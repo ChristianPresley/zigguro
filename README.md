@@ -12,7 +12,23 @@ An AI-native code editor built in pure Zig 0.16.
 
 ## Status
 
-Early development. There is nothing to build or run yet.
+Early development. The foundations (build graph, `zg_core`, `zg_jsonrpc`, `zg_net`) are being implemented from the spec in the GitHub issues; the index issue #1198 maps spec IDs to issues.
+
+## Building
+
+Install Zig 0.16.0 (nothing else is needed), then:
+
+```sh
+zig build              # builds zig-out/bin/zigguro and zig-out/bin/zg
+zig build test         # every package and tool
+zig build run-zg -- --version
+```
+
+## Contributing
+
+- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md): toolchain, building, testing, style, layering.
+- [docs/AGENTS.md](docs/AGENTS.md): how humans and AI agents claim issues and ship pull requests.
+- [docs/definition-of-done.md](docs/definition-of-done.md), [docs/ownership.md](docs/ownership.md), [docs/adr/](docs/adr/README.md).
 
 ## License
 
