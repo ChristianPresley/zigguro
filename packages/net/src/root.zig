@@ -3,6 +3,10 @@
 const std = @import("std");
 pub const options = @import("zg_options");
 pub const sse = @import("sse.zig");
+pub const proxy = @import("proxy.zig");
+pub const retry = @import("retry.zig");
+pub const url = @import("url.zig");
+pub const http = @import("http.zig");
 
 test {
     std.testing.refAllDecls(@This());
