@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the tests of every package and tool");
     const fuzz_step = b.step("fuzz", "Run every test (use with --fuzz to fuzz `fuzz:` tests)");
     inline for (packages.all, 0..) |p, i| {
-        const t = b.addTest(.{ .name = p.name, .root_module = mods[i], .filters = test_filters });
+        const t = b.addTest(.{ .name = p.name, .root_module = zg_build.testModule(b, f, mods[i]), .filters = test_filters });
         const run = b.addRunArtifact(t);
         run.skip_foreign_checks = true;
         const one = b.step("test-" ++ comptime p.short(), "Run the " ++ p.name ++ " tests");
