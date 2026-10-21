@@ -4,6 +4,9 @@ const std = @import("std");
 pub const options = @import("zg_options");
 pub const framing = @import("framing.zig");
 pub const message = @import("message.zig");
+pub const testing = @import("testing.zig");
+pub const dialect = @import("dialect.zig");
+pub const Endpoint = @import("Endpoint.zig");
 
 test {
     std.testing.refAllDecls(@This());
