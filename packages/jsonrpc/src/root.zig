@@ -3,6 +3,7 @@
 const std = @import("std");
 pub const options = @import("zg_options");
 pub const framing = @import("framing.zig");
+pub const message = @import("message.zig");
 
 test {
     std.testing.refAllDecls(@This());
