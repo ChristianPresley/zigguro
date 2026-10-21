@@ -82,14 +82,20 @@ pub fn init(rt: *Runtime, min: std.process.Init.Minimal, opts: Options) !void {
 
 /// Initialises `rt` for tests with `std.testing.allocator` and `std.testing.io`.
 pub fn initTesting(rt: *Runtime) void {
+    rt.initBorrowed(std.testing.allocator, std.testing.io, 4096) catch @panic("OOM");
+}
+
+/// Initialises `rt` on an allocator and `Io` owned by the caller (tests,
+/// benchmarks, embedding); `deinit` then frees only the mailbox.
+pub fn initBorrowed(rt: *Runtime, gpa: std.mem.Allocator, io: std.Io, mailbox_capacity: u32) !void {
     rt.gpa_state = .{ .kind = .page };
     rt.threaded = undefined;
-    rt.gpa = std.testing.allocator;
-    rt.io = std.testing.io;
+    rt.gpa = gpa;
+    rt.io = io;
     rt.owns_io = false;
     rt.ui_thread = null;
     rt.self_check = rt;
-    rt.mailbox = mailbox_mod.Mailbox.init(rt.gpa, 4096) catch @panic("OOM");
+    rt.mailbox = try mailbox_mod.Mailbox.init(gpa, mailbox_capacity);
 }
 
 /// Tears down the mailbox, the `Io` and the GPA; returns the leak check.
