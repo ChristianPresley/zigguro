@@ -1,0 +1,74 @@
+name: Epic
+description: A top-level area of work (E00-E17).
+title: "[EXX] Epic: "
+labels: ["epic"]
+body:
+  - type: markdown
+    attributes:
+      value: Follow the issue templates in the spec conventions. Refer to other work by spec ID (e.g. E05.F02.S01).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: why-goals
+    attributes:
+      label: Why (goals)
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: packages
+    attributes:
+      label: Packages
+    validations:
+      required: true
+  - type: textarea
+    id: architecture-overview
+    attributes:
+      label: Architecture overview
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+    validations:
+      required: true
+  - type: textarea
+    id: performance-budgets
+    attributes:
+      label: Performance budgets
+    validations:
+      required: true
+  - type: textarea
+    id: cross-epic-dependencies
+    attributes:
+      label: Cross-epic dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: features
+    attributes:
+      label: Features
+    validations:
+      required: true
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of done
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+    validations:
+      required: true
