@@ -235,6 +235,24 @@ pub const Client = struct {
         return std.json.parseFromSlice(T, gpa, r.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
     }
 
+    /// A raw connection for protocols layered on HTTP/1.1 upgrades
+    /// (WebSocket). Honours proxies and NO_PROXY. Release it with
+    /// `releaseRaw`; it is never returned to the keep-alive pool.
+    pub const Raw = struct { std_client: *StdClient, conn: *StdClient.Connection };
+
+    pub fn connectRaw(self: *Client, host: Io.net.HostName, port: u16, protocol: StdClient.Protocol) !Raw {
+        self.rt.assertNotUi();
+        if (protocol == .tls) try self.ensureCaLoaded();
+        const c = if (proxy.shouldBypass(self.no_proxy, host.bytes, port)) &self.direct else &self.proxied;
+        const conn = try c.connect(host, port, protocol);
+        return .{ .std_client = c, .conn = conn };
+    }
+
+    pub fn releaseRaw(self: *Client, raw: Raw) void {
+        raw.conn.closing = true;
+        raw.std_client.connection_pool.release(raw.conn, self.io);
+    }
+
     fn perform(self: *Client, gpa: Allocator, req: Request, sink: ?BodySink) !Response {
         self.rt.assertNotUi();
         const uri = try std.Uri.parse(req.url);
