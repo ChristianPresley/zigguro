@@ -1,0 +1,62 @@
+epic	5319e7	Epic: a top-level area of work
+feature	1d76db	Feature within an epic
+story	0e8a16	User story within a feature
+task	fbca04	Implementable task
+E00	c5def5	Epic E00
+E01	c5def5	Epic E01
+E02	c5def5	Epic E02
+E03	c5def5	Epic E03
+E04	c5def5	Epic E04
+E05	c5def5	Epic E05
+E06	c5def5	Epic E06
+E07	c5def5	Epic E07
+E08	c5def5	Epic E08
+E09	c5def5	Epic E09
+E10	c5def5	Epic E10
+E11	c5def5	Epic E11
+E12	c5def5	Epic E12
+E13	c5def5	Epic E13
+E14	c5def5	Epic E14
+E15	c5def5	Epic E15
+E16	c5def5	Epic E16
+E17	c5def5	Epic E17
+pkg:core	bfdadc	Package core
+pkg:jsonrpc	bfdadc	Package jsonrpc
+pkg:net	bfdadc	Package net
+pkg:regex	bfdadc	Package regex
+pkg:platform	bfdadc	Package platform
+pkg:text	bfdadc	Package text
+pkg:vulkan	bfdadc	Package vulkan
+pkg:gui	bfdadc	Package gui
+pkg:syntax	bfdadc	Package syntax
+pkg:editor	bfdadc	Package editor
+pkg:terminal	bfdadc	Package terminal
+pkg:lsp	bfdadc	Package lsp
+pkg:dap	bfdadc	Package dap
+pkg:workspace	bfdadc	Package workspace
+pkg:notes	bfdadc	Package notes
+pkg:scm	bfdadc	Package scm
+pkg:git	bfdadc	Package git
+pkg:ai	bfdadc	Package ai
+pkg:mcp	bfdadc	Package mcp
+pkg:mcp-servers	bfdadc	Package mcp-servers
+pkg:review	bfdadc	Package review
+pkg:agents	bfdadc	Package agents
+pkg:perf	bfdadc	Package perf
+pkg:config	bfdadc	Package config
+pkg:security	bfdadc	Package security
+pkg:apps	bfdadc	Package apps
+pkg:build	bfdadc	Package build
+P0	b60205	MVP critical path
+P1	d93f0b	v1
+P2	fef2c0	Later
+os:windows	0052cc	Windows-specific
+os:linux	0052cc	Linux-specific
+os:macos	0052cc	macOS-specific
+good-first-agent-task	7057ff	Small, fully independent task
+status:claimed	006b75	Claimed by an agent or contributor
+status:blocked	e11d21	Blocked on a dependency
+cross-package	d4c5f9	Touches files outside one package
+api-change	d4c5f9	Changes a public interface
+fuzz-crash	b60205	Crash found by fuzzing
+bug	d73a4a	Something does not work as specified
