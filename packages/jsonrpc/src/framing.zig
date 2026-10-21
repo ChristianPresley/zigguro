@@ -235,12 +235,21 @@ pub const FrameReader = union(Framing) {
     }
 };
 
-/// Writes one frame in `framing`.
+/// Writes one frame in `framing`, then flushes.
 pub fn writeFrame(framing: Framing, w: *Writer, body: []const u8) Error!void {
-    return switch (framing) {
-        .content_length => writeContentLength(w, body),
-        .ndjson => writeNdjson(w, body),
-    };
+    try writeFrameUnflushed(framing, w, body);
+    w.flush() catch return error.WriteFailed;
+}
+
+/// Writes one frame without flushing, so a writer loop can batch frames and
+/// flush once.
+pub fn writeFrameUnflushed(framing: Framing, w: *Writer, body: []const u8) Error!void {
+    switch (framing) {
+        .content_length => w.print("Content-Length: {d}\r\n\r\n", .{body.len}) catch return error.WriteFailed,
+        .ndjson => if (std.mem.indexOfScalar(u8, body, '\n') != null) return error.EmbeddedNewline,
+    }
+    w.writeAll(body) catch return error.WriteFailed;
+    if (framing == .ndjson) w.writeByte('\n') catch return error.WriteFailed;
 }
 
 const testing = std.testing;
