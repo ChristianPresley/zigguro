@@ -160,9 +160,7 @@ pub fn parse(arena: Allocator, body: []const u8) Parsed {
     const first = sc.peekNextTokenType() catch return .{ .invalid = .of(.parse_error, "Parse error") };
     switch (first) {
         .object_begin => {
-            sc.skipValue() catch return .{ .invalid = .of(.parse_error, "Parse error") };
-            if (!atEnd(&sc)) return .{ .invalid = .of(.parse_error, "Parse error") };
-            return switch (classify(arena, body)) {
+            return switch (classify(arena, body, true)) {
                 .message => |m| .{ .single = m },
                 .invalid => |e| .{ .invalid = e },
             };
@@ -180,7 +178,7 @@ pub fn parse(arena: Allocator, body: []const u8) Parsed {
             if (!atEnd(&sc)) return .{ .invalid = .of(.parse_error, "Parse error") };
             if (slices.items.len == 0) return .{ .invalid = .of(.invalid_request, "Invalid Request") };
             const out = arena.alloc(BatchEntry, slices.items.len) catch return .{ .invalid = .of(.internal_error, "Out of memory") };
-            for (slices.items, out) |s, *e| e.* = classify(arena, s);
+            for (slices.items, out) |s, *e| e.* = classify(arena, s, false);
             return .{ .batch = out };
         },
         else => {
@@ -197,33 +195,96 @@ fn atEnd(sc: *Scanner) bool {
 }
 
 /// The slice of the next value, with surrounding whitespace removed.
+/// Objects, arrays and strings are skipped by `skipRaw`, a structural scan
+/// several times faster than `Scanner.skipValue` on large payloads; it
+/// checks nesting and string boundaries only, and phase 2 (`RawJson.parse`)
+/// validates the contents.
 fn rawValue(sc: *Scanner, body: []const u8) ![]const u8 {
-    _ = try sc.peekNextTokenType();
+    const t = try sc.peekNextTokenType();
     const start = sc.cursor;
-    try sc.skipValue();
+    switch (t) {
+        .object_begin, .array_begin, .string => {
+            const end = skipRaw(body, start) orelse return error.SyntaxError;
+            sc.cursor = end;
+            sc.state = .post_value;
+        },
+        else => try sc.skipValue(),
+    }
     return std.mem.trimEnd(u8, body[start..sc.cursor], " \t\r\n");
+}
+
+/// The end of the object, array or string starting at `s[start]`, or null
+/// when the input ends first or brackets do not match.
+fn skipRaw(s: []const u8, start: usize) ?usize {
+    var stack: std.bit_set.IntegerBitSet(256) = .initEmpty(); // set: array
+    var depth: usize = 0;
+    var i = start;
+    while (i < s.len) {
+        switch (s[i]) {
+            '"' => {
+                i = skipString(s, i) orelse return null;
+                if (depth == 0) return i;
+                continue;
+            },
+            '{', '[' => {
+                if (depth == 256) return null;
+                stack.setValue(depth, s[i] == '[');
+                depth += 1;
+            },
+            '}', ']' => {
+                if (depth == 0) return null;
+                depth -= 1;
+                if (stack.isSet(depth) != (s[i] == ']')) return null;
+                if (depth == 0) return i + 1;
+            },
+            else => {},
+        }
+        i += 1;
+    }
+    return null;
+}
+
+/// The index after the closing quote of the string starting at `s[start]`.
+/// Finds quotes with the SIMD scalar search and treats one preceded by an
+/// odd run of backslashes as escaped.
+fn skipString(s: []const u8, start: usize) ?usize {
+    var j = start + 1;
+    while (std.mem.indexOfScalarPos(u8, s, j, '"')) |k| {
+        var bs: usize = 0;
+        while (k - bs > start + 1 and s[k - bs - 1] == '\\') bs += 1;
+        if (bs % 2 == 0) return k + 1;
+        j = k + 1;
+    }
+    return null;
 }
 
 fn invalidRequest() BatchEntry {
     return .{ .invalid = .of(.invalid_request, "Invalid Request") };
 }
 
-/// Classifies one syntactically valid JSON value.
-fn classify(arena: Allocator, body: []const u8) BatchEntry {
-    return classifyInner(arena, body) catch |err| switch (err) {
+/// Classifies one JSON value. At the top level (`top`), syntax errors and
+/// trailing bytes are parse errors; batch elements were already delimited.
+fn classify(arena: Allocator, body: []const u8, top: bool) BatchEntry {
+    return classifyInner(arena, body, top) catch |err| switch (err) {
         error.OutOfMemory => .{ .invalid = .of(.internal_error, "Out of memory") },
-        else => invalidRequest(),
+        error.SyntaxError, error.UnexpectedEndOfInput, error.BufferUnderrun, error.ValueTooLong => .{ .invalid = .of(.parse_error, "Parse error") },
+        error.Invalid => invalidRequest(),
     };
 }
 
 const ClassifyError = Scanner.AllocError || Scanner.PeekError || error{Invalid};
 
-fn classifyInner(arena: Allocator, body: []const u8) ClassifyError!BatchEntry {
+fn classifyInner(arena: Allocator, body: []const u8, top: bool) ClassifyError!BatchEntry {
     var sfa = std.heap.stackFallback(512, arena);
     var sc: Scanner = .initCompleteInput(sfa.get(), body);
     defer sc.deinit();
     if (try sc.next() != .object_begin) return invalidRequest();
+    const entry = try classifyFields(arena, body, &sc);
+    if (top and try sc.next() != .end_of_document) return error.SyntaxError;
+    return entry;
+}
 
+fn classifyFields(arena: Allocator, body: []const u8, sc: *Scanner) ClassifyError!BatchEntry {
     var version_ok = false;
     var id: ?Id = null;
     var method: ?[]const u8 = null;
@@ -258,11 +319,11 @@ fn classifyInner(arena: Allocator, body: []const u8) ClassifyError!BatchEntry {
         } else if (std.mem.eql(u8, key, "params")) {
             const t = try sc.peekNextTokenType();
             if (t != .object_begin and t != .array_begin) return error.Invalid;
-            params = .{ .bytes = try rawValue(&sc, body) };
+            params = .{ .bytes = try rawValue(sc, body) };
         } else if (std.mem.eql(u8, key, "result")) {
-            result = .{ .bytes = try rawValue(&sc, body) };
+            result = .{ .bytes = try rawValue(sc, body) };
         } else if (std.mem.eql(u8, key, "error")) {
-            err_obj = try parseErrorObject(arena, try rawValue(&sc, body));
+            err_obj = try parseErrorObject(arena, try rawValue(sc, body));
         } else {
             try sc.skipValue();
         }
@@ -328,12 +389,19 @@ fn writeParams(s: *Stringify, params: anytype) !void {
         return;
     }
     try s.objectField("params");
+    const info = @typeInfo(P);
+    if (info == .@"struct" and info.@"struct".is_tuple and info.@"struct".fields.len == 0) {
+        // `.{}` means "no parameters": an empty object, not an empty array.
+        try s.beginObject();
+        try s.endObject();
+        return;
+    }
     try s.write(params);
 }
 
 /// Writes `{"jsonrpc":"2.0","id":..,"method":..,"params":..}`. `params` of
-/// type `void`, `null` or a null optional is omitted; a `RawJson` is copied
-/// verbatim.
+/// type `void`, `null` or a null optional is omitted; `.{}` is written as
+/// `{}`; a `RawJson` is copied verbatim.
 pub fn writeRequest(w: *std.Io.Writer, id: Id, method: []const u8, params: anytype) !void {
     var s: Stringify = .{ .writer = w };
     try begin(&s);
@@ -517,6 +585,9 @@ test "message: classification rules" {
     try expectParse("{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":1}", "invalid(-32600)");
     try expectParse("{\"jsonrpc\":\"2.0\",\"id\":-7,\"result\":null,\"extra\":[1,{}]}", "resp(-7,ok:null)");
     try expectParse("{\"jsonrpc\":\"2.0\",\"id\":\"a\\\"b\",\"method\":\"x\\u0041\"}", "req(\"a\"b\",xA,-)");
+    try expectParse("{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":[\"a\\\"]b\\\\\",{\"k\":\"}\"}]}", "note(m,[\"a\\\"]b\\\\\",{\"k\":\"}\"}])");
+    try expectParse("{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":[1}}", "invalid(-32700)");
+    try expectParse("{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":{\"a\":\"x}", "invalid(-32700)");
     try expectParse("\"str\"", "invalid(-32600)");
     try expectParse("{} {}", "invalid(-32700)");
     try expectParse("", "invalid(-32700)");
