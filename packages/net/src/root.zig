@@ -7,6 +7,8 @@ pub const proxy = @import("proxy.zig");
 pub const retry = @import("retry.zig");
 pub const url = @import("url.zig");
 pub const http = @import("http.zig");
+pub const ws_frame = @import("ws_frame.zig");
+pub const websocket = @import("websocket.zig");
 
 test {
     std.testing.refAllDecls(@This());
