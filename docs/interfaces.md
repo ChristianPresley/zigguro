@@ -179,7 +179,7 @@ Stable; adding fields is additive.
 ## zg_jsonrpc framers and Endpoint
 
 ### Defined in
-`packages/jsonrpc/src/{framing.zig, message.zig, Endpoint.zig}` (E00.F05).
+`packages/jsonrpc/src/{framing.zig, message.zig, dialect.zig, Endpoint.zig, testing.zig}` (E00.F05).
 
 ### Implemented by
 E00.F05.S01.T01, E00.F05.S01.T02, E00.F05.S02.T01.
@@ -188,37 +188,62 @@ E00.F05.S01.T01, E00.F05.S01.T02, E00.F05.S02.T01.
 E07 (LSP and DAP clients), E11 (MCP client and server SDK).
 
 ### Signature
-(spec, not yet merged)
 ```zig
+// framing.zig
 pub const Options = struct { max_message_bytes: usize = 64 << 20, max_header_bytes: usize = 8 << 10 };
+pub const Framing = enum { content_length, ndjson };
 pub const ContentLengthReader = struct {
     pub fn init(r: *std.Io.Reader, opts: Options) ContentLengthReader;
     pub fn next(self: *ContentLengthReader, gpa: std.mem.Allocator) Error![]const u8;
+    pub fn deinit(self: *ContentLengthReader, gpa: std.mem.Allocator) void;
 };
-pub fn writeContentLength(w: *std.Io.Writer, body: []const u8) Error!void;
-pub const NdjsonReader = struct {
+pub const NdjsonReader = struct { // same shape as ContentLengthReader
     pub fn init(r: *std.Io.Reader, opts: Options) NdjsonReader;
     pub fn next(self: *NdjsonReader, gpa: std.mem.Allocator) Error![]const u8;
+    pub fn deinit(self: *NdjsonReader, gpa: std.mem.Allocator) void;
 };
+pub fn writeContentLength(w: *std.Io.Writer, body: []const u8) Error!void;
 pub fn writeNdjson(w: *std.Io.Writer, body: []const u8) Error!void;
+pub fn isFatal(err: Error) bool;
 
-pub const Dialect = enum { plain, lsp, mcp };
+// message.zig
+pub const Id = union(enum) { int: i64, str: []const u8, null };
+pub const RawJson = struct { bytes: []const u8 };
+pub const Message = union(enum) { request: Request, notification: Notification, response: Response };
+pub const Parsed = union(enum) { single: Message, batch: []BatchEntry, invalid: ErrorObject };
+pub fn parse(arena: Allocator, body: []const u8) Parsed;
+
+// Endpoint.zig
+pub fn init(rt: *zg_core.Runtime, cfg: Config, reader: *std.Io.Reader, writer: *std.Io.Writer) !*Endpoint;
+pub fn onRequest(self: *Endpoint, method: []const u8, h: Handler) !void;
+pub fn onNotification(self: *Endpoint, method: []const u8, h: NotificationHandler) !void;
+pub fn onClose(self: *Endpoint, cb: Callback) void;
+pub fn start(self: *Endpoint) !void;
+pub fn request(self: *Endpoint, method: []const u8, params: anytype, opts: CallOptions) !OwnedResponse;
+pub fn requestAsync(self: *Endpoint, method: []const u8, params: anytype, opts: CallOptions, cb: Callback) !i64;
+pub fn notify(self: *Endpoint, method: []const u8, params: anytype) !void;
+pub fn cancel(self: *Endpoint, id: i64) void;
 pub fn respond(self: *Endpoint, id: message.Id, result: anytype) !void;
 pub fn respondError(self: *Endpoint, id: message.Id, code: i32, msg: []const u8) !void;
-pub fn onClose(self: *Endpoint, cb: Callback) void;
+pub fn isCanceled(self: *Endpoint, id: message.Id) bool;
+pub fn close(self: *Endpoint) void;
+pub fn deinit(self: *Endpoint) void;
 ```
 
 ### Threading
-The Endpoint runs a reader loop and a writer loop on the Runtime's Io. Sync
-`request` must not be called on the UI thread. Callbacks run on the reader
-thread; use `Runtime.post` to reach the UI.
+The Endpoint runs reader, writer and timer loops on the Runtime's Io; any
+thread may send. Sync `request` must not be called on the UI thread.
+Request handlers run as Subsystem tasks; notification handlers and
+callbacks run on the reader or timer loop and must use `Runtime.post` to
+reach the UI. Incoming cancellation is cooperative (`isCanceled`).
 
 ### Ownership/lifetime
-Frame bodies returned by `next` are valid until the next call. Request
-handlers get a per-request arena freed after the reply is written.
+Frame bodies returned by `next` are valid until the next call. A handler's
+`RawJson` lives in a per-request arena freed after the reply is written. An
+`OwnedResponse` owns its memory; call `deinit`.
 
 ### Stability
-Experimental until E00.F05 merges.
+Stable as merged in E00.F05; changes follow the rule above.
 
 ## zg_net.http, sse and websocket
 
