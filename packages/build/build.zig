@@ -160,16 +160,18 @@ pub const PackageSpec = struct {
 /// artifact the root fetches with `dep.artifact()`.
 pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module {
     if (spec.link_libc) @panic("zigguro packages must not link libc");
+    // The public module leaves `optimize` unset so it inherits the mode of
+    // whatever compilation imports it: tests use -Doptimize, benches
+    // ReleaseFast, apps their own mode.
     const mod = b.addModule(spec.name, .{
         .root_source_file = b.path(spec.root),
         .target = f.target,
-        .optimize = f.optimize,
         .imports = spec.imports,
     });
     mod.addImport("zg_options", optionsModule(b, f));
     mod.addImport("zg_corpus", corpusModule(b));
 
-    const tests = b.addTest(.{ .name = spec.name, .root_module = mod });
+    const tests = b.addTest(.{ .name = spec.name, .root_module = testModule(b, f, mod) });
     const run_tests = b.addRunArtifact(tests);
     run_tests.skip_foreign_checks = true;
     b.step("test", "Run this package's unit tests").dependOn(&run_tests.step);
@@ -181,8 +183,10 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
             // Benches are always ReleaseFast; a per-package optimize option
             // would have to be forwarded and would break the invariant.
             .optimize = .ReleaseFast,
-            .imports = &.{.{ .name = spec.name, .module = mod }},
         });
+        // Benches see the package and everything the package imports.
+        bench_mod.addImport(spec.name, mod);
+        for (spec.imports) |imp| bench_mod.addImport(imp.name, imp.module);
         const exe = b.addExecutable(.{ .name = b.fmt("{s}-bench", .{spec.name}), .root_module = bench_mod });
         b.installArtifact(exe);
         const run = b.addRunArtifact(exe);
@@ -191,6 +195,20 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
         b.step("bench", "Run this package's benchmarks").dependOn(&run.step);
     }
     return mod;
+}
+
+/// A copy of package module `mod` (same root file and imports) with
+/// `f.optimize`, for use as the root module of a test compilation. Use it
+/// instead of `mod` itself, whose mode is inherited from the importer.
+pub fn testModule(b: *std.Build, f: Flags, mod: *std.Build.Module) *std.Build.Module {
+    const t = b.createModule(.{
+        .root_source_file = mod.root_source_file,
+        .target = f.target,
+        .optimize = f.optimize,
+    });
+    var it = mod.import_table.iterator();
+    while (it.next()) |e| t.addImport(e.key_ptr.*, e.value_ptr.*);
+    return t;
 }
 
 /// Generates the `zg_corpus` module: `pub const <target> = &.{ @embedFile(..), .. };`
