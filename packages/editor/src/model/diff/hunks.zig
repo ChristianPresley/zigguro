@@ -14,9 +14,12 @@ pub const LineSpan = struct { start: u64, count: u64 };
 
 /// Intraline or moved-block highlight, in byte offsets of one side's text.
 pub const DiffRange = struct {
-    side: enum { old, new },
+    side: Side,
     range: pt.Range,
     kind: enum { changed, moved },
+
+    /// Which text a range is in.
+    pub const Side = enum { old, new };
 };
 
 /// One hunk. With context, `old`/`new` include the context lines.
