@@ -206,6 +206,8 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/seat.zig`.
+    pub const seat = @import("wayland/seat.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
@@ -427,6 +429,7 @@ test {
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
+    _ = wayland.seat;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -505,6 +508,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
     .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
+    .{ .path = "wayland/seat.zig", .src = @embedFile("wayland/seat.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },

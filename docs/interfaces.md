@@ -876,8 +876,9 @@ E01.F04.S01.T01.
 ### Consumed by
 `zg_platform.init` on Wayland sessions; E02 presents through the
 window's `Presenter`; E04 reads `window_configure` state and
-`WmCapabilities`. Input, cursors, data device, IME and decorations
-(E01.F04.S01.T02, E01.F04.S02, E01.F04.S03) extend this backend.
+`WmCapabilities`; E04 reads key, pointer, scroll and touch events.
+Cursors, data device, IME and decorations (E01.F04.S02, E01.F04.S03)
+extend this backend.
 
 ### Signature
 ```zig
@@ -920,8 +921,23 @@ are described under the presenter contract above. With wp_presentation
 every present asks for feedback (`InitOptions.presentation_feedback`),
 reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
 a discarded frame has `flags = PresentFlags.discarded` and
-`presented_ns = 0`. Until the data device lands,
-`clipboard_read` answers only from our own `clipboard_write`. Move,
+`presented_ns = 0`.
+
+Input (E01.F04.S02.T02, `wayland/seat.zig`): the first `wl_seat` (v5–9)
+gives keyboard, pointer and touch as its capabilities come and go.
+Keymaps are parsed with `xkb.Keymap` on the platform thread; key events
+carry the level-resolved keysym, its codepoint and UTF-8 `text`, except
+Ctrl/Alt chords (not AltGr), which carry the level-0 keysym and no text.
+Compose rules load at thread start from `InitOptions.environ_map`
+(`XCOMPOSEFILE`, `~/.XCompose`, the locale's file, then the built-in
+dead keys); a finished sequence sends `text_input`. Repeat is
+client-side (`repeat_info`, a timerfd) with `action = .repeat`. Pointer
+events are grouped by `wl_pointer.frame` and reported in physical
+pixels; clicks count within 500 ms and 4 px. Wheels scroll in `.lines`
+(`value120`, else `discrete`, else 10 units a line), fingers and
+continuous devices in `.pixels`, fingers with `begin`/`update`/`end`.
+Touch points are reported per `wl_touch.frame`. Until the data device
+lands, `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
 
