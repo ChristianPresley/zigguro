@@ -78,6 +78,25 @@ pub fn colorOf(p: *const Palette, id: HighlightId, fallback: Color) Color {
     return Color.hexa(v);
 }
 
+/// `colorOf` for any id: one interned by `names` (an LSP semantic token
+/// type outside the fixed set) takes its nearest fixed ancestor's colour.
+pub fn colorOfNamed(p: *const Palette, names: ?*const zg_syntax.HighlightNames, id: HighlightId, fallback: Color) Color {
+    var cur = id;
+    if (names) |n| while (@intFromEnum(cur) >= HighlightId.count) {
+        cur = n.parentOf(cur) orelse return fallback;
+    };
+    return colorOf(p, cur, fallback);
+}
+
+test "interned names take their ancestor's colour" {
+    const fg: Color = .hex(0xffffff);
+    var names: zg_syntax.HighlightNames = .init(std.testing.allocator);
+    defer names.deinit();
+    const id = try names.intern("keyword.control.custom");
+    try std.testing.expectEqual(colorOf(&dark, .keyword_control, fg), colorOfNamed(&dark, &names, id, fg));
+    try std.testing.expectEqual(fg, colorOfNamed(&dark, null, id, fg));
+}
+
 test "prefix fallback and background choice" {
     const fg: Color = .hex(0xffffff);
     try std.testing.expectEqual(Color.hexa(0xc792eaff), colorOf(&dark, .keyword_control, fg));

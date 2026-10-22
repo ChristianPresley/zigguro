@@ -84,6 +84,10 @@ pub const EditorView = struct {
     /// Decorations to draw (fed by its own listener). Not owned.
     decorations: ?*const deco_store.DecorationStore = null,
     styles: ?StyleResolver = null,
+    /// Names of highlight ids beyond the fixed set (LSP semantic token
+    /// types, from E07's legend), so they colour like their ancestors.
+    /// Not owned.
+    hl_names: ?*const @import("zg_syntax").HighlightNames = null,
     /// The SCM bar's hunks (a dirty diff); none: no bar. Not owned.
     scm: ?gutter.ScmGutterSource = null,
     on_change: ?ChangeHook = null,
