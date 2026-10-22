@@ -66,12 +66,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     return if (argv.len >= 2) 2 else 0;
 }
 
-/// Crash reports go to `<state>/crashes` (E17.F05); `install` copies the
-/// paths. A failure here only means no reports.
+/// Crash reports go to `<state>/crashes` (E17.F05), inside
+/// `zigguro-data` for a portable install; `install` copies the paths. A failure here only means no reports.
 fn installCrashHandler(min: std.process.Init.Minimal, product: []const u8) void {
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     var crash_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const state = zg_crash.paths.stateDir(min.environ, &state_buf) orelse return;
+    // Before the runtime exists: the one stat for portable mode runs on
+    // std's single-threaded Io.
+    const state = zg_crash.paths.stateDirAt(std.Io.Threaded.global_single_threaded.io(), min.environ, &state_buf) orelse return;
     const crashes = zg_crash.paths.crashDir(state, &crash_buf) orelse return;
     zg_crash.install(.{ .crash_dir = crashes, .state_dir = state, .product = product }) catch {};
 }
