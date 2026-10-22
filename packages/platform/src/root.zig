@@ -191,6 +191,25 @@ pub const portal = if (is_linux) struct {
     pub const window_handle = @import("portal/window_handle.zig");
 } else struct {};
 
+/// A pure-Zig X11 client: connection setup, request serialization,
+/// replies, errors and events (Linux).
+pub const x11 = if (is_linux) struct {
+    /// See `x11/conn.zig`.
+    pub const Conn = @import("x11/conn.zig").Conn;
+    /// See `x11/auth.zig`.
+    pub const auth = @import("x11/auth.zig");
+    /// See `x11/setup.zig`.
+    pub const setup = @import("x11/setup.zig");
+    /// See `x11/proto.zig`.
+    pub const proto = @import("x11/proto.zig");
+    /// See `x11/ext.zig`.
+    pub const ext = @import("x11/ext.zig");
+    /// See `x11/atoms.zig`.
+    pub const AtomTable = @import("x11/atoms.zig").AtomTable;
+    /// See `x11/testing/fake_server.zig`.
+    pub const testing = @import("x11/testing/fake_server.zig");
+} else struct {};
+
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
     /// See `queue/event_ring.zig`.
@@ -262,11 +281,14 @@ test {
     inline for (wayland.protocol.interfaces) |I| std.testing.refAllDecls(I);
     std.testing.refAllDecls(wayland.wire);
     std.testing.refAllDecls(portal);
+    std.testing.refAllDecls(x11);
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
         _ = @import("wayland/wire/fuzz.zig");
         _ = @import("portal/fake_portal.zig");
+        std.testing.refAllDecls(x11.Conn);
+        _ = @import("x11/testing/fake_server.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
@@ -328,6 +350,13 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
     .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
+    .{ .path = "x11/conn.zig", .src = @embedFile("x11/conn.zig") },
+    .{ .path = "x11/auth.zig", .src = @embedFile("x11/auth.zig") },
+    .{ .path = "x11/setup.zig", .src = @embedFile("x11/setup.zig") },
+    .{ .path = "x11/proto.zig", .src = @embedFile("x11/proto.zig") },
+    .{ .path = "x11/ext.zig", .src = @embedFile("x11/ext.zig") },
+    .{ .path = "x11/atoms.zig", .src = @embedFile("x11/atoms.zig") },
+    .{ .path = "x11/testing/fake_server.zig", .src = @embedFile("x11/testing/fake_server.zig") },
 };
 
 test "init starts the headless backend" {
