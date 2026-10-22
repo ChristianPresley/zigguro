@@ -189,10 +189,28 @@ const Ctx = struct {
 /// mark run.
 pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.Error!void {
     if (b.len() == 0) return;
+    const count = b.len();
+    // Most text: no marks, and the font maps every character, so each
+    // keeps its glyph in place. Stop at the first character that needs
+    // more; the prefix before it is final (a base followed by a mark is
+    // left to its cluster).
+    var done: usize = 0;
+    {
+        const infos = b.infos.items;
+        while (done < count) : (done += 1) {
+            const g = &infos[done];
+            if (g.isUnicodeMark()) break;
+            const gid = face.glyphIndex(g.cp);
+            if (gid == 0) break;
+            g.gid = gid;
+        }
+        if (done == count) return;
+        if (done > 0 and infos[done].isUnicodeMark()) done -= 1;
+    }
     b.out.clearRetainingCapacity();
     try b.out.ensureTotalCapacity(b.gpa, b.len());
-    var c: Ctx = .{ .face = face, .b = b };
-    const count = b.len();
+    b.out.appendSliceAssumeCapacity(b.infos.items[0..done]);
+    var c: Ctx = .{ .face = face, .b = b, .idx = done };
     var all_simple = true;
 
     // Round 1: decompose.
