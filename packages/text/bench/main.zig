@@ -15,15 +15,15 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",   "text.bidi_200col_ltr",     "text.bidi_200col_rtl", "text.cache_hit",
-    "text.cache_screen",   "text.casefold_ascii",      "text.cells_row_200",   "text.cff_outline",
-    "text.fontdb_load_3k", "text.gamma",               "text.glyf_outline",    "text.grapheme_ascii",
-    "text.grapheme_mixed", "text.gvar_apply",          "text.hit_test",        "text.integrate_gpix",
-    "text.itemize_200col", "text.layout_200col",       "text.lcd",             "text.linebreak_mixed",
-    "text.measure_hit",    "text.nfc_quickcheck",      "text.nfc_slow_mixed",  "text.props_lookup",
-    "text.raster_14px",    "text.raster_64px_cjk",     "text.raster_lcd_14px", "text.registry_get",
-    "text.sdf_48px",       "text.shape_code_line_200", "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.var_advance",    "text.width_row_200",       "text.word_mixed",      "text.wrap_10kb",
+    "text.atlas_insert",        "text.bidi_200col_ltr", "text.bidi_200col_rtl",      "text.cache_hit",
+    "text.cache_screen",        "text.casefold_ascii",  "text.cells_row_200",        "text.cff_outline",
+    "text.fontdb_load_3k",      "text.gamma",           "text.glyf_outline",         "text.grapheme_ascii",
+    "text.grapheme_mixed",      "text.gvar_apply",      "text.hit_test",             "text.integrate_gpix",
+    "text.itemize_200col",      "text.layout_200col",   "text.lcd",                  "text.linebreak_mixed",
+    "text.measure_hit",         "text.nfc_quickcheck",  "text.nfc_slow_mixed",       "text.raster_14px",
+    "text.raster_64px_cjk",     "text.raster_lcd_14px", "text.registry_get",         "text.sdf_48px",
+    "text.shape_code_line_200", "text.shape_latin_1k",  "text.shape_word_cache_hit", "text.var_advance",
+    "text.width_row_200",       "text.word_mixed",      "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -69,6 +69,15 @@ fn register(b: *bench.Bench) !void {
     cached.attachPageCache(&pc);
     for (cps) |c| _ = cached.glyphIndex(c); // warm the pages
     try b.run("text.cmap_lookup", CmapCtx{ .face = &cached, .cps = &cps }, cmapLookup);
+
+    // Unicode property lookups over the same mixed code points.
+    try b.run("text.props_lookup", &cps, propsLookup);
+}
+
+fn propsLookup(cps: *const [4096]u21, s: *State) void {
+    var acc: u64 = 0;
+    for (0..s.iterations()) |i| acc +%= @as(u64, @bitCast(zg_text.unicode.props(cps[i & 4095])));
+    bench.doNotOptimizeAway(acc);
 }
 
 fn faceOpen(fonts: *const Fonts, s: *State) void {
