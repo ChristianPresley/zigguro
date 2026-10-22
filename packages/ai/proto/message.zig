@@ -87,6 +87,8 @@ pub const Meta = struct {
     time_ms: ?i64 = null,
     /// Inserted by the harness (reminders, compaction summaries), not typed by the user.
     synthetic: bool = false,
+    /// A partial message committed after a cancel or error.
+    interrupted: bool = false,
 };
 
 /// One conversation message.
