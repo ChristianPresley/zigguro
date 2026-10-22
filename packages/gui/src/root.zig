@@ -77,4 +77,5 @@ test {
     _ = @import("virtual/table_test.zig");
     _ = @import("a11y/tree_test.zig");
     _ = @import("a11y/uia_test.zig");
+    if (@import("builtin").os.tag == .linux) _ = @import("a11y/atspi/atspi_test.zig");
 }

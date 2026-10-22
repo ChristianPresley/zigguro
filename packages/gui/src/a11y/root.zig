@@ -4,6 +4,8 @@
 pub const tree = @import("tree.zig");
 pub const snapshot = @import("snapshot.zig");
 pub const uia = @import("uia/root.zig");
+/// Linux only (D-Bus).
+pub const atspi = if (@import("builtin").os.tag == .linux) @import("atspi/root.zig") else struct {};
 
 pub const A11yTree = tree.A11yTree;
 pub const Snapshot = snapshot.Snapshot;
