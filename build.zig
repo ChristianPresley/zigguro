@@ -82,6 +82,21 @@ pub fn build(b: *std.Build) void {
     zig_pin.has_side_effects = true;
     b.step("zig-pin", "Download, verify and pin the Zig toolchain (-Dzig-version=0.16.0)").dependOn(&zig_pin.step);
 
+    // setup-zig.sh against a loopback fixture mirror (Linux; skipped elsewhere).
+    const ci_opts = b.addOptions();
+    ci_opts.addOption([]const u8, "repo_root", b.pathFromRoot("."));
+    const ci_test = b.addTest(.{
+        .name = "test-ci-scripts",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/zig-verify/ci_scripts_test.zig"),
+            .target = b.graph.host,
+            .imports = &.{.{ .name = "ci_test_options", .module = ci_opts.createModule() }},
+        }),
+    });
+    const ci_test_run = b.addRunArtifact(ci_test);
+    ci_test_run.has_side_effects = true;
+    b.step("test-ci-scripts", "Run setup-zig.sh against a fixture mirror (Linux)").dependOn(&ci_test_run.step);
+
     const check_layers = b.addRunArtifact(pkgtool);
     check_layers.addArgs(&.{ "check-layers", "--root" });
     check_layers.addDirectoryArg(b.path("."));
