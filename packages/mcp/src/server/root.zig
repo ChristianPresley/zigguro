@@ -1,5 +1,5 @@
-//! The MCP server SDK (E11.F05): typed tools, registries and dual-era
-//! dispatch.
+//! The MCP server SDK (E11.F05): typed tools, registries, dual-era
+//! dispatch and user input from handlers (MRTR, sealed `requestState`).
 
 const std = @import("std");
 
@@ -9,8 +9,12 @@ pub const registry = @import("registry.zig");
 pub const pagination = @import("pagination.zig");
 pub const dispatch = @import("dispatch.zig");
 pub const subscriptions = @import("subscriptions.zig");
+pub const ctx = @import("ctx.zig");
+pub const mrtr_seal = @import("mrtr_seal.zig");
+pub const legacy_requests = @import("legacy_requests.zig");
 
 pub const CallCtx = Server.CallCtx;
+pub const InputError = ctx.InputError;
 pub const Conn = Server.Conn;
 pub const Options = Server.Options;
 pub const Authorizer = Server.Authorizer;
