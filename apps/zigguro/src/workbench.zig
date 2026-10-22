@@ -287,7 +287,7 @@ pub const Workbench = struct {
                     f.diff = m;
                     sync.diff = m;
                     f.view.scm = .of(m);
-                    wb.diffAgainstHead(sync, m, p, loaded.?);
+                    wb.diffAgainstHead(sync, m, p, loaded.?.encoding, loaded.?.eol.style);
                 } else |e| log.warn("diff of {s}: {t}", .{ p, e });
             }
         }
@@ -305,11 +305,12 @@ pub const Workbench = struct {
 
     /// In a git working tree, the change bars compare with the file at
     /// `HEAD` instead of the text on disk.
-    fn diffAgainstHead(wb: *Workbench, sync: *FileSync, m: *diff_model.DiffModel, path: []const u8, loaded: zg_editor.model.buffer.external.Loaded) void {
+    fn diffAgainstHead(wb: *Workbench, sync: *FileSync, m: *diff_model.DiffModel, path: []const u8, encoding: zg_editor.model.encoding.Encoding, eol: zg_editor.model.buffer.eol.Eol) void {
         const gpa = wb.gpa;
         const abs = std.fs.path.resolve(gpa, &.{ wb.cwd, path }) catch return;
         defer gpa.free(abs);
-        const text = scm_base.headText(gpa, wb.io, abs, loaded.encoding, loaded.eol.style) catch |e| {
+        sync.head_commit = scm_base.headCommit(gpa, wb.io, abs) catch null;
+        const text = scm_base.headText(gpa, wb.io, abs, encoding, eol) catch |e| {
             log.warn("HEAD version of {s}: {t}", .{ path, e });
             return;
         } orelse return;
@@ -910,7 +911,22 @@ pub const Workbench = struct {
     /// Looks for changes on disk to every open file (when the window
     /// gains focus, and with the review poll while the agent runs).
     fn checkFiles(wb: *Workbench) void {
-        for (wb.files.items) |f| if (f.sync) |fs| fs.check() catch {};
+        for (wb.files.items) |f| if (f.sync) |fs| {
+            fs.check() catch {};
+            wb.refreshHead(f, fs);
+        };
+    }
+
+    /// Diffs `f` against HEAD again when HEAD moved since its base was
+    /// read (a commit, checkout or reset, from the terminal or the agent).
+    fn refreshHead(wb: *Workbench, f: OpenFile, fs: *FileSync) void {
+        const m = f.diff orelse return;
+        const path = f.path orelse return;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path }) catch return;
+        defer wb.gpa.free(abs);
+        const now = (scm_base.headCommit(wb.gpa, wb.io, abs) catch return) orelse return;
+        if (fs.head_commit) |was| if (std.mem.eql(u8, &was, &now)) return;
+        wb.diffAgainstHead(fs, m, path, fs.file.encoding, fs.file.eol);
     }
 
     /// Mailbox messages for the workbench's models: a DiffModel's full
