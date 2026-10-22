@@ -65,6 +65,22 @@ pub const models = struct {
         _ = @import("provider/hub_test.zig");
     }
 };
+/// The agent loop runtime (E10.F05).
+pub const loop = struct {
+    pub const events = @import("loop/events.zig");
+    pub const bus = @import("loop/bus.zig");
+    pub const scheduler = @import("loop/scheduler.zig");
+    pub const budget = @import("loop/budget.zig");
+    pub const deps = @import("loop/deps.zig");
+    pub const input_queue = @import("loop/input_queue.zig");
+    pub const Agent = @import("loop/Agent.zig");
+    pub const AgentManager = @import("loop/Manager.zig");
+    test {
+        _ = @import("loop/bus_test.zig");
+        _ = @import("loop/scheduler_test.zig");
+        _ = @import("loop/turn_test.zig");
+    }
+};
 pub const schema = struct {
     pub const validate = @import("schema/validate.zig");
     pub const strict = @import("schema/strict.zig");
@@ -103,4 +119,5 @@ test {
     std.testing.refAllDecls(openai);
     std.testing.refAllDecls(gemini);
     std.testing.refAllDecls(models);
+    std.testing.refAllDecls(loop);
 }
