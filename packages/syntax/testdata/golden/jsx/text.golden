@@ -1,0 +1,5 @@
+1| keyword.storage:const variable:t operator:= punctuation.bracket:(
+2| punctuation:< tag:p punctuation:>
+3| string:    Plain text with "quotes" and 'apostrophes' / slashes // not comments
+4| string:   punctuation:</ tag:p punctuation:>
+5| punctuation.bracket:) punctuation.delimiter:;
