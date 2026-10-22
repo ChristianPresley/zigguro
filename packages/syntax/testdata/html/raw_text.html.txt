@@ -1,0 +1,5 @@
+<textarea name="t"><b>not a tag</b> &amp; entity</textarea>
+<title>A <b>title</b> &amp; more</title>
+<textarea>
+line one
+</textarea>
