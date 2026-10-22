@@ -78,5 +78,20 @@ snapshot's text. In this package's tests the sink compares it with
 `pixels` captures the recorded draw list rather than rendered pixels.
 
 The example scripts are in `src/testing/scripts/*.zgui`, and
-`src/testing/script_test.zig` runs them against its `Counter`, `Form` and
-`Dock` views.
+`src/testing/script_test.zig` runs them against the `Counter`, `Form` and
+`Dock` views in `src/testing/examples.zig`.
+
+From the command line, `zg ui-test` runs scripts against the same views:
+
+```
+zg ui-test packages/gui/src/testing/scripts/*.zgui
+zg ui-test --snapshots out/ --update my.zgui
+```
+
+Each snapshot is compared with `<snapshots>/<name>.<kind>` (by default
+`snapshots/` next to the script). A missing file is written, and a
+different one fails the script unless `--update` is given. The command
+exits 0 when every script passes, 1 when one fails (with the failing line
+and the closest names, or the first differing snapshot line) and 2 on a
+usage error. `zig build test-zg` runs it on the example scripts and checks
+the snapshots against this package's goldens.
