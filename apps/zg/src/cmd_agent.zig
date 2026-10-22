@@ -142,6 +142,25 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer task.deinit();
     try tool_registry.addSource(task.source());
 
+    // The todo list, and questions to the user: asked on the terminal in
+    // the REPL; one-shot runs have nobody to ask, so ask_user is left out.
+    var todos: zg_ai.plan.todos.TodoStore = .init(gpa, io);
+    defer todos.deinit();
+    todos.mgr = mgr;
+    try tool_registry.addSource(todos.source());
+    var in_buf: [64 * 1024]u8 = undefined;
+    var in_r: Io.File.Reader = .initStreaming(.stdin(), io, &in_buf);
+    const in = &in_r.interface;
+    const stdin_piped = !(Io.File.stdin().isTty(io) catch true);
+    const one_shot = opts.prompt != null or opts.streamInput() or stdin_piped;
+    var cli_asker: zg_ai.plan.ask_user.CliAsker = .{ .in = in, .out = err };
+    var ask_user: zg_ai.plan.ask_user.AskUserTool = .{
+        .asker = if (one_shot) null else cli_asker.asker(),
+        .mgr = mgr,
+        .labeler = zg_ai.plan.ask_user.subagentLabeler(&subagents),
+    };
+    try tool_registry.addSource(ask_user.source());
+
     // Sessions live under the state directory.
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state = stateDir(min, &env, &state_buf);
@@ -164,7 +183,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     headless.signals.install(&sig);
 
     opts.env = .{
-        .stdin_piped = !(Io.File.stdin().isTty(io) catch true),
+        .stdin_piped = stdin_piped,
         .spill_dir = state orelse cwd,
         .store = if (store) |*s| s else null,
         .index = if (index) |*ix| ix else null,
@@ -172,12 +191,10 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .err = err,
         .cwd = cwd,
         .default_model = env.get("ZG_MODEL") orelse "sonnet",
+        .todos = &todos,
     };
 
-    var in_buf: [64 * 1024]u8 = undefined;
-    var in_r: Io.File.Reader = .initStreaming(.stdin(), io, &in_buf);
-    const in = &in_r.interface;
-    const code = if (opts.prompt != null or opts.streamInput() or opts.env.stdin_piped)
+    const code = if (one_shot)
         try headless.runPrint(io, gpa, mgr, opts, out, in)
     else
         try headless.runRepl(io, gpa, mgr, opts, out, in);
