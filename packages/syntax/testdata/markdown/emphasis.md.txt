@@ -3,3 +3,4 @@
 snake_case_word stays plain, as does 2 * 3 * 4
 **unclosed strong
 a \*literal\* star and \_underscore\_
+~one~ and ~ not ~ and ~~~three~~~ and ~~mixed~ too

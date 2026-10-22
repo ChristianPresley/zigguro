@@ -78,6 +78,9 @@ pub const TokenSink = struct {
 pub const Scanner = struct {
     line: []const u8,
     pos: u32 = 0,
+    /// The next line's text, for languages with `Language.lookahead`
+    /// (null otherwise, and on the last line).
+    next: ?[]const u8 = null,
 
     /// The byte at the cursor, or null at the end.
     pub fn peek(s: *const Scanner) ?u8 {

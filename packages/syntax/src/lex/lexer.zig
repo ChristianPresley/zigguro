@@ -23,6 +23,12 @@ const max_handoffs = 16;
 /// Lexes `line` (without its EOL) starting in `st`, leaving `st` as the
 /// line's end state. The sink must have been begun for this line.
 pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *TokenSink) void {
+    lexLineAhead(reg, st, line, null, sink);
+}
+
+/// `lexLine` that also shows the lexers the next line's text (`next`,
+/// null on the last line), for languages with `Language.lookahead`.
+pub fn lexLineAhead(reg: *const Registry, st: *LexState, line: []const u8, next: ?[]const u8, sink: *TokenSink) void {
     if (line.len > max_tokenized_line) {
         sink.push(.{ .start = 0, .kind = 0, .hl = .none });
         return;
@@ -42,7 +48,7 @@ pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *Tok
             };
         }
         sink.kind_or = if (st.injected()) Token.injected_bit else 0;
-        var s: Scanner = .{ .line = line[0..view_end], .pos = pos };
+        var s: Scanner = .{ .line = line[0..view_end], .pos = pos, .next = next };
         const depth = st.stack_len;
         const top = st.top();
         lang.lexer.lexLineFn(st, &s, sink);

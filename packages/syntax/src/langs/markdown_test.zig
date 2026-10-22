@@ -127,7 +127,62 @@ test "markdown: inline spans" {
     try std.testing.expectEqual(S.none, l.hlAt(at(line, "_case")));
 }
 
-const pieces = [_][]const u8{ "# ", "```", "```python", "~~~", "x", "*a*", "`", "---", "<div>", "</div>", "", "- ", "> ", "|", "[l](u)", "    ", "\t", "é" };
+test "markdown: setext heading text looks one line ahead" {
+    var r = try lt.registry();
+    defer r.deinit(gpa);
+    const S = syntax.HighlightId;
+    {
+        const lines = [_][]const u8{ "first", "Title", "=====", "", "Sub *x*", "  ---", "", "para", "    ===", "", "list", "-", "", "> Quote", "> ---" };
+        var d = try Doc.init(&markdown.markdown_language, &lines);
+        defer d.deinit();
+        // Only the last paragraph line is the heading.
+        try std.testing.expectEqual(S.none, d.hlAt(0, 0));
+        try std.testing.expectEqual(S.markup_heading_1, d.hlAt(1, 0));
+        try std.testing.expectEqual(S.markup_heading_1, d.hlAt(2, 0));
+        try std.testing.expectEqual(S.markup_heading_2, d.hlAt(4, 4));
+        try std.testing.expectEqual(S.markup_heading_2, d.hlAt(5, 2));
+        // Four spaces of indentation: a paragraph continuation.
+        try std.testing.expectEqual(S.none, d.hlAt(7, 0));
+        try std.testing.expectEqual(S.none, d.hlAt(8, 4));
+        // A lone `-` after a paragraph underlines it.
+        try std.testing.expectEqual(S.markup_heading_2, d.hlAt(10, 0));
+        try std.testing.expectEqual(S.markup_heading_2, d.hlAt(11, 0));
+        try std.testing.expectEqual(S.markup_heading_2, d.hlAt(13, 2));
+    }
+    {
+        // Typing the underline recolours the line above it.
+        var lines = [_][]const u8{ "Title", "" };
+        const src_lines: []const []const u8 = &lines;
+        var h = try syntax.Highlighter.init(gpa, &markdown.markdown_language, &r);
+        defer h.deinit();
+        var src = syntax.LineSource.fromSlice(&src_lines);
+        try h.reset(src);
+        try h.ensure(src, 0, 1);
+        try std.testing.expectEqual(S.none, h.tokens(0)[0].hl);
+        lines[1] = "==";
+        src = syntax.LineSource.fromSlice(&src_lines);
+        try h.onEdit(.{ .first = 1, .removed = 1, .inserted = 1 }, src, null);
+        try std.testing.expectEqual(S.markup_heading_1, h.tokens(0)[0].hl);
+        lines[1] = "==x";
+        try h.onEdit(.{ .first = 1, .removed = 1, .inserted = 1 }, src, null);
+        try std.testing.expectEqual(S.none, h.tokens(0)[0].hl);
+    }
+}
+
+test "markdown: strikethrough" {
+    var l = try lt.lexWith(markdown.markdown_language.lexer.lexLineFn, .init(.markdown), "~~a b~~ ~c~ ~~d~ ~ e ~ ~~~f~~~");
+    defer l.deinit();
+    const S = syntax.HighlightId;
+    try std.testing.expectEqual(S.markup_strikethrough, l.hlAt(0));
+    try std.testing.expectEqual(S.markup_strikethrough, l.hlAt(6));
+    try std.testing.expectEqual(S.markup_strikethrough, l.hlAt(8));
+    try std.testing.expectEqual(S.none, l.hlAt(12)); // `~~d~`: lengths differ
+    try std.testing.expectEqual(S.none, l.hlAt(17)); // `~ e ~`: blank after the opener
+    try std.testing.expectEqual(S.none, l.hlAt(23)); // three tildes
+    try std.testing.expectEqualStrings("markup.strikethrough", S.markup_strikethrough.name());
+}
+
+const pieces = [_][]const u8{ "# ", "```", "```python", "~~~", "x", "*a*", "`", "---", "<div>", "</div>", "", "- ", "> ", "|", "[l](u)", "    ", "\t", "é", "===", "-", "~~s~~" };
 
 test "markdown: incremental equals full" {
     var r = try lt.registry();
