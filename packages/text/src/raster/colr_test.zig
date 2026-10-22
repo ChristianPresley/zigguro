@@ -478,9 +478,13 @@ fn fuzzColr(input: []const u8) !void {
     if (input.len < 5) return;
     const gpa = std.heap.page_allocator;
     if (fuzz_font == null) {
-        var f: Fixture = undefined;
-        try f.init(gpa, "test_glyphs-glyf_colr_1_variable.ttf", &.{});
-        fuzz_font = .{ .f = f, .varied = try variation.FaceInstance.init(gpa, &f.face, &golden_loc) };
+        // Built in place: both instances point at `f.face`, so the fixture
+        // must not move after `init` (a stack copy left them dangling).
+        fuzz_font = .{ .f = undefined, .varied = undefined };
+        const slot = &fuzz_font.?;
+        errdefer fuzz_font = null;
+        try slot.f.init(gpa, "test_glyphs-glyf_colr_1_variable.ttf", &.{});
+        slot.varied = try variation.FaceInstance.init(gpa, &slot.f.face, &golden_loc);
     }
     const ff = &fuzz_font.?;
     const rest = input[5..];
