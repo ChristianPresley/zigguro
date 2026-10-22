@@ -85,6 +85,29 @@ fn registerClient(b: *bench.Bench) !void {
     try rt.initBorrowed(b.gpa, b.io, 64);
     defer _ = rt.deinit();
     try b.run("client: connect in-process (modern)", &rt, connectInProcess);
+
+    // Acceptance (E11.F05.S02.T01): an in-process round trip < 100 µs.
+    const Server = zg_mcp.server.Server;
+    const srv = try Server.init(b.gpa, b.io, .{ .info = .{ .name = "bench", .version = "0" } });
+    defer srv.deinit();
+    var pair: zg_mcp.transport.InProcPair = .init(b.gpa, b.io);
+    defer pair.deinit();
+    const conn = try srv.serveInProcess(&pair);
+    defer conn.close();
+    const c = try zg_mcp.client.Client.connect(&rt, b.gpa, .{ .in_process = &pair }, .{
+        .client_info = .{ .name = "zigguro", .version = "0.0.0" },
+    });
+    defer c.close();
+    try b.run("inproc: round trip (tools/list, modern)", c, roundTrip);
+}
+
+fn roundTrip(c: *zg_mcp.client.Client, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var arena: std.heap.ArenaAllocator = .init(s.allocator());
+        defer arena.deinit();
+        const r = c.request(.tools_list, .{}, .{ .arena = arena.allocator() }) catch unreachable;
+        bench.doNotOptimizeAway(r.tools.len);
+    }
 }
 
 fn connectInProcess(rt: *zg_core.Runtime, s: *State) void {
