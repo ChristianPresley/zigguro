@@ -2321,7 +2321,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
-- `ExternalRing` exists but `VkRenderer` does not use it yet: every `.external` target goes through the shm sink. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
+- `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
@@ -2720,6 +2720,8 @@ pub const RenderThread = struct {
     pub fn stats(self) FrameStats;                       // last completed frame
     pub fn shutdown(self) void;                          // joins, destroys the renderer
 };
+// FrameStats.skipped: the renderer had no free target buffer; the thread
+// re-renders (the same list if nothing newer was posted) one refresh later.
 pub const FramePacer = struct {
     pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
     pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };

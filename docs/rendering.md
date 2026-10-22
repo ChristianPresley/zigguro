@@ -193,11 +193,19 @@ counters (`gpu.frame_ns`, `gpu.uploads_ns`, `gpu.layers_ns`, `gpu.main_ns`).
 On Linux devices with calibrated timestamps, `gpu_start_ns` places the frame
 on the CPU monotonic clock.
 
-With no window damage and no layer redrawn, nothing is submitted. Targets
-today are readback to a headless sink, to memory, or to an external
-presenter's shm buffers (`present/ShmRing.zig`: up to three
-`allocCpuBuffer` buffers, buffer-age repaint from a CPU backbuffer, latest
-frame wins when the compositor holds them all). The whole scene corpus,
+With no window damage and no layer redrawn, nothing is submitted. An
+external presenter (Wayland, X11) gets the zero-copy dmabuf ring
+(`present/ExternalRing.zig`) when the device exports dmabufs with DRM
+format modifiers and shares a format/modifier with the compositor; the
+frame renders straight into a ring image released to the foreign queue
+family, with an exported sync_file (or a CPU wait) as the acquire point.
+When the compositor holds all three images the frame is skipped
+(`FrameStats.skipped`) and its damage carries over. Otherwise frames go
+through readback: to a headless sink, to memory, or to the presenter's shm
+buffers (`present/ShmRing.zig`: up to three `allocCpuBuffer` buffers,
+buffer-age repaint from a CPU backbuffer, latest frame wins when the
+compositor holds them all). Lavapipe has no DRM format modifiers, so CI
+covers the shm path; dmabuf presentation needs the manual hardware matrix. The whole scene corpus,
 multi-frame damage and layer scenes included, matches the software goldens
 on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
 
@@ -219,6 +227,8 @@ platform frame callbacks and configures with `onPlatformFrame`.
 - `immediate` is for headless targets.
 
 With nothing posted, the thread sleeps on one event, so idle costs no wakeups.
+A frame the renderer skipped (no free target buffer) is rendered again one
+refresh interval later, from the same list unless a newer one was posted.
 
 ## Golden images
 

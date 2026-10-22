@@ -218,6 +218,10 @@ pub const FrameStats = struct {
     backend: Backend = .software,
     /// Monotonic id of the presented frame (0 when nothing was presented).
     present_id: u64 = 0,
+    /// No target buffer was free (the compositor holds them all): nothing
+    /// was rendered, and the frame's damage carries to the next render.
+    /// Render again after the next frame signal or refresh interval.
+    skipped: bool = false,
 };
 
 test "types: radii helpers" {
