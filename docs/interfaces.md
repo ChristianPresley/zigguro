@@ -2310,12 +2310,13 @@ Internal to E02 behind `r2d.Renderer`.
 ### Defined in
 `packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
 `highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig`,
-`structure/*.zig` (E05.F04); the document adapter is
+`structure/*.zig`, `brackets/*.zig` (E05.F04); the document adapter is
 `packages/editor/src/model/syntax.zig`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`).
+structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
+structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2359,13 +2360,42 @@ pub const Structure = struct { version: u64, folds: []const FoldRange, symbols: 
     pub fn selectionRanges(s, gpa, pos: u32, out: *ArrayList(ByteRange)) !void; // innermost first
     pub fn indentDepth(s, pos: u32) ?u32;
 };
+pub const FoldKind = enum { block, comment, imports, string, region, pub fn lspKind(k) ?[]const u8 };
+pub const SymbolKind = enum { function, test_decl, @"struct", ..., class, interface, module, namespace, method,
+    type_alias, heading, pub fn lspKind(k) u8 };                          // LSP SymbolKind numbers
+// structure/query.zig
+pub fn foldsStartingIn(s, first: u32, last: u32) []const FoldRange; pub fn foldAt(s, line: u32) ?FoldRange;
+pub fn symbolAt(s, pos: u32) ?u32; pub fn children(s, parent: ?u32) ChildIterator;
+// Bracket pairs (brackets/bracket_tree.zig): a (2,3)-tree with relative lengths, updated by node reuse.
+pub const BracketToken = struct { offset: u64, len: u8, pair: u6, open: bool };   // pair indexes Language.brackets
+pub const BracketSource = struct { ctx, len: u64, nextFn: fn (ctx, from: u64) !?BracketToken };
+pub const TextEdit = struct { start: u64, end: u64, new_len: u64 };               // old offsets
+pub const BracketPairInfo = struct { open: u64, open_len: u8, close: ?u64, close_len: u8, depth: u32, pair: u6 };
+pub const BracketTree = struct {
+    pub fn build(gpa, src: BracketSource) !BracketTree; pub fn rebuild(bt, src) !void;
+    pub fn applyEdits(bt, edits: []const TextEdit, retokenized: []const Range /* new offsets */, src) !void;
+    pub fn matching(bt, pos: u64) ?BracketPairInfo;        // pos on either bracket
+    pub fn enclosing(bt, pos: u64) ?BracketPairInfo;       // innermost pair around pos
+    pub fn pairsInRange(bt, gpa, r: Range, out) !void;    // rainbow depth + guides, document order
+    pub fn unmatched(bt, gpa, r: Range, out: *ArrayList(u64)) !void;
+};
+pub const HighlightBrackets = struct { pub fn init(gpa, h: *const Highlighter, lines: LineSource, index: LineIndex) HighlightBrackets;
+    pub fn source(s) BracketSource };                     // bracket-highlighted tokens matching Language.brackets
+pub fn Highlighter.takeRelexed(h) ?Range;                  // lines relexed since the last call
+pub fn Highlighter.isCommentLine(h, line: u64, text: []const u8) bool;
+// Fallback structure (structure/fallback.zig): any language without tier 2.
+pub fn fallbackStructure(gpa, text: []const u8, version: u64, bt: ?*const BracketTree, lang: *const Language,
+    o: struct { tab_size: u8 = 4, hints: ?LineHints = null }) !Structure;
+// Language gains `fold_by_indent: bool` and `decl_keywords: []const DeclKeyword` (scopes/outline headers).
 // zg_editor.model.syntax: the document adapter.
 pub fn lineSource(tree: *const PieceTree) LineSource;
 pub fn lineEdits(gpa, ev: *const ChangeEvent, after: PieceTree, out: *ArrayList(LineEdit)) !?[]const LineEdit;
-pub const DocumentSyntax = struct { hl: Highlighter, version: u64,
+pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, version: u64,
     pub fn init(gpa, lang, reg, tree: *const PieceTree, version: u64) !DocumentSyntax;
     pub fn onChange(ds, ev: *const ChangeEvent, after: *const PieceTree, deadline: ?Deadline) !void; // from a Listener
-    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool };
+    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool;
+    pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
+pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 ```
 
@@ -2379,6 +2409,8 @@ immutable and tagged with the snapshot's version, so a stale one is dropped.
 `Language` definitions and the `Registry` are borrowed and must outlive every
 `Highlighter` using them. `tokens(line)` slices are valid until the next
 call that mutates the highlighter. `LineSource` text is borrowed per call.
+`BracketTree` owns its nodes; `pairsInRange`/`unmatched` fill caller lists.
+A `BracketSource` must describe the text the tree is updated to.
 
 ### Stability
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not

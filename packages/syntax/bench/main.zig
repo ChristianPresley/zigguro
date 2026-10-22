@@ -112,6 +112,88 @@ fn toyLex(st: *syntax.LexState, s: *syntax.Scanner, out: *syntax.TokenSink) void
 
 const toy: syntax.Language = .{ .id = @enumFromInt(300), .name = "toy", .lexer = .{ .lexLineFn = toyLex } };
 
+/// Bracket tokens of the corpus with an offset shift past `at`, so the
+/// edit bench can insert and delete a byte without copying tokens.
+const ShiftSource = struct {
+    toks: []const syntax.brackets.bracket_tree.BracketToken,
+    len: u64,
+    at: u64 = std.math.maxInt(u64),
+    by: u64 = 0,
+    hint: usize = 0,
+
+    fn source(s: *ShiftSource) syntax.BracketSource {
+        return .{ .ctx = s, .len = s.len + s.by, .nextFn = next };
+    }
+
+    fn next(ctx: *anyopaque, from: u64) std.mem.Allocator.Error!?syntax.brackets.bracket_tree.BracketToken {
+        const s: *ShiftSource = @ptrCast(@alignCast(ctx));
+        // Old offset of `from`: tokens at or past `at` moved by `by`.
+        const old = if (from >= s.at + s.by) from - s.by else @min(from, s.at);
+        // Sequential reads ask for the token after the last one.
+        var lo: usize = s.hint;
+        if (!(lo < s.toks.len and s.toks[lo].offset >= old and (lo == 0 or s.toks[lo - 1].offset < old))) {
+            lo = 0;
+            var hi: usize = s.toks.len;
+            while (lo < hi) {
+                const mid = (lo + hi) / 2;
+                if (s.toks[mid].offset < old) lo = mid + 1 else hi = mid;
+            }
+        }
+        s.hint = lo + 1;
+        if (lo == s.toks.len) return null;
+        var t = s.toks[lo];
+        if (t.offset >= s.at) t.offset += s.by;
+        return t;
+    }
+};
+
+/// The corpus's bracket tokens, from the Zig lexer.
+fn bracketTokens(gpa: std.mem.Allocator, reg: *const syntax.Registry, lines: []const []const u8) ![]syntax.brackets.bracket_tree.BracketToken {
+    var out: std.ArrayList(syntax.brackets.bracket_tree.BracketToken) = .empty;
+    var sink: syntax.TokenSink = .{};
+    defer sink.deinit(gpa);
+    var st = syntax.LexState.init(.zig);
+    var off: u64 = 0;
+    for (lines) |l| {
+        try sink.begin(gpa, l.len);
+        syntax.lex.lexer.lexLine(reg, &st, l, &sink);
+        for (sink.tokens()) |t| if (t.hl == .punctuation_bracket) {
+            const pair: u6 = switch (l[t.start]) {
+                '(', ')' => 0,
+                '[', ']' => 1,
+                else => 2,
+            };
+            const open = switch (l[t.start]) {
+                '(', '[', '{' => true,
+                else => false,
+            };
+            try out.append(gpa, .{ .offset = off + t.start, .len = 1, .pair = pair, .open = open });
+        };
+        off += l.len + 1;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const FallbackCtx = struct { bt: *syntax.BracketTree, text: []const u8 };
+
+const EditCtx = struct { bt: *syntax.BracketTree, src: *ShiftSource, at: u64, line: syntax.brackets.bracket_tree.Range };
+
+/// Types a byte into a line in the middle of the file and deletes it
+/// again, updating the bracket tree each time (the edited line counts as
+/// retokenized, as the highlighter reports it).
+fn bracketEdit(ctx: EditCtx, s: *bench.State) void {
+    var it: u64 = 0;
+    while (it < s.iterations()) : (it += 1) {
+        const inserting = ctx.src.by == 0;
+        ctx.src.at = ctx.at;
+        ctx.src.by = if (inserting) 1 else 0;
+        const e: syntax.brackets.bracket_tree.TextEdit = if (inserting) .{ .start = ctx.at, .end = ctx.at, .new_len = 1 } else .{ .start = ctx.at, .end = ctx.at + 1, .new_len = 0 };
+        const line: syntax.brackets.bracket_tree.Range = .{ .start = ctx.line.start, .end = ctx.line.end + ctx.src.by };
+        ctx.bt.applyEdits(&.{e}, &.{line}, ctx.src.source()) catch unreachable;
+        bench.doNotOptimizeAway(ctx.bt.len());
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     const gpa = b.gpa;
     var reg = try syntax.defaultRegistry(gpa);
@@ -171,6 +253,49 @@ fn register(b: *bench.Bench) !void {
             st.setBytes(src.len);
         }
     }.f);
+
+    {
+        const toks = try bracketTokens(gpa, &reg, lines);
+        defer gpa.free(toks);
+        var ss: ShiftSource = .{ .toks = toks, .len = text.len };
+        try b.run("syntax.brackets.build_100k", &ss, struct {
+            fn f(src: *ShiftSource, st: *bench.State) void {
+                var it: u64 = 0;
+                while (it < st.iterations()) : (it += 1) {
+                    var t = syntax.BracketTree.build(std.heap.smp_allocator, src.source()) catch unreachable;
+                    bench.doNotOptimizeAway(t.len());
+                    t.deinit();
+                }
+                st.setBytes(src.len);
+            }
+        }.f);
+        var bt = try syntax.BracketTree.build(gpa, ss.source());
+        defer bt.deinit();
+        std.debug.print("  brackets: {d} tokens, {d} nodes\n", .{ toks.len, bt.nodeCount() });
+        // Inside the body of a function in the middle.
+        const mid_line = lines.len / 2;
+        var off: u64 = 0;
+        for (lines[0..mid_line]) |l| off += l.len + 1;
+        const at = off + lines[mid_line].len / 2;
+        const ctx: EditCtx = .{ .bt = &bt, .src = &ss, .at = at, .line = .{ .start = off, .end = off + lines[mid_line].len } };
+        try b.run("syntax.brackets.edit_100k", ctx, bracketEdit);
+        if (ss.by != 0) {
+            ss.by = 0;
+            try bt.applyEdits(&.{.{ .start = at, .end = at + 1, .new_len = 0 }}, &.{ctx.line}, ss.source());
+        }
+
+        try b.run("syntax.structure.fallback_100k", FallbackCtx{ .bt = &bt, .text = text }, struct {
+            fn f(c: FallbackCtx, st: *bench.State) void {
+                var it: u64 = 0;
+                while (it < st.iterations()) : (it += 1) {
+                    var r = syntax.fallbackStructure(std.heap.smp_allocator, c.text, it, c.bt, &syntax.langs.zig.zig_language, .{}) catch unreachable;
+                    bench.doNotOptimizeAway(r.folds.len);
+                    r.deinit();
+                }
+                st.setBytes(c.text.len);
+            }
+        }.f);
+    }
 
     inline for (.{ .{ "syntax.keystroke.zig_100k", &syntax.langs.zig.zig_language }, .{ "syntax.keystroke.toy_100k", &toy } }) |c| {
         var h: syntax.Highlighter = try .init(gpa, c[1], &reg);
