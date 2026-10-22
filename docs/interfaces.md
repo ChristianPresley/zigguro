@@ -257,21 +257,35 @@ E00.F06.S01.T01, E00.F06.S02.T01, E00.F06.S02.T02.
 E10 (AI providers), E11 (MCP HTTP transport), E16 (account services).
 
 ### Signature
-(spec, not yet merged)
 ```zig
+// http.zig
 pub fn init(rt: *zg_core.Runtime, cfg: Config) !*Client;
+pub fn deinit(self: *Client) void;
 pub fn send(self: *Client, gpa: Allocator, req: Request) !Response;
 pub fn stream(self: *Client, req: Request, sink: BodySink) !Head;
+pub fn getJson(self: *Client, comptime T: type, gpa: Allocator, url: []const u8, headers: []const std.http.Header) !std.json.Parsed(T);
+pub fn connectRaw(self: *Client, host: Io.net.HostName, port: u16, protocol: std.http.Client.Protocol) !Raw;
+pub fn releaseRaw(self: *Client, raw: Raw) void;
 
+// sse.zig
 pub const Event = struct { type: []const u8, data: []const u8, id: ?[]const u8, retry_ms: ?u64 };
 pub const Parser = struct {
-    pub fn feed(self: *Parser, chunk: []const u8, sink: anytype) !void;
+    pub fn init(gpa: Allocator, opts: Options) Parser;
+    pub fn feed(self: *Parser, chunk: []const u8, sink: anytype) !void; // sink.onEvent(Event)
     pub fn finish(self: *Parser) void;
 };
 
+// websocket.zig
 pub fn connect(client: *http.Client, gpa: Allocator, url: []const u8, opts: Options) !*WebSocket;
-pub fn send(self: *WebSocket, kind: enum { text, binary }, data: []const u8) !void;
+pub fn send(self: *WebSocket, kind: Kind, data: []const u8) !void;
+pub fn ping(self: *WebSocket, payload: []const u8) !void;
+pub fn recv(self: *WebSocket, gpa: Allocator) !Received; // .message or .closed
+pub fn close(self: *WebSocket, code: u16, reason: []const u8) !void;
 ```
+
+Credentials (`Authorization`, `x-api-key`) are sent by zg_net itself and
+dropped on redirects to another origin: std 0.16 accepts
+`privileged_headers` but never writes them.
 
 ### Threading
 `Client` is thread-safe. Blocking calls must not run on the UI thread.
@@ -282,7 +296,7 @@ pub fn send(self: *WebSocket, kind: enum { text, binary }, data: []const u8) !vo
 only during the `onEvent` callback.
 
 ### Stability
-Experimental until E00.F06 merges.
+Experimental until PR #1199 merges.
 
 ## zg_net.oauth.TokenStore
 
@@ -296,13 +310,22 @@ E16.F06 (OS keychain-backed store). zg_net ships `MemoryTokenStore`.
 `zg_net.oauth.Session` (E11 MCP auth, AI providers using OAuth).
 
 ### Signature
-(spec, not yet merged)
 ```zig
-pub const TokenStore = struct { ctx: ?*anyopaque, vtable: *const struct {
-    load: *const fn (?*anyopaque, gpa: Allocator, issuer: []const u8, resource: []const u8) anyerror!?TokenSet,
-    save: *const fn (?*anyopaque, issuer: []const u8, resource: []const u8, t: TokenSet) anyerror!void,
-    remove: *const fn (?*anyopaque, issuer: []const u8, resource: []const u8) anyerror!void,
-} };
+pub const TokenStore = struct {
+    ctx: ?*anyopaque,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        load: *const fn (?*anyopaque, gpa: Allocator, issuer: []const u8, resource: []const u8) anyerror!?TokenSet,
+        save: *const fn (?*anyopaque, issuer: []const u8, resource: []const u8, t: TokenSet) anyerror!void,
+        remove: *const fn (?*anyopaque, issuer: []const u8, resource: []const u8) anyerror!void,
+    };
+};
+pub const TokenSet = struct { access_token: []const u8, token_type: []const u8, expires_at: ?i64,
+    refresh_token: ?[]const u8, scope: ?[]const u8 }; // expires_at in Unix seconds
+pub const MemoryTokenStore = struct {
+    pub fn init(gpa: Allocator, io: std.Io) MemoryTokenStore;
+    pub fn store(self: *MemoryTokenStore) TokenStore;
+};
 ```
 
 ### Threading
@@ -314,7 +337,7 @@ thread-safe.
 copies what it keeps. Tokens are never logged.
 
 ### Stability
-Experimental until E00.F06.S03.T02 merges.
+Experimental until PR #1199 merges.
 
 ## zg_net.oauth.OpenUrlFn
 
@@ -328,7 +351,6 @@ E01.F07 (open the system browser).
 `zg_net.oauth.Session.authorize`.
 
 ### Signature
-(spec, not yet merged)
 ```zig
 pub const OpenUrlFn = *const fn (ctx: ?*anyopaque, url: []const u8) anyerror!void;
 ```
@@ -341,4 +363,44 @@ asked to open; it does not wait for the user.
 `url` is valid only during the call; `ctx` is borrowed.
 
 ### Stability
-Experimental until E00.F06.S03.T01 merges.
+Experimental until PR #1199 merges.
+
+## zg_net.oauth.Session
+
+### Defined in
+`packages/net/src/oauth/session.zig` (E00.F06.S03.T02).
+
+### Implemented by
+E00.F06.S03.T01, E00.F06.S03.T02.
+
+### Consumed by
+E11 (MCP authorization), E10 (providers using OAuth).
+
+### Signature
+```zig
+pub const ClientRegistration = union(enum) {
+    preregistered: []const u8,
+    metadata_document_url: []const u8, // falls back to dynamic registration where unsupported
+    dynamic: struct { client_name: []const u8 },
+};
+pub fn init(c: *http.Client, store: TokenStore, open_url: OpenUrlFn, open_ctx: ?*anyopaque, client: ClientRegistration) Session;
+pub fn deinit(self: *Session) void;
+pub fn authorize(self: *Session, gpa: Allocator, resource: []const u8, challenge: []const u8) !TokenSet;
+pub fn refresh(self: *Session, gpa: Allocator, issuer: []const u8, resource: []const u8) !TokenSet;
+pub fn bearer(self: *Session, gpa: Allocator, resource: []const u8) !?[]u8; // refreshes within 60 s of expiry
+pub fn send(self: *Session, gpa: Allocator, resource: []const u8, req: http.Request) !http.Response;
+pub fn remember(self: *Session, resource: []const u8, issuer: []const u8) !void;
+```
+
+### Threading
+Blocking; worker threads only. Internal maps are mutex-protected, so one
+session can serve several tasks.
+
+### Ownership/lifetime
+Returned token sets and bearer strings are owned by `gpa`. The
+`ClientRegistration` strings and the `TokenStore` must outlive the session.
+On an `iss` mismatch the code is not redeemed and the callback's error
+fields are not surfaced (`error.IssuerMismatch`).
+
+### Stability
+Experimental until PR #1199 merges.
