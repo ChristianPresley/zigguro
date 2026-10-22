@@ -1012,8 +1012,15 @@ pub fn platform(b: *Win32Backend) Platform;
 `window_configure` comes from `createWindow`; later ones from `WM_SIZE`
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
-chords carry none. Wheel notches are `scroll` lines with forward
-negative. A window created on a non-96 DPI monitor is resized for that
+chords carry none; their `keysym` is the layout's unshifted character
+(`ToUnicodeEx`, cached per scancode until `WM_INPUTLANGCHANGE`), so
+Ctrl+A reports `a`. AltGr's synthetic Left Ctrl is dropped. Coalesced
+auto-repeat becomes one `repeat` per count (at most 32).
+`native_ctrl_state` carries the console control-key bits. Focus loss
+releases every held key. Alt, Alt+Space and Alt+F4 keep their system
+meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
+with forward negative; sub-notch deltas (precision touchpads) report
+`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
