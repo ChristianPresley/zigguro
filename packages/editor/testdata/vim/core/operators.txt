@@ -1,0 +1,1215 @@
+=== dw
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+dw
+--- after
+foo ¦baz.qux
+second line here
+
+  indented (a, b) end
+
+=== d2w
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+d2w
+--- after
+foo ¦.qux
+second line here
+
+  indented (a, b) end
+
+=== 2dw
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+2dw
+--- after
+foo ¦.qux
+second line here
+
+  indented (a, b) end
+
+=== dw last word
+--- before
+foo b¦ar
+--- keys
+dw
+--- after
+foo ¦b
+
+=== dw last word of line
+--- before
+foo b¦ar
+next
+--- keys
+dw
+--- after
+foo ¦b
+next
+
+=== dw on blank
+--- before
+foo ¦  bar
+--- keys
+dw
+--- after
+foo ¦bar
+
+=== de
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+de
+--- after
+foo ¦ baz.qux
+second line here
+
+  indented (a, b) end
+
+=== db
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+db
+--- after
+¦bar baz.qux
+second line here
+
+  indented (a, b) end
+
+=== dB
+--- before
+a.b c-d¦ ef
+--- keys
+dB
+--- after
+a.b ¦ ef
+
+=== d$
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+d$
+--- after
+foo¦ 
+second line here
+
+  indented (a, b) end
+
+=== D
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+D
+--- after
+foo¦ 
+second line here
+
+  indented (a, b) end
+
+=== 2D
+--- before
+a¦bc
+def
+ghi
+--- keys
+2D
+--- after
+¦a
+ghi
+
+=== d0
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+d0
+--- after
+¦bar baz.qux
+second line here
+
+  indented (a, b) end
+
+=== d^
+--- before
+  abc ¦def
+--- keys
+d^
+--- after
+  ¦def
+
+=== dd
+--- before
+one
+t¦wo
+three
+--- keys
+dd
+--- after
+one
+¦three
+
+=== 2dd
+--- before
+one
+t¦wo
+three
+four
+--- keys
+2dd
+--- after
+one
+¦four
+
+=== dd last line
+--- before
+one
+t¦wo
+--- keys
+dd
+--- after
+¦one
+
+=== dd only line
+--- before
+o¦ne
+--- keys
+dd
+--- after
+¦
+
+=== 3dd too many
+--- before
+one
+t¦wo
+--- keys
+3dd
+--- after
+one
+t¦wo
+
+=== dj
+--- before
+one
+t¦wo
+three
+four
+--- keys
+dj
+--- after
+one
+¦four
+
+=== dk
+--- before
+one
+t¦wo
+three
+--- keys
+dk
+--- after
+¦three
+
+=== dG
+--- before
+one
+t¦wo
+three
+--- keys
+dG
+--- after
+¦one
+
+=== dgg
+--- before
+one
+t¦wo
+three
+--- keys
+dgg
+--- after
+¦three
+
+=== dfx
+--- before
+a¦bcxde
+--- keys
+dfx
+--- after
+a¦de
+
+=== dtx
+--- before
+a¦bcxde
+--- keys
+dtx
+--- after
+a¦xde
+
+=== dFx
+--- before
+axbc¦de
+--- keys
+dFx
+--- after
+a¦de
+
+=== dTx
+--- before
+axbc¦de
+--- keys
+dTx
+--- after
+ax¦de
+
+=== d%
+--- before
+f¦oo(a, b) c
+--- keys
+d%
+--- after
+f¦ c
+
+=== d}
+--- before
+a¦b
+cd
+
+ef
+--- keys
+d}
+--- after
+¦a
+
+ef
+
+=== d} from line start
+--- before
+¦ab
+cd
+
+ef
+--- keys
+d}
+--- after
+¦
+ef
+
+=== d{
+--- before
+ab
+
+cd
+e¦f
+--- keys
+d{
+--- after
+ab
+¦f
+
+=== dl
+--- before
+ab¦c
+--- keys
+dl
+--- after
+a¦b
+
+=== dh
+--- before
+ab¦c
+--- keys
+dh
+--- after
+a¦c
+
+=== dh at start
+--- before
+¦abc
+--- keys
+dh
+--- after
+¦abc
+
+=== x
+--- before
+a¦bc
+--- keys
+x
+--- after
+a¦c
+
+=== 3x
+--- before
+a¦bcde
+--- keys
+3x
+--- after
+a¦e
+
+=== x at end
+--- before
+ab¦c
+--- keys
+x
+--- after
+a¦b
+
+=== 5x clamps
+--- before
+ab¦cd
+--- keys
+5x
+--- after
+a¦b
+
+=== x empty line
+--- before
+a
+¦
+b
+--- keys
+x
+--- after
+a
+¦
+b
+
+=== X
+--- before
+ab¦c
+--- keys
+X
+--- after
+a¦c
+
+=== 3X
+--- before
+abcd¦e
+--- keys
+3X
+--- after
+a¦e
+
+=== X at start
+--- before
+¦abc
+--- keys
+X
+--- after
+¦abc
+
+=== dw col0 rule
+--- before
+foo ¦bar
+baz
+--- keys
+2dw
+--- after
+foo¦ 
+
+=== d2w over lines linewise
+--- before
+¦foo
+bar baz
+--- keys
+d2w
+--- after
+¦baz
+
+=== dw exclusive to indent
+--- before
+  ¦foo
+  bar
+--- keys
+d3w
+--- after
+¦
+
+=== cw
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+cwXY<Esc>
+--- after
+foo X¦Y baz.qux
+second line here
+
+  indented (a, b) end
+
+=== cw on last char
+--- before
+fo¦o bar
+--- keys
+cwX<Esc>
+--- after
+fo¦X bar
+
+=== c2w
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+c2wX<Esc>
+--- after
+foo ¦X.qux
+second line here
+
+  indented (a, b) end
+
+=== cw on blank
+--- before
+foo ¦  bar
+--- keys
+cwX<Esc>
+--- after
+foo ¦Xbar
+
+=== cW
+--- before
+¦a.b c
+--- keys
+cWX<Esc>
+--- after
+¦X c
+
+=== ce
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+ceX<Esc>
+--- after
+foo ¦X baz.qux
+second line here
+
+  indented (a, b) end
+
+=== cb
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+cbX<Esc>
+--- after
+¦Xbar baz.qux
+second line here
+
+  indented (a, b) end
+
+=== c$
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+c$X<Esc>
+--- after
+foo ¦X
+second line here
+
+  indented (a, b) end
+
+=== C
+--- before
+foo ¦bar baz.qux
+second line here
+
+  indented (a, b) end
+--- keys
+CX<Esc>
+--- after
+foo ¦X
+second line here
+
+  indented (a, b) end
+
+=== cc
+--- before
+one
+  t¦wo
+three
+--- keys
+ccX<Esc>
+--- after
+one
+  ¦X
+three
+
+=== 2cc
+--- before
+one
+  t¦wo
+three
+--- keys
+2ccX<Esc>
+--- after
+one
+  ¦X
+
+=== S
+--- before
+  a¦b
+c
+--- keys
+SX<Esc>
+--- after
+  ¦X
+c
+
+=== s
+--- before
+a¦bc
+--- keys
+sX<Esc>
+--- after
+a¦Xc
+
+=== 3s
+--- before
+a¦bcde
+--- keys
+3sX<Esc>
+--- after
+a¦Xe
+
+=== cl
+--- before
+a¦bc
+--- keys
+clX<Esc>
+--- after
+a¦Xc
+
+=== ct
+--- before
+a¦bc)d
+--- keys
+ct)X<Esc>
+--- after
+a¦X)d
+
+=== c pending
+--- before
+a¦bc
+--- keys
+cw
+--- after
+a¦
+[insert]
+
+=== yw then P
+--- before
+foo ¦bar baz
+--- keys
+ywP
+--- after
+foo bar¦ bar baz
+
+=== yy then p
+--- before
+o¦ne
+two
+--- keys
+yyp
+--- after
+one
+¦one
+two
+
+=== yy then P
+--- before
+one
+t¦wo
+--- keys
+yyP
+--- after
+one
+¦two
+two
+
+=== Y then p
+--- before
+o¦ne
+two
+--- keys
+Yp
+--- after
+one
+¦one
+two
+
+=== yw +reg
+--- before
+foo ¦bar baz
+--- keys
+yw
+--- after
+foo ¦bar baz
+[reg v] "bar "
+
+=== yy +reg
+--- before
+o¦ne
+two
+--- keys
+yy
+--- after
+o¦ne
+two
+[reg V] "one\n"
+
+=== dd +reg
+--- before
+o¦ne
+two
+--- keys
+dd
+--- after
+¦two
+[reg V] "one\n"
+
+=== yb moves cursor
+--- before
+foo bar b¦az
+--- keys
+yb
+--- after
+foo bar ¦baz
+
+=== yk moves cursor
+--- before
+one
+tw¦o
+--- keys
+yk
+--- after
+on¦e
+two
+
+=== yj keeps cursor
+--- before
+on¦e
+two
+--- keys
+yj
+--- after
+on¦e
+two
+
+=== y$ +reg
+--- before
+a¦bc
+--- keys
+y$
+--- after
+a¦bc
+[reg v] "bc"
+
+=== ye
+--- before
+¦abc def
+--- keys
+yeP
+--- after
+ab¦cabc def
+
+=== p charwise
+--- before
+a¦bc
+--- keys
+ylp
+--- after
+ab¦bc
+
+=== P charwise
+--- before
+a¦bc
+--- keys
+ylP
+--- after
+a¦bbc
+
+=== 3p
+--- before
+a¦bc
+--- keys
+yl3p
+--- after
+abbb¦bc
+
+=== p after dw
+--- before
+foo ¦bar baz
+--- keys
+dwp
+--- after
+foo bbar¦ az
+
+=== p linewise last line
+--- before
+one
+t¦wo
+--- keys
+yyp
+--- after
+one
+two
+¦two
+
+=== 3p linewise
+--- before
+o¦ne
+two
+--- keys
+yy3p
+--- after
+one
+¦one
+one
+one
+two
+
+=== p multiline charwise
+--- before
+a¦b
+cd
+--- keys
+vjyGp
+--- after
+ab
+c¦b
+cdd
+
+=== p on empty line
+--- before
+ab
+¦
+cd
+--- keys
+Pp
+--- after
+ab
+¦
+cd
+
+=== >>
+--- before
+a¦bc
+--- keys
+>>
+--- after
+    ¦abc
+
+=== 3>>
+--- before
+a
+¦b
+c
+d
+--- keys
+3>>
+--- after
+a
+    ¦b
+    c
+    d
+
+=== <<
+--- before
+        a¦bc
+--- keys
+<<
+--- after
+    ¦abc
+
+=== << partial
+--- before
+  a¦bc
+--- keys
+<<
+--- after
+¦abc
+
+=== >j
+--- before
+a¦b
+cd
+ef
+--- keys
+>j
+--- after
+    ¦ab
+    cd
+ef
+
+=== >> empty line
+--- before
+a
+¦
+b
+--- keys
+>>
+--- after
+a
+¦
+b
+
+=== >ip
+--- before
+a¦
+b
+
+c
+--- keys
+>ip
+--- after
+    ¦a
+    b
+
+c
+
+=== guu
+--- before
+ABC ¦DEF
+--- keys
+guu
+--- after
+¦abc def
+
+=== gUU
+--- before
+abc ¦def
+--- keys
+gUU
+--- after
+¦ABC DEF
+
+=== gugu
+--- before
+AB¦C
+--- keys
+gugu
+--- after
+¦abc
+
+=== gUw
+--- before
+foo ¦bar baz
+--- keys
+gUw
+--- after
+foo ¦BAR baz
+
+=== guiw
+--- before
+FOO ¦BAR baz
+--- keys
+guiw
+--- after
+FOO ¦bar baz
+
+=== g~~
+--- before
+aBc¦D
+--- keys
+g~~
+--- after
+¦AbCd
+
+=== g~w
+--- before
+ab¦Cd ef
+--- keys
+g~w
+--- after
+ab¦cD ef
+
+=== ~
+--- before
+a¦bcd
+--- keys
+~
+--- after
+aB¦cd
+
+=== 3~
+--- before
+a¦bcd
+--- keys
+3~
+--- after
+aBC¦D
+
+=== ~ at end
+--- before
+ab¦c
+--- keys
+~
+--- after
+ab¦C
+
+=== ~ utf8
+--- before
+¦é
+--- keys
+~
+--- after
+¦É
+
+=== J
+--- before
+on¦e
+two
+--- keys
+J
+--- after
+one¦ two
+
+=== J leading white
+--- before
+¦one
+    two
+--- keys
+J
+--- after
+one¦ two
+
+=== 3J
+--- before
+¦a
+b
+c
+d
+--- keys
+3J
+--- after
+a b¦ c
+d
+
+=== J trailing space
+--- before
+one ¦
+two
+--- keys
+J
+--- after
+one ¦two
+
+=== J paren
+--- before
+¦f(
+)
+--- keys
+J
+--- after
+f(¦)
+
+=== J empty next
+--- before
+¦one
+
+two
+--- keys
+J
+--- after
+on¦e
+two
+
+=== J last line
+--- before
+one
+¦two
+--- keys
+J
+--- after
+one
+¦two
+
+=== gJ
+--- before
+¦one
+  two
+--- keys
+gJ
+--- after
+one¦  two
+
+=== J empty current
+--- before
+¦
+two
+--- keys
+J
+--- after
+¦two
+
+=== r
+--- before
+a¦bc
+--- keys
+rx
+--- after
+a¦xc
+
+=== 3r
+--- before
+a¦bcde
+--- keys
+3rx
+--- after
+axx¦xe
+
+=== r too far
+--- before
+a¦b
+--- keys
+3rx
+--- after
+a¦b
+
+=== r enter
+--- before
+ab¦ cd
+--- keys
+r<CR>
+--- after
+ab
+¦cd
+
+=== dvj
+--- before
+ab¦c
+def
+--- keys
+dvj
+--- after
+ab¦f
+
+=== dVw
+--- before
+a¦b
+cd
+--- keys
+dVw
+--- after
+¦cd
+
+=== dv on exclusive
+--- before
+a¦bcd
+--- keys
+dve
+--- after
+a¦d
+
+=== de on last
+--- before
+foo b¦ar
+--- keys
+de
+--- after
+foo ¦b
+
+=== d2j
+--- before
+a
+b¦
+c
+d
+--- keys
+d2j
+--- after
+¦a
+
+=== d<CR>
+--- before
+a¦
+b
+c
+--- keys
+d<CR>
+--- after
+¦c
+
+=== d-
+--- before
+a
+b¦
+c
+--- keys
+d-
+--- after
+¦c
+
+=== ds space
+--- before
+ab¦c
+def
+--- keys
+d<Space>
+--- after
+a¦b
+def
+
+=== d2space wraps
+--- before
+ab¦c
+def
+--- keys
+d2<Space>
+--- after
+a¦b
+def
+
+=== d bs wraps
+--- before
+abc
+¦def
+--- keys
+d<BS>
+--- after
+abc¦def
+
+=== cw count insert
+--- before
+¦a b c
+--- keys
+cwx<Esc>
+--- after
+¦x b c
