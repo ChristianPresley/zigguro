@@ -5,6 +5,10 @@ pub const provenance = @import("provenance.zig");
 pub const changeset = @import("changeset.zig");
 pub const hunks = @import("hunks.zig");
 pub const state = @import("state.zig");
+pub const blobs = @import("blobs.zig");
+pub const batch = @import("batch.zig");
+pub const events = @import("events.zig");
+pub const queue = @import("queue.zig");
 
 pub const ChangesetId = ids.ChangesetId;
 pub const ChangeSetId = ids.ChangeSetId;
@@ -40,6 +44,16 @@ pub const transition = state.transition;
 pub const fileTransition = state.fileTransition;
 pub const recomputeState = state.recomputeState;
 
+pub const Blobs = blobs.Blobs;
+pub const MemBlobs = blobs.MemBlobs;
+pub const Event = events.Event;
+pub const Listener = events.Listener;
+pub const Queue = queue.Queue;
+pub const Submitter = queue.Submitter;
+pub const SubmitOptions = queue.SubmitOptions;
+pub const Filter = queue.Filter;
+
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = @import("queue_test.zig");
 }
