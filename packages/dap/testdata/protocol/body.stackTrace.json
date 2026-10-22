@@ -1,0 +1,1 @@
+{"stackFrames":[{"id":1000,"name":"main.add","source":{"name":"main.zig","path":"/home/dev/proj/src/main.zig","sourceReference":0},"line":12,"column":5,"instructionPointerReference":"0x0000000001034f2a","moduleId":3},{"id":1001,"name":"start.callMain","line":0,"column":0,"presentationHint":"subtle","moduleId":"libstd"}],"totalFrames":12}
