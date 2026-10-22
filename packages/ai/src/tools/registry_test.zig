@@ -166,7 +166,7 @@ test "plan mode filter" {
     const tools = at.tools();
     try testing.expectEqual(@as(usize, 5), tools.list().len);
     at.setMode(.plan);
-    try testing.expectEqualStrings("read_file todo_write exit_plan_mode", try names(arena.allocator(), tools.list()));
+    try testing.expectEqualStrings("read_file todo_write exit_plan_mode run_command", try names(arena.allocator(), tools.list()));
     try testing.expectEqual(@as(?*const ToolSpec, null), tools.find("edit_file"));
     try testing.expectEqual(@as(u32, 1), at.invalidations);
     at.setMode(.default);

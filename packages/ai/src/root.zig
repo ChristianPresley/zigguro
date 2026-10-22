@@ -169,6 +169,16 @@ pub const tools = struct {
         _ = @import("tools/builtin/web_test.zig");
     }
 };
+/// Plan mode: the read-only allowlist and `exit_plan_mode` (E10.F09.S02).
+pub const plan = struct {
+    pub const readonly = @import("plan/readonly.zig");
+    pub const plan_mode = @import("plan/plan_mode.zig");
+    pub const PlanMode = plan_mode.PlanMode;
+    test {
+        _ = readonly;
+        _ = @import("plan/plan_mode_test.zig");
+    }
+};
 /// Subagents: definitions, the runner and the `task` tool (E10.F09.S01).
 pub const subagent = struct {
     pub const defs = @import("subagent/defs.zig");
