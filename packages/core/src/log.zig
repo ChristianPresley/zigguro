@@ -331,7 +331,9 @@ const FileSink = struct {
     const name = "zigguro.log";
 
     fn open(io: std.Io, dir: std.Io.Dir, max_bytes: u64, keep: u8) !FileSink {
-        const file = try dir.createFile(io, name, .{ .truncate = false });
+        // Readable so `length` works on Windows (a write-only handle can't
+        // read attributes, which would restart the log at offset 0).
+        const file = try dir.createFile(io, name, .{ .truncate = false, .read = true });
         const len = file.length(io) catch 0;
         return .{ .io = io, .dir = dir, .file = file, .offset = len, .max_bytes = max_bytes, .keep = keep };
     }
