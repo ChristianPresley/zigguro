@@ -12,10 +12,27 @@ pub const json = @import("proto/json.zig");
 pub const glob = @import("proto/glob.zig");
 /// Fuzzy scoring for completion, symbol pickers and REPL completions.
 pub const fuzzy = @import("features/fuzzy.zig");
+/// Byte transports (stdio pipes, TCP) shared with zg_dap.
+pub const transport = struct {
+    pub const Transport = @import("transport/Transport.zig");
+    pub const StdioTransport = @import("transport/stdio.zig").StdioTransport;
+    pub const tcp = @import("transport/tcp.zig");
+};
+/// The LSP client: server processes and sessions.
+pub const client = struct {
+    pub const ServerProcess = @import("client/ServerProcess.zig");
+};
+/// Test support shared with zg_dap: the scripted-peer engine behind the
+/// fake language server and debug adapter.
+pub const testing = struct {
+    pub const script = @import("testing/script.zig");
+};
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("proto/glob_test.zig");
     _ = @import("features/fuzzy_test.zig");
     _ = @import("proto/protocol_test.zig");
+    _ = @import("testing/script_test.zig");
+    _ = @import("client/ServerProcess_test.zig");
 }
