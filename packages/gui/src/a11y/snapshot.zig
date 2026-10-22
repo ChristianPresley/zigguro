@@ -107,6 +107,8 @@ pub const Snapshot = struct {
     /// The window's top-left on screen, physical pixels (null where the
     /// platform doesn't say, as on Wayland).
     screen_origin: ?[2]i32 = null,
+    /// The window is the active (focused) one.
+    active: bool = false,
     /// Bumped by each publish.
     version: u64 = 0,
     index: Index = .empty,
@@ -213,6 +215,7 @@ pub const Publisher = struct {
             s.window = 0;
             s.scale = 1;
             s.screen_origin = null;
+            s.active = false;
             s.index = .empty;
             return s;
         }
