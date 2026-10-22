@@ -59,6 +59,22 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platfor
     };
 }
 
+/// Recursive file watching.
+pub const fswatch = struct {
+    /// See `fswatch/api.zig`.
+    pub const api = @import("fswatch/api.zig");
+    /// See `fswatch/api.zig`.
+    pub const Watcher = api.Watcher;
+    /// See `fswatch/api.zig`.
+    pub const FsEvent = api.FsEvent;
+    /// See `fswatch/ignore.zig`.
+    pub const IgnoreFilter = api.IgnoreFilter;
+    /// See `fswatch/ignore.zig`.
+    pub const NameList = @import("fswatch/ignore.zig").NameList;
+    /// See `fswatch/coalesce.zig`.
+    pub const Coalescer = @import("fswatch/coalesce.zig").Coalescer;
+};
+
 /// Child processes: PTYs for terminals, and plain spawns under a policy.
 pub const process = struct {
     /// See `process/pty.zig`.
@@ -135,6 +151,8 @@ test {
     std.testing.refAllDecls(queue);
     std.testing.refAllDecls(headless);
     std.testing.refAllDecls(process);
+    std.testing.refAllDecls(fswatch);
+    if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -158,6 +176,10 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "headless/backend.zig", .src = @embedFile("headless/backend.zig") },
     .{ .path = "headless/trace.zig", .src = @embedFile("headless/trace.zig") },
     .{ .path = "process/pty.zig", .src = @embedFile("process/pty.zig") },
+    .{ .path = "fswatch/api.zig", .src = @embedFile("fswatch/api.zig") },
+    .{ .path = "fswatch/ignore.zig", .src = @embedFile("fswatch/ignore.zig") },
+    .{ .path = "fswatch/coalesce.zig", .src = @embedFile("fswatch/coalesce.zig") },
+    .{ .path = "fswatch/linux_inotify.zig", .src = @embedFile("fswatch/linux_inotify.zig") },
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
