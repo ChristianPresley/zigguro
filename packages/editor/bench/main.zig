@@ -120,6 +120,141 @@ fn retainRelease(d: *Doc, s: *bench.State) void {
     }
 }
 
+/// Undo then redo of one 10k-replacement group (the applies dominate).
+fn undo10k(d: *Doc, s: *bench.State) void {
+    const edit = zg_editor.model.edit;
+    const gpa = std.heap.smp_allocator;
+    var edits: [10_000]buffer.piece_tree.Edit = undefined;
+    const step = d.tree.len() / edits.len;
+    for (&edits, 0..) |*e, k| e.* = .{ .range = .{ .start = k * step, .end = k * step + 1 }, .text = "zz" };
+    const cs = edit.change_set.ChangeSet.fromEdits(gpa, d.tree.len(), &edits) catch unreachable;
+    const inv = cs.invert(d.tree, gpa) catch unreachable;
+    const next = cs.apply(d.tree, &d.pool) catch unreachable;
+    d.tree.deinit(&d.pool);
+    d.tree = next;
+    var tree: edit.undo.UndoTree = .init(gpa, .{});
+    defer tree.deinit();
+    tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .zero }) catch unreachable;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        inline for (.{ edit.undo.UndoTree.undo, edit.undo.UndoTree.redo }) |f| {
+            const st = f(&tree).?;
+            const t = st.changes.apply(d.tree, &d.pool) catch unreachable;
+            d.tree.deinit(&d.pool);
+            d.tree = t;
+        }
+    }
+}
+
+/// A modified copy of `text` with `hunks` scattered single-line changes.
+fn mutateLines(gpa: std.mem.Allocator, text: []const u8, hunks: usize) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    const lines = std.mem.count(u8, text, "\n");
+    const every = lines / hunks;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var i: usize = 0;
+    while (it.next()) |line| : (i += 1) {
+        if (line.len == 0 and it.peek() == null) break;
+        if (every > 0 and i % every == every / 2) try out.appendSlice(gpa, "changed line\n");
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const DiffPair = struct {
+    a: zg_editor.model.diff.LineSource,
+    b: zg_editor.model.diff.LineSource,
+};
+
+fn diffPair(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var r = diff.diffLines(std.heap.smp_allocator, &p.a, &p.b, .{}) catch unreachable;
+        bench.doNotOptimizeAway(r.hunks.len);
+        r.deinit(std.heap.smp_allocator);
+    }
+}
+
+fn diffMoves(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var r = diff.diffLines(std.heap.smp_allocator, &p.a, &p.b, .{ .detect_moves = true, .intraline = .none }) catch unreachable;
+        bench.doNotOptimizeAway(r.moves.len);
+        r.deinit(std.heap.smp_allocator);
+    }
+}
+
+/// Word highlights for one changed line pair (a typical small hunk).
+fn intralineHunk(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    const edits = [_]diff.Edit{ .{ .kind = .delete, .a_start = 0, .b_start = 0, .len = 2 }, .{ .kind = .insert, .a_start = 2, .b_start = 0, .len = 2 } };
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const r = diff.intraline.intralineEdits(std.heap.smp_allocator, &edits, &p.a, &p.b, .word) catch unreachable;
+        bench.doNotOptimizeAway(r.len);
+        std.heap.smp_allocator.free(r);
+    }
+}
+
+fn registerDiff(b: *bench.Bench) !void {
+    {
+        var p: DiffPair = .{
+            .a = try .fromBytes(b.gpa, "    const total = computeTotal(items, options.include_tax, rate);\n    return total * scale;\n"),
+            .b = try .fromBytes(b.gpa, "    const subtotal = computeTotal(items, options.include_shipping, rate);\n    return subtotal * scale;\n"),
+        };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        try b.run("editor.diff.intraline_hunk", &p, intralineHunk);
+    }
+    {
+        // 10k lines with 100 eight-line blocks moved 50 lines down.
+        const a_text = try genLines(b.gpa, 10_000);
+        defer b.gpa.free(a_text);
+        var lines: std.ArrayList([]const u8) = .empty;
+        defer lines.deinit(b.gpa);
+        var it = std.mem.splitScalar(u8, a_text, '\n');
+        while (it.next()) |l| if (l.len > 0) try lines.append(b.gpa, l);
+        var k: usize = 0;
+        while (k + 58 < lines.items.len) : (k += 100) {
+            std.mem.rotate([]const u8, lines.items[k .. k + 58], 8);
+        }
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(b.gpa);
+        for (lines.items) |l| {
+            try out.appendSlice(b.gpa, l);
+            try out.append(b.gpa, '\n');
+        }
+        var p: DiffPair = .{ .a = try .fromBytes(b.gpa, a_text), .b = try .fromBytes(b.gpa, out.items) };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        try b.run("editor.diff.moves_10k", &p, diffMoves);
+    }
+    const diff = zg_editor.model.diff;
+    inline for (.{
+        .{ "editor.diff.10k_100hunks", 10_000, 100, false },
+        .{ "editor.diff.100k_1khunks", 100_000, 1000, false },
+        .{ "editor.diff.unrelated_100k", 100_000, 0, true },
+    }) |c| {
+        const a_text = try genLines(b.gpa, c[1]);
+        defer b.gpa.free(a_text);
+        const b_text = if (c[3]) blk: {
+            const t = try b.gpa.dupe(u8, a_text);
+            std.mem.reverse(u8, t);
+            break :blk t;
+        } else try mutateLines(b.gpa, a_text, c[2]);
+        defer b.gpa.free(b_text);
+        var p: DiffPair = .{ .a = try .fromBytes(b.gpa, a_text), .b = try .fromBytes(b.gpa, b_text) };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        _ = diff;
+        try b.run(c[0], &p, diffPair);
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -133,9 +268,11 @@ fn register(b: *bench.Bench) !void {
         .{ "editor.buffer.offset_to_utf16", offsetToUtf16 },
         .{ "editor.buffer.replace_1k_cursors", replace1k },
         .{ "editor.snapshot.retain_release", retainRelease },
+        .{ "editor.undo.10k_group", undo10k },
     }) |entry| {
         const d = try Doc.init(b.gpa, text);
         defer d.deinit(b.gpa);
         try b.run(entry[0], d, entry[1]);
     }
+    try registerDiff(b);
 }

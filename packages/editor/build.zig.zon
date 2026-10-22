@@ -6,6 +6,7 @@
     .dependencies = .{
         .zg_build = .{ .path = "../build" },
         .zg_core = .{ .path = "../core" },
+        .zg_text = .{ .path = "../text" },
     },
     .paths = .{
         "build.zig",

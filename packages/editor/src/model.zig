@@ -4,6 +4,8 @@
 pub const buffer = @import("model/buffer.zig");
 /// ChangeSets, anchors, selections and undo.
 pub const edit = @import("model/edit.zig");
+/// Line and token diffs.
+pub const diff = @import("model/diff.zig");
 /// Live documents.
 pub const document = @import("model/document.zig");
 /// Cross-thread snapshots.
