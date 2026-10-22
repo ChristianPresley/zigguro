@@ -936,8 +936,22 @@ events are grouped by `wl_pointer.frame` and reported in physical
 pixels; clicks count within 500 ms and 4 px. Wheels scroll in `.lines`
 (`value120`, else `discrete`, else 10 units a line), fingers and
 continuous devices in `.pixels`, fingers with `begin`/`update`/`end`.
-Touch points are reported per `wl_touch.frame`. Until the data device
-lands, `clipboard_read` answers only from our own `clipboard_write`. Move,
+Touch points are reported per `wl_touch.frame`.
+
+Selections (E01.F04.S03.T02, `wayland/data_device.zig`,
+`linux/pipe_transfer.zig`): `clipboard_write` creates a `wl_data_source`
+(or a primary-selection source) offering each item's MIME types (text
+as `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`, `TEXT`,
+`STRING`) and sets it with the newest input serial; an empty item list
+clears the selection. While we own a selection, `clipboard_read`
+answers from our copy; otherwise it receives the best offered type
+through a non-blocking pipe on the platform thread. Payloads over 64 KiB
+are large payloads (`Platform.release`). A read that has not finished
+after `InitOptions.transfer_timeout_ns` (5 s) answers with empty data.
+`clipboard_changed` fires when another client sets a selection.
+`uri_list` data is the raw `text/uri-list`;
+`zg_platform.linux_util.uri_list.paths` turns it into local paths.
+Drag-and-drop offers are dropped until E01.F04.S03.T03. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
 

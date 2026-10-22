@@ -208,11 +208,21 @@ pub const wayland = struct {
     pub const window = @import("wayland/window.zig");
     /// See `wayland/seat.zig`.
     pub const seat = @import("wayland/seat.zig");
+    /// See `wayland/data_device.zig`.
+    pub const data_device = @import("wayland/data_device.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
+
+/// Linux helpers shared by the Wayland and X11 backends.
+pub const linux_util = struct {
+    /// See `linux/pipe_transfer.zig`.
+    pub const pipe_transfer = if (is_linux) @import("linux/pipe_transfer.zig") else struct {};
+    /// See `linux/uri_list.zig`.
+    pub const uri_list = @import("linux/uri_list.zig");
+};
 const is_windows = @import("builtin").os.tag == .windows;
 
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
@@ -430,6 +440,8 @@ test {
     _ = win32.cursor;
     _ = win32.ime;
     _ = wayland.seat;
+    _ = wayland.data_device;
+    _ = linux_util.uri_list;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -437,6 +449,7 @@ test {
         _ = @import("wayland/backend.zig");
         _ = @import("wayland/shm.zig");
         _ = @import("wayland/dmabuf.zig");
+        _ = linux_util.pipe_transfer;
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
@@ -509,6 +522,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
     .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
     .{ .path = "wayland/seat.zig", .src = @embedFile("wayland/seat.zig") },
+    .{ .path = "wayland/data_device.zig", .src = @embedFile("wayland/data_device.zig") },
+    .{ .path = "linux/pipe_transfer.zig", .src = @embedFile("linux/pipe_transfer.zig") },
+    .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
