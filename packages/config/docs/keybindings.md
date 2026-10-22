@@ -82,6 +82,34 @@ when-clauses hold, as in VS Code.
   the key. This is how `ctrl+w` reaches the shell in the terminal.
 - **Swallow**: bind the key to `noop` to consume it without doing anything.
 
+## Presets
+
+`src/keymap/presets/` ships the presets as ZON data, embedded at build time:
+
+- `vscode.zon`, the default: VS Code's published defaults for the commands
+  zigguro implements, plus the agent, review and mode-switch keys. Every
+  entry has a comment naming its VS Code counterpart.
+- `jetbrains.zon`: the IntelliJ IDEA Windows/Linux keymap (Shift Shift,
+  Ctrl+Shift+A, Alt+Enter, Shift+F6, ...).
+- `sublime.zon`: Sublime Text keys. Sublime's Mod+L takes the agent pane's
+  key, so this preset moves the agent pane to Mod+Alt+L.
+
+The VS Code keymap is always loaded first and the chosen preset applies on
+top of it, both in the `preset` layer (`presets.presetLayers`). Onboarding
+offers `presets.choices()` (VS Code, JetBrains, Sublime, Vim, Emacs).
+
+## Importing VS Code keybindings
+
+`import_vscode.importVsCodeKeybindings` reads a VS Code `keybindings.json`
+(comments and trailing commas allowed) and reports each entry as `mapped`,
+`unmapped`, `conflict` (it replaces a current binding to another command),
+`invalid_key` or `invalid_when`. Command ids go through
+`presets/vscode_commands.zon`; removals (`-command`) map to removals of the
+zigguro id; when-clause context keys that differ are renamed, and unknown
+ones are noted (they evaluate to false). `appendImported` adds the mapped and
+conflicting entries to an existing `keybindings.zon`, each with a comment
+naming the VS Code command.
+
 ## Resolution
 
 `Resolver.resolve(stack, event)` returns one of:
