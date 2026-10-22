@@ -117,6 +117,8 @@ ops_work: std.ArrayList(TexOp) = .empty,
 /// The `seq` of the last list rendered (lists dropped by latest-wins
 /// count as done once a newer one renders).
 done_seq: std.atomic.Value(u64) = .init(0),
+/// When a skipped frame (no free target buffer) is retried.
+retry_at: ?u64 = null,
 /// A frame asked the UI for a full repaint (see `takeRedraw`).
 redraw: std.atomic.Value(bool) = .init(false),
 pacer: FramePacer,
@@ -358,6 +360,15 @@ fn run(self: *RenderThread) void {
             continue;
         }
         const now = zg_core.time.nowNs(io);
+        if (self.retry_at) |t| {
+            // Every target buffer was held: try again one refresh later.
+            if (now < t) {
+                const d: Io.Clock.Duration = .{ .raw = .fromNanoseconds(@intCast(t - now)), .clock = .awake };
+                self.wake.waitTimeout(io, .{ .duration = d }) catch {};
+                continue;
+            }
+            self.retry_at = null;
+        }
         switch (self.pacer.readiness(now)) {
             .now => {},
             .signal => {
@@ -374,13 +385,19 @@ fn run(self: *RenderThread) void {
         const slot = self.pending.swap(null, .acq_rel) orelse continue;
         // Uploads queued before this list was posted land first.
         self.applyOps();
-        self.renderOne(slot);
+        if (self.renderOne(slot)) {
+            self.retry_at = zg_core.time.nowNs(io) + self.pacer.refresh_ns;
+            // Render the same list again unless a newer one arrived (the
+            // renderer carries the skipped damage either way).
+            if (self.pending.cmpxchgStrong(null, slot, .acq_rel, .acquire) == null) continue;
+        }
         self.done_seq.store(slot.seq, .release);
         self.release(slot);
     }
 }
 
-fn renderOne(self: *RenderThread, slot: *Slot) void {
+/// Renders `slot`; true when the renderer skipped the frame.
+fn renderOne(self: *RenderThread, slot: *Slot) bool {
     const io = self.io;
     const start = zg_core.time.nowNs(io);
     var failed = false;
@@ -389,6 +406,7 @@ fn renderOne(self: *RenderThread, slot: *Slot) void {
         failed = true;
         break :blk r2d.FrameStats{ .needs_full_redraw = true };
     };
+    if (s.skipped) return true;
     self.frames += 1;
     self.pacer.frameDone(start, s.present_id != 0);
 
@@ -416,6 +434,7 @@ fn renderOne(self: *RenderThread, slot: *Slot) void {
         self.redraw.store(true, .release);
         if (self.notify) |n| n.wake_ui(n.ctx);
     }
+    return false;
 }
 
 fn release(self: *RenderThread, slot: *Slot) void {
@@ -447,6 +466,9 @@ const FakeRenderer = struct {
     /// `uploads` when the last frame rendered.
     uploads_at_render: std.atomic.Value(u32) = .init(0),
     tex_destroyed: std.atomic.Value(u32) = .init(0),
+    /// Frames to report as skipped (no free buffer) before rendering.
+    skip: std.atomic.Value(u32) = .init(0),
+    skipped: std.atomic.Value(u32) = .init(0),
 
     fn renderer(self: *FakeRenderer) Renderer {
         return .{ .ptr = self, .vtable = &.{
@@ -468,6 +490,11 @@ const FakeRenderer = struct {
         const self = cast(p);
         self.entered.set(self.io);
         self.gate.waitUncancelable(self.io);
+        if (self.skip.load(.acquire) > 0) {
+            _ = self.skip.fetchSub(1, .acq_rel);
+            _ = self.skipped.fetchAdd(1, .acq_rel);
+            return .{ .skipped = true };
+        }
         self.last_prims.store(@intCast(dl.prims.items.len), .release);
         self.last_damage_full.store(dl.damage_full, .release);
         self.last_damage_len.store(dl.damage_len, .release);
@@ -541,6 +568,31 @@ test "mailbox: latest wins and damage unioned" {
     try testing.expectEqual(@as(u32, 2), fake.rendered.load(.acquire));
     try testing.expectEqual(@as(u32, 2), fake.last_prims.load(.acquire));
     try testing.expectEqual(@as(u32, 2), fake.last_damage_len.load(.acquire));
+}
+
+test "mailbox: a skipped frame is retried once per refresh" {
+    const io = testing.io;
+    var fake: FakeRenderer = .{ .io = io };
+    fake.skip.store(3, .release);
+    const refresh = 5 * std.time.ns_per_ms;
+    const rt = spawn(testing.allocator, io, fake.renderer(), .{ .pacing = .immediate, .refresh_ns = refresh }) catch |e| switch (e) {
+        error.ConcurrencyUnavailable => return error.SkipZigTest,
+        else => return e,
+    };
+    defer rt.shutdown();
+    var dl = rt.firstList();
+    dl.reset(.{ .w = 32, .h = 32 }, 1);
+    dl.addDamage(.{ .x = 1, .y = 1, .w = 2, .h = 2 });
+    dl.rect(.{ .x = 0, .y = 0, .w = 5, .h = 5 }, r2d.Color.white, .{});
+    const t0 = zg_core.time.nowNs(io);
+    dl = rt.post(dl);
+    try waitFor(io, &fake.rendered, 1);
+    // Three skips, each followed by a refresh-long wait: no spinning.
+    try testing.expectEqual(@as(u32, 3), fake.skipped.load(.acquire));
+    try testing.expect(zg_core.time.nowNs(io) - t0 >= 3 * refresh);
+    // The same list finally rendered, and counts as done.
+    try testing.expectEqual(@as(u32, 1), fake.last_prims.load(.acquire));
+    try testing.expect(rt.waitIdle(std.time.ns_per_s));
 }
 
 test "mailbox: post never blocks" {

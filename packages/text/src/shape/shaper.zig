@@ -30,7 +30,6 @@ const skippy = @import("skippy.zig");
 const apply_gsub = @import("apply_gsub.zig");
 const apply_gpos = @import("apply_gpos.zig");
 const normalize = @import("normalize.zig");
-const default_shaper = @import("complex/default.zig");
 
 /// Shaper output in font units, visual order, structure of arrays.
 pub const GlyphRun = struct {
@@ -115,7 +114,7 @@ pub const Shaper = struct {
         for (s.keys, 0..) |k, i| if (k) |v| if (v.eql(key)) return &s.plans[i];
         const slot = s.next_slot;
         s.next_slot = (slot + 1) % plan_cache_size;
-        const p = try ShapePlan.build(s.gpa, inst, script, lang, dir, default_shaper.select(script), features);
+        const p = try ShapePlan.build(s.gpa, inst, script, lang, dir, null, features);
         if (s.keys[slot] != null) s.plans[slot].deinit();
         s.plans[slot] = p;
         s.keys[slot] = key;
@@ -200,7 +199,7 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
     var budget = skippy.OpBudget.init(b.len());
     try b.computeGlyphSet(face.num_glyphs);
     if (p.gsub) |table| {
-        var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gsub, .gdef = &p.gdef, .budget = &budget, .coords = p.inst.coordsSlice(), .accels = p.accels[0] };
+        var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gsub, .gdef = &p.gdef, .budget = &budget, .coords = p.coords, .var_scalars = p.var_scalars, .accels = p.accels[0] };
         for (p.gsub_stages) |stage| {
             try apply_gsub.applyLookups(&c, stage.lookups);
             if (stage.pause) |f| f(p, b);
@@ -220,7 +219,7 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
     var gpos_budget = skippy.OpBudget.init(b.len());
     try b.computeGlyphSet(face.num_glyphs);
     if (p.apply_gpos) if (p.gpos) |table| {
-        var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gpos, .gdef = &p.gdef, .budget = &gpos_budget, .coords = p.inst.coordsSlice(), .rtl = dir == .rtl, .accels = p.accels[1] };
+        var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gpos, .gdef = &p.gdef, .budget = &gpos_budget, .coords = p.coords, .var_scalars = p.var_scalars, .rtl = dir == .rtl, .accels = p.accels[1] };
         for (p.gpos_stages) |stage| {
             try apply_gpos.applyLookups(&c, stage.lookups);
             if (stage.pause) |f| f(p, b);

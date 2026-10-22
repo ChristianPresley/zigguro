@@ -339,13 +339,17 @@ const ShmPresenter = struct {
 
 test "gpu: vk renderer: shm presenter gets exact pixels with buffer-age copies" {
     const gpa = testing.allocator;
-    const gpu = try testing_gpu.gpuOrSkip();
+    // A device with the external-surface extensions: without dmabuf
+    // export (lavapipe) the renderer falls back to shm readback.
+    const gpu = try testing_gpu.gpuForOrSkip(.external);
     defer gpu.destroy();
     var fake: ShmPresenter = .{};
     defer for (fake.bufs[0..fake.n]) |b| gpa.free(b);
     var pr: platform.surface.Presenter = .{ .ptr = &fake, .vtable = &ShmPresenter.vtable };
     const vr = try VkRenderer.createWithGpu(gpa, testing.io, gpu, .{ .target = .{ .external = &pr } });
     defer vr.destroy();
+    // A presenter with no dmabuf formats never gets a ring.
+    try testing.expect(vr.ext == null);
     // Reference: the same frames fully redrawn into memory.
     var counter: CountingSink = .{};
     var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
