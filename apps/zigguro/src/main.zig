@@ -108,12 +108,22 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         defer platform.deinit();
         var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{ .fonts = font_text });
         defer host.deinit();
-        const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = root });
+        // Interactive sessions get the working folder's saved layout back
+        // (runs with --frames are reproducible: they neither read nor
+        // write it).
+        var size: zg_gui.core.geom.Size = .{ .w = 1280, .h = 800 };
+        if (use_wb and frames_arg == null) {
+            var state_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (zg_crash.paths.stateDir(min.environ, &state_buf)) |state| {
+                if (wb.loadLayout(state)) |s| size = s;
+            }
+        }
+        const hw = try host.open(.{ .title = "zigguro", .size = size, .root = root });
         if (use_wb) try wb.attach(hw.win);
         if (use_wb) wb.enableFloating(host.windowOpener());
-        if (want_terminal) try wb.toggleTerminal();
-        if (want_agent) try wb.toggleAgent();
-        if (want_review) try wb.toggleReview();
+        if (want_terminal and !wb.panelShown("terminal")) try wb.toggleTerminal();
+        if (want_agent and !wb.panelShown("agent")) try wb.toggleAgent();
+        if (want_review and !wb.panelShown("review")) try wb.toggleReview();
         defer if (use_wb) wb.detach();
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
