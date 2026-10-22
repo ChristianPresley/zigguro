@@ -16,6 +16,11 @@
 //!   turn ends (`end_turn`), already applied and marked auto-applied, so
 //!   the review panel lists what every turn changed (`model`).
 //!
+//! - In `policy` mode the turn is held the same way, and when it ends
+//!   zg_review's `ReviewPolicy` (the workspace's `review` settings in
+//!   `.zigguro/settings.zon`) lands the files it auto-applies, rejects
+//!   the ones it denies and leaves the rest pending.
+//!
 //! - In `review` mode (`mode`) proposals to files not open in the editor
 //!   are held instead (`Outcome.pending`): the turn's changes live in
 //!   memory until it ends, then become one pending changeset. The agent
@@ -79,6 +84,11 @@ pub const ReviewGlue = struct {
     /// Whether agent proposals land at once or wait for review. Read when
     /// a turn first proposes; the panel switches it (under `mutex`).
     mode: Mode = .auto_apply,
+    /// The workspace's edit policy (`policy` mode).
+    policy: *zg_review.policy.ReviewPolicy,
+    /// The agents' permission mode, as the policy sees it (E16's real
+    /// probe comes with `Engine.probe`).
+    permission_mode: zg_review.policy.policy.Mode = .default,
     /// What each running turn wrote: the content before its first write.
     turns: std.ArrayList(Turn) = .empty,
     /// Called after a turn's changeset is in the queue, on the agent's
@@ -86,7 +96,7 @@ pub const ReviewGlue = struct {
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     mutex: Io.Mutex = .init,
 
-    pub const Mode = enum { auto_apply, review };
+    pub const Mode = enum { auto_apply, review, policy };
 
     const Turn = struct {
         agent: zg_ai_proto.AgentRef,
@@ -130,6 +140,7 @@ pub const ReviewGlue = struct {
             .model = undefined,
             .overlay = undefined,
             .conflicts = undefined,
+            .policy = undefined,
         };
         errdefer g.dir.close(io);
         errdefer g.blobs.deinit();
@@ -145,6 +156,8 @@ pub const ReviewGlue = struct {
         }
         errdefer if (g.store) |st| st.close();
         g.applier = .init(gpa, io, g.q, g.workspace.files(), &g.history);
+        g.policy = try g.loadPolicy();
+        errdefer g.policy.deinit();
         g.conflicts = try zg_review.rebase.ConflictIndex.init(gpa, g.q, .{ .history = &g.history });
         errdefer g.conflicts.deinit();
         g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{ .conflicts = g.conflicts });
@@ -159,6 +172,7 @@ pub const ReviewGlue = struct {
         g.turns.deinit(gpa);
         g.model.deinit();
         g.conflicts.deinit();
+        g.policy.deinit();
         if (g.store) |st| st.close();
         g.cps.deinit();
         g.q.deinit();
@@ -289,7 +303,7 @@ pub const ReviewGlue = struct {
         g.mutex.lockUncancelable(io);
         defer g.mutex.unlock(io);
         g.ensureStoreLocked();
-        const held = if (g.findTurn(origin.agent, origin.turn)) |t| t.held else g.mode == .review;
+        const held = if (g.findTurn(origin.agent, origin.turn)) |t| t.held else g.mode != .auto_apply;
         if (held) return g.hold(arena, rel, p, origin);
         const ws = g.workspace.files();
         const before = try ws.read(arena, rel);
@@ -391,7 +405,10 @@ pub const ReviewGlue = struct {
             return null;
         }
         const id = try g.q.commitBatch(b, .{});
-        if (t.held) return id;
+        if (t.held) {
+            if (g.mode == .policy) g.applyPolicy(arena, id);
+            return id;
+        }
         const cs = g.q.getMut(id) orelse return id;
         for (cs.files) |*f| {
             for (f.hunks) |*h| h.decision = .accepted;
@@ -529,6 +546,50 @@ pub const ReviewGlue = struct {
             g.q.journal = null;
             g.history.recorder = null;
         };
+    }
+
+    /// The workspace's `review` settings compiled; problems are logged and
+    /// the rule they concern is left out.
+    fn loadPolicy(g: *ReviewGlue) !*zg_review.policy.ReviewPolicy {
+        var arena_state: std.heap.ArenaAllocator = .init(g.gpa);
+        defer arena_state.deinit();
+        var diags: std.ArrayList(zg_review.policy.rules.Diagnostic) = .empty;
+        const settings: zg_review.policy.Settings = zg_review.policy.rules.loadWorkspace(arena_state.allocator(), g.io, g.dir, &diags) catch |e| blk: {
+            log.warn("review settings not read: {t}", .{e});
+            break :blk .{};
+        };
+        const p = try zg_review.policy.ReviewPolicy.init(g.gpa, settings);
+        for (diags.items) |d| log.warn("{s}", .{d.message});
+        for (p.diagnostics) |d| log.warn("review rule {?d}: {s}", .{ d.rule, d.message });
+        return p;
+    }
+
+    /// The probe the policy asks: no E16 rules (the agent's tool
+    /// permissions already ran), the permission mode as set.
+    fn probe(g: *ReviewGlue) zg_review.policy.SecurityProbe {
+        return .{ .ctx = g, .probe = probeAsk, .mode = probeMode };
+    }
+
+    fn probeAsk(_: *anyopaque, _: ?u128, _: []const u8, _: zg_review.policy.rules.Op) zg_review.policy.policy.ProbeResult {
+        return .{ .kind = .ask, .layer = .default };
+    }
+
+    fn probeMode(ctx: *anyopaque, _: ?u128) zg_review.policy.policy.Mode {
+        return cast(ctx).permission_mode;
+    }
+
+    /// `policy` mode, after a held turn is queued: lands what the policy
+    /// auto-applies, rejects what it denies. Locked.
+    fn applyPolicy(g: *ReviewGlue, arena: Allocator, id: model.ChangesetId) void {
+        const cs = g.q.get(id) orelse return;
+        var ctx: zg_review.policy.PolicyCtx = .of(cs);
+        ctx.security = g.probe();
+        const r = zg_review.policy.policy.autoApply(g.policy, ctx, &g.applier, id, arena) catch |e| {
+            log.warn("review policy on {f} failed: {t}", .{ id, e });
+            return;
+        };
+        if (r.failed) |e| log.warn("review policy: auto-applying {f} failed: {t}", .{ id, e });
+        if (r.apply != null) _ = g.conflicts.rebaseApplied() catch |e| log.warn("rebasing after an apply failed: {t}", .{e});
     }
 
     /// Writes what changed to the store (when persisting). Locked. A
@@ -843,4 +904,41 @@ test "review glue: the persisted queue is shared with another process and surviv
         try testing.expect(try again.actLocked(arena, id, .undo) == .ok);
     }
     try testing.expectEqualStrings("one\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
+}
+
+test "review glue: policy mode lands what the workspace's rules auto-accept" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.createDirPath(testing.io, ".zigguro");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".zigguro/settings.zon", .data = ".{ .review = .{ .rules = .{ .{ .paths = .{\"docs/**\"}, .action = .auto_accept } } } }" });
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "# A\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.zig", .data = "const b = 1;\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .policy;
+    const fs = g.files();
+    _ = try edit(fs, arena, "docs/a.md", s1, .{ .str_replace = .{ .old = "# A", .new = "# Alpha" } });
+    _ = try edit(fs, arena, "b.zig", s1, .{ .str_replace = .{ .old = "1", .new = "2" } });
+    // Held during the turn.
+    try testing.expectEqualStrings("# A\n", try tmp.dir.readFileAlloc(testing.io, "docs/a.md", arena, .limited(64)));
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 0)).?);
+    try testing.expectEqualStrings("# Alpha\n", try tmp.dir.readFileAlloc(testing.io, "docs/a.md", arena, .limited(64)));
+    try testing.expectEqualStrings("const b = 1;\n", try tmp.dir.readFileAlloc(testing.io, "b.zig", arena, .limited(64)));
+    const cs = g.q.get(id).?;
+    try testing.expectEqual(model.State.partially_applied, cs.state);
+    try testing.expect(cs.auto_applied);
+
+    // accept_edits auto-applies plain edits whatever the rules say.
+    g.permission_mode = .accept_edits;
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "c.zig", .data = "const c = 1;\n" });
+    _ = try edit(fs, arena, "c.zig", s1, .{ .str_replace = .{ .old = "1", .new = "3" } });
+    _ = try fs.endTurn(testing.io, s1, 0);
+    try testing.expectEqualStrings("const c = 3;\n", try tmp.dir.readFileAlloc(testing.io, "c.zig", arena, .limited(64)));
 }
