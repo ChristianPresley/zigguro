@@ -31,7 +31,9 @@
 //! Readback into its shm buffers; Readback also serves headless sinks and
 //! `renderToImage`. When every ring image is held, the frame is skipped
 //! (`FrameStats.skipped`) and its damage carries to the next one. The
-//! Win32 swapchain follows.
+//! Win32 windows get a swapchain (`present/Swapchain.zig`): the frame
+//! renders into the acquired image (buffer-age repaint, present regions)
+//! and is presented with the frame's present id.
 
 const VkRenderer = @This();
 
@@ -51,6 +53,8 @@ const iface = @import("../../shaders/interface.zig");
 const FrameScheduler = @import("../../present/FrameScheduler.zig");
 const Readback = @import("../../present/Readback.zig");
 const ExternalRing = @import("../../present/ExternalRing.zig");
+const Swapchain = @import("../../present/Swapchain.zig");
+const FramePacer = @import("../../present/FramePacer.zig");
 const Damage = @import("../../present/Damage.zig");
 const CpuImage = @import("../../testing/CpuImage.zig");
 const batch = @import("batch.zig");
@@ -108,7 +112,11 @@ uploader: Uploader,
 readback: Readback,
 /// The dmabuf ring (external targets whose device can export).
 ext: ?ExternalRing = null,
-/// Render through Readback even with a ring (`renderToImage`).
+/// The Win32 swapchain (`.win32` targets).
+sc: ?*Swapchain = null,
+/// Present ids handed to the swapchain (match `FramePacer.nextPresentId`).
+present_count: u64 = 0,
+/// Render through Readback even with a ring or swapchain (`renderToImage`).
 to_memory: bool = false,
 /// Damage of skipped frames, added to the next one.
 carry: Damage.RectList = .{},
@@ -144,11 +152,15 @@ last_gpu: ?GpuTimer.Durations = null,
 /// external targets for now (`error.Unsupported` otherwise).
 pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !*VkRenderer {
     switch (opts.target) {
-        .headless, .external => {},
+        .headless, .external, .win32 => {},
         else => return error.Unsupported,
     }
     const gpu = try Gpu.create(gpa, io, .{
-        .instance = .{ .env_validation = opts.env.vk_validation, .surface = if (opts.target == .external) .external else .headless },
+        .instance = .{ .env_validation = opts.env.vk_validation, .surface = switch (opts.target) {
+            .external => .external,
+            .win32 => .win32,
+            else => .headless,
+        } },
         .drm_device = if (opts.target == .external) opts.target.external.drmDevice() else null,
         .forced = opts.env.gpu orelse opts.gpu,
         .loader_path = opts.env.vk_loader_path,
@@ -168,6 +180,8 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
         // Without a dmabuf path, external presenters get shm buffers
         // filled by readback.
         .external => |p| .{ .shm = p },
+        // The swapchain presents; readback only serves renderToImage.
+        .win32 => .none,
         else => return error.Unsupported,
     };
     const self = try gpa.create(VkRenderer);
@@ -188,6 +202,8 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
     errdefer self.cache.destroy();
     self.readback = Readback.init(gpu, &self.mem, &self.sched, sink, opts.window);
     self.ext = null;
+    self.sc = null;
+    self.present_count = 0;
     self.to_memory = false;
     self.carry = .{};
     self.carry_full = false;
@@ -198,6 +214,20 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
         };
     }
     errdefer if (self.ext) |*x| x.deinit();
+    if (opts.target == .win32) {
+        const w = opts.target.win32;
+        self.sc = try Swapchain.init(gpu, &self.sched, w.hinstance, w.hwnd, .{ .width = opts.size.w, .height = opts.size.h }, .{
+            .mode = switch (opts.present.mode) {
+                .auto => .auto,
+                .fifo => .fifo,
+                .mailbox => .mailbox,
+                .fifo_latest_ready => .fifo_latest_ready,
+            },
+        });
+        // Pipelines and renderToImage use the swapchain's format.
+        self.readback.format = self.sc.?.format;
+    }
+    errdefer if (self.sc) |sc| sc.deinit();
     self.pipes = try pipeline.createPipelines(gpu, &self.cache, &self.heap, self.readback.vkFormat());
     errdefer self.pipes.deinit();
     self.ring = try UploadRing.init(&self.mem, frames, initial_ring_bytes);
@@ -233,6 +263,7 @@ pub fn destroy(self: *VkRenderer) void {
     self.sched.waitValue(self.sched.submitted) catch {};
     if (self.timer) |*t| t.deinit();
     if (self.ext) |*x| x.deinit();
+    if (self.sc) |sc| sc.deinit();
     self.readback.deinit();
     self.uploader.deinit();
     for (self.textures.items) |t| if (t) |tex| {
@@ -324,7 +355,7 @@ fn mapErr(err: anyerror) RenderError {
     return switch (err) {
         error.OutOfMemory, error.OutOfHostMemory, error.OutOfDeviceMemory => error.OutOfMemory,
         error.DeviceLost => error.DeviceLost,
-        error.PresentFailed => error.SurfaceLost,
+        error.PresentFailed, error.SurfaceLost => error.SurfaceLost,
         else => blk: {
             log.err("render failed: {t}", .{err});
             break :blk error.DeviceLost;
@@ -566,6 +597,20 @@ fn ensureRing(self: *VkRenderer, need: u64) !void {
     self.bindRing();
 }
 
+/// The swapchain's present waiter for `RenderThread.Options.waiter`
+/// (null without a swapchain or present-wait support).
+pub fn presentWaiter(self: *VkRenderer) ?FramePacer.PresentWaiter {
+    const sc = self.sc orelse return null;
+    return sc.presentWaiter();
+}
+
+/// What the FramePacer can use for this renderer's target.
+pub fn pacerCaps(self: *const VkRenderer) FramePacer.Caps {
+    if (self.sc == null) return .{ .headless = self.opts.target == .headless, .platform_frames = self.opts.target == .external };
+    const caps = self.gpu.info.caps;
+    return .{ .present_wait2 = caps.present_wait2 and caps.present_id2, .present_wait = caps.present_wait and caps.present_id };
+}
+
 /// Renders `dl` and hands the result to the target.
 pub fn render(self: *VkRenderer, dl: *const DrawList) RenderError!r2d.FrameStats {
     return self.renderInner(dl) catch |e| mapErr(e);
@@ -593,7 +638,7 @@ pub fn renderToImage(self: *VkRenderer, dl: *const DrawList, out: *CpuImage) Ren
 
 fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     const start = zg_core.time.nowNs(self.io);
-    const extent = dl.extent;
+    var extent = dl.extent;
     var stats: r2d.FrameStats = .{ .backend = .vulkan, .prims = @intCast(dl.prims.items.len) };
     if (extent.w == 0 or extent.h == 0) return stats;
     if (extent.w != self.extent.w or extent.h != self.extent.h) {
@@ -627,6 +672,19 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     };
     var ext_open = ext_acq != null;
     errdefer if (ext_open) self.ext.?.abandon(ext_acq.?);
+    // The swapchain, unless the window is minimised.
+    const sc: ?*Swapchain = if (self.to_memory) null else self.sc;
+    if (sc) |s| {
+        s.requestResize(.{ .width = extent.w, .height = extent.h });
+        s.prepare() catch |e| switch (e) {
+            error.Minimized => {
+                self.carry = damage;
+                self.carry_full = full_frame;
+                return stats;
+            },
+            else => return e,
+        };
+    }
     self.frame_no += 1;
     try self.planLayers(dl);
 
@@ -638,14 +696,33 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     try self.ensureRing(prim_bytes + xprim_bytes + clip_bytes + xclip_bytes + 4096);
 
     const fs = try self.sched.begin();
+    var sc_acq: ?Swapchain.Acquired = null;
+    if (sc) |s| sc_acq = s.acquire(fs) catch |e| {
+        self.sched.cancel(fs);
+        self.needs_full = true;
+        if (e == error.Minimized) return stats;
+        return e;
+    };
+    // The surface decides the image size on Win32; while it differs from
+    // the list's (mid-resize), draw 1:1 into the image and repaint fully.
+    var size_changed = false;
+    if (sc_acq != null and (sc.?.extent.width != extent.w or sc.?.extent.height != extent.h)) {
+        extent = .{ .w = sc.?.extent.width, .h = sc.?.extent.height };
+        size_changed = true;
+    }
     self.ring.beginFrame(fs.index);
     self.heap.reclaim(self.sched.completed());
     self.readback.poll();
-    const acq: Readback.Acquired = if (ext_acq) |a| .{ .image = a.image, .age = a.age } else try self.readback.acquire(extent);
+    const acq: Readback.Acquired = if (ext_acq) |a|
+        .{ .image = a.image, .age = a.age }
+    else if (sc_acq) |a|
+        .{ .image = a.image, .age = a.age }
+    else
+        try self.readback.acquire(extent);
 
     var repaint: Damage.RectList = .{};
     const r2d_rect = r2d.rect;
-    if (full_frame) {
+    if (full_frame or size_changed) {
         repaint.add(r2d_rect.full(extent));
     } else {
         self.history.repaintFor(acq.age, damage.slice(), extent, &repaint);
@@ -739,6 +816,8 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         const img = acq.image;
         if (ext_acq) |a| {
             self.ext.?.beginRendering(cb, a);
+        } else if (sc_acq) |a| {
+            sc.?.beginRendering(cb, a);
         } else {
             barriers.imageTransition(cb, d, img.image.handle, if (acq.age == 0) .undefined else img.access, .color_attachment, .{ .color = true });
             img.access = .color_attachment;
@@ -761,21 +840,34 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         ext_open = false;
     }
 
-    if (ext_acq == null) try self.readback.recordCopy(fs, repaint.slice());
+    if (sc_acq) |a| sc.?.endRendering(cb, a);
+    if (ext_acq == null and sc_acq == null) try self.readback.recordCopy(fs, repaint.slice());
     if (timer) |t| t.mark(cb, fs.index, .frame, .end);
     self.retireDoomed();
-    const signal: ?vk.SemaphoreSubmitInfo = if (ext_acq != null) self.ext.?.signalFor(fs) else null;
-    try self.sched.submit(fs, &.{}, if (signal) |*sg| sg[0..1] else &.{});
-    if (ext_acq) |a| {
-        ext_open = false;
-        try self.ext.?.present(fs, a, if (full_repaint) &.{} else damage.slice());
-    } else self.readback.present(fs);
-    if (full_frame) self.history.pushFull() else self.history.push(damage.slice());
+    if (sc_acq) |a| {
+        const si = sc.?.submitInfos(fs, a);
+        try self.sched.submit(fs, &.{si.wait}, &.{si.signal});
+        self.present_count += 1;
+        var clamped: Damage.RectList = .{};
+        for (damage.slice()) |r| clamped.add(r2d_rect.clamp(r, extent));
+        var region_buf: [Damage.RectList.capacity]vk.RectLayerKHR = undefined;
+        const regions: ?[]const vk.RectLayerKHR = if (full_repaint) null else Damage.toPresentRegions(clamped.slice(), &region_buf);
+        try sc.?.present(a, .{ .present_id = self.present_count, .regions = regions });
+    } else {
+        const signal: ?vk.SemaphoreSubmitInfo = if (ext_acq != null) self.ext.?.signalFor(fs) else null;
+        try self.sched.submit(fs, &.{}, if (signal) |*sg| sg[0..1] else &.{});
+        if (ext_acq) |a| {
+            ext_open = false;
+            try self.ext.?.present(fs, a, if (full_repaint) &.{} else damage.slice());
+        } else self.readback.present(fs);
+    }
+    if (full_frame or size_changed) self.history.pushFull() else self.history.push(damage.slice());
     self.carry = .{};
     self.carry_full = false;
     self.needs_full = false;
     stats.needs_full_redraw = full_repaint;
-    stats.present_id = fs.timeline_value;
+    // Swapchain frames carry the FramePacer's present ids (1, 2, ...).
+    stats.present_id = if (sc_acq != null) self.present_count else fs.timeline_value;
     if (self.last_gpu) |g| stats.gpu_ns = g.frame_ns;
     stats.cpu_encode_ns = @intCast(zg_core.time.nowNs(self.io) - start);
     return stats;

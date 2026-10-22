@@ -5,7 +5,8 @@
 //!
 //! `zigguro FILE` opens FILE in the editor workbench instead (a missing
 //! file starts empty and is created on save); `--terminal` opens the
-//! workbench with its terminal panel showing (Ctrl+` toggles it).
+//! workbench with its terminal panel showing (Ctrl+` toggles it), and
+//! `--agent` with the agent pane open (Ctrl+L toggles it).
 //!
 //! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
 //! or when no display can be reached, it renders `--frames N` frames
@@ -67,9 +68,10 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const file_arg = pathArg(min, rt.gpa);
     defer if (file_arg) |p| rt.gpa.free(p);
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
-    const use_wb = file_arg != null or want_terminal;
+    const want_agent = hasFlag(min, rt.gpa, "--agent");
+    const use_wb = file_arg != null or want_terminal or want_agent;
     var wb: Workbench = undefined;
-    if (use_wb) try wb.init(rt.gpa, rt.io, &env, file_arg);
+    if (use_wb) try wb.init(&rt, &env, file_arg);
     defer if (use_wb) wb.deinit();
     const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
 
@@ -86,6 +88,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = root });
         if (use_wb) try wb.attach(hw.win);
         if (want_terminal) try wb.toggleTerminal();
+        if (want_agent) try wb.toggleAgent();
         defer if (use_wb) wb.detach();
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
@@ -118,6 +121,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = root });
     if (use_wb) try wb.attach(hw.win);
     if (want_terminal) try wb.toggleTerminal();
+    if (want_agent) try wb.toggleAgent();
     defer if (use_wb) wb.detach();
     var drawn: u64 = 0;
     var i: u32 = 0;

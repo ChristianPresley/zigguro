@@ -124,6 +124,14 @@ pub fn begin(self: *FrameScheduler) !*FrameSlot {
     return s;
 }
 
+/// Abandons `fs` without submitting (nothing recorded may have been
+/// executed; the slot's command pool is reset at its next `begin`).
+pub fn cancel(self: *FrameScheduler, fs: *FrameSlot) void {
+    std.debug.assert(self.recording == fs);
+    self.recording = null;
+    _ = self.gpu.ddisp.end_command_buffer(fs.cb);
+}
+
 /// Ends `fs` and submits it on the graphics queue, waiting on `waits` and
 /// signalling the next timeline value plus `extra_signals`.
 pub fn submit(self: *FrameScheduler, fs: *FrameSlot, waits: []const vk.SemaphoreSubmitInfo, extra_signals: []const vk.SemaphoreSubmitInfo) !void {

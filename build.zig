@@ -61,6 +61,13 @@ pub fn build(b: *std.Build) void {
 
     // Tests: `test` runs every package; `test-<short>` runs one.
     const test_step = b.step("test", "Run the tests of every package and tool");
+    // The zigguro app's own wiring (agent panel adapters).
+    {
+        const t = b.addTest(.{ .name = "zigguro-app", .root_module = appModule(b, "apps/zigguro/src/tests.zig", f.target, f.optimize, &mods, options), .filters = test_filters });
+        const run = b.addRunArtifact(t);
+        b.step("test-apps", "Run the tests of apps/zigguro").dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
     const fuzz_step = b.step("fuzz", "Run every test (use with --fuzz to fuzz `fuzz:` tests)");
     inline for (packages.all, 0..) |p, i| {
         const tm = zg_build.testModule(b, f, mods[i]);
@@ -445,6 +452,24 @@ fn addApp(
     mods: []const *std.Build.Module,
     options: *std.Build.Module,
 ) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = appModule(b, "apps/" ++ name ++ "/src/main.zig", target, optimize, mods, options),
+        .use_llvm = if (target.result.cpu.arch == .aarch64) true else null,
+    });
+    if (target.result.ofmt == .elf) exe.build_id = .sha1;
+    return exe;
+}
+
+/// An app module rooted at `root`, importing every package.
+fn appModule(
+    b: *std.Build,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    mods: []const *std.Build.Module,
+    options: *std.Build.Module,
+) *std.Build.Module {
     var imports: std.ArrayList(std.Build.Module.Import) = .empty;
     imports.append(b.allocator, .{ .name = "zg_options", .module = options }) catch @panic("OOM");
     inline for (packages.all, 0..) |p, i| imports.append(b.allocator, .{ .name = p.name, .module = mods[i] }) catch @panic("OOM");
@@ -453,19 +478,13 @@ fn addApp(
     imports.append(b.allocator, .{ .name = "zg_security_ui", .module = mods[comptime packages.indexOf("zg_security")].owner.modules.get("zg_security_ui").? }) catch @panic("OOM");
     // Crash reports (E17.F05) need frame pointers and a GNU build id, and
     // the self-hosted aarch64 backend traps before the segfault hook runs.
-    const exe = b.addExecutable(.{
-        .name = name,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/" ++ name ++ "/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = imports.items,
-            .omit_frame_pointer = false,
-        }),
-        .use_llvm = if (target.result.cpu.arch == .aarch64) true else null,
+    return b.createModule(.{
+        .root_source_file = b.path(root),
+        .target = target,
+        .optimize = optimize,
+        .imports = imports.items,
+        .omit_frame_pointer = false,
     });
-    if (target.result.ofmt == .elf) exe.build_id = .sha1;
-    return exe;
 }
 
 fn addTool(
