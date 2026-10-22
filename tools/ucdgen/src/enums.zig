@@ -59,7 +59,60 @@ pub const Aux = packed struct(u32) {
     default_ignorable: bool = false,
     /// PropList White_Space.
     white_space: bool = false,
-    _pad: u6 = 0,
+    /// The Universal Shaping Engine class (`.O` outside USE scripts).
+    use: UseCategory = .O,
+};
+
+/// Universal Shaping Engine character classes, derived from the Indic
+/// categories, General_Category, Joining_Type and Microsoft's override
+/// files the way HarfBuzz's gen-use-table.py does. The values are
+/// HarfBuzz's machine categories; the gaps are classes the cluster
+/// machine no longer uses.
+pub const UseCategory = enum(u6) {
+    O = 0,
+    B = 1,
+    N = 4,
+    GB = 5,
+    CGJ = 6,
+    SUB = 11,
+    H = 12,
+    HN = 13,
+    ZWNJ = 14,
+    WJ = 16,
+    R = 18,
+    VPre = 22,
+    VMPre = 23,
+    FAbv = 24,
+    FBlw = 25,
+    FPst = 26,
+    MAbv = 27,
+    MBlw = 28,
+    MPst = 29,
+    MPre = 30,
+    CMAbv = 31,
+    CMBlw = 32,
+    VAbv = 33,
+    VBlw = 34,
+    VPst = 35,
+    VMAbv = 37,
+    VMBlw = 38,
+    VMPst = 39,
+    SMAbv = 41,
+    SMBlw = 42,
+    CS = 43,
+    IS = 44,
+    FMAbv = 45,
+    FMBlw = 46,
+    FMPst = 47,
+    Sk = 48,
+    G = 49,
+    J = 50,
+    SB = 51,
+    SE = 52,
+    HVM = 53,
+    HM = 54,
+    HR = 55,
+    RK = 56,
 };
 
 comptime {
