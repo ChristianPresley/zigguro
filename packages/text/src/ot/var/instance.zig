@@ -14,6 +14,10 @@ const fvar_mod = @import("fvar.zig");
 const Avar = @import("avar.zig").Avar;
 const Hvar = @import("hvar.zig").Hvar;
 const Mvar = @import("mvar.zig").Mvar;
+const gvar_mod = @import("gvar.zig");
+const Gvar = gvar_mod.Gvar;
+const glyf_mod = @import("../glyf.zig");
+const Path = @import("../../outline/path.zig").Path;
 
 const Face = face_mod.Face;
 const GlyphId = reader.GlyphId;
@@ -43,6 +47,18 @@ pub fn namedInstances(face: *const Face) fvar_mod.NamedInstanceIterator {
     return .{ .f = fvarOf(face) };
 }
 
+/// Reusable outline buffers; one per worker thread.
+pub const OutlineScratch = struct {
+    glyf: glyf_mod.Scratch = .{},
+    gvar: gvar_mod.GvarScratch = .{},
+
+    /// Frees the buffers.
+    pub fn deinit(s: *OutlineScratch, gpa: Allocator) void {
+        s.glyf.deinit(gpa);
+        s.gvar.deinit(gpa);
+    }
+};
+
 /// One face at one position in its design space.
 pub const FaceInstance = struct {
     face: *const Face,
@@ -50,6 +66,7 @@ pub const FaceInstance = struct {
     axis_count: u8 = 0,
     hvar: ?Hvar = null,
     mvar: ?Mvar = null,
+    gvar: ?Gvar = null,
     /// Region scalars of HVAR's store (empty without HVAR).
     hvar_scalars: []f32 = &.{},
     /// HVAR's data subtables, parsed once (a malformed one has no items).
@@ -85,6 +102,9 @@ pub const FaceInstance = struct {
             for (fi.hvar_data, 0..) |*d, i| d.* = h.store.itemData(@intCast(i)) catch .{ .item_count = 0, .word_count = 0, .long_words = false, .regions = &.{}, .rows = &.{} };
             fi.hvar = h;
         } else |_| {};
+        if (face.knownTable(.gvar)) |t| {
+            fi.gvar = Gvar.init(t, @intCast(axes), face.num_glyphs) catch null;
+        }
         if (face.knownTable(.mvar)) |t| if (Mvar.init(t)) |m| {
             if (m.store) |s| {
                 fi.mvar_scalars = try gpa.alloc(f32, s.region_count);
@@ -116,13 +136,37 @@ pub const FaceInstance = struct {
         return true;
     }
 
-    /// Advance of `gid` in design units: hmtx plus the HVAR delta.
+    /// Advance of `gid` in design units: hmtx plus the HVAR delta, or,
+    /// without HVAR, the gvar phantom-point delta.
     pub fn advance(fi: *const FaceInstance, gid: GlyphId) f32 {
         const base: f32 = @floatFromInt(fi.face.advance(gid));
-        const h = &(fi.hvar orelse return base);
+        const h = &(fi.hvar orelse return base + fi.phantomAdvanceDelta(gid));
         const i = h.advanceIdx(gid);
         if (i.outer >= fi.hvar_data.len) return base;
         return base + fi.hvar_data[i.outer].deltaScaled(i.inner, fi.hvar_scalars);
+    }
+
+    fn phantomAdvanceDelta(fi: *const FaceInstance, gid: GlyphId) f32 {
+        const gv = &(fi.gvar orelse return 0);
+        const g = fi.face.glyf() orelse return 0;
+        const n = g.pointCount(gid) catch return 0;
+        const d = gv.phantomDeltas(gid, fi.coordsSlice(), n) catch return 0;
+        return d[1][0] - d[0][0];
+    }
+
+    /// The advance from gvar phantom points (hmtx advance plus the
+    /// right-minus-left phantom delta), whether or not the face has HVAR.
+    pub fn advanceFromPhantoms(fi: *const FaceInstance, gid: GlyphId) f32 {
+        return @as(f32, @floatFromInt(fi.face.advance(gid))) + fi.phantomAdvanceDelta(gid);
+    }
+
+    /// Appends the outline of `gid` at this instance to `out` (font units,
+    /// origin at the glyph's left phantom point). Allocation-free once
+    /// `scratch` and `out` are warm.
+    pub fn outline(fi: *const FaceInstance, gpa: Allocator, gid: GlyphId, scratch: *OutlineScratch, out: *Path) error{ Malformed, OutOfMemory, LimitExceeded, Unsupported }!void {
+        const g = fi.face.glyf() orelse return error.Unsupported;
+        const hook: ?glyf_mod.DeltaHook = if (fi.gvar) |*gv| gv.hook(gpa, fi.coordsSlice(), &scratch.gvar) else null;
+        _ = try g.outline(gpa, gid, &scratch.glyf, hook, out);
     }
 
     /// Font-wide metrics with MVAR deltas. Ascender, descender and line gap
