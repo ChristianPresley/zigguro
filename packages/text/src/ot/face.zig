@@ -14,6 +14,7 @@ const Os2 = @import("os2.zig").Os2;
 const Post = @import("post.zig").Post;
 const name_mod = @import("name.zig");
 const glyf_mod = @import("glyf.zig");
+const cff_mod = @import("cff.zig");
 
 const GlyphId = reader.GlyphId;
 const Tag = reader.Tag;
@@ -156,6 +157,16 @@ pub const Face = struct {
         var g = glyf_mod.Glyf.init(f.knownTable(.glyf).?, f.knownTable(.loca).?, f.loca_long, f.num_glyphs) catch return null;
         g.hmtx = f.hmtx;
         return g;
+    }
+
+    /// The parsed `CFF ` or `CFF2` table, or null when the face has no CFF
+    /// outlines (or they are malformed or unsupported).
+    pub fn cff(f: *const Face) ?cff_mod.Cff {
+        return switch (f.outline_kind) {
+            .cff => cff_mod.Cff.init(f.knownTable(.cff).?, .cff1) catch null,
+            .cff2 => cff_mod.Cff.init(f.knownTable(.cff2).?, .cff2) catch null,
+            else => null,
+        };
     }
 
     /// Advance width of `gid` (default instance, design units).
