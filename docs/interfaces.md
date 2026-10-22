@@ -506,8 +506,11 @@ pub const PresenterVTable = struct {
 thread for that window.
 
 ### Ownership/lifetime
-`importBuffer` does not take ownership of plane fds. A `CpuBuffer` from
-`allocCpuBuffer` is owned by the presenter until `releaseBuffer`.
+`importBuffer` does not take ownership of plane fds; E02 keeps them open
+until `releaseBuffer` (the Wayland presenter uses them for implicit
+sync). A `CpuBuffer` from `allocCpuBuffer` is owned by the presenter
+until `releaseBuffer`. `present` takes ownership of a `.sync_file`
+acquire fd and closes it, also on error.
 
 `present` with `ack = null` (E02's software path) answers the newest
 pending configure on Wayland. On X11 the newest presented buffer stays
@@ -515,10 +518,19 @@ busy (it repaints `Expose` damage) until a newer one is presented, and
 MIT-SHM buffers also until their `ShmCompletion`.
 
 ### Stability
-Experimental. Until DRI3/dmabuf (E01.F04.S04.T01, E01.F05.S03.T02) the
-Wayland and X11 presenters are CPU-only (`syncMode() == .cpu_only`,
-`importBuffer` → `error.Unsupported`), so E02 renders with the software
-renderer into `allocCpuBuffer` buffers.
+Experimental. The Wayland presenter imports dmabufs when the compositor
+offers zwp_linux_dmabuf_v1 (v3+): `drmDevice()` is the first tranche's
+device of the default feedback (or `main_device`), `formats()` lists the
+feedback's pairs in tranche order (preferred first), and `syncMode()` is
+`.implicit_sync_file`. A `.sync_file` acquire is imported into the
+dmabuf with `DMA_BUF_IOCTL_IMPORT_SYNC_FILE`; without the ioctl the
+presenter waits on it on the calling thread. A `.syncobj` acquire is
+`error.Unsupported` until the contract carries a release point. Shm
+`importBuffer` (an E02 memfd) works on Wayland too. Without the global,
+and on X11 until DRI3 (E01.F05.S03.T02), presenters are CPU-only
+(`.cpu_only`, `importBuffer` → `error.Unsupported`). Per-surface feedback
+is not requested yet; a later change of the default feedback is logged
+and applies to the next ring E02 builds.
 
 ## zg_platform.headless.Headless and .zgtrace
 
@@ -893,8 +905,12 @@ A window's presenter and its buffers die with `destroyWindow`.
 connection.
 
 ### Stability
-Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
-`Unsupported` until E01.F04.S04. Until the data device lands,
+Experimental until the E01 PR merges. dmabuf import and implicit sync
+are described under the presenter contract above. With wp_presentation
+every present asks for feedback (`InitOptions.presentation_feedback`),
+reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
+a discarded frame has `flags = PresentFlags.discarded` and
+`presented_ns = 0`. Until the data device lands,
 `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
