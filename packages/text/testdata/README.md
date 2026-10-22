@@ -93,6 +93,26 @@ Coverage itself is checked against a reference in the same test file: the
 winding number integrated exactly in x on 128 sub-scanlines per pixel row,
 within 2/255 per pixel.
 
+## Colour glyph goldens
+
+`golden/colr/` holds Skia renderings (through blackrenderer) of every
+googlefonts COLRv1 test glyph at 32 px: `test_glyphs-32px` from the static
+font and `test_glyphs-variable-32px` from the variable one at the axis
+settings named in its `.zon` header (`golden_loc` in
+`src/raster/colr_test.zig`). Each set is an atlas `.png` of premultiplied
+RGBA, an `-edges.png` mask and a `.zon` index, written by
+`provenance/gen_colr_golden.py` (its docstring lists the setup and the
+patches it applies to blackrenderer):
+
+```
+python3 testdata/provenance/gen_colr_golden.py testdata/fonts/test_glyphs-glyf_colr_1.ttf 32 testdata/golden/colr/test_glyphs-32px --fg 1,0.5,0,1
+```
+
+Glyphs are rendered at 16× and box-filtered, so edge pixels hold the exact
+area average. The test compares pixels away from the marked edges to ±2
+and the whole glyph through its alpha total and centroid; the exceptions,
+each with its reason, are `exceptions` in `colr_test.zig`.
+
 ## text-dump
 
 From `packages/text`:
