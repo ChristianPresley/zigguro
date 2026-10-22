@@ -253,7 +253,8 @@ pub fn modeName(m: PermissionMode) []const u8 {
     };
 }
 
-fn promptMode(m: PermissionMode) assembler.Mode {
+/// The prompt's view of a permission mode.
+pub fn promptMode(m: PermissionMode) assembler.Mode {
     return switch (m) {
         .default, .dont_ask => .default,
         .plan => .plan,
