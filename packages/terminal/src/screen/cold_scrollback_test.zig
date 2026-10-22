@@ -113,14 +113,64 @@ test "the byte cap evicts cold pages first" {
     try testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "line {d} bold", .{pl.evicted}), text.items);
 }
 
-test "pins into compacted rows become garbage" {
+test "pins into compacted rows are garbage while cold and return when decoded" {
     var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50 });
+    defer t.deinit();
+    const pl = &t.primary.pages;
+    var start = pl.activeRow(0);
+    start.x = 5;
+    const pin = try pl.track(start);
+    defer pl.untrack(pin);
+    feedLines(&t, 0, 2000);
+    try testing.expect(pin.garbage);
+    try testing.expect(pin.cold != null);
+    // Scrolling back to it decodes the page and restores the pin.
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    try rowAt(pl, 0, &text);
+    try testing.expect(!pin.garbage);
+    try testing.expectEqual(@as(?PageList.ColdPos, null), pin.cold);
+    try testing.expectEqual(@as(u64, 0), pl.rowIndex(pin.pin));
+    try testing.expectEqual(@as(u16, 5), pin.pin.x);
+    try pl.verify();
+}
+
+test "a cold pin keeps its place in a wrapped line across a resize" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50 });
+    defer t.deinit();
+    const pl = &t.primary.pages;
+    var buf: [64]u8 = undefined;
+    t.feed("line zero\r\n");
+    // Line 1 is 30 cells; pin its 26th cell ('Z').
+    t.feed("abcdefghijklmnopqrstuvwxyZ0123\r\n");
+    var p = pl.screenRow(1).?;
+    p.x = 25;
+    const pin = try pl.track(p);
+    defer pl.untrack(pin);
+    for (0..1000) |i| t.feed(std.fmt.bufPrint(&buf, "{d}\r\n", .{i}) catch unreachable);
+    try testing.expect(pin.cold != null);
+    try t.resize(20, 5);
+    try testing.expect(pin.cold != null);
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    try rowAt(pl, 0, &text);
+    try testing.expect(!pin.garbage);
+    // At 20 columns line 1 takes rows 1 and 2; cell 25 is row 2, column 5.
+    try testing.expectEqual(@as(u64, 2), pl.rowIndex(pin.pin));
+    try testing.expectEqual(@as(u16, 5), pin.pin.x);
+    try testing.expectEqual(@as(u21, 'Z'), pin.pin.cells()[5].codepoint());
+}
+
+test "evicting a cold page drops its pins' positions" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50, .max_scrollback_bytes = 1 << 20 });
     defer t.deinit();
     const pl = &t.primary.pages;
     const pin = try pl.track(pl.activeRow(0));
     defer pl.untrack(pin);
-    feedLines(&t, 0, 2000);
+    feedLines(&t, 0, 200_000);
+    try testing.expect(pl.evicted > 0);
     try testing.expect(pin.garbage);
+    try testing.expectEqual(@as(?PageList.ColdPos, null), pin.cold);
 }
 
 test "resize recounts cold rows; decoding re-wraps them at the new width" {
