@@ -1,0 +1,67 @@
+// Default keymap (VS Code style). Each entry names its VS Code counterpart.
+// `mod` is Cmd on macOS and Ctrl elsewhere. Package-specific defaults live in
+// each package's own keybindings and are not repeated here.
+.{
+    // workbench.action.showCommands
+    .{ .key = "mod+shift+p", .command = "workbench.showCommands" },
+    .{ .key = "f1", .command = "workbench.showCommands" },
+    // workbench.action.quickOpen
+    .{ .key = "mod+p", .command = "quickOpen.files" },
+    // workbench.action.openSettings
+    .{ .key = "mod+,", .command = "workbench.openSettings" },
+    // workbench.action.openGlobalKeybindings
+    .{ .key = "mod+k mod+s", .command = "workbench.openKeybindings" },
+    // workbench.action.toggleSidebarVisibility
+    .{ .key = "mod+b", .command = "workbench.toggleSidebar" },
+    // workbench.action.terminal.toggleTerminal
+    .{ .key = "ctrl+`", .command = "terminal.toggle" },
+    // workbench.action.splitEditor
+    .{ .key = "mod+\\", .command = "workbench.splitEditor" },
+    // workbench.action.focusFirstEditorGroup .. focusThirdEditorGroup
+    .{ .key = "mod+1", .command = "workbench.focusGroup1" },
+    .{ .key = "mod+2", .command = "workbench.focusGroup2" },
+    .{ .key = "mod+3", .command = "workbench.focusGroup3" },
+    // actions.find / editor.action.startFindReplaceAction
+    .{ .key = "mod+f", .command = "editor.find", .when = "editorFocus" },
+    .{ .key = "mod+h", .macos = "cmd+alt+f", .command = "editor.replace", .when = "editorFocus" },
+    // workbench.action.findInFiles
+    .{ .key = "mod+shift+f", .command = "search.findInFiles" },
+    // workbench.action.gotoLine (ctrl+g on every platform)
+    .{ .key = "ctrl+g", .command = "editor.goToLine", .when = "editorFocus" },
+    // workbench.action.gotoSymbol
+    .{ .key = "mod+shift+o", .command = "quickOpen.symbolsInFile" },
+    // editor.action.formatDocument
+    .{ .key = "shift+alt+f", .linux = "ctrl+shift+i", .command = "editor.formatDocument", .when = "editorTextFocus && !editorReadonly" },
+    // editor.action.commentLine
+    .{ .key = "mod+/", .command = "editor.toggleLineComment", .when = "editorTextFocus && !editorReadonly" },
+    // editor.action.addSelectionToNextFindMatch
+    .{ .key = "mod+d", .command = "editor.addSelectionToNextMatch", .when = "editorFocus" },
+    // editor.action.insertCursorAbove / Below
+    .{ .key = "ctrl+alt+up", .linux = "shift+alt+up", .macos = "cmd+alt+up", .command = "editor.addCursorAbove", .when = "editorTextFocus" },
+    .{ .key = "ctrl+alt+down", .linux = "shift+alt+down", .macos = "cmd+alt+down", .command = "editor.addCursorBelow", .when = "editorTextFocus" },
+    // workbench.action.files.save / newUntitledFile / closeActiveEditor
+    .{ .key = "mod+s", .command = "file.save" },
+    .{ .key = "mod+n", .command = "file.newUntitled" },
+    .{ .key = "mod+w", .command = "workbench.closeEditor", .when = "!terminalFocus" },
+    // undo / redo
+    .{ .key = "mod+z", .command = "editor.undo", .when = "editorTextFocus" },
+    .{ .key = "mod+shift+z", .command = "editor.redo", .when = "editorTextFocus" },
+    .{ .key = "ctrl+y", .macos = "cmd+shift+z", .command = "editor.redo", .when = "editorTextFocus" },
+    // editor.action.rename / revealDefinition / quickFix
+    .{ .key = "f2", .command = "editor.rename", .when = "editorTextFocus" },
+    .{ .key = "f12", .command = "editor.goToDefinition", .when = "editorTextFocus" },
+    .{ .key = "mod+.", .command = "editor.quickFix", .when = "editorTextFocus" },
+    // zigguro: agent pane (Cursor/Copilot precedent)
+    .{ .key = "mod+l", .command = "agent.togglePane" },
+    // zigguro: inline edit (E12.F06.S01.T02)
+    .{ .key = "mod+k mod+i", .command = "agent.inlineEdit", .when = "editorTextFocus" },
+    // zigguro: review hunks (VS Code editor.action.dirtydiff.next / previous)
+    .{ .key = "alt+f5", .command = "review.nextHunk" },
+    .{ .key = "shift+alt+f5", .command = "review.previousHunk" },
+    .{ .key = "mod+enter", .command = "review.acceptHunk", .when = "reviewFocus" },
+    .{ .key = "mod+backspace", .command = "review.rejectHunk", .when = "reviewFocus" },
+    // zigguro: mode switch Code / Agent / Split
+    .{ .key = "mod+alt+1", .command = "workbench.mode.code" },
+    .{ .key = "mod+alt+2", .command = "workbench.mode.agent" },
+    .{ .key = "mod+alt+3", .command = "workbench.mode.split" },
+}
