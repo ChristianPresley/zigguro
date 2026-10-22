@@ -6,6 +6,15 @@
 //! presentation feedback and commits in one flush, so the compositor
 //! never sees a buffer of the old size after the ack.
 //!
+//! CPU buffers (E01.F04.S04.T02) are carved from pools: one sealed memfd
+//! (`linux/memfd.zig`) and one `wl_shm_pool` sized for a ring of
+//! `ring_slots` buffers, rows padded to 64 bytes. A pool with no buffers
+//! left grows in place (`wl_shm_pool.resize`, never shrinking); one that
+//! still has buffers is left to drain and a new pool takes over, so a
+//! mapping is never moved under pixels E02 still holds. A buffer the app
+//! releases while the compositor holds it is destroyed at its
+//! `wl_buffer.release`.
+//!
 //! Explicit sync (wp_linux_drm_syncobj_v1) needs a release timeline the
 //! presenter contract does not carry yet; a `.syncobj` acquire point is
 //! `error.Unsupported`.
@@ -17,13 +26,29 @@ const types = @import("../api/types.zig");
 const surface = @import("../api/surface.zig");
 const Backend = @import("backend.zig").WaylandBackend;
 const dmabuf = @import("dmabuf.zig");
+const memfd = @import("../linux/memfd.zig");
 
 /// DRM fourcc `AR24`.
 pub const fourcc_argb8888: u32 = 0x34325241;
 /// DRM fourcc `XR24`.
 pub const fourcc_xrgb8888: u32 = 0x34325258;
 
-const page = std.heap.page_size_min;
+/// Buffers a new pool has room for.
+pub const ring_slots = 3;
+
+/// Slot offsets in a pool are aligned to this.
+const slot_align = 64;
+
+/// A memfd and its `wl_shm_pool`, from which `allocCpuBuffer` carves
+/// buffers.
+pub const Pool = struct {
+    mem: memfd.Memfd,
+    id: wl.wl_shm_pool.Id,
+    /// Bytes handed out from the start.
+    used: usize = 0,
+    /// Buffers carved from it and not yet destroyed.
+    live: u32 = 0,
+};
 
 /// One buffer: allocated shm, imported shm, or imported dmabuf.
 pub const ShmBuffer = struct {
@@ -31,8 +56,12 @@ pub const ShmBuffer = struct {
     handle: u32,
     /// The protocol object.
     buffer: wl.wl_buffer.Id,
-    /// The mapping of an `allocCpuBuffer` buffer; null for imports.
-    mem: ?[]align(page) u8 = null,
+    /// The pool of an `allocCpuBuffer` buffer; null for imports.
+    pool: ?*Pool = null,
+    /// Attached and not yet released by the compositor.
+    busy: bool = false,
+    /// Released by the app while busy: destroyed at `wl_buffer.release`.
+    doomed: bool = false,
     /// An imported dmabuf's plane fds (borrowed from E02), for implicit
     /// sync.
     dmabuf_fds: [4]i32 = .{ -1, -1, -1, -1 },
@@ -58,6 +87,8 @@ pub const ShmPresenter = struct {
     buffers: std.ArrayList(ShmBuffer) = .empty,
     /// Buffers the compositor released, not yet polled.
     released: std.ArrayList(surface.BufferHandle) = .empty,
+    /// CPU buffer pools; the last one is current.
+    pools: std.ArrayList(*Pool) = .empty,
     next: u32 = 1,
     /// Whether the CPU-wait fallback has been logged.
     warned_cpu_wait: bool = false,
@@ -75,12 +106,82 @@ pub const ShmPresenter = struct {
     /// Destroys every buffer. Backend mutex held.
     pub fn deinit(p: *ShmPresenter) void {
         const gpa = p.b.gpa;
-        for (p.buffers.items) |buf| {
-            wl.wl_buffer.destroy(p.b.conn, buf.buffer) catch {};
-            if (buf.mem) |m| std.posix.munmap(m);
-        }
+        for (p.buffers.items) |buf| wl.wl_buffer.destroy(p.b.conn, buf.buffer) catch {};
+        for (p.pools.items) |pool| p.dropPool(pool);
+        p.pools.deinit(gpa);
         p.buffers.deinit(gpa);
         p.released.deinit(gpa);
+    }
+
+    fn dropPool(p: *ShmPresenter, pool: *Pool) void {
+        wl.wl_shm_pool.destroy(p.b.conn, pool.id) catch {};
+        pool.mem.deinit();
+        p.b.gpa.destroy(pool);
+    }
+
+    /// `wl_buffer.release` for `buf`: reported to E02, or the buffer is
+    /// destroyed if E02 already let go of it. Backend mutex held.
+    pub fn onRelease(p: *ShmPresenter, buf: *ShmBuffer) !void {
+        buf.busy = false;
+        if (buf.doomed) {
+            const i = (@intFromPtr(buf) - @intFromPtr(p.buffers.items.ptr)) / @sizeOf(ShmBuffer);
+            p.destroyAt(i);
+            return;
+        }
+        try p.released.append(p.b.gpa, @enumFromInt(buf.handle));
+    }
+
+    /// Destroys buffer `i` and retires its pool once empty and no longer
+    /// current. Backend mutex held.
+    fn destroyAt(p: *ShmPresenter, i: usize) void {
+        const buf = p.buffers.swapRemove(i);
+        wl.wl_buffer.destroy(p.b.conn, buf.buffer) catch {};
+        const pool = buf.pool orelse return;
+        pool.live -= 1;
+        if (pool.live > 0 or pool == p.pools.getLast()) return;
+        for (p.pools.items, 0..) |x, j| if (x == pool) {
+            _ = p.pools.orderedRemove(j);
+            break;
+        };
+        p.dropPool(pool);
+    }
+
+    /// `size` bytes at a 64-byte offset in the current pool, growing it
+    /// when it is empty or starting a new one when it is not. Backend
+    /// mutex held.
+    fn carve(p: *ShmPresenter, size: usize) !struct { pool: *Pool, offset: usize } {
+        const b = p.b;
+        const need = std.mem.alignForward(usize, size, slot_align);
+        if (p.pools.items.len > 0) {
+            const cur = p.pools.getLast();
+            if (cur.used + need <= cur.mem.mem.len) {
+                defer cur.used += need;
+                return .{ .pool = cur, .offset = cur.used };
+            }
+            if (cur.live == 0) {
+                // Nothing points into it: reuse from the start, larger.
+                const want = need * ring_slots;
+                if (want > cur.mem.mem.len) {
+                    if (want > std.math.maxInt(i32)) return error.InvalidSize;
+                    try cur.mem.grow(want);
+                    try wl.wl_shm_pool.resize(b.conn, cur.id, @intCast(want));
+                }
+                cur.used = need;
+                return .{ .pool = cur, .offset = 0 };
+            }
+        }
+        const want = need * ring_slots;
+        if (want > std.math.maxInt(i32)) return error.InvalidSize;
+        try p.pools.ensureUnusedCapacity(b.gpa, 1);
+        const pool = try b.gpa.create(Pool);
+        errdefer b.gpa.destroy(pool);
+        var mem = try memfd.Memfd.create("zg-shm", want);
+        errdefer mem.deinit();
+        const id = try b.conn.newIdVersion(wl.wl_shm_pool, b.conn.version(@intFromEnum(b.shm)), null);
+        try wl.wl_shm.createPool(b.conn, b.shm, id, mem.fd, @intCast(want));
+        pool.* = .{ .mem = mem, .id = id, .used = need };
+        p.pools.appendAssumeCapacity(pool);
+        return .{ .pool = pool, .offset = 0 };
     }
 
     /// The buffer whose protocol object is `id`, if this presenter owns it.
@@ -90,7 +191,7 @@ pub const ShmPresenter = struct {
     }
 
     fn byHandle(p: *ShmPresenter, h: surface.BufferHandle) ?usize {
-        for (p.buffers.items, 0..) |buf, i| if (buf.handle == @intFromEnum(h)) return i;
+        for (p.buffers.items, 0..) |buf, i| if (buf.handle == @intFromEnum(h) and !buf.doomed) return i;
         return null;
     }
 };
@@ -191,30 +292,23 @@ fn allocCpuBuffer(ctx: *anyopaque, w: u32, h: u32, fourcc: u32) anyerror!surface
     const p = of(ctx);
     const fmt = shmFormat(fourcc) orelse return error.UnsupportedFormat;
     if (w == 0 or h == 0 or w > 16384 or h > 16384) return error.InvalidSize;
-    const stride = w * 4;
+    const stride = memfd.stride32(w);
     const size: usize = @as(usize, stride) * h;
-
-    const fd_rc = linux.memfd_create("zg-shm", linux.MFD.CLOEXEC | linux.MFD.ALLOW_SEALING);
-    if (linux.errno(fd_rc) != .SUCCESS) return error.SystemResources;
-    const fd: i32 = @intCast(fd_rc);
-    defer _ = linux.close(fd);
-    if (linux.errno(linux.ftruncate(fd, @intCast(size))) != .SUCCESS) return error.SystemResources;
-    const mem = try std.posix.mmap(null, size, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, fd, 0);
-    errdefer std.posix.munmap(mem);
 
     const b = p.b;
     b.lock();
     defer b.unlock();
-    const pool = try b.conn.newIdVersion(wl.wl_shm_pool, b.conn.version(@intFromEnum(b.shm)), null);
-    try wl.wl_shm.createPool(b.conn, b.shm, pool, fd, @intCast(size));
-    const buffer = try b.conn.newIdVersion(wl.wl_buffer, b.conn.version(@intFromEnum(pool)), b.handler(.buffer));
-    try wl.wl_shm_pool.createBuffer(b.conn, pool, buffer, 0, @intCast(w), @intCast(h), @intCast(stride), fmt);
-    try wl.wl_shm_pool.destroy(b.conn, pool);
+    try p.buffers.ensureUnusedCapacity(b.gpa, 1);
+    const slot = try p.carve(size);
+    const c = b.conn;
+    const buffer = try c.newIdVersion(wl.wl_buffer, c.version(@intFromEnum(slot.pool.id)), b.handler(.buffer));
+    try wl.wl_shm_pool.createBuffer(c, slot.pool.id, buffer, @intCast(slot.offset), @intCast(w), @intCast(h), @intCast(stride), fmt);
+    slot.pool.live += 1;
     const handle = p.next;
-    try p.buffers.append(b.gpa, .{ .handle = handle, .buffer = buffer, .mem = mem, .w = w, .h = h, .stride = stride });
+    p.buffers.appendAssumeCapacity(.{ .handle = handle, .buffer = buffer, .pool = slot.pool, .w = w, .h = h, .stride = stride });
     p.next += 1;
-    try b.conn.flush();
-    return .{ .handle = @enumFromInt(handle), .pixels = mem, .stride = stride };
+    try c.flush();
+    return .{ .handle = @enumFromInt(handle), .pixels = slot.pool.mem.mem[slot.offset..][0..size], .stride = stride };
 }
 
 fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.PxRect, acquire: surface.SyncPoint, ack: ?surface.ConfigureAck) anyerror!void {
@@ -243,8 +337,9 @@ fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.
     b.lock();
     defer b.unlock();
     const i = p.byHandle(handle) orelse return error.InvalidBuffer;
-    const buf = p.buffers.items[i];
+    const buf = &p.buffers.items[i];
     try b.presentLocked(p.win, buf.buffer, damage, if (ack) |a| a.serial else null);
+    buf.busy = true;
 }
 
 fn releaseBuffer(ctx: *anyopaque, handle: surface.BufferHandle) void {
@@ -253,9 +348,12 @@ fn releaseBuffer(ctx: *anyopaque, handle: surface.BufferHandle) void {
     b.lock();
     defer b.unlock();
     const i = p.byHandle(handle) orelse return;
-    const buf = p.buffers.swapRemove(i);
-    wl.wl_buffer.destroy(b.conn, buf.buffer) catch {};
-    if (buf.mem) |m| std.posix.munmap(m);
+    // The compositor may still read it: destroy it at its release.
+    if (p.buffers.items[i].busy) {
+        p.buffers.items[i].doomed = true;
+        return;
+    }
+    p.destroyAt(i);
     b.conn.flush() catch {};
 }
 
@@ -268,4 +366,12 @@ fn pollReleased(ctx: *anyopaque, out: []surface.BufferHandle) usize {
     @memcpy(out[0..n], p.released.items[0..n]);
     p.released.replaceRangeAssumeCapacity(0, n, &.{});
     return n;
+}
+
+test "wl_shm formats are not DRM fourccs" {
+    try std.testing.expectEqual(wl.wl_shm.Format.argb8888, shmFormat(fourcc_argb8888).?);
+    try std.testing.expectEqual(wl.wl_shm.Format.xrgb8888, shmFormat(fourcc_xrgb8888).?);
+    try std.testing.expectEqual(0, @intFromEnum(shmFormat(fourcc_argb8888).?));
+    try std.testing.expectEqual(1, @intFromEnum(shmFormat(fourcc_xrgb8888).?));
+    try std.testing.expectEqual(null, shmFormat(0x34325258 + 1));
 }
