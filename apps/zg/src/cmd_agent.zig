@@ -162,6 +162,13 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .labeler = zg_ai.plan.ask_user.subagentLabeler(&subagents),
     };
     try tool_registry.addSource(ask_user.source());
+    // Plan mode: `exit_plan_mode` asks on the terminal in the REPL (and
+    // `/plan` enters it); one-shot runs answer with the plan instead. The
+    // runner attaches its agent.
+    var cli_approver: zg_ai.plan.plan_mode.CliApprover = .{ .in = in, .out = err };
+    var plan_mode: zg_ai.plan.PlanMode = .init(gpa, undefined, cwd, cli_approver.approver(), .{ .tools = &agent_tools });
+    defer plan_mode.deinit();
+    if (!one_shot) try tool_registry.addSource(plan_mode.source());
 
     // Hooks (Claude Code format): managed and user `hooks.json`, then the
     // workspace's `.zigguro/hooks.json` and `hooks.local.json`, and in
@@ -217,6 +224,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .cwd = cwd,
         .default_model = env.get("ZG_MODEL") orelse "sonnet",
         .todos = &todos,
+        .plan_mode = if (one_shot) null else &plan_mode,
     };
 
     const code = if (one_shot)
