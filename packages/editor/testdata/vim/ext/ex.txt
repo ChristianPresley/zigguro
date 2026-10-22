@@ -716,3 +716,266 @@ b
 :s/\d\+\ze usd/N/<CR>
 --- after
 ¦price N usd
+
+=== confirm: yes no
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>yny
+--- after
+X a X
+b ¦a
+
+=== confirm: all
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>na
+--- after
+a X X
+¦b X
+
+=== confirm: last
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>nly
+--- after
+¦a X a
+b a
+
+=== confirm: quit
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>yq
+--- after
+X ¦a a
+b a
+
+=== confirm: escape
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>y<Esc>
+--- after
+X ¦a a
+b a
+
+=== confirm: undo
+--- before
+¦a a a
+b a
+--- keys
+:%s/a/X/gc<CR>yyyyu
+--- after
+X X X
+¦b a
+
+=== confirm: all done cursor
+--- before
+¦a a a
+b a
+c
+--- keys
+:%s/a/X/gc<CR>yyyy
+--- after
+X X X
+¦b X
+c
+
+=== confirm: line count
+--- before
+¦a
+a
+a
+--- keys
+:%s/a/XY/c<CR>yy
+--- after
+XY
+XY
+¦a
+
+=== confirm: other key ignored
+--- before
+¦a a
+--- keys
+:s/a/X/gc<CR>zy
+--- after
+X ¦a
+
+=== confirm: join
+--- before
+¦a
+b
+a
+b
+--- keys
+:%s/a\n/X/c<CR>ny
+--- after
+a
+b
+¦Xb
+
+=== confirm: growing
+--- before
+¦ab ab
+--- keys
+:s/a/aa/gc<CR>yy
+--- after
+¦aab aab
+
+=== confirm: then normal
+--- before
+¦a a
+--- keys
+:s/a/X/gc<CR>yqx
+--- after
+X¦ 
+
+=== confirm: undo same line
+--- before
+¦a a
+--- keys
+:s/a/X/gc<CR>yyu
+--- after
+¦a a
+
+=== confirm: undo two lines
+--- before
+¦a
+a
+--- keys
+:%s/a/X/c<CR>yyu
+--- after
+X
+¦a
+
+=== confirm: undo twice
+--- before
+¦a
+a
+--- keys
+:%s/a/X/c<CR>yyuu
+--- after
+¦a
+a
+
+=== confirm: undo after quit
+--- before
+¦a
+a
+a
+--- keys
+:%s/a/X/c<CR>yyqu
+--- after
+X
+¦a
+a
+
+=== confirm: undo after all
+--- before
+¦a
+a
+a
+--- keys
+:%s/a/X/c<CR>yau
+--- after
+X
+¦a
+a
+
+=== confirm: none accepted
+--- before
+x a
+¦b a
+c
+--- keys
+:%s/a/X/c<CR>nn
+--- after
+x a
+b ¦a
+c
+
+=== confirm: quit first
+--- before
+x a
+¦b a
+c
+--- keys
+:%s/a/X/c<CR>q
+--- after
+x ¦a
+b a
+c
+
+=== confirm: yes then no
+--- before
+x a
+¦b a
+c
+--- keys
+:%s/a/X/c<CR>yn
+--- after
+x X
+b ¦a
+c
+
+=== confirm: indented
+--- before
+¦  a b a
+--- keys
+:s/a/X/gc<CR>yn
+--- after
+  X b ¦a
+
+=== confirm: dot repeat
+--- before
+¦a a
+a
+--- keys
+:s/a/X/gc<CR>yn<Esc>j:&&<CR>
+--- after
+X a
+¦a
+
+=== confirm: indented no yes
+--- before
+¦  a b a
+--- keys
+:s/a/X/gc<CR>ny
+--- after
+¦  a b X
+
+=== confirm: indented lines
+--- before
+¦  a
+  a
+--- keys
+:%s/a/X/c<CR>yy
+--- after
+  X
+¦  X
+
+=== confirm: last indented
+--- before
+¦  a b a
+--- keys
+:s/a/X/gc<CR>l
+--- after
+¦  X b a
+
+=== confirm: all indented
+--- before
+¦  a b a
+  a
+--- keys
+:%s/a/X/gc<CR>a
+--- after
+  X b X
+  ¦X
