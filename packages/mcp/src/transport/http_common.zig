@@ -23,6 +23,11 @@ pub const HttpOptions = struct {
     idle_stream_timeout: std.Io.Duration = .fromSeconds(300),
     /// Largest JSON body or SSE event accepted.
     max_response_bytes: u64 = 64 * 1024 * 1024,
+    /// Legacy Streamable HTTP: also send `Mcp-Method`/`Mcp-Name`/
+    /// `Mcp-Param-*` (undefined before 2026-07-28 but harmless).
+    legacy_method_headers: bool = false,
+    /// HTTP+SSE: how long `connect` waits for the `endpoint` event.
+    endpoint_timeout: std.Io.Duration = .fromSeconds(10),
 };
 
 /// Supplies `Authorization` and reacts to 401/403 (E11.F04 `McpAuth`).
@@ -61,7 +66,7 @@ pub fn postHeaders(
     if (revision) |r| if (protocol.revision.has(r, .mcp_protocol_version_header))
         try list.append(arena, .{ .name = "MCP-Protocol-Version", .value = r.string() });
     if (session_id) |sid| try list.append(arena, .{ .name = "Mcp-Session-Id", .value = sid });
-    if (req) |r| if (method_headers) {
+    if (req) |r| if (method_headers and r.method_str.len > 0) {
         try list.append(arena, .{ .name = "Mcp-Method", .value = r.method_str });
         if (r.name_for_header) |n| try list.append(arena, .{ .name = "Mcp-Name", .value = try headers_mod.encodeHeaderValue(arena, n) });
         for (r.param_headers) |p| try list.append(arena, .{ .name = p.name, .value = p.value });
@@ -69,6 +74,54 @@ pub fn postHeaders(
     for (opts.static_headers) |h| try list.append(arena, h);
     if (authorization) |a| try list.append(arena, .{ .name = "Authorization", .value = a });
     return list.toOwnedSlice(arena);
+}
+
+/// Builds the header list for a GET (legacy server stream or resume, and
+/// the HTTP+SSE stream) in `arena`.
+pub fn getHeaders(
+    arena: Allocator,
+    opts: *const HttpOptions,
+    revision: ?protocol.Revision,
+    authorization: ?[]const u8,
+    session_id: ?[]const u8,
+    last_event_id: ?[]const u8,
+) Allocator.Error![]std.http.Header {
+    var list: std.ArrayList(std.http.Header) = .empty;
+    try list.append(arena, .{ .name = "Accept", .value = "text/event-stream" });
+    if (revision) |r| if (protocol.revision.has(r, .mcp_protocol_version_header))
+        try list.append(arena, .{ .name = "MCP-Protocol-Version", .value = r.string() });
+    if (session_id) |sid| try list.append(arena, .{ .name = "Mcp-Session-Id", .value = sid });
+    if (last_event_id) |l| try list.append(arena, .{ .name = "Last-Event-ID", .value = l });
+    for (opts.static_headers) |h| try list.append(arena, h);
+    if (authorization) |a| try list.append(arena, .{ .name = "Authorization", .value = a });
+    return list.toOwnedSlice(arena);
+}
+
+/// Whether `id` is a valid session id: one or more visible ASCII
+/// characters (0x21 to 0x7E).
+pub fn validSessionId(id: []const u8) bool {
+    if (id.len == 0) return false;
+    for (id) |c| if (c < 0x21 or c > 0x7E) return false;
+    return true;
+}
+
+/// The `notifications/cancelled` message for request `id`, in `gpa`.
+pub fn cancelledBody(gpa: Allocator, id: protocol.RequestId, reason: ?[]const u8) Allocator.Error![]u8 {
+    return std.json.Stringify.valueAlloc(gpa, .{
+        .jsonrpc = "2.0",
+        .method = "notifications/cancelled",
+        .params = .{ .requestId = id, .reason = reason },
+    }, .{ .emit_null_optional_fields = false });
+}
+
+/// Delay before reconnect attempt `attempt` (0-based): the server's `retry`
+/// (default 1 s) doubled per failed attempt, capped at 30 s, with up to 25 %
+/// jitter taken off from `random`.
+pub fn reconnectDelayMs(retry_ms: ?u64, attempt: u32, random: u64) u64 {
+    const base = retry_ms orelse 1000;
+    const shifted = std.math.shl(u64, base, @min(attempt, 16));
+    const capped = @min(shifted, 30_000);
+    return capped - (random % (capped / 4 + 1));
 }
 
 /// What `route` found in one JSON-RPC message.
@@ -91,7 +144,7 @@ pub fn route(
     switch (msg) {
         .response => |r| {
             if (id) |want| if (r.id.eql(want)) {
-                sink.onResponse(sink.ctx, r);
+                sink.onResponse(r);
                 return .response;
             };
             return .other;
@@ -99,11 +152,11 @@ pub fn route(
         .notification => |n| {
             const typed = protocol.Notification.decode(arena, n.method, n.params, .{}) catch
                 protocol.Notification{ .unknown = .{ .method = n.method, .params = null } };
-            sink.onNotification(sink.ctx, typed, n);
+            sink.onNotification(typed, n);
             return .other;
         },
         .request => |r| {
-            sink.onServerRequest(sink.ctx, r);
+            sink.onServerRequest(r);
             return .other;
         },
     }
@@ -147,6 +200,10 @@ pub fn BodyRouter(comptime Sink: type) type {
         json: std.ArrayList(u8) = .empty,
         parser: ?zg_net.sse.Parser = null,
         got_response: bool = false,
+        /// The response status, once the head arrived.
+        status: ?u16 = null,
+        /// `Mcp-Session-Id` from the head, if any (legacy sessions).
+        session_id: std.ArrayList(u8) = .empty,
         /// Last SSE event id and `retry` seen (legacy resumability).
         last_event_id: std.ArrayList(u8) = .empty,
         retry_ms: ?u64 = null,
@@ -162,17 +219,57 @@ pub fn BodyRouter(comptime Sink: type) type {
             self.json.deinit(self.gpa);
             if (self.parser) |*p| p.deinit();
             self.last_event_id.deinit(self.gpa);
+            self.session_id.deinit(self.gpa);
         }
 
         /// Forces SSE mode (GET streams, where no JSON is possible).
         pub fn forceSse(self: *Self) void {
             self.mode = .sse;
+            if (self.parser) |*p| {
+                p.finish();
+                return;
+            }
             self.parser = .init(self.gpa, .{ .max_event_bytes = @intCast(@min(self.max_bytes, std.math.maxInt(usize))) });
+        }
+
+        /// Prepares for another response on the same logical stream (a
+        /// legacy resume): keeps `last_event_id`, `retry_ms` and whether the
+        /// response was seen; drops the partial event and the head.
+        pub fn reset(self: *Self) void {
+            self.status = null;
+            self.mode = null;
+            self.json.clearRetainingCapacity();
+            if (self.parser) |*p| p.finish();
         }
 
         /// A `zg_net.http.BodySink` feeding this router.
         pub fn bodySink(self: *Self) zg_net.http.BodySink {
-            return .{ .ctx = self, .onChunk = onChunkErased };
+            return .{ .ctx = self, .onChunk = onChunkErased, .onHead = onHeadErased };
+        }
+
+        fn onHeadErased(ctx: ?*anyopaque, status: std.http.Status, hs: *const zg_net.http.OwnedHeaders) anyerror!void {
+            const self: *Self = @ptrCast(@alignCast(ctx.?));
+            return self.onHead(@intFromEnum(status), hs);
+        }
+
+        /// Records the head: the status, the session id, and the body mode
+        /// from `Content-Type` (error bodies are buffered as JSON).
+        pub fn onHead(self: *Self, status: u16, hs: *const zg_net.http.OwnedHeaders) !void {
+            self.status = status;
+            if (hs.get("mcp-session-id")) |sid| {
+                self.session_id.clearRetainingCapacity();
+                try self.session_id.appendSlice(self.gpa, sid);
+            }
+            if (status / 100 != 2) {
+                self.mode = .json;
+                return;
+            }
+            const ct = hs.get("content-type") orelse return;
+            if (std.ascii.startsWithIgnoreCase(ct, "text/event-stream")) {
+                self.forceSse();
+            } else if (std.ascii.startsWithIgnoreCase(ct, "application/json")) {
+                self.mode = .json;
+            }
         }
 
         fn onChunkErased(ctx: ?*anyopaque, chunk: []const u8) anyerror!void {
