@@ -54,8 +54,8 @@ pub const Charsets = struct {
 
 /// The kitty keyboard protocol flag stack (one per screen).
 pub const KittyStack = struct {
-    flags: [8]u5 = @splat(0),
-    len: u4 = 0,
+    flags: [16]u5 = @splat(0),
+    len: u5 = 0,
 
     /// The current flags (0 when the stack is empty).
     pub fn current(k: *const KittyStack) u5 {
@@ -64,7 +64,7 @@ pub const KittyStack = struct {
     /// Pushes flags; the oldest entry is dropped when full.
     pub fn push(k: *KittyStack, f: u5) void {
         if (k.len == k.flags.len) {
-            std.mem.copyForwards(u5, k.flags[0..7], k.flags[1..8]);
+            std.mem.copyForwards(u5, k.flags[0 .. k.flags.len - 1], k.flags[1..]);
             k.len -= 1;
         }
         k.flags[k.len] = f;
