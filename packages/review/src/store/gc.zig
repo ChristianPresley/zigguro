@@ -13,7 +13,8 @@
 //!      the first apply of a kept changeset on.
 //! 2. The journal is replaced by one snapshot segment: the id watermarks
 //!    (so dropped ids are not handed out again), then a record per kept
-//!    checkpoint, history record and changeset.
+//!    checkpoint, history record and changeset, and a `snapshot` record
+//!    per comment thread of a kept changeset.
 //! 3. The dropped changesets leave the queue with a journaled `remove`,
 //!    after the snapshot, so other processes drop them too.
 //! 4. Blobs that no record of the journal names are deleted, unless they
@@ -30,6 +31,7 @@ const model = @import("../model/root.zig");
 const journal = @import("journal.zig");
 const records = @import("records.zig");
 const store_mod = @import("store.zig");
+const comments = @import("../feedback/comments.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -48,6 +50,8 @@ pub const Live = struct {
     q: *model.Queue,
     history: ?*model.History = null,
     checkpoints: ?model.CheckpointList = null,
+    /// Threads of dropped changesets go with them.
+    comments: ?*comments.CommentStore = null,
 };
 
 pub const Report = struct {
@@ -69,7 +73,10 @@ pub fn collect(s: *ChangesetStore, sink: store_mod.Sink, live: Live, ret: Retent
     try s.withExclusive(sink, &job, Job.run);
     // Removals go after the snapshot (higher sequence numbers), so other
     // processes do not skip them.
-    for (job.dropped.items) |id| live.q.remove(id);
+    for (job.dropped.items) |id| {
+        live.q.remove(id);
+        if (live.comments) |c| c.dropTarget(id);
+    }
     try s.flush();
     job.report.bytes_after = (try s.journalSize()).bytes;
     return job.report;
@@ -151,6 +158,11 @@ const Job = struct {
             aw.clearRetainingCapacity();
             try records.writeChangeset(&aw.writer, cs, j.s.blobs(), gpa);
             try j.s.frameInto(&frames, .changeset, aw.written());
+            if (j.live.comments) |c| for (c.threadsOf(cs.id)) |t| {
+                aw.clearRetainingCapacity();
+                try comments.writeSnapshot(gpa, &aw.writer, t);
+                try j.s.frameInto(&frames, .comment, aw.written());
+            };
         };
         j.report.segments_removed = try j.s.replaceJournal(frames.items);
 
