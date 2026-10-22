@@ -10,7 +10,9 @@
 //! - a skill expands (arguments substituted) into the prompt the agent
 //!   gets; shell injections are not run yet (they need the terminal
 //!   seam), so they show the disabled notice;
-//! - `/help`, `/skills`, `/agents` and `/cost` answer with a note;
+//! - `/help`, `/skills`, `/agents`, `/cost`, `/memory` (the memory files
+//!   in use) and `/context` (what the last request was made of) answer
+//!   with a note;
 //! - `/plan [prompt]` and `/mode <mode>` switch modes (and send the
 //!   prompt); `/clear` clears the conversation;
 //! - the other built-ins say they are not available in the IDE yet.
@@ -45,6 +47,8 @@ pub const Target = struct {
     plan_mode: ?*zg_ai.plan.PlanMode = null,
     agent_tools: ?*zg_ai.tools.AgentTools = null,
     subagents: []const zg_ai.subagent.defs.AgentDef = &.{},
+    /// Memory files and the context report.
+    context: ?*const zg_ai.context.ContextStack = null,
 };
 
 pub const AgentCommands = struct {
@@ -156,6 +160,14 @@ pub const AgentCommands = struct {
             const u = s.usage;
             return .{ .note = try std.fmt.allocPrint(arena, "{d} input and {d} output tokens ({d} read from cache), ${d:.2}.", .{ u.input, u.output, u.cache_read, @as(f64, @floatFromInt(s.cost_micros)) / 1e6 }) };
         }
+        if (eq(u8, name, "memory")) {
+            const cs = t.context orelse return .{ .note = "No memory files are loaded." };
+            return .{ .note = try memoryNote(arena, cs.memorySet()) };
+        }
+        if (eq(u8, name, "context")) {
+            const cs = t.context orelse return .{ .note = "No context report yet." };
+            return .{ .note = try contextNote(arena, cs.report()) };
+        }
         if (eq(u8, name, "agents")) {
             var out: std.ArrayList(u8) = .empty;
             try out.appendSlice(arena, "Subagents:\n");
@@ -189,6 +201,26 @@ pub const AgentCommands = struct {
         return out.items;
     }
 };
+
+fn memoryNote(arena: Allocator, set: *const zg_ai.context.memory.MemorySet) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, "Memory files:\n");
+    for (set.files) |f| try out.print(arena, "  {s}  ({t}, ~{d} tokens)\n", .{ f.path, f.scope, f.tokens });
+    if (set.files.len == 0) try out.appendSlice(arena, "  (none: add ZIGGURO.md, AGENTS.md or CLAUDE.md to the workspace)\n");
+    for (set.notes) |n| try out.print(arena, "  ! {s}\n", .{n});
+    return out.items;
+}
+
+fn contextNote(arena: Allocator, r: zg_ai.context.assembler.Report) ![]const u8 {
+    if (r.sections.len == 0) return "No request has been made yet.";
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(arena, "Context: ~{d} tokens", .{r.total_tokens});
+    if (r.window > 0) try out.print(arena, " of {d} ({d}%)", .{ r.window, r.total_tokens * 100 / r.window });
+    try out.appendSlice(arena, "\n");
+    for (r.sections) |sec| try out.print(arena, "  {s}  ~{d}\n", .{ sec.name, sec.tokens });
+    if (r.cleared > 0) try out.print(arena, "  ({d} tool results cleared)\n", .{r.cleared});
+    return out.items;
+}
 
 fn modeNames() []const u8 {
     comptime var s: []const u8 = "";
@@ -258,4 +290,21 @@ test "slash commands: a project command expands into the prompt" {
     try reg.execute(reg.lookup("ai.plan").?, null, .palette);
     try testing.expectEqualStrings("plan", seen.name[0..seen.len]);
     try testing.expect(seen.takes_args);
+}
+
+test "slash commands: /memory and /context notes" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const files = [_]zg_ai.context.memory.MemoryFile{.{ .path = "/w/ZIGGURO.md", .scope = .project, .text = "be brief", .version_hash = 1, .tokens = 2 }};
+    const set: zg_ai.context.memory.MemorySet = .{ .files = &files, .notes = &.{"rules/x.md: no frontmatter"} };
+    const m = try memoryNote(a, &set);
+    try testing.expect(std.mem.indexOf(u8, m, "/w/ZIGGURO.md  (project, ~2 tokens)") != null);
+    try testing.expect(std.mem.indexOf(u8, m, "! rules/x.md") != null);
+    try testing.expect(std.mem.indexOf(u8, try memoryNote(a, &.{}), "(none") != null);
+    const secs = [_]zg_ai.context.assembler.Section{ .{ .name = "system", .tokens = 300 }, .{ .name = "messages", .tokens = 700 } };
+    const c = try contextNote(a, .{ .sections = &secs, .total_tokens = 1000, .window = 200000 });
+    try testing.expect(std.mem.startsWith(u8, c, "Context: ~1000 tokens of 200000 (0%)"));
+    try testing.expect(std.mem.indexOf(u8, c, "messages  ~700") != null);
+    try testing.expectEqualStrings("No request has been made yet.", try contextNote(a, .{}));
 }
