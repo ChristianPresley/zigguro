@@ -1,0 +1,11 @@
+Unclosed paragraph
+
+Another **bold *both** italic* text
+Attributes with > inside
+Stray end tags are ignored.
+
+A lone < sign and a < b > c.
+
+After the comment.
+
+Unterminated tag at the end

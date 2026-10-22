@@ -144,6 +144,7 @@ pub const ToolRegistry = struct {
                     s.description = try a.dupe(u8, spec.description);
                     s.input_schema_json = try a.dupe(u8, spec.input_schema_json);
                     if (spec.output_schema_json) |o| s.output_schema_json = try a.dupe(u8, o);
+                    if (spec.native) |n| s.native = .{ .provider = n.provider, .json = try a.dupe(u8, n.json) };
                     if (kind == .mcp) {
                         s.origin = .{ .mcp = try a.dupe(u8, src.name) };
                         const full = try std.fmt.allocPrint(a, "{s}{s}", .{ src.namespace orelse try std.fmt.allocPrint(a, "mcp__{s}__", .{server}), try sanitize(a, spec.name) });
