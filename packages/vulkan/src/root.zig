@@ -27,19 +27,22 @@ pub const pipeline = @import("pipeline/root.zig");
 pub const present = @import("present/root.zig");
 /// The Vulkan 2D backend.
 pub const VkRenderer = @import("r2d/vk/VkRenderer.zig");
+/// The Vulkan backend with device-loss recovery (what `createRenderer`
+/// returns for `.vulkan`).
+pub const Recovering = @import("r2d/vk/Recovering.zig");
 /// Draw batching of the Vulkan backend.
 pub const vk_batch = @import("r2d/vk/batch.zig");
 /// GPU timestamps of the Vulkan backend.
 pub const GpuTimer = @import("r2d/vk/gpu_timing.zig");
 
 /// Creates the renderer for `opts`: `.vulkan` uses the Vulkan backend
-/// (headless targets for now; `error.VulkanUnavailable` without a usable
-/// driver or for other targets); `.auto` and `.software` use the software
+/// with device-loss recovery (`Recovering`; `error.VulkanUnavailable`
+/// without a usable driver or for unsupported targets); `.auto` and `.software` use the software
 /// renderer until the Vulkan presentation targets land (E02.F04).
 pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !r2d.Renderer {
     switch (opts.backend) {
         .vulkan => {
-            const v = VkRenderer.create(gpa, io, opts) catch |err| switch (err) {
+            const v = Recovering.create(gpa, io, opts) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
                     std.log.scoped(.zg_vulkan).info("Vulkan backend unavailable: {t}", .{err});
@@ -52,6 +55,27 @@ pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOpti
     }
     const s = try sw.SwRenderer.create(gpa, io, opts);
     return s.renderer();
+}
+
+/// What a render thread paces a Vulkan renderer with.
+pub const VkPacing = struct {
+    caps: present.FramePacer.Caps,
+    waiter: ?present.FramePacer.PresentWaiter,
+};
+
+/// The pacing inputs of `r` when it renders with Vulkan (from
+/// `createRenderer` or `VkRenderer.renderer`); null otherwise.
+pub fn vulkanPacing(r: r2d.Renderer) ?VkPacing {
+    if (Recovering.is(r)) {
+        const x = Recovering.of(r);
+        if (x.inner != .vulkan) return null;
+        return .{ .caps = x.pacerCaps(), .waiter = x.presentWaiter() };
+    }
+    if (VkRenderer.is(r)) {
+        const v = VkRenderer.of(r);
+        return .{ .caps = v.pacerCaps(), .waiter = v.presentWaiter() };
+    }
+    return null;
 }
 
 test "renderer: auto falls back to software" {
@@ -81,6 +105,7 @@ test {
     _ = vk_batch;
     _ = GpuTimer;
     _ = @import("r2d/vk/gpu_test.zig");
+    _ = @import("r2d/vk/recovering_gpu_test.zig");
     _ = shader_interface;
 }
 

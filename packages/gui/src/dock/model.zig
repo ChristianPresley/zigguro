@@ -309,7 +309,8 @@ pub const DockModel = struct {
     }
 
     /// Opens `p` in `g` at `index` (null: after the active tab; never
-    /// before the pinned tabs), moving it from where it was. A preview
+    /// before the pinned tabs), moving it from where it was. Within its
+    /// own group, `index` reorders it (counting it at its old place). A preview
     /// open replaces the group's preview tab, which closes.
     pub fn openIn(m: *DockModel, p: PanelRef, g: GroupId, index: ?u32, opts: OpenOptions) Allocator.Error!void {
         if (!m.panels.contains(p) or !m.groups.contains(g)) return;
@@ -321,11 +322,23 @@ pub const DockModel = struct {
     fn openInRaw(m: *DockModel, p: PanelRef, g: GroupId, index: ?u32, opts: OpenOptions) Allocator.Error!void {
         if (m.groupOf(p)) |from| {
             if (from == g) {
-                // Already here: just activate (and pin a preview opened
+                // Already here: move it to `index` within its pinned or
+                // unpinned run, and activate it (and pin a preview opened
                 // again as a normal tab).
                 const gr = m.groups.getPtr(g).?;
                 if (!opts.preview and gr.preview == p) gr.preview = null;
-                if (opts.activate) gr.active = @intCast(std.mem.indexOfScalar(PanelRef, gr.tabs.items, p).?);
+                var i: u32 = @intCast(std.mem.indexOfScalar(PanelRef, gr.tabs.items, p).?);
+                if (index) |want| {
+                    const active = gr.tabs.items[gr.active];
+                    const len: u32 = @intCast(gr.tabs.items.len);
+                    var to = if (want > i) want - 1 else want;
+                    to = if (i < gr.pinned) @min(to, gr.pinned - 1) else std.math.clamp(to, gr.pinned, len - 1);
+                    _ = gr.tabs.orderedRemove(i);
+                    gr.tabs.insertAssumeCapacity(to, p);
+                    gr.active = @intCast(std.mem.indexOfScalar(PanelRef, gr.tabs.items, active).?);
+                    i = to;
+                }
+                if (opts.activate) gr.active = i;
                 return;
             }
             m.removeTab(from, p);
@@ -507,6 +520,20 @@ pub const DockModel = struct {
         try m.record();
         for (sp.ratios.items, ratios) |*d, r| d.* = if (r > min_ratio and std.math.isFinite(r)) r else min_ratio;
         renormalize(sp.ratios.items);
+    }
+
+    /// Sets ratios without an undo step (live splitter drags; call
+    /// `checkpoint` once when the gesture starts).
+    pub fn setRatiosLive(m: *DockModel, s: SplitId, ratios: []const f32) void {
+        const sp = m.splits.getPtr(s) orelse return;
+        if (ratios.len != sp.ratios.items.len) return;
+        @memcpy(sp.ratios.items, ratios);
+        renormalize(sp.ratios.items);
+    }
+
+    /// Records an undo step for a gesture made of live changes.
+    pub fn checkpoint(m: *DockModel) Allocator.Error!void {
+        try m.record();
     }
 
     /// Shows only `g` in the center, or everything again.

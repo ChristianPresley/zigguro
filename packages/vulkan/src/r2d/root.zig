@@ -63,6 +63,8 @@ pub const rect = @import("rect.zig");
 pub const layers = @import("layers.zig");
 /// See `layers.zig`.
 pub const LayerKind = layers.LayerKind;
+/// CPU copies of textures for device-loss recovery.
+pub const TextureRegistry = @import("texture_registry.zig");
 /// The reference shading math.
 pub const shading = @import("shading.zig");
 /// See `shading.zig`.
@@ -78,4 +80,5 @@ test {
     _ = layers;
     _ = DrawList;
     _ = Renderer;
+    _ = TextureRegistry;
 }
