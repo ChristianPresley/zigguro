@@ -1,7 +1,8 @@
 //! zg_platform benchmarks (`zig build bench`): event ring push/pop and
 //! cross-thread wake round trips (E01.F01 budgets: ring < 30 ns per push+pop,
 //! wake < 100 µs p99), PTY spawn (E01.F06: < 5 ms on Linux), watch setup (>= 50k dirs/s)
-//! and XKB keymap parsing (E01.F04: < 2 ms for us.xkb in ReleaseFast).
+//! XKB keymap parsing (E01.F04: < 2 ms for us.xkb in ReleaseFast) and
+//! Wayland event dispatch (E01.F03: >= 2M msgs/s, so < 500 µs per 1000).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -27,6 +28,7 @@ fn register(b: *bench.Bench) !void {
     if (@import("builtin").os.tag == .linux) {
         try b.run("pty: spawn /bin/true and wait", b, ptySpawnTrue);
         try watchSetup(b);
+        try waylandDispatch(b);
     }
     try xkbParse(b);
 }
@@ -44,6 +46,43 @@ fn xkbParseOnce(text: []const u8, s: *State) void {
     for (0..s.iterations()) |_| {
         var km = zg_platform.xkb.Keymap.parse(s.allocator(), text) catch unreachable;
         km.deinit(s.allocator());
+    }
+}
+
+const wl = zg_platform.wayland.protocol;
+const wire = zg_platform.wayland.wire;
+
+const WlBench = struct {
+    c: *wire.Connection,
+    msgs: [1000 * 20]u8 align(4),
+};
+
+/// Decodes and dispatches 1000 `wl_pointer.motion` events from the
+/// receive buffer per iteration (no socket I/O).
+fn waylandDispatch(b: *bench.Bench) !void {
+    const fc = try zg_platform.wayland.testing.FakeCompositor.init(b.gpa);
+    defer fc.deinit();
+    const wb = try b.gpa.create(WlBench);
+    defer b.gpa.destroy(wb);
+    wb.c = try wire.Connection.fromFd(b.gpa, b.io, fc.client_fd);
+    defer wb.c.deinit();
+    const ptr = try wb.c.newId(wl.wl_pointer, .{ .ctx = wb, .on_event = onPointer });
+    var len: usize = 0;
+    while (len < wb.msgs.len) len += try wire.marshal.encode(wb.msgs[len..], @intFromEnum(ptr), 2, .{ @as(u32, 1), wl.Fixed.fromInt(1), wl.Fixed.fromInt(2) });
+    try b.run("wayland: dispatch 1000 pointer motions", wb, wlDispatchOnce);
+}
+
+fn onPointer(_: *anyopaque, _: *wire.Connection, _: u32, opcode: u16, body: []const u32, fds: *wire.FdQueue) anyerror!void {
+    bench.doNotOptimizeAway(try wl.wl_pointer.decodeEvent(opcode, body, fds));
+}
+
+fn wlDispatchOnce(wb: *WlBench, s: *State) void {
+    s.setBytes(wb.msgs.len);
+    for (0..s.iterations()) |_| {
+        @memcpy(wb.c.in[0..wb.msgs.len], &wb.msgs);
+        wb.c.in_start = 0;
+        wb.c.in_end = wb.msgs.len;
+        bench.doNotOptimizeAway(wb.c.dispatchPending() catch unreachable);
     }
 }
 
