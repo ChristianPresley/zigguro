@@ -14,6 +14,7 @@ const flatten = @import("flatten.zig");
 const embolden = @import("embolden.zig");
 const lcd = @import("lcd.zig");
 const sdf = @import("sdf.zig");
+const bitmap_strikes = @import("bitmap_strikes.zig");
 
 /// Largest bitmap side in pixels. Bigger requests fail with `TooLarge`;
 /// callers use SDF or tiles instead.
@@ -61,6 +62,10 @@ pub const RasterParams = struct {
     synth_oblique: bool = false,
     stem_darkening: bool = false,
     sdf_spread_px: f32 = 4,
+    /// Use the face's colour data for this glyph when it has some (bitmap
+    /// strikes; output `rgba8_premul`). A corrupt image falls back to the
+    /// outline. `mode` and the synthetic styles apply only to outlines.
+    color: bool = false,
 
     /// Output kind.
     pub const Mode = enum { gray, lcd_rgb, lcd_bgr, sdf };
@@ -186,6 +191,10 @@ pub const Rasterizer = struct {
     segs: std.ArrayList([2][2]f32) = .empty,
     cell_start: std.ArrayList(u32) = .empty,
     cell_items: std.ArrayList(u32) = .empty,
+    /// Float scratch for colour glyph resampling and compositing.
+    fbuf: std.ArrayList(f32) = .empty,
+    /// Decoded bitmap-strike PNGs.
+    strikes: bitmap_strikes.StrikeCache = .{},
 
     /// A rasterizer with empty buffers.
     pub fn init(gpa: Allocator) Rasterizer {
@@ -203,6 +212,8 @@ pub const Rasterizer = struct {
         r.segs.deinit(r.gpa);
         r.cell_start.deinit(r.gpa);
         r.cell_items.deinit(r.gpa);
+        r.fbuf.deinit(r.gpa);
+        r.strikes.deinit(r.gpa);
     }
 
     /// Rasterizes `path` (font units, y up) at `p`. An empty or non-finite
@@ -212,8 +223,20 @@ pub const Rasterizer = struct {
         return r.rasterizeMapped(path, pixelTransform(@floatFromInt(units_per_em), p), p);
     }
 
-    /// Outlines `gid` of `inst` and rasterizes it.
+    /// Rasterizes `gid` of `inst`: from a bitmap strike when `p.color` is
+    /// set and the face has one for the glyph, else from its outline.
     pub fn rasterizeGlyph(r: *Rasterizer, inst: *const variation.FaceInstance, gid: ot.GlyphId, p: RasterParams) Error!Bitmap {
+        if (p.color) {
+            const strike = ot.cbdt.cbdtGlyph(inst.face, gid, p.px_per_em) orelse ot.sbix.sbixGlyph(inst.face, gid, p.px_per_em);
+            if (strike) |g| {
+                if (bitmap_strikes.renderStrike(r, g, p.px_per_em, &r.strikes)) |bm| {
+                    return bm;
+                } else |e| switch (e) {
+                    error.Malformed, error.Unsupported => {}, // outline fallback
+                    else => return e,
+                }
+            }
+        }
         r.path.reset();
         try inst.outline(r.gpa, gid, &r.scratch, &r.path);
         const upem: f32 = @floatFromInt(inst.face.units_per_em);
