@@ -109,6 +109,17 @@ pub const PaintCx = struct {
         pc.push(.{ .image = .{ .tex = tex, .dst = dst, .uv = uv, .tint = tint, .radii = .all(radius) } });
     }
 
+    /// Clips the following ops to `r` until `popClip` (pairs must match
+    /// within one paint call).
+    pub fn pushClip(pc: *PaintCx, r: Rect, radius: f32) void {
+        pc.push(.{ .push_clip = .{ .r = r, .radii = .all(radius) } });
+    }
+
+    /// Ends the innermost `pushClip`.
+    pub fn popClip(pc: *PaintCx) void {
+        pc.push(.pop_clip);
+    }
+
     /// The focus ring around `r` when focus is keyboard-visible.
     pub fn focusRing(pc: *PaintCx, r: Rect, radius: f32) void {
         if (!pc.state.focus_visible) return;

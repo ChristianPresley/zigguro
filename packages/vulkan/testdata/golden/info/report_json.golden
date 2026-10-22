@@ -1,0 +1,52 @@
+{
+  "loader": {
+    "path": "libvulkan.so.1",
+    "version": "1.3.275"
+  },
+  "devices": [
+    {
+      "name": "Intel(R) Graphics",
+      "vendor": 32902,
+      "device": 42912,
+      "driver": "test",
+      "api": "1.3",
+      "type": "integrated_gpu",
+      "score": 420,
+      "reject": null
+    },
+    {
+      "name": "NVIDIA GeForce RTX 4060",
+      "vendor": 32903,
+      "device": 42913,
+      "driver": "test",
+      "api": "1.3",
+      "type": "discrete_gpu",
+      "score": 520,
+      "reject": null
+    },
+    {
+      "name": "Old GPU",
+      "vendor": 32904,
+      "device": 42914,
+      "driver": "test",
+      "api": "1.1",
+      "type": "discrete_gpu",
+      "score": null,
+      "reject": "api_too_old"
+    }
+  ],
+  "chosen": 1,
+  "caps": [
+    "core13",
+    "dual_src_blend",
+    "memory_budget",
+    "host_query_reset"
+  ],
+  "extensions": [
+    "VK_EXT_memory_budget"
+  ],
+  "losses": [
+    1000000,
+    2000000
+  ]
+}

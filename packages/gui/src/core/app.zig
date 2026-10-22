@@ -42,6 +42,32 @@ const Sub = struct {
     alive: bool = true,
 };
 
+/// The app's copy of the text clipboard. Widgets read and write it
+/// synchronously; the Host forwards local writes to the platform and
+/// refreshes it when the system clipboard changes.
+pub const Clipboard = struct {
+    text: std.ArrayList(u8) = .empty,
+    /// Set by `set`; the Host forwards the text and clears it.
+    pending_write: bool = false,
+
+    /// Replaces the text (from a widget: Copy or Cut).
+    pub fn set(c: *Clipboard, gpa: std.mem.Allocator, s: []const u8) void {
+        c.replace(gpa, s);
+        c.pending_write = true;
+    }
+
+    /// Replaces the text without forwarding it (from the platform).
+    pub fn replace(c: *Clipboard, gpa: std.mem.Allocator, s: []const u8) void {
+        c.text.clearRetainingCapacity();
+        c.text.appendSlice(gpa, s) catch c.text.clearRetainingCapacity();
+    }
+
+    /// The text.
+    pub fn get(c: *const Clipboard) []const u8 {
+        return c.text.items;
+    }
+};
+
 /// The process-wide UI state.
 pub const App = struct {
     gpa: std.mem.Allocator,
@@ -57,6 +83,11 @@ pub const App = struct {
     follow_system: bool = true,
     /// Set when `flushEffects` hit its cycle guard.
     effect_cycle: bool = false,
+    /// The text clipboard (kept in sync with the system's by the Host).
+    clipboard: Clipboard = .{},
+    /// Milliseconds on a monotonic clock: set by the Host on every pump,
+    /// by tests directly. Drives undo coalescing and other timing.
+    now_ms: u64 = 0,
 
     /// An empty app.
     pub fn init(gpa: std.mem.Allocator) App {
@@ -79,6 +110,7 @@ pub const App = struct {
         app.effects.deinit(app.gpa);
         app.effect_arena.deinit();
         app.entities.deinit();
+        app.clipboard.text.deinit(app.gpa);
     }
 
     /// Opens a window (see `Window.Options`).
