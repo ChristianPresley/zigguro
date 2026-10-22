@@ -3,6 +3,7 @@
 //! so there are no tombstones and the table never needs rebuilding.
 
 const std = @import("std");
+const fill = @import("fill.zig");
 
 /// One slot. `key` is the cell index + 1 (0 = empty).
 pub const Slot = extern struct { key: u32, a: u32, b: u32 };
@@ -83,7 +84,7 @@ pub const CellMap = struct {
 
     /// Empties the map.
     pub fn clear(m: CellMap, base: [*]u8, st: *State) void {
-        @memset(std.mem.sliceAsBytes(m.slots(base)), 0);
+        fill.bytes(std.mem.sliceAsBytes(m.slots(base)), 0);
         st.count = 0;
     }
 
