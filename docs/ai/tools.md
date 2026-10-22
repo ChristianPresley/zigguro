@@ -150,6 +150,11 @@ Every tool call goes through `tools/invoke.zig`, in this order:
 
 1. **Validation.** The input is checked against the tool's schema. An
    invalid input returns the errors to the model and nothing else runs.
+   Each error names the JSON pointer and the keyword that failed, for
+   example `/edits/0/old_string (type)`. The apps validate with E11's JSON
+   Schema 2020-12 validator through `zg_mcp.schema.toolValidator`, the
+   same code that checks MCP `tools/call` arguments. Without it (tests,
+   hosts without zg_mcp), `validate.permissive()` accepts any object.
 2. **Plan mode.** In plan mode a call that plan mode does not allow is
    refused here, before any hook runs, even when the model calls a tool
    the toolset left out.
