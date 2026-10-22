@@ -8,7 +8,7 @@ const cfg = @import("test_build_options");
 const step_names = [_][]const u8{
     "install",      "run",      "run-zg",        "test",   "test-tools", "test-build", "test-core",
     "test-jsonrpc", "test-net", "test-platform", "bench",  "fuzz",       "fmt-check",  "check-layers",
-    "new-package",  "cross",    "docs",          "prlint", "fuzz-list",
+    "new-package",  "cross",    "docs",          "prlint", "fuzz-list",  "keysym-gen",
 };
 
 fn zigBuild(gpa: std.mem.Allocator, cwd: []const u8, extra: []const []const u8) !std.process.RunResult {
