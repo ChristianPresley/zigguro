@@ -1,0 +1,6 @@
+1| tag:body punctuation.delimiter:, tag:html punctuation.bracket:{ property:margin punctuation.delimiter:: number:0 punctuation.delimiter:; punctuation.bracket:}
+2| type:.card operator:> type:.title operator:+ tag:p operator:~ tag:span punctuation.bracket:{ property:color punctuation.delimiter:: constant:red punctuation.delimiter:; punctuation.bracket:}
+3| label:#main type:.item attribute::hover attribute:::after punctuation.bracket:{ property:content punctuation.delimiter:: string:"" punctuation.delimiter:; punctuation.bracket:}
+4| tag:ul tag:li attribute::nth-child punctuation.bracket:( number:2n operator:+ number:1 punctuation.bracket:) punctuation.bracket:{ property:color punctuation.delimiter:: constant:blue punctuation.delimiter:; punctuation.bracket:}
+5| operator:* punctuation.bracket:{ property:box-sizing punctuation.delimiter:: constant:border-box punctuation.delimiter:; punctuation.bracket:}
+6| tag:a attribute::not punctuation.bracket:( type:.active punctuation.bracket:) attribute::focus-visible punctuation.bracket:{ property:outline punctuation.delimiter:: constant:none punctuation.delimiter:; punctuation.bracket:}
