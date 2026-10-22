@@ -38,7 +38,8 @@ registry with a `ToolsetConfig`:
 - Rules with a pattern, such as `run_command(rm *)`, are checked when the
   tool is called, not here.
 - Plan mode keeps only the read-only tools, plus `exit_plan_mode`,
-  `todo_write` and `ask_user`.
+  `todo_write`, `ask_user` and `run_command` for read-only commands (see
+  [Plan mode](#plan-mode)).
 
 **When the toolset is rebuilt.** The loop calls `list` while it builds a
 request, and the toolset is rebuilt only there. A change in the middle of a
@@ -141,17 +142,20 @@ Every tool call goes through `tools/invoke.zig`, in this order:
 
 1. **Validation.** The input is checked against the tool's schema. An
    invalid input returns the errors to the model and nothing else runs.
-2. **`PreToolUse` hooks.** A deny ends the call. An allow skips the
+2. **Plan mode.** In plan mode a call that plan mode does not allow is
+   refused here, before any hook runs, even when the model calls a tool
+   the toolset left out.
+3. **`PreToolUse` hooks.** A deny ends the call. An allow skips the
    approval prompt, but deny rules and plan mode still apply. An ask forces
    a prompt. An updated input is validated again.
-3. **Permission.** `deps.Permission` (E16 in the IDE) allows, denies or
+4. **Permission.** `deps.Permission` (E16 in the IDE) allows, denies or
    prompts. An input the user edits in the approval is validated again.
-4. **The handler.** A Zig error from the handler becomes an instruction to
+5. **The handler.** A Zig error from the handler becomes an instruction to
    the model, for example to try a smaller request after a timeout.
-5. **`PostToolUse` hooks** (`PostToolUseFailure` when the result is an
+6. **`PostToolUse` hooks** (`PostToolUseFailure` when the result is an
    error). Their extra context is appended to the result, and an updated
    output replaces it.
-6. **Bounding.** Text over 30,000 characters is cut to its first and last
+7. **Bounding.** Text over 30,000 characters is cut to its first and last
    2,000 characters, on line ends. The whole output is saved to
    `<spill dir>/<call id>.txt`, and the model is told the path so it can
    read the rest with `read_file`. `zg agent` saves under
@@ -262,3 +266,34 @@ The report is the child's last answer, cut to 4k tokens, with a trailer:
 Cancelling the parent cancels its children. Spawning a child and getting
 its report takes about 1.2 ms besides the model call (bench
 `ai.subagent_spawn`).
+
+## Plan mode
+
+`plan/plan_mode.zig` switches an agent in and out of plan mode. In plan
+mode:
+
+- the toolset keeps the read-only tools, `exit_plan_mode`, `todo_write`,
+  `ask_user`, `run_command` and `command_output`;
+- `run_command` runs only commands on the read-only allowlist
+  (`plan/readonly.zig`): `ls`, `cat`, `grep`, `find` without `-delete` or
+  `-exec`, `git status`, `git log`, `git diff` and similar, joined by pipes
+  only. Redirections, `;`, `&&`, background runs and command substitution
+  are refused;
+- the invoke pipeline and the headless permission engine both refuse
+  anything else, so a hallucinated `edit_file` call does not run either;
+- the system prompt carries the plan-mode addendum.
+
+`exit_plan_mode {plan}` publishes `plan_proposed` and asks the approver.
+The CLI approver shows the plan and asks `[a]` approve and auto-accept
+edits, `[y]` approve, or `[n]` keep planning, with optional feedback. On
+approval the plan, as the user edited it, is written atomically to
+`.zigguro/plans/<session>.md`, `plan_approved` is published and recorded
+in the session, the agent switches to the chosen mode, and the plan joins
+the system prompt ("Current plan") and the compaction re-injection. The
+session title becomes the plan's first heading. "Approve and clear
+context" also replaces the history with the plan before the next request,
+recorded as a compaction with trigger `plan_approved`. Keep planning
+returns the feedback to the model and stays in plan mode.
+
+`zg agent --permission-mode plan` and `-p` runs start in plan mode, with
+read-only commands allowed; they do not register `exit_plan_mode` yet.

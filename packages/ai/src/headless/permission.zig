@@ -14,6 +14,7 @@
 const std = @import("std");
 const proto = @import("zg_ai_proto");
 const deps = @import("../loop/deps.zig");
+const readonly = @import("../plan/readonly.zig");
 const ratelimit = @import("../provider/ratelimit.zig");
 const args_mod = @import("args.zig");
 const sj = @import("stream_json.zig");
@@ -232,12 +233,17 @@ pub const HeadlessPermission = struct {
         if (h.opts.base) |b| return b.decide(io, agent, spec, input_json, hint);
         const e = spec.effectiveEffects();
         const read_only = e.read_only and !e.writes_workspace and !e.executes and !e.network;
+        if (h.opts.mode == .plan) {
+            // Plan mode outranks allow rules: read-only commands and the
+            // plan-mode tools run, everything else is refused.
+            if (!readonly.planAllows(spec, input_json)) return .{ .deny = "plan mode is read-only" };
+            if (hint != .hook_ask) return .allow;
+        }
         if (hint != .hook_ask) {
             if (h.opts.mode == .bypass_permissions) return .allow;
             for (h.allowed) |r| if (r.matches(sa, spec.name, input_json)) return .allow;
             if (read_only) return .allow;
         }
-        if (h.opts.mode == .plan and !read_only) return .{ .deny = "plan mode is read-only" };
         if (hint == .hook_allow) return .allow;
         if (hint != .hook_ask and h.opts.mode == .accept_edits and !e.executes and !e.network and !e.open_world) return .allow;
         if (h.opts.mode != .dont_ask) if (h.opts.broker) |b| {

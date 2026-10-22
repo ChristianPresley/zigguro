@@ -127,6 +127,12 @@
       "cost_usd": 0.01125
     },
     {
+      "name": "plan_mode_readonly_command",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
       "name": "plan_mode_write_denied",
       "passed": true,
       "turns": 2,

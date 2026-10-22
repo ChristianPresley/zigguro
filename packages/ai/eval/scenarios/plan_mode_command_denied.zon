@@ -18,7 +18,7 @@
         .{
             .text = "Plan: clean up after approval.",
             .expect = .{
-                "Unknown tool: run_command",
+                "Plan mode is read-only: run_command was not run",
             },
         },
     },

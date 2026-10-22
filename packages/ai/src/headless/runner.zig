@@ -152,6 +152,7 @@ pub const Runner = struct {
             r.agent = try r.mgr.create(cfg);
         }
         r.session_text = proto.agent_ref.format(r.agent.ref.session);
+        r.agent.setPlanMode(r.opts.permission_mode == .plan);
 
         r.seen_seq = r.agent.bus.lastSeq();
         // Inline: output keeps event order with permission prompts written
