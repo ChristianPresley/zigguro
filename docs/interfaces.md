@@ -1799,6 +1799,8 @@ pub const Renderer = struct { // render, resize, createTexture, updateTexture, d
     pub fn render(r: Renderer, dl: *const DrawList) RenderError!FrameStats;
 };
 pub fn createRenderer(gpa: Allocator, io: std.Io, opts: RendererOptions) !Renderer;
+pub fn setProcessEnv(env: EnvOverrides) void;
+pub fn writeGpuReport(gpa: Allocator, io: std.Io, w: *std.Io.Writer, fmt: gpu.ReportFormat) !void;
 ```
 `RectF`, `Vec2`, `Radii`, `Insets` are logical pixels; `PxRect` and `Size`
 are physical. `Color` is `packed struct(u32) { r, g, b, a }`, straight
@@ -1810,6 +1812,15 @@ size and emits normalised coordinates).
 Deviation from the spec text: `createRenderer` lives in the package root, not
 in `r2d/Renderer.zig`, so `r2d` never imports a backend; `imageFiltered`,
 `damageAll` and `setGlyphPages` are additions.
+
+`createRenderer` merges the process environment set by `setProcessEnv`
+under `opts.env` (`EnvOverrides.over`: fields the caller set win).
+`ZG_RENDERER=vulkan|software|auto` (`EnvOverrides.renderer`) overrides
+`opts.backend`. `writeGpuReport` brings up a `Gpu` from the same
+environment and writes its report (`zigguro --doctor-gpu [--json]`), or
+`Vulkan unavailable: <error>` (JSON `{"error":...}`). The zigguro binary
+links libc on glibc Linux so the Vulkan loader can be loaded
+(ADR-E02-001); other targets stay libc-free.
 
 ### Threading
 A `DrawList` is built by one thread (UI) and read by the render thread after
