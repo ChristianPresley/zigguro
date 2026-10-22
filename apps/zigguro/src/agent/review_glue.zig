@@ -54,8 +54,9 @@
 //!
 //! `outcomes` tells the agent what review did with its changes
 //! (`bindOutcomes`; the sink queues reminders): pumped on each refresh,
-//! and flushed for a session when its turn ends, so they reach its next
-//! request.
+//! and flushed for a session when its turn ends (after taking in other
+//! processes' records), so they reach its next request. Decisions are
+//! journaled, so `zg review accept` reaches `zg agent` the same way.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
@@ -412,8 +413,13 @@ pub const ReviewGlue = struct {
             var t = g.turns.swapRemove(i);
             defer t.arena.deinit();
             defer g.flushLocked();
-            // Outcomes of earlier changes reach the session's next request.
-            if (g.outcomes) |o| _ = o.flush(agent.session);
+            // Outcomes of earlier changes, decided here or by `zg review`,
+            // reach the session's next request.
+            if (g.outcomes) |o| {
+                if (g.store) |st| _ = st.tail(g.sink.sink()) catch |e| log.warn("review store: reading other processes' records failed: {t}", .{e});
+                o.pump(nowMs(io));
+                _ = o.flush(agent.session);
+            }
             const id = try g.submitTurn(&t) orelse return null;
             if (g.feedback) |*f| f.pump();
             break :blk id;
@@ -595,6 +601,10 @@ pub const ReviewGlue = struct {
         errdefer if (g.approvals) |b| b.bind(null, 0);
         errdefer g.sink.approvals = null;
         const rep = try st.load(g.sink.sink());
+        // Decisions are journaled for other processes' outcome reporters,
+        // and theirs come back as events from now on.
+        _ = try g.q.subscribe(st.decidedListener());
+        g.sink.decided = true;
         if (g.approvals) |b| {
             b.journalRestored();
             // From now on only answers from `zg review approve`.

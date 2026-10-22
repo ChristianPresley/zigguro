@@ -247,6 +247,8 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer context.deinit();
     for (context.memorySet().notes) |n| err.print("zg agent: {s}\n", .{n}) catch {};
     context.install(&mgr.deps);
+    // Review outcomes reach the agent as reminders.
+    try review.bindOutcomes(&context.queue);
 
     // Hooks (Claude Code format): managed and user `hooks.json`, then the
     // workspace's `.zigguro/hooks.json` and `hooks.local.json`, and in
