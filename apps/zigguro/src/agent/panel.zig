@@ -50,6 +50,8 @@ pub const AgentPanel = struct {
     streaming: bool = false,
     status: ev.Status = .idle,
     input: zg_gui.w.TextBuffer,
+    /// Files dropped on the prompt become `@path` mentions.
+    prompt_hooks: zg_gui.w.PromptHooks = undefined,
     /// A cancel running off the UI thread.
     stopping: ?Io.Future(void) = null,
     /// `stopping` has finished.
@@ -140,6 +142,7 @@ pub const AgentPanel = struct {
         const p = try gpa.create(AgentPanel);
         errdefer gpa.destroy(p);
         p.* = .{ .gpa = gpa, .io = io, .app = app, .agent = agent, .sub = undefined, .input = try .init(gpa, "") };
+        p.prompt_hooks = .{ .ctx = p, .on_drop_files = dropFiles };
         errdefer p.input.deinit();
         p.sub = try agent.subscribe(.{ .ctx = p, .on_events = onEvents, .mode = .queued });
         return p;
@@ -411,7 +414,7 @@ pub const AgentPanel = struct {
 
         ui.open(.{ .style = .{ .dir = .column, .gap = 6, .padding = .all(10), .shrink = 0 } });
         defer ui.close();
-        const r = zg_gui.w.textField(ui, .{ .buffer = &p.input, .multiline = true, .max_rows = 6, .placeholder = "Message the agent (Enter sends)", .a11y_label = "Agent prompt" });
+        const r = zg_gui.w.textField(ui, .{ .buffer = &p.input, .multiline = true, .max_rows = 6, .placeholder = "Message the agent (Enter sends)", .a11y_label = "Agent prompt", .prompt = &p.prompt_hooks });
         p.input_node = ui.lastNode();
         if (r.submitted) {
             const text = p.gpa.dupe(u8, p.input.slice()) catch return;
@@ -422,6 +425,28 @@ pub const AgentPanel = struct {
         if (busy(p.status)) {
             if (zg_gui.w.button(ui, .{ .label = "Stop" }).clicked) p.stop();
         }
+    }
+
+    fn dropFiles(ctx: *anyopaque, paths: []const []const u8) void {
+        const p: *AgentPanel = @ptrCast(@alignCast(ctx));
+        p.mentionFiles(paths) catch {};
+    }
+
+    /// Appends an `@path` mention per path to the prompt (quoted when the
+    /// path has spaces), then a space to keep typing.
+    pub fn mentionFiles(p: *AgentPanel, paths: []const []const u8) !void {
+        var add: std.ArrayList(u8) = .empty;
+        defer add.deinit(p.gpa);
+        const cur = p.input.slice();
+        if (cur.len > 0 and !std.ascii.isWhitespace(cur[cur.len - 1])) try add.append(p.gpa, ' ');
+        for (paths) |path| {
+            if (std.mem.indexOfAny(u8, path, " \t\"") != null) {
+                try add.print(p.gpa, "@\"{s}\" ", .{path});
+            } else try add.print(p.gpa, "@{s} ", .{path});
+        }
+        const end = p.input.len();
+        try p.input.replace(.{ end, end }, add.items);
+        if (p.on_change) |c| c.f(c.ctx);
     }
 
     fn item(p: *AgentPanel, ui: *Ui, it: *Item) void {
@@ -859,4 +884,26 @@ test "agent panel: slash commands answer in the transcript; /clear starts over" 
 
     try p.submit("/clear");
     try testing.expectEqual(@as(usize, 0), p.items.items.len);
+}
+
+test "agent panel: dropped files become mentions in the prompt" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &.{}, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var tools: zg_ai.loop.deps.StaticTools = .{ .specs = &.{} };
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &models, .providers = .fixed(&provider), .tools = tools.tools() });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+    const t = try zg_gui.testing.TestApp.init(gpa, .{});
+    defer t.deinit();
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+
+    try p.input.setText("look at");
+    p.prompt_hooks.on_drop_files.?(p.prompt_hooks.ctx, &.{ "/tmp/a b.txt", "/src/x.zig" });
+    try testing.expectEqualStrings("look at @\"/tmp/a b.txt\" @/src/x.zig ", p.input.slice());
 }
