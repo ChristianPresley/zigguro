@@ -360,9 +360,11 @@ pub const Window = struct {
             w.stats.layout = w.engine.stats;
         }
 
-        // PAINT and PRESENT.
-        w.paintPass();
-        w.present();
+        // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
+        if (w.store.paint_pending or w.full_repaint) {
+            w.paintPass();
+            w.present();
+        }
         _ = w.frame_arena.reset(.retain_capacity);
         if (w.ui.oom or w.engine.oom) {
             w.ui.oom = false;
@@ -425,6 +427,7 @@ pub const Window = struct {
         w.hits.finish(w.gpa, w.size) catch {};
         w.stats.ops = @intCast(new.ops.items.len);
         w.full_repaint = false;
+        w.store.paint_pending = false;
     }
 
     fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect) void {
