@@ -1,5 +1,6 @@
 //! zg_config: settings, commands, context keys, keymaps and the extension
-//! protocol (E15). Headless: usable from `apps/zg` as well as the GUI.
+//! protocol (E15). Headless, so usable from `apps/zg`, except `ui`, which
+//! connects it to zg_gui windows.
 
 const std = @import("std");
 
@@ -52,6 +53,9 @@ pub const import_vscode = @import("keymap/import_vscode.zig");
 /// (also published alone as the `zg_ext_sdk` module).
 pub const zep = @import("zep/root.zig");
 
+/// The keymap adapter and command palette for zg_gui windows.
+pub const ui = @import("ui/root.zig");
+
 /// This package's settings declarations (aggregate with `schema.SchemaRegistry.comptimeInit`).
 pub const settings_schema = @import("settings_schema.zon");
 
@@ -64,6 +68,7 @@ test {
     _ = @import("commands/registry_test.zig");
     _ = @import("keymap/resolver_test.zig");
     _ = @import("keymap/presets_test.zig");
+    _ = @import("ui/ui_test.zig");
 }
 
 test "settings_schema: aggregates and resolver options read it" {
