@@ -3,11 +3,12 @@
 //! and after. Undo accept and checkpoint restore start from these; the
 //! contents themselves are in `Blobs`.
 //!
-//! A rename is recorded as two files: the new path created, the old one
-//! deleted.
+//! A rename is recorded as two files: the new path created (with `from`),
+//! the old one deleted.
 //!
-//! Owner thread only, like the queue. The store journals each record
-//! (`Recorder`) and replays it with `restore`.
+//! Owner thread only, like the queue, except `lastId`, which any thread
+//! may read (checkpoints). The store journals each record (`Recorder`)
+//! and replays it with `restore`.
 
 const std = @import("std");
 const ids = @import("ids.zig");
@@ -18,6 +19,9 @@ const ChangesetId = ids.ChangesetId;
 
 pub const ApplyFile = struct {
     path: []const u8,
+    /// This write is the new side of a rename from that path (whose
+    /// delete is another file of the record).
+    from: ?[]const u8 = null,
     /// Null: there was no file.
     pre: ?BlobHash,
     /// Null: the file was deleted.
@@ -59,7 +63,7 @@ pub const History = struct {
     arena: std.heap.ArenaAllocator,
     applies: std.ArrayList(Apply) = .empty,
     recorder: ?Recorder = null,
-    next_id: u64 = 1,
+    next_id: std.atomic.Value(u64) = .init(1),
 
     pub fn init(gpa: Allocator, recorder: ?Recorder) History {
         return .{ .gpa = gpa, .arena = .init(gpa), .recorder = recorder };
@@ -74,9 +78,9 @@ pub const History = struct {
     /// Copies `a` in under a new id, journals it and returns the id.
     pub fn record(h: *History, a: Apply) Allocator.Error!u64 {
         var c = try h.copy(a);
-        c.id = h.next_id;
+        c.id = h.next_id.load(.monotonic);
         try h.applies.append(h.gpa, c);
-        h.next_id += 1;
+        h.next_id.store(c.id + 1, .release);
         if (h.recorder) |r| r.apply(r.ctx, &h.applies.items[h.applies.items.len - 1]);
         return c.id;
     }
@@ -90,7 +94,12 @@ pub const History = struct {
         var i = h.applies.items.len;
         while (i > 0 and h.applies.items[i - 1].id > c.id) i -= 1;
         try h.applies.insert(h.gpa, i, c);
-        h.next_id = @max(h.next_id, c.id + 1);
+        if (c.id >= h.next_id.load(.monotonic)) h.next_id.store(c.id + 1, .release);
+    }
+
+    /// The id of the newest record (0 when none); any thread.
+    pub fn lastId(h: *const History) u64 {
+        return h.next_id.load(.acquire) - 1;
     }
 
     pub fn get(h: *const History, id: u64) ?*const Apply {
@@ -127,6 +136,7 @@ pub const History = struct {
         for (a.files, files) |f, *o| {
             o.* = f;
             o.path = try ar.dupe(u8, f.path);
+            if (f.from) |x| o.from = try ar.dupe(u8, x);
         }
         var c = a;
         c.files = files;

@@ -21,6 +21,9 @@
 //! A rename is a write of the new path and a delete of the old one; it
 //! lands with the first hunk taken (or the file accepted).
 //!
+//! `undoApply` reverts an apply with a three-way merge per file and
+//! reopens the changes it landed (undo accept).
+//!
 //! Runs on the queue's owner thread and does its I/O there. Not yet:
 //! open documents through E05 (the app routes them itself for now), E08
 //! FileOps transactions, E09 provenance, line-level selection, and
@@ -31,6 +34,8 @@ const zg_core = @import("zg_core");
 const model = @import("../model/root.zig");
 const selection = @import("selection.zig");
 const files_mod = @import("files.zig");
+const txn_mod = @import("txn.zig");
+const revert = @import("revert.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -42,6 +47,8 @@ const Files = files_mod.Files;
 const Entry = files_mod.Entry;
 const SelectionInput = selection.SelectionInput;
 const SelectionResult = selection.SelectionResult;
+const Txn = txn_mod.Txn;
+const Op = txn_mod.Op;
 
 pub const Whole = enum { accept, reject };
 
@@ -93,7 +100,22 @@ pub const Error = error{
     SourceMissing,
     /// A base or binary blob is not in the store.
     MissingBlob,
+    UnknownApply,
+    /// The record is an undo or a restore.
+    NotAnApply,
+    AlreadyUndone,
+    /// A later apply of the same changeset must be undone first.
+    NotLatest,
 } || selection.Error;
+
+pub const UndoResult = union(enum) {
+    /// The `History` undo record.
+    ok: u64,
+    /// Files where the revert would overwrite later edits; nothing was
+    /// written. Allocated in the caller's arena.
+    conflicts: []const revert.Conflict,
+    failed: txn_mod.Failure,
+};
 
 pub const Applier = struct {
     gpa: Allocator,
@@ -114,8 +136,6 @@ pub const Applier = struct {
         /// Something of this file reaches the disk.
         lands: bool = false,
     };
-
-    const Op = struct { path: []const u8, new: ?[]const u8, exec: ?bool };
 
     pub fn init(gpa: Allocator, io: Io, q: *model.Queue, files: Files, history: *model.History) Applier {
         return .{ .gpa = gpa, .io = io, .q = q, .files = files, .history = history };
@@ -154,35 +174,22 @@ pub const Applier = struct {
         }
 
         // 2. Preflight.
-        var pre: std.StringArrayHashMapUnmanaged(?Entry) = .empty;
-        var ops: std.ArrayList(Op) = .empty;
+        var t: Txn = .init(arena, a.files);
         for (plans) |*p| {
             if (!p.lands) continue;
             const fc = &cs.files[p.idx];
-            const src = srcPath(fc);
-            const cur = try a.readOnce(arena, &pre, src);
+            const cur = try t.read(srcPath(fc));
             switch (fc.op) {
-                .rename => if (try a.readOnce(arena, &pre, fc.path) != null) return error.TargetExists,
+                .rename => if (try t.read(fc.path) != null) return error.TargetExists,
                 else => {},
             }
             try checkBase(fc, cur);
-            try a.opsFor(arena, fc, p, cur, &ops);
+            try a.opsFor(arena, fc, p, cur, &t);
         }
-        for (pre.values()) |e| if (e) |x| {
-            _ = try a.q.blobs.put(x.bytes);
-        };
-        for (ops.items) |op| if (op.new) |b| {
-            _ = try a.q.blobs.put(b);
-        };
+        try t.saveImages(a.q.blobs);
 
         // 3. Execute.
-        for (ops.items, 0..) |op, i| {
-            const r = if (op.new) |b| a.files.write(op.path, b, op.exec) else a.files.delete(op.path);
-            r catch |err| {
-                const rolled = a.revert(ops.items[0..i], &pre);
-                return .{ .failed = .{ .path = failedPath(cs, op.path), .err = err, .rolled_back = rolled } };
-            };
-        }
+        if (t.run()) |f| return .{ .failed = .{ .path = failedPath(cs, f.path), .err = f.err, .rolled_back = f.rolled_back } };
 
         // 4. Record.
         var hunk_count: u32 = 0;
@@ -194,18 +201,8 @@ pub const Applier = struct {
             if (to == .applied or to == .rejected) cs.decided_ms = nowMs(a.io);
         }
         var apply_id: ?u64 = null;
-        if (ops.items.len > 0) {
-            const recs = try arena.alloc(model.ApplyFile, ops.items.len);
-            for (ops.items, recs) |op, *r| {
-                const before = pre.get(op.path) orelse null;
-                r.* = .{
-                    .path = op.path,
-                    .pre = if (before) |b| model.blobHash(b.bytes) else null,
-                    .post = if (op.new) |b| model.blobHash(b) else null,
-                    .pre_exec = if (before) |b| b.executable else false,
-                    .post_exec = if (op.new != null) op.exec orelse (if (before) |b| b.executable else false) else false,
-                };
-            }
+        if (t.ops.items.len > 0) {
+            const recs = try t.records();
             const ref = cs.prov.origin.agentRef();
             apply_id = try a.history.record(.{
                 .cs = cs.id,
@@ -219,6 +216,102 @@ pub const Applier = struct {
         if (apply_id) |id| a.q.emit(.{ .applied = .{ .cs = cs.id, .apply = id } });
         if (to != from) a.q.emit(.{ .state = .{ .cs = cs.id, .from = from, .to = to } });
         return .{ .ok = .{ .apply = apply_id, .files = @intCast(plans.len), .hunks = hunk_count } };
+    }
+
+    /// Undo accept: reverts apply `apply_id` with a three-way merge per
+    /// file (later edits on other lines survive) and reopens what it
+    /// landed: each text file gets back the edits it had (the line diff
+    /// from preimage to postimage, then whatever was still pending), its
+    /// hunks undecided. Only the newest apply of a changeset can be
+    /// undone. Results are allocated in `arena`.
+    pub fn undoApply(a: *Applier, arena: Allocator, apply_id: u64) anyerror!UndoResult {
+        const rec = a.history.get(apply_id) orelse return error.UnknownApply;
+        if (rec.kind != .apply) return error.NotAnApply;
+        if (a.history.undone(apply_id)) return error.AlreadyUndone;
+        const cs: ?*Changeset = if (rec.cs) |id| a.q.getMut(id) else null;
+        if (cs != null) {
+            const last = a.history.lastApplyOf(rec.cs.?) orelse return error.NotLatest;
+            if (last.id != apply_id) return error.NotLatest;
+        }
+        const targets = try arena.alloc(revert.Target, rec.files.len);
+        const steps = try arena.alloc(revert.Step, rec.files.len);
+        for (rec.files, targets, steps) |f, *tg, *st| {
+            st.* = .{ .pre = f.pre, .pre_exec = f.pre_exec, .post = f.post, .post_exec = f.post_exec };
+            tg.* = .{ .path = f.path, .steps = st[0..1] };
+        }
+        var t: Txn = .init(arena, a.files);
+        const p = try revert.plan(a.gpa, a.q.blobs, &t, targets);
+        if (p.conflicts.len > 0) return .{ .conflicts = p.conflicts };
+        try t.saveImages(a.q.blobs);
+        if (t.run()) |f| return .{ .failed = f };
+        const undo_id = try a.history.record(.{
+            .kind = .undo,
+            .cs = rec.cs,
+            .undoes = apply_id,
+            .session = rec.session,
+            .created_ms = nowMs(a.io),
+            .files = try t.records(),
+        });
+        if (cs) |c| {
+            // `rec` may have moved: the history grew.
+            try a.reopen(arena, c, a.history.get(apply_id).?);
+            const from = c.state;
+            c.state = model.state.derivedState(c);
+            c.decided_ms = null;
+            a.q.persist(c.id);
+            a.q.emit(.{ .updated = c.id });
+            if (c.state != from) a.q.emit(.{ .state = .{ .cs = c.id, .from = from, .to = c.state } });
+        }
+        return .{ .ok = undo_id };
+    }
+
+    /// Puts back what `rec` landed of `cs` as undecided changes.
+    fn reopen(a: *Applier, arena: Allocator, cs: *Changeset, rec: *const model.Apply) !void {
+        var cs_arena = cs.arena.promote(a.gpa);
+        defer cs.arena = cs_arena.state;
+        const ca = cs_arena.allocator();
+        for (cs.files) |*fc| {
+            const e = findFile(rec, fc.path) orelse continue;
+            const landed_before = a.landedBefore(cs.id, rec.id, fc.path);
+            switch (fc.content) {
+                .text => |*tx| if (e.post) |post_hash| {
+                    const old_hash = if (e.from) |from| (findFile(rec, from) orelse return error.InvalidRecord).pre else e.pre;
+                    const old: []const u8 = if (old_hash) |h| try a.q.blobs.get(arena, h) orelse return error.MissingBlob else "";
+                    const new = try a.q.blobs.get(arena, post_hash) orelse return error.MissingBlob;
+                    var back = try model.merge3.lineChangeSet(a.gpa, old, new);
+                    defer back.deinit();
+                    var edits = if (tx.edits.base_len == new.len) try back.compose(&tx.edits, a.gpa) else try back.clone(a.gpa);
+                    errdefer edits.deinit();
+                    var lines: zg_core.LineIndex = try .build(a.gpa, old);
+                    defer lines.deinit(a.gpa);
+                    var o = a.q.hunk_options;
+                    o.previous = &.{};
+                    const hs = try model.deriveHunks(a.gpa, old, &lines, &edits, o);
+                    defer a.gpa.free(hs);
+                    fc.hunks = try ca.dupe(model.Hunk, hs);
+                    tx.edits.deinit();
+                    tx.edits = edits;
+                    tx.base = if (old_hash != null) model.BaseRef.of(old) else null;
+                    fc.op = if (e.from) |from|
+                        .{ .rename = .{ .from = try ca.dupe(u8, from) } }
+                    else if (old_hash == null)
+                        .{ .create = .{ .executable = e.post_exec } }
+                    else
+                        .modify;
+                },
+                else => {},
+            }
+            fc.state = if (landed_before) .partially_applied else .pending;
+        }
+    }
+
+    /// Whether an earlier, still standing apply of `cs` touched `path`.
+    fn landedBefore(a: *const Applier, cs: ChangesetId, apply_id: u64, path: []const u8) bool {
+        for (a.history.items()) |r| {
+            if (r.kind != .apply or r.cs != cs or r.id == apply_id or a.history.undone(r.id)) continue;
+            if (findFile(&r, path) != null) return true;
+        }
+        return false;
     }
 
     fn plan(a: *Applier, arena: Allocator, fc: *FileChange, it: ApplyItem, p: *Plan) !void {
@@ -248,7 +341,7 @@ pub const Applier = struct {
     }
 
     /// The disk operations of a landing file.
-    fn opsFor(a: *Applier, arena: Allocator, fc: *const FileChange, p: *const Plan, cur: ?Entry, ops: *std.ArrayList(Op)) !void {
+    fn opsFor(a: *Applier, arena: Allocator, fc: *const FileChange, p: *const Plan, cur: ?Entry, t: *Txn) !void {
         const exec_now: ?bool = if (cur) |c| c.executable else null;
         switch (fc.content) {
             .text => {
@@ -257,7 +350,7 @@ pub const Applier = struct {
                     .rename => exec_now,
                     else => null,
                 };
-                try ops.append(arena, .{ .path = fc.path, .new = p.new_text, .exec = exec });
+                try t.add(.{ .path = fc.path, .new = p.new_text, .exec = exec, .from = renamedFrom(fc) });
             },
             .binary => |b| {
                 const bytes = try a.q.blobs.get(arena, b.new) orelse return error.MissingBlob;
@@ -266,43 +359,19 @@ pub const Applier = struct {
                     .rename => exec_now,
                     else => null,
                 };
-                try ops.append(arena, .{ .path = fc.path, .new = bytes, .exec = exec });
+                try t.add(.{ .path = fc.path, .new = bytes, .exec = exec, .from = renamedFrom(fc) });
             },
             .none => switch (fc.op) {
                 .delete => {
-                    try ops.append(arena, .{ .path = fc.path, .new = null, .exec = null });
+                    try t.add(.{ .path = fc.path, .new = null });
                     return;
                 },
-                .set_executable => |on| try ops.append(arena, .{ .path = fc.path, .new = cur.?.bytes, .exec = on }),
-                .rename => try ops.append(arena, .{ .path = fc.path, .new = cur.?.bytes, .exec = exec_now }),
+                .set_executable => |on| try t.add(.{ .path = fc.path, .new = cur.?.bytes, .exec = on }),
+                .rename => |r| try t.add(.{ .path = fc.path, .new = cur.?.bytes, .exec = exec_now, .from = r.from }),
                 .create, .modify => unreachable,
             },
         }
-        if (fc.op == .rename) try ops.append(arena, .{ .path = fc.op.rename.from, .new = null, .exec = null });
-    }
-
-    fn readOnce(a: *Applier, arena: Allocator, pre: *std.StringArrayHashMapUnmanaged(?Entry), path: []const u8) !?Entry {
-        const gop = try pre.getOrPut(arena, path);
-        if (!gop.found_existing) gop.value_ptr.* = try a.files.read(arena, path);
-        return gop.value_ptr.*;
-    }
-
-    /// Reverts `done` from the preimages, newest first; false if any
-    /// revert failed.
-    fn revert(a: *Applier, done: []const Op, pre: *const std.StringArrayHashMapUnmanaged(?Entry)) bool {
-        var ok = true;
-        var i = done.len;
-        while (i > 0) {
-            i -= 1;
-            const path = done[i].path;
-            const before = pre.get(path) orelse null;
-            const r = if (before) |b| a.files.write(path, b.bytes, b.executable) else a.files.delete(path);
-            r catch |e| {
-                std.log.scoped(.zg_review).warn("apply rollback: {s} not restored: {t}", .{ path, e });
-                ok = false;
-            };
-        }
-        return ok;
+        if (fc.op == .rename) try t.add(.{ .path = fc.op.rename.from, .new = null });
     }
 
     /// Moves a file's state and content past this apply; returns the
@@ -347,8 +416,20 @@ pub const Applier = struct {
     }
 };
 
+fn findFile(rec: *const model.Apply, path: []const u8) ?model.ApplyFile {
+    for (rec.files) |f| if (std.mem.eql(u8, f.path, path)) return f;
+    return null;
+}
+
 fn isOpen(s: model.FileState) bool {
     return s == .pending or s == .partially_applied;
+}
+
+fn renamedFrom(fc: *const FileChange) ?[]const u8 {
+    return switch (fc.op) {
+        .rename => |r| r.from,
+        else => null,
+    };
 }
 
 fn srcPath(fc: *const FileChange) []const u8 {

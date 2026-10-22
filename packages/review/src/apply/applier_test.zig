@@ -278,3 +278,99 @@ test "applier: through DirFiles on a real directory" {
     try testing.expectEqualStrings("a\n.\nB\n.\nc\n", try tmp.dir.readFile(testing.io, "f.txt", &buf));
     try testing.expectEqualStrings("new\n", try tmp.dir.readFile(testing.io, "sub/dir/n.txt", &buf));
 }
+
+test "applier: undo accept keeps a later user edit and reopens the hunks" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const id = try threeHunks(&fx);
+    const r = try fx.ap.apply(.{ .cs = id, .items = &.{.{ .file = 0, .input = .{ .accept = &.{0}, .reject = &.{2} } }} });
+    try fx.expectDisk("f.txt", "A\n.\nb\n.\nc\n");
+    try fx.disk.put("f.txt", "A\nuser\nb\n.\nc\n", false);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const u = try fx.ap.undoApply(arena.allocator(), r.ok.apply.?);
+    try fx.expectDisk("f.txt", "a\nuser\nb\n.\nc\n");
+    try testing.expect(fx.history.undone(r.ok.apply.?));
+    try testing.expectEqual(model.ApplyKind.undo, fx.history.get(u.ok).?.kind);
+    try testing.expectEqual(@as(?*const model.Apply, null), fx.history.lastApplyOf(id));
+    const f = fx.cs(id).files[0];
+    try testing.expectEqual(model.State.pending, fx.cs(id).state);
+    try testing.expectEqual(model.FileState.pending, f.state);
+    // Hunk 0 is back; the rejected hunk 2 stays dropped.
+    try testing.expectEqual(@as(usize, 2), f.hunks.len);
+    for (f.hunks) |h| try testing.expectEqual(model.Decision.undecided, h.decision);
+    try testing.expectEqualSlices(u8, &model.blobHash(three), &f.content.text.base.?.hash);
+    const want = try f.content.text.edits.applyToSlice(gpa, three);
+    defer gpa.free(want);
+    try testing.expectEqualStrings("A\n.\nB\n.\nc\n", want);
+    try testing.expectError(error.AlreadyUndone, fx.ap.undoApply(arena.allocator(), r.ok.apply.?));
+}
+
+test "applier: undo accept reports overlapping edits and writes nothing" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const id = try threeHunks(&fx);
+    const r = try fx.ap.acceptAll(id);
+    try fx.disk.put("f.txt", "A!\n.\nB\n.\nC\n", false);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const before = fx.disk.mutations;
+    const u = try fx.ap.undoApply(arena.allocator(), r.ok.apply.?);
+    try testing.expectEqual(@as(usize, 1), u.conflicts.len);
+    try testing.expectEqual(@as(u32, 1), u.conflicts[0].regions);
+    try testing.expectEqual(before, fx.disk.mutations);
+    try testing.expectEqual(model.State.applied, fx.cs(id).state);
+}
+
+test "applier: only the newest apply of a changeset can be undone" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const id = try threeHunks(&fx);
+    const r1 = try fx.ap.apply(.{ .cs = id, .items = &.{.{ .file = 0, .input = .{ .accept = &.{0} } }} });
+    const r2 = try fx.ap.acceptAll(id);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    try testing.expectError(error.NotLatest, fx.ap.undoApply(arena.allocator(), r1.ok.apply.?));
+    _ = try fx.ap.undoApply(arena.allocator(), r2.ok.apply.?);
+    try fx.expectDisk("f.txt", "A\n.\nb\n.\nc\n");
+    try testing.expectEqual(model.State.partially_applied, fx.cs(id).state);
+    try testing.expectEqual(model.FileState.partially_applied, fx.cs(id).files[0].state);
+    _ = try fx.ap.undoApply(arena.allocator(), r1.ok.apply.?);
+    try fx.expectDisk("f.txt", three);
+    try testing.expectEqual(model.State.pending, fx.cs(id).state);
+    try testing.expectEqual(@as(usize, 3), fx.cs(id).files[0].hunks.len);
+    // Accepting again lands the same text.
+    _ = try fx.ap.acceptAll(id);
+    try fx.expectDisk("f.txt", "A\n.\nB\n.\nC\n");
+}
+
+test "applier: undo of a mixed apply restores every file and reopens every op" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const id = try mixed(&fx);
+    const r = try fx.ap.acceptAll(id);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    _ = try fx.ap.undoApply(arena.allocator(), r.ok.apply.?);
+    try fx.expectDisk("m.txt", "one\ntwo\n");
+    try fx.expectDisk("new/c.txt", null);
+    try fx.expectDisk("d.txt", "gone\n");
+    try fx.expectDisk("old.txt", "moved\n");
+    try fx.expectDisk("renamed.txt", null);
+    try testing.expect(fx.disk.isExec("old.txt"));
+    try testing.expect(!fx.disk.isExec("run.sh"));
+    const c = fx.cs(id);
+    try testing.expectEqual(model.State.pending, c.state);
+    for (c.files) |f| try testing.expectEqual(model.FileState.pending, f.state);
+    try testing.expect(c.files[1].op == .create);
+    try testing.expect(c.files[3].op == .rename);
+    _ = try fx.ap.acceptAll(id);
+    try fx.expectDisk("m.txt", "ONE\ntwo\n");
+    try fx.expectDisk("new/c.txt", "created\n");
+    try fx.expectDisk("renamed.txt", "moved\n");
+    try testing.expect(fx.disk.isExec("run.sh"));
+}
