@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:a operator:= string:"double  string.escape:\" string:quoted string.escape:\" string:  string.escape:\n string:" punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= string:'single  string.escape:\' string:quoted string.escape:\' string:  string.escape:\x41 string:  string.escape:\u{1F600} string:' punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= string:"unterminated
+4| keyword.storage:const variable:d operator:= string:"continued  string.escape:\
+5| string:on the next line" punctuation.delimiter:;
+6| keyword.storage:const variable:e operator:= string:'' punctuation.delimiter:;
