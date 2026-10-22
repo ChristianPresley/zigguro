@@ -195,3 +195,22 @@ test "host draws real glyphs through FontText" {
         try std.testing.expectEqualSlices(u8, &.{ bg.r, bg.g, bg.b }, pixel(f, @intCast(x), @intCast(y))[0..3]);
     };
 }
+
+test "host: pacing follows the renderer" {
+    const gpa = std.testing.allocator;
+    const zg_vulkan = @import("zg_vulkan");
+    const pacingFor = @import("host.zig").pacingFor;
+    var sink: zg_platform.surface.HeadlessSink = .{ .ptr = undefined, .write = undefined };
+    // Software renderers pace on the platform's frame events.
+    const sw = try zg_vulkan.createRenderer(gpa, std.testing.io, .{ .target = .{ .headless = &sink }, .backend = .software });
+    defer sw.deinit();
+    const p = pacingFor(sw);
+    try std.testing.expectEqual(zg_vulkan.present.FramePacer.Mode.platform_frame, p.mode);
+    try std.testing.expect(p.waiter == null);
+    // A headless Vulkan target has no presentation engine: no waits.
+    const vk = zg_vulkan.createRenderer(gpa, std.testing.io, .{ .target = .{ .headless = &sink }, .backend = .vulkan }) catch return;
+    defer vk.deinit();
+    const q = pacingFor(vk);
+    try std.testing.expectEqual(zg_vulkan.present.FramePacer.Mode.immediate, q.mode);
+    try std.testing.expect(q.waiter == null);
+}
