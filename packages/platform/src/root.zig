@@ -87,6 +87,24 @@ pub const process = struct {
     pub const spawn_linux = if (@import("builtin").os.tag == .linux) @import("process/spawn_linux.zig") else struct {};
 };
 
+/// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
+pub const dbus = struct {
+    /// See `dbus/signature.zig`.
+    pub const signature = @import("dbus/signature.zig");
+    /// See `dbus/marshal.zig`.
+    pub const marshal = @import("dbus/marshal.zig");
+    /// See `dbus/variant.zig`.
+    pub const Value = @import("dbus/variant.zig").Value;
+    /// See `dbus/message.zig`.
+    pub const message = @import("dbus/message.zig");
+    /// See `dbus/auth.zig`.
+    pub const auth = @import("dbus/auth.zig");
+    /// See `dbus/conn.zig`.
+    pub const conn = if (@import("builtin").os.tag == .linux) @import("dbus/conn.zig") else struct {};
+    /// See `dbus/conn.zig`.
+    pub const Bus = if (@import("builtin").os.tag == .linux) conn.Bus else void;
+};
+
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
     /// See `queue/event_ring.zig`.
@@ -152,6 +170,7 @@ test {
     std.testing.refAllDecls(headless);
     std.testing.refAllDecls(process);
     std.testing.refAllDecls(fswatch);
+    std.testing.refAllDecls(dbus);
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
 
@@ -183,6 +202,12 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
+    .{ .path = "dbus/signature.zig", .src = @embedFile("dbus/signature.zig") },
+    .{ .path = "dbus/marshal.zig", .src = @embedFile("dbus/marshal.zig") },
+    .{ .path = "dbus/variant.zig", .src = @embedFile("dbus/variant.zig") },
+    .{ .path = "dbus/message.zig", .src = @embedFile("dbus/message.zig") },
+    .{ .path = "dbus/auth.zig", .src = @embedFile("dbus/auth.zig") },
+    .{ .path = "dbus/conn.zig", .src = @embedFile("dbus/conn.zig") },
 };
 
 test "init starts the headless backend" {
