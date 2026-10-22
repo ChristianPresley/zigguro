@@ -154,6 +154,12 @@ pub const Event = union(enum(u8)) {
     dialog_result: struct { request: u32, paths: PayloadSlice, cancelled: bool },
     /// `Platform.wake` was called.
     wake,
+    /// A pen's tip pressure (0..1, 0 while hovering) for the
+    /// `pointer_move` that follows it. Mice send none.
+    pointer_pressure: struct { win: WindowId, pressure: f32 },
+    /// Unaccelerated relative mouse motion in device counts, only when
+    /// `InitOptions.raw_mouse` asked for it (Win32 raw input).
+    pointer_relative: struct { win: WindowId, dx: f32, dy: f32, time_ns: u64 },
 
     /// The tag type.
     pub const Tag = std.meta.Tag(Event);
