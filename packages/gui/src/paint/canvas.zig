@@ -5,6 +5,10 @@
 //! thin forwarder; see "zg_gui.paint.Canvas" in docs/interfaces.md.
 //! Coordinates are logical pixels; `begin` passes the window scale.
 //!
+//! Scroll layers (optional: a canvas without them gets the content drawn
+//! in place): `beginScrollLayer` records a scroll container's content into
+//! a wraparound layer the renderer keeps, `drawLayer` composites it.
+//!
 //! `OpList` is the retained per-window prim cache: widgets paint into it in
 //! node-local coordinates, and clean nodes are replayed from it by range.
 
@@ -28,6 +32,9 @@ pub const TextAa = enum(u2) { grayscale, subpixel_rgb, subpixel_bgr, none };
 /// A renderer texture (matches `r2d.TextureId`).
 pub const TextureId = enum(u32) { none = 0, _ };
 
+/// A rectangle in physical pixels (matches `r2d.PxRect`).
+pub const PxRect = extern struct { x: i32, y: i32, w: u32, h: u32 };
+
 /// A renderer that accepts one frame of prims at a time.
 pub const Canvas = struct {
     ptr: *anyopaque,
@@ -46,7 +53,32 @@ pub const Canvas = struct {
         popClip: *const fn (*anyopaque) void,
         addDamage: *const fn (*anyopaque, r: Rect) void,
         end: *const fn (*anyopaque) void,
+        /// `r2d.DrawList.beginScrollLayer`: `size` and `damage` are
+        /// physical pixels; false means the renderer still holds the
+        /// content (skip it, no `endLayer`).
+        beginScrollLayer: ?*const fn (*anyopaque, id: u32, size: [2]u32, origin: [2]i32, damage: []const PxRect) bool = null,
+        endLayer: ?*const fn (*anyopaque) void = null,
+        /// Composites layer `id` into `dst`, offset by `scroll_px`
+        /// physical pixels.
+        drawLayer: ?*const fn (*anyopaque, id: u32, dst: Rect, scroll_px: Vec2) void = null,
     };
+
+    /// Whether the canvas keeps scroll layers.
+    pub fn hasLayers(c: Canvas) bool {
+        return c.vtable.beginScrollLayer != null and c.vtable.endLayer != null and c.vtable.drawLayer != null;
+    }
+    /// See `VTable.beginScrollLayer`.
+    pub fn beginScrollLayer(c: Canvas, id: u32, size: [2]u32, origin: [2]i32, damage: []const PxRect) bool {
+        return c.vtable.beginScrollLayer.?(c.ptr, id, size, origin, damage);
+    }
+    /// Ends the layer `beginScrollLayer` opened.
+    pub fn endLayer(c: Canvas) void {
+        c.vtable.endLayer.?(c.ptr);
+    }
+    /// See `VTable.drawLayer`.
+    pub fn drawLayer(c: Canvas, id: u32, dst: Rect, scroll_px: Vec2) void {
+        c.vtable.drawLayer.?(c.ptr, id, dst, scroll_px);
+    }
 
     /// Starts a frame of `size` logical pixels at `scale` physical/logical.
     pub fn begin(c: Canvas, size: Size, scale: f32) void {
