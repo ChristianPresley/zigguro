@@ -8,6 +8,8 @@ pub const model = @import("model.zig");
 pub const geometry = @import("geometry.zig");
 /// The `splitter.zig` module.
 pub const splitter = @import("splitter.zig");
+/// The `area_sash.zig` module.
+pub const area_sash = @import("area_sash.zig");
 /// The `tab_strip.zig` module.
 pub const tab_strip = @import("tab_strip.zig");
 /// The `drop_zones.zig` module.

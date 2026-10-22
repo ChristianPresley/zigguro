@@ -8,6 +8,7 @@ const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
 const model = @import("model.zig");
 const view = @import("view.zig");
+const area_sash = @import("area_sash.zig");
 const TestApp = @import("../testing/test_app.zig").TestApp;
 
 const Ui = ui_mod.Ui;
@@ -339,4 +340,78 @@ test "drag to dock: outside the window floats when enabled" {
     try testing.expectEqual(@as(usize, 1), f.page.dock.floating.items.len);
     try testing.expectEqual(@as(f32, 900), f.page.dock.floating.items[0].rect.x);
     try f.page.dock.validate();
+}
+
+const SashPage = struct {
+    dock: DockModel,
+
+    pub fn build(p: *SashPage, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .row, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .align_items = .stretch } });
+        defer ui.close();
+        ui.open(.{ .style = .{ .w = .{ .px = p.dock.areas[@intFromEnum(model.Area.left)].size }, .shrink = 0 }, .test_id = "left" });
+        ui.close();
+        area_sash.areaSash(ui, .{ .dock = &p.dock, .area = .left, .max_px = 600 });
+        ui.open(.{ .style = .{ .grow = 1, .basis = .{ .px = 0 } }, .test_id = "center" });
+        ui.close();
+        area_sash.areaSash(ui, .{ .dock = &p.dock, .area = .agent });
+        ui.open(.{ .style = .{ .w = .{ .px = p.dock.areas[@intFromEnum(model.Area.agent)].size }, .shrink = 0 }, .test_id = "agent" });
+        ui.close();
+    }
+};
+
+test "area sash: drag, clamp, undo, double-click and keyboard" {
+    var page: SashPage = .{ .dock = try DockModel.init(gpa) };
+    defer page.dock.deinit();
+    const t = try TestApp.init(gpa, .{ .root = .of(&page), .size = .{ .w = 1200, .h = 400 } });
+    defer t.deinit();
+    _ = t.settle();
+    const left = &page.dock.areas[@intFromEnum(model.Area.left)].size;
+    const agent = &page.dock.areas[@intFromEnum(model.Area.agent)].size;
+    try testing.expectEqual(@as(f32, 240), left.*);
+    try testing.expectApproxEqAbs(@as(f32, 240), (try t.rectOf(.{ .test_id = "left" })).w, 0.5);
+    // Drag the left sash 60 px right.
+    const r = try t.rectOf(.{ .name = "Resize left area" });
+    const x = r.x + r.w / 2;
+    const y = r.y + r.h / 2;
+    t.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = x, .y = y }, .clicks = 1 } });
+    t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = x + 60, .y = y } } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = x + 60, .y = y } } });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 300), left.*);
+    try testing.expectApproxEqAbs(@as(f32, 300), (try t.rectOf(.{ .test_id = "left" })).w, 0.5);
+    // The maximum and minimum hold.
+    t.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = x + 60, .y = y }, .clicks = 1 } });
+    t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = x + 900, .y = y } } });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 600), left.*);
+    t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = x - 900, .y = y } } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = x - 900, .y = y } } });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 170), left.*);
+    // Each drag is one undo step.
+    try testing.expect(try page.dock.undo());
+    try testing.expectEqual(@as(f32, 300), left.*);
+    // Keyboard on the focused sash.
+    t.win.markAllDirty();
+    _ = t.settle();
+    t.press(.arrow_left, .{});
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 290), left.*);
+    t.press(.arrow_right, .{ .shift = true });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 340), left.*);
+    // The agent area grows as its sash moves left.
+    const ra = try t.rectOf(.{ .name = "Resize agent area" });
+    const ax = ra.x + ra.w / 2;
+    t.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = ax, .y = y }, .clicks = 1 } });
+    t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = ax - 20, .y = y } } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = ax - 20, .y = y } } });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 400), agent.*);
+    // Double-click restores the default.
+    const ra2 = try t.rectOf(.{ .name = "Resize agent area" });
+    t.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = ra2.x + 1, .y = y }, .clicks = 2 } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = ra2.x + 1, .y = y } } });
+    _ = t.settle();
+    try testing.expectEqual(@as(f32, 380), agent.*);
 }
