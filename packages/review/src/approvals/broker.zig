@@ -69,6 +69,8 @@ const Item = struct {
     arena: std.heap.ArenaAllocator,
     view: InboxItem,
     done: Io.Event = .unset,
+    /// Came back expired from a load; not journaled as such yet.
+    restored: bool = false,
 };
 
 pub const ApprovalBroker = struct {
@@ -189,7 +191,7 @@ pub const ApprovalBroker = struct {
             const it = b.items.get(@intFromEnum(id)) orelse return error.UnknownApproval;
             if (it.view.state != .pending) return error.AlreadyAnswered;
             if (a == .edit and !it.view.req.editable) return error.NotEditable;
-            try b.closeLocked(it, state, a, by);
+            try b.closeLocked(it, state, a, by, true);
         }
         b.notify(id, state);
     }
@@ -202,7 +204,7 @@ pub const ApprovalBroker = struct {
             defer b.mutex.unlock(b.io);
             const it = b.items.get(@intFromEnum(id)) orelse return;
             if (it.view.state != .pending) return;
-            b.closeLocked(it, .cancelled, .{ .deny = "cancelled" }, null) catch return;
+            b.closeLocked(it, .cancelled, .{ .deny = "cancelled" }, null, true) catch return;
         }
         b.notify(id, .cancelled);
     }
@@ -226,7 +228,7 @@ pub const ApprovalBroker = struct {
                         more = true;
                         break;
                     }
-                    b.closeLocked(it, .expired, .{ .deny = "the approval request timed out" }, null) catch {
+                    b.closeLocked(it, .expired, .{ .deny = "the approval request timed out" }, null, true) catch {
                         more = false;
                         break;
                     };
@@ -240,9 +242,9 @@ pub const ApprovalBroker = struct {
         return n;
     }
 
-    /// Sets the outcome (its strings copied), journals it and wakes the
-    /// waiter.
-    fn closeLocked(b: *ApprovalBroker, it: *Item, state: ApprovalState, a: Answer, by: ?[]const u8) Allocator.Error!void {
+    /// Sets the outcome (its strings copied), journals it (unless the
+    /// journal already holds it) and wakes the waiter.
+    fn closeLocked(b: *ApprovalBroker, it: *Item, state: ApprovalState, a: Answer, by: ?[]const u8, record: bool) Allocator.Error!void {
         const ar = it.arena.allocator();
         const copy = try copyAnswer(ar, a);
         const by_copy = if (by) |s| try ar.dupe(u8, s) else null;
@@ -250,7 +252,7 @@ pub const ApprovalBroker = struct {
         it.view.answer = copy;
         it.view.answered_by = by_copy;
         it.view.answered_ms = Io.Clock.real.now(b.io).toMilliseconds();
-        b.recordLocked(it);
+        if (record) b.recordLocked(it);
         it.done.set(b.io);
     }
 
@@ -355,19 +357,81 @@ pub const ApprovalBroker = struct {
         try b.restore(v);
     }
 
+    /// A sink that copies records as they are, for a viewer of another
+    /// process's approvals (`zg review approvals`).
+    pub fn mirrorSink(b: *ApprovalBroker) RestoreSink {
+        return .{ .ctx = b, .restore = struct {
+            fn f(ctx: *anyopaque, v: std.json.Value) anyerror!void {
+                const self: *ApprovalBroker = @ptrCast(@alignCast(ctx));
+                try self.put(v, .keep);
+            }
+        }.f };
+    }
+
+    /// A sink for the records other processes append later (`tail`): an
+    /// answer to one of this broker's pending requests (`zg review
+    /// approve`) is taken as if a view gave it.
+    pub fn remoteSink(b: *ApprovalBroker) RestoreSink {
+        return .{ .ctx = b, .restore = struct {
+            fn f(ctx: *anyopaque, v: std.json.Value) anyerror!void {
+                const self: *ApprovalBroker = @ptrCast(@alignCast(ctx));
+                try self.applyRemote(v);
+            }
+        }.f };
+    }
+
     /// Restores one record from a load (a later record of the same id
     /// replaces the earlier one). Pending requests come back `expired`,
-    /// and nobody waits on them.
+    /// and nobody waits on them; `journalRestored` records that.
     pub fn restore(b: *ApprovalBroker, v: std.json.Value) !void {
+        return b.put(v, .expire);
+    }
+
+    /// Journals the requests a load turned `expired`, so other processes
+    /// stop showing them as waiting. After the load (the store's lock is
+    /// free again).
+    pub fn journalRestored(b: *ApprovalBroker) void {
+        b.mutex.lockUncancelable(b.io);
+        defer b.mutex.unlock(b.io);
+        for (b.items.values()) |it| if (it.restored) {
+            it.restored = false;
+            b.recordLocked(it);
+        };
+    }
+
+    /// Takes another process's answer to one of this broker's pending
+    /// requests; anything else is ignored.
+    pub fn applyRemote(b: *ApprovalBroker, v: std.json.Value) !void {
+        var arena_state: std.heap.ArenaAllocator = .init(b.gpa);
+        defer arena_state.deinit();
+        const rec = try readRecord(arena_state.allocator(), v);
+        const a = rec.answer orelse return;
+        if (rec.state == .pending or rec.state == .cancelled) return;
+        if (@intFromEnum(rec.id) >> 32 != b.opts.id_base >> 32) return;
+        {
+            b.mutex.lockUncancelable(b.io);
+            defer b.mutex.unlock(b.io);
+            const it = b.items.get(@intFromEnum(rec.id)) orelse return;
+            if (it.view.state != .pending) return;
+            if (a == .edit and !it.view.req.editable) return;
+            // The journal already holds this answer.
+            try b.closeLocked(it, rec.state, a, rec.answered_by orelse "cli", false);
+        }
+        b.notify(rec.id, rec.state);
+    }
+
+    fn put(b: *ApprovalBroker, v: std.json.Value, how: enum { expire, keep }) !void {
         const it = try b.gpa.create(Item);
         it.* = .{ .arena = .init(b.gpa), .view = undefined };
         errdefer b.freeItem(it);
         it.view = try readRecord(it.arena.allocator(), v);
-        if (it.view.state == .pending) {
+        if (it.view.state == .pending and how == .expire) {
             it.view.state = .expired;
             it.view.answer = .{ .deny = "the approval request expired" };
+            it.restored = true;
         }
-        it.done.set(b.io);
+        // A mirrored pending request has no waiter here and no answer.
+        if (it.view.state != .pending) it.done.set(b.io);
         b.mutex.lockUncancelable(b.io);
         defer b.mutex.unlock(b.io);
         const raw = @intFromEnum(it.view.id);
