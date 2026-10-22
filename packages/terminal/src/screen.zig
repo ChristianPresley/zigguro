@@ -19,4 +19,5 @@ pub const unicode = @import("screen/unicode.zig");
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("screen/cellmap.zig");
+    _ = @import("screen/fill.zig");
 }
