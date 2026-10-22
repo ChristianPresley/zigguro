@@ -189,6 +189,31 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     skill_tool.subagents = &subagents;
     try tool_registry.addSource(skill_tool.source());
 
+    // Context: the memory files (ZIGGURO.md, AGENTS.md and CLAUDE.md,
+    // rules) in the system prompt, and compaction by the provider's
+    // cheapest model, automatic near the window and on `/compact`.
+    const default_model = env.get("ZG_MODEL") orelse "sonnet";
+    var context: zg_ai.context.ContextStack = undefined;
+    try context.init(gpa, io, .{
+        .sources = if (opts.bare) null else .{
+            .managed_dir = if (cfg_paths) |p| p.managed else null,
+            .user_dir = if (cfg_paths) |p| p.config else null,
+            .home_dir = env.get("HOME") orelse env.get("USERPROFILE"),
+            .workspace_roots = &.{cwd},
+            .cwd = cwd,
+        },
+        .env = .{ .cwd = cwd, .now_ms = zg_ai.ratelimit.Clock.real.now(io), .workspace_roots = &.{cwd}, .shell = env.get("SHELL") },
+        .compaction = compaction: {
+            const main_model = registry.resolve(opts.model orelse default_model) orelse break :compaction null;
+            const m = registry.modelForRole(main_model, .compaction);
+            const p = mgr.deps.providers.get(m) orelse break :compaction null;
+            break :compaction .{ .provider = p, .model = m };
+        },
+    });
+    defer context.deinit();
+    for (context.memorySet().notes) |n| err.print("zg agent: {s}\n", .{n}) catch {};
+    context.install(&mgr.deps);
+
     // Hooks (Claude Code format): managed and user `hooks.json`, then the
     // workspace's `.zigguro/hooks.json` and `hooks.local.json`, and in
     // compat `.claude/settings.json` and `settings.local.json`. Running
@@ -241,10 +266,11 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .signals = &sig,
         .err = err,
         .cwd = cwd,
-        .default_model = env.get("ZG_MODEL") orelse "sonnet",
+        .default_model = default_model,
         .todos = &todos,
         .plan_mode = if (one_shot) null else &plan_mode,
         .skills = .{ .index = &skill_index, .tool = &skill_tool, .host = processes.host() },
+        .context = &context,
     };
 
     const code = if (one_shot)
