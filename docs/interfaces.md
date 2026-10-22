@@ -2093,6 +2093,52 @@ A `Clipboard` owns its pieces; the view keeps the last one for paste and frees i
 ### Stability
 Unstable: case transforms are locale-independent; sort is byte order (numeric sort is P2).
 
+## zg_editor.model.encoding
+
+### Defined in
+`packages/editor/src/model/encoding.zig` and `packages/editor/src/model/encoding/{detect.zig,
+utf16.zig, wtf8.zig, single_byte.zig}` (E05.F01.S02). WHATWG single-byte indexes are vendored in
+`encoding/whatwg/` (CC BY 4.0) and parsed at compile time instead of by a separate `encgen`
+tool. Detection fixtures: `packages/editor/testdata/encodings/expected.txt`.
+
+### Implemented by
+E05.F01.S02.T01.
+
+### Consumed by
+File open and save (E05.F01.S02.T02), the status bar encoding picker (E04/E15).
+
+### Signature
+```zig
+pub const Encoding = enum { utf8, utf8_bom, utf16le, utf16le_bom, utf16be, utf16be_bom, utf32le_bom,
+    utf32be_bom, windows_1250, ..., windows_1258, windows_874, iso_8859_2, ..., iso_8859_16, koi8_r,
+    koi8_u, ibm866, macintosh, binary };                  // bom(), singleByte()
+pub const Detection = struct { encoding: Encoding, confidence: enum { bom, certain, heuristic, default }, bom_len: u3 };
+pub fn detect(head: []const u8, hint: ?Encoding, fallback: Encoding) Detection;
+pub const Decoder = struct {                            // streaming; skips the BOM
+    pub fn init(e: Encoding) Decoder;
+    pub fn decode(d: *Decoder, in: []const u8, out: *std.ArrayList(u8), gpa, last: bool) !void;
+};
+pub fn decodeAll(e, bytes, gpa) ![]u8;
+pub fn encode(e, utf8: []const u8, out: *std.ArrayList(u8), gpa) error{ Unrepresentable, OutOfMemory }!void; // BOM first
+pub fn firstUnrepresentable(e, utf8) ?usize;
+pub fn label(e) []const u8; pub fn fromLabel(s) ?Encoding;
+```
+Detection order: BOM (UTF-32LE before UTF-16LE), hint, UTF-16 without BOM (zero-byte
+statistics, or zeros only in high bytes for samples of 32+ units), a NUL means `binary`, valid
+UTF-8 (a sequence cut at the 8 KiB sample end allowed), else `fallback` with `default`
+confidence. UTF-8 passes through byte for byte (invalid bytes too); undefined single-byte
+entries and `binary` bytes >= 0x80 decode to U+F700 + byte. Malformed UTF-16/32 tails decode to
+U+FFFD and are the only inputs that do not round-trip.
+
+### Threading
+Pure functions; a `Decoder` belongs to one reader.
+
+### Ownership/lifetime
+Callers own the output lists.
+
+### Stability
+Stable formats; new encodings append to the enum.
+
 ## zg_editor.model.diff
 
 ### Defined in
