@@ -94,14 +94,12 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
     }
     if (lookupKind(l) == 2) return applyMultipleLookup(c, l, acc, filter);
     var i: usize = 0;
-    while (i < c.buf.len()) {
-        if (c.budget.exhausted) return;
-        if (!digest.has(filter, c.buf.infos.items[i].gid) or !c.applicable(i)) {
-            i += 1;
-            continue;
-        }
+    while (true) {
+        i = c.nextCandidate(filter, i);
+        if (i >= c.buf.len()) return;
         const before = c.buf.len();
         const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+        if (c.budget.exhausted) return;
         if (applied) |next| {
             // A rule that consumed nothing and removed nothing must still
             // move on.
@@ -263,10 +261,12 @@ fn applyLigature(c: *Ctx, st: []const u8, i: usize) ?usize {
     if (ci >= n) return null;
     const set = reader.sub(st, readAt(u16, st, 6 + @as(usize, ci) * 2) catch return null) catch return null;
     const nl = readAt(u16, set, 0) catch return null;
-    // With many ligatures, peek at the second glyph once and only try the
-    // ligatures that start with it (HarfBuzz's LigatureSet fast path).
+    // Peek at the second glyph once and only try the ligatures that
+    // start with it (HarfBuzz's LigatureSet fast path, which HarfBuzz
+    // takes above four ligatures; matching input here costs more than
+    // the peek even for one).
     var second: ?GlyphId = null;
-    if (nl > 4) {
+    {
         var it = Skippy.init(c, false);
         it.reset(i, 1);
         if (it.peekNext()) |j| second = c.buf.infos.items[j].gid;
@@ -382,6 +382,7 @@ fn applyReverse(c: *Ctx, st: []const u8, i: usize) ?usize {
 /// Applies `lookups` (one stage) in order.
 pub fn applyLookups(c: *Ctx, lookups: anytype) Allocator.Error!void {
     for (lookups) |lm| {
+        if (lm.mask & c.buf.mask_union == 0) continue;
         if (!digest.intersects(c.buf.glyph_set.items, lm.digest)) continue;
         c.lookup_digest = lm.digest;
         defer c.lookup_digest = &.{};

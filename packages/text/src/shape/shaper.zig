@@ -202,7 +202,10 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
         var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gsub, .gdef = &p.gdef, .budget = &budget, .coords = p.coords, .var_scalars = p.var_scalars, .accels = p.accels[0] };
         for (p.gsub_stages) |stage| {
             try apply_gsub.applyLookups(&c, stage.lookups);
-            if (stage.pause) |f| f(p, b);
+            if (stage.pause) |f| {
+                f(p, b);
+                b.computeMaskUnion();
+            }
         }
     } else for (p.gsub_stages) |stage| if (stage.pause) |f| f(p, b);
 
@@ -222,7 +225,10 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
         var c: skippy.Ctx = .{ .buf = b, .table = table, .kind = .gpos, .gdef = &p.gdef, .budget = &gpos_budget, .coords = p.coords, .var_scalars = p.var_scalars, .rtl = dir == .rtl, .accels = p.accels[1] };
         for (p.gpos_stages) |stage| {
             try apply_gpos.applyLookups(&c, stage.lookups);
-            if (stage.pause) |f| f(p, b);
+            if (stage.pause) |f| {
+                f(p, b);
+                b.computeMaskUnion();
+            }
         }
     };
     if (p.apply_kern) if (p.kern) |*k| k.apply(b, &p.gdef, p.kern_mask);

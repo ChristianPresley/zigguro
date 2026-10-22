@@ -98,6 +98,25 @@ pub const Ctx = struct {
         return g.mask & c.lookup_mask != 0 and c.checkGlyphProperty(g, c.lookup_props);
     }
 
+    /// The first glyph at or after `i` the current lookup may apply to
+    /// whose id is in `filter` (empty: every id), or the buffer length.
+    /// One tight scan instead of a check per loop turn of the caller.
+    pub inline fn nextCandidate(c: *const Ctx, filter: []const u64, i: usize) usize {
+        const infos = c.buf.infos.items;
+        const mask = c.lookup_mask;
+        const props = c.lookup_props;
+        var k = i;
+        while (k < infos.len) : (k += 1) {
+            const g = infos[k];
+            if (filter.len != 0) {
+                const w = g.gid >> 6;
+                if (w >= filter.len or filter[w] >> @intCast(g.gid & 63) & 1 == 0) continue;
+            }
+            if (g.mask & mask != 0 and c.checkGlyphProperty(g, props)) break;
+        }
+        return k;
+    }
+
     /// GSUB: recompute the class of the glyph at `i` after it became `gid`
     /// (HarfBuzz's `_set_glyph_class`).
     pub fn setGlyphClass(c: *const Ctx, g: *GlyphInfo, gid: GlyphId, class_guess: u16, ligature: bool, component: bool) void {

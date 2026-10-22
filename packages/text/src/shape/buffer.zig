@@ -210,6 +210,10 @@ pub const Buffer = struct {
     out: std.ArrayList(GlyphInfo) = .empty,
     /// Bitset of glyph ids present (see `digest.zig`); empty: unknown.
     glyph_set: std.ArrayList(u64) = .empty,
+    /// The union of the glyphs' masks, from `computeGlyphSet` or
+    /// `computeMaskUnion`. Rewriting copies masks, so it stays a superset
+    /// while lookups run; a lookup whose mask misses it applies nowhere.
+    mask_union: u32 = 0,
     dir: Direction = .ltr,
     script: Script = .Zyyy,
     lang: Tag = ot.tag("dflt"),
@@ -376,10 +380,20 @@ pub const Buffer = struct {
     pub fn computeGlyphSet(b: *Buffer, num_glyphs: usize) Allocator.Error!void {
         try b.glyph_set.resize(b.gpa, (num_glyphs + 63) / 64);
         @memset(b.glyph_set.items, 0);
+        var masks: u32 = 0;
         for (b.infos.items) |g| {
             const w = g.gid >> 6;
             if (w < b.glyph_set.items.len) b.glyph_set.items[w] |= @as(u64, 1) << @intCast(g.gid & 63);
+            masks |= g.mask;
         }
+        b.mask_union = masks;
+    }
+
+    /// Recomputes `mask_union` (after code outside lookups set masks).
+    pub fn computeMaskUnion(b: *Buffer) void {
+        var masks: u32 = 0;
+        for (b.infos.items) |g| masks |= g.mask;
+        b.mask_union = masks;
     }
 
     /// Makes the scratch output the glyph string (after a rewriting pass).
