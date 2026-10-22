@@ -18,6 +18,7 @@ const ot = @import("../ot/root.zig");
 const FaceInstance = @import("../ot/var/instance.zig").FaceInstance;
 const AxisValue = @import("../ot/var/fvar.zig").AxisValue;
 const db_mod = @import("db.zig");
+const LastResortTable = @import("last_resort.zig").LastResortTable;
 const matcher = @import("matcher.zig");
 
 pub const Synth = matcher.Synth;
@@ -75,6 +76,8 @@ pub const FontRegistry = struct {
     files: std.StringHashMapUnmanaged(*FileNode) = .empty,
     /// The Io the files were opened with (closing needs it).
     io: ?std.Io = null,
+    /// Glyph ids of last-resort code points (instance 0).
+    last_resort: LastResortTable = .{},
 
     const seg0_log2 = 6;
     const seg0 = 1 << seg0_log2;
@@ -114,6 +117,7 @@ pub const FontRegistry = struct {
             gpa.free(e.key_ptr.*);
         }
         r.files.deinit(gpa);
+        r.last_resort.deinit(gpa);
         for (r.segments, 0..) |seg, k| if (seg) |p| gpa.free(p[0 .. @as(usize, seg0) << @intCast(k)]);
         r.* = undefined;
     }
@@ -223,6 +227,17 @@ pub const FontRegistry = struct {
     /// True when `id` names a registered instance.
     pub fn has(r: *const FontRegistry, id: InstanceId) bool {
         return id >= first_id and id - first_id < r.len.load(.acquire);
+    }
+
+    /// The last-resort glyph id of `cp` (see last_resort.zig). Callable
+    /// through a const registry: the table locks itself.
+    pub fn lastResortGlyph(r: *const FontRegistry, cp: u21) u16 {
+        return @constCast(&r.last_resort).glyph(r.gpa, cp);
+    }
+
+    /// The code point of last-resort glyph `g`.
+    pub fn lastResortCodepoint(r: *const FontRegistry, g: u16) u21 {
+        return r.last_resort.codepoint(g);
     }
 
     /// The number of registered instances.

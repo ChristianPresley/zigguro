@@ -221,3 +221,59 @@ test "store: applies and their records reach another process" {
     // B's next record gets a later id.
     try testing.expect(b.history.lastId() >= rec.id);
 }
+
+test "store: decisions reach another process as one decided event, not journaled again" {
+    const apply = @import("../apply/root.zig");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var a: Proc = undefined;
+    _ = try a.open(tmp.dir, .{ .process_tag = 1 });
+    defer a.close();
+    _ = try a.q.subscribe(a.store.decidedListener());
+    var b: Proc = undefined;
+    _ = try b.open(tmp.dir, .{ .process_tag = 2 });
+    defer b.close();
+    _ = try b.q.subscribe(b.store.decidedListener());
+    b.sink.decided = true;
+    const Seen = struct {
+        n: u32 = 0,
+        edited: u32 = 0,
+        user: [16]u8 = undefined,
+        user_len: usize = 0,
+        fn on(ctx: *anyopaque, ev: *const model.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const d = switch (ev.*) {
+                .decided => |d| d,
+                else => return,
+            };
+            self.n += 1;
+            self.edited += d.files[0].count(.edited);
+            const u = d.files[0].edits[0].user;
+            @memcpy(self.user[0..u.len], u);
+            self.user_len = u.len;
+        }
+    };
+    var seen: Seen = .{};
+    _ = try b.q.subscribe(.{ .ctx = &seen, .on = Seen.on });
+
+    var disk: apply.MemFiles = .init(testing.allocator);
+    defer disk.deinit();
+    try disk.put("a.txt", "one\ntwo\n", false);
+    const id = try submit(a.q, "a.txt", "one\ntwo\n", 4, "1.5\n");
+    var ap: apply.Applier = .init(testing.allocator, io, a.q, disk.files(), &a.history);
+    _ = try ap.apply(.{ .cs = id, .items = &.{.{ .file = 0, .input = .{ .edited = &.{.{ .hunk = 0, .text = "half\n" }} } }} });
+    try a.store.flush();
+
+    _ = try b.tail();
+    try testing.expectEqual(@as(u32, 1), seen.n);
+    try testing.expectEqual(@as(u32, 1), seen.edited);
+    try testing.expectEqualStrings("half\n", seen.user[0..seen.user_len]);
+    // B wrote nothing back: A has nothing new to read.
+    try b.store.flush();
+    try testing.expectEqual(@as(u32, 0), try a.tail());
+    // A reopened process does not replay old decisions.
+    var c: Proc = undefined;
+    _ = try c.open(tmp.dir, .{ .process_tag = 3 });
+    defer c.close();
+    try testing.expectEqual(@as(u32, 0), try c.tail());
+}

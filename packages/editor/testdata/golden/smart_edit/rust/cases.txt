@@ -1,0 +1,89 @@
+=== enter between braces
+--- before
+fn main() {¦}
+--- keys
+<enter>
+--- after
+fn main() {
+    ¦
+}
+
+=== electric closer
+--- before
+impl S {
+    fn f() {}
+    ¦
+--- keys
+}
+--- after
+impl S {
+    fn f() {}
+}¦
+
+=== lifetime quote no autoclose
+--- before
+fn f<¦>()
+--- keys
+'a
+--- after
+fn f<'a¦>()
+
+=== autoclose paren
+--- before
+let x = ¦;
+--- keys
+(1, 2
+--- after
+let x = (1, 2¦);
+
+=== overtype
+--- before
+let x = ¦;
+--- keys
+(1)
+--- after
+let x = (1)¦;
+
+=== surround
+--- before
+let x = «v»;
+--- keys
+[
+--- after
+let x = [«v»];
+
+=== line comment
+--- before
+«let a = 1;
+    let b = 2;»
+--- keys
+<lc>
+--- after
+«// let a = 1;
+//     let b = 2;»
+
+=== no autoclose in comment
+--- before
+// todo ¦
+--- keys
+(
+--- after
+// todo (¦
+
+=== match arm enter
+--- before
+match x {¦}
+--- keys
+<enter>1 => 2,
+--- after
+match x {
+    1 => 2,¦
+}
+
+=== string no pair
+--- before
+let s = "a¦";
+--- keys
+[
+--- after
+let s = "a[¦";

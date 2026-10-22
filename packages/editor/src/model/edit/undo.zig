@@ -121,7 +121,8 @@ pub const Node = struct {
             (n.sel_before.len + n.sel_after.len) * @sizeOf(Selection);
     }
 
-    fn deinit(n: *Node, gpa: Allocator) void {
+    /// Frees the node's ChangeSets, selections and label.
+    pub fn deinit(n: *Node, gpa: Allocator) void {
         n.forward.deinit();
         n.inverse.deinit();
         gpa.free(n.sel_before);
@@ -467,84 +468,14 @@ pub const UndoTree = struct {
     fn enforceLimits(u: *UndoTree) Error!void {
         const items = u.items.items;
         if (items.len <= u.limits.max_nodes and u.bytes <= u.limits.max_bytes) return;
-        const target_nodes = u.limits.max_nodes - u.limits.max_nodes / 10;
-        const target_bytes = u.limits.max_bytes - u.limits.max_bytes / 10;
-        const n = items.len;
-
-        var on_path = try std.DynamicBitSetUnmanaged.initEmpty(u.gpa, n);
-        defer on_path.deinit(u.gpa);
-        var c = u.current;
-        while (true) {
-            on_path.set(c.idx());
-            if (c == .root) break;
-            c = u.node(c).parent;
-        }
-        // Newest activity and size of every subtree (children follow
-        // parents, so one reverse pass suffices).
-        const newest = try u.gpa.alloc(usize, n);
-        defer u.gpa.free(newest);
-        const sub_bytes = try u.gpa.alloc(usize, n);
-        defer u.gpa.free(sub_bytes);
-        const sub_count = try u.gpa.alloc(usize, n);
-        defer u.gpa.free(sub_count);
-        for (items, 0..) |*it, i| {
-            newest[i] = i;
-            sub_bytes[i] = it.bytes();
-            sub_count[i] = 1;
-        }
-        var i = n;
-        while (i > 1) {
-            i -= 1;
-            const p = items[i].parent.idx();
-            newest[p] = @max(newest[p], newest[i]);
-            sub_bytes[p] += sub_bytes[i];
-            sub_count[p] += sub_count[i];
-        }
-        // Branches hanging off the path, least recently active first.
-        var branches: std.ArrayList(usize) = .empty;
-        defer branches.deinit(u.gpa);
-        for (1..n) |k| if (!on_path.isSet(k) and on_path.isSet(items[k].parent.idx())) try branches.append(u.gpa, k);
-        std.sort.pdq(usize, branches.items, newest, struct {
-            fn lt(nw: []const usize, x: usize, y: usize) bool {
-                return nw[x] < nw[y];
-            }
-        }.lt);
-        var dead = try std.DynamicBitSetUnmanaged.initEmpty(u.gpa, n);
-        defer dead.deinit(u.gpa);
-        var count = n;
-        var bytes = u.bytes;
-        for (branches.items) |b| {
-            if (count <= target_nodes and bytes <= target_bytes) break;
-            dead.set(b);
-            count -= sub_count[b];
-            bytes -= sub_bytes[b];
-        }
-        for (1..n) |k| if (dead.isSet(items[k].parent.idx())) dead.set(k);
-        // Still over: drop the oldest states on the path (truncation).
-        var new_root: usize = 0;
-        if (count > target_nodes or bytes > target_bytes) {
-            var chain: std.ArrayList(usize) = .empty;
-            defer chain.deinit(u.gpa);
-            c = u.current;
-            while (true) {
-                try chain.append(u.gpa, c.idx());
-                if (c == .root) break;
-                c = u.node(c).parent;
-            }
-            std.mem.reverse(usize, chain.items);
-            var k: usize = 0;
-            while (k + 1 < chain.items.len and (count > target_nodes or bytes > target_bytes)) : (k += 1) {
-                dead.set(chain.items[k]);
-                count -= 1;
-                bytes -= items[chain.items[k]].bytes();
-            }
-            new_root = chain.items[k];
-            // Branches of the dropped states go too.
-            for (1..n) |m| if (m != new_root and dead.isSet(items[m].parent.idx())) dead.set(m);
-            u.truncated = true;
-        }
-        if (new_root != 0) {
-            const r = &items[new_root];
+        const sizes = try u.gpa.alloc(usize, items.len);
+        defer u.gpa.free(sizes);
+        for (items, sizes) |*it, *sz| sz.* = it.bytes();
+        var plan = try planPrune(u.gpa, items, u.current, sizes, u.limits.max_nodes - u.limits.max_nodes / 10, u.limits.max_bytes - u.limits.max_bytes / 10);
+        defer plan.deinit(u.gpa);
+        if (plan.truncated) u.truncated = true;
+        if (plan.new_root != 0) {
+            const r = &items[plan.new_root];
             u.bytes -= r.bytes();
             r.forward.deinit();
             r.inverse.deinit();
@@ -555,7 +486,25 @@ pub const UndoTree = struct {
             r.parent = .none;
             u.bytes += r.bytes();
         }
-        u.compact(&dead);
+        u.compact(&plan.dead);
+    }
+
+    /// Takes over `owned` (allocated with `gpa`, in creation order, each
+    /// parent before its children, node 0 the root) as a tree: links the
+    /// children and counts the bytes. Used to restore a persisted history.
+    pub fn fromNodes(gpa: Allocator, limits: Limits, owned: []Node, current: NodeId, saved: NodeId) UndoTree {
+        var u: UndoTree = .{ .gpa = gpa, .limits = limits, .items = .fromOwnedSlice(owned), .current = current, .saved = saved };
+        for (owned, 0..) |*it, k| {
+            it.first_child = .none;
+            it.next_sibling = .none;
+            u.bytes += it.bytes();
+            u.next_seq = @max(u.next_seq, it.seq + 1);
+            if (k == 0) continue;
+            const p = &owned[it.parent.idx()];
+            it.next_sibling = p.first_child;
+            p.first_child = NodeId.of(k);
+        }
+        return u;
     }
 
     /// Removes dead nodes, keeping order, and relinks everything.
@@ -608,6 +557,103 @@ pub const UndoTree = struct {
         std.debug.assert(u.items.items[0].parent == .none);
     }
 };
+
+/// Which nodes to drop to bring a tree under `target_count` nodes and
+/// `target_bytes` (by `sizes`): first whole branches hanging off the path
+/// from the root to `current`, least recently active first, then the
+/// oldest states on that path. `new_root` is the oldest state kept (0 when
+/// the path was not cut); its changes must be dropped.
+pub const PrunePlan = struct {
+    dead: std.DynamicBitSetUnmanaged,
+    new_root: usize,
+    /// The path was cut (history before `new_root` is gone).
+    truncated: bool,
+
+    /// Frees the set.
+    pub fn deinit(p: *PrunePlan, gpa: Allocator) void {
+        p.dead.deinit(gpa);
+        p.* = undefined;
+    }
+};
+
+/// Plans pruning of `items` (see `PrunePlan`).
+pub fn planPrune(gpa: Allocator, items: []const Node, current: NodeId, sizes: []const usize, target_count: usize, target_bytes: usize) Error!PrunePlan {
+    const n = items.len;
+    var total: usize = 0;
+    for (sizes) |sz| total += sz;
+    var on_path = try std.DynamicBitSetUnmanaged.initEmpty(gpa, n);
+    defer on_path.deinit(gpa);
+    var c = current;
+    while (true) {
+        on_path.set(c.idx());
+        if (c == .root) break;
+        c = items[c.idx()].parent;
+    }
+    // Newest activity and size of every subtree (children follow
+    // parents, so one reverse pass suffices).
+    const newest = try gpa.alloc(usize, n);
+    defer gpa.free(newest);
+    const sub_bytes = try gpa.alloc(usize, n);
+    defer gpa.free(sub_bytes);
+    const sub_count = try gpa.alloc(usize, n);
+    defer gpa.free(sub_count);
+    for (0..n) |i| {
+        newest[i] = i;
+        sub_bytes[i] = sizes[i];
+        sub_count[i] = 1;
+    }
+    var i = n;
+    while (i > 1) {
+        i -= 1;
+        const p = items[i].parent.idx();
+        newest[p] = @max(newest[p], newest[i]);
+        sub_bytes[p] += sub_bytes[i];
+        sub_count[p] += sub_count[i];
+    }
+    // Branches hanging off the path, least recently active first.
+    var branches: std.ArrayList(usize) = .empty;
+    defer branches.deinit(gpa);
+    for (1..n) |k| if (!on_path.isSet(k) and on_path.isSet(items[k].parent.idx())) try branches.append(gpa, k);
+    std.sort.pdq(usize, branches.items, newest, struct {
+        fn lt(nw: []const usize, x: usize, y: usize) bool {
+            return nw[x] < nw[y];
+        }
+    }.lt);
+    var plan: PrunePlan = .{ .dead = try .initEmpty(gpa, n), .new_root = 0, .truncated = false };
+    errdefer plan.deinit(gpa);
+    var count = n;
+    var bytes = total;
+    for (branches.items) |b| {
+        if (count <= target_count and bytes <= target_bytes) break;
+        plan.dead.set(b);
+        count -= sub_count[b];
+        bytes -= sub_bytes[b];
+    }
+    for (1..n) |k| if (plan.dead.isSet(items[k].parent.idx())) plan.dead.set(k);
+    // Still over: drop the oldest states on the path (truncation).
+    if (count > target_count or bytes > target_bytes) {
+        var chain: std.ArrayList(usize) = .empty;
+        defer chain.deinit(gpa);
+        c = current;
+        while (true) {
+            try chain.append(gpa, c.idx());
+            if (c == .root) break;
+            c = items[c.idx()].parent;
+        }
+        std.mem.reverse(usize, chain.items);
+        var k: usize = 0;
+        while (k + 1 < chain.items.len and (count > target_count or bytes > target_bytes)) : (k += 1) {
+            plan.dead.set(chain.items[k]);
+            count -= 1;
+            bytes -= sizes[chain.items[k]];
+        }
+        plan.new_root = chain.items[k];
+        // Branches of the dropped states go too.
+        for (1..n) |m| if (m != plan.new_root and plan.dead.isSet(items[m].parent.idx())) plan.dead.set(m);
+        plan.truncated = true;
+    }
+    return plan;
+}
 
 /// Whether a later replacement `b` touches text that `a` would restore:
 /// proper overlap, or an insertion strictly inside the other range.

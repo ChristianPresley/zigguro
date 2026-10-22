@@ -182,7 +182,7 @@ pub fn fsck(s: *Store, opts: FsckOptions) !FsckReport {
     for (checks) |*c| {
         if (c.err) |e| return e;
         report.objects += c.sg.index.count;
-        for (c.issues.items) |iss| try report.corrupt.append(ra, iss);
+        for (c.issues.items) |iss| try report.corrupt.append(ra, .{ .segment = try ra.dupe(u8, iss.segment), .id = iss.id, .reason = iss.reason });
         for (c.refs.items) |id| {
             if (gc_mod.locate(segs.items, id) != null) continue;
             if ((try missing_seen.getOrPut(gpa, id)).found_existing) continue;

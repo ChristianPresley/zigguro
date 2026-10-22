@@ -11,15 +11,20 @@
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
 //! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `agent.togglePane`
 //! (Ctrl+L), `workspace.manageTrust`, `editor.undo`, `editor.redo`,
-//! `editor.selectAll` and `workbench.toggleTheme`.
+//! `editor.selectAll`, `workbench.toggleTheme` and
+//! `workbench.floatingAlwaysOnTop`.
 //!
 //! The document lives in an E05 `DocumentRegistry`, so the agent pane's
 //! file tools read and edit it through the editor (agent/editor_files.zig)
-//! and their approvals come up as dialogs (agent/approvals.zig).
+//! and their approvals go to the approvals inbox at the top of the review
+//! queue (agent/approvals.zig, review/approvals_view.zig).
 //!
 //! Workspace trust is asked per session until the trust store
 //! (E16.F07.S01.T01) persists it; the status line shows Restricted Mode.
-//! `approvals` is the dialog ApprovalPort for consumers (agents, MCP).
+//! `approvals` is E12's `ApprovalBroker`, the ApprovalPort for consumers
+//! (agents, MCP): a request shows the review queue with its card, and
+//! while the window is unfocused a toast;
+//! `mcp_input` asks the user when an MCP server needs input mid-call.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -35,7 +40,12 @@ const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
+const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
+const ApprovalsInbox = @import("review/approvals_view.zig").ApprovalsInbox;
+const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
+const file_sync = @import("file_sync.zig");
+const FileSync = file_sync.FileSync;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -53,6 +63,9 @@ const Area = zg_gui.dock.model.Area;
 const persist = zg_gui.dock.persist;
 const log = std.log.scoped(.workbench);
 
+/// How often the review panel looks for other processes' decisions.
+const review_poll_ms = 1000;
+
 /// See the module doc.
 pub const Workbench = struct {
     rt: *zg_core.Runtime,
@@ -61,6 +74,8 @@ pub const Workbench = struct {
     env: *const std.process.Environ.Map,
     /// The file being edited, or null for an untitled buffer.
     path: ?[]u8 = null,
+    /// The window had focus at the last build (a regain checks files).
+    was_focused: bool = false,
     /// The open documents (owns `doc`).
     docs: DocumentRegistry,
     doc: *Document,
@@ -110,10 +125,17 @@ pub const Workbench = struct {
     focus_terminal: bool = false,
     /// This session's trust in the working folder (until the trust store).
     trust: zg_security.contracts.TrustState = .unknown,
-    approvals: zg_security_ui.DialogApprovalPort = undefined,
+    approvals: zg_review.approvals.ApprovalBroker = undefined,
+    /// The approvals section of the review queue (from `attach`).
+    approvals_inbox: ?*ApprovalsInbox = null,
+    /// Asks the user when an MCP server needs input during a call (from
+    /// `attach`).
+    mcp_input: McpInputDialogs = undefined,
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
+    /// Code block colours in the agent's replies (with the panel).
+    md_highlight: ?zg_editor.view.MarkdownHighlighter = null,
     /// Slash commands and skills, in the palette and the agent prompt.
     agent_cmds: ?*AgentCommands = null,
     focus_agent: bool = false,
@@ -124,6 +146,9 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
+    /// Polls the review store for other processes' records (`zg review`)
+    /// while the review panel exists.
+    review_timer: Window.TimerId = .none,
     /// This working folder's saved layout (`loadLayout`), and its saver
     /// (from `attach`).
     layout_dir: ?std.Io.Dir = null,
@@ -141,6 +166,8 @@ pub const Workbench = struct {
         doc: *Document,
         view: *EditorView,
         syntax: ?*DocumentSyntax,
+        /// The document's file on disk (null: untitled).
+        sync: ?*FileSync = null,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -201,12 +228,18 @@ pub const Workbench = struct {
         defer gpa.free(bytes);
         var f: OpenFile = .{ .path = null, .doc = undefined, .view = undefined, .syntax = null };
         errdefer if (f.path) |p| gpa.free(p);
+        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
         if (path) |p| {
             f.path = try gpa.dupe(u8, p);
-            bytes = std.Io.Dir.cwd().readFileAlloc(wb.io, p, gpa, .limited(256 << 20)) catch |e| switch (e) {
-                error.FileNotFound => try gpa.alloc(u8, 0),
+            // Decoded (encoding, BOM and line ends detected); a missing
+            // file opens empty.
+            if (zg_editor.model.buffer.external.load(gpa, wb.io, std.Io.Dir.cwd(), p, null, .utf8)) |l| {
+                loaded = l;
+                bytes = l.text;
+            } else |e| switch (e) {
+                error.FileNotFound => bytes = try gpa.alloc(u8, 0),
                 else => return e,
-            };
+            }
         }
         const h = if (f.path) |p| blk: {
             const abs = try std.fs.path.resolve(gpa, &.{ wb.cwd, p });
@@ -216,6 +249,12 @@ pub const Workbench = struct {
         f.doc = wb.docs.get(h).?;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
+        if (f.path) |p| {
+            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
+            sync.on_done = .{ .ctx = wb, .f = onFileSync };
+            f.sync = sync;
+        }
+        errdefer if (f.sync) |x| x.destroy();
         if (wb.langs.detect(f.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
             const sx = try gpa.create(DocumentSyntax);
             errdefer gpa.destroy(sx);
@@ -227,6 +266,7 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (f.sync) |x| x.destroy();
         f.view.deinit();
         if (f.syntax) |sx| {
             sx.deinit();
@@ -254,7 +294,10 @@ pub const Workbench = struct {
         const nf = &wb.files.items[wb.files.items.len - 1];
         nf.panel = try wb.addEditorPanel(nf.*);
         try wb.showEditor(nf);
-        if (wb.win != null) nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        if (wb.win != null) {
+            nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
         return nf;
     }
 
@@ -555,8 +598,12 @@ pub const Workbench = struct {
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.md_highlight) |*h| h.deinit(wb.gpa);
+        wb.md_highlight = null;
         if (wb.review_view) |v| v.destroy();
         wb.review_view = null;
+        if (wb.review_timer != .none) w.cancelTimer(wb.review_timer);
+        wb.review_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
@@ -564,11 +611,17 @@ pub const Workbench = struct {
         wb.agent = null;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
+        if (wb.approvals_inbox) |i| i.destroy();
+        wb.approvals_inbox = null;
         wb.approvals.deinit();
+        wb.mcp_input.deinit();
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        for (wb.files.items) |f| f.view.on_change = null;
+        for (wb.files.items) |f| {
+            f.view.on_change = null;
+            f.view.on_caret = null;
+        }
         wb.win = null;
     }
 
@@ -600,13 +653,26 @@ pub const Workbench = struct {
     /// Hooks the keymap and the palette into `win` and focuses the editor.
     pub fn attach(wb: *Workbench, win: *Window) !void {
         wb.win = win;
+        for (wb.files.items) |f| if (f.sync) |x| {
+            x.app = win.app;
+        };
         wb.adapter = .init(wb.gpa, wb.reg, wb.resolver, win);
         wb.adapter.install();
         wb.adapter.on_status = .{ .ctx = wb, .f = onStatus };
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
-        for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
-        wb.approvals = .init(wb.gpa, wb.io, win);
+        for (wb.files.items) |f| {
+            f.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
+        wb.approvals = .init(wb.gpa, wb.io, .{});
+        if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
+            inb.win = win;
+            inb.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            inb.on_pending = .{ .ctx = wb, .f = onApprovalPending };
+            wb.approvals_inbox = inb;
+        } else |e| log.err("approvals inbox: {t}", .{e});
+        wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
             wb.persister = .{ .gpa = wb.gpa, .io = wb.io, .app = win.app, .dir = dir, .source = .{ .ctx = wb, .snapshot = layoutSnapshot }, .win = win };
@@ -640,14 +706,20 @@ pub const Workbench = struct {
 
     const commands = [_]Cmd{
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
+        .{ .id = "file.saveOverwrite", .title = "Save, Overwriting Changes on Disk", .category = "File", .run = saveOverwrite },
+        .{ .id = "file.revert", .title = "Revert File (Reload from Disk)", .category = "File", .run = revert },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
+        .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
+        .{ .id = "editor.addCursorAbove", .title = "Add Cursor Above", .category = "Selection", .run = addCursorAbove },
+        .{ .id = "editor.addCursorBelow", .title = "Add Cursor Below", .category = "Selection", .run = addCursorBelow },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
+        .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -669,25 +741,76 @@ pub const Workbench = struct {
     }
 
     fn notify(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, comptime fmt: []const u8, args: anytype) void {
-        const w = wb.win orelse return;
-        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch return;
-        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = s, .source = "Files" });
+        wb.notifyActions(severity, &.{}, fmt, args);
     }
 
-    /// Writes the document to its file.
+    fn notifyActions(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, actions: []const zg_gui.w.notification_center.ToastAction, comptime fmt: []const u8, args: anytype) void {
+        const w = wb.win orelse return;
+        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch return;
+        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = s, .source = "Files", .actions = actions, .sticky = actions.len > 0 });
+    }
+
+    /// The current file's disk binding, or a notice for an untitled one.
+    fn currentSync(wb: *Workbench) ?*FileSync {
+        const f = if (wb.cur_panel) |cp| wb.fileOf(cp) else null;
+        if (f) |x| if (x.sync) |fs| return fs;
+        wb.notify(.warning, "Untitled: start zigguro with a file path to save", .{});
+        return null;
+    }
+
+    /// Starts writing the document to its file (on a worker; the outcome
+    /// is a toast).
     pub fn save(wb: *Workbench) !void {
-        const p = wb.path orelse {
-            wb.notify(.warning, "Untitled: start zigguro with a file path to save", .{});
-            return;
+        wb.startSave(.{});
+    }
+
+    /// Saves even though the file changed on disk.
+    fn saveOverwrite(wb: *Workbench) !void {
+        wb.startSave(.{ .overwrite = true });
+    }
+
+    fn startSave(wb: *Workbench, o: file_sync.SaveOptions) void {
+        const fs = wb.currentSync() orelse return;
+        fs.save(o) catch |e| switch (e) {
+            error.Busy => wb.notify(.info, "{s} is still being saved", .{std.fs.path.basename(fs.path)}),
+            else => wb.notify(.error_, "Save failed: {t}", .{e}),
         };
-        const bytes = try wb.view.allText(wb.gpa);
-        defer wb.gpa.free(bytes);
-        std.Io.Dir.cwd().writeFile(wb.io, .{ .sub_path = p, .data = bytes }) catch |e| {
-            wb.notify(.error_, "Save failed: {t}", .{e});
-            return e;
+    }
+
+    /// Reloads the current file from disk, dropping unsaved edits (one
+    /// undo step brings them back).
+    fn revert(wb: *Workbench) !void {
+        const fs = wb.currentSync() orelse return;
+        fs.revert() catch |e| wb.notify(.error_, "Revert failed: {t}", .{e});
+    }
+
+    /// Looks for changes on disk to every open file (when the window
+    /// gains focus, and with the review poll while the agent runs).
+    fn checkFiles(wb: *Workbench) void {
+        for (wb.files.items) |f| if (f.sync) |fs| fs.check() catch {};
+    }
+
+    fn onFileSync(ctx: *anyopaque, fs: *FileSync, o: file_sync.Outcome) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const name = std.fs.path.basename(fs.path);
+        const keep_or_reload = &[_]zg_gui.w.notification_center.ToastAction{
+            .{ .label = "Overwrite", .action = "file.saveOverwrite" },
+            .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
-        wb.doc.saved_version = wb.doc.version;
-        wb.notify(.success, "Saved {s} ({d} bytes)", .{ std.fs.path.basename(p), bytes.len });
+        switch (o) {
+            .saved => |s| wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes }),
+            .save_failed => |e| switch (e) {
+                error.ExternalChangeConflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk; not saved", .{name}),
+                error.Unrepresentable => wb.notify(.error_, "{s}: a character has no encoding in {t}; not saved", .{ name, fs.file.encoding }),
+                else => wb.notify(.error_, "Saving {s} failed: {t}", .{ name, e }),
+            },
+            .unchanged => {},
+            .reloaded => wb.notify(.info, "Reloaded {s} from disk", .{name}),
+            .conflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk and has unsaved edits", .{name}),
+            .deleted => wb.notify(.warning, "{s} was deleted on disk", .{name}),
+            .check_failed => |e| log.warn("checking {s}: {t}", .{ name, e }),
+        }
+        if (wb.win) |w| w.markAllDirty();
     }
 
     fn undo(wb: *Workbench) !void {
@@ -698,8 +821,24 @@ pub const Workbench = struct {
         _ = try wb.view.redoStep();
     }
 
+    /// The keymap's binding (Shift+Alt+Up/Down on Linux, Ctrl+Alt+Up/Down
+    /// elsewhere; the editor also takes Ctrl+Alt itself).
+    fn addCursorAbove(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_above);
+    }
+
+    fn addCursorBelow(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_below);
+    }
+
     fn selectAll(wb: *Workbench) !void {
         wb.view.selectAll();
+    }
+
+    fn toggleFloatOnTop(wb: *Workbench) !void {
+        const fl = if (wb.floater) |*fl| fl else return;
+        fl.setAlwaysOnTop(!fl.policy.always_on_top);
+        wb.notify(.info, "Floating windows {s}", .{if (fl.policy.always_on_top) "stay on top" else "no longer stay on top"});
     }
 
     fn toggleTheme(wb: *Workbench) !void {
@@ -755,11 +894,13 @@ pub const Workbench = struct {
     /// Creates the agent and its panel, once.
     fn startAgent(wb: *Workbench, w: *Window) !void {
         if (wb.agent_panel != null) return;
-        const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, wb.approvals.port());
+        const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, &wb.approvals);
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
         const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
+        if (wb.md_highlight) |*h| p.highlighter = h.highlighter();
         // Pasted images go to the project's .zigguro/attachments.
         if (std.fs.path.join(wb.gpa, &.{ wb.cwd, ".zigguro", "attachments" })) |dir| {
             defer wb.gpa.free(dir);
@@ -767,6 +908,11 @@ pub const Workbench = struct {
         } else |_| {}
         p.plans = &host.plans;
         p.plan_mode = &host.plan_mode;
+        // The session's approvals also show in the pane.
+        p.approvals = PaneApprovals.create(wb.gpa, w.app, &wb.approvals, host.agent.ref.session) catch |e| blk: {
+            log.err("agent pane approvals: {t}", .{e});
+            break :blk null;
+        };
         p.attachChildren(&host.children);
         // Rewinding code goes through E12's checkpoints.
         p.restore = host.review.restore();
@@ -775,6 +921,7 @@ pub const Workbench = struct {
             p.commands = c;
         }
         host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        host.mcp.broker = wb.mcp_input.broker();
         if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
         wb.agent = host;
         wb.agent_panel = p;
@@ -804,7 +951,35 @@ pub const Workbench = struct {
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
         p.open_review = .{ .ctx = wb, .f = openReview };
+        p.inbox = wb.approvals_inbox;
         wb.review_panel = p;
+        wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
+    }
+
+    /// Shows the review queue, whose top lists the approvals.
+    pub fn showApprovals(wb: *Workbench) !void {
+        if (wb.shown(wb.review_ref) and wb.areaOf(wb.review_ref) != .center) return;
+        try wb.toggleReview();
+    }
+
+    /// A request waits for approval (UI thread).
+    fn onApprovalPending(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showApprovals() catch |e| log.err("approvals: cannot show the review queue: {t}", .{e});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Takes in what `zg review` or another window decided, then polls
+    /// again.
+    fn pollReview(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.review_timer = .none;
+        const host = wb.agent orelse return;
+        if (host.review.refresh()) w.markAllDirty();
+        // Accepted review changes land on disk: open files pick them up
+        // (a stat per file when nothing changed).
+        wb.checkFiles();
+        wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
     }
 
     /// A palette "AI: /name" command: opens the agent pane and runs
@@ -877,6 +1052,10 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
+        // Back in the window: files may have changed on disk.
+        const focused = ui.win.chrome.focused;
+        if (focused and !wb.was_focused) wb.checkFiles();
+        wb.was_focused = focused;
         if (wb.pending_open) |p| {
             wb.pending_open = null;
             defer wb.gpa.free(p);
@@ -1100,11 +1279,11 @@ pub const Workbench = struct {
         const head = wb.view.primarySel().head;
         const line = wb.view.lineOf(head);
         const col = head - wb.view.lineRange(line).start;
-        const pos = if (wb.view.sels.items.len > 1)
-            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.sels.items.len }) catch ""
+        const pos = if (wb.view.selections().len > 1)
+            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [7]zg_gui.w.StatusItem = undefined;
+        var items: [8]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -1116,6 +1295,12 @@ pub const Workbench = struct {
         }
         if (wb.syntax) |sx| {
             items[n] = .{ .id = "language", .text = sx.lang.name, .side = .right, .priority = 50 };
+            n += 1;
+        }
+        var ab: [32]u8 = undefined;
+        const waiting = wb.approvals.pendingCount(.{});
+        if (waiting > 0) {
+            items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
             n += 1;
         }
         items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };

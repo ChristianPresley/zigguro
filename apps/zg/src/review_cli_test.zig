@@ -371,3 +371,103 @@ test "review_cli: runs next to the IDE on one store" {
     try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "show", "2" }));
     try testing.expect(std.mem.startsWith(u8, fx.out.written(), "#2 Turn 2: more  pending\n"));
 }
+
+test "review_cli: policy explain golden" {
+    var fx: Fx = undefined;
+    fx.init();
+    defer fx.deinit();
+    try fx.tmp.dir.createDirPath(io, ".zigguro");
+    try fx.write(".zigguro/settings.zon",
+        \\.{ .review = .{ .rules = .{
+        \\    .{ .paths = .{"**/*.lock"}, .action = .review_required },
+        \\    .{ .paths = .{"docs/**"}, .max_changed_lines = 50, .action = .auto_accept },
+        \\} } }
+    );
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "docs/a.md", "--lines", "10" }));
+    try testing.expectEqualStrings(
+        \\docs/a.md: auto-apply
+        \\  step: rule (an auto_accept rule matched)
+        \\  rule 1: action auto_accept, paths docs/**, at most 50 changed lines
+        \\  (2 rules in .zigguro/settings.zon; E16 permissions are not consulted here)
+        \\
+    , fx.out.written());
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "docs/a.md" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "docs/a.md: review\n  step: default"));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "build.zig", "--mode", "accept_edits" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "build.zig: review\n  step: protected_path"));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "src/x.zig", "--mode", "plan" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "src/x.zig: deny\n"));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "policy", "explain", "a", "--op", "rename" }));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "policy", "list" }));
+}
+
+test "review_cli: approvals list, approve and deny reach the waiting process" {
+    var fx: Fx = undefined;
+    fx.init();
+    defer fx.deinit();
+    try std.testing.expectEqual(@as(u8, 0), try fx.run(&.{"approvals"}));
+    try testing.expectEqualStrings("No approval requests.\n", fx.out.written());
+
+    // The IDE asks twice and waits.
+    var p: Ide = undefined;
+    try p.open(fx.tmp.dir);
+    defer p.close();
+    var b: zg_review.approvals.ApprovalBroker = .init(gpa, io, .{});
+    defer b.deinit();
+    b.bind(p.store.approvalRecorder(), 77 << 32);
+    p.sink.approvals = b.remoteSink();
+    const req: zg_review.approvals.ApprovalRequest = .{
+        .kind = .command,
+        .actor = .{ .agent = .{ .session = "s1", .agent = "main" } },
+        .title = "Run command",
+        .detail_json = "{\"command\":\"make\"}",
+        .command = "make",
+        .risk = &.{"Runs a program on this machine."},
+        .rule_suggestion = "run_command(make)",
+        .editable = true,
+        .created_ms = now_ms - 2 * std.time.ms_per_min,
+    };
+    const a = try b.present(req);
+    var tool = req;
+    tool.kind = .mcp_tool;
+    tool.title = "Call MCP tool github.create_issue";
+    tool.command = null;
+    tool.risk = &.{};
+    tool.rule_suggestion = null;
+    tool.created_ms = now_ms - std.time.ms_per_min;
+    const t = try b.present(tool);
+    try p.store.flush();
+
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{"approvals"}));
+    var buf: [256]u8 = undefined;
+    const line = try std.fmt.bufPrint(&buf, "{f}  pending             2m  agent:s1/main  Run command: make\n      ! Runs a program on this machine.\n", .{a});
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), line));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "approvals", "--json" }));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, fx.out.written(), "\n"));
+    try testing.expect(std.mem.indexOf(u8, fx.out.written(), "\"state\":\"pending\"") != null);
+
+    var id_buf: [32]u8 = undefined;
+    const a_id = try std.fmt.bufPrint(&id_buf, "{d}", .{@intFromEnum(a)});
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "approve", a_id, "--session" }));
+    try testing.expect(std.mem.endsWith(u8, fx.out.written(), "Allowed for the session.\n"));
+    // Answered: a second answer is a conflict; unknown ids are not found.
+    try testing.expectEqual(@as(u8, 3), try fx.run(&.{ "approve", a_id }));
+    try testing.expectEqual(@as(u8, 4), try fx.run(&.{ "deny", "!12345" }));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{"approve"}));
+    var t_buf: [32]u8 = undefined;
+    const t_id = try std.fmt.bufPrint(&t_buf, "!{d}", .{@intFromEnum(t)});
+    // A tool's edited input must be JSON; it has no rule to save.
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "approve", t_id, "--edit", "{nope" }));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "approve", t_id, "--always" }));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "deny", t_id, "--reason", "wrong repo" }));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{"approvals"}));
+    try testing.expectEqualStrings("No approval requests waiting.\n", fx.out.written());
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "approvals", "--all" }));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, fx.out.written(), "agent:s1/main"));
+
+    // The IDE reads the journal: its waiters get the answers.
+    _ = try p.store.tail(p.sink.sink());
+    try testing.expectEqualStrings("run_command(make)", (try b.await(a, io)).allow_session);
+    try testing.expectEqualStrings("wrong repo", (try b.await(t, io)).deny);
+    try testing.expectEqualStrings("cli", b.get(t).?.answered_by.?);
+}

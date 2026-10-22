@@ -627,6 +627,7 @@ pub const python_language: language.Language = .{
         },
         .insert_spaces = true,
         .indent_after = &.{":"},
+        .dedent_on = &.{ "else", "elif", "except", "finally" },
         .dedent_after = &.{ "return", "pass", "break", "continue", "raise" },
     },
     .brackets = &.{

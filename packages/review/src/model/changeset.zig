@@ -130,6 +130,10 @@ pub const FileChange = struct {
     /// changes keep their base in `content`.
     base: ?BaseRef = null,
     folded_from: []const ChangesetId = &.{},
+    /// The proposed text at the changeset's previous revision (a blob),
+    /// when the agent revised it after review feedback: the left side of
+    /// the interdiff.
+    previous: ?BlobHash = null,
 
     /// Lines added and removed by the hunks.
     pub fn countLines(fc: *const FileChange) struct { added: u32, removed: u32 } {

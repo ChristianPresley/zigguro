@@ -317,3 +317,23 @@ test "wayland path uses private mime" {
     try testing.expectEqual(f.ps[0], g.tabs.items[g.tabs.items.len - 1]);
     try testing.expectEqual(@as(usize, 0), f.page.dock.floating.items.len);
 }
+
+test "a restored floating window opens at its place, above others" {
+    var f: Fx = undefined;
+    try f.init(.{ .always_on_top = true });
+    defer f.deinit();
+    try f.page.dock.move(f.ps[1], .{ .float = .{ .x = 120, .y = 60, .w = 400, .h = 300 } });
+    const fm = &f.page.dock.floating.items[0];
+    fm.monitor.set("HEADLESS-1");
+    try f.fl.sync();
+    try f.frames();
+    const hw = f.floatWin();
+    const scale = f.hl.opts.scale.factor;
+    const at = f.hl.placement(hw.id).?;
+    try testing.expectEqual(@as(i32, @intFromFloat(@round(120 * scale))), at.position.?.x);
+    try testing.expectEqual(@as(i32, @intFromFloat(@round(60 * scale))), at.position.?.y);
+    try testing.expect(at.always_on_top);
+    f.fl.setAlwaysOnTop(false);
+    try f.frames();
+    try testing.expect(!f.hl.placement(hw.id).?.always_on_top);
+}

@@ -4,6 +4,7 @@
 //! and font file listing.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const options = @import("zg_options");
 const xml = @import("xml.zig");
@@ -141,6 +142,8 @@ const Fixture = struct {
     root: []u8,
 
     fn init(case: []const u8) !Fixture {
+        // fontconfig paths are POSIX paths; the loader is Linux-only.
+        if (builtin.os.tag == .windows) return error.SkipZigTest;
         const gpa = testing.allocator;
         var env: std.process.Environ.Map = .init(gpa);
         errdefer env.deinit();
@@ -253,6 +256,9 @@ test "default dirs when no config" {
 }
 
 test "listFontFiles extension filter and symlink loop" {
+    // Creating symlinks needs a privilege on Windows (and fails under
+    // Wine); the Windows discovery tests cover listing there.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const gpa = testing.allocator;
     const io = testing.io;
     var tmp = testing.tmpDir(.{});

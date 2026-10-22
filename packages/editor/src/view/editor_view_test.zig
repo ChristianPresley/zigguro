@@ -135,6 +135,52 @@ test "view: undo groups typing and redo restores it" {
     try f.expectText("ab c");
 }
 
+test "view: undoing back to the saved text makes the document clean" {
+    var f: Fx = undefined;
+    try f.init("abc");
+    defer f.deinit();
+    try testing.expect(!f.doc.isDirty());
+    f.t.typeText("x");
+    try testing.expect(f.doc.isDirty());
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try f.expectText("abc");
+    try testing.expect(!f.doc.isDirty());
+    f.press(.{ .key = .key_y, .mods = .{ .ctrl = true } });
+    try testing.expect(f.doc.isDirty());
+
+    // A change from outside the view's history (an agent edit) keeps the
+    // document dirty even when the view's undo is back at the saved state.
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try testing.expect(!f.doc.isDirty());
+    f.t.typeText("y");
+    var cs = try cs_mod.ChangeSet.fromEdits(gpa, f.doc.len(), &.{.{ .range = .{ .start = 0, .end = 0 }, .text = "agent " }});
+    defer cs.deinit();
+    try f.doc.applyChangeSet(&cs, .{ .agent = 1 });
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try testing.expect(f.doc.isDirty());
+}
+
+test "view: on_caret reports caret moves, not every repaint" {
+    var f: Fx = undefined;
+    try f.init("one\ntwo");
+    defer f.deinit();
+    var calls: u32 = 0;
+    f.view.on_caret = .{ .ctx = &calls, .f = struct {
+        fn bump(ctx: *anyopaque, _: *EditorView) void {
+            const n: *u32 = @ptrCast(@alignCast(ctx));
+            n.* += 1;
+        }
+    }.bump };
+    f.press(.{ .key = .arrow_right });
+    try testing.expectEqual(@as(u32, 1), calls);
+    f.press(.{ .key = .arrow_down });
+    try testing.expectEqual(@as(u32, 2), calls);
+    // A repaint or a scroll without a caret move reports nothing.
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    try testing.expectEqual(@as(u32, 2), calls);
+}
+
 test "view: arrows, words, home and end" {
     var f: Fx = undefined;
     try f.init("  alpha beta\nxy\nlonger line");
@@ -225,7 +271,7 @@ test "view: alt-click adds carets that type and paste together" {
     try f.clickAt(0, 1, 1, no_mods);
     try f.clickAt(1, 1, 1, .{ .key = .unknown, .mods = .{ .alt = true } });
     try f.clickAt(2, 1, 1, .{ .key = .unknown, .mods = .{ .alt = true } });
-    try testing.expectEqual(@as(usize, 3), f.view.sels.items.len);
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
     f.t.typeText("!");
     try f.expectText("a!\nb!\nc!");
     // One clipboard line per caret.
@@ -233,7 +279,64 @@ test "view: alt-click adds carets that type and paste together" {
     f.press(.{ .key = .key_v, .mods = .{ .ctrl = true } });
     try f.expectText("a!1\nb!2\nc!3");
     f.press(.{ .key = .escape });
-    try testing.expectEqual(@as(usize, 1), f.view.sels.items.len);
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+}
+
+test "view: multi-cursor keys run the model's commands" {
+    var f: Fx = undefined;
+    try f.init("foo bar\nfoo baz\nfoo");
+    defer f.deinit();
+    // Ctrl+D from a caret selects the word, then its next occurrences.
+    f.view.setSelection(.caret(1));
+    const ctrl_d: zg_gui.input.event.KeyPress = .{ .key = .key_d, .mods = .{ .ctrl = true } };
+    f.press(ctrl_d);
+    f.press(ctrl_d);
+    try testing.expectEqual(@as(usize, 2), f.view.selections().len);
+    // Ctrl+U takes the last one back.
+    f.press(.{ .key = .key_u, .mods = .{ .ctrl = true } });
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+    // Ctrl+Shift+L: every occurrence; typing replaces them all.
+    f.press(.{ .key = .key_l, .mods = .{ .ctrl = true, .shift = true } });
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
+    f.t.typeText("qux");
+    try f.expectText("qux bar\nqux baz\nqux");
+    f.press(.{ .key = .escape });
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+
+    // Ctrl+Alt+Down adds a caret on the next line, same column.
+    f.view.setSelection(.caret(2));
+    f.press(.{ .key = .arrow_down, .mods = .{ .ctrl = true, .alt = true } });
+    try testing.expectEqual(@as(usize, 2), f.view.selections().len);
+    f.t.typeText("_");
+    try f.expectText("qu_x bar\nqu_x baz\nqux");
+
+    // Alt+Shift+I splits a multi-line range into one per line.
+    f.view.selectAll();
+    f.press(.{ .key = .key_i, .mods = .{ .alt = true, .shift = true } });
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
+}
+
+test "view: alt-shift drag selects a column" {
+    var f: Fx = undefined;
+    try f.init("abcd\nefgh\nij");
+    defer f.deinit();
+    const from = try f.pointAt(0, 1);
+    const to = try f.pointAt(2, 3);
+    const mods = (zg_gui.input.event.KeyPress{ .key = .unknown, .mods = .{ .alt = true, .shift = true } }).mods;
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = from } });
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = from, .clicks = 1, .mods = mods } });
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = to } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = to, .clicks = 1, .mods = mods } });
+    _ = f.t.settle();
+    const sels = f.view.selections();
+    try testing.expectEqual(@as(usize, 3), sels.len);
+    try testing.expectEqual(@as(u64, 1), sels[0].start());
+    try testing.expectEqual(@as(u64, 3), sels[0].end());
+    // The short last row stops at its end.
+    try testing.expectEqual(@as(u64, 11), sels[2].start());
+    try testing.expectEqual(@as(u64, 12), sels[2].end());
+    f.t.typeText("-");
+    try f.expectText("a-d\ne-h\ni-");
 }
 
 test "view: edits from elsewhere move the carets" {

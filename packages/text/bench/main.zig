@@ -759,6 +759,40 @@ fn fontBenches(b: *bench.Bench, fonts: *const Fonts) !void {
     for (&ids) |*id| id.* = @intCast(F.registry.first_id + rng.random().uintLessThan(u32, 1000));
     var get_ctx: GetCtx = .{ .reg = &reg, .ids = &ids };
     try b.run("text.registry_get", &get_ctx, registryGet);
+
+    // Fallback through a database of the test fonts: a cached
+    // resolution, and a miss that searches the coverage index.
+    const dir = try std.fs.path.join(b.gpa, &.{ zg_text.dev.package_root, "testdata", "fonts" });
+    defer b.gpa.free(dir);
+    var list: std.ArrayList(F.FileEntry) = .empty;
+    defer F.discovery.freeFileEntries(b.gpa, &list);
+    try F.listFontFiles(b.gpa, b.io, &.{dir}, &list);
+    var stats: F.ScanStats = .{};
+    var tdb = try F.FontDb.empty.rescan(b.gpa, b.io, list.items, &stats);
+    defer tdb.deinit(b.gpa);
+    var freg: F.FontRegistry = .init(b.gpa);
+    defer freg.deinit();
+    var fb: F.Fallback = .init(b.gpa, &freg);
+    defer fb.deinit();
+    try fb.attachDb(&freg, b.io, &tdb, .{}, .{});
+    var fb_ctx: FallbackCtx = .{ .fb = &fb, .chain = try fb.chain(&.{"JetBrains Mono"}, .{}) };
+    _ = fb.resolve(fb_ctx.chain, "\u{628}", .default);
+    try b.run("text.fallback_hit", &fb_ctx, fallbackHit);
+    try b.run("text.fallback_miss", &fb_ctx, fallbackMiss);
+}
+
+const FallbackCtx = struct { fb: *zg_text.fonts.Fallback, chain: zg_text.fonts.ChainId };
+
+fn fallbackHit(ctx: *FallbackCtx, s: *State) void {
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(ctx.fb.resolve(ctx.chain, "\u{628}", .default));
+}
+
+fn fallbackMiss(ctx: *FallbackCtx, s: *State) void {
+    for (0..s.iterations()) |i| {
+        // A locale change drops the cache, so each resolution searches.
+        ctx.fb.setLocale(if (i & 1 == 0) "ja" else "ko");
+        bench.doNotOptimizeAway(ctx.fb.resolve(ctx.chain, "\u{628}", .default));
+    }
 }
 
 const LoadCtx = struct { gpa: std.mem.Allocator, io: std.Io, path: []const u8 };

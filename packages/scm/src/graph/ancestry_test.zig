@@ -175,3 +175,39 @@ test "ancestry: mergeBases criss-cross" {
     try t.expectEqual(P(ix, c), (try limited.next()).?);
     try t.expectEqual(@as(?Pos, null), try limited.next());
 }
+
+test "ancestry: reachability labels survive appends, folds and rebuilds" {
+    const t = std.testing;
+    const gpa = t.allocator;
+    const r = try Repo.init(gpa);
+    defer r.deinit();
+    var prng: std.Random.DefaultPrng = .init(23);
+    const rng = prng.random();
+    const ids = try test_repo.randomDag(r, rng, 4_000);
+    defer gpa.free(ids);
+    const ix = try r.openIndex(null);
+    defer ix.close();
+
+    // Index in batches so the labels extend (and segments fold) between
+    // queries; the last batch is large enough to force a full relabel.
+    var done: usize = 0;
+    for ([_]usize{ 2_000, 2_100, 2_300, 2_450, 4_000 }) |upto| {
+        try ix.ensureIndexed(ids[done..upto]);
+        done = upto;
+        try checkPairs(gpa, ix, rng);
+    }
+    try ix.rebuild();
+    try checkPairs(gpa, ix, rng);
+}
+
+fn checkPairs(gpa: std.mem.Allocator, ix: *index.CommitIndex, rng: std.Random) !void {
+    const v = ix.acquire();
+    defer v.release();
+    const sets = try closure(gpa, v);
+    defer freeClosure(gpa, sets);
+    for (0..3_000) |_| {
+        const b = rng.uintLessThan(u32, v.count);
+        const a = if (rng.boolean()) rng.uintLessThan(u32, v.count) else b -| rng.uintLessThan(u32, 200);
+        try std.testing.expectEqual(sets[b].isSet(a), try ix.isAncestor(Pos.of(a), Pos.of(b)));
+    }
+}

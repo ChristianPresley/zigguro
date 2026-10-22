@@ -23,8 +23,12 @@
 //! - Monitors: a floating window records its monitor's name and scale;
 //!   `restoreRect` puts a saved rect back on that monitor, or centered on
 //!   the primary one when the monitor is gone or the rect is off screen.
-//!   Platforms cannot place windows yet (and Wayland never lets clients),
-//!   so only the size is applied when a window opens.
+//!   A restored window opens at that place (Win32 and X11; Wayland
+//!   compositors place windows themselves). A new tear-off is placed by
+//!   the system: a window's own screen position is not known.
+//! - `FloatingPolicy.always_on_top` keeps floating windows above normal
+//!   ones where the platform can; `setAlwaysOnTop` changes it for open
+//!   windows.
 //!
 //! Windows are opened through a `WindowOpener` (`Host.windowOpener` for
 //! real ones); closing only asks (`Window.close_requested`), so a window
@@ -61,11 +65,23 @@ pub const FloatingPolicy = struct {
     always_on_top: bool = false,
 };
 
+/// Where a floating window opens.
+pub const Placement = struct {
+    /// Outer top-left corner on the virtual screen (physical pixels);
+    /// null lets the system choose.
+    position: ?zg_platform.types.PxPoint = null,
+    always_on_top: bool = false,
+};
+
 /// Opens and closes the OS windows floating panels live in.
 pub const WindowOpener = struct {
     ctx: *anyopaque,
     /// Opens a window of logical `size` showing `root`.
     open: *const fn (ctx: *anyopaque, title: []const u8, size: geom.Size, root: view_mod.AnyView) anyerror!*Window,
+    /// Like `open`, placed; preferred when set.
+    open_placed: ?*const fn (ctx: *anyopaque, title: []const u8, size: geom.Size, root: view_mod.AnyView, at: Placement) anyerror!*Window = null,
+    /// Changes an open window's always-on-top state (false: cannot).
+    set_always_on_top: ?*const fn (ctx: *anyopaque, w: *Window, on: bool) bool = null,
     /// The monitors (`Platform.monitors`); none when unknown.
     monitors: ?*const fn (ctx: *anyopaque, out: []zg_platform.types.MonitorInfo) usize = null,
 };
@@ -116,6 +132,21 @@ pub fn restoreRect(r: Rect, monitor: []const u8, monitors: []const zg_platform.t
     const w = @min(r.w, wa.w);
     const h = @min(r.h, wa.h);
     return .{ .x = wa.x + (wa.w - w) / 2, .y = wa.y + (wa.h - h) / 2, .w = w, .h = h };
+}
+
+/// The physical top-left of logical `r` on the monitor named `monitor`
+/// (the primary when it is gone).
+fn physicalAt(r: Rect, monitor: []const u8, monitors: []const zg_platform.types.MonitorInfo) ?zg_platform.types.PxPoint {
+    if (monitors.len == 0) return null;
+    var m = &monitors[0];
+    for (monitors) |*x| if (x.primary) {
+        m = x;
+    };
+    for (monitors) |*x| if (std.mem.eql(u8, x.name(), monitor)) {
+        m = x;
+    };
+    const s = if (m.scale.factor > 0) m.scale.factor else 1;
+    return .{ .x = @intFromFloat(@round(r.x * s)), .y = @intFromFloat(@round(r.y * s)) };
 }
 
 fn workOf(m: *const zg_platform.types.MonitorInfo) Rect {
@@ -194,6 +225,14 @@ pub const Floater = struct {
 
     /// Frees every floating window's state. Their windows must be closed
     /// (or about to be) and not built again.
+    /// Keeps floating windows above normal ones (or stops); open windows
+    /// change too where the platform can.
+    pub fn setAlwaysOnTop(fl: *Floater, on: bool) void {
+        fl.policy.always_on_top = on;
+        const f = fl.opener.set_always_on_top orelse return;
+        for (fl.wins.items) |fw| _ = f(fl.opener.ctx, fw.win, on);
+    }
+
     pub fn deinit(fl: *Floater) void {
         for (fl.wins.items) |fw| fl.freeWin(fw);
         for (fl.closed.items) |fw| fl.freeWin(fw);
@@ -343,19 +382,26 @@ pub const Floater = struct {
         if (f.root) |r| if (fl.dock.firstGroup(r)) |g| if (fl.dock.group(g)) |gr| if (gr.tabs.items.len > 0) {
             title = fl.host.tab(fl.host.ctx, gr.tabs.items[gr.active]).title;
         };
-        // Where it goes is recorded; only the size can be applied.
+        var at: Placement = .{ .always_on_top = fl.policy.always_on_top };
         if (fl.opener.monitors) |mf| {
             var mons: [8]zg_platform.types.MonitorInfo = undefined;
             const n = @min(mf(fl.opener.ctx, &mons), mons.len);
             // A saved window goes back on screen; a new one records the
             // monitor it opens on (the primary: positions are unknown).
-            if (f.monitor.len > 0) f.rect = restoreRect(f.rect, f.monitor.get(), mons[0..n]);
+            if (f.monitor.len > 0) {
+                f.rect = restoreRect(f.rect, f.monitor.get(), mons[0..n]);
+                at.position = physicalAt(f.rect, f.monitor.get(), mons[0..n]);
+            }
             if (f.monitor.len == 0) for (mons[0..n]) |*m| if (m.primary or n == 1) {
                 f.monitor.set(m.name());
                 f.scale = m.scale.factor;
             };
         }
-        fw.win = try fl.opener.open(fl.opener.ctx, title, .{ .w = f.rect.w, .h = f.rect.h }, view_mod.AnyView.of(fw));
+        const size: geom.Size = .{ .w = f.rect.w, .h = f.rect.h };
+        fw.win = if (fl.opener.open_placed) |op|
+            try op(fl.opener.ctx, title, size, view_mod.AnyView.of(fw), at)
+        else
+            try fl.opener.open(fl.opener.ctx, title, size, view_mod.AnyView.of(fw));
         try fl.wins.append(fl.gpa, fw);
         fl.hook(fw.win, &fw.dv);
         fw.win.on_close = .{ .ctx = fl, .f = onFloatClose };

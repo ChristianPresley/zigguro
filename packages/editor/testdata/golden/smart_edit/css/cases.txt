@@ -1,0 +1,93 @@
+=== enter between braces
+--- before
+a {¦}
+--- keys
+<enter>
+--- after
+a {
+    ¦
+}
+
+=== electric closer
+--- before
+a {
+    color: red;
+    ¦
+--- keys
+}
+--- after
+a {
+    color: red;
+}¦
+
+=== autoclose paren
+--- before
+a { color: rgb¦ }
+--- keys
+(1
+--- after
+a { color: rgb(1¦) }
+
+=== string
+--- before
+a { content: ¦ }
+--- keys
+"x
+--- after
+a { content: "x¦" }
+
+=== comment toggle
+--- before
+«a { }
+b { }»
+--- keys
+<lc>
+--- after
+«/* a { } */
+/* b { } */»
+
+=== comment toggle off
+--- before
+«/* a { } */»
+--- keys
+<lc>
+--- after
+«a { }»
+
+=== block comment
+--- before
+a { «color: red;» }
+--- keys
+<bc>
+--- after
+a { «/* color: red; */» }
+
+=== surround
+--- before
+a { width: «1px» }
+--- keys
+(
+--- after
+a { width: («1px») }
+
+=== brackets attribute
+--- before
+a¦ {}
+--- keys
+[href
+--- after
+a[href¦] {}
+
+=== nested
+--- before
+@media x {
+    a {¦}
+}
+--- keys
+<enter>
+--- after
+@media x {
+    a {
+        ¦
+    }
+}

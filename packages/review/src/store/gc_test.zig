@@ -4,6 +4,7 @@ const store_mod = @import("store.zig");
 const gc = @import("gc.zig");
 const Checkpoints = @import("../checkpoint/root.zig").Checkpoints;
 const apply = @import("../apply/root.zig");
+const comments = @import("../feedback/comments.zig");
 
 const testing = std.testing;
 const io = testing.io;
@@ -19,6 +20,7 @@ const Proc = struct {
     disk: apply.MemFiles,
     cps: Checkpoints,
     sink: store_mod.QueueSink,
+    comments: comments.CommentStore,
 
     fn open(p: *Proc, dir: std.Io.Dir, tag: u32) !void {
         p.store = try ChangesetStore.open(gpa, io, dir, "review", .{ .process_tag = tag });
@@ -27,11 +29,14 @@ const Proc = struct {
         p.disk = .init(gpa);
         p.cps = .init(gpa, io, p.q, &p.history, p.disk.files(), p.store.checkpointRecorder());
         p.sink = p.store.queueSink(p.q, &p.history, p.cps.sink());
+        p.comments = .init(gpa, .{ .recorder = p.store.commentRecorder(), .id_base = @as(u64, tag) << 32 });
+        p.sink.comments = p.comments.restoreSink();
         _ = try p.store.load(p.sink.sink());
     }
 
     fn close(p: *Proc) void {
         p.store.close();
+        p.comments.deinit();
         p.cps.deinit();
         p.q.deinit();
         p.history.deinit();
@@ -39,7 +44,7 @@ const Proc = struct {
     }
 
     fn collect(p: *Proc, ret: gc.Retention) !gc.Report {
-        return gc.collect(p.store, p.sink.sink(), .{ .q = p.q, .history = &p.history, .checkpoints = p.cps.gcList() }, ret);
+        return gc.collect(p.store, p.sink.sink(), .{ .q = p.q, .history = &p.history, .checkpoints = p.cps.gcList(), .comments = &p.comments }, ret);
     }
 
     fn submit(p: *Proc, path: []const u8, base: []const u8) !model.ChangesetId {
@@ -211,4 +216,39 @@ test "gc: a crash between the snapshot and the deletes loads the same state" {
     defer list.deinit(gpa);
     try p.cps.listSession(7, &list, gpa);
     try testing.expectEqual(@as(usize, 1), list.items.len);
+}
+
+test "gc: comment threads stay with kept changesets and go with dropped ones" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var kept_thread: comments.ThreadId = undefined;
+    var kept: model.ChangesetId = undefined;
+    var gone: model.ChangesetId = undefined;
+    {
+        var p: Proc = undefined;
+        try p.open(tmp.dir, 1);
+        defer p.close();
+        gone = try p.submit("a.txt", "a\n");
+        try p.decide(gone, 0);
+        kept = try p.submit("b.txt", "b\n");
+        const anchor: comments.CommentAnchor = try .at(gpa, "b.txt", .new, "xb\n", .{ .start = 0, .count = 1 });
+        _ = try p.comments.create(gone, anchor, null, false, "old", .{ .user = "u" }, 1);
+        kept_thread = try p.comments.create(kept, anchor, .issue, true, "issue (blocking): b", .{ .user = "u" }, 2);
+        _ = try p.comments.reply(kept_thread, "on it", .{ .user = "agent" }, 3);
+        try p.comments.resolve(kept_thread, true);
+        try p.store.flush();
+        _ = try p.collect(now_blobs);
+        try testing.expectEqual(@as(usize, 0), p.comments.threadsOf(gone).len);
+    }
+    var p: Proc = undefined;
+    try p.open(tmp.dir, 1);
+    defer p.close();
+    try testing.expectEqual(@as(usize, 0), p.comments.threadsOf(gone).len);
+    const t = p.comments.get(kept_thread).?;
+    try testing.expectEqual(kept, t.target);
+    try testing.expectEqual(@as(usize, 2), t.comments.items.len);
+    try testing.expect(t.resolved and t.blocking);
+    // The id counter survives the compaction.
+    const anchor: comments.CommentAnchor = try .at(gpa, "b.txt", .new, "xb\n", .{ .start = 0, .count = 1 });
+    try testing.expect(@intFromEnum(try p.comments.create(kept, anchor, null, false, "new", .{ .user = "u" }, 4)) > t.comments.items[1].id);
 }

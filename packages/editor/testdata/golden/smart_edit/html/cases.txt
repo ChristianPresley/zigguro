@@ -1,0 +1,92 @@
+=== enter between tags
+--- before
+<div>¦</div>
+--- keys
+<enter>
+--- after
+<div>
+    ¦
+</div>
+
+=== autoclose attribute quote
+--- before
+<a href=¦>
+--- keys
+"x
+--- after
+<a href="x¦">
+
+=== block comment
+--- before
+<p>¦a</p>
+--- keys
+<bc>
+--- after
+<!-- <p>¦a</p> -->
+
+=== line comment falls back to block
+--- before
+«<p>a</p>»
+--- keys
+<lc>
+--- after
+«<!-- <p>a</p> -->»
+
+=== line comment unwrap
+--- before
+«<!-- <p>a</p> -->»
+--- keys
+<lc>
+--- after
+«<p>a</p>»
+
+=== text apostrophe
+--- before
+<p>don¦</p>
+--- keys
+'t
+--- after
+<p>don't¦</p>
+
+=== surround
+--- before
+<p>«a»</p>
+--- keys
+(
+--- after
+<p>(«a»)</p>
+
+=== indent nested
+--- before
+<ul>
+  <li>¦</li>
+</ul>
+--- keys
+<enter>
+--- after
+<ul>
+  <li>
+      ¦
+  </li>
+</ul>
+
+=== script braces
+--- before
+<script>
+function f() {¦}
+</script>
+--- keys
+<enter>
+--- after
+<script>
+function f() {
+¦}
+</script>
+
+=== no autoclose in comment
+--- before
+<!-- ¦ -->
+--- keys
+(
+--- after
+<!-- (¦ -->

@@ -1,0 +1,90 @@
+=== indent after colon
+--- before
+key:¦
+--- keys
+<enter>child: 1
+--- after
+key:
+    child: 1¦
+
+=== keep indent
+--- before
+a:
+  b: 1¦
+--- keys
+<enter>c: 2
+--- after
+a:
+  b: 1
+  c: 2¦
+
+=== flow mapping
+--- before
+a: ¦
+--- keys
+{x: 1
+--- after
+a: {x: 1¦}
+
+=== flow sequence
+--- before
+a: ¦
+--- keys
+[1, 2
+--- after
+a: [1, 2¦]
+
+=== quote
+--- before
+a: ¦
+--- keys
+"v
+--- after
+a: "v¦"
+
+=== comment toggle
+--- before
+«a: 1
+b: 2»
+--- keys
+<lc>
+--- after
+«# a: 1
+# b: 2»
+
+=== comment off
+--- before
+«# a: 1
+# b: 2»
+--- keys
+<lc>
+--- after
+«a: 1
+b: 2»
+
+=== no autoclose in comment
+--- before
+# ¦
+--- keys
+[
+--- after
+# [¦
+
+=== list item
+--- before
+items:
+  - a¦
+--- keys
+<enter>- b
+--- after
+items:
+  - a
+  - b¦
+
+=== surround
+--- before
+a: «v»
+--- keys
+'
+--- after
+a: '«v»'

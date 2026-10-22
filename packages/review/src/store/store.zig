@@ -27,6 +27,8 @@ const model = @import("../model/root.zig");
 const journal = @import("journal.zig");
 const records = @import("records.zig");
 const DiskBlobs = @import("blobs.zig").DiskBlobs;
+const approvals = @import("../approvals/broker.zig");
+const comments = @import("../feedback/comments.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -64,6 +66,8 @@ pub const ChangesetStore = struct {
     /// Frames not yet written.
     pending: std.ArrayList(u8) = .empty,
     seq: u64 = 0,
+    /// `QueueSink` is re-emitting a `decided` record (not journaled again).
+    replaying_decided: bool = false,
     /// Read position in each segment seen (by segment number).
     read_pos: std.AutoArrayHashMapUnmanaged(u32, u64) = .empty,
     /// Highest sequence number seen per process.
@@ -129,6 +133,49 @@ pub const ChangesetStore = struct {
     /// The checkpoints' recorder port; thread-safe.
     pub fn checkpointRecorder(s: *ChangesetStore) model.CheckpointRecorder {
         return .{ .ctx = s, .checkpoint = jCheckpoint };
+    }
+
+    /// The approvals broker's recorder port; thread-safe.
+    pub fn approvalRecorder(s: *ChangesetStore) approvals.Recorder {
+        return .{ .ctx = s, .record = jApproval };
+    }
+
+    /// The comment store's recorder port.
+    pub fn commentRecorder(s: *ChangesetStore) comments.Recorder {
+        return .{ .ctx = s, .record = jComment };
+    }
+
+    /// A queue listener that journals `decided` events (subscribe it on
+    /// the queue the store feeds).
+    pub fn decidedListener(s: *ChangesetStore) model.Listener {
+        return .{ .ctx = s, .on = jDecided };
+    }
+
+    fn jDecided(ctx: *anyopaque, ev: *const model.Event) void {
+        const d = switch (ev.*) {
+            .decided => |*d| d,
+            else => return,
+        };
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        // Another process's decisions, re-emitted by `QueueSink`.
+        if (s.replaying_decided) return;
+        var aw: std.Io.Writer.Allocating = .init(s.gpa);
+        defer aw.deinit();
+        records.writeDecided(&aw.writer, d) catch |e| {
+            log.err("review store: decisions on {f} not recorded: {t}", .{ d.cs, e });
+            return;
+        };
+        s.append(.decided, aw.written()) catch |e| log.err("review store: decisions on {f} not recorded: {t}", .{ d.cs, e });
+    }
+
+    fn jComment(ctx: *anyopaque, json: []const u8) void {
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        s.append(.comment, json) catch |e| log.err("review store: comment not recorded: {t}", .{e});
+    }
+
+    fn jApproval(ctx: *anyopaque, json: []const u8) void {
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        s.append(.approval, json) catch |e| log.err("review store: approval not recorded: {t}", .{e});
     }
 
     fn jCheckpoint(ctx: *anyopaque, c: *const model.Checkpoint) void {
@@ -437,6 +484,13 @@ pub const QueueSink = struct {
     q: *model.Queue,
     history: ?*model.History = null,
     checkpoints: ?model.CheckpointSink = null,
+    /// Approval records (a load only: pending ones come back expired).
+    approvals: ?approvals.RestoreSink = null,
+    /// Comment records (load and tail).
+    comments: ?comments.RestoreSink = null,
+    /// Re-emit other processes' decisions as `decided` events (set it
+    /// after the load: old decisions are not news).
+    decided: bool = false,
 
     pub fn sink(qs: *QueueSink) Sink {
         return .{ .ctx = qs, .on = on };
@@ -473,6 +527,16 @@ pub const QueueSink = struct {
                 var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
                 defer arena.deinit();
                 try h.restore(try records.readApply(arena.allocator(), rec));
+            },
+            .approval => if (qs.approvals) |a| try a.restore(a.ctx, rec),
+            .comment => if (qs.comments) |c| try c.restore(c.ctx, rec),
+            .decided => if (qs.decided) {
+                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
+                defer arena.deinit();
+                const d = try records.readDecided(arena.allocator(), rec);
+                qs.store.replaying_decided = true;
+                defer qs.store.replaying_decided = false;
+                qs.q.emit(.{ .decided = d });
             },
             else => {},
         }

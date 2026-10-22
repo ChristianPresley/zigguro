@@ -14,6 +14,12 @@
 //! only changes), so the candidate window follows the caret; commits
 //! arrive as text. Inline preedit is not drawn yet.
 //!
+//! Multi-cursor (VS Code keys): Alt+click adds a caret, Alt+Shift+drag
+//! selects a column (box), Ctrl+Alt+Up/Down add a cursor above/below,
+//! Ctrl+D adds the next occurrence, Ctrl+Shift+L selects all of them,
+//! Alt+Shift+I splits ranges into lines, Ctrl+U undoes the last cursor
+//! change and Escape collapses to the primary.
+//!
 //! PRIMARY selection (X11 and Wayland): when a pointer drag or a key
 //! leaves a new non-empty primary selection, its text becomes PRIMARY; a
 //! middle click places the caret and pastes PRIMARY there.
@@ -59,12 +65,14 @@ pub const Editor = struct {
     };
 
     /// Pointer-drag granularity.
-    pub const Drag = enum(u8) { none, char, word, line };
+    pub const Drag = enum(u8) { none, char, word, line, box };
 
     /// Per-node input state.
     pub const State = struct {
         drag: Drag = .none,
         drag_origin: [2]u64 = .{ 0, 0 },
+        /// Box drags: where the drag started (row, x).
+        box_anchor: @import("../model/edit/multi_cursor.zig").DisplayPos = .{ .row = 0, .col_px = 0 },
         /// The selection last made PRIMARY (empty: none).
         primary_pub: [2]u64 = .{ 0, 0 },
         decos: std.ArrayList(deco_store.DecoRef) = .empty,
@@ -172,7 +180,7 @@ pub const Editor = struct {
             const y = o.y + @as(f32, @floatFromInt(line)) * lh;
 
             // Current line (only with a single caret, like most editors).
-            if (line == prim_line and prim.isCaret() and v.sels.items.len == 1 and focused) {
+            if (line == prim_line and prim.isCaret() and v.selections().len == 1 and focused) {
                 pc.rect(.{ .x = v.gutter_w, .y = y, .w = r.w - v.gutter_w, .h = lh }, pc.color(.hover_bg), .{});
             }
             // Decoration highlights.
@@ -188,7 +196,7 @@ pub const Editor = struct {
                 }
             }
             // Selections.
-            for (v.sels.items) |s| {
+            for (v.selections()) |s| {
                 if (s.isCaret()) continue;
                 const sr = s.range();
                 if (sr.end < lr.start or sr.start > lr.end) continue;
@@ -217,7 +225,7 @@ pub const Editor = struct {
                 }
             }
             // Carets.
-            if (focused) for (v.sels.items) |s| {
+            if (focused) for (v.selections()) |s| {
                 if (s.head < lr.start or s.head > lr.end) continue;
                 const x = v.xInLine(row_text, @intCast(s.head - lr.start));
                 pc.rect(.{ .x = @round(o.x + x), .y = y, .w = caret_w, .h = lh }, fg, .{});
@@ -279,9 +287,14 @@ pub const Editor = struct {
     }
 
     fn hitAt(ec: *EventCx, v: *EditorView, p: Vec2) u64 {
+        return v.offsetAt(textPoint(ec, v, p));
+    }
+
+    /// `p` relative to the text origin.
+    fn textPoint(ec: *EventCx, v: *EditorView, p: Vec2) Vec2 {
         const l = ec.local(p);
         const o = origin(v);
-        return v.offsetAt(.{ .x = l.x - o.x, .y = l.y - o.y });
+        return .{ .x = l.x - o.x, .y = l.y - o.y };
     }
 
     /// See the module doc and `EditorView`.
@@ -367,6 +380,14 @@ pub const Editor = struct {
                 const at = hitAt(ec, v, p.pos);
                 switch (p.clicks) {
                     0, 1 => {
+                        if (p.mods.alt and p.mods.shift) {
+                            state.box_anchor = v.displayPosAt(textPoint(ec, v, p.pos));
+                            v.boxSelect(state.box_anchor, state.box_anchor);
+                            state.drag = .box;
+                            ec.capture();
+                            ec.repaint();
+                            return true;
+                        }
                         if (p.mods.alt) {
                             v.addCaret(at);
                         } else if (p.mods.shift) {
@@ -395,10 +416,15 @@ pub const Editor = struct {
             .pointer_move => |p| {
                 ec.setCursor(.text);
                 if (state.drag == .none) return false;
+                if (state.drag == .box) {
+                    v.boxSelect(state.box_anchor, v.displayPosAt(textPoint(ec, v, p.pos)));
+                    ec.repaint();
+                    return true;
+                }
                 const at = hitAt(ec, v, p.pos);
-                const s = &v.sels.items[v.primary];
+                const s = v.primaryPtr();
                 switch (state.drag) {
-                    .none => {},
+                    .none, .box => {},
                     .char => s.head = at,
                     .word, .line => {
                         const unit = if (state.drag == .word) v.wordRange(at) else v.lineRangeWithEol(at);
@@ -449,8 +475,12 @@ pub const Editor = struct {
         switch (k.key) {
             .arrow_left => v.moveH(false, unit, shift),
             .arrow_right => v.moveH(true, unit, shift),
-            .arrow_up => if (ctrl) v.scrollBy(.{ .x = 0, .y = -v.lineHeight() }) else v.moveV(-1, shift),
-            .arrow_down => if (ctrl) v.scrollBy(.{ .x = 0, .y = v.lineHeight() }) else v.moveV(1, shift),
+            .arrow_up => if (ctrl and k.mods.alt) {
+                _ = try v.cursorCommand(.add_above);
+            } else if (ctrl) v.scrollBy(.{ .x = 0, .y = -v.lineHeight() }) else v.moveV(-1, shift),
+            .arrow_down => if (ctrl and k.mods.alt) {
+                _ = try v.cursorCommand(.add_below);
+            } else if (ctrl) v.scrollBy(.{ .x = 0, .y = v.lineHeight() }) else v.moveV(1, shift),
             .page_up => v.moveV(-page, shift),
             .page_down => v.moveV(page, shift),
             .home => if (ctrl) v.docEdge(false, shift) else v.home(shift),
@@ -465,9 +495,25 @@ pub const Editor = struct {
             .enter, .numpad_enter => if (!ro and !ctrl) try v.newline() else return false,
             .tab => if (!ro and !ctrl) try v.tab() else return false,
             .escape => {
-                if (v.sels.items.len <= 1 and v.primarySel().isCaret()) return false;
-                v.setSelection(.caret(v.primarySel().head));
+                if (v.selections().len > 1) {
+                    _ = try v.cursorCommand(.collapse);
+                } else {
+                    if (v.primarySel().isCaret()) return false;
+                    v.setSelection(.caret(v.primarySel().head));
+                }
             },
+            .key_d => if (ctrl and !shift and !k.mods.alt) {
+                _ = try v.cursorCommand(.add_next_occurrence);
+            } else return false,
+            .key_l => if (ctrl and shift) {
+                _ = try v.cursorCommand(.select_all_occurrences);
+            } else return false,
+            .key_i => if (k.mods.alt and shift and !ctrl) {
+                _ = try v.cursorCommand(.split_into_lines);
+            } else return false,
+            .key_u => if (ctrl and !shift) {
+                _ = try v.cursorCommand(.undo_cursor);
+            } else return false,
             .key_a => if (ctrl) v.selectAll() else return false,
             .key_c, .insert => if (ctrl) {
                 const t = try v.copyText(v.gpa);

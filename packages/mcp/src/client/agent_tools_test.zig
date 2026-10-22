@@ -17,7 +17,7 @@ const Value = std.json.Value;
 const M = protocol.messages;
 
 /// The shape of `zg_ai.tools.adapters.foreign`.
-const Foreign = struct {
+pub const Foreign = struct {
     pub const Kind = enum { lsp, debug, tasks, workspace, notes, scm, mcp };
     pub const Annotations = struct {
         title: ?[]const u8 = null,

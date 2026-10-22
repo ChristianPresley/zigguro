@@ -4,6 +4,7 @@
 const std = @import("std");
 const zg_core = @import("zg_core");
 const zg_editor = @import("zg_editor");
+const zg_syntax = @import("zg_syntax");
 const bench = zg_core.bench;
 
 const buffer = zg_editor.model.buffer;
@@ -358,6 +359,47 @@ fn register(b: *bench.Bench) !void {
     try registerAiOverlays(b, text);
     try registerAgentEdit(b, text);
     try registerCursors(b, text);
+    try registerMoves(b, text);
+    try registerSmart(b, text);
+    try registerLineOps(b, text);
+    try registerEncoding(b, text);
+    try registerSave(b, text);
+    try registerUndoFile(b, text);
+    try registerDiffModel(b);
+}
+
+const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
+
+/// One move by `unit` from scattered positions in a 100k-line document,
+/// alternating direction.
+fn registerMoves(b: *bench.Bench, text: []const u8) !void {
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    inline for (.{
+        .{ "editor.move.grapheme_100k", .grapheme },
+        .{ "editor.move.word_100k", .word },
+        .{ "editor.move.subword_100k", .subword },
+        .{ "editor.move.buffer_line_100k", .buffer_line },
+        .{ "editor.move.smart_home_100k", .smart_home },
+        .{ "editor.move.paragraph_100k", .paragraph },
+    }) |c| {
+        var mb: MoveBench = .{ .snap = doc.snapshot(), .unit = c[1] };
+        defer mb.snap.release();
+        try b.run(c[0], &mb, moveOnce);
+    }
+}
+
+fn moveOnce(m: *MoveBench, s: *bench.State) void {
+    const movement = zg_editor.model.edit.movement;
+    var rng: std.Random.DefaultPrng = .init(7);
+    const r = rng.random();
+    const len = m.snap.len();
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const at = r.uintLessThan(u64, len);
+        const dir: movement.Dir = if (i & 1 == 0) .forward else .backward;
+        bench.doNotOptimizeAway(movement.move(&m.snap, at, m.unit, dir, .{}));
+    }
 }
 
 const CursorBench = struct { doc: *zg_editor.model.document.Document, sels: *zg_editor.model.edit.selection.SelectionSet };
@@ -387,6 +429,250 @@ fn typeCursors(c: *CursorBench, s: *bench.State) void {
     while (i < s.iterations()) : (i += 1) {
         _ = zg_editor.model.edit.runner.typeText(c.doc, c.sels, "x", .{ .user = 0 }) catch unreachable;
         c.doc.endFrame();
+    }
+}
+
+const SmartBench = struct {
+    doc: *zg_editor.model.document.Document,
+    sels: *zg_editor.model.edit.selection.SelectionSet,
+    ap: *zg_editor.model.edit.pairs.AutoPairs,
+};
+
+/// Smart typing with one and 1k carets over a 100k-line Zig document: an
+/// auto-closing `(` typed at each, and Enter (auto-indent) at each. No
+/// syntax tokens, so this is the edit pipeline plus the indent rules.
+fn registerSmart(b: *bench.Bench, text: []const u8) !void {
+    const edit = zg_editor.model.edit;
+    inline for (.{
+        .{ "editor.smart.type_autoclose", typeAutoClose, 1 },
+        .{ "editor.smart.type_autoclose_1k_cursors", typeAutoClose, 1_000 },
+        .{ "editor.smart.newline_1k_cursors", newlineCursors, 1_000 },
+    }) |c| {
+        const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+        defer doc.deinit();
+        var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(0));
+        defer sels.deinit();
+        var ap: edit.pairs.AutoPairs = .{ .gpa = b.gpa };
+        defer ap.deinit();
+        const n = c[2];
+        const lines = doc.tree.lineCount() - 1;
+        const carets = try b.gpa.alloc(edit.selection.Selection, n);
+        defer b.gpa.free(carets);
+        for (carets, 0..) |*sel, i| {
+            const l = i * lines / n;
+            sel.* = .caret(doc.tree.lineStart(l + 1) - 1);
+        }
+        try sels.set(carets, 0);
+        var sb: SmartBench = .{ .doc = doc, .sels = &sels, .ap = &ap };
+        try b.run(c[0], &sb, c[1]);
+    }
+}
+
+fn smartCtx(c: *SmartBench) zg_editor.model.edit.smart_edit.EditCtx {
+    return .{ .lang = &zg_syntax.langs.zig.zig_language, .auto_pairs = c.ap };
+}
+
+fn typeAutoClose(c: *SmartBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        _ = zg_editor.model.edit.smart_edit.typeChar(c.doc, c.sels, '(', smartCtx(c)) catch unreachable;
+        c.ap.clear();
+        c.doc.endFrame();
+    }
+}
+
+fn newlineCursors(c: *SmartBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        _ = zg_editor.model.edit.smart_edit.newline(c.doc, c.sels, smartCtx(c)) catch unreachable;
+        c.doc.endFrame();
+    }
+}
+
+const LineBench = struct {
+    doc: *zg_editor.model.document.Document,
+    sels: *zg_editor.model.edit.selection.SelectionSet,
+    flip: bool = false,
+};
+
+/// Move-line with 1k carets (alternating up and down so the document
+/// stays the same size) and a 1 MB paste with re-indent at one caret.
+fn registerLineOps(b: *bench.Bench, text: []const u8) !void {
+    const edit = zg_editor.model.edit;
+    {
+        const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+        defer doc.deinit();
+        var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(0));
+        defer sels.deinit();
+        const n = 1_000;
+        const lines = doc.tree.lineCount() - 1;
+        const carets = try b.gpa.alloc(edit.selection.Selection, n);
+        defer b.gpa.free(carets);
+        for (carets, 0..) |*sel, i| sel.* = .caret(doc.tree.lineStart(i * lines / n + 1));
+        try sels.set(carets, 0);
+        var lb: LineBench = .{ .doc = doc, .sels = &sels };
+        try b.run("editor.line.move_1k_cursors", &lb, moveLines);
+    }
+    {
+        const piece = try b.gpa.dupe(u8, text[0..@min(text.len, 1 << 20)]);
+        defer b.gpa.free(piece);
+        var pieces = [_][]u8{piece};
+        var cb: edit.clipboard.Clipboard = .{ .gpa = b.gpa, .pieces = &pieces, .linewise = false };
+        var pb: PasteBench = .{ .gpa = b.gpa, .cb = &cb };
+        try b.run("editor.clipboard.paste_1mb_reindent", &pb, pasteReindent);
+    }
+}
+
+const PasteBench = struct { gpa: std.mem.Allocator, cb: *const zg_editor.model.edit.clipboard.Clipboard };
+
+fn moveLines(c: *LineBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const op: zg_editor.model.edit.line_ops.LineOp = if (c.flip) .move_down else .move_up;
+        c.flip = !c.flip;
+        _ = zg_editor.model.edit.line_ops.lineOp(c.doc, c.sels, op, .{}) catch unreachable;
+        c.doc.endFrame();
+    }
+}
+
+/// Each iteration pastes into a fresh small document (so memory stays
+/// flat): normalizing EOLs, re-indenting 1 MB and inserting it.
+fn pasteReindent(c: *PasteBench, s: *bench.State) void {
+    const edit = zg_editor.model.edit;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const doc = zg_editor.model.document.Document.initBytes(c.gpa, @enumFromInt(1), "    x\n") catch unreachable;
+        defer doc.deinit();
+        var sels = edit.selection.SelectionSet.init(c.gpa, .caret(4)) catch unreachable;
+        defer sels.deinit();
+        _ = edit.clipboard.paste(doc, &sels, c.cb, .{ .reindent_on_paste = true }) catch unreachable;
+    }
+}
+
+const EncBench = struct { bytes: []const u8, enc: zg_editor.model.encoding.Encoding, out: std.ArrayList(u8) = .empty, gpa: std.mem.Allocator };
+
+/// Decoding the 3.5 MB corpus re-encoded as UTF-16LE (ASCII fast path)
+/// and as windows-1252.
+fn registerEncoding(b: *bench.Bench, text: []const u8) !void {
+    const encoding = zg_editor.model.encoding;
+    inline for (.{ .{ "editor.encoding.utf16le_decode", encoding.Encoding.utf16le }, .{ "editor.encoding.windows1252_decode", encoding.Encoding.windows_1252 } }) |c| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(b.gpa);
+        // The corpus is ASCII Zig; any byte a legacy encoding lacks would
+        // fail, so encode only what it can hold.
+        encoding.encode(c[1], text, &bytes, b.gpa) catch {
+            bytes.clearRetainingCapacity();
+            for (text) |ch| if (ch < 0x80) try bytes.append(b.gpa, ch);
+        };
+        var eb: EncBench = .{ .bytes = bytes.items, .enc = c[1], .gpa = b.gpa };
+        defer eb.out.deinit(b.gpa);
+        try b.run(c[0], &eb, decodeBench);
+    }
+}
+
+fn decodeBench(c: *EncBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.out.clearRetainingCapacity();
+        var d: zg_editor.model.encoding.Decoder = .init(c.enc);
+        d.decode(c.bytes, &c.out, c.gpa, true) catch unreachable;
+    }
+}
+
+/// Saving 100 MB of UTF-8 through the atomic path (temp file, sync,
+/// rename) into `.zig-cache/bench-save`.
+fn registerSave(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.save.100mb_utf8", f) == null) return;
+    const save = buffer.save;
+    const big = try b.gpa.alloc(u8, 100 << 20);
+    defer b.gpa.free(big);
+    for (0..big.len) |k| big[k] = text[k % text.len];
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), big);
+    defer doc.deinit();
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(b.io, ".zig-cache/bench-save", .{});
+    defer dir.close(b.io);
+    var job: save.SaveJob = .{ .gpa = b.gpa, .snap = doc.snapshot(), .dir = dir, .path = "big.txt", .encoding = .utf8, .expect = null };
+    defer job.deinit();
+    try b.run("editor.save.100mb_utf8", &job, saveBench);
+    dir.deleteFile(b.io, "big.txt") catch {};
+}
+
+fn saveBench(job: *buffer.save.SaveJob, s: *bench.State) void {
+    s.setBytes(job.snap.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) _ = job.run(s.io) catch unreachable;
+}
+
+const UndoFileBench = struct { bytes: []const u8, hash: [32]u8, len: u64, gpa: std.mem.Allocator };
+
+/// Restoring a 10 MB undo history (2,500 groups of 4 KB inserts with
+/// their inverses) from bytes already read.
+fn registerUndoFile(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.undo_file.restore_10mb", f) == null) return;
+    const edit = zg_editor.model.edit;
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), "");
+    defer doc.deinit();
+    var tree: edit.undo.UndoTree = .init(b.gpa, .{ .max_bytes = 1 << 30 });
+    defer tree.deinit();
+    for (0..2500) |k| {
+        const piece = text[(k * 4096) % (text.len - 4096) ..][0..4096];
+        var cs = try edit.change_set.ChangeSet.fromEdits(b.gpa, doc.len(), &.{.{ .range = .{ .start = doc.len(), .end = doc.len() }, .text = piece }});
+        const inv = try cs.invert(doc.tree, b.gpa);
+        try doc.applyChangeSet(&cs, .{ .user = 0 });
+        try tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .{ .nanoseconds = @intCast(k) } });
+        tree.breakGroup();
+    }
+    const hash = edit.undo_file.contentHash("bench");
+    const bytes = try edit.undo_file.encode(b.gpa, &tree, hash, 5, 64 << 20);
+    defer b.gpa.free(bytes);
+    var ub: UndoFileBench = .{ .bytes = bytes, .hash = hash, .len = 5, .gpa = b.gpa };
+    try b.run("editor.undo_file.restore_10mb", &ub, undoRestore);
+}
+
+fn undoRestore(c: *UndoFileBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var t = (zg_editor.model.edit.undo_file.decode(c.gpa, c.bytes, c.hash, c.len, .{ .max_bytes = 1 << 30 }) catch unreachable).?;
+        t.deinit();
+    }
+}
+
+const DiffModelBench = struct { doc: *zg_editor.model.document.Document, m: *zg_editor.model.diff.diff_model.DiffModel, at: u64 };
+
+/// One keystroke (insert, then delete) in the middle of a 10k-line file
+/// whose live diff has 100 hunks.
+fn registerDiffModel(b: *bench.Bench) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.diff_model.keystroke_10k", f) == null) return;
+    const Document = zg_editor.model.document.Document;
+    const base = try genLines(b.gpa, 10_000);
+    defer b.gpa.free(base);
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), base);
+    defer doc.deinit();
+    const snap = doc.snapshot();
+    // Change one line in every hundred: 100 hunks.
+    var k: u64 = 50;
+    while (k < 10_000) : (k += 100) try benchEdit(b.gpa, doc, doc.tree.lineStart(k), 2, "CHANGED");
+    const m = try zg_editor.model.diff.diff_model.DiffModel.init(b.gpa, null, snap, doc, .{});
+    defer m.deinit();
+    try m.completeFull();
+    std.debug.assert(m.hunks().len == 100);
+    var db: DiffModelBench = .{ .doc = doc, .m = m, .at = doc.tree.lineStart(5_020) + 3 };
+    try b.run("editor.diff_model.keystroke_10k", &db, diffKeystroke);
+}
+
+fn benchEdit(gpa: std.mem.Allocator, doc: *zg_editor.model.document.Document, at: u64, del: u64, text: []const u8) !void {
+    var cs = try zg_editor.model.edit.change_set.ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at + del }, .text = text }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+}
+
+fn diffKeystroke(c: *DiffModelBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        // Alternate typing and deleting a character.
+        if (i % 2 == 0) benchEdit(c.m.gpa, c.doc, c.at, 0, "x") catch unreachable else benchEdit(c.m.gpa, c.doc, c.at, 1, "") catch unreachable;
     }
 }
 

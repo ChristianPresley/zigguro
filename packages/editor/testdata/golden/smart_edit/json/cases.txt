@@ -1,0 +1,98 @@
+=== enter between braces
+--- before
+{¦}
+--- keys
+<enter>
+--- after
+{
+    ¦
+}
+
+=== enter between brackets
+--- before
+[¦]
+--- keys
+<enter>
+--- after
+[
+    ¦
+]
+
+=== autoclose key
+--- before
+{¦}
+--- keys
+"a
+--- after
+{"a¦"}
+
+=== overtype quote
+--- before
+{¦}
+--- keys
+"a": 1
+--- after
+{"a": 1¦}
+
+=== nested object
+--- before
+{
+    "a": ¦
+}
+--- keys
+{<enter>
+--- after
+{
+    "a": {
+        ¦
+    }
+}
+
+=== electric closer
+--- before
+{
+    "a": 1
+    ¦
+--- keys
+}
+--- after
+{
+    "a": 1
+}¦
+
+=== no autoclose in string
+--- before
+{"a¦": 1}
+--- keys
+[
+--- after
+{"a[¦": 1}
+
+=== backspace pair
+--- before
+[¦]
+--- keys
+{<bs>
+--- after
+[¦]
+
+=== surround
+--- before
+[«1»]
+--- keys
+[
+--- after
+[[«1»]]
+
+=== comma then enter
+--- before
+[
+    1,¦
+]
+--- keys
+<enter>2
+--- after
+[
+    1,
+    2¦
+]

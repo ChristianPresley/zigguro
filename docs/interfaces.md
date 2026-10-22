@@ -1861,8 +1861,29 @@ pub const UndoTree = struct {
     pub fn markSaved(u, id: NodeId) void; pub fn isAtSaved(u) bool;
     pub fn selectiveUndo(u, id: NodeId, current: Snapshot) !union(enum) { ok: ChangeSet, conflict: ConflictInfo };
     pub fn nodes(u) []const Node; pub fn selectionsAt(u, id) []const Selection;
+    pub fn fromNodes(gpa, limits, owned: []Node, current: NodeId, saved: NodeId) UndoTree; // restore
 };
+pub fn planPrune(gpa, items: []const Node, current: NodeId, sizes: []const usize,
+    target_count: usize, target_bytes: usize) !PrunePlan; // { dead, new_root, truncated }
+
+// undo_file.zig: persistent history
+pub const UndoFileHeader = extern struct { magic: [8]u8 = "ZGUNDO\x00\x01".*, version: u32 = 1, flags: u32,
+    content_len: u64, content_hash: [32]u8, node_count: u32, current: u32, saved: u32, _pad: u32 };
+pub fn pathKey(abs_path) [32]u8;                  // BLAKE3; file <state>/zigguro/undo/<hex[0..16]>.zgundo
+pub fn fileName(key) [39]u8; pub fn contentHash(bytes) [32]u8;
+pub fn shouldPersist(path, content_len, o: PersistOptions) bool; // persistUndo, secret globs, 256 MiB
+pub fn encode(gpa, tree: *const UndoTree, content_hash, content_len, max_bytes) ![]u8;
+pub fn decode(gpa, bytes, expect_hash, expect_len, limits) error{ Corrupt, OutOfMemory }!?UndoTree;
+pub fn write(io, dir, path_key, tree, content_hash, content_len, gpa) !void; // atomic, 16 MiB cap
+pub fn read(io, dir, path_key, expect_hash, expect_len, gpa) !?UndoTree;   // null: none/mismatch/corrupt
 ```
+Undo file layout (little-endian): 72-byte header, 48-byte node records (parent, redo child, seq,
+timestamp, origin, coalesce key, blob offset and length), a blob area (label, forward and inverse
+ChangeSets as LEB128 ranges plus text, selections) and an XxHash3 trailer. Over the size cap the
+writer drops stale branches, then the oldest states (`planPrune`, as in-memory pruning does).
+`read` checks the trailer, the content hash and length, parent order and that the ChangeSets
+chain; a corrupt file is moved aside as `<name>.corrupt`. `read` takes the content length as
+well as the hash.
 
 ### Threading
 Owner (UI) thread only, like the Document it belongs to.
@@ -1873,7 +1894,7 @@ are valid until the next `record`. Pruning compacts the tree, so NodeIds are
 invalidated by a `record` that prunes.
 
 ### Stability
-Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+The undo file format is versioned (`format_version`); readers ignore other versions.
 
 ## zg_editor.model.edit selections (SelectionSet, multi_cursor, runner)
 
@@ -1903,7 +1924,9 @@ pub const SelectionSet = struct { gpa, items, primary_id: u32, word_search: bool
 // multi_cursor.zig
 pub const DisplayPos = struct { row: u64, col_px: f32 };
 pub const Hit = struct { offset: u64, virtual: u32 = 0 };
-pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn; pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit };
+pub const RowPos = struct { row: u64, x: f32 };
+pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn, rowOfFn;
+    pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit; pub fn rowOf(q, pos) RowPos };
 pub const ColumnOptions = struct { tab_size: u32 = 4, width: zg_text.unicode.width.WidthOptions = .{} };
 pub const ColumnMap = struct { gpa, snap: *const Snapshot, o: ColumnOptions; pub fn query(m) DisplayMapQuery }; // headless
 pub const BoxSelection = struct { anchor: DisplayPos, head: DisplayPos, virtual_space: bool = false };
@@ -1938,6 +1961,266 @@ The set owns its selections and history. `ColumnMap` borrows the snapshot.
 ### Stability
 Unstable until the F05 display map supplies `DisplayMapQuery`.
 
+## zg_editor.model.edit movement (movement, word, commands_move)
+
+### Defined in
+`packages/editor/src/model/edit/{movement.zig, word.zig, word_tailoring.zig, commands_move.zig}`
+(E05.F02.S01). Word rules and the stop table: `docs/editor/word-movement.md`.
+
+### Implemented by
+E05.F02.S01.T03.
+
+### Consumed by
+`EditorView` and E15 keybindings (command ids), F07 smart typing, E05.F09 Vim/Emacs motions.
+
+### Signature
+```zig
+pub const Unit = enum { grapheme, word, word_end, subword, whitespace_word, line_boundary, smart_home,
+    display_row, buffer_line, paragraph, page, bracket, document };
+pub const Dir = enum { backward, forward };
+pub const MoveContext = struct { display: ?DisplayMapQuery = null, goal_x: ?f32 = null, page_rows: u32 = 40,
+    lang: ?*const zg_syntax.Language = null, tab_size: u8 = 4 };
+pub fn move(snap: *const Snapshot, pos: u64, unit: Unit, dir: Dir, ctx: MoveContext) u64; // no allocation
+pub fn goalOf(snap, pos, ctx) f32; pub fn isVertical(unit) bool;
+pub fn matchingBracketPos(snap, pos) ?u64;              // plain scan, 1 MiB cap
+// word.zig
+pub const WordClass = enum { space, newline, ident, punct, other };
+pub fn classify(cp: u21, lang_word_chars: []const u21) WordClass;
+pub fn subwordBoundary(a: u21, b: u21, c: u21) bool; pub fn isSubwordSeparator(cp) bool;
+// commands_move.zig
+pub const MoveCommand = struct { id: []const u8, unit: Unit, dir: Dir, select: bool = false };
+pub const move_commands: [32]MoveCommand;               // cursor.* and cursor.*Select
+pub const DeleteCommand = struct { id: []const u8, unit: Unit, dir: Dir };
+pub const delete_commands: [8]DeleteCommand;            // delete.* (delete.line is deleteLines)
+pub fn moveCommand(id) ?MoveCommand;
+pub fn moveSelections(snap, sels: *SelectionSet, unit, dir, select: bool, ctx) void;
+pub const DeleteOptions = struct { ctx: MoveContext = .{}, use_tab_stops: bool = true };
+pub fn deleteBy(doc, sels, unit, dir, o: DeleteOptions, origin) !RunResult;
+pub fn deleteLines(doc, sels, origin) !RunResult;
+```
+`Language.word_chars` now set: `@` for Zig, `#` for C/C++ (with `$` for JS/TS and `-` for CSS/HTML).
+Moves read a 512-byte window or stream chunks; line moves scan for EOLs instead of indexing
+lines, and `paragraph` streams until a blank line (the whole file when there is none).
+
+### Threading
+Owner (UI) thread, or any thread holding the snapshot (`move` is pure).
+
+### Ownership/lifetime
+Nothing is retained between calls.
+
+### Stability
+Unstable until the F05 display map and the bracket tree replace the fallbacks.
+
+## zg_editor.model.edit smart typing (smart_edit, pairs, indent, comment)
+
+### Defined in
+`packages/editor/src/model/edit/{smart_edit.zig, pairs.zig, indent.zig, comment.zig}` and
+`SyntaxTokens` in `packages/editor/src/model/syntax.zig` (E05.F02.S03). Behaviour per language:
+`docs/editor/smart-typing.md`; goldens in `packages/editor/testdata/golden/smart_edit/`.
+
+### Implemented by
+E05.F02.S03.T01.
+
+### Consumed by
+`EditorView` and E15 keybindings (type, Enter, Backspace, `editor.toggleLineComment`,
+`editor.toggleBlockComment`), E05.F09 Vim/Emacs insert mode.
+
+### Signature
+```zig
+// smart_edit.zig
+pub const EditCtx = struct { lang: ?*const Language = null, tab_size: u8 = 4, insert_spaces: bool = true,
+    unit: ?IndentUnit = null, auto_close: AutoClose = .language_defined, tokens: ?TokenQuery = null,
+    auto_pairs: ?*AutoPairs = null, origin: EditOrigin = .{ .user = 0 } };
+pub fn typeChar(doc, sels, cp: u21, ctx: EditCtx) !RunResult;   // surround, overtype, auto-close, electric
+pub fn newline(doc, sels, ctx) !RunResult;                       // auto-indent, pair split
+pub fn deleteLeft(doc, sels, ctx, use_tab_stops: bool) !RunResult;
+pub fn toggleLineComment(doc, sels, ctx) !bool; pub fn toggleBlockComment(doc, sels, ctx) !bool;
+// pairs.zig
+pub const TokenKind = enum { code, string, comment, regex, char };
+pub const TokenQuery = struct { ptr: *anyopaque, kindAtFn: *const fn (*anyopaque, u64) TokenKind };
+pub const AutoClose = enum { always, language_defined, before_whitespace, never };
+pub const AutoPairs = struct { gpa: Allocator, ... };            // add, sync, has, remove, clear, deinit
+// indent.zig
+pub const IndentUnit = struct { tabs: bool, size: u8 };          // columns(ws, tab), write(cols, buf)
+pub fn guess(snap: *const Snapshot) ?IndentUnit;                  // first 1000 indented lines
+// syntax.zig
+pub const SyntaxTokens = struct { ds: *DocumentSyntax, tree: *const PieceTree };  // query() TokenQuery
+// runner.zig
+pub const Mapping = enum { keep, grow };
+pub fn applyEdits(doc, sels, edits: []const Replace, origin, mapping: Mapping) !bool;
+// Target gains `.at: u64` (a caret at a mapped old position).
+```
+`zg_syntax.language.EditRules` gains `surround` (pairs that wrap a selection, defaulting to
+`auto_close`) and `tag_pairs` (Enter between `<p>` and `</p>`); Python lists `dedent_on`
+keywords. `startsDedented` now requires keywords to end at a word boundary and always
+counts closers.
+
+### Threading
+Owner (UI) thread, with the Document. `SyntaxTokens.kindAt` may tokenize the queried line.
+
+### Ownership/lifetime
+`AutoPairs` is owned by the view (one per editor) and cleared on caret jumps; the rest
+borrows its inputs for one call.
+
+### Stability
+Unstable: embedded languages (script in HTML, code fences) use the host language's rules
+until the injection map is queryable by position.
+
+## zg_editor.model.edit line operations and clipboard (line_ops, clipboard)
+
+### Defined in
+`packages/editor/src/model/edit/{line_ops.zig, clipboard.zig}` (E05.F02.S03.T02); goldens in
+`packages/editor/testdata/golden/line_ops/cases.txt`. Shared golden helpers:
+`packages/editor/src/model/edit/golden_testing.zig`.
+
+### Implemented by
+E05.F02.S03.T02.
+
+### Consumed by
+`EditorView` (E05.F05.S02.T04 moves `PlatformClip` to and from the E01 clipboards) and E15
+keybindings (`line_ops.command_ids`), E05.F09 Vim/Emacs registers.
+
+### Signature
+```zig
+pub const LineOp = enum { move_up, move_down, duplicate_up, duplicate_down, join, sort_asc, sort_desc,
+    sort_unique, reverse, transpose_chars, transpose_lines, delete_line, indent, outdent, upper, lower,
+    title, trim_trailing_ws };
+pub const command_ids: std.enums.EnumArray(LineOp, []const u8);     // editor.moveLinesUp, ...
+pub fn lineOp(doc, sels, op: LineOp, ctx: EditCtx) !bool;          // one change; false when nothing to do
+// clipboard.zig
+pub const Clipboard = struct { gpa: Allocator, pieces: [][]u8, linewise: bool }; // deinit, joined(gpa, eol)
+pub const PlatformClip = struct { text: []u8, private: []u8 };                  // deinit(gpa)
+pub const private_mime = "application/x-zigguro-multicursor";
+pub fn copy(doc, sels: *const SelectionSet, gpa) !Clipboard;   // only carets: their lines (linewise)
+pub fn cut(doc, sels, gpa, ctx) !Clipboard;
+pub fn paste(doc, sels, cb: *const Clipboard, ctx) !bool;       // N pieces to N selections, else joined
+pub fn reindent(a, text, target_cols: u32, first: bool, ctx) ![]const u8;
+pub fn encodePlatform(cb: *const Clipboard, gpa) !PlatformClip;   // private = JSON {v, linewise, pieces}
+pub fn decodePlatform(text, private: ?[]const u8, gpa) !Clipboard; // private ignored unless it matches text
+pub fn documentEol(t: *const PieceTree) []const u8;
+```
+`EditCtx` gains `reindent_on_paste`. Move and duplicate leave the block's own text in place
+(the neighbouring line is deleted and re-inserted, or a copy inserted beside it), so
+decorations and anchors on moved lines follow them; each line keeps its EOL. Sort, reverse
+and transpose_lines rewrite the block and keep selections on their line numbers. Pasted
+text takes the document's EOL.
+
+### Threading
+Owner (UI) thread, with the Document.
+
+### Ownership/lifetime
+A `Clipboard` owns its pieces; the view keeps the last one for paste and frees it.
+
+### Stability
+Unstable: case transforms are locale-independent; sort is byte order (numeric sort is P2).
+
+## zg_editor.model.encoding
+
+### Defined in
+`packages/editor/src/model/encoding.zig` and `packages/editor/src/model/encoding/{detect.zig,
+utf16.zig, wtf8.zig, single_byte.zig}` (E05.F01.S02). WHATWG single-byte indexes are vendored in
+`encoding/whatwg/` (CC BY 4.0) and parsed at compile time instead of by a separate `encgen`
+tool. Detection fixtures: `packages/editor/testdata/encodings/expected.txt`.
+
+### Implemented by
+E05.F01.S02.T01.
+
+### Consumed by
+File open and save (E05.F01.S02.T02), the status bar encoding picker (E04/E15).
+
+### Signature
+```zig
+pub const Encoding = enum { utf8, utf8_bom, utf16le, utf16le_bom, utf16be, utf16be_bom, utf32le_bom,
+    utf32be_bom, windows_1250, ..., windows_1258, windows_874, iso_8859_2, ..., iso_8859_16, koi8_r,
+    koi8_u, ibm866, macintosh, binary };                  // bom(), singleByte()
+pub const Detection = struct { encoding: Encoding, confidence: enum { bom, certain, heuristic, default }, bom_len: u3 };
+pub fn detect(head: []const u8, hint: ?Encoding, fallback: Encoding) Detection;
+pub const Decoder = struct {                            // streaming; skips the BOM
+    pub fn init(e: Encoding) Decoder;
+    pub fn decode(d: *Decoder, in: []const u8, out: *std.ArrayList(u8), gpa, last: bool) !void;
+};
+pub fn decodeAll(e, bytes, gpa) ![]u8;
+pub fn encode(e, utf8: []const u8, out: *std.ArrayList(u8), gpa) error{ Unrepresentable, OutOfMemory }!void; // BOM first
+pub fn encodeBody(e, utf8, out, gpa) error{ Unrepresentable, OutOfMemory }!void; // no BOM, for streaming
+pub fn firstUnrepresentable(e, utf8) ?usize;
+pub fn label(e) []const u8; pub fn fromLabel(s) ?Encoding;
+```
+Detection order: BOM (UTF-32LE before UTF-16LE), hint, UTF-16 without BOM (zero-byte
+statistics, or zeros only in high bytes for samples of 32+ units), a NUL means `binary`, valid
+UTF-8 (a sequence cut at the 8 KiB sample end allowed), else `fallback` with `default`
+confidence. UTF-8 passes through byte for byte (invalid bytes too); undefined single-byte
+entries and `binary` bytes >= 0x80 decode to U+F700 + byte. Malformed UTF-16/32 tails decode to
+U+FFFD and are the only inputs that do not round-trip.
+
+### Threading
+Pure functions; a `Decoder` belongs to one reader.
+
+### Ownership/lifetime
+Callers own the output lists.
+
+### Stability
+Stable formats; new encodings append to the enum.
+
+## zg_editor.model.buffer.save / external / eol
+
+### Defined in
+`packages/editor/src/model/buffer/{save.zig, external.zig, eol.zig}`, tests `save_test.zig`
+(E05.F01.S02.T02).
+
+### Implemented by
+E05.F01.S02.T02.
+
+### Consumed by
+The workbench save and reload commands (E04/E15), the file watcher glue (E01.F06), conflict UI.
+
+### Signature
+```zig
+// eol.zig
+pub const Eol = enum { lf, crlf, cr, mixed };             // bytes(), native()
+pub const EolStats = struct { dominant: Eol, style: Eol, counts: [3]u64, sampled: bool };
+pub fn detectEol(t: PieceTree) EolStats;                 // first 1 MiB
+pub fn detectEolBytes(text: []const u8) EolStats;
+// save.zig
+pub const SaveOptions = struct { trim_trailing_whitespace = false, insert_final_newline = false,
+    eol_override: ?Eol = null, encoding_override: ?Encoding = null, overwrite = false, backup_dir: ?Dir = null };
+pub const DiskState = struct { size: u64, mtime: Io.Timestamp, file_id: u128, content_hash: u64 }; // XxHash3
+pub const FileState = struct { dir: Dir, path: []const u8, encoding: Encoding, eol: Eol, disk: ?DiskState };
+pub fn normalizationChanges(gpa, t: PieceTree, o) !?ChangeSet;
+pub fn applyNormalizations(doc, undo: ?*UndoTree, o, now) !bool;   // one group "Save normalizations"
+pub fn begin(doc, file: *const FileState, undo, o, now) !struct { job: SaveJob, normalized: bool }; // UI
+pub const SaveJob = struct { ...; pub fn run(job, io) SaveError!DiskState; pub fn deinit(job) void }; // worker
+pub fn commit(doc, file: *FileState, job: *const SaveJob, disk: DiskState, undo) void;            // UI
+pub fn save(doc, file, rt: *zg_core.Runtime, undo, o) !SaveResult;  // all three, blocking
+// external.zig
+pub fn load(gpa, io, dir, path, hint: ?Encoding, fallback: Encoding) !Loaded; // text, encoding, eol, disk
+pub fn probe(gpa, io, file: *const FileState) !Probe;    // worker: unchanged | touched | changed | deleted
+pub const ExternalChange = union(enum) { none, reloaded_clean, conflict: ConflictInfo, deleted };
+pub fn applyProbe(doc, file, undo, p: Probe, now) !ExternalChange; // UI; "Reload from disk" group
+pub fn onWatchEvent(doc, file, rt, undo) !ExternalChange; // probe + applyProbe, blocking
+pub fn reloadChanges(gpa, old: PieceTree, new_text) !?ChangeSet;
+pub fn merge3(gpa, base, mine, theirs: []const u8, labels: MergeLabels) !MergeResult; // text, conflicts
+```
+A save writes a temp file beside the target (`createFileAtomic`, current permissions), syncs
+it and renames it over the target; any failure leaves the original. Symlinks and files with
+more than one hard link are written in place instead (backup copy to `backup_dir/<hash>`
+first, encodability checked before the file is opened, length set after the last byte).
+Before writing, a target whose size, mtime or file id differ from `DiskState` fails with
+`ExternalChangeConflict` unless its hash is unchanged (a touch) or `overwrite` is set; a
+read-only target fails with `AccessDenied`. A reload applies only the changed lines (trimmed
+to the differing bytes) and changed terminators, so positions outside them map unchanged.
+`merge3` is line-based diff3; changes on adjacent lines conflict, as in git.
+
+### Threading
+`begin`, `commit`, `applyNormalizations` and `applyProbe` run on the document's owner (UI)
+thread; `SaveJob.run`, `load` and `probe` block on the disk and run on workers.
+
+### Ownership/lifetime
+`FileState.dir` and `path` are borrowed. A `SaveJob` holds a snapshot until `deinit`. A
+`Probe` passed to `applyProbe` is consumed; a `conflict` owns `theirs`.
+
+### Stability
+Unstable: Windows mapped originals (large-file mode) are not handled yet.
+
 ## zg_editor.model.diff
 
 ### Defined in
@@ -1969,17 +2252,41 @@ pub fn unified.writeUnified(w: *std.Io.Writer, edits, hunks, a, b, names: [2][]c
 pub fn intraline.intralineEdits(gpa, edits, a, b, mode: enum { word, char }) ![]DiffRange;
 pub fn postprocess.slideHunks(edits: []Edit, ids_a, ids_b, a, b) usize;      // returns the new length
 pub fn moves.detectMoves(gpa, edits, a, b, o: struct { min_lines = 3, min_chars = 60 }) ![]Move;
+
+// diff_model.zig: live base-vs-current diff
+pub const HunksChanged = struct { first: u32, removed: u32, inserted: u32, version: u64 };
+pub const DiffListener = struct { ctx: *anyopaque, onHunks: *const fn (ctx, ev: HunksChanged) void };
+pub const ui_msg_kind: u32 = 0x0507_0001;   // payload a = *DiffModel; route to DiffModel.handleMsg
+pub const DiffModel = struct {
+    pub fn init(gpa, rt: ?*zg_core.Runtime, base: Snapshot, current: *Document, o: DiffOptions) !*DiffModel; // takes base
+    pub fn deinit(m) void;
+    pub fn setBase(m, base: Snapshot) !void;
+    pub fn hunks(m) []const LineHunk;          // no context lines; old = base lines, new = current lines
+    pub fn version(m) u64; pub fn fullPending(m) bool;
+    pub fn subscribe(m, l: DiffListener) !void;
+    pub fn onChange(m, ev: *const ChangeEvent) !void; // called by the document listener it registers
+    pub fn completeFull(m) !void;  pub fn handleMsg(msg: zg_core.UiMsg) void;
+    pub fn hunkChangeSet(m, idx: u32, direction: enum { current_to_base, base_to_current }) !ChangeSet;
+    pub fn intraline(m, idx: u32, mode, gpa) ![]DiffRange; // lazy; new ranges in current offsets
+};
 ```
+`DiffModel` runs a full diff on a worker (`init`, `setBase`, edits over 10,000 lines, rediff
+windows over 2,000 lines) and otherwise rediffs a window around each edit bounded by 3 equal
+lines on each side, splicing its hunks; hunks after the edit shift by its line delta. Results
+of a full diff are mapped through the edits made while it ran. Lines compare without
+terminators, so terminator-only changes are not hunks. A keystroke in a 10k-line file with 100
+hunks costs about 2.7 µs including the document edit.
 
 ### Threading
-Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`).
+Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`). A
+`DiffModel` belongs to its document's owner (UI) thread; only its full diffs run on workers.
 
 ### Ownership/lifetime
 Results are owned by the caller (`DiffResult.deinit`). `LineSource.fromBytes`
 borrows the text; `fromTree` copies it.
 
 ### Stability
-Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
+Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
@@ -3863,3 +4170,155 @@ rebuilt.
 
 ### Stability
 Unstable until the panel binds it.
+
+## zg_review.approvals (ApprovalBroker)
+
+### Defined in
+`packages/review/src/approvals/{broker.zig, inbox.zig}` (E12.F05.S02.T01); see `packages/review/docs/approvals.md`.
+
+### Implemented by
+E12.F05.S02.T01. Views: `apps/zigguro/src/review/{approval_card.zig, approvals_view.zig}` (E12.F05.S02.T02).
+
+### Consumed by
+E16 (`ApprovalPort`), E10's `ToolApprovals` in the IDE, the review queue panel's inbox, the status bar, `zg review approvals` (not yet).
+
+### Signature
+```zig
+pub const ApprovalBroker = struct {
+    pub fn init(gpa, io, o: Options{ timeout_ms = 0, id_base = 0, recorder: ?Recorder = null }) ApprovalBroker;
+    pub fn deinit(b) void;
+    pub fn bind(b, r: ?Recorder, id_base: u64) void;                // once the review store is open
+    pub fn approvalPort(b) zg_security.contracts.ApprovalPort;      // exactly E16's type
+    pub fn present(b, req: ApprovalRequest) !ApprovalId;            // created_ms 0 → now
+    pub fn presentChained(b, req, previous: ?ApprovalId) !ApprovalId;
+    pub fn await(b, id, io) Io.Cancelable!Answer;                   // Io cancellation cancels the request
+    pub fn answer(b, id, a: Answer, by: []const u8) error{ UnknownApproval, AlreadyAnswered, NotEditable, OutOfMemory }!void;
+    pub fn cancel(b, id) void;
+    pub fn expireDue(b, now_ms: i64) u32;
+    pub fn get(b, id) ?InboxItem;
+    pub fn list(b, arena, f: Filter{ session: ?[]const u8, answered = true }) ![]InboxItem;   // pending first, then oldest
+    pub fn pendingCount(b, f: Filter) usize;
+    pub fn addListener(b, l: InboxListener) !void;
+    pub fn removeListener(b, ctx: *anyopaque) void;
+    pub fn prune(b, before_ms: i64) u32;
+    pub fn restoreSink(b) RestoreSink;                              // QueueSink.approvals, load only
+};
+pub fn commandView(req: *const ApprovalRequest, arena) !?CommandView;   // line + cwd/terminal/shell from detail_json
+```
+Deviations from the spec text:
+- Tests live in `src/approvals/broker_test.zig` (a module cannot import
+  outside its folder).
+- No owner-thread posting: every call is mutex-guarded and listeners run
+  after the lock is released, on the calling thread.
+- The views live in apps/zigguro (no `zg_review_ui` module): the card,
+  not a `zg_gui.Widget`, is a build function plus a `CardState`.
+
+### Threading
+Any thread.
+
+### Ownership/lifetime
+Requests and answers are copied into each item's arena and stay valid
+until `prune` drops the item.
+
+### Stability
+Unstable until E10's agent pane embeds the card.
+
+## zg_review.feedback (CommentStore)
+
+### Defined in
+`packages/review/src/feedback/{comments.zig, anchor.zig, labels.zig}` (E12.F03.S03.T01); see `packages/review/docs/comments.md`.
+
+### Implemented by
+E12.F03.S03.T01.
+
+### Consumed by
+The hunk review view (comments UI), feedback dispatch to agents (E12.F03.S03.T02), F08 code review findings, `zg review`.
+
+### Signature
+```zig
+pub const CommentStore = struct {
+    pub fn init(gpa, o: Options{ id_base = 0, recorder: ?Recorder = null, listener: ?Listener = null }) CommentStore;
+    pub fn deinit(cs) void;
+    pub fn bind(cs, r: ?Recorder, id_base: u64) void;
+    pub fn create(cs, target: ChangesetId, anchor: CommentAnchor, label: ?Label, blocking: bool, body: []const u8, author: Author, now_ms: i64) Error!ThreadId;
+    pub fn reply(cs, t: ThreadId, body, author, now_ms) Error!u64;
+    pub fn edit(cs, t, comment: u64, body, now_ms) Error!void;
+    pub fn resolve(cs, t, resolved: bool) Error!void;
+    pub fn setLabel(cs, t, label: ?Label, blocking: bool) Error!void;
+    pub fn reanchor(cs, target, path, new_text: []const u8, o: ReanchorOptions{ side = .new, map: ?[]const Hunk = null }) !ReanchorReport;
+    pub fn dropTarget(cs, target) void;
+    pub fn threadsOf(cs, target) []const *const Thread;
+    pub fn get(cs, t) ?*const Thread;
+    pub fn unresolvedBlocking(cs, target) u32;
+    pub fn counts(cs, target) Counts;
+    pub fn restoreSink(cs) RestoreSink;                       // QueueSink.comments, load and tail
+};
+pub fn CommentAnchor.at(gpa, path, side: Side, text, lines: LineRange) !CommentAnchor;
+pub fn parseLabelPrefix(body: []const u8) Prefix;            // { label, blocking, decorations, rest } + tags()
+```
+Deviations from the spec text:
+- `parseLabelPrefix` is a free function, and unknown decorations are
+  returned through `Prefix.tags()` instead of in `rest`.
+- `reanchor` takes the new text as bytes and an optional hunk mapping
+  (not an E05 `LineSource`); `create` and `reply` take `now_ms`.
+- Tests live in `src/feedback/comments_test.zig`.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Each thread owns its strings (an arena) until `dropTarget` or `deinit`;
+`threadsOf` slices are valid until the next change.
+
+### Stability
+Unstable until the comments UI binds it.
+
+## zg_review.feedback (Feedback, AgentPort)
+
+### Defined in
+`packages/review/src/feedback/{feedback.zig, message.zig}` (E12.F03.S03.T02); see `packages/review/docs/comments.md`.
+
+### Implemented by
+E12.F03.S03.T02. `AgentPort` is implemented by the apps over E10's agents.
+
+### Consumed by
+The hunk review view (Request fix, interdiff), `zg review`.
+
+### Signature
+```zig
+pub const AgentPort = struct {
+    ctx: *anyopaque,
+    status: *const fn (ctx, SessionId) AgentStatus,                 // running, idle, ended, unknown
+    submit: *const fn (ctx, SessionId, msg: *const FeedbackMessage, mode: SubmitMode) anyerror!void,   // steer, new_turn
+    resumeSession: *const fn (ctx, SessionId) anyerror!void,
+    newSession: *const fn (ctx, msg: *const FeedbackMessage) anyerror!SessionId,
+    estimate: ?message.Estimate = null,
+};
+pub const FeedbackMessage = struct { text, context: []const ContextItem, revises: ChangesetId, quotes_dropped: bool };
+pub const Feedback = struct {
+    pub fn init(gpa, q: *Queue, comments: *CommentStore, port: AgentPort, o: Options{ max_tokens = 4000 }) Feedback;
+    pub fn requestFix(f, cs, threads: []const ThreadId, extra: []const u8, now_ms: i64) !Delivery;   // steered, new_turn, ask_resume
+    pub fn finishEnded(f, choice: EndedChoice, now_ms: i64) !void;                               // resume_session, new_session, cancel
+    pub fn listener(f) model.Listener;                                                            // notes events
+    pub fn pump(f) void;                                                                          // handles them
+    pub fn onSubmitted(f, cs) !void;
+    pub fn onUpdated(f, cs) !void;
+    pub fn interdiff(f, older, newer, path, arena) !?InterdiffDocs;
+    pub fn waitingOn(f, cs) bool;
+};
+pub fn message.compose(arena, cs, label, threads, extra, texts: ?TextOf, o) !FeedbackMessage;
+```
+Deviations from the spec text:
+- The previous proposal is `FileChange.previous`, journaled with the
+  changeset snapshot, not a separate `revision` record.
+- An ended session returns `ask_resume`; the UI calls `finishEnded`.
+- `submit` and `newSession` take the message by pointer.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+The message passed to the port lives until the call returns.
+
+### Stability
+Unstable until the review view binds it.

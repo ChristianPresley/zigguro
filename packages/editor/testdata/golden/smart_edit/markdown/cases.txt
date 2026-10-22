@@ -1,0 +1,83 @@
+=== apostrophe
+--- before
+it¦
+--- keys
+'s
+--- after
+it's¦
+
+=== surround emphasis
+--- before
+a «b» c
+--- keys
+*
+--- after
+a *«b»* c
+
+=== surround backtick
+--- before
+use «x»
+--- keys
+`
+--- after
+use `«x»`
+
+=== autoclose bracket
+--- before
+see ¦
+--- keys
+[link
+--- after
+see [link¦]
+
+=== link paren
+--- before
+[a]¦
+--- keys
+(u
+--- after
+[a](u¦)
+
+=== list continuation
+--- before
+- a¦
+--- keys
+<enter>
+--- after
+- a
+¦
+
+=== html comment
+--- before
+«text»
+--- keys
+<bc>
+--- after
+«<!-- text -->»
+
+=== line comment fallback
+--- before
+«a
+b»
+--- keys
+<lc>
+--- after
+«<!-- a -->
+<!-- b -->»
+
+=== enter plain
+--- before
+para¦
+--- keys
+<enter>next
+--- after
+para
+next¦
+
+=== backspace pair
+--- before
+x ¦
+--- keys
+(<bs>
+--- after
+x ¦

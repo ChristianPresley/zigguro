@@ -7,6 +7,9 @@
 //! undone, which reverts its files and puts its changes back for review;
 //! an open one can be accepted or rejected.
 //!
+//! Above the queue, the approvals inbox (`approvals_view.zig`) lists
+//! requests waiting for an answer.
+//!
 //! The rows come from `zg_review.queue_view.QueueModel`, which the
 //! glue's queue updates on the agents' tasks under the glue's mutex; the
 //! panel reads it, and acts, under the same mutex. Files open in an
@@ -17,6 +20,7 @@ const std = @import("std");
 const zg_gui = @import("zg_gui");
 const zg_review = @import("zg_review");
 const ReviewGlue = @import("../agent/review_glue.zig").ReviewGlue;
+const ApprovalsInbox = @import("approvals_view.zig").ApprovalsInbox;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -47,6 +51,8 @@ pub const QueuePanel = struct {
     open_req: ?zg_review.model.ChangesetId = null,
     /// Whether a workspace-relative path is open in an editor.
     is_open: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, rel: []const u8) bool } = null,
+    /// The approvals section pinned at the top.
+    inbox: ?*ApprovalsInbox = null,
     /// The workbench repaints.
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     /// A repaint is queued on the UI thread.
@@ -79,8 +85,12 @@ pub const QueuePanel = struct {
         if (p.on_change) |h| h.f(h.ctx);
     }
 
-    /// The tab badge: open changesets, if any.
+    /// The tab badge: waiting approvals, else open changesets, if any.
     pub fn badge(p: *QueuePanel, buf: []u8) []const u8 {
+        if (p.inbox) |i| {
+            const a = i.pendingCount();
+            if (a > 0) return std.fmt.bufPrint(buf, "\u{2691}{d}", .{a}) catch "";
+        }
         p.glue.mutex.lockUncancelable(p.io);
         const n = p.glue.model.counts().pending_changesets;
         p.glue.mutex.unlock(p.io);
@@ -89,6 +99,10 @@ pub const QueuePanel = struct {
     }
 
     pub fn build(p: *QueuePanel, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } } });
+        defer ui.close();
+        // Outside the glue's lock: answers go to the broker.
+        if (p.inbox) |i| i.build(ui);
         p.glue.mutex.lockUncancelable(p.io);
         p.buildLocked(ui);
         p.glue.mutex.unlock(p.io);
@@ -188,10 +202,22 @@ pub const QueuePanel = struct {
         ui.close();
 
         ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .shrink = 0 } });
-        const held = p.glue.mode == .review;
-        if (zg_gui.w.button(ui, .{ .label = if (held) "Agent edits: held" else "Agent edits: applied", .variant = .ghost }).clicked) {
-            p.glue.mode = if (held) .auto_apply else .review;
-            p.say(false, "{s}", .{if (held) "Agent edits now land at once (each turn can be undone here)" else "Agent edits now wait here for review"});
+        const label = switch (p.glue.mode) {
+            .auto_apply => "Agent edits: applied",
+            .review => "Agent edits: held",
+            .policy => "Agent edits: by policy",
+        };
+        if (zg_gui.w.button(ui, .{ .label = label, .variant = .ghost }).clicked) {
+            p.glue.mode = switch (p.glue.mode) {
+                .auto_apply => .review,
+                .review => .policy,
+                .policy => .auto_apply,
+            };
+            p.say(false, "{s}", .{switch (p.glue.mode) {
+                .auto_apply => "Agent edits now land at once (each turn can be undone here)",
+                .review => "Agent edits now wait here for review",
+                .policy => "Agent edits now follow the review rules in .zigguro/settings.zon; the rest wait here",
+            }});
             ui.window().markAllDirty();
         }
         ui.close();
@@ -299,7 +325,7 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
     defer gpa.free(root);
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
-    const g = try ReviewGlue.create(gpa, testing.io, root);
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
     defer g.destroy();
 
     const Root = struct {
@@ -384,6 +410,12 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     _ = t.settle();
     try testing.expectEqual(ReviewGlue.Mode.review, g.mode);
     try testing.expect(t.find(.{ .name = "Agent edits: held" }) != null);
+    try t.click(.{ .role = .button, .name = "Agent edits: held" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.policy, g.mode);
+    try t.click(.{ .role = .button, .name = "Agent edits: by policy" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.auto_apply, g.mode);
 
     // A filter that matches nothing, then a bad one.
     p.filter.setText("nothing-matches") catch unreachable;

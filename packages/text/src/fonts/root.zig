@@ -12,6 +12,10 @@ pub const fallback = @import("fallback.zig");
 pub const discovery = @import("discovery.zig");
 /// Linux discovery from fontconfig's XML configuration.
 pub const discovery_linux = @import("discovery_linux.zig");
+/// Windows discovery from the registry and font directories.
+pub const discovery_windows = @import("discovery_windows.zig");
+/// The advapi32 registry reads Windows discovery needs.
+pub const win_registry = @import("win_registry.zig");
 /// The fontconfig configuration subset discovery reads.
 pub const fontconfig_xml = @import("fontconfig_xml.zig");
 /// A minimal XML tokenizer.
@@ -22,16 +26,24 @@ pub const db = @import("db.zig");
 pub const db_cache = @import("db_cache.zig");
 /// CSS Fonts 4 style matching and generic families.
 pub const matcher = @import("matcher.zig");
+/// The last-resort glyph (code point in a box).
+pub const last_resort = @import("last_resort.zig");
 
 pub const InstanceId = registry.InstanceId;
 pub const FontRegistry = registry.FontRegistry;
 pub const Fallback = fallback.Fallback;
 pub const ChainId = fallback.ChainId;
 pub const Presentation = fallback.Presentation;
+pub const OsDefaults = fallback.OsDefaults;
+pub const ChainStyle = fallback.ChainStyle;
+pub const last_resort_instance = registry.last_resort_instance;
+pub const lastResortBitmap = last_resort.lastResortBitmap;
 pub const Discovery = discovery.Discovery;
 pub const FileEntry = discovery.FileEntry;
 pub const listFontFiles = discovery.listFontFiles;
 pub const discoverLinux = discovery_linux.discoverLinux;
+pub const discoverWindows = discovery_windows.discoverWindows;
+pub const windowsDefaults = discovery_windows.windowsDefaults;
 pub const FontDb = db.FontDb;
 pub const FaceInfo = db.FaceInfo;
 pub const FaceRef = db.FaceRef;
@@ -45,5 +57,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("fallback_test.zig");
     _ = @import("discovery_test.zig");
+    _ = @import("discovery_windows_test.zig");
     _ = @import("db_test.zig");
+    _ = @import("fallback_db_test.zig");
 }

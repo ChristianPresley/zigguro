@@ -38,11 +38,19 @@ pub const DisplayPos = struct { row: u64, col_px: f32 };
 /// the row's end the x lies (virtual space).
 pub const Hit = struct { offset: u64, virtual: u32 = 0 };
 
-/// What box selection needs from a display map.
+/// The display row of a buffer position and its x.
+pub const RowPos = struct { row: u64, x: f32 };
+
+/// What box selection and vertical movement need from a display map.
 pub const DisplayMapQuery = struct {
     ptr: *anyopaque,
     rowCountFn: *const fn (ptr: *anyopaque) u64,
     hitTestFn: *const fn (ptr: *anyopaque, row: u64, col_px: f32) Hit,
+    rowOfFn: *const fn (ptr: *anyopaque, pos: u64) RowPos,
+
+    pub fn rowOf(q: DisplayMapQuery, pos: u64) RowPos {
+        return q.rowOfFn(q.ptr, pos);
+    }
 
     pub fn rowCount(q: DisplayMapQuery) u64 {
         return q.rowCountFn(q.ptr);
@@ -65,13 +73,20 @@ fn clusterWidth(g: []const u8, col: u32, o: ColumnOptions) u32 {
     return width.graphemeWidth(g, o.width);
 }
 
+/// The end of the grapheme cluster starting at `i` (ASCII fast path).
+fn clusterEnd(line: []const u8, i: usize) usize {
+    if (line[i] < 0x80 and (i + 1 == line.len or line[i + 1] < 0x80)) return i + 1;
+    return grapheme.nextBoundary(line, i);
+}
+
 /// The display column of byte `at` of `line`.
 pub fn columnOf(line: []const u8, at: usize, o: ColumnOptions) u32 {
     var col: u32 = 0;
-    var it = grapheme.Iterator.init(line);
-    while (it.next()) |sp| {
-        if (sp.start >= at) break;
-        col += clusterWidth(line[sp.start..][0..sp.len], col, o);
+    var i: usize = 0;
+    while (i < line.len and i < at) {
+        const e = clusterEnd(line, i);
+        col += clusterWidth(line[i..e], col, o);
+        i = e;
     }
     return col;
 }
@@ -81,12 +96,14 @@ pub fn columnOf(line: []const u8, at: usize, o: ColumnOptions) u32 {
 /// right), and the columns past the end.
 pub fn byteAtColumn(line: []const u8, col: u32, o: ColumnOptions) struct { byte: usize, virtual: u32 } {
     var c: u32 = 0;
-    var it = grapheme.Iterator.init(line);
-    while (it.next()) |sp| {
-        if (col <= c) return .{ .byte = sp.start, .virtual = 0 };
-        const w = clusterWidth(line[sp.start..][0..sp.len], c, o);
-        if (col < c + w) return .{ .byte = if ((col - c) * 2 < w) sp.start else sp.start + sp.len, .virtual = 0 };
+    var i: usize = 0;
+    while (i < line.len) {
+        if (col <= c) return .{ .byte = i, .virtual = 0 };
+        const e = clusterEnd(line, i);
+        const w = clusterWidth(line[i..e], c, o);
+        if (col < c + w) return .{ .byte = if ((col - c) * 2 < w) i else e, .virtual = 0 };
         c += w;
+        i = e;
     }
     return .{ .byte = line.len, .virtual = col - c };
 }
@@ -103,7 +120,15 @@ pub const ColumnMap = struct {
     }
 
     pub fn query(m: *ColumnMap) DisplayMapQuery {
-        return .{ .ptr = m, .rowCountFn = rowCount, .hitTestFn = hitTest };
+        return .{ .ptr = m, .rowCountFn = rowCount, .hitTestFn = hitTest, .rowOfFn = rowOf };
+    }
+
+    fn rowOf(ptr: *anyopaque, pos: u64) RowPos {
+        const m: *ColumnMap = @ptrCast(@alignCast(ptr));
+        const line = m.snap.tree.lineOf(pos);
+        const text = lineText(m.gpa, &m.buf, m.snap, line) catch return .{ .row = line, .x = 0 };
+        const at: usize = @intCast(@min(pos - m.snap.tree.lineStart(line), text.len));
+        return .{ .row = line, .x = @floatFromInt(columnOf(text, at, m.o)) };
     }
 
     fn rowCount(ptr: *anyopaque) u64 {

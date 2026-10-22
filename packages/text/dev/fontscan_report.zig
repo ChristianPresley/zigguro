@@ -1,7 +1,9 @@
 //! `text-fontscan-report`: prints what font discovery finds on this
 //! machine (directories, generic-family preferences, font files) so a
-//! maintainer can compare it by hand with `fc-list --format '%{file}\n'`,
-//! and how long a font database scan of those files takes.
+//! maintainer can compare it by hand with `fc-list --format '%{file}\n'`
+//! on Linux or `Get-ChildItem C:\Windows\Fonts` plus the registry's
+//! Fonts key on Windows, and how long a font database scan of those
+//! files takes.
 //! This is a manual check, never a CI step.
 //!
 //!   zig build text-fontscan-report [-- --no-files]
@@ -23,15 +25,20 @@ pub fn main(init: std.process.Init) !u8 {
     defer out.flush() catch {};
     const files = !(args.len > 1 and std.mem.eql(u8, args[1], "--no-files"));
 
-    if (builtin.os.tag != .linux) {
-        try out.print("font discovery for {t} is not implemented yet\n", .{builtin.os.tag});
-        return 2;
-    }
     const t0 = std.Io.Clock.awake.now(io);
-    var d = try fonts.discoverLinux(gpa, io, init.environ_map);
+    var d = switch (builtin.os.tag) {
+        .linux => try fonts.discoverLinux(gpa, io, init.environ_map),
+        .windows => try fonts.discoverWindows(gpa, io, init.environ_map),
+        else => {
+            try out.print("font discovery for {t} is not implemented yet\n", .{builtin.os.tag});
+            return 2;
+        },
+    };
     const t1 = std.Io.Clock.awake.now(io);
     try out.print("# directories ({d}, {d} µs)\n", .{ d.dirs.len, @divTrunc(t0.durationTo(t1).nanoseconds, 1000) });
     for (d.dirs) |dir| try out.print("{s}\n", .{dir});
+    if (d.files.len > 0) try out.print("\n# registered files outside them ({d})\n", .{d.files.len});
+    for (d.files) |f| try out.print("{s}\n", .{f});
     try out.print("\n# generic families\n", .{});
     for (generics) |g| {
         const prefs = try d.preferences(gpa, g);
@@ -40,7 +47,7 @@ pub fn main(init: std.process.Init) !u8 {
         try out.print("\n", .{});
     }
     var list: std.ArrayList(fonts.FileEntry) = .empty;
-    try fonts.listFontFiles(gpa, io, d.dirs, &list);
+    try d.listFiles(gpa, io, &list);
     const t2 = std.Io.Clock.awake.now(io);
     try out.print("\n# font files ({d}, {d} µs)\n", .{ list.items.len, @divTrunc(t1.durationTo(t2).nanoseconds, 1000) });
     if (files) for (list.items) |e| try out.print("{s}\n", .{e.path});

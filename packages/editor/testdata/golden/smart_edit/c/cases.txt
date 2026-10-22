@@ -1,0 +1,100 @@
+=== enter between braces
+--- before
+int main(void) {¦}
+--- keys
+<enter>
+--- after
+int main(void) {
+    ¦
+}
+
+=== electric closer
+--- before
+void f(void) {
+    g();
+    ¦
+--- keys
+}
+--- after
+void f(void) {
+    g();
+}¦
+
+=== autoclose bracket
+--- before
+int a¦;
+--- keys
+[3
+--- after
+int a[3¦];
+
+=== no autoclose in string
+--- before
+char *s = "x¦";
+--- keys
+(
+--- after
+char *s = "x(¦";
+
+=== char quote
+--- before
+char c = ¦;
+--- keys
+'a
+--- after
+char c = 'a¦';
+
+=== surround
+--- before
+x = «a»;
+--- keys
+(
+--- after
+x = («a»);
+
+=== line comment
+--- before
+«int a;
+int b;»
+--- keys
+<lc>
+--- after
+«// int a;
+// int b;»
+
+=== block comment
+--- before
+int ¦a;
+--- keys
+<bc>
+--- after
+/* int ¦a; */
+
+=== indent after open paren
+--- before
+f(a,¦
+--- keys
+<enter>b
+--- after
+f(a,
+    b¦
+
+=== backspace pair
+--- before
+x = ¦;
+--- keys
+(<bs>
+--- after
+x = ¦;
+
+=== multi cursor type
+--- before
+a¦
+b¦
+c¦
+--- keys
+()
+--- after
+a()¦
+b()¦
+c()¦
