@@ -77,6 +77,12 @@ pub const Style = struct {
     align_content: Justify = .start,
     justify: Justify = .start,
     clip: bool = false,
+    /// Scroll container on the horizontal axis: children are laid out with
+    /// unbounded width and painted shifted by the node's scroll offset.
+    /// Scrolling implies `clip`.
+    scroll_x: bool = false,
+    /// Scroll container on the vertical axis (see `scroll_x`).
+    scroll_y: bool = false,
     grow: f32 = 0,
     shrink: f32 = 1,
     basis: Dim = .auto,
@@ -101,6 +107,11 @@ pub const Style = struct {
     /// Layout of this subtree never changes the node's own size, so dirty
     /// propagation stops here.
     relayout_boundary: bool = false,
+
+    /// True when the node scrolls on either axis.
+    pub fn scrolls(s: *const Style) bool {
+        return s.scroll_x or s.scroll_y;
+    }
 
     /// A row container.
     pub fn row() Style {

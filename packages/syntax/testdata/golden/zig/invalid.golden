@@ -1,0 +1,4 @@
+1| keyword.storage:const variable:a operator:= string:"tab invalid:	inside";
+2| keyword.storage:const invalid:é = 1;
+3| keyword.storage:const variable:b operator:= invalid:#define;
+4| keyword.storage:const variable:c operator:= invalid:\ x;

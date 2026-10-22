@@ -104,6 +104,34 @@ pub const context = struct {
     }
 };
 /// Sessions: the JSONL log, index, resume, fork and rewind (E10.F08).
+/// `zg agent`: print mode, the REPL, `zg.stream/1` and exit codes (E10.F10.S01).
+pub const headless = struct {
+    pub const args = @import("headless/args.zig");
+    pub const exit_codes = @import("headless/exit_codes.zig");
+    pub const permission = @import("headless/permission.zig");
+    pub const signals = @import("headless/signals.zig");
+    pub const stream_json = @import("headless/stream_json.zig");
+    pub const runner = @import("headless/runner.zig");
+    pub const print = @import("headless/print.zig");
+    pub const repl = @import("headless/repl.zig");
+    pub const HeadlessOptions = args.HeadlessOptions;
+    pub const ExitCode = exit_codes.ExitCode;
+    pub const parseArgs = args.parseArgs;
+    pub const runPrint = print.runPrint;
+    pub const runRepl = repl.runRepl;
+    test {
+        _ = @import("headless/args_test.zig");
+        _ = @import("headless/print_test.zig");
+        _ = @import("headless/stream_json_test.zig");
+    }
+};
+/// Cassettes and the eval runner (E10.F10.S02).
+pub const testing = struct {
+    pub const cassette = @import("testing/cassette.zig");
+    test {
+        _ = @import("testing/cassette_test.zig");
+    }
+};
 pub const session = struct {
     pub const key = @import("session/key.zig");
     pub const records = @import("session/records.zig");
@@ -167,4 +195,6 @@ test {
     std.testing.refAllDecls(loop);
     std.testing.refAllDecls(context);
     std.testing.refAllDecls(session);
+    std.testing.refAllDecls(testing);
+    std.testing.refAllDecls(headless);
 }

@@ -25,6 +25,8 @@ const event = @import("../input/event.zig");
 const hit_test = @import("../input/hit_test.zig");
 const keys_mod = @import("../input/keys.zig");
 const box = @import("../widgets/box.zig");
+const overlay = @import("../widgets/overlay.zig");
+const theme_mod = @import("../theme/theme.zig");
 
 const NodeId = ids.NodeId;
 const Rect = geom.Rect;
@@ -66,6 +68,8 @@ pub const ViewEntry = struct {
 /// embedded as the first field of another has the same address.
 const ViewKey = struct { ptr: usize, vt: usize };
 
+const PendingHook = struct { hook: overlay.CloseHook, id: overlay.OverlayId };
+
 fn viewKey(v: view_mod.AnyView) ViewKey {
     return .{ .ptr = @intFromPtr(v.ptr), .vt = @intFromPtr(v.vtable) };
 }
@@ -74,6 +78,8 @@ const Cmd = union(enum) {
     ops: struct { range: canvas.Range, origin: Vec2 },
     push_clip: struct { r: Rect, radius: f32 },
     pop_clip,
+    /// A scrollbar thumb, drawn above the scrolled content.
+    thumb: struct { r: Rect, color: geom.Color },
 };
 
 /// A window: node tree, views, layout, paint cache and input state.
@@ -91,6 +97,10 @@ pub const Window = struct {
     frame_arena: std.heap.ArenaAllocator,
     frame_no: u64 = 0,
     building: bool = false,
+    /// Open overlays (popovers, dialogs) in paint order.
+    overlays: overlay.Stack = .{},
+    /// Close hooks of overlays closed while building, run after the build.
+    close_hooks: std.ArrayList(PendingHook) = .empty,
     needs_frame: bool = true,
     stats: FrameStats = .{},
 
@@ -167,6 +177,10 @@ pub const Window = struct {
     /// Frees the window (use `App.closeWindow`).
     pub fn destroy(w: *Window) void {
         const gpa = w.gpa;
+        // Close hooks may own their views.
+        while (w.overlays.top()) |e| w.closeOverlay(e.id);
+        w.overlays.deinit(gpa);
+        w.close_hooks.deinit(gpa);
         w.store.on_free = null;
         w.ui.deinit();
         w.engine.deinit();
@@ -338,11 +352,20 @@ pub const Window = struct {
         // dirty children inline.
         w.building = true;
         w.ui.emitted = 0;
-        if (w.store.hot.items(.first_child)[w.root.index].isNone()) {
-            w.ui.buildRoot(w.root);
+        // The root is rebuilt when overlays open or close, which a view's
+        // build may do; a few rounds settle it.
+        var round: u8 = 0;
+        while (round < 4) : (round += 1) {
+            if (w.store.hot.items(.first_child)[w.root.index].isNone() or w.overlays.dirty) {
+                w.overlays.dirty = false;
+                w.ui.buildRoot(w.root);
+            }
+            while (w.nextDirtyView()) |vid| w.ui.buildInto(vid, w.views.items[vid].node);
+            if (!w.overlays.dirty) break;
         }
-        while (w.nextDirtyView()) |vid| w.ui.buildInto(vid, w.views.items[vid].node);
         w.building = false;
+        for (w.close_hooks.items) |c| c.hook.f(c.hook.ctx, c.id);
+        w.close_hooks.clearRetainingCapacity();
         for (w.views.items) |*e| {
             if (e.dirty_next) {
                 e.dirty_next = false;
@@ -358,7 +381,12 @@ pub const Window = struct {
         if (rfl.subtree_dirty or rfl.layout_dirty) {
             w.engine.run(w.root, w.size);
             w.stats.layout = w.engine.stats;
+            // Views that build from a viewport size see the new one next frame.
+            for (w.store.resized_views.items) |vid| w.markViewDirty(vid);
+            w.store.resized_views.clearRetainingCapacity();
         }
+
+        if (w.overlays.items.items.len > 0) w.placeOverlays();
 
         // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
         if (w.store.paint_pending or w.full_repaint) {
@@ -422,7 +450,7 @@ pub const Window = struct {
             for (w.store.hot.items(.flags)[1..]) |*f| f.paint_dirty = true;
         }
         const viewport: Rect = .{ .w = w.size.w, .h = w.size.h };
-        w.walkPaint(w.root, .{}, viewport);
+        w.walkPaint(w.root, .{}, viewport, false);
         w.cur_ops = 1 - w.cur_ops;
         w.hits.finish(w.gpa, w.size) catch {};
         w.stats.ops = @intCast(new.ops.items.len);
@@ -430,7 +458,10 @@ pub const Window = struct {
         w.store.paint_pending = false;
     }
 
-    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect) void {
+    /// Paints `id` and its subtree. `cull` (children of a scroll
+    /// container) skips subtrees whose box lies outside `clip`; content
+    /// that overflows its own box there is skipped with it.
+    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect, cull: bool) void {
         const s = &w.store;
         const i = id.index;
         var fl = s.hot.items(.flags)[i];
@@ -443,10 +474,20 @@ pub const Window = struct {
             return;
         }
         const abs = s.relRect(id).translate(origin);
+        if (cull) {
+            const ext = w.ringExtent(fl);
+            if (abs.outset(ext).intersect(clip).isEmpty()) {
+                if (fl.painted) {
+                    w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
+                    s.hot.items(.flags)[i].painted = false;
+                }
+                return;
+            }
+        }
         const moved = !fl.painted or !old_abs.eql(abs);
         if (fl.paint_dirty or moved) {
             const ext = w.ringExtent(fl);
-            if (fl.painted) w.damage.add(old_abs.outset(ext).intersect(.{ .w = w.size.w, .h = w.size.h }));
+            if (fl.painted) w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
             w.damage.add(abs.outset(ext).intersect(clip.outset(ext)));
         }
         const new = &w.ops[1 - w.cur_ops];
@@ -492,7 +533,8 @@ pub const Window = struct {
             child_clip = clip.intersect(abs);
             w.cmds.append(w.gpa, .{ .push_clip = .{ .r = abs, .radius = st.radius } }) catch {};
         }
-        const child_origin: Vec2 = .{ .x = abs.x, .y = abs.y };
+        const scroll = s.cold.items[i].scroll;
+        const child_origin: Vec2 = .{ .x = abs.x - scroll.x, .y = abs.y - scroll.y };
         // Children in z order (stable for equal z).
         var needs_sort = false;
         var it = s.children(id);
@@ -504,7 +546,7 @@ pub const Window = struct {
         }
         if (!needs_sort) {
             it = s.children(id);
-            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip);
+            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, st.scrolls());
         } else {
             const start = w.z_scratch.items.len;
             it = s.children(id);
@@ -517,11 +559,100 @@ pub const Window = struct {
             }.lt);
             var k: usize = 0;
             while (start + k < w.z_scratch.items.len and k < kids.len) : (k += 1) {
-                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip);
+                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, st.scrolls());
             }
             w.z_scratch.shrinkRetainingCapacity(start);
         }
+        if (st.scrolls()) w.addThumbs(id, abs);
         if (fl.clips or st.clip) w.cmds.append(w.gpa, .pop_clip) catch {};
+    }
+
+    /// Thickness of a scrollbar thumb, logical pixels.
+    pub const thumb_size: f32 = 6;
+
+    /// The thumb rectangles of scroll container `id` at `abs`
+    /// (null where the content fits).
+    pub fn thumbRects(w: *const Window, id: NodeId, abs: Rect) [2]?Rect {
+        const c = &w.store.cold.items[id.index];
+        const st = &c.style;
+        var out: [2]?Rect = .{ null, null };
+        const vw = abs.w - st.padding.horizontal() - 2 * st.border_w;
+        const vh = abs.h - st.padding.vertical() - 2 * st.border_w;
+        if (st.scroll_y and c.content.h > vh + 0.5 and vh > 0) {
+            const len = @max(16, abs.h * vh / c.content.h);
+            const top = abs.y + (abs.h - len) * (c.scroll.y / (c.content.h - vh));
+            out[1] = .{ .x = abs.x + abs.w - thumb_size - 2, .y = top, .w = thumb_size, .h = len };
+        }
+        if (st.scroll_x and c.content.w > vw + 0.5 and vw > 0) {
+            const len = @max(16, abs.w * vw / c.content.w);
+            const left = abs.x + (abs.w - len) * (c.scroll.x / (c.content.w - vw));
+            out[0] = .{ .x = left, .y = abs.y + abs.h - thumb_size - 2, .w = len, .h = thumb_size };
+        }
+        return out;
+    }
+
+    fn addThumbs(w: *Window, id: NodeId, abs: Rect) void {
+        const color = w.app.theme.color(.scrollbar_thumb);
+        for (w.thumbRects(id, abs)) |t| if (t) |r| {
+            w.cmds.append(w.gpa, .{ .thumb = .{ .r = r, .color = color } }) catch {};
+        };
+    }
+
+    // -- scrolling ------------------------------------------------------------
+
+    /// The scroll offset of `id` (zero for nodes that do not scroll).
+    pub fn scrollOffset(w: *const Window, id: NodeId) Vec2 {
+        if (!w.store.valid(id)) return .{};
+        return w.store.cold.items[id.index].scroll;
+    }
+
+    /// The largest offset `id` can scroll to on each axis.
+    pub fn maxScroll(w: *const Window, id: NodeId) Vec2 {
+        if (!w.store.valid(id)) return .{};
+        const c = &w.store.cold.items[id.index];
+        const r = w.store.relRect(id);
+        const st = &c.style;
+        return .{
+            .x = if (st.scroll_x) @max(0, c.content.w - (r.w - st.padding.horizontal() - 2 * st.border_w)) else 0,
+            .y = if (st.scroll_y) @max(0, c.content.h - (r.h - st.padding.vertical() - 2 * st.border_w)) else 0,
+        };
+    }
+
+    /// Scrolls `id` to `to` (clamped); true when the offset changed. The
+    /// content repaints at its new position without relayout; a container
+    /// opened with `rebuild_on_scroll` also rebuilds its view.
+    pub fn scrollTo(w: *Window, id: NodeId, to: Vec2) bool {
+        if (!w.store.valid(id) or !w.store.cold.items[id.index].style.scrolls()) return false;
+        const max = w.maxScroll(id);
+        const c = &w.store.cold.items[id.index];
+        const next: Vec2 = .{ .x = std.math.clamp(to.x, 0, max.x), .y = std.math.clamp(to.y, 0, max.y) };
+        if (next.x == c.scroll.x and next.y == c.scroll.y) return false;
+        c.scroll = next;
+        w.store.markPaint(id);
+        if (w.store.flags(id).rebuild_on_scroll) w.markViewDirty(w.store.hot.items(.view)[id.index]);
+        w.needs_frame = true;
+        return true;
+    }
+
+    /// Scrolls `id` by `d`; true when the offset changed.
+    pub fn scrollBy(w: *Window, id: NodeId, d: Vec2) bool {
+        const o = w.scrollOffset(id);
+        return w.scrollTo(id, .{ .x = o.x + d.x, .y = o.y + d.y });
+    }
+
+    /// Pixels per wheel notch.
+    pub const wheel_step: f32 = 48;
+
+    /// Scrolls the innermost container under `from` that can move in the
+    /// event's direction (an inner list at its end lets the outer page
+    /// scroll).
+    fn scrollChain(w: *Window, from: NodeId, sc: event.Scroll) void {
+        const k: f32 = if (sc.precise) 1 else wheel_step;
+        const d: Vec2 = .{ .x = sc.dx * k, .y = sc.dy * k };
+        var n = from;
+        while (!n.isNone()) : (n = w.store.parent(n)) {
+            if (w.scrollBy(n, d)) return;
+        }
     }
 
     var dummy: u8 = 0;
@@ -537,6 +668,7 @@ pub const Window = struct {
                 .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
                 .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
                 .pop_clip => c.popClip(),
+                .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
             };
             if (w.damage.full) c.addDamage(.{ .w = w.size.w, .h = w.size.h }) else for (w.damage.slice()) |r| c.addDamage(r);
             c.end();
@@ -553,8 +685,151 @@ pub const Window = struct {
             .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
             .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
             .pop_clip => c.popClip(),
+            .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
         };
         c.end();
+    }
+
+    // -- overlays -------------------------------------------------------------
+
+    /// Opens `view` as an overlay (see `zg_gui.w.overlay`). Opened during a
+    /// build, the building view is rebuilt when the overlay closes.
+    pub fn openOverlay(w: *Window, view: view_mod.AnyView, opts: overlay.Options) !overlay.OverlayId {
+        const id = try w.overlays.push(w.gpa, .{
+            .id = .none,
+            .view = view,
+            .opts = opts,
+            .owner_view = if (w.building) w.ui.currentView() else 0,
+            .prev_focus = w.focus,
+            .wants_focus = opts.modal or opts.take_focus,
+        });
+        w.needs_frame = true;
+        return id;
+    }
+
+    /// Closes overlay `id` (no-op when it is not open): restores focus,
+    /// rebuilds the view that opened it and runs its close hook.
+    pub fn closeOverlay(w: *Window, id: overlay.OverlayId) void {
+        const e = w.overlays.remove(id) orelse return;
+        w.needs_frame = true;
+        if (e.opts.restore_focus) {
+            const inside = !e.panel.isNone() and w.store.valid(e.panel) and !w.focus.isNone() and w.store.isAncestor(e.panel, w.focus);
+            if (inside or w.focus.isNone()) {
+                const back = if (!e.prev_focus.isNone() and w.store.valid(e.prev_focus)) e.prev_focus else NodeId.none;
+                w.setFocus(back, w.focus_visible);
+            }
+        }
+        if (e.owner_view != 0 and e.owner_view < w.views.items.len and w.views.items[e.owner_view].alive) w.markViewDirty(e.owner_view);
+        if (e.opts.on_close) |h| {
+            // A hook may free the overlay's view, which may be building.
+            if (w.building) {
+                w.close_hooks.append(w.gpa, .{ .hook = h, .id = id }) catch h.f(h.ctx, id);
+            } else h.f(h.ctx, id);
+        }
+    }
+
+    /// True while overlay `id` is open.
+    pub fn isOverlayOpen(w: *const Window, id: overlay.OverlayId) bool {
+        return w.overlays.indexOf(id) != null;
+    }
+
+    /// The rectangle of `id` from the last layout, in window coordinates
+    /// (parents' scroll offsets applied).
+    pub fn layoutRect(w: *const Window, id: NodeId) Rect {
+        var r = w.store.relRect(id);
+        var p = w.store.parent(id);
+        while (!p.isNone()) : (p = w.store.parent(p)) {
+            const pr = w.store.relRect(p);
+            const sc = w.store.cold.items[p.index].scroll;
+            r.x += pr.x - sc.x;
+            r.y += pr.y - sc.y;
+        }
+        return r;
+    }
+
+    /// Positions overlay panels after layout, closes overlays whose anchor
+    /// unmounted, and moves focus into newly opened ones.
+    fn placeOverlays(w: *Window) void {
+        const vp: Rect = .{ .w = w.size.w, .h = w.size.h };
+        var i: usize = 0;
+        while (i < w.overlays.items.items.len) {
+            const e = &w.overlays.items.items[i];
+            i += 1;
+            if (e.panel.isNone() or !w.store.valid(e.panel)) continue;
+            const cur = w.store.relRect(e.panel);
+            const size: Size = .{ .w = cur.w, .h = cur.h };
+            const target = if (e.opts.anchor) |a| switch (a) {
+                .rect => |r| overlay.place(r, size, vp, e.opts.placement),
+                .node => |n| blk: {
+                    if (!w.store.valid(n) or w.store.flags(n).hidden) {
+                        w.closeOverlay(e.id);
+                        i -= 1;
+                        continue;
+                    }
+                    break :blk overlay.place(w.layoutRect(n), size, vp, e.opts.placement);
+                },
+            } else overlay.center(size, vp);
+            if (target.x != cur.x or target.y != cur.y) {
+                w.store.hot.items(.rect)[e.panel.index] = target.toArray();
+                w.store.markPaint(e.panel);
+                w.full_repaint = true;
+            }
+            if (e.wants_focus) {
+                e.wants_focus = false;
+                const f = w.firstFocusable(e.panel);
+                const to = if (!f.isNone()) f else if (e.opts.modal) e.panel else NodeId.none;
+                if (!to.isNone()) w.setFocus(to, w.focus_visible);
+            }
+        }
+    }
+
+    /// The first enabled focusable node under `n` in tree order (not `n`).
+    fn firstFocusable(w: *Window, n: NodeId) NodeId {
+        var it = w.store.children(n);
+        while (it.next()) |c| {
+            const fl = w.store.flags(c);
+            if (fl.hidden) continue;
+            if (fl.focusable and !fl.disabled) return c;
+            const d = w.firstFocusable(c);
+            if (!d.isNone()) return d;
+        }
+        return .none;
+    }
+
+    /// The overlay Escape closes: the topmost that is modal or holds focus.
+    fn escapeTarget(w: *const Window) ?overlay.OverlayId {
+        var i = w.overlays.items.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = w.overlays.items.items[i];
+            if (e.opts.modal) return e.id;
+            if (!w.focus.isNone() and !e.panel.isNone() and w.store.valid(e.panel) and w.store.isAncestor(e.panel, w.focus)) return e.id;
+        }
+        return null;
+    }
+
+    /// Light dismiss for a press at `p`; true when the press is consumed.
+    fn dismissOutside(w: *Window, p: Vec2) bool {
+        const top = w.overlays.top() orelse return false;
+        const h = w.hitTest(p);
+        if (!top.panel.isNone() and w.store.valid(top.panel) and !h.isNone() and w.store.isAncestor(top.panel, h)) return false;
+        if (top.opts.light_dismiss) {
+            const consume = top.opts.consume_outside_click;
+            w.closeOverlay(top.id);
+            return consume;
+        }
+        // The scrim under a modal overlay swallows the press.
+        return top.opts.modal;
+    }
+
+    /// Closes the light-dismissable popovers and tooltips (window blur).
+    pub fn dismissPopovers(w: *Window) void {
+        var i = w.overlays.items.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = w.overlays.items.items[i];
+            if (e.opts.light_dismiss and (e.opts.layer == .popover or e.opts.layer == .tooltip)) w.closeOverlay(e.id);
+        }
     }
 
     // -- input --------------------------------------------------------------
@@ -612,6 +887,12 @@ pub const Window = struct {
         .release = sinkRelease,
         .setCursor = sinkCursor,
         .nodeRect = sinkRect,
+        .relayout = sinkRelayout,
+        .textSystem = sinkText,
+        .theme = sinkTheme,
+        .clipboardGet = sinkClipGet,
+        .clipboardSet = sinkClipSet,
+        .nowMs = sinkNow,
     };
 
     fn sinkRespond(p: *anyopaque, n: NodeId, r: Response) void {
@@ -642,6 +923,31 @@ pub const Window = struct {
     fn sinkRect(p: *anyopaque, n: NodeId) Rect {
         const w: *Window = @ptrCast(@alignCast(p));
         return w.store.absRect(n);
+    }
+    fn sinkRelayout(p: *anyopaque, n: NodeId) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.store.markLayout(n);
+        w.needs_frame = true;
+    }
+    fn sinkText(p: *anyopaque) text.TextSystem {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.text_sys;
+    }
+    fn sinkTheme(p: *anyopaque) *const theme_mod.Theme {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.theme;
+    }
+    fn sinkClipGet(p: *anyopaque) []const u8 {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.clipboard.get();
+    }
+    fn sinkClipSet(p: *anyopaque, s: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.app.clipboard.set(w.gpa, s);
+    }
+    fn sinkNow(p: *anyopaque) u64 {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.now_ms;
     }
 
     /// Delivers `ev` along the path root → `target` (capture) and back
@@ -705,6 +1011,7 @@ pub const Window = struct {
             },
             .pointer_down => |pd| {
                 w.pointer = pd.pos;
+                if (w.dismissOutside(pd.pos)) return;
                 const h = w.hitTest(pd.pos);
                 w.setHot(h);
                 if (h.isNone()) return;
@@ -740,7 +1047,8 @@ pub const Window = struct {
                 w.setHot(.none);
             },
             .scroll => |sc| {
-                _ = w.deliver(w.hitTest(sc.pos), ev, true);
+                const h = w.hitTest(sc.pos);
+                if (!w.deliver(h, ev, true)) w.scrollChain(h, sc);
             },
             .key => |k| w.dispatchKey(k),
             .text => {
@@ -769,8 +1077,12 @@ pub const Window = struct {
             .enter, .numpad_enter, .space => if (!w.focus.isNone()) {
                 if (!w.deliver(w.focus, .activate, false)) w.respond(w.focus, .{ .clicked = true });
             },
-            .escape => if (!w.focus.isNone()) {
-                w.respond(w.focus, .{ .cancelled = true });
+            .escape => {
+                if (w.escapeTarget()) |id| {
+                    w.closeOverlay(id);
+                } else if (!w.focus.isNone()) {
+                    w.respond(w.focus, .{ .cancelled = true });
+                }
             },
             else => {},
         }
@@ -801,7 +1113,8 @@ pub const Window = struct {
         var passed = false;
         var stack: [512]NodeId = undefined;
         var sp: usize = 0;
-        stack[0] = w.root;
+        // A modal overlay traps focus.
+        stack[0] = if (w.overlays.topModal()) |m| (if (m.panel.isNone() or !w.store.valid(m.panel)) w.root else m.panel) else w.root;
         sp = 1;
         // Pre-order DFS without recursion.
         while (sp > 0) {
@@ -858,6 +1171,7 @@ pub const Window = struct {
             .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
             .window_focus => |f| if (!f.focused) {
                 w.setHot(.none);
+                w.dismissPopovers();
             },
             .frame => {
                 w.needs_frame = true;

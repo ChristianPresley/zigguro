@@ -81,6 +81,24 @@ pub fn build(b: *std.Build) void {
             // The golden scene corpus alone (E02.F07.S02.T02).
             const golden = b.addTest(.{ .name = "test-golden", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"scene:"} });
             b.step("test-golden", "Render the zg_vulkan scene corpus against its golden images").dependOn(&b.addRunArtifact(golden).step);
+            // The system Vulkan loader needs libc (ADR-E02-001), so the GPU
+            // tests get their own libc-linked binary (E02.F01.S02.T01).
+            const gpu_mod = zg_build.testModule(b, f, mods[i]);
+            gpu_mod.link_libc = true;
+            const gpu = b.addTest(.{ .name = "test-vulkan-gpu", .root_module = gpu_mod, .filters = &.{"gpu:"} });
+            b.step("test-vulkan-gpu", "Run the zg_vulkan tests that need a Vulkan loader (skipped without one)").dependOn(&b.addRunArtifact(gpu).step);
+            // Every generated binding on the three tier-1 64-bit targets.
+            const check_vk = b.step("check-vk-gen", "Compile all of the generated vk.zig for x86_64-windows, x86_64-linux-gnu and aarch64-linux-gnu");
+            for ([_][]const u8{ "x86_64-windows", "x86_64-linux-gnu", "aarch64-linux-gnu" }) |triple| {
+                const target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable);
+                const vt = b.addTest(.{ .name = b.fmt("check-vk-{s}", .{triple}), .root_module = b.createModule(.{
+                    .root_source_file = b.path("packages/vulkan/src/vk/check.zig"),
+                    .target = target,
+                    .optimize = .Debug,
+                }) });
+                check_vk.dependOn(&vt.step);
+            }
+            test_step.dependOn(check_vk);
         }
         // zg_ai also exports the zg_ai_proto leaf module, tested with it.
         if (comptime std.mem.eql(u8, p.name, "zg_ai")) {
@@ -103,6 +121,23 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run.step);
     }
 
+    // `zg agent` end to end: spawns the built zg (E10.F10.S01.T02).
+    {
+        const fx = b.addOptions();
+        fx.addOptionPath("zg", zg_exe.getEmittedBin());
+        fx.addOptionPath("cassette", b.path("apps/zg/testdata/cassettes/two_turns.jsonl"));
+        const e2e = b.addTest(.{ .name = "zg-agent-e2e", .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/zg/test/agent_e2e_test.zig"),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{.{ .name = "zg_e2e", .module = fx.createModule() }},
+        }), .filters = test_filters });
+        const run = b.addRunArtifact(e2e);
+        run.skip_foreign_checks = true;
+        b.step("test-zg", "Run the zg CLI end-to-end tests").dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
+
     // INV-01: every consumer against a deny-all engine (E16.F02.S01.T04).
     inline for (packages.all, 0..) |p, i| {
         if (comptime std.mem.eql(u8, p.name, "zg_security")) {
@@ -122,6 +157,7 @@ pub fn build(b: *std.Build) void {
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
+    const vkgen = addTool(b, "vkgen", "tools/vkgen/main.zig", test_filters, f.optimize, tools_test_step);
     // zg-transcript shares its core with zg_lsp (a std-only file).
     const transcript = addToolImports(b, "zg-transcript", "tools/transcript/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "zg_transcript", .module = b.createModule(.{ .root_source_file = b.path("packages/lsp/src/client/transcript.zig") }) },
@@ -180,6 +216,7 @@ pub fn build(b: *std.Build) void {
     const generators = .{
         .{ lspgen, "lspgen", "tools/lspgen/data/metaModel-3.18.json", "packages/lsp/src/gen/protocol.zig" },
         .{ dapgen, "dapgen", "tools/dapgen/data/debugAdapterProtocol.json", "packages/dap/src/gen/protocol.zig" },
+        .{ vkgen, "vkgen", "tools/vkgen/data/vk.xml", "packages/vulkan/src/vk/vk.zig" },
     };
     inline for (generators) |g| {
         inline for (.{ false, true }) |check| {
@@ -195,6 +232,14 @@ pub fn build(b: *std.Build) void {
             }
         }
     }
+    // The vkgen golden for its mini registry (checked by `test-tools`).
+    const vkgen_mini = b.addRunArtifact(vkgen);
+    vkgen_mini.addFileArg(b.path("tools/vkgen/testdata/mini.xml"));
+    vkgen_mini.addArg(b.pathFromRoot("tools/vkgen/testdata/golden/mini_vk.zig"));
+    vkgen_mini.addArgs(&.{ "--max-version", "1.1", "--extensions", "VK_KHR_mini", "--no-helpers" });
+    vkgen_mini.has_side_effects = true;
+    b.step("vkgen-mini", "Regenerate tools/vkgen/testdata/golden/mini_vk.zig").dependOn(&vkgen_mini.step);
+
     const supply_chain = addTool(b, "check-supply-chain", "tools/check-supply-chain/main.zig", test_filters, f.optimize, tools_test_step);
 
     const zig_pin = b.addRunArtifact(zig_verify);

@@ -1,0 +1,8 @@
+1| keyword.storage:const variable:a operator:= number:1_000_000 punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= number:0xFF_FF punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= number:0o755 punctuation.delimiter:;
+4| keyword.storage:const variable:d operator:= number:0b1010_0101 punctuation.delimiter:;
+5| keyword.storage:const variable:e operator:= number:1.5e10 punctuation.delimiter:;
+6| keyword.storage:const variable:f operator:= number:1e-3 punctuation.delimiter:;
+7| keyword.storage:const variable:g operator:= number:0 operator:.. number:10 punctuation.delimiter:;
+8| keyword.storage:const variable:h operator:= variable:arr punctuation.bracket:[ number:1 operator:.. punctuation.bracket:] punctuation.delimiter:;

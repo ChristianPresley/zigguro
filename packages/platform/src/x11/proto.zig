@@ -343,6 +343,295 @@ pub const BigReqEnable = struct {
     };
 };
 
+/// SendEvent (25): delivers a 32-byte event to `destination`.
+pub const SendEvent = struct {
+    /// The major opcode.
+    pub const opcode = 25;
+    data: bool = false, // propagate
+    destination: u32,
+    event_mask: u32,
+    event: [32]u8,
+};
+
+/// ConfigureWindow (12) values, in bit order.
+pub const ConfigureValues = struct {
+    x: ?u32 = null,
+    y: ?u32 = null,
+    width: ?u32 = null,
+    height: ?u32 = null,
+    border_width: ?u32 = null,
+    sibling: ?u32 = null,
+    stack_mode: ?u32 = null,
+};
+
+/// ConfigureWindow (12). The mask is 16 bits here, unlike other lists.
+pub const ConfigureWindow = struct {
+    /// The major opcode.
+    pub const opcode = 12;
+    window: u32,
+    mask: u16,
+    _pad: [2]u8 = .{ 0, 0 },
+    values: []const u32,
+};
+
+/// CreateGC / ChangeGC values, in bit order (up to graphics-exposures).
+pub const GcValues = struct {
+    function: ?u32 = null,
+    plane_mask: ?u32 = null,
+    foreground: ?u32 = null,
+    background: ?u32 = null,
+    line_width: ?u32 = null,
+    line_style: ?u32 = null,
+    cap_style: ?u32 = null,
+    join_style: ?u32 = null,
+    fill_style: ?u32 = null,
+    fill_rule: ?u32 = null,
+    tile: ?u32 = null,
+    stipple: ?u32 = null,
+    tile_stipple_x_origin: ?u32 = null,
+    tile_stipple_y_origin: ?u32 = null,
+    font: ?u32 = null,
+    subwindow_mode: ?u32 = null,
+    graphics_exposures: ?u32 = null,
+};
+
+/// CreateGC (55).
+pub const CreateGC = struct {
+    /// The major opcode.
+    pub const opcode = 55;
+    cid: u32,
+    drawable: u32,
+    values: ValueList(GcValues) = .{},
+};
+
+/// FreeGC (60).
+pub const FreeGC = struct {
+    /// The major opcode.
+    pub const opcode = 60;
+    gc: u32,
+};
+
+/// Image formats of PutImage and GetImage.
+pub const ImageFormat = enum(u8) { bitmap = 0, xy_pixmap = 1, z_pixmap = 2 };
+
+/// PutImage (72).
+pub const PutImage = struct {
+    /// The major opcode.
+    pub const opcode = 72;
+    data: ImageFormat = .z_pixmap,
+    drawable: u32,
+    gc: u32,
+    width: u16,
+    height: u16,
+    dst_x: i16,
+    dst_y: i16,
+    left_pad: u8 = 0,
+    depth: u8,
+    _pad: [2]u8 = .{ 0, 0 },
+    pixels: []const u8,
+};
+
+/// GetImage (73).
+pub const GetImage = struct {
+    /// The major opcode.
+    pub const opcode = 73;
+    data: ImageFormat = .z_pixmap,
+    drawable: u32,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    plane_mask: u32 = 0xffffffff,
+
+    /// The image depth, visual and pixels (a view into the reply).
+    pub const Reply = struct {
+        depth: u8,
+        visual: u32,
+        pixels: []const u8,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            const len = @as(usize, u32At(b, 4)) * 4;
+            if (b.len < 32 + len) return error.Malformed;
+            return .{ .depth = b[1], .visual = u32At(b, 8), .pixels = b[32..][0..len] };
+        }
+    };
+};
+
+/// GetKeyboardMapping (101).
+pub const GetKeyboardMapping = struct {
+    /// The major opcode.
+    pub const opcode = 101;
+    first_keycode: u8,
+    count: u8,
+    _pad: [2]u8 = .{ 0, 0 },
+
+    /// `keysyms_per_keycode` keysyms for each keycode from `first_keycode`.
+    pub const Reply = struct {
+        keysyms_per_keycode: u8,
+        /// Little-endian u32 keysyms.
+        keysyms: []const u8,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            const len = @as(usize, u32At(b, 4)) * 4;
+            if (b.len < 32 + len) return error.Malformed;
+            return .{ .keysyms_per_keycode = b[1], .keysyms = b[32..][0..len] };
+        }
+    };
+};
+
+/// MIT-SHM QueryVersion.
+pub const ShmQueryVersion = struct {
+    /// The extension that owns this request.
+    pub const extension = "MIT-SHM";
+    /// The minor opcode.
+    pub const minor = 0;
+
+    /// The server's MIT-SHM version.
+    pub const Reply = struct {
+        major: u16,
+        minor: u16,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .major = u16At(b, 8), .minor = u16At(b, 10) };
+        }
+    };
+};
+
+/// MIT-SHM Detach.
+pub const ShmDetach = struct {
+    /// The extension that owns this request.
+    pub const extension = "MIT-SHM";
+    /// The minor opcode.
+    pub const minor = 2;
+    shmseg: u32,
+};
+
+/// MIT-SHM PutImage: copies from a segment to a drawable.
+pub const ShmPutImage = struct {
+    /// The extension that owns this request.
+    pub const extension = "MIT-SHM";
+    /// The minor opcode.
+    pub const minor = 3;
+    drawable: u32,
+    gc: u32,
+    total_width: u16,
+    total_height: u16,
+    src_x: u16,
+    src_y: u16,
+    src_width: u16,
+    src_height: u16,
+    dst_x: i16,
+    dst_y: i16,
+    depth: u8,
+    format: ImageFormat = .z_pixmap,
+    send_event: bool,
+    _pad: u8 = 0,
+    shmseg: u32,
+    offset: u32,
+};
+
+/// MIT-SHM AttachFd (1.2): attaches the memory behind the fd sent with it.
+pub const ShmAttachFd = struct {
+    /// The extension that owns this request.
+    pub const extension = "MIT-SHM";
+    /// The minor opcode.
+    pub const minor = 6;
+    shmseg: u32,
+    read_only: bool = false,
+    _pad: [3]u8 = .{ 0, 0, 0 },
+};
+
+/// Core event codes (byte 0, without the SendEvent bit).
+pub const EventCode = struct {
+    /// KeyPress.
+    pub const key_press = 2;
+    /// KeyRelease.
+    pub const key_release = 3;
+    /// ButtonPress.
+    pub const button_press = 4;
+    /// ButtonRelease.
+    pub const button_release = 5;
+    /// MotionNotify.
+    pub const motion_notify = 6;
+    /// EnterNotify.
+    pub const enter_notify = 7;
+    /// LeaveNotify.
+    pub const leave_notify = 8;
+    /// FocusIn.
+    pub const focus_in = 9;
+    /// FocusOut.
+    pub const focus_out = 10;
+    /// Expose.
+    pub const expose = 12;
+    /// VisibilityNotify.
+    pub const visibility_notify = 15;
+    /// UnmapNotify.
+    pub const unmap_notify = 18;
+    /// MapNotify.
+    pub const map_notify = 19;
+    /// ConfigureNotify.
+    pub const configure_notify = 22;
+    /// ClientMessage.
+    pub const client_message = 33;
+    /// MappingNotify.
+    pub const mapping_notify = 34;
+};
+
+/// Core event-mask bits.
+pub const EventMask = struct {
+    /// KeyPress.
+    pub const key_press: u32 = 1 << 0;
+    /// KeyRelease.
+    pub const key_release: u32 = 1 << 1;
+    /// ButtonPress.
+    pub const button_press: u32 = 1 << 2;
+    /// ButtonRelease.
+    pub const button_release: u32 = 1 << 3;
+    /// EnterWindow.
+    pub const enter_window: u32 = 1 << 4;
+    /// LeaveWindow.
+    pub const leave_window: u32 = 1 << 5;
+    /// PointerMotion.
+    pub const pointer_motion: u32 = 1 << 6;
+    /// Exposure.
+    pub const exposure: u32 = 1 << 15;
+    /// VisibilityChange.
+    pub const visibility_change: u32 = 1 << 16;
+    /// StructureNotify.
+    pub const structure_notify: u32 = 1 << 17;
+    /// SubstructureNotify.
+    pub const substructure_notify: u32 = 1 << 19;
+    /// SubstructureRedirect.
+    pub const substructure_redirect: u32 = 1 << 20;
+    /// FocusChange.
+    pub const focus_change: u32 = 1 << 21;
+    /// PropertyChange.
+    pub const property_change: u32 = 1 << 22;
+};
+
+/// Predefined atoms.
+pub const Atom = struct {
+    /// ATOM.
+    pub const atom: u32 = 4;
+    /// CARDINAL.
+    pub const cardinal: u32 = 6;
+    /// RESOURCE_MANAGER.
+    pub const resource_manager: u32 = 23;
+    /// STRING.
+    pub const string: u32 = 31;
+    /// WM_NAME.
+    pub const wm_name: u32 = 39;
+    /// WM_NORMAL_HINTS.
+    pub const wm_normal_hints: u32 = 40;
+    /// WM_SIZE_HINTS.
+    pub const wm_size_hints: u32 = 41;
+    /// WM_CLASS.
+    pub const wm_class: u32 = 67;
+};
+
 /// A protocol error as the server sent it.
 pub const XError = struct {
     code: u8,
@@ -449,4 +738,43 @@ test "reply and error decoding" {
     try testing.expectEqual(77, xe.sequence);
     try testing.expectEqual(0xdead, xe.bad_value);
     try testing.expectEqual(8, xe.major_opcode);
+}
+
+test "PutImage and ShmPutImage layouts" {
+    var buf: [64]u8 = undefined;
+    const px = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    const n = try writeRequest(&buf, PutImage, .{ .drawable = 7, .gc = 9, .width = 2, .height = 1, .dst_x = 3, .dst_y = -1, .depth = 24, .pixels = &px }, 0, false);
+    try testing.expectEqual(@as(usize, 32), n);
+    try testing.expectEqual(@as(u8, 72), buf[0]);
+    try testing.expectEqual(@as(u8, 2), buf[1]); // ZPixmap
+    try testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, buf[2..4], .little));
+    try testing.expectEqual(@as(i16, -1), std.mem.readInt(i16, buf[18..20], .little));
+    try testing.expectEqual(@as(u8, 24), buf[21]);
+    try testing.expectEqualSlices(u8, &px, buf[24..32]);
+
+    const m = try writeRequest(&buf, ShmPutImage, .{ .drawable = 1, .gc = 2, .total_width = 10, .total_height = 20, .src_x = 1, .src_y = 2, .src_width = 3, .src_height = 4, .dst_x = 5, .dst_y = 6, .depth = 24, .send_event = true, .shmseg = 0x55, .offset = 0 }, 130, false);
+    try testing.expectEqual(@as(usize, 40), m);
+    try testing.expectEqual(@as(u8, 130), buf[0]);
+    try testing.expectEqual(@as(u8, 3), buf[1]);
+    try testing.expectEqual(@as(u8, 24), buf[28]);
+    try testing.expectEqual(@as(u8, 2), buf[29]);
+    try testing.expectEqual(@as(u8, 1), buf[30]);
+    try testing.expectEqual(@as(u32, 0x55), std.mem.readInt(u32, buf[32..36], .little));
+}
+
+test "CreateGC value list and GetKeyboardMapping reply" {
+    var buf: [32]u8 = undefined;
+    const n = try writeRequest(&buf, CreateGC, .{ .cid = 1, .drawable = 2, .values = .{ .values = .{ .graphics_exposures = 0 } } }, 0, false);
+    try testing.expectEqual(@as(usize, 20), n);
+    try testing.expectEqual(@as(u32, 1 << 16), std.mem.readInt(u32, buf[12..16], .little));
+    var r: [40]u8 = @splat(0);
+    r[0] = 1;
+    r[1] = 2;
+    std.mem.writeInt(u32, r[4..8], 2, .little);
+    std.mem.writeInt(u32, r[32..36], 0x61, .little);
+    std.mem.writeInt(u32, r[36..40], 0x41, .little);
+    var fds: FdQueue = .{};
+    const km = try GetKeyboardMapping.Reply.decode(&r, &fds);
+    try testing.expectEqual(@as(u8, 2), km.keysyms_per_keycode);
+    try testing.expectEqual(@as(usize, 8), km.keysyms.len);
 }

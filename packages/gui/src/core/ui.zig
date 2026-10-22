@@ -18,6 +18,7 @@ const app_mod = @import("app.zig");
 const window_mod = @import("window.zig");
 const style_mod = @import("../layout/style.zig");
 const theme_mod = @import("../theme/theme.zig");
+const overlay = @import("../widgets/overlay.zig");
 const box = @import("../widgets/box.zig");
 const text_w = @import("../widgets/text.zig");
 
@@ -42,6 +43,9 @@ pub const BoxDesc = struct {
     hit: bool = false,
     focusable: bool = false,
     disabled: bool = false,
+    /// For scroll containers: rebuild the owning view whenever the offset
+    /// changes (see `zg_gui.w.virtual_list`).
+    rebuild_on_scroll: bool = false,
 };
 
 const Frame = struct {
@@ -105,10 +109,12 @@ pub const Ui = struct {
         const node = ui.emit(.box, widget.vtable(.box), &props, d.style, d.test_id);
         if (!node.isNone()) {
             const fl = ui.win.store.flags(node);
-            fl.hit_testable = d.hit or d.focusable;
+            const scrolls = d.style.scrolls();
+            fl.hit_testable = d.hit or d.focusable or scrolls;
             fl.focusable = d.focusable and !d.disabled;
             fl.disabled = d.disabled;
-            fl.clips = d.style.clip;
+            fl.clips = d.style.clip or scrolls;
+            fl.rebuild_on_scroll = d.rebuild_on_scroll and scrolls;
         }
         ui.push(node, @src());
     }
@@ -141,6 +147,12 @@ pub const Ui = struct {
     pub fn end(ui: *Ui, comptime W: type) void {
         _ = W;
         ui.pop();
+    }
+
+    /// The node of the innermost open container (after `begin`/`open`).
+    pub fn current(ui: *Ui) NodeId {
+        const f = ui.top() orelse return .none;
+        return f.node;
     }
 
     /// The response of the innermost open container (after `begin`/`open`).
@@ -260,6 +272,7 @@ pub const Ui = struct {
             ui.with(.{ .grow = 1 });
             ui.mount(v);
         }
+        overlay.build(ui, &ui.win.overlays);
         ui.pop();
     }
 
@@ -270,7 +283,8 @@ pub const Ui = struct {
         return &ui.frames.items[ui.frames.items.len - 1];
     }
 
-    fn currentView(ui: *Ui) u16 {
+    /// The view being built (0 outside any view).
+    pub fn currentView(ui: *Ui) u16 {
         return if (ui.top()) |f| f.view else 0;
     }
 

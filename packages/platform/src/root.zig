@@ -43,11 +43,27 @@ pub const headless = struct {
     pub const trace = @import("headless/trace.zig");
 };
 
-/// Starts the backend chosen by `platform.selectBackend`. Only headless
-/// exists so far; the OS backends (E01.F02, E01.F04, E01.F05) return
-/// `error.BackendUnavailable` until they land.
+/// Starts the backend chosen by `platform.selectBackend`, falling back
+/// along Wayland → X11 when the backend was detected rather than forced
+/// (by `opts.backend` or `ZG_PLATFORM`) and it cannot connect. The app
+/// falls back to headless itself. Cocoa (E01.F08) returns
+/// `error.BackendUnavailable` until it lands.
 pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform {
-    return switch (platform.selectBackend(opts)) {
+    const first = platform.selectBackend(opts);
+    if (initBackend(gpa, io, first, opts)) |p| return p else |err| {
+        if (platform.isForced(opts) or first != .wayland) return err;
+        const env = opts.environ_map orelse return err;
+        const display = env.get("DISPLAY") orelse return err;
+        if (display.len == 0) return err;
+        std.log.scoped(.platform).info("Wayland unavailable ({t}); trying X11", .{err});
+        return initBackend(gpa, io, .x11, opts);
+    }
+}
+
+/// Starts exactly `backend`, mapping its errors to `Error`.
+pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, backend: Backend, opts: InitOptions) Error!Platform {
+    const log = std.log.scoped(.platform);
+    switch (backend) {
         .headless => {
             const h = headless.Headless.init(gpa, io, .{}) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
@@ -55,8 +71,30 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platfor
             };
             return h.platform();
         },
-        else => error.BackendUnavailable,
-    };
+        .wayland => if (is_linux) {
+            const b = wayland.WaylandBackend.init(gpa, io, .{ .environ_map = opts.environ_map }) catch |err| {
+                log.info("Wayland backend unavailable: {t}", .{err});
+                return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
+            };
+            return b.platform();
+        },
+        .x11 => if (is_linux) {
+            const b = x11.X11Backend.init(gpa, io, .{ .environ_map = opts.environ_map }) catch |err| {
+                log.info("X11 backend unavailable: {t}", .{err});
+                return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
+            };
+            return b.platform();
+        },
+        .win32 => if (is_windows) {
+            const b = win32.Win32Backend.init(gpa, io, .{}) catch |err| {
+                log.info("Win32 backend unavailable: {t}", .{err});
+                return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
+            };
+            return b.platform();
+        },
+        .cocoa => {},
+    }
+    return error.BackendUnavailable;
 }
 
 /// Recursive file watching.
@@ -221,6 +259,18 @@ pub const x11 = if (is_linux) struct {
     pub const AtomTable = @import("x11/atoms.zig").AtomTable;
     /// See `x11/testing/fake_server.zig`.
     pub const testing = @import("x11/testing/fake_server.zig");
+    /// See `x11/backend.zig`.
+    pub const X11Backend = @import("x11/backend.zig").X11Backend;
+    /// See `x11/backend.zig`.
+    pub const InitOptions = @import("x11/backend.zig").InitOptions;
+    /// See `x11/backend.zig`.
+    pub const XvfbForTest = @import("x11/backend.zig").XvfbForTest;
+    /// See `x11/present.zig`.
+    pub const present = @import("x11/present.zig");
+    /// See `x11/dpi.zig`.
+    pub const dpi = @import("x11/dpi.zig");
+    /// See `x11/keymap.zig`.
+    pub const keymap = @import("x11/keymap.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -249,6 +299,18 @@ pub const win32 = struct {
     pub const dwmapi = if (is_windows) @import("win32/bindings/dwmapi.zig") else struct {};
     /// See `win32/bindings/advapi32.zig`.
     pub const advapi32 = if (is_windows) @import("win32/bindings/advapi32.zig") else struct {};
+    /// See `win32/msgs.zig`.
+    pub const msgs = @import("win32/msgs.zig");
+    /// See `win32/keys.zig`.
+    pub const keys = @import("win32/keys.zig");
+    /// See `win32/dpi.zig`.
+    pub const dpi = @import("win32/dpi.zig");
+    /// See `win32/cpu_present.zig`.
+    pub const cpu_present = @import("win32/cpu_present.zig");
+    /// See `win32/backend.zig`.
+    pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
+    /// See `win32/backend.zig`.
+    pub const InitOptions = if (is_windows) @import("win32/backend.zig").InitOptions else void;
 };
 
 /// The transport between the platform and UI threads, used by backends.
@@ -331,7 +393,11 @@ test {
     if (is_windows) {
         inline for (.{ "user32", "kernel32", "gdi32", "imm32", "ole32", "shell32", "dwmapi", "advapi32" }) |n| std.testing.refAllDecls(@field(win32, n));
         _ = @import("win32/bindings/windows_test.zig");
+        _ = @import("win32/backend.zig");
     }
+    _ = win32.keys;
+    _ = win32.dpi;
+    _ = win32.cpu_present;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -341,6 +407,7 @@ test {
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
+        _ = @import("x11/backend.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
@@ -414,6 +481,10 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/ext.zig", .src = @embedFile("x11/ext.zig") },
     .{ .path = "x11/atoms.zig", .src = @embedFile("x11/atoms.zig") },
     .{ .path = "x11/testing/fake_server.zig", .src = @embedFile("x11/testing/fake_server.zig") },
+    .{ .path = "x11/backend.zig", .src = @embedFile("x11/backend.zig") },
+    .{ .path = "x11/present.zig", .src = @embedFile("x11/present.zig") },
+    .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
+    .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
     .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
     .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },
@@ -425,12 +496,40 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/bindings/advapi32.zig", .src = @embedFile("win32/bindings/advapi32.zig") },
     .{ .path = "win32/com.zig", .src = @embedFile("win32/com.zig") },
     .{ .path = "win32/wide.zig", .src = @embedFile("win32/wide.zig") },
+    .{ .path = "win32/msgs.zig", .src = @embedFile("win32/msgs.zig") },
+    .{ .path = "win32/keys.zig", .src = @embedFile("win32/keys.zig") },
+    .{ .path = "win32/dpi.zig", .src = @embedFile("win32/dpi.zig") },
+    .{ .path = "win32/cpu_present.zig", .src = @embedFile("win32/cpu_present.zig") },
+    .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 
 test "init starts the headless backend" {
     const p = try init(std.testing.allocator, std.testing.io, .{ .backend = .headless });
     defer p.deinit();
     try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .wayland }));
+    if (!is_windows) try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .win32 }));
+}
+
+test "init falls back from an unreachable Wayland display to X11" {
+    if (!is_linux) return error.SkipZigTest;
+    var x = x11.XvfbForTest.start(4) catch return error.SkipZigTest;
+    defer x.stop();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = dir_buf[0..try tmp.dir.realPath(std.testing.io, &dir_buf)];
+    var env: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("XDG_RUNTIME_DIR", dir);
+    try env.put("WAYLAND_DISPLAY", "zg-no-such-socket");
+    try env.put("DISPLAY", x.display());
+    const p = try init(std.testing.allocator, std.testing.io, .{ .environ_map = &env });
+    defer p.deinit();
+    const win = try p.createWindow(.{ .title = "fallback", .size = .{ .w = 8, .h = 8 } });
+    try std.testing.expect(p.native().windowHandle(p.native().ptr, win) == .x11);
+    // Forcing Wayland does not fall back.
+    try env.put("ZG_PLATFORM", "wayland");
+    try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .environ_map = &env }));
 }
 
 test "every pub declaration has a doc comment" {

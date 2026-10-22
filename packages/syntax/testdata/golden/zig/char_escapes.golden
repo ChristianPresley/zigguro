@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:a operator:= character:'a' punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= character:' string.escape:\n character:' punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= character:' string.escape:\x41 character:' punctuation.delimiter:;
+4| keyword.storage:const variable:d operator:= character:' string.escape:\u{1F600} character:' punctuation.delimiter:;
+5| keyword.storage:const variable:e operator:= character:' string.escape:\' character:' punctuation.delimiter:;
+6| keyword.storage:const variable:f operator:= character:' string.escape:\\ character:' punctuation.delimiter:;

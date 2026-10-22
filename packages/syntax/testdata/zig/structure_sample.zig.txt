@@ -1,0 +1,50 @@
+//! A sample for structure tests.
+//! Two container doc lines.
+
+const std = @import("std");
+const mem = std.mem;
+const Allocator = @import("std").mem.Allocator;
+
+/// A point.
+/// With two doc lines.
+pub const Point = struct {
+    x: f32,
+    y: f32 = 0,
+
+    pub fn len(p: Point) f32 {
+        return std.math.sqrt(p.x * p.x + p.y * p.y);
+    }
+};
+
+pub const Color = enum { red, green };
+
+const Shape = union(enum) {
+    circle: f32,
+    square: f32,
+};
+
+var counter: u32 = 0;
+
+fn helper(items: []const u32) u32 {
+    var sum: u32 = 0;
+    for (items) |it| {
+        if (it > 3) {
+            sum += it;
+        }
+    }
+    const v = blk: {
+        break :blk switch (sum) {
+            0 => 1,
+            else => sum,
+        };
+    };
+    return v;
+}
+
+test "helper sums" {
+    const xs = [_]u32{
+        1, 5,
+        7,
+    };
+    try std.testing.expectEqual(@as(u32, 12), helper(&xs));
+}
