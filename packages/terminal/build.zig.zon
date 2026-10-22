@@ -14,5 +14,7 @@
         "bench",
         "fuzz",
         "testdata",
+        "tools",
+        "docs",
     },
 }
