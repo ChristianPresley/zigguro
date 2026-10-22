@@ -126,6 +126,22 @@ pub const ChangesetStore = struct {
         return .{ .ctx = s, .apply = jApply };
     }
 
+    /// The checkpoints' recorder port; thread-safe.
+    pub fn checkpointRecorder(s: *ChangesetStore) model.CheckpointRecorder {
+        return .{ .ctx = s, .checkpoint = jCheckpoint };
+    }
+
+    fn jCheckpoint(ctx: *anyopaque, c: *const model.Checkpoint) void {
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        var aw: std.Io.Writer.Allocating = .init(s.gpa);
+        defer aw.deinit();
+        records.writeCheckpoint(&aw.writer, c) catch |e| {
+            log.err("review store: checkpoint {d} not recorded: {t}", .{ c.id, e });
+            return;
+        };
+        s.append(.checkpoint, aw.written()) catch |e| log.err("review store: checkpoint {d} not recorded: {t}", .{ c.id, e });
+    }
+
     fn jApply(ctx: *anyopaque, a: *const model.Apply) void {
         const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
         var aw: std.Io.Writer.Allocating = .init(s.gpa);
@@ -321,10 +337,10 @@ pub const ChangesetStore = struct {
 
     // ------------------------------------------------- queue binding
 
-    /// A sink that restores into `q` (load and tail), and apply records
-    /// into `history` when given.
-    pub fn queueSink(s: *ChangesetStore, q: *model.Queue, history: ?*model.History) QueueSink {
-        return .{ .store = s, .q = q, .history = history };
+    /// A sink that restores into `q` (load and tail), apply records into
+    /// `history` and checkpoints into `checkpoints` when given.
+    pub fn queueSink(s: *ChangesetStore, q: *model.Queue, history: ?*model.History, checkpoints: ?model.CheckpointSink) QueueSink {
+        return .{ .store = s, .q = q, .history = history, .checkpoints = checkpoints };
     }
 };
 
@@ -332,6 +348,7 @@ pub const QueueSink = struct {
     store: *ChangesetStore,
     q: *model.Queue,
     history: ?*model.History = null,
+    checkpoints: ?model.CheckpointSink = null,
 
     pub fn sink(qs: *QueueSink) Sink {
         return .{ .ctx = qs, .on = on };
@@ -351,6 +368,12 @@ pub const QueueSink = struct {
             .remove => {
                 const id = intOf(u64, if (rec == .object) rec.object.get("id") else null) orelse return error.InvalidRecord;
                 qs.q.restoreRemoved(@enumFromInt(id));
+            },
+            .checkpoint => if (qs.checkpoints) |c| {
+                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
+                defer arena.deinit();
+                const cp = try records.readCheckpoint(arena.allocator(), rec);
+                try c.restore(c.ctx, &cp);
             },
             .apply => if (qs.history) |h| {
                 var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
