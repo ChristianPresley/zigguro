@@ -209,6 +209,13 @@ pub const Checkpoints = struct {
     create: *const fn (ctx: *anyopaque, io: Io, origin: proto.AgentRef, turn: u32, label: []const u8) u64,
 };
 
+/// Runs when an agent turn ends, however it ended (E12 commits the turn's
+/// changeset).
+pub const TurnEnd = struct {
+    ctx: *anyopaque,
+    finished: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, turn: u32) void,
+};
+
 /// The history after a compaction.
 pub const CompactedHistory = struct {
     messages: []const proto.Message,

@@ -131,6 +131,14 @@ the IDE's open documents and against the disk.
 - Every change is a proposal. `Files.propose` applies it, keeps it pending
   in a changeset for review, or rejects it (for example as stale), and
   the model is told which.
+- One agent turn makes one changeset. Each proposal carries its agent
+  and turn (`Origin.turn`). When the turn ends, the loop's `turn_end` seam
+  (`FileTools.turnEnd`) calls `Files.end_turn`, and the app commits the
+  turn's pending changes as one E12 changeset. Until then, a result
+  reads "in this turn's changeset".
+- After an applied edit, `FileTools.diagnostics` (E07, set by the app)
+  can report the file's diagnostics. They are appended to the result as
+  "Diagnostics after edit: ..." unless `diagnostics_after_edit` is off.
 - `ReadTracker` records what each agent has read and at which version.
   An agent must read a file before it edits or replaces it.
 - `zg agent` uses `DiskFiles`, which applies proposals directly. The IDE

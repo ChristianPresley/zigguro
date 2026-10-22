@@ -76,6 +76,12 @@ pub fn runTurns(a: *Agent) Io.Cancelable!void {
 }
 
 fn finishTurn(a: *Agent, reason: ev.FinishReason, kind: ?budget.Kind) void {
+    if (a.deps.turn_end) |t| {
+        // Runs after a cancel too.
+        const prev = a.io.swapCancelProtection(.blocked);
+        defer _ = a.io.swapCancelProtection(prev);
+        t.finished(t.ctx, a.io, a.ref, a.turn_id);
+    }
     {
         a.mutex.lockUncancelable(a.io);
         defer a.mutex.unlock(a.io);
@@ -638,6 +644,7 @@ fn invokeOne(a: *Agent, ar: Allocator, io: Io, c: *const scheduler.Call) proto.T
         .spec = c.spec,
         .input_json = c.input_json,
         .agent = a.ref,
+        .turn = a.turn_id,
         .progress = .{ .ctx = &prog, .emit = Progress.emit },
     });
 }
