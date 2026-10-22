@@ -3,6 +3,8 @@
 > initialize
 < {"id": $1, "result": {"capabilities": {}}}
 > initialized
+# The test checks formatting is unsupported first, then lets the server register.
+> $/setTrace
 < {"id": 900, "method": "client/registerCapability", "params": {"registrations": [{"id": "fmt", "method": "textDocument/formatting", "registerOptions": {"documentSelector": [{"language": "zig"}]}}]}}
 > response {"id": 900, "result": null}
 < {"id": 901, "method": "workspace/configuration", "params": {"items": [{"section": "zig"}, {"section": "zls"}]}}
