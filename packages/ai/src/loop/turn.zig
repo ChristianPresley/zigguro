@@ -133,6 +133,7 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
 
     var stop_continuations: u8 = 0;
     var recovery_attempt: u8 = 0;
+    var compactions: u8 = 0;
     var model_override: ?[]const u8 = null;
     var max_override: ?u32 = null;
 
@@ -157,9 +158,25 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
         };
         const req = a.deps.context.build(a.deps.context.ctx, a.io, scratch, &view) catch |e| switch (e) {
             error.Canceled => return error.Canceled,
+            error.ContextOverflow => {
+                // Too big even to assemble: compact from the plain request.
+                const base = deps.ContextBuilder.basic.build(deps.ContextBuilder.basic.ctx, a.io, scratch, &view) catch
+                    return fail(a, "out_of_memory", "", null);
+                if (compactions < max_compactions_per_turn and try compactHistory(a, scratch, &base, true)) {
+                    compactions += 1;
+                    continue;
+                }
+                return fail(a, "context_overflow", "the conversation no longer fits the model's context window", null);
+            },
             else => return fail(a, "context_error", @errorName(e), null),
         };
         const est_input = guarded.estimateInputTokens(&req);
+        if (a.deps.compaction) |c| if (compactions < max_compactions_per_turn and c.should_compact(c.ctx, est_input, model.context_window)) {
+            if (try compactHistory(a, scratch, &req, false)) {
+                compactions += 1;
+                continue;
+            }
+        };
 
         a.used.wall_ms = a.wall.elapsedMs(a.io);
         switch (budget.beforeRequest(&a.cfg.budgets, a.usedSnapshot(), .{ .est_input = est_input, .max_output = max_out, .expected_cache_read = a.last_cache_read, .price = model.price })) {
@@ -184,6 +201,14 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
                 commitPartial(a, &sink.asm_);
                 return error.Canceled;
             },
+            error.ContextOverflow => {
+                commitPartial(a, &sink.asm_);
+                if (compactions < max_compactions_per_turn and try compactHistory(a, scratch, &req, true)) {
+                    compactions += 1;
+                    continue;
+                }
+                return fail(a, "context_overflow", "the conversation no longer fits the model's context window", null);
+            },
             else => {
                 commitPartial(a, &sink.asm_);
                 const info = sink.asm_.error_info;
@@ -206,6 +231,11 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
                 recovery_attempt += 1;
                 a.publish(.{ .recovery = .{ .action = "fallback_model", .detail = ar.dupe(u8, m) catch "" } });
                 model_override = ar.dupe(u8, m) catch m;
+                continue;
+            },
+            .compact_then_retry => if (compactions < max_compactions_per_turn and try compactHistory(a, scratch, &req, true)) {
+                // The provider rejected the request as too long.
+                compactions += 1;
                 continue;
             },
             else => {},
@@ -312,6 +342,42 @@ fn stopBudget(a: *Agent, k: budget.Kind) ev.FinishReason {
     a.setStatus(.done);
     syncSession(a);
     return .budget;
+}
+
+/// Compactions one turn may run before giving up on an overflow.
+pub const max_compactions_per_turn = 2;
+
+/// Replaces the transcript with a compacted one and logs it: a
+/// `compaction` record, then the new history with fresh sequence numbers.
+/// Returns false when no compaction is configured or it failed.
+fn compactHistory(a: *Agent, scratch: Allocator, base: *const request.Request, overflow: bool) Io.Cancelable!bool {
+    const c = a.deps.compaction orelse return false;
+    a.setStatus(.compacting);
+    const res = c.compact(c.ctx, a.io, scratch, base, a.messages(), overflow) catch |e| switch (e) {
+        error.Canceled => return error.Canceled,
+        else => {
+            a.publish(.{ .warning = "compaction failed" });
+            return false;
+        },
+    };
+    const trigger = if (overflow) "window_overflow" else "auto_threshold";
+    a.publish(.{ .recovery = .{ .action = "compacted", .detail = trigger } });
+    // Cleanup that must not be torn: transcript and log stay consistent.
+    const prev = a.io.swapCancelProtection(.blocked);
+    defer _ = a.io.swapCancelProtection(prev);
+    const seq = a.bus.lastSeq() + 1;
+    const head = seq + 1;
+    const seqs = scratch.alloc(u64, res.messages.len) catch return false;
+    for (seqs, 0..) |*s, i| s.* = head + i;
+    a.swapTranscript(res.messages, seqs, if (seqs.len > 0) seqs[seqs.len - 1] else seq) catch return false;
+    if (a.deps.session) |s| {
+        if (s.vtable.compaction) |f| f(s.ctx, a.io, a.ref, seq, .{ .head_seq = head, .trigger = trigger, .tokens_before = res.tokens_before, .tokens_after = res.tokens_after, .model = res.model }) catch |e| a.publish(.{ .warning = @errorName(e) });
+        for (a.messages(), seqs) |*m, q| s.vtable.message(s.ctx, a.io, a.ref, q, m) catch |e| a.publish(.{ .warning = @errorName(e) });
+        s.vtable.sync(s.ctx, a.io) catch {};
+    }
+    if (res.fallback) a.publish(.{ .warning = "compaction failed; old tool results were cleared instead" });
+    a.setStatus(.thinking);
+    return true;
 }
 
 fn syncSession(a: *Agent) void {
@@ -433,6 +499,12 @@ const StreamSink = struct {
         };
         switch (e) {
             .ping, .rate_limit => return,
+            .retrying => |r| {
+                // Backoff: the wait is interrupted by a cancel.
+                s.a.setStatus(.retrying);
+                s.a.publish(.{ .retrying = .{ .attempt = r.attempt, .delay_ms = r.delay_ms, .status = r.status, .err = s.a.arena.allocator().dupe(u8, r.err) catch "" } });
+                return;
+            },
             else => {},
         }
         if (!s.streaming and (e == .text_delta or e == .thinking_delta or e == .tool_input_delta)) {

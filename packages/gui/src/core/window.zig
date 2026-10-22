@@ -74,6 +74,8 @@ const Cmd = union(enum) {
     ops: struct { range: canvas.Range, origin: Vec2 },
     push_clip: struct { r: Rect, radius: f32 },
     pop_clip,
+    /// A scrollbar thumb, drawn above the scrolled content.
+    thumb: struct { r: Rect, color: geom.Color },
 };
 
 /// A window: node tree, views, layout, paint cache and input state.
@@ -358,6 +360,9 @@ pub const Window = struct {
         if (rfl.subtree_dirty or rfl.layout_dirty) {
             w.engine.run(w.root, w.size);
             w.stats.layout = w.engine.stats;
+            // Views that build from a viewport size see the new one next frame.
+            for (w.store.resized_views.items) |vid| w.markViewDirty(vid);
+            w.store.resized_views.clearRetainingCapacity();
         }
 
         // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
@@ -422,7 +427,7 @@ pub const Window = struct {
             for (w.store.hot.items(.flags)[1..]) |*f| f.paint_dirty = true;
         }
         const viewport: Rect = .{ .w = w.size.w, .h = w.size.h };
-        w.walkPaint(w.root, .{}, viewport);
+        w.walkPaint(w.root, .{}, viewport, false);
         w.cur_ops = 1 - w.cur_ops;
         w.hits.finish(w.gpa, w.size) catch {};
         w.stats.ops = @intCast(new.ops.items.len);
@@ -430,7 +435,10 @@ pub const Window = struct {
         w.store.paint_pending = false;
     }
 
-    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect) void {
+    /// Paints `id` and its subtree. `cull` (children of a scroll
+    /// container) skips subtrees whose box lies outside `clip`; content
+    /// that overflows its own box there is skipped with it.
+    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect, cull: bool) void {
         const s = &w.store;
         const i = id.index;
         var fl = s.hot.items(.flags)[i];
@@ -443,10 +451,20 @@ pub const Window = struct {
             return;
         }
         const abs = s.relRect(id).translate(origin);
+        if (cull) {
+            const ext = w.ringExtent(fl);
+            if (abs.outset(ext).intersect(clip).isEmpty()) {
+                if (fl.painted) {
+                    w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
+                    s.hot.items(.flags)[i].painted = false;
+                }
+                return;
+            }
+        }
         const moved = !fl.painted or !old_abs.eql(abs);
         if (fl.paint_dirty or moved) {
             const ext = w.ringExtent(fl);
-            if (fl.painted) w.damage.add(old_abs.outset(ext).intersect(.{ .w = w.size.w, .h = w.size.h }));
+            if (fl.painted) w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
             w.damage.add(abs.outset(ext).intersect(clip.outset(ext)));
         }
         const new = &w.ops[1 - w.cur_ops];
@@ -492,7 +510,8 @@ pub const Window = struct {
             child_clip = clip.intersect(abs);
             w.cmds.append(w.gpa, .{ .push_clip = .{ .r = abs, .radius = st.radius } }) catch {};
         }
-        const child_origin: Vec2 = .{ .x = abs.x, .y = abs.y };
+        const scroll = s.cold.items[i].scroll;
+        const child_origin: Vec2 = .{ .x = abs.x - scroll.x, .y = abs.y - scroll.y };
         // Children in z order (stable for equal z).
         var needs_sort = false;
         var it = s.children(id);
@@ -504,7 +523,7 @@ pub const Window = struct {
         }
         if (!needs_sort) {
             it = s.children(id);
-            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip);
+            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, st.scrolls());
         } else {
             const start = w.z_scratch.items.len;
             it = s.children(id);
@@ -517,11 +536,100 @@ pub const Window = struct {
             }.lt);
             var k: usize = 0;
             while (start + k < w.z_scratch.items.len and k < kids.len) : (k += 1) {
-                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip);
+                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, st.scrolls());
             }
             w.z_scratch.shrinkRetainingCapacity(start);
         }
+        if (st.scrolls()) w.addThumbs(id, abs);
         if (fl.clips or st.clip) w.cmds.append(w.gpa, .pop_clip) catch {};
+    }
+
+    /// Thickness of a scrollbar thumb, logical pixels.
+    pub const thumb_size: f32 = 6;
+
+    /// The thumb rectangles of scroll container `id` at `abs`
+    /// (null where the content fits).
+    pub fn thumbRects(w: *const Window, id: NodeId, abs: Rect) [2]?Rect {
+        const c = &w.store.cold.items[id.index];
+        const st = &c.style;
+        var out: [2]?Rect = .{ null, null };
+        const vw = abs.w - st.padding.horizontal() - 2 * st.border_w;
+        const vh = abs.h - st.padding.vertical() - 2 * st.border_w;
+        if (st.scroll_y and c.content.h > vh + 0.5 and vh > 0) {
+            const len = @max(16, abs.h * vh / c.content.h);
+            const top = abs.y + (abs.h - len) * (c.scroll.y / (c.content.h - vh));
+            out[1] = .{ .x = abs.x + abs.w - thumb_size - 2, .y = top, .w = thumb_size, .h = len };
+        }
+        if (st.scroll_x and c.content.w > vw + 0.5 and vw > 0) {
+            const len = @max(16, abs.w * vw / c.content.w);
+            const left = abs.x + (abs.w - len) * (c.scroll.x / (c.content.w - vw));
+            out[0] = .{ .x = left, .y = abs.y + abs.h - thumb_size - 2, .w = len, .h = thumb_size };
+        }
+        return out;
+    }
+
+    fn addThumbs(w: *Window, id: NodeId, abs: Rect) void {
+        const color = w.app.theme.color(.scrollbar_thumb);
+        for (w.thumbRects(id, abs)) |t| if (t) |r| {
+            w.cmds.append(w.gpa, .{ .thumb = .{ .r = r, .color = color } }) catch {};
+        };
+    }
+
+    // -- scrolling ------------------------------------------------------------
+
+    /// The scroll offset of `id` (zero for nodes that do not scroll).
+    pub fn scrollOffset(w: *const Window, id: NodeId) Vec2 {
+        if (!w.store.valid(id)) return .{};
+        return w.store.cold.items[id.index].scroll;
+    }
+
+    /// The largest offset `id` can scroll to on each axis.
+    pub fn maxScroll(w: *const Window, id: NodeId) Vec2 {
+        if (!w.store.valid(id)) return .{};
+        const c = &w.store.cold.items[id.index];
+        const r = w.store.relRect(id);
+        const st = &c.style;
+        return .{
+            .x = if (st.scroll_x) @max(0, c.content.w - (r.w - st.padding.horizontal() - 2 * st.border_w)) else 0,
+            .y = if (st.scroll_y) @max(0, c.content.h - (r.h - st.padding.vertical() - 2 * st.border_w)) else 0,
+        };
+    }
+
+    /// Scrolls `id` to `to` (clamped); true when the offset changed. The
+    /// content repaints at its new position without relayout; a container
+    /// opened with `rebuild_on_scroll` also rebuilds its view.
+    pub fn scrollTo(w: *Window, id: NodeId, to: Vec2) bool {
+        if (!w.store.valid(id) or !w.store.cold.items[id.index].style.scrolls()) return false;
+        const max = w.maxScroll(id);
+        const c = &w.store.cold.items[id.index];
+        const next: Vec2 = .{ .x = std.math.clamp(to.x, 0, max.x), .y = std.math.clamp(to.y, 0, max.y) };
+        if (next.x == c.scroll.x and next.y == c.scroll.y) return false;
+        c.scroll = next;
+        w.store.markPaint(id);
+        if (w.store.flags(id).rebuild_on_scroll) w.markViewDirty(w.store.hot.items(.view)[id.index]);
+        w.needs_frame = true;
+        return true;
+    }
+
+    /// Scrolls `id` by `d`; true when the offset changed.
+    pub fn scrollBy(w: *Window, id: NodeId, d: Vec2) bool {
+        const o = w.scrollOffset(id);
+        return w.scrollTo(id, .{ .x = o.x + d.x, .y = o.y + d.y });
+    }
+
+    /// Pixels per wheel notch.
+    pub const wheel_step: f32 = 48;
+
+    /// Scrolls the innermost container under `from` that can move in the
+    /// event's direction (an inner list at its end lets the outer page
+    /// scroll).
+    fn scrollChain(w: *Window, from: NodeId, sc: event.Scroll) void {
+        const k: f32 = if (sc.precise) 1 else wheel_step;
+        const d: Vec2 = .{ .x = sc.dx * k, .y = sc.dy * k };
+        var n = from;
+        while (!n.isNone()) : (n = w.store.parent(n)) {
+            if (w.scrollBy(n, d)) return;
+        }
     }
 
     var dummy: u8 = 0;
@@ -537,6 +645,7 @@ pub const Window = struct {
                 .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
                 .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
                 .pop_clip => c.popClip(),
+                .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
             };
             if (w.damage.full) c.addDamage(.{ .w = w.size.w, .h = w.size.h }) else for (w.damage.slice()) |r| c.addDamage(r);
             c.end();
@@ -553,6 +662,7 @@ pub const Window = struct {
             .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
             .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
             .pop_clip => c.popClip(),
+            .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
         };
         c.end();
     }
@@ -740,7 +850,8 @@ pub const Window = struct {
                 w.setHot(.none);
             },
             .scroll => |sc| {
-                _ = w.deliver(w.hitTest(sc.pos), ev, true);
+                const h = w.hitTest(sc.pos);
+                if (!w.deliver(h, ev, true)) w.scrollChain(h, sc);
             },
             .key => |k| w.dispatchKey(k),
             .text => {

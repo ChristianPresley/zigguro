@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A tiny registry exercising every construct vkgen emits. -->
+<registry>
+    <comment>SPDX-License-Identifier: Apache-2.0 OR MIT</comment>
+    <tags>
+        <tag name="KHR" author="Khronos" contact="-"/>
+        <tag name="EXT" author="Multivendor" contact="-"/>
+    </tags>
+    <types>
+        <type name="vk_platform" category="include">#include "vk_platform.h"</type>
+        <type requires="vk_platform" name="void"/>
+        <type requires="vk_platform" name="char"/>
+        <type requires="vk_platform" name="float"/>
+        <type requires="vk_platform" name="uint32_t"/>
+        <type requires="vk_platform" name="uint64_t"/>
+        <type requires="vk_platform" name="size_t"/>
+        <type category="define">// Version of this file
+#define <name>VK_HEADER_VERSION</name> 7</type>
+        <type category="basetype">typedef <type>uint32_t</type> <name>VkBool32</name>;</type>
+        <type category="basetype">typedef <type>uint32_t</type> <name>VkFlags</name>;</type>
+        <type category="basetype">typedef <type>uint64_t</type> <name>VkFlags64</name>;</type>
+        <type category="basetype">typedef <type>uint64_t</type> <name>VkDeviceSize</name>;</type>
+        <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>
+        <type category="handle" parent="VkInstance"><type>VK_DEFINE_HANDLE</type>(<name>VkDevice</name>)</type>
+        <type category="handle" parent="VkDevice"><type>VK_DEFINE_NON_DISPATCHABLE_HANDLE</type>(<name>VkImage</name>)</type>
+        <type name="VkResult" category="enum"/>
+        <type name="VkStructureType" category="enum"/>
+        <type name="VkImageType" category="enum"/>
+        <type name="VkImageUsageFlagBits" category="enum"/>
+        <type requires="VkImageUsageFlagBits" category="bitmask">typedef <type>VkFlags</type> <name>VkImageUsageFlags</name>;</type>
+        <type category="bitmask">typedef <type>VkFlags</type> <name>VkReservedCreateFlags</name>;</type>
+        <type name="VkStageFlagBits2" category="enum"/>
+        <type bitvalues="VkStageFlagBits2" category="bitmask">typedef <type>VkFlags64</type> <name>VkStageFlags2</name>;</type>
+        <type category="funcpointer">typedef void (VKAPI_PTR *<name>PFN_vkVoidFunction</name>)(void);</type>
+        <type category="funcpointer">typedef <type>VkBool32</type> (VKAPI_PTR *<name>PFN_vkMiniCallback</name>)(
+    const <type>char</type>*                 pMessage,
+    <type>void</type>*                       pUserData);</type>
+        <type category="struct" name="VkExtent2D">
+            <member><type>uint32_t</type>        <name>width</name></member>
+            <member><type>uint32_t</type>        <name>height</name></member>
+        </type>
+        <type category="union" name="VkClearColor">
+            <member><type>float</type>           <name>float32</name>[4]</member>
+            <member><type>uint32_t</type>        <name>uint32</name>[4]</member>
+        </type>
+        <type category="struct" name="VkInstanceCreateInfo">
+            <member values="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"><type>VkStructureType</type> <name>sType</name></member>
+            <member optional="true">const <type>void</type>*     <name>pNext</name></member>
+            <member optional="true"><type>VkReservedCreateFlags</type> <name>flags</name></member>
+            <member optional="true"><type>uint32_t</type>               <name>enabledExtensionCount</name></member>
+            <member len="enabledExtensionCount,null-terminated">const <type>char</type>* const*      <name>ppEnabledExtensionNames</name></member>
+            <member optional="true"><type>PFN_vkMiniCallback</type> <name>pfnCallback</name></member>
+            <member optional="true"><type>VkBool32</type> <name>validate</name></member>
+        </type>
+        <type category="struct" name="VkImageCreateInfo">
+            <member values="VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO"><type>VkStructureType</type> <name>sType</name></member>
+            <member optional="true">const <type>void</type>*     <name>pNext</name></member>
+            <member><type>VkImageType</type>            <name>imageType</name></member>
+            <member><type>VkExtent2D</type>             <name>extent</name></member>
+            <member><type>VkImageUsageFlags</type>      <name>usage</name></member>
+            <member><type>VkStageFlags2</type>          <name>stages</name></member>
+            <member optional="true"><type>VkImage</type> <name>base</name></member>
+        </type>
+        <type category="struct" name="VkMiniProperties" returnedonly="true">
+            <member values="VK_STRUCTURE_TYPE_MINI_PROPERTIES_KHR"><type>VkStructureType</type> <name>sType</name></member>
+            <member optional="true"><type>void</type>*        <name>pNext</name></member>
+            <member><type>char</type>              <name>name</name>[<enum>VK_MAX_NAME_SIZE</enum>]</member>
+            <member><type>VkDeviceSize</type>      <name>maxSize</name></member>
+            <member><type>uint32_t</type>          <name>low</name>:24</member>
+            <member><type>uint32_t</type>          <name>high</name>:8</member>
+        </type>
+        <type category="struct" name="VkMiniFeaturesKHR" structextends="VkInstanceCreateInfo,VkImageCreateInfo">
+            <member values="VK_STRUCTURE_TYPE_MINI_FEATURES_KHR"><type>VkStructureType</type> <name>sType</name></member>
+            <member optional="true"><type>void</type>*        <name>pNext</name></member>
+            <member><type>VkBool32</type>          <name>mini</name></member>
+        </type>
+        <type category="struct" name="VkExtent2DKHR" alias="VkExtent2D"/>
+    </types>
+    <enums name="API Constants" type="constants">
+        <enum type="uint32_t" value="16"        name="VK_MAX_NAME_SIZE"/>
+        <enum type="uint32_t" value="(~0U)"     name="VK_REMAINING_THINGS"/>
+        <enum type="uint64_t" value="(~0ULL)"   name="VK_WHOLE_SIZE"/>
+        <enum type="float"    value="1000.0F"   name="VK_LOD_CLAMP_NONE"/>
+        <enum type="uint32_t" value="1"         name="VK_TRUE"/>
+        <enum type="uint32_t" value="0"         name="VK_FALSE"/>
+    </enums>
+    <enums name="VkResult" type="enum">
+        <enum value="0"     name="VK_SUCCESS"/>
+        <enum value="5"     name="VK_INCOMPLETE"/>
+        <enum value="-1"    name="VK_ERROR_OUT_OF_HOST_MEMORY"/>
+        <enum value="-13"   name="VK_ERROR_UNKNOWN"/>
+    </enums>
+    <enums name="VkStructureType" type="enum">
+        <enum value="1"     name="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"/>
+        <enum value="14"    name="VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO"/>
+    </enums>
+    <enums name="VkImageType" type="enum">
+        <enum value="0"     name="VK_IMAGE_TYPE_1D"/>
+        <enum value="1"     name="VK_IMAGE_TYPE_2D"/>
+    </enums>
+    <enums name="VkImageUsageFlagBits" type="bitmask">
+        <enum bitpos="0"    name="VK_IMAGE_USAGE_TRANSFER_SRC_BIT"/>
+        <enum bitpos="1"    name="VK_IMAGE_USAGE_TRANSFER_DST_BIT"/>
+        <enum bitpos="2"    name="VK_IMAGE_USAGE_SAMPLED_BIT"/>
+        <enum value="0x3"   name="VK_IMAGE_USAGE_TRANSFER_ALL"/>
+    </enums>
+    <enums name="VkStageFlagBits2" type="bitmask" bitwidth="64">
+        <enum value="0"     name="VK_STAGE_2_NONE"/>
+        <enum bitpos="40"   name="VK_STAGE_2_FAR_BIT"/>
+    </enums>
+    <commands>
+        <command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY">
+            <proto><type>VkResult</type> <name>vkCreateInstance</name></proto>
+            <param>const <type>VkInstanceCreateInfo</type>* <name>pCreateInfo</name></param>
+            <param><type>VkInstance</type>* <name>pInstance</name></param>
+        </command>
+        <command>
+            <proto><type>PFN_vkVoidFunction</type> <name>vkGetInstanceProcAddr</name></proto>
+            <param optional="true"><type>VkInstance</type> <name>instance</name></param>
+            <param>const <type>char</type>* <name>pName</name></param>
+        </command>
+        <command successcodes="VK_SUCCESS,VK_INCOMPLETE" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY">
+            <proto><type>VkResult</type> <name>vkEnumerateDevices</name></proto>
+            <param><type>VkInstance</type> <name>instance</name></param>
+            <param optional="false,true"><type>uint32_t</type>* <name>pDeviceCount</name></param>
+            <param optional="true" len="pDeviceCount"><type>VkDevice</type>* <name>pDevices</name></param>
+        </command>
+        <command api="vulkansc">
+            <proto><type>void</type> <name>vkScOnly</name></proto>
+            <param><type>VkDevice</type> <name>device</name></param>
+        </command>
+        <command>
+            <proto><type>void</type> <name>vkGetMiniProperties</name></proto>
+            <param><type>VkDevice</type> <name>device</name></param>
+            <param><type>VkMiniProperties</type>* <name>pProperties</name></param>
+        </command>
+        <command name="vkGetMiniPropertiesKHR" alias="vkGetMiniProperties"/>
+    </commands>
+    <feature api="vulkan,vulkansc" name="VK_VERSION_1_0" number="1.0">
+        <require>
+            <type name="VkBool32"/>
+            <type name="VkImageCreateInfo"/>
+            <type name="VkClearColor"/>
+            <type name="VkExtent2DKHR"/>
+            <command name="vkCreateInstance"/>
+            <command name="vkGetInstanceProcAddr"/>
+            <command name="vkEnumerateDevices"/>
+        </require>
+    </feature>
+    <feature api="vulkan" name="VK_VERSION_1_1" number="1.1" depends="VK_VERSION_1_0">
+        <require>
+            <enum extends="VkStructureType" extnumber="2" offset="3" name="VK_STRUCTURE_TYPE_MINI_PROPERTIES"/>
+            <command name="vkGetMiniProperties"/>
+        </require>
+    </feature>
+    <feature api="vulkan" name="VK_VERSION_1_2" number="1.2" depends="VK_VERSION_1_1">
+        <require><type name="VkMiniFeaturesKHR"/></require>
+    </feature>
+    <extensions>
+        <extension name="VK_KHR_mini" number="2" type="device" supported="vulkan" promotedto="VK_VERSION_1_1" depends="VK_KHR_dep">
+            <require>
+                <enum value="3"                         name="VK_KHR_MINI_SPEC_VERSION"/>
+                <enum value="&quot;VK_KHR_mini&quot;"   name="VK_KHR_MINI_EXTENSION_NAME"/>
+                <enum offset="0" extends="VkStructureType"  name="VK_STRUCTURE_TYPE_MINI_FEATURES_KHR"/>
+                <enum extends="VkStructureType" name="VK_STRUCTURE_TYPE_MINI_PROPERTIES_KHR" alias="VK_STRUCTURE_TYPE_MINI_PROPERTIES"/>
+                <enum offset="4" extends="VkResult" dir="-" name="VK_ERROR_MINI_LOST_KHR"/>
+                <enum bitpos="3" extends="VkImageUsageFlagBits" name="VK_IMAGE_USAGE_MINI_BIT_KHR"/>
+                <enum extends="VkImageUsageFlagBits" name="VK_IMAGE_USAGE_SAMPLED_BIT_KHR" alias="VK_IMAGE_USAGE_SAMPLED_BIT"/>
+                <type name="VkMiniFeaturesKHR"/>
+                <command name="vkGetMiniPropertiesKHR"/>
+            </require>
+        </extension>
+        <extension name="VK_KHR_dep" number="3" type="instance" supported="vulkan">
+            <require>
+                <enum value="1" name="VK_KHR_DEP_SPEC_VERSION"/>
+            </require>
+        </extension>
+        <extension name="VK_EXT_disabled" number="4" supported="disabled">
+            <require>
+                <enum offset="0" extends="VkStructureType" name="VK_STRUCTURE_TYPE_DISABLED_EXT"/>
+            </require>
+        </extension>
+    </extensions>
+</registry>
