@@ -5,6 +5,7 @@ const skills = @import("../ext/skills.zig");
 const fake_host = @import("../tools/builtin/fake_host.zig");
 const repl = @import("repl.zig");
 const ts = @import("test_support.zig");
+const stack = @import("../context/stack.zig");
 
 const testing = std.testing;
 const io = ts.io;
@@ -139,4 +140,62 @@ test "repl built-in commands" {
     try testing.expect(std.mem.indexOf(u8, err, "conversation cleared") != null);
     try testing.expect(std.mem.indexOf(u8, out, "  /build [target]  Builds\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "  /exit  Leave the REPL\n") != null);
+}
+
+test "repl /memory, /context and /compact with a context stack" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "ZIGGURO.md", .data = "Use tabs.\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+
+    var h: Harness = undefined;
+    // A turn, the summary, then a turn after the compaction.
+    try h.init(&.{ script.text("Hi."), script.text("SUMMARY: said hello."), script.text("Again.") });
+    defer h.deinit();
+    var ctx: stack.ContextStack = undefined;
+    try ctx.init(testing.allocator, io, .{
+        .sources = .{ .workspace_roots = &.{root}, .cwd = root },
+        .env = .{ .cwd = root, .now_ms = 0 },
+        .compaction = .{ .provider = h.provider, .model = h.registry.resolve("m").? },
+    });
+    defer ctx.deinit();
+    ctx.install(&h.manager.deps);
+
+    var o = try h.options(&.{});
+    o.env.context = &ctx;
+    var in: std.Io.Reader = .fixed("/memory\nhello\n/context\n/compact the greeting\nagain\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    const out = h.stdout();
+    const err = h.stderr();
+    try testing.expect(std.mem.indexOf(u8, out, "ZIGGURO.md  (project, ") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Context: ") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "ZIGGURO.md  ") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "  messages  ") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "conversation compacted (") != null);
+
+    const reqs = h.sp.requests();
+    try testing.expectEqual(@as(usize, 3), reqs.len);
+    // The memory file is in the system prompt.
+    var found = false;
+    for (reqs[0].system) |p| found = found or std.mem.indexOf(u8, p.text, "Use tabs.") != null;
+    try testing.expect(found);
+    // The summary request carries the focus; the next turn starts from the summary.
+    try testing.expect(std.mem.indexOf(u8, h.lastUserText(1), "Focus the summary on: the greeting") != null);
+    const after = reqs[2].messages;
+    try testing.expect(std.mem.indexOf(u8, after[0].content[1].text.text, "SUMMARY: said hello.") != null);
+    try testing.expectEqualStrings("again", h.lastUserText(2));
+}
+
+test "/compact without a compactor" {
+    var h: Harness = undefined;
+    try h.init(&.{script.text("Hi.")});
+    defer h.deinit();
+    const o = try h.options(&.{});
+    var in: std.Io.Reader = .fixed("/compact\nhello\n/compact\n/memory\n/context\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    try testing.expect(std.mem.indexOf(u8, h.stderr(), "nothing to compact yet") != null);
+    try testing.expect(std.mem.indexOf(u8, h.stderr(), "this run cannot compact the conversation") != null);
+    try testing.expect(std.mem.indexOf(u8, h.stdout(), "No memory files are loaded.") != null);
+    try testing.expect(std.mem.indexOf(u8, h.stdout(), "Context: about ") != null);
 }
