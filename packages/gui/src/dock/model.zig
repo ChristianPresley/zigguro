@@ -115,9 +115,34 @@ pub const AreaState = struct {
 /// A floating window.
 pub const Floating = struct {
     id: FloatId,
+    /// Position and size; the position is the monitor's global layout
+    /// in logical pixels (unknown on Wayland, where only the size
+    /// restores).
     rect: Rect,
     monitor_hint: u32 = 0,
+    /// The monitor it was on (`MonitorName.set`), for restoring.
+    monitor: MonitorName = .{},
+    /// That monitor's scale.
+    scale: f32 = 1,
     root: ?Node,
+};
+
+/// A monitor's name, stored inline so layouts copy without allocating.
+pub const MonitorName = struct {
+    buf: [48]u8 = undefined,
+    len: u8 = 0,
+
+    /// The name (truncated to 48 bytes).
+    pub fn set(n: *MonitorName, s: []const u8) void {
+        const k = @min(s.len, n.buf.len);
+        @memcpy(n.buf[0..k], s[0..k]);
+        n.len = @intCast(k);
+    }
+
+    /// The name.
+    pub fn get(n: *const MonitorName) []const u8 {
+        return n.buf[0..n.len];
+    }
 };
 
 /// Where `move` takes a panel.
@@ -250,6 +275,36 @@ pub const DockModel = struct {
             .float => |f| if (m.floatIndex(f)) |i| {
                 m.floating.items[i].root = n;
             },
+        }
+    }
+
+    /// Floating window `f`'s tree, if it still exists.
+    pub fn floatRoot(m: *const DockModel, f: FloatId) ?Node {
+        const i = m.floatIndex(f) orelse return null;
+        return m.floating.items[i].root;
+    }
+
+    /// Floating window `f`'s state.
+    pub fn float(m: *DockModel, f: FloatId) ?*Floating {
+        const i = m.floatIndex(f) orelse return null;
+        return &m.floating.items[i];
+    }
+
+    /// The floating window showing `p`, if any.
+    pub fn floatOf(m: *const DockModel, p: PanelRef) ?FloatId {
+        const g = m.groupOf(p) orelse return null;
+        const o = m.ownerOf(.{ .group = g }) orelse return null;
+        return switch (o) {
+            .float => |f| f,
+            .area => null,
+        };
+    }
+
+    /// Appends the panels of the tree at `n` (depth-first, tab order).
+    pub fn panelsIn(m: *const DockModel, n: Node, gpa: Allocator, out: *std.ArrayList(PanelRef)) Allocator.Error!void {
+        switch (n) {
+            .group => |g| if (m.groups.get(g)) |gr| try out.appendSlice(gpa, gr.tabs.items),
+            .split => |s| if (m.splits.get(s)) |sp| for (sp.children.items) |c| try m.panelsIn(c, gpa, out),
         }
     }
 

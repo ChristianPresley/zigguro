@@ -297,3 +297,84 @@ test "one changeset per agent turn" {
     try testing.expectEqual(@as(u32, 2), f.ff.committed.items[1].turn);
     try testing.expectEqual(@as(u32, 1), f.ff.committed.items[1].changes);
 }
+
+/// An E12 `AgentView` stand-in over `FakeFiles`: session 7 has a pending
+/// edit of a.zig and a pending create of new.zig, and another session has
+/// pending changes on a.zig.
+const Overlay = struct {
+    ff: *fake.FakeFiles,
+    proposed: ?files.Proposal = null,
+
+    fn asFiles(o: *Overlay) files.Files {
+        return .{ .ctx = o, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .kind_as = kindAs, .read_as = readAs } };
+    }
+
+    fn mine(agent: proto.AgentRef) bool {
+        return agent.session == 7;
+    }
+
+    fn pending(abs: []const u8) ?[]const u8 {
+        if (std.mem.endsWith(u8, abs, "/a.zig")) return "const x = 2;\n";
+        if (std.mem.endsWith(u8, abs, "/new.zig")) return "pub fn f() void {}\n";
+        return null;
+    }
+
+    fn resolve(ctx: *anyopaque, io_: std.Io, arena: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!files.Resolved {
+        const o: *Overlay = @ptrCast(@alignCast(ctx));
+        return o.ff.asFiles().resolve(io_, arena, path);
+    }
+    fn kind(ctx: *anyopaque, io_: std.Io, abs: []const u8) files.Kind {
+        const o: *Overlay = @ptrCast(@alignCast(ctx));
+        return o.ff.asFiles().kind(io_, abs);
+    }
+    fn read(ctx: *anyopaque, io_: std.Io, arena: std.mem.Allocator, abs: []const u8, max: usize) anyerror!files.Read {
+        const o: *Overlay = @ptrCast(@alignCast(ctx));
+        return o.ff.asFiles().read(io_, arena, abs, max);
+    }
+    fn kindAs(ctx: *anyopaque, io_: std.Io, abs: []const u8, agent: proto.AgentRef) files.Kind {
+        if (mine(agent) and pending(abs) != null) return .file;
+        return kind(ctx, io_, abs);
+    }
+    fn readAs(ctx: *anyopaque, io_: std.Io, arena: std.mem.Allocator, abs: []const u8, max: usize, agent: proto.AgentRef) anyerror!files.Read {
+        const p = (if (mine(agent)) pending(abs) else null) orelse return read(ctx, io_, arena, abs, max);
+        const note: ?[]const u8 = if (std.mem.endsWith(u8, abs, "/a.zig")) "Session 3 also has pending changes to a.zig." else null;
+        return .{ .version = 100, .bytes = p, .size = p.len, .notes = note };
+    }
+    fn propose(ctx: *anyopaque, _: std.Io, _: std.mem.Allocator, _: []const u8, p: files.Proposal, _: files.Origin) anyerror!files.Outcome {
+        const o: *Overlay = @ptrCast(@alignCast(ctx));
+        o.proposed = p;
+        return .{ .pending = .{} };
+    }
+};
+
+test "the file tools read and edit the agent's own pending text" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try f.ff.put("a.zig", "const x = 1;\n", false);
+    var ov: Overlay = .{ .ff = &f.ff };
+    f.ft.files = ov.asFiles();
+    const a = f.arena.allocator();
+    const callAs = @import("read_test.zig").callToolAs;
+
+    // Session 7 sees its pending text and the note; another session sees disk.
+    const r = try callAs(&f.ft, a, "read_file", "{\"path\":\"a.zig\"}", .{ .session = 7 });
+    try testing.expectEqual(2, r.parts.len);
+    try testing.expect(std.mem.indexOf(u8, r.parts[0].text, "const x = 2;") != null);
+    try testing.expectEqualStrings("Session 3 also has pending changes to a.zig.", r.parts[1].text);
+    const other = try callAs(&f.ft, a, "read_file", "{\"path\":\"a.zig\"}", .{ .session = 9 });
+    try testing.expectEqual(1, other.parts.len);
+    try testing.expect(std.mem.indexOf(u8, other.parts[0].text, "const x = 1;") != null);
+
+    // A pending create exists for its author only.
+    const n = try callAs(&f.ft, a, "read_file", "{\"path\":\"new.zig\"}", .{ .session = 7 });
+    try testing.expect(!n.is_error);
+    try testing.expect((try callAs(&f.ft, a, "read_file", "{\"path\":\"new.zig\"}", .{ .session = 9 })).is_error);
+
+    // The edit is made against the pending text, and keeps the note.
+    const e = try callAs(&f.ft, a, "edit_file", "{\"path\":\"a.zig\",\"old_string\":\"2\",\"new_string\":\"3\"}", .{ .session = 7 });
+    try testing.expect(!e.is_error);
+    try testing.expect(std.mem.indexOf(u8, e.parts[0].text, "-const x = 2;\n+const x = 3;") != null);
+    try testing.expectEqualStrings("Session 3 also has pending changes to a.zig.", e.parts[e.parts.len - 1].text);
+    try testing.expectEqualStrings("2", ov.proposed.?.str_replace.old);
+}

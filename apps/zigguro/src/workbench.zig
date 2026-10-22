@@ -67,6 +67,8 @@ pub const Workbench = struct {
     /// The docking layout and its view.
     dock: zg_gui.dock.DockModel,
     dv: zg_gui.dock.DockView = undefined,
+    /// Torn-off panels' windows (`enableFloating`).
+    floater: ?zg_gui.dock.floating.Floater = null,
     /// The dock panels of the terminal and the agent, once created.
     terminal_ref: ?PanelRef = null,
     agent_ref: ?PanelRef = null,
@@ -153,7 +155,7 @@ pub const Workbench = struct {
             .crumbs = .init(gpa, io),
             .dock = try .init(gpa),
         };
-        wb.dv = .init(gpa, &wb.dock, .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose });
+        wb.dv = .init(gpa, &wb.dock, wb.panelHost());
         wb.cwd = try std.process.currentPathAlloc(io, gpa);
         const f = try wb.addFile(try wb.load(path));
         wb.setCurrent(f.*);
@@ -306,6 +308,17 @@ pub const Workbench = struct {
         return std.mem.eql(u8, a, abs);
     }
 
+    /// Whether the review root's `rel` is open in an editor (the review
+    /// panel leaves those files alone).
+    fn reviewFileOpen(ctx: *anyopaque, rel: []const u8) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const host = wb.agent orelse return false;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ host.review.root, rel }) catch return true;
+        defer wb.gpa.free(abs);
+        for (wb.files.items) |f| if (f.path) |p| if (wb.samePath(p, abs)) return true;
+        return false;
+    }
+
     /// Breadcrumb dropdowns run `file.open` from event handling: switch
     /// at the next build.
     fn onChromeAction(ctx: ?*anyopaque, action: zg_gui.w.menu.ActionId, arg: ?[]const u8) void {
@@ -321,9 +334,23 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    fn panelHost(wb: *Workbench) zg_gui.dock.PanelHost {
+        return .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose };
+    }
+
+    /// Lets tabs tear off into their own windows, opened by `opener`
+    /// (after `attach`).
+    pub fn enableFloating(wb: *Workbench, opener: zg_gui.dock.floating.WindowOpener) void {
+        const w = wb.win orelse return;
+        wb.floater = .init(wb.gpa, &wb.dock, wb.panelHost(), opener, .{});
+        wb.floater.?.attachMain(w, &wb.dv);
+    }
+
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        // Floating panels come home before their windows close.
+        if (wb.floater) |*fl| fl.closeAll();
         // The panel stops the agent first: its tools may be waiting on
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
@@ -357,6 +384,7 @@ pub const Workbench = struct {
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
+        if (wb.floater) |*fl| fl.deinit();
         wb.dv.deinit();
         wb.dock.deinit();
         if (wb.pending_open) |p| wb.gpa.free(p);
@@ -507,8 +535,10 @@ pub const Workbench = struct {
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
             p.attachChildren(&host.children);
+            // Rewinding code goes through E12's checkpoints.
+            p.restore = host.review.restore();
             if (wb.agent_cmds) |c| {
-                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs };
+                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs, .context = &host.context };
                 p.commands = c;
             }
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
@@ -535,6 +565,7 @@ pub const Workbench = struct {
         if (wb.review_panel == null) {
             const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
             wb.review_panel = p;
         }
         if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
@@ -731,7 +762,8 @@ pub const Workbench = struct {
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
             defer ui.close();
             _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
-            f.node = ui.lastNode();
+            // Focus helpers act on the main window's nodes only.
+            f.node = if (ui.window() == wb.win) ui.lastNode() else .none;
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
@@ -813,7 +845,7 @@ pub const Workbench = struct {
             ui.close();
         }
         _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
-        wb.terminal_node = t.view.node;
+        if (ui.window() == wb.win) wb.terminal_node = t.view.node;
     }
 
     fn statusBar(wb: *Workbench, ui: *Ui) void {

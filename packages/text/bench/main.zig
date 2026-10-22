@@ -15,7 +15,6 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.cells_row_200",
     "text.fontdb_load_3k",
     "text.registry_get",
 };
@@ -311,6 +310,17 @@ fn layoutBenches(b: *bench.Bench, jb: *const vt.FaceInstance, inter: *const vt.F
     _ = tl.measure(measure_ctx.text, measure_ctx.style);
     try b.run("text.measure_hit", &measure_ctx, measureHit);
 
+    // A 200-cell terminal row: code with box drawing, ligatures off and on.
+    var cell_text: [200]u8 = undefined;
+    fill(&cell_text, &.{ "if (a != b) { x = y->z; } ", "// TODO 0xFF <= n ", "ls -la | grep foo && echo ok " });
+    var row: [200]L.Cell = undefined;
+    for (&row, 0..) |*c, i| c.* = .{ .text = if (i % 40 == 0) "\u{2502}" else if (i % 40 == 1) "\u{2500}" else cell_text[i .. i + 1], .style = .{ .chain = code_chain } };
+    var cells_ctx: CellsCtx = .{ .tl = &tl, .arena = arena_buf, .row = &row, .grid = L.cellMetrics(&tl, lig) };
+    cells_ctx.one(.{});
+    cells_ctx.one(.{ .ligatures = true });
+    try b.run("text.cells_row_200", &cells_ctx, cellsRow);
+    try b.run("text.cells_row_200_ligatures", &cells_ctx, cellsRowLig);
+
     var hit_ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = code, .style = lig };
     var fba = std.heap.FixedBufferAllocator.init(arena_buf);
     hit_ctx.laid = try tl.layoutLine(fba.allocator(), code, &.{.{ .end = @intCast(code.len), .style = lig }}, .{});
@@ -318,6 +328,28 @@ fn layoutBenches(b: *bench.Bench, jb: *const vt.FaceInstance, inter: *const vt.F
 }
 
 const vt = zg_text.ot.variation;
+
+const CellsCtx = struct {
+    tl: *zg_text.layout.TextLayout,
+    arena: []u8,
+    row: []const zg_text.layout.Cell,
+    grid: zg_text.layout.CellGrid,
+
+    fn one(ctx: *CellsCtx, o: zg_text.layout.CellOptions) void {
+        var fba = std.heap.FixedBufferAllocator.init(ctx.arena);
+        var out: std.ArrayList(zg_text.layout.CellGlyph) = .empty;
+        zg_text.layout.layoutCells(ctx.tl, fba.allocator(), ctx.row, ctx.grid, o, &out) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
+    }
+};
+
+fn cellsRow(ctx: *CellsCtx, s: *State) void {
+    for (0..s.iterations()) |_| ctx.one(.{});
+}
+
+fn cellsRowLig(ctx: *CellsCtx, s: *State) void {
+    for (0..s.iterations()) |_| ctx.one(.{ .ligatures = true });
+}
 
 const LayoutCtx = struct {
     tl: *zg_text.layout.TextLayout,

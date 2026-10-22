@@ -214,6 +214,13 @@ pub const Window = struct {
     /// The external drag over this window; the Host sends
     /// `drop.pending` as `set_drop_effect`.
     drop: drop_mod.DropState = .{},
+    /// Receives drags between our own windows (see input/drop.zig).
+    internal_drop: ?InternalDrop = null,
+    /// A drag to start with the platform (`startDrag`); the Host submits
+    /// it as `start_drag` offering `application/x-zigguro-internal`.
+    drag_out: ?[]u8 = null,
+    /// Called instead of closing when the platform asks to close.
+    on_close: ?CloseHook = null,
     /// A widget's clipboard read (`EventCx.readClipboard`): `send` for the
     /// Host to submit, then `wait` until the data arrives.
     clip_read: struct { send: ?ClipRead = null, wait: ?ClipRead = null } = .{},
@@ -225,6 +232,40 @@ pub const Window = struct {
     /// The platform window this window presents to, if any.
     platform_win: ?zg_platform.types.WindowId = null,
     close_requested: bool = false,
+
+    /// See `internal_drop`. `f` answers `enter` and `over` (true
+    /// accepts); `data` is the dragged bytes on `drop`. `source_finished`
+    /// reaches the window the drag started from, `allowed` empty when
+    /// nothing took it.
+    pub const InternalDrop = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, w: *Window, phase: zg_platform.clipboard.DropPhase, pos: Vec2, data: []const u8, allowed: zg_platform.clipboard.DragActions) bool,
+    };
+
+    /// See `on_close`.
+    pub const CloseHook = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, w: *Window) void,
+    };
+
+    /// Asks the Host to start a platform drag of `bytes` (copied) as
+    /// `application/x-zigguro-internal`.
+    pub fn startDrag(w: *Window, bytes: []const u8) void {
+        const copy = w.gpa.dupe(u8, bytes) catch return;
+        if (w.drag_out) |old| w.gpa.free(old);
+        w.drag_out = copy;
+    }
+
+    /// The drag started with `startDrag` ended (`allowed` empty: nothing
+    /// took it).
+    pub fn dragFinished(w: *Window, allowed: zg_platform.clipboard.DragActions) void {
+        if (w.internal_drop) |h| _ = h.f(h.ctx, w, .source_finished, w.pointer, "", allowed);
+    }
+
+    /// The platform asked to close: runs `on_close`, else closes.
+    pub fn requestClose(w: *Window) void {
+        if (w.on_close) |h| h.f(h.ctx, w) else w.close_requested = true;
+    }
 
     /// See `chrome`.
     pub const Chrome = struct {
@@ -373,6 +414,7 @@ pub const Window = struct {
         w.ime.text.deinit(gpa);
         w.chrome.interactive.deinit(gpa);
         w.window_ops.deinit(gpa);
+        if (w.drag_out) |b| gpa.free(b);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         for (w.after_frame.items) |t| t.f(t.ctx, w);
         w.after_frame_due.deinit(gpa);
@@ -1566,9 +1608,36 @@ pub const Window = struct {
     /// An external drag over the window (see input/drop.zig).
     fn handleDrop(w: *Window, d: zg_platform.clipboard.DropEvent, payload: anytype) void {
         const pos: Vec2 = .{ .x = d.pos_px[0] / w.scale, .y = d.pos_px[1] / w.scale };
+        if (w.internal_drop) |h| {
+            if (d.phase == .source_finished) {
+                _ = h.f(h.ctx, w, .source_finished, pos, "", d.allowed);
+                return;
+            }
+            if (d.phase == .enter and drop_mod.offers(payload.payload(d.mimes), .zigguro_internal)) {
+                w.drop.reset();
+                w.drop.internal = true;
+                w.drop.mime = .zigguro_internal;
+            }
+            if (w.drop.internal) {
+                switch (d.phase) {
+                    .enter, .over => w.drop.answer(h.f(h.ctx, w, d.phase, pos, "", d.allowed)),
+                    .leave => {
+                        _ = h.f(h.ctx, w, .leave, pos, "", d.allowed);
+                        w.drop.reset();
+                    },
+                    .drop => {
+                        defer w.drop.reset();
+                        if (w.drop.sent == true) _ = h.f(h.ctx, w, .drop, pos, payload.payload(d.data), d.allowed);
+                    },
+                    .source_finished => unreachable,
+                }
+                return;
+            }
+        }
         switch (d.phase) {
             .enter => {
                 w.drop.reset();
+                w.drop.mime = .uri_list;
                 w.drop.files = drop_mod.offersFiles(payload.payload(d.mimes));
                 if (w.drop.files) w.dispatch(.{ .drag_files_over = pos }) else w.drop.answer(false);
             },
@@ -1725,7 +1794,7 @@ pub const Window = struct {
                 w.chrome.margins_px = d.margins_px;
                 w.chromeChanged();
             },
-            .window_close_requested => w.close_requested = true,
+            .window_close_requested => w.requestClose(),
             .pointer_move => |p| w.dispatch(.{ .pointer_move = .{ .pos = .{ .x = p.pos_px[0] * inv, .y = p.pos_px[1] * inv }, .mods = p.mods } }),
             .pointer_button => |p| {
                 const pt: event.Pointer = .{ .pos = .{ .x = p.pos_px[0] * inv, .y = p.pos_px[1] * inv }, .button = mapButton(p.button), .clicks = p.clicks, .mods = p.mods };
