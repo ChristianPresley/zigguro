@@ -553,6 +553,13 @@ pub const Workbench = struct {
         }
         wb.followFocus();
         wb.dv.beginFrame(ui);
+        // At the window origin: the chrome (title bar and frame when the
+        // platform asks us to draw them), then the dock's drop preview.
+        ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column } });
+        defer ui.close();
+        defer wb.dv.dropOverlay(ui);
+        zg_gui.dock.chrome.begin(ui, .{ .title = "zigguro" });
+        defer zg_gui.dock.chrome.end(ui);
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column, .bg = .{ .token = .bg_base } } });
         defer ui.close();
         wb.header(ui);
@@ -575,7 +582,6 @@ pub const Workbench = struct {
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
-        wb.dv.dropOverlay(ui);
     }
 
     const agent_w: f32 = 380;
