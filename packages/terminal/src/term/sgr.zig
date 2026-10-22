@@ -24,7 +24,7 @@ const Ext = struct { color: ?Color, consumed: usize };
 
 /// Parses an extended colour starting at param `i` (the 38/48/58 itself).
 fn extColor(c: *const Csi, i: usize) Ext {
-    const subs = subCount(c, i);
+    const subs = if (c.colon_mask == 0) 0 else subCount(c, i);
     if (subs > 0) {
         // Colon form: everything is in the sub-params.
         const kind = c.get(i + 1, 0);
@@ -65,7 +65,8 @@ pub fn applySgr(st: *Style, c: *const Csi) void {
     var i: usize = 0;
     while (i < c.count) : (i += 1) {
         const p = c.get(i, 0);
-        const subs = subCount(c, i);
+        // Most sequences have no sub-parameters at all.
+        const subs = if (c.colon_mask == 0) 0 else subCount(c, i);
         switch (p) {
             0 => st.* = .{},
             1 => st.flags.bold = true,
