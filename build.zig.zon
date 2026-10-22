@@ -9,6 +9,7 @@
         .zg_jsonrpc = .{ .path = "packages/jsonrpc" },
         .zg_net = .{ .path = "packages/net" },
         .zg_terminal = .{ .path = "packages/terminal" },
+        .zg_mcp = .{ .path = "packages/mcp" },
         // pkgtool:insert
     },
     .paths = .{

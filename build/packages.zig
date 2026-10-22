@@ -24,5 +24,14 @@ pub const all = [_]Package{
     .{ .name = "zg_jsonrpc", .dir = "packages/jsonrpc", .has_bench = true },
     .{ .name = "zg_net", .dir = "packages/net", .has_bench = true },
     .{ .name = "zg_terminal", .dir = "packages/terminal", .has_bench = true },
+    .{ .name = "zg_mcp", .dir = "packages/mcp", .has_bench = true },
     // pkgtool:insert
 };
+
+/// Index of the package named `name` in `all` (a compile error if absent).
+pub fn indexOf(comptime name: []const u8) usize {
+    for (all, 0..) |p, i| {
+        if (@import("std").mem.eql(u8, p.name, name)) return i;
+    }
+    @compileError("unknown package " ++ name);
+}

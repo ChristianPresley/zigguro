@@ -1,0 +1,203 @@
+//! zg_mcp benchmarks (`zig build bench`).
+//!
+//! Budgets (E11 epic): decoding `tools/list` with 500 tools is part of the
+//! < 15 ms catalog budget; per-request codec work is part of the < 50 µs
+//! zigguro-side overhead.
+
+const std = @import("std");
+const zg_core = @import("zg_core");
+const zg_mcp = @import("zg_mcp");
+const bench = zg_core.bench;
+const State = bench.State;
+const codec = zg_mcp.protocol.codec;
+const M = zg_mcp.protocol.messages;
+
+pub fn main(min: std.process.Init.Minimal) !u8 {
+    return bench.mainFromArgs(min, register);
+}
+
+const tool_count = 500;
+
+fn register(b: *bench.Bench) !void {
+    const gpa = b.gpa;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    const w = &aw.writer;
+    try w.writeAll("{\"resultType\":\"complete\",\"ttlMs\":60000,\"cacheScope\":\"private\",\"tools\":[");
+    for (0..tool_count) |i| {
+        if (i != 0) try w.writeByte(',');
+        try w.print(
+            \\{{"name":"tool_{d}","title":"Tool {d}","description":"Does thing number {d} to the repository and reports what changed.","inputSchema":{{"type":"object","properties":{{"path":{{"type":"string","description":"File path"}},"line":{{"type":"integer","minimum":1}},"dryRun":{{"type":"boolean"}}}},"required":["path"]}},"annotations":{{"readOnlyHint":true}}}}
+        , .{ i, i, i });
+    }
+    try w.writeAll("]}");
+    const list = aw.written();
+
+    try b.run("protocol: decode tools/list (500 tools)", list, decodeList);
+    try b.run("protocol: decode tools/call result", {}, decodeCall);
+    try b.run("protocol: encode tools/call request", {}, encodeCall);
+    try registerSchema(b);
+    try registerClient(b);
+    try registerServer(b);
+}
+
+/// Acceptance (E11.F05.S01.T01): `tools/list` with 100 tools, warm (the
+/// page is cached), < 200 µs per request including dispatch and the send.
+fn registerServer(b: *bench.Bench) !void {
+    const Server = zg_mcp.server.Server;
+    const srv = try Server.init(b.gpa, b.io, .{ .info = .{ .name = "bench", .version = "0" } });
+    defer srv.deinit();
+    var arena: std.heap.ArenaAllocator = .init(b.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = try codec.parseValue(a, tool_schema);
+    for (0..100) |i| try srv.addDynamicTool(.{
+        .def = .{ .name = try std.fmt.allocPrint(a, "tool_{d}", .{i}), .description = "Does a thing to the repository.", .input_schema = input },
+        .handler = .{ .ctx = null, .call = nopTool },
+    });
+    var sent: usize = 0;
+    const conn = try srv.connect(.{ .ctx = &sent, .send = countBytes }, null);
+    try b.run("server: tools/list 100 tools (warm, modern)", conn, listTools);
+}
+
+fn nopTool(_: ?*anyopaque, _: *zg_mcp.server.CallCtx, _: std.json.Value) anyerror!M.CallToolResult {
+    return .{ .content = &.{} };
+}
+
+fn countBytes(ctx: ?*anyopaque, body: []const u8) void {
+    const n: *usize = @ptrCast(@alignCast(ctx.?));
+    n.* += body.len;
+}
+
+const list_request =
+    \\{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+;
+
+fn listTools(conn: *zg_mcp.server.Conn, s: *State) void {
+    for (0..s.iterations()) |_| conn.receive(list_request);
+}
+
+/// Acceptance (E11.F03.S01.T01): connect overhead < 1 ms in-process. The
+/// scripted server's own work is included and is a few allocations.
+fn registerClient(b: *bench.Bench) !void {
+    var rt: zg_core.Runtime = undefined;
+    try rt.initBorrowed(b.gpa, b.io, 64);
+    defer _ = rt.deinit();
+    try b.run("client: connect in-process (modern)", &rt, connectInProcess);
+}
+
+fn connectInProcess(rt: *zg_core.Runtime, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var srv: zg_mcp.testing.MockServer = undefined;
+        srv.init(s.allocator(), rt.io, .modern);
+        const c = zg_mcp.client.Client.connect(rt, s.allocator(), .{ .in_process = &srv.pair }, .{
+            .client_info = .{ .name = "zigguro", .version = "0.0.0" },
+        }) catch unreachable;
+        bench.doNotOptimizeAway(c.serverInfo().revision);
+        c.close();
+        srv.deinit();
+    }
+}
+
+const schema = zg_mcp.schema;
+
+/// A 200-subschema object schema (40 properties of 5 nodes each).
+fn bigSchema(gpa: std.mem.Allocator) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    const w = &aw.writer;
+    try w.writeAll("{\"type\":\"object\",\"properties\":{");
+    for (0..40) |i| {
+        if (i != 0) try w.writeByte(',');
+        try w.print(
+            \\"p{d}":{{"anyOf":[{{"type":"string","maxLength":64}},{{"type":"array","items":{{"type":"integer","minimum":0}}}},{{"type":"null"}}]}}
+        , .{i});
+    }
+    try w.writeAll("},\"required\":[\"p0\"],\"additionalProperties\":false}");
+    return aw.toOwnedSlice();
+}
+
+const tool_schema =
+    \\{"type":"object","properties":{"path":{"type":"string","description":"File path"},"line":{"type":"integer","minimum":1},"dryRun":{"type":"boolean"}},"required":["path"]}
+;
+const tool_args =
+    \\{"path":"src/main.zig","line":42,"dryRun":false}
+;
+
+const SchemaFixture = struct { big: std.json.Value, tool: *schema.Schema, args: std.json.Value };
+
+fn registerSchema(b: *bench.Bench) !void {
+    var arena: std.heap.ArenaAllocator = .init(b.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const big = try std.json.parseFromSliceLeaky(std.json.Value, a, try bigSchema(a), .{});
+    const tool = try schema.compile(b.gpa, try std.json.parseFromSliceLeaky(std.json.Value, a, tool_schema, .{}), .{});
+    defer tool.deinit();
+    const fx: SchemaFixture = .{ .big = big, .tool = tool, .args = try std.json.parseFromSliceLeaky(std.json.Value, a, tool_args, .{}) };
+    try b.run("schema: compile 200-node schema", fx, compileBig);
+    try b.run("schema: validate tools/call arguments", fx, validateArgs);
+}
+
+fn compileBig(fx: SchemaFixture, s: *State) void {
+    for (0..s.iterations()) |_| {
+        const c = schema.compile(s.allocator(), fx.big, .{}) catch unreachable;
+        bench.doNotOptimizeAway(c.nodes.len);
+        c.deinit();
+    }
+}
+
+fn validateArgs(fx: SchemaFixture, s: *State) void {
+    for (0..s.iterations()) |_| {
+        const ok = schema.validate(fx.tool, s.allocator(), fx.args, null) catch unreachable;
+        bench.doNotOptimizeAway(ok);
+    }
+}
+
+fn decodeList(list: []const u8, s: *State) void {
+    var arena: std.heap.ArenaAllocator = .init(s.allocator());
+    defer arena.deinit();
+    s.setBytes(list.len);
+    for (0..s.iterations()) |_| {
+        _ = arena.reset(.retain_capacity);
+        const r = codec.decodeResult(M.ListToolsResult, arena.allocator(), .{ .bytes = list }, .{}) catch unreachable;
+        bench.doNotOptimizeAway(r.complete.tools.len);
+    }
+}
+
+const call_result =
+    \\{"resultType":"complete","content":[{"type":"text","text":"Current weather in New York:\nTemperature: 72°F\nConditions: Partly cloudy"}],"structuredContent":{"temperature":72,"conditions":"Partly cloudy"},"isError":false}
+;
+
+fn decodeCall(_: void, s: *State) void {
+    var arena: std.heap.ArenaAllocator = .init(s.allocator());
+    defer arena.deinit();
+    s.setBytes(call_result.len);
+    for (0..s.iterations()) |_| {
+        _ = arena.reset(.retain_capacity);
+        const r = codec.decodeResult(M.CallToolResult, arena.allocator(), .{ .bytes = call_result }, .{}) catch unreachable;
+        bench.doNotOptimizeAway(r.complete.content.len);
+    }
+}
+
+fn encodeCall(_: void, s: *State) void {
+    var arena: std.heap.ArenaAllocator = .init(s.allocator());
+    defer arena.deinit();
+    var buf: [1024]u8 = undefined;
+    for (0..s.iterations()) |_| {
+        _ = arena.reset(.retain_capacity);
+        const a = arena.allocator();
+        var args: std.json.ObjectMap = .empty;
+        args.put(a, "location", .{ .string = "New York" }) catch unreachable;
+        const p: M.CallToolParams = .{
+            .name = "get_weather",
+            .arguments = .{ .object = args },
+            .meta = .{
+                .protocol_version = "2026-07-28",
+                .client_info = .{ .name = "zigguro", .version = "0.0.0" },
+                .client_capabilities = zg_mcp.protocol.Capabilities.empty,
+            },
+        };
+        var w: std.Io.Writer = .fixed(&buf);
+        @import("zg_jsonrpc").message.writeRequest(&w, .{ .int = 1 }, "tools/call", codec.json(p)) catch unreachable;
+        bench.doNotOptimizeAway(w.end);
+    }
+}

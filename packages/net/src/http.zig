@@ -109,6 +109,11 @@ pub const Head = struct {
 pub const BodySink = struct {
     ctx: ?*anyopaque,
     onChunk: *const fn (?*anyopaque, []const u8) anyerror!void,
+    /// Called once with the final response's status and headers before the
+    /// first chunk (not for retried or redirected attempts); an error aborts
+    /// the stream like one from `onChunk`. The headers are valid only during
+    /// the call.
+    onHead: ?*const fn (?*anyopaque, std.http.Status, *const OwnedHeaders) anyerror!void = null,
 };
 
 pub const Client = struct {
@@ -407,6 +412,7 @@ pub const Client = struct {
                 _ = body.discardRemaining() catch {};
                 return .{ .status = status, .headers = headers, .body = &.{} };
             }
+            if (s.onHead) |f| try f(s.ctx, status, &headers);
             while (true) {
                 const avail = body.peekGreedy(1) catch |err| switch (err) {
                     error.EndOfStream => break,
@@ -561,6 +567,50 @@ test "http: POST body and chunked stream to sink" {
     defer head.deinit(f.client.gpa);
     try testing.expectEqual(std.http.Status.ok, head.status);
     try testing.expectEqualStrings("echo:ping;part2", collected.items);
+}
+
+test "http: onHead sees the head before the first chunk" {
+    const io = testing.io;
+    var srv: TestServer = .{ .server = undefined, .port = 0, .max = 1, .handler = struct {
+        fn h(_: *TestServer, req: *std.http.Server.Request) !void {
+            var out: [256]u8 = undefined;
+            var bw = try req.respondStreaming(&out, .{ .respond_options = .{
+                .status = .accepted,
+                .extra_headers = &.{.{ .name = "x-session", .value = "abc" }},
+            } });
+            try bw.writer.writeAll("body");
+            try bw.end();
+        }
+    }.h };
+    try srv.start(io);
+    defer srv.stop(io);
+    var f: Fixture = undefined;
+    try f.init(test_cfg);
+    defer f.deinit();
+    const Seen = struct {
+        status: ?std.http.Status = null,
+        session: [8]u8 = undefined,
+        session_len: usize = 0,
+        head_before_body: bool = false,
+        fn onHead(ctx: ?*anyopaque, st: std.http.Status, hs: *const OwnedHeaders) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx.?));
+            s.status = st;
+            const v = hs.get("X-Session").?;
+            @memcpy(s.session[0..v.len], v);
+            s.session_len = v.len;
+        }
+        fn onChunk(ctx: ?*anyopaque, _: []const u8) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx.?));
+            s.head_before_body = s.status != null;
+        }
+    };
+    var seen: Seen = .{};
+    var buf: [64]u8 = undefined;
+    var head = try f.client.stream(.{ .url = srv.url(&buf, "/h") }, .{ .ctx = &seen, .onChunk = Seen.onChunk, .onHead = Seen.onHead });
+    defer head.deinit(f.client.gpa);
+    try testing.expectEqual(std.http.Status.accepted, seen.status.?);
+    try testing.expectEqualStrings("abc", seen.session[0..seen.session_len]);
+    try testing.expect(seen.head_before_body);
 }
 
 test "http: 429 retry honours Retry-After" {

@@ -71,6 +71,16 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run.step);
         fuzz_step.dependOn(&run.step);
     }
+    // zg_mcp's stdio tests spawn a fixture server, so they are a separate
+    // test binary defined by the package's build.zig.
+    {
+        const mcp = comptime packages.indexOf("zg_mcp");
+        const stdio = @import("zg_mcp").addStdioTests(b, f, mods[mcp], mods[comptime packages.indexOf("zg_core")], "packages/mcp/");
+        const run = b.addRunArtifact(stdio);
+        run.skip_foreign_checks = true;
+        b.top_level_steps.get("test-mcp").?.step.dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
 
     // Repository tools (std-only Zig programs under tools/).
     const tools_test_step = b.step("test-tools", "Run the tests of tools/*");
