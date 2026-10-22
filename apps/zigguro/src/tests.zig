@@ -14,6 +14,8 @@ test {
     _ = @import("path_crumbs.zig");
     _ = @import("review/queue_panel.zig");
     _ = @import("review/review_view.zig");
+    _ = @import("review/approval_card.zig");
+    _ = @import("review/approvals_view.zig");
     _ = @import("startup/early_update_check.zig");
     _ = @import("workbench.zig");
 }
