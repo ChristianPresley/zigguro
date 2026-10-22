@@ -25,8 +25,10 @@
 //!   binds the UI thread with a waker that wakes the platform, and drains
 //!   the mailbox (worker results) on every pump;
 //! - window timers run on every pump, and `run` sleeps until the earliest;
-//! - on Windows each window gets a UI Automation bridge (E04.F09.S01.T02)
-//!   that turns its accessibility tree on when a screen reader asks;
+//! - on Windows each window gets a UI Automation bridge (E04.F09.S01.T02),
+//!   and on Linux the app gets an AT-SPI2 bridge (E04.F09.S01.T03) when a
+//!   session bus address is given; either turns the accessibility trees on
+//!   only when a screen reader asks;
 //! - with a `FontText`, the glyph atlas is uploaded to every window's
 //!   renderer (one texture per atlas page) before it renders; uploads go
 //!   through the render thread's queue, ahead of the list that uses them.
@@ -49,6 +51,8 @@ const chrome = @import("dock/chrome.zig");
 const hit_map = @import("dock/hit_map.zig");
 const floating = @import("dock/floating.zig");
 const uia = @import("a11y/uia/root.zig");
+const atspi = @import("a11y/root.zig").atspi;
+const is_linux = builtin.os.tag == .linux;
 const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
@@ -173,6 +177,18 @@ pub const Host = struct {
     rt_bound: bool = false,
     atlas_updates: std.ArrayList(zg_text.cache.AtlasUpdate) = .empty,
     render_thread: bool,
+    a11y: Accessibility = .{},
+    /// The AT-SPI2 bridge, made with the first window (Linux).
+    atspi_bridge: if (is_linux) ?*atspi.Bridge else void = if (is_linux) null else {},
+
+    /// Screen reader support.
+    pub const Accessibility = struct {
+        /// The session bus address the AT-SPI2 bridge starts from
+        /// (Linux); null leaves windows invisible to screen readers there.
+        session_address: ?[]const u8 = null,
+        /// The version `Application.Version` reports.
+        version: []const u8 = "0",
+    };
 
     /// Options for `init`.
     pub const Options = struct {
@@ -182,17 +198,19 @@ pub const Host = struct {
         /// Render on a thread per window (falls back to the UI thread when
         /// the `Io` cannot spawn one).
         render_thread: bool = true,
+        a11y: Accessibility = .{},
     };
 
     /// A host for `app` on `platform`; text goes through `text_sys`. The
     /// Host must not move once a window is open.
     pub fn init(gpa: std.mem.Allocator, io: std.Io, app: *app_mod.App, platform: Platform, text_sys: text.TextSystem, opts: Options) Host {
-        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread };
+        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread, .a11y = opts.a11y };
     }
 
     /// Closes every window.
     pub fn deinit(h: *Host) void {
         while (h.windows.items.len > 0) h.close(h.windows.items[h.windows.items.len - 1]);
+        if (is_linux) if (h.atspi_bridge) |b| b.deinit();
         h.windows.deinit(h.gpa);
         h.atlas_updates.deinit(h.gpa);
     }
@@ -265,6 +283,7 @@ pub const Host = struct {
         errdefer h.app.closeWindow(hw.win);
         try h.windows.append(h.gpa, hw);
         if (builtin.os.tag == .windows) h.openUia(hw);
+        if (is_linux) h.openAtspi(hw);
         // The new renderer has none of the atlas yet.
         if (h.fonts) |ft| ft.reuploadAll();
         return hw;
@@ -310,6 +329,18 @@ pub const Host = struct {
         hw.uia = b;
     }
 
+    /// Exposes `hw` through the AT-SPI2 bridge, starting it with the first
+    /// window. Without a session bus the window just isn't accessible.
+    fn openAtspi(h: *Host, hw: *HostWindow) void {
+        const b = h.atspi_bridge orelse blk: {
+            const addr = h.a11y.session_address orelse return;
+            const b = atspi.Bridge.init(h.gpa, h.io, .{ .session_address = addr, .version = h.a11y.version }) catch return;
+            h.atspi_bridge = b;
+            break :blk b;
+        };
+        b.addWindow(hw.win, @intFromEnum(hw.id)) catch {};
+    }
+
     /// Closes `hw` and its platform window.
     pub fn close(h: *Host, hw: *HostWindow) void {
         for (h.windows.items, 0..) |x, i| if (x == hw) {
@@ -318,6 +349,7 @@ pub const Host = struct {
         };
         // Before the window goes: the bridge detaches its tree from it.
         if (hw.uia) |b| b.close();
+        if (is_linux) if (h.atspi_bridge) |b| b.removeWindow(hw.win);
         h.app.closeWindow(hw.win);
         hw.deinitOutput();
         hw.pages.deinit(h.gpa);
