@@ -2404,7 +2404,7 @@ regexps); `M-%`/`C-M-%` query replace with `y n ! . q`. Self-inserts
 amalgamate up to 20 per undo step (`CoalesceKey.amalgamate`), and undo
 follows Emacs: after any other command, `C-/` first undoes the undos.
 `C-x C-s`, `C-x C-f`, `C-x b`, `C-x k`, `C-x 3` and `M-x` become
-`Action.command` with the ids `data/keymaps/emacs.zon` gives the E15
+`Action.command` with the ids `src/modes/emacs/keymap.zon` gives the E15
 layer. Behaviour is checked against GNU Emacs 29: `testdata/emacs/*.zon`
 (132 cases) are recorded by `testdata/emacs/oracle.py` from `emacs
 --batch` keyboard macros and replayed by `emacs_test.zig`.
