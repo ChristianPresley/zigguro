@@ -4,6 +4,7 @@
 //! zigguro-setup.exe [--silent] [--dir <path>] [--no-path] [--no-start-menu]
 //!                   [--desktop-shortcut] [--no-open-with] [--no-folder-menu] [--no-launch]
 //! zigguro-setup.exe --uninstall [--silent] [--remove-user-data]
+//!                   (internal: --stage2 --root <root> [--parent-pid <pid>])
 //! zigguro-setup.exe --apply --root <root> --wait-pid <pid> [--relaunch <args>]
 //! ```
 
@@ -31,6 +32,12 @@ pub const Install = struct {
 pub const Uninstall = struct {
     silent: bool = false,
     remove_user_data: bool = false,
+    /// Set by the first stage when it relaunches the temporary copy.
+    stage2: bool = false,
+    /// The install root; the first stage derives it from its own path.
+    root: ?[]const u8 = null,
+    /// The first stage's process, which the second waits for.
+    parent_pid: ?u32 = null,
 };
 
 pub const Apply = struct {
@@ -113,6 +120,12 @@ pub fn parse(args: []const []const u8) Error!Command {
             .uninstall => {
                 if (eql(a, "--remove-user-data")) {
                     un.remove_user_data = true;
+                } else if (eql(a, "--stage2")) {
+                    un.stage2 = true;
+                } else if (eql(a, "--root")) {
+                    un.root = try value(args, &i);
+                } else if (eql(a, "--parent-pid")) {
+                    un.parent_pid = std.fmt.parseInt(u32, try value(args, &i), 10) catch return error.BadPid;
                 } else return unknown(a);
             },
             .apply => {
@@ -135,7 +148,7 @@ pub fn parse(args: []const []const u8) Error!Command {
 
 /// A flag of another mode is `WrongMode`; anything else `UnknownFlag`.
 fn unknown(a: []const u8) Error {
-    const all = [_][]const u8{ "--dir", "--no-path", "--no-start-menu", "--desktop-shortcut", "--no-open-with", "--no-folder-menu", "--no-launch", "--remove-user-data", "--root", "--wait-pid", "--relaunch" };
+    const all = [_][]const u8{ "--dir", "--no-path", "--no-start-menu", "--desktop-shortcut", "--no-open-with", "--no-folder-menu", "--no-launch", "--remove-user-data", "--stage2", "--parent-pid", "--root", "--wait-pid", "--relaunch" };
     for (all) |f| if (std.mem.eql(u8, a, f)) return error.WrongMode;
     return error.UnknownFlag;
 }
@@ -152,7 +165,11 @@ test "args: parse all flags" {
     try testing.expect(!d.silent and d.dir == null and d.opts.add_to_path and d.opts.start_menu and !d.opts.desktop_shortcut and d.launch);
 
     const u = (try parse(&.{ "--uninstall", "--silent", "--remove-user-data" })).uninstall;
-    try testing.expect(u.silent and u.remove_user_data);
+    try testing.expect(u.silent and u.remove_user_data and !u.stage2 and u.root == null);
+    const st2 = (try parse(&.{ "--uninstall", "--stage2", "--root", "C:\\zg", "--parent-pid", "77" })).uninstall;
+    try testing.expect(st2.stage2 and !st2.silent);
+    try testing.expectEqualStrings("C:\\zg", st2.root.?);
+    try testing.expectEqual(@as(u32, 77), st2.parent_pid.?);
 
     const ap = (try parse(&.{ "--apply", "--root", "C:\\zg", "--wait-pid", "4242", "--relaunch", "--new-window x.zig" })).apply;
     try testing.expectEqualStrings("C:\\zg", ap.root);

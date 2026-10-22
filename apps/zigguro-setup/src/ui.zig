@@ -5,6 +5,8 @@ const builtin = @import("builtin");
 
 const MB_OK: u32 = 0x0;
 const MB_RETRYCANCEL: u32 = 0x5;
+const MB_YESNO: u32 = 0x4;
+const IDYES: i32 = 6;
 const MB_ICONERROR: u32 = 0x10;
 const MB_ICONWARNING: u32 = 0x30;
 const MB_ICONINFORMATION: u32 = 0x40;
@@ -38,4 +40,10 @@ pub fn message(kind: Kind, text: []const u8) void {
 pub fn retry(text: []const u8) bool {
     if (builtin.os.tag != .windows) return false;
     return show(text, MB_RETRYCANCEL | MB_ICONWARNING) == IDRETRY;
+}
+
+/// Yes/No; true for Yes. Off Windows, false.
+pub fn confirm(text: []const u8) bool {
+    if (builtin.os.tag != .windows) return false;
+    return show(text, MB_YESNO | MB_ICONWARNING) == IDYES;
 }
