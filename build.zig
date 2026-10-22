@@ -121,6 +121,19 @@ pub fn build(b: *std.Build) void {
     const transcript = addToolImports(b, "zg-transcript", "tools/transcript/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "zg_transcript", .module = b.createModule(.{ .root_source_file = b.path("packages/lsp/src/client/transcript.zig") }) },
     });
+    // zg-release (E17) links zg_release built for the host.
+    var host_args = f.args();
+    host_args.target = b.graph.host;
+    const release_host = b.dependency("zg_release", host_args).module("zg_release");
+    const release_tool = addToolImports(b, "zg-release", "tools/release/src/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "zg_release", .module = release_host },
+    });
+    b.installArtifact(release_tool);
+    const release_run = b.addRunArtifact(release_tool);
+    if (b.args) |a| release_run.addArgs(a);
+    release_run.has_side_effects = true;
+    b.step("release-tool", "Run tools/release (zg-release <command> ...; args after --)").dependOn(&release_run.step);
+
     const transcript_run = b.addRunArtifact(transcript);
     if (b.args) |args| transcript_run.addArgs(args);
     b.step("zg-transcript", "Run zg-transcript (pass arguments after --)").dependOn(&transcript_run.step);
