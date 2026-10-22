@@ -4,8 +4,11 @@
 //! - each window renders on its own `RenderThread` (E02.F04.S03): the UI
 //!   thread records a `DrawList` and posts it, never waiting for the GPU;
 //!   the frame and configure events are forwarded to the thread's
-//!   `FramePacer`. Without concurrency (`std.Io` that cannot spawn) or with
-//!   `Options.render_thread = false`, the UI thread renders itself;
+//!   `FramePacer`. A Vulkan renderer with a swapchain paces on present
+//!   waits (its `pacerCaps` pick the mode, its `presentWaiter` blocks);
+//!   others pace on the platform's frame events. Without concurrency
+//!   (`std.Io` that cannot spawn) or with `Options.render_thread = false`,
+//!   the UI thread renders itself;
 //! - platform events are routed to their window (`handlePlatformEvent`);
 //! - a window that wants a frame asks the platform with `request_frame`
 //!   and records when the platform's `frame` event arrives (frame pacing
@@ -42,6 +45,7 @@ const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
 const RenderThread = zg_vulkan.present.RenderThread;
+const FramePacer = zg_vulkan.present.FramePacer;
 const Platform = zg_platform.Platform;
 const WindowId = zg_platform.types.WindowId;
 const Event = zg_platform.event.Event;
@@ -214,7 +218,8 @@ pub const Host = struct {
         hw.out = .{ .direct = renderer };
         if (h.render_thread) {
             const notify: RenderThread.Notify = .{ .ctx = &h.platform, .wake_ui = wakeFromRenderer };
-            if (RenderThread.spawn(h.gpa, h.io, renderer, .{ .pacing = .platform_frame, .notify = notify })) |rt| {
+            const pace = pacingFor(renderer);
+            if (RenderThread.spawn(h.gpa, h.io, renderer, .{ .pacing = pace.mode, .waiter = pace.waiter, .notify = notify })) |rt| {
                 hw.out = .{ .thread = rt };
             } else |err| switch (err) {
                 error.ConcurrencyUnavailable => {},
@@ -411,3 +416,21 @@ pub const Host = struct {
         }
     }
 };
+
+/// A render thread's pacing mode and present waiter.
+pub const Pacing = struct { mode: FramePacer.Mode, waiter: ?FramePacer.PresentWaiter };
+
+/// How a render thread paces `r`: present waits for a Vulkan swapchain
+/// that supports them, else the platform's frame events.
+pub fn pacingFor(r: zg_vulkan.r2d.Renderer) Pacing {
+    if (r.backend() != .vulkan) return .{ .mode = .platform_frame, .waiter = null };
+    const vk: *zg_vulkan.VkRenderer = @ptrCast(@alignCast(r.ptr));
+    const mode = FramePacer.selectMode(vk.pacerCaps());
+    return switch (mode) {
+        .present_wait, .present_wait2 => if (vk.presentWaiter()) |w| .{ .mode = mode, .waiter = w } else .{ .mode = .platform_frame, .waiter = null },
+        .platform_frame, .immediate => .{ .mode = mode, .waiter = null },
+        // A swapchain without present waits: the compositor's frame events
+        // still pace best.
+        else => .{ .mode = .platform_frame, .waiter = null },
+    };
+}
