@@ -29,6 +29,7 @@
         .zg_vulkan = .{ .path = "packages/vulkan" },
         .zg_syntax = .{ .path = "packages/syntax" },
         .zg_gui = .{ .path = "packages/gui" },
+        .zg_review = .{ .path = "packages/review" },
         // pkgtool:insert
     },
     .paths = .{
