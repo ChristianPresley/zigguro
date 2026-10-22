@@ -1,0 +1,8 @@
+int a = 0, b = 42, c = 0x1F, d = 0X1f, e = 017, f = 0b1010;
+unsigned g = 42u, h = 42UL, i = 42ull;
+double j = 1.0, k = .5, l = 1e10, m = 1.5e-3, n = 1E+3;
+float o = 3.14f, p = 2.f;
+double q = 0x1.8p3, r = 0x1p-2;
+int s = 1'000'000;
+long t = 0xFFFF'FFFFL;
+x = a.b + 1.e2;
