@@ -27,6 +27,10 @@ pub const Query = struct {
     test_id: ?[]const u8 = null,
     /// Widget kind name ("button", "text", ...).
     kind: ?[]const u8 = null,
+    /// Accessible name, substring match.
+    name_contains: ?[]const u8 = null,
+    /// Only below this node.
+    within: ?NodeId = null,
 };
 
 /// A headless app with one window.
@@ -82,37 +86,59 @@ pub const TestApp = struct {
         const vt = widget.vtable(s.hot.items(.kind)[n.index]);
         if (q.kind) |k| if (!std.mem.eql(u8, k, vt.name)) return false;
         if (q.test_id) |tid| if (s.coldOf(n).test_id != std.hash.Wyhash.hash(0, tid)) return false;
-        if (q.role != null or q.name != null) {
-            const f = vt.a11y orelse return false;
-            const props = s.props(n) orelse return false;
-            const st: *anyopaque = s.hot.items(.state)[n.index] orelse @ptrCast(&dummy);
-            const info = f(props, st);
+        if (q.role != null or q.name != null or q.name_contains != null) {
+            const info = t.a11yOf(n) orelse return false;
             if (q.role) |r| if (info.role != r) return false;
             if (q.name) |nm| if (!std.mem.eql(u8, nm, info.name)) return false;
+            if (q.name_contains) |nm| if (std.mem.indexOf(u8, info.name, nm) == null) return false;
         }
         return true;
+    }
+
+    /// What node `n` exposes to assistive technology, if anything.
+    pub fn a11yOf(t: *TestApp, n: NodeId) ?widget.A11y {
+        const s = &t.win.store;
+        const vt = widget.vtable(s.hot.items(.kind)[n.index]);
+        const f = vt.a11y orelse return null;
+        const props = s.props(n) orelse return null;
+        const st: *anyopaque = s.hot.items(.state)[n.index] orelse @ptrCast(&dummy);
+        return f(props, st);
+    }
+
+    /// The widget kind name of `n`.
+    pub fn kindOf(t: *TestApp, n: NodeId) []const u8 {
+        return widget.vtable(t.win.store.hot.items(.kind)[n.index]).name;
     }
 
     var dummy: u8 = 0;
 
     /// The first node in tree order matching `q`.
     pub fn find(t: *TestApp, q: Query) ?NodeId {
-        return t.findFrom(t.win.root, q);
+        return t.findNth(q, 0);
     }
 
-    fn findFrom(t: *TestApp, n: NodeId, q: Query) ?NodeId {
+    /// The `nth` (from 0) node in tree order matching `q`.
+    pub fn findNth(t: *TestApp, q: Query, nth: usize) ?NodeId {
+        var left = nth;
+        return t.findFrom(q.within orelse t.win.root, q, &left);
+    }
+
+    fn findFrom(t: *TestApp, n: NodeId, q: Query, left: *usize) ?NodeId {
         if (t.win.store.flags(n).hidden) return null;
-        if (t.matches(n, q)) return n;
+        if (t.matches(n, q)) {
+            if (left.* == 0) return n;
+            left.* -= 1;
+        }
         var it = t.win.store.children(n);
         while (it.next()) |c| {
-            if (t.findFrom(c, q)) |r| return r;
+            if (t.findFrom(c, q, left)) |r| return r;
         }
         return null;
     }
 
     /// How many visible nodes match `q`.
     pub fn count(t: *TestApp, q: Query) usize {
-        return t.countFrom(t.win.root, q);
+        return t.countFrom(q.within orelse t.win.root, q);
     }
 
     fn countFrom(t: *TestApp, n: NodeId, q: Query) usize {
@@ -131,6 +157,40 @@ pub const TestApp = struct {
 
     fn center(r: Rect) geom.Vec2 {
         return .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 };
+    }
+
+    /// Double-clicks the centre of the node matching `q` and settles.
+    pub fn doubleClick(t: *TestApp, q: Query) !void {
+        const p = center(try t.rectOf(q));
+        t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        t.win.dispatch(.{ .pointer_down = .{ .pos = p } });
+        t.win.dispatch(.{ .pointer_up = .{ .pos = p } });
+        t.win.dispatch(.{ .pointer_down = .{ .pos = p, .clicks = 2 } });
+        t.win.dispatch(.{ .pointer_up = .{ .pos = p, .clicks = 2 } });
+        _ = t.settle();
+    }
+
+    /// Scrolls by `dx`, `dy` pixels over the node matching `q`.
+    pub fn scroll(t: *TestApp, q: Query, dx: f32, dy: f32) !void {
+        const p = center(try t.rectOf(q));
+        t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        t.win.dispatch(.{ .scroll = .{ .pos = p, .dx = dx, .dy = dy, .precise = true } });
+        _ = t.settle();
+    }
+
+    /// Presses the node matching `q`, moves to `to` in four steps (frames
+    /// in between) and releases there.
+    pub fn drag(t: *TestApp, q: Query, to: geom.Vec2) !void {
+        const p = center(try t.rectOf(q));
+        t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        t.win.dispatch(.{ .pointer_down = .{ .pos = p } });
+        var i: f32 = 1;
+        while (i <= 4) : (i += 1) {
+            t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = p.x + (to.x - p.x) * i / 4, .y = p.y + (to.y - p.y) * i / 4 } } });
+            _ = t.settle();
+        }
+        t.win.dispatch(.{ .pointer_up = .{ .pos = to } });
+        _ = t.settle();
     }
 
     /// Advances the app clock by `ms`, runs due timers and settles.
@@ -207,6 +267,35 @@ pub const TestApp = struct {
         try out.print(gpa, " {f}\n", .{canvas.fmtRect(s.absRect(n))});
         var it = s.children(n);
         while (it.next()) |c| try t.snap(gpa, out, c, depth + 1);
+    }
+
+    /// The accessibility tree as indented lines `role "name" states`
+    /// (nodes with a role; others are skipped and their children lifted).
+    pub fn semanticsSnapshot(t: *TestApp, gpa: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try t.sem(gpa, &out, t.win.root, 0);
+        return out.toOwnedSlice(gpa);
+    }
+
+    fn sem(t: *TestApp, gpa: std.mem.Allocator, out: *std.ArrayList(u8), n: NodeId, depth: usize) !void {
+        const s = &t.win.store;
+        if (s.flags(n).hidden) return;
+        var d = depth;
+        if (t.a11yOf(n)) |info| if (info.role != .none) {
+            try out.appendNTimes(gpa, ' ', depth * 2);
+            try out.print(gpa, "{t}", .{info.role});
+            if (info.name.len > 0) try out.print(gpa, " \"{s}\"", .{info.name});
+            if (info.text.len > 0) try out.print(gpa, " text=\"{s}\"", .{info.text});
+            if (info.checked) |c| try out.print(gpa, " checked={}", .{c});
+            if (info.value) |v| try out.print(gpa, " value={d:.2}", .{v});
+            if (info.disabled) try out.appendSlice(gpa, " disabled");
+            if (t.win.focus == n) try out.appendSlice(gpa, " focused");
+            try out.append(gpa, '\n');
+            d += 1;
+        };
+        var it = s.children(n);
+        while (it.next()) |c| try t.sem(gpa, out, c, d);
     }
 
     /// The recorded text of the last presented frame.

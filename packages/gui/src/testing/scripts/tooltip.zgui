@@ -1,0 +1,9 @@
+# Tooltips wait 500 ms on the virtual clock.
+open Form
+hover role=button name="Clear"
+wait 400ms
+expect role=tooltip absent
+wait 200ms
+expect role=tooltip name="Empties the field"
+press escape
+expect role=tooltip absent

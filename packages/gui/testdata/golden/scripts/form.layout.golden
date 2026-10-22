@@ -1,0 +1,5 @@
+root 0,0 800x600
+  view 0,0 800x600
+    box 0,0 320x76
+      text_field "Name" 8,8 304x26
+      button "Clear" 8,42 304x26

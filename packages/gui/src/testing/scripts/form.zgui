@@ -1,0 +1,13 @@
+# Typing into a field, select-all and delete, then Clear.
+open Form
+click role=textbox name="Name"
+expect role=textbox name="Name" focused
+type "Ada Lovelace"
+expect role=textbox name="Name" text="Ada Lovelace"
+press ctrl+a
+press backspace
+expect role=textbox text=""
+type "Grace"
+click role=button name="Clear" within(testid=form)
+expect role=textbox text=""
+snapshot layout "form"
