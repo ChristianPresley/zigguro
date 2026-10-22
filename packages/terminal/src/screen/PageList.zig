@@ -5,8 +5,8 @@
 //! Rows are appended at the bottom (`grow`), so scrolling the full screen is
 //! O(1) per line with no row memmove. Whole pages are evicted from the top
 //! when the byte cap is exceeded; pins into evicted rows become `garbage`.
-//! Cold (compressed) pages are E06.F03.S02.T01; resize currently copies rows
-//! without reflow until E06.F03.S02.T02.
+//! Cold (compressed) pages are E06.F03.S02.T01. `resize` copies rows as
+//! they are; `reflow.zig` re-wraps them at a new width.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -101,7 +101,8 @@ pub fn deinit(pl: *PageList) void {
     pl.* = undefined;
 }
 
-fn newNode(gpa: Allocator, pool: *Page.PagePool, cols: u16, page_bytes: u32) !*Node {
+/// A fresh node with an empty page (for `reflow.zig`).
+pub fn newNode(gpa: Allocator, pool: *Page.PagePool, cols: u16, page_bytes: u32) !*Node {
     const buf = try pool.alloc(page_bytes);
     errdefer pool.free(buf);
     const node = try gpa.create(Node);
@@ -109,7 +110,8 @@ fn newNode(gpa: Allocator, pool: *Page.PagePool, cols: u16, page_bytes: u32) !*N
     return node;
 }
 
-fn appendRow(pl: *PageList) !Pin {
+/// Appends a blank row without scrolling bookkeeping (for building lists).
+pub fn appendRow(pl: *PageList) !Pin {
     var t = pl.tail;
     if (t.page.rowCount() == t.page.layout.rows_cap) {
         // At the byte cap, the head page is evicted anyway: reuse its node
@@ -369,7 +371,8 @@ fn nodeIn(head: *Node, n: *Node) bool {
     return false;
 }
 
-fn freeNodes(gpa: Allocator, pool: *Page.PagePool, head: *Node) void {
+/// Frees `head` and every node after it.
+pub fn freeNodes(gpa: Allocator, pool: *Page.PagePool, head: *Node) void {
     var n: ?*Node = head;
     while (n) |node| {
         n = node.next;
