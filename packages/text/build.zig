@@ -64,8 +64,9 @@ pub fn build(b: *std.Build) void {
     b.step("text-gamma-sheet", "Render a text gamma/contrast contact sheet (args after --)").dependOn(&sheet_run.step);
 
     // `zig build text-fontscan-report [-- --no-files]`: what font
-    // discovery finds on this machine, for a manual comparison with
-    // fc-list (never run in CI).
+    // discovery finds on this machine (Linux or Windows), for a manual
+    // comparison with fc-list or the Windows Fonts folder (never run in
+    // CI).
     const scan = b.addExecutable(.{
         .name = "text-fontscan-report",
         .root_module = b.createModule(.{

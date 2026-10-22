@@ -25,6 +25,42 @@ fn register(b: *bench.Bench) !void {
     try registerHunks(b);
     try registerSubmit(b);
     try registerApprovals(b);
+    try registerReanchor(b);
+}
+
+const Reanchor = struct {
+    store: zg_review.feedback.CommentStore,
+    texts: [2][]const u8,
+};
+
+/// Re-anchor 200 threads after a revision that inserted 3 lines at the
+/// top of a 2,000-line file, with no line mapping (hash search; the
+/// budget is < 5 ms). Alternates between the two texts so every pass
+/// moves every thread.
+fn registerReanchor(b: *bench.Bench) !void {
+    var v1: std.ArrayList(u8) = .empty;
+    defer v1.deinit(b.gpa);
+    for (0..2_000) |i| try v1.print(b.gpa, "    const x{d} = compute({d}, \"line\");\n", .{ i, i * 7 });
+    var v2: std.ArrayList(u8) = .empty;
+    defer v2.deinit(b.gpa);
+    try v2.appendSlice(b.gpa, "// a\n// b\n// c\n");
+    try v2.appendSlice(b.gpa, v1.items);
+    var r: Reanchor = .{ .store = .init(b.gpa, .{}), .texts = .{ v2.items, v1.items } };
+    defer r.store.deinit();
+    const target: model.ChangesetId = @enumFromInt(1);
+    for (0..200) |i| {
+        const at: zg_review.feedback.CommentAnchor = try .at(b.gpa, "src/a.zig", .new, v1.items, .{ .start = @intCast(i * 10), .count = 2 });
+        _ = try r.store.create(target, at, null, false, "why?", .{ .user = "bench" }, 0);
+    }
+    try b.run("review.comments.reanchor_200", &r, struct {
+        fn f(x: *Reanchor, st: *bench.State) void {
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                const rep = x.store.reanchor(@enumFromInt(1), "src/a.zig", x.texts[i % 2], .{}) catch unreachable;
+                bench.doNotOptimizeAway(rep);
+            }
+        }
+    }.f);
 }
 
 /// Present, answer and collect one approval (the broker's share of the

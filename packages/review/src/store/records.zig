@@ -196,6 +196,7 @@ fn writeFile(s: *Stringify, f: *const FileChange, blobs: model.Blobs, scratch: A
         for (f.folded_from) |id| try s.write(@intFromEnum(id));
         try s.endArray();
     }
+    if (f.previous) |h| try field(s, "previous", &hex(h));
     try s.objectField("content");
     try s.beginObject();
     try field(s, "type", @tagName(f.content));
@@ -319,6 +320,7 @@ fn readFile(gpa: Allocator, a: Allocator, v: Value, blobs: model.Blobs) anyerror
         for (out, items) |*d, x| d.* = @enumFromInt(try int(u64, x));
         f.folded_from = out;
     }
+    if (get(o, "previous")) |x| f.previous = try unhex(x);
     const c = try obj(get(o, "content") orelse return error.InvalidRecord);
     switch (try enumOf(std.meta.Tag(model.Content), get(c, "type"))) {
         .none => {},
