@@ -14,6 +14,8 @@ pub const discovery = @import("discovery.zig");
 pub const discovery_linux = @import("discovery_linux.zig");
 /// Windows discovery from the registry and font directories.
 pub const discovery_windows = @import("discovery_windows.zig");
+/// macOS discovery by scanning the standard font directories.
+pub const discovery_macos = @import("discovery_macos.zig");
 /// The advapi32 registry reads Windows discovery needs.
 pub const win_registry = @import("win_registry.zig");
 /// The fontconfig configuration subset discovery reads.
@@ -44,6 +46,8 @@ pub const listFontFiles = discovery.listFontFiles;
 pub const discoverLinux = discovery_linux.discoverLinux;
 pub const discoverWindows = discovery_windows.discoverWindows;
 pub const windowsDefaults = discovery_windows.windowsDefaults;
+pub const discoverMacos = discovery_macos.discoverMacos;
+pub const macosDefaults = discovery_macos.macosDefaults;
 pub const FontDb = db.FontDb;
 pub const FaceInfo = db.FaceInfo;
 pub const FaceRef = db.FaceRef;
@@ -58,6 +62,7 @@ test {
     _ = @import("fallback_test.zig");
     _ = @import("discovery_test.zig");
     _ = @import("discovery_windows_test.zig");
+    _ = @import("discovery_macos_test.zig");
     _ = @import("db_test.zig");
     _ = @import("fallback_db_test.zig");
 }

@@ -6,6 +6,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const log = std.log.scoped(.zg_text);
 
 /// A generic family (or any family) and the families to try for it, as
 /// fontconfig's `<alias>`.
@@ -88,7 +89,8 @@ pub fn freeFileEntries(gpa: Allocator, list: *std.ArrayList(FileEntry)) void {
 /// Directory nesting `listFontFiles` follows.
 pub const max_depth = 8;
 
-/// True for `.ttf .otf .ttc .otc` (any case).
+/// True for `.ttf .otf .ttc .otc` (any case). macOS `.dfont` suitcases
+/// are not font files here: `listFontFiles` skips them with a log line.
 pub fn isFontFile(name: []const u8) bool {
     const ext = std.fs.path.extension(name);
     for ([_][]const u8{ ".ttf", ".otf", ".ttc", ".otc" }) |e| if (std.ascii.eqlIgnoreCase(ext, e)) return true;
@@ -144,6 +146,8 @@ fn walkDir(gpa: Allocator, io: Io, path: []const u8, depth: usize, seen: *std.St
                 const p = try std.fs.path.join(gpa, &.{ path, e.name });
                 errdefer gpa.free(p);
                 try out.append(gpa, .{ .path = p, .size = st.size, .mtime = st.mtime });
+            } else if (std.ascii.eqlIgnoreCase(std.fs.path.extension(e.name), ".dfont")) {
+                log.debug("skipping resource-fork font {s}/{s}", .{ path, e.name });
             },
             else => {},
         }
