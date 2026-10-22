@@ -6,7 +6,8 @@
 //! - optional functions, all taking `*const Props` and `*State`:
 //!   `style(props, theme) Style`, `measure(*MeasureCx, props, state, max_w) Size`,
 //!   `paint(*PaintCx, props, state)`, `event(*EventCx, props, state, *const InputEvent) bool`,
-//!   `a11y(props, state) A11y`, `layoutHash(props) u64`, `paintHash(props) u64`;
+//!   `a11y(props, state) A11y`, `a11yAction(props, state, A11yAction, ?A11yArg) bool`,
+//!   `layoutHash(props) u64`, `paintHash(props) u64`;
 //! - optional `pub const focusable: bool` and `pub const hit_testable: bool`.
 //!
 //! Props are retained per node (slices deep-copied into a node-owned blob)
@@ -90,6 +91,29 @@ pub const A11y = struct {
     text: []const u8 = "",
 };
 
+/// What assistive technology can ask a node to do (E04.F09.S01.T01).
+pub const A11yAction = enum(u8) {
+    invoke,
+    toggle,
+    expand,
+    collapse,
+    select,
+    add_to_selection,
+    remove_from_selection,
+    focus,
+    scroll_into_view,
+    set_value,
+    show_menu,
+};
+
+/// An action's argument: `set_value` takes a number or text,
+/// `scroll_into_view` on a virtual collection a row index.
+pub const A11yArg = union(enum) {
+    number: f64,
+    text: []const u8,
+    index: u64,
+};
+
 /// Type-erased widget operations; one static instance per widget type.
 pub const WidgetVTable = struct {
     name: []const u8,
@@ -112,6 +136,9 @@ pub const WidgetVTable = struct {
     paint: ?*const fn (*paint_cx.PaintCx, *const anyopaque, *anyopaque) void,
     event: ?*const fn (*event_mod.EventCx, *const anyopaque, *anyopaque, *const event_mod.InputEvent) bool,
     a11y: ?*const fn (*const anyopaque, *anyopaque) A11y,
+    /// Performs an accessibility action; false when the widget leaves it
+    /// to the default handling (a click, focus, scrolling into view).
+    a11yAction: ?*const fn (*const anyopaque, *anyopaque, A11yAction, ?A11yArg) bool = null,
 };
 
 /// A node-owned, 16-byte aligned byte buffer holding retained props.
@@ -198,6 +225,9 @@ pub fn vtableOf(comptime W: type) *const WidgetVTable {
         fn a11yFn(p: *const anyopaque, s: *anyopaque) A11y {
             return W.a11y(@ptrCast(@alignCast(p)), @ptrCast(@alignCast(s)));
         }
+        fn a11yActionFn(p: *const anyopaque, s: *anyopaque, a: A11yAction, arg: ?A11yArg) bool {
+            return W.a11yAction(@ptrCast(@alignCast(p)), @ptrCast(@alignCast(s)), a, arg);
+        }
 
         const vt: WidgetVTable = .{
             .name = if (@hasDecl(W, "name")) W.name else @typeName(W),
@@ -217,6 +247,7 @@ pub fn vtableOf(comptime W: type) *const WidgetVTable {
             .paint = if (@hasDecl(W, "paint")) paintFn else null,
             .event = if (@hasDecl(W, "event")) eventFn else null,
             .a11y = if (@hasDecl(W, "a11y")) a11yFn else null,
+            .a11yAction = if (@hasDecl(W, "a11yAction")) a11yActionFn else null,
         };
     }.vt;
 }
