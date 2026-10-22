@@ -22,12 +22,18 @@ pub const db = @import("db.zig");
 pub const db_cache = @import("db_cache.zig");
 /// CSS Fonts 4 style matching and generic families.
 pub const matcher = @import("matcher.zig");
+/// The last-resort glyph (code point in a box).
+pub const last_resort = @import("last_resort.zig");
 
 pub const InstanceId = registry.InstanceId;
 pub const FontRegistry = registry.FontRegistry;
 pub const Fallback = fallback.Fallback;
 pub const ChainId = fallback.ChainId;
 pub const Presentation = fallback.Presentation;
+pub const OsDefaults = fallback.OsDefaults;
+pub const ChainStyle = fallback.ChainStyle;
+pub const last_resort_instance = registry.last_resort_instance;
+pub const lastResortBitmap = last_resort.lastResortBitmap;
 pub const Discovery = discovery.Discovery;
 pub const FileEntry = discovery.FileEntry;
 pub const listFontFiles = discovery.listFontFiles;
@@ -46,4 +52,5 @@ test {
     _ = @import("fallback_test.zig");
     _ = @import("discovery_test.zig");
     _ = @import("db_test.zig");
+    _ = @import("fallback_db_test.zig");
 }

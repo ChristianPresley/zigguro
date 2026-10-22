@@ -188,10 +188,22 @@ pub const QueuePanel = struct {
         ui.close();
 
         ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .shrink = 0 } });
-        const held = p.glue.mode == .review;
-        if (zg_gui.w.button(ui, .{ .label = if (held) "Agent edits: held" else "Agent edits: applied", .variant = .ghost }).clicked) {
-            p.glue.mode = if (held) .auto_apply else .review;
-            p.say(false, "{s}", .{if (held) "Agent edits now land at once (each turn can be undone here)" else "Agent edits now wait here for review"});
+        const label = switch (p.glue.mode) {
+            .auto_apply => "Agent edits: applied",
+            .review => "Agent edits: held",
+            .policy => "Agent edits: by policy",
+        };
+        if (zg_gui.w.button(ui, .{ .label = label, .variant = .ghost }).clicked) {
+            p.glue.mode = switch (p.glue.mode) {
+                .auto_apply => .review,
+                .review => .policy,
+                .policy => .auto_apply,
+            };
+            p.say(false, "{s}", .{switch (p.glue.mode) {
+                .auto_apply => "Agent edits now land at once (each turn can be undone here)",
+                .review => "Agent edits now wait here for review",
+                .policy => "Agent edits now follow the review rules in .zigguro/settings.zon; the rest wait here",
+            }});
             ui.window().markAllDirty();
         }
         ui.close();
@@ -384,6 +396,12 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     _ = t.settle();
     try testing.expectEqual(ReviewGlue.Mode.review, g.mode);
     try testing.expect(t.find(.{ .name = "Agent edits: held" }) != null);
+    try t.click(.{ .role = .button, .name = "Agent edits: held" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.policy, g.mode);
+    try t.click(.{ .role = .button, .name = "Agent edits: by policy" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.auto_apply, g.mode);
 
     // A filter that matches nothing, then a bad one.
     p.filter.setText("nothing-matches") catch unreachable;

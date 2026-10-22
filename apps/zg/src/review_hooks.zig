@@ -9,10 +9,12 @@
 //!   skip. `v` pipes the patch through `$PAGER` when it is set.
 //! - `apply`: edits land at once and are recorded as auto-applied
 //!   changesets, as in the IDE without review mode.
+//! - `policy`: each turn is held, then the workspace's edit policy
+//!   (`review` in `.zigguro/settings.zon`, and `--permission-mode`) lands
+//!   what it auto-applies; the rest waits as with `defer`.
 //!
 //! The agent reads its own pending changes back (the glue's agent view).
-//! `policy` waits for review policies in the glue; the `review` events of
-//! `zg.stream/1` come later.
+//! The `review` events of `zg.stream/1` come later.
 
 const std = @import("std");
 const zg_ai = @import("zg_ai");
@@ -24,15 +26,16 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const model = zg_review.model;
 
-pub const Mode = enum { @"defer", interactive, apply };
+pub const Mode = enum { @"defer", interactive, apply, policy };
 
 pub const help =
     \\
     \\Review:
-    \\  --review defer|interactive|apply
+    \\  --review defer|interactive|apply|policy
     \\        defer (default): each turn's edits wait in the workspace's
     \\        review queue (`zg review list`); interactive: ask about each
-    \\        one when the run ends; apply: write them at once
+    \\        one when the run ends; apply: write them at once; policy: the
+    \\        workspace's review rules (and --permission-mode) decide
     \\
 ;
 
@@ -65,9 +68,18 @@ pub const Review = struct {
     /// Changesets with this id or larger came from this run.
     first: u64,
 
-    pub fn init(gpa: Allocator, io: Io, cwd: []const u8, mode: Mode) !Review {
+    /// `permission_mode` is the name of `zg agent`'s `--permission-mode`.
+    pub fn init(gpa: Allocator, io: Io, cwd: []const u8, mode: Mode, permission_mode: []const u8) !Review {
         const g = try ReviewGlue.create(gpa, io, cwd, .{ .persist = true });
-        g.mode = if (mode == .apply) .auto_apply else .review;
+        g.mode = switch (mode) {
+            .apply => .auto_apply,
+            .policy => .policy,
+            .@"defer", .interactive => .review,
+        };
+        g.permission_mode = if (std.mem.eql(u8, permission_mode, "bypass_permissions"))
+            .bypass
+        else
+            std.meta.stringToEnum(zg_review.policy.policy.Mode, permission_mode) orelse .default;
         return .{ .glue = g, .mode = mode, .first = g.q.next_id.load(.monotonic) };
     }
 
@@ -164,7 +176,8 @@ test "review hooks: --review is taken out of the agent's flags" {
     try std.testing.expectEqual(Mode.apply, (try parseFlag(a, &.{"--review=apply"})).mode);
     try std.testing.expectEqual(Mode.@"defer", (try parseFlag(a, &.{"-p"})).mode);
     try std.testing.expectError(error.Usage, parseFlag(a, &.{"--review"}));
-    try std.testing.expectError(error.Usage, parseFlag(a, &.{ "--review", "policy" }));
+    try std.testing.expectEqual(Mode.policy, (try parseFlag(a, &.{ "--review", "policy" })).mode);
+    try std.testing.expectError(error.Usage, parseFlag(a, &.{ "--review", "maybe" }));
 }
 
 test "review hooks: a held turn is listed, then accepted interactively" {
@@ -179,7 +192,7 @@ test "review hooks: a held turn is listed, then accepted interactively" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    var r: Review = try .init(gpa, io, root, .interactive);
+    var r: Review = try .init(gpa, io, root, .interactive, "default");
     defer r.deinit();
     const fs = r.glue.files();
     const agent: zg_ai.proto.AgentRef = .{ .session = 7 };

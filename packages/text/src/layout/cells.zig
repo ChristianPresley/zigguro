@@ -193,13 +193,19 @@ fn isAsciiCell(c: Cell) bool {
 /// centred when narrower.
 fn placeCell(tl: *TextLayout, arena: Allocator, cell: Cell, col: usize, grid: CellGrid, out: *std.ArrayList(CellGlyph)) !void {
     const id = tl.fb.resolve(cell.style.chain, cell.text, .default);
-    const reg = tl.reg.get(id);
+    const last_resort = id == registry.last_resort_instance;
+    // A last-resort glyph is 1 em of the primary, scaled into its cells.
+    const reg = tl.reg.get(if (last_resort) tl.fb.primary(cell.style.chain) else id);
     const s = grid.size_px / reg.upem;
     var run: GlyphRun = .{};
     var one_gid: [1]GlyphId = undefined;
     var one_adv: [1]i32 = undefined;
     var zero: [1]i32 = .{0};
-    if (cell.text.len == 1 and cell.text[0] < 0x80 and reg.coversAscii()) {
+    if (last_resort) {
+        one_gid[0] = tl.reg.lastResortGlyph(decode.at(cell.text, 0).cp);
+        one_adv[0] = @intFromFloat(reg.upem);
+        run = .{ .gids = &one_gid, .x_adv = &one_adv, .x_off = &zero, .y_off = &zero };
+    } else if (cell.text.len == 1 and cell.text[0] < 0x80 and reg.coversAscii()) {
         // Printable ASCII: the per-instance table, no cmap lookup.
         const info = try tl.asciiInfo(id, 0);
         one_gid[0] = info.gid[cell.text[0]];
@@ -229,7 +235,7 @@ fn placeCell(tl: *TextLayout, arena: Allocator, cell: Cell, col: usize, grid: Ce
         x0 += @round((target - adv) / 2);
     }
     const size_q = glyph_key.quantizeSize(grid.size_px * scale);
-    const mode = modeOf(reg, grid.size_px * scale);
+    const mode: RenderMode = if (last_resort) .gray else modeOf(reg, grid.size_px * scale);
     var pen: f32 = 0;
     for (run.gids, 0..) |gid, k| {
         try out.append(arena, .{

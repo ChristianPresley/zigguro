@@ -371,3 +371,32 @@ test "review_cli: runs next to the IDE on one store" {
     try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "show", "2" }));
     try testing.expect(std.mem.startsWith(u8, fx.out.written(), "#2 Turn 2: more  pending\n"));
 }
+
+test "review_cli: policy explain golden" {
+    var fx: Fx = undefined;
+    fx.init();
+    defer fx.deinit();
+    try fx.tmp.dir.createDirPath(io, ".zigguro");
+    try fx.write(".zigguro/settings.zon",
+        \\.{ .review = .{ .rules = .{
+        \\    .{ .paths = .{"**/*.lock"}, .action = .review_required },
+        \\    .{ .paths = .{"docs/**"}, .max_changed_lines = 50, .action = .auto_accept },
+        \\} } }
+    );
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "docs/a.md", "--lines", "10" }));
+    try testing.expectEqualStrings(
+        \\docs/a.md: auto-apply
+        \\  step: rule (an auto_accept rule matched)
+        \\  rule 1: action auto_accept, paths docs/**, at most 50 changed lines
+        \\  (2 rules in .zigguro/settings.zon; E16 permissions are not consulted here)
+        \\
+    , fx.out.written());
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "docs/a.md" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "docs/a.md: review\n  step: default"));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "build.zig", "--mode", "accept_edits" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "build.zig: review\n  step: protected_path"));
+    try testing.expectEqual(@as(u8, 0), try fx.run(&.{ "policy", "explain", "src/x.zig", "--mode", "plan" }));
+    try testing.expect(std.mem.startsWith(u8, fx.out.written(), "src/x.zig: deny\n"));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "policy", "explain", "a", "--op", "rename" }));
+    try testing.expectEqual(@as(u8, 1), try fx.run(&.{ "policy", "list" }));
+}
