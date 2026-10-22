@@ -157,6 +157,9 @@ pub const Applier = struct {
     /// untouched; a failure while writing is reported in the result.
     pub fn apply(a: *Applier, req: ApplyRequest) anyerror!ApplyResult {
         const cs = a.q.getMut(req.cs) orelse return error.UnknownChangeset;
+        // An SCM proposal's files only show its preview; E09 applies it
+        // (`scm.ScmReviewPort.decide`).
+        if (cs.prov.origin == .scm_proposal) return error.ScmProposal;
         if (cs.state != .pending and cs.state != .partially_applied) return error.NotOpen;
         var arena_state: std.heap.ArenaAllocator = .init(a.gpa);
         defer arena_state.deinit();
