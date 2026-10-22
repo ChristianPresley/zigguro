@@ -10,6 +10,7 @@
         .zg_ai = .{ .path = "../ai" },
         .zg_workspace = .{ .path = "../workspace" },
         .zg_security = .{ .path = "../security" },
+        .zg_scm = .{ .path = "../scm" },
     },
     .paths = .{
         "build.zig",
