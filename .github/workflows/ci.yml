@@ -13,9 +13,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  # Pull requests drop superseded runs; pushes to main let the running one
-  # finish (the newest queued push replaces older queued ones).
+  # Pull requests share a group and drop superseded runs. Every push to main
+  # gets its own group (by SHA), so no merge's run is cancelled or replaced.
+  group: ci-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
