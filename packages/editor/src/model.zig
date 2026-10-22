@@ -14,6 +14,8 @@ pub const document = @import("model/document.zig");
 pub const snapshot = @import("model/snapshot.zig");
 /// Highlighting and structure for documents.
 pub const syntax = @import("model/syntax.zig");
+/// The document registry and LSP sync.
+pub const api = @import("model/api.zig");
 /// The per-document change log.
 pub const change_log = @import("model/change_log.zig");
 
