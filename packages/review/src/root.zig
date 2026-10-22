@@ -16,6 +16,8 @@ pub const policy = @import("policy/root.zig");
 pub const rebase = @import("rebase/root.zig");
 /// Views of the workspace with pending changes taken (read your own).
 pub const overlay = @import("overlay/root.zig");
+/// The review queue's rows, filters and counts.
+pub const queue_view = @import("queue_view/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

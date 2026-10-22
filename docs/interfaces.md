@@ -3708,3 +3708,53 @@ Everything returned is in the caller's arena.
 
 ### Stability
 Unstable until E10 binds it.
+
+## zg_review.queue_view (QueueModel)
+
+### Defined in
+`packages/review/src/queue_view/queue_model.zig` (E12.F03.S01.T01); see `packages/review/docs/queue.md`.
+
+### Implemented by
+E12.F03.S01.T01.
+
+### Consumed by
+The review queue panel (apps/zigguro), `zg review` (E12.F03.S05.T01), the E10 agent tabs and the status bar (`counts`).
+
+### Signature
+```zig
+pub const QueueFilter = struct { states: StateMask = pending_like, origins: ?OriginMask = null, agent: ?[]const u8 = null,
+    path_glob: ?[]const u8 = null, has_conflicts: ?bool = null, text: ?[]const u8 = null };
+pub fn parseFilter(arena, text: []const u8) !QueueFilter;   // "state:pending path:src/** agent:x origin:lsp conflicts:yes free text"
+pub const GroupBy = enum { session, agent, origin, path, none };
+pub const Row = struct { kind: enum { group, changeset, file }, depth: u8, label, cs: ?ChangesetId, file: u32,
+    files: u32, added: u32, removed: u32, conflicts: u32, created_ms: i64, expanded: bool, count: u32 };
+pub const Counts = struct { pending_changesets, pending_hunks, conflicts, approvals: u32, per_session: []const SessionCount };
+pub const QueueModel = struct {
+    pub fn init(gpa, q: *Queue, o: Options{ group_by = .session, conflicts: ?*const ConflictIndex, names: ?SessionNames, now_ms: ?fn () i64 }) !*QueueModel;
+    pub fn deinit(m) void;
+    pub fn setFilter(m, f: QueueFilter) !void;
+    pub fn setGroupBy(m, g: GroupBy) void;
+    pub fn toggle(m, row: usize) !void;
+    pub fn rows(m) []const Row;     // rebuilt lazily after a change
+    pub fn counts(m) Counts;
+    version: u64,
+};
+```
+Deviations from the spec text:
+- The model lives in zg_review (`queue_view`), not in a `ui/` module:
+  it imports no GUI code. `parseFilter` takes an arena.
+- Rows are rebuilt with one sort after a change (O(n log n)), not kept
+  sorted by binary-search insertion. Per-changeset display data is still
+  computed at event time.
+- Not done here: the panel widget, the explorer decoration provider (E08
+  has no provider interface yet), notifications, and E15 commands.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Row labels belong to the model and stay valid until the rows are
+rebuilt.
+
+### Stability
+Unstable until the panel binds it.
