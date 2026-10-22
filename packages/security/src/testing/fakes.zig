@@ -101,7 +101,10 @@ pub const FakeApprovalPort = struct {
     gpa: Allocator,
     /// Answers handed out in order; when empty, `await` answers `deny`.
     answers: std.ArrayList(contracts.Answer) = .empty,
+    /// Requests shown, with their strings copied (callers only lend them
+    /// for the duration of `present`).
     presented: std.ArrayList(contracts.ApprovalRequest) = .empty,
+    strings: std.heap.ArenaAllocator.State = .{},
     cancelled: std.ArrayList(u64) = .empty,
     next_id: u64 = 1,
 
@@ -110,6 +113,7 @@ pub const FakeApprovalPort = struct {
         self.answers.deinit(self.gpa);
         self.presented.deinit(self.gpa);
         self.cancelled.deinit(self.gpa);
+        self.strings.promote(self.gpa).deinit();
     }
 
     /// The port interface.
@@ -121,7 +125,18 @@ pub const FakeApprovalPort = struct {
 
     fn present(ctx: *anyopaque, req: contracts.ApprovalRequest) anyerror!u64 {
         const self: *FakeApprovalPort = @ptrCast(@alignCast(ctx));
-        try self.presented.append(self.gpa, req);
+        var arena = self.strings.promote(self.gpa);
+        defer self.strings = arena.state;
+        const a = arena.allocator();
+        var copy = req;
+        copy.title = try a.dupe(u8, req.title);
+        copy.detail_json = try a.dupe(u8, req.detail_json);
+        if (req.command) |c| copy.command = try a.dupe(u8, c);
+        if (req.rule_suggestion) |r| copy.rule_suggestion = try a.dupe(u8, r);
+        const risk = try a.alloc([]const u8, req.risk.len);
+        for (req.risk, risk) |r, *d| d.* = try a.dupe(u8, r);
+        copy.risk = risk;
+        try self.presented.append(self.gpa, copy);
         defer self.next_id += 1;
         return self.next_id;
     }
@@ -209,10 +224,11 @@ pub const StaticTrust = struct {
 };
 
 /// An audit sink that keeps records in memory (tests only; slices in the
-/// records are borrowed from the caller).
+/// records are borrowed from the caller). Safe to append from many threads.
 pub const MemoryAuditSink = struct {
     gpa: Allocator,
     records: std.ArrayList(contracts.AuditRecord) = .empty,
+    busy: std.atomic.Value(bool) = .init(false),
 
     /// Frees the records.
     pub fn deinit(self: *MemoryAuditSink) void {
@@ -226,6 +242,8 @@ pub const MemoryAuditSink = struct {
 
     fn append(ctx: *anyopaque, rec: *const contracts.AuditRecord) void {
         const self: *MemoryAuditSink = @ptrCast(@alignCast(ctx));
+        while (self.busy.swap(true, .acquire)) std.atomic.spinLoopHint();
+        defer self.busy.store(false, .release);
         self.records.append(self.gpa, rec.*) catch {};
     }
 };
