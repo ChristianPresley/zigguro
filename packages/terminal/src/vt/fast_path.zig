@@ -14,7 +14,10 @@ pub fn scanPrintable(bytes: []const u8) usize {
     while (i + lanes <= bytes.len) : (i += lanes) {
         const v: V = bytes[i..][0..lanes].*;
         const bad = (v < lo) | (v >= hi);
-        if (std.simd.firstTrue(bad)) |k| return i + k;
+        // A lane bit mask and ctz: `std.simd.firstTrue` reduces over an
+        // index vector, which costs more than the scan itself on short runs.
+        const m: std.meta.Int(.unsigned, lanes) = @bitCast(bad);
+        if (m != 0) return i + @ctz(m);
     }
     while (i < bytes.len) : (i += 1) {
         const b = bytes[i];
