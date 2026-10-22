@@ -1,0 +1,118 @@
+# SGR rendition flags: setting, clearing and resetting each attribute.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Pm-m.1CA7
+
+@case SGR 1 sets bold
+@size 10x2
+@send "\e[1mx"
+@expect-cell 1,1 bold
+
+@case SGR 2 sets faint
+@size 10x2
+@send "\e[2mx"
+@expect-cell 1,1 faint
+
+@case SGR 3 sets italic
+@size 10x2
+@send "\e[3mx"
+@expect-cell 1,1 italic
+
+@case SGR 5 sets blink
+@size 10x2
+@send "\e[5mx"
+@expect-cell 1,1 blink
+
+@case SGR 6 sets blink
+@size 10x2
+@send "\e[6mx"
+@expect-cell 1,1 blink
+
+@case SGR 7 sets inverse
+@size 10x2
+@send "\e[7mx"
+@expect-cell 1,1 inverse
+
+@case SGR 8 sets invisible
+@size 10x2
+@send "\e[8mx"
+@expect-cell 1,1 invisible
+
+@case SGR 9 sets strike
+@size 10x2
+@send "\e[9mx"
+@expect-cell 1,1 strike
+
+@case SGR 53 sets overline
+@size 10x2
+@send "\e[53mx"
+@expect-cell 1,1 overline
+
+@case SGR 22 clears bold and faint
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[22mx"
+@expect-cell 1,1 !bold !faint
+
+@case SGR 23 clears italic
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[23mx"
+@expect-cell 1,1 !italic
+
+@case SGR 25 clears blink
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[25mx"
+@expect-cell 1,1 !blink
+
+@case SGR 27 clears inverse
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[27mx"
+@expect-cell 1,1 !inverse
+
+@case SGR 28 clears invisible
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[28mx"
+@expect-cell 1,1 !invisible
+
+@case SGR 29 clears strike
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[29mx"
+@expect-cell 1,1 !strike
+
+@case SGR 55 clears overline
+@size 10x2
+@send "\e[1;2;3;5;7;8;9;53m\e[55mx"
+@expect-cell 1,1 !overline
+
+@case SGR 0 resets every attribute
+@size 10x2
+@send "\e[1;3;4;7;31;42m\e[0mx"
+@expect-cell 1,1 plain
+
+@case An empty SGR resets
+@size 10x2
+@send "\e[1;31m\e[mx"
+@expect-cell 1,1 plain
+
+@case SGR with an empty first param resets then applies
+@size 10x2
+@send "\e[1m\e[;3mx"
+@expect-cell 1,1 italic !bold
+
+@case Attributes combine in one sequence
+@size 10x2
+@send "\e[1;3;9mx"
+@expect-cell 1,1 bold italic strike
+
+@case Attributes accumulate across sequences
+@size 10x2
+@send "\e[1m\e[3mx"
+@expect-cell 1,1 bold italic
+
+@case Unknown SGR params are ignored
+@size 10x2
+@send "\e[1;666;3mx"
+@expect-cell 1,1 bold italic
+
+@case Text before an SGR keeps its rendition
+@size 10x2
+@send "a\e[1mb"
+@expect-cell 1,1 plain
+@expect-cell 1,2 bold
