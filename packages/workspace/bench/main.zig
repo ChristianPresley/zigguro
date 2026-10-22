@@ -120,4 +120,62 @@ fn register(b: *bench.Bench) !void {
             bench.doNotOptimizeAway(n);
         }
     }.f);
+
+    // Budget: 100 k files < 350 ms warm (E08.F02.S01.T01). The tree is
+    // generated once under .zig-cache and reused; the first run warms the
+    // page cache.
+    const scan_dir = try scanTree(b.io, a);
+    // The 1-worker run is the baseline for the scaling criterion (1 -> 8
+    // workers >= 4x).
+    try b.run("workspace/scan_100k", ScanCtx{ .abs = scan_dir, .workers = 0 }, scanOnce);
+    try b.run("workspace/scan_100k_1worker", ScanCtx{ .abs = scan_dir, .workers = 1 }, scanOnce);
+}
+
+const ScanCtx = struct { abs: []const u8, workers: u8 };
+
+fn scanOnce(c: ScanCtx, s: *bench.State) void {
+    for (0..s.iterations()) |_| {
+        // A real multi-threaded allocator: page_allocator would serialize
+        // the workers on mmap.
+        const gpa = std.heap.smp_allocator;
+        const ps = zg_workspace.PathStore.init(gpa, s.ioHandle()) catch @panic("oom");
+        defer ps.deinit();
+        const ign = zg_workspace.IgnoreStack.init(gpa, s.ioHandle(), 0) catch @panic("oom");
+        defer ign.deinit();
+        const root = ign.addRoot() catch @panic("oom");
+        ps.addRoot(root, false) catch @panic("oom");
+        const job = zg_workspace.Scanner.start(gpa, s.ioHandle(), .{ .paths = ps, .ignore = ign, .root = root, .abs_path = c.abs }, "", .{ .max_workers = c.workers }) catch @panic("scan");
+        job.wait();
+        const snap = ps.snapshot();
+        defer snap.release();
+        if (snap.fileCount() != scan_files + 1) @panic("scan incomplete"); // + the marker
+        job.deinit();
+    }
+}
+
+const scan_files = 100 * 10 * 10 * 10;
+
+/// packages/p<0..99>/<dir>/d<0..9>/f<0..9>.zig: 100 k files in 11 k
+/// directories, created once.
+fn scanTree(io: std.Io, a: std.mem.Allocator) ![]const u8 {
+    const cwd = std.Io.Dir.cwd();
+    const rel = ".zig-cache/bench/scan_100k";
+    var root = try cwd.createDirPathOpen(io, rel, .{});
+    defer root.close(io);
+    if (root.statFile(io, "complete", .{})) |_| {} else |_| {
+        const dirs = [_][]const u8{ "src", "lib", "test", "components", "utils", "internal", "api", "core", "views", "models" };
+        var buf: [256]u8 = undefined;
+        for (0..100) |p| for (dirs) |d| for (0..10) |k| {
+            const dir_rel = try std.fmt.bufPrint(&buf, "packages/p{d}/{s}/d{d}", .{ p, d, k });
+            var dir = try root.createDirPathOpen(io, dir_rel, .{});
+            defer dir.close(io);
+            for (0..10) |i| {
+                var nb: [32]u8 = undefined;
+                try dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&nb, "f{d}.zig", .{i}), .data = "" });
+            }
+        };
+        try root.writeFile(io, .{ .sub_path = "complete", .data = "" });
+    }
+    const z = try cwd.realPathFileAlloc(io, rel, a);
+    return z;
 }
