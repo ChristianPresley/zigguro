@@ -23,5 +23,6 @@ pub const all = [_]Package{
     .{ .name = "zg_core", .dir = "packages/core", .has_bench = true },
     .{ .name = "zg_jsonrpc", .dir = "packages/jsonrpc", .has_bench = true },
     .{ .name = "zg_net", .dir = "packages/net", .has_bench = true },
+    .{ .name = "zg_terminal", .dir = "packages/terminal", .has_bench = true },
     // pkgtool:insert
 };
