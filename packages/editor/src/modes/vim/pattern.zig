@@ -6,9 +6,10 @@
 //! word bounds, character classes (`\s`, `\d`, `\w`, `\a`, `\l`, `\u`, `\x`,
 //! `\o`, `\h` and their `\_` forms), collections and character codes.
 //! Vim's classes and negated collections never match a line break unless
-//! written with `\_`, so they become explicit ASCII sets here. Look-around
-//! (`\@`), `\zs`/`\ze`, back references and the position atoms (`\%23l`,
-//! `\%V`) have no zg_regex equivalent and are reported with their span.
+//! written with `\_`, so they become explicit ASCII sets here. `\zs`/`\ze`
+//! at the top level become the named group `match_group`. Look-around
+//! (`\@`), back references and the position atoms (`\%23l`, `\%V`) have no
+//! zg_regex equivalent and are reported with their span.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -27,6 +28,10 @@ pub const Flags = struct {
     smartcase: bool = false,
     diag: ?*Diag = null,
 };
+
+/// The capture group `\zs`/`\ze` translate to; when the compiled regex
+/// has it, its span is the match.
+pub const match_group = "zg_vim_match";
 
 const Magic = enum { very, magic, nomagic, very_nomagic };
 
@@ -70,6 +75,12 @@ const Translator = struct {
     /// The last thing emitted was a multi (a second one is an error).
     after_multi: bool = false,
     depth: u32 = 0,
+    /// Output offset where `\zs` opened the match group.
+    zs: ?usize = null,
+    /// `\ze` closed it.
+    ze: bool = false,
+    /// A `\|` at the top level (with `\zs`/`\ze` that is not supported).
+    top_branch: ?usize = null,
 
     fn fail(t: *Translator, err: TranslateError, start: usize, msg: []const u8) TranslateError {
         if (t.diag) |d| d.* = .{ .start = start, .end = @min(t.i, t.src.len), .msg = msg };
@@ -126,6 +137,7 @@ const Translator = struct {
                     t.after_multi = false;
                 },
                 '|' => {
+                    if (t.depth == 0) t.top_branch = start;
                     try t.emit("|");
                     t.can_repeat = false;
                     branch_start = true;
@@ -160,10 +172,7 @@ const Translator = struct {
                     if (t.atBranchEnd()) try t.atom("$", false) else try t.literal('$');
                 },
                 '_' => try t.underscore(start),
-                'z' => {
-                    if (t.i < t.src.len) t.i += 1;
-                    return t.fail(error.Unsupported, start, "\\z atoms (\\zs, \\ze) are not supported");
-                },
+                'z' => try t.zAtom(start),
                 '1'...'9' => return t.fail(error.Unsupported, start, "back references are not supported"),
                 'c' => t.force_case = true,
                 'C' => t.force_case = false,
@@ -192,6 +201,41 @@ const Translator = struct {
             }
         }
         if (t.depth != 0) return t.fail(error.Syntax, t.src.len, "unmatched \\(");
+        if (t.zs != null or t.ze) {
+            if (t.top_branch) |b| {
+                t.i = b + 2;
+                return t.fail(error.Unsupported, b, "\\| with \\zs or \\ze is not supported");
+            }
+            if (!t.ze) try t.emit(")");
+        }
+    }
+
+    /// `\zs` and `\ze` at the top level: the text between them (or from
+    /// the start, or to the end) becomes the capture group named
+    /// `match_group`, which callers use as the match.
+    fn zAtom(t: *Translator, start: usize) !void {
+        const which: u8 = if (t.i < t.src.len) t.src[t.i] else 0;
+        if (which != 's' and which != 'e') {
+            if (t.i < t.src.len) t.i += 1;
+            return t.fail(error.Unsupported, start, "this \\z atom is not supported");
+        }
+        t.i += 1;
+        if (t.depth != 0) return t.fail(error.Unsupported, start, "\\zs and \\ze inside a group are not supported");
+        if (which == 's') {
+            if (t.zs != null or t.ze) return t.fail(error.Unsupported, start, "a second \\zs (or one after \\ze) is not supported");
+            t.zs = t.out.items.len;
+            try t.emit("(?P<" ++ match_group ++ ">");
+        } else {
+            if (t.ze) return t.fail(error.Unsupported, start, "a second \\ze is not supported");
+            if (t.zs == null) {
+                t.zs = 0;
+                try t.out.insertSlice(t.gpa, 0, "(?P<" ++ match_group ++ ">");
+            }
+            try t.emit(")");
+            t.ze = true;
+        }
+        t.can_repeat = false;
+        t.after_multi = false;
     }
 
     fn multiDone(t: *Translator) void {
@@ -555,6 +599,10 @@ test "vim: pattern translation table" {
         .{ .vim = "x\\cy", .re = "(?i)xy" },
         .{ .vim = "a.b c", .re = "a.b c" },
         .{ .vim = "a$\\|b", .re = "a$|b" },
+        .{ .vim = "foo\\zsbar", .re = "foo(?P<zg_vim_match>bar)" },
+        .{ .vim = "foo\\zebar", .re = "(?P<zg_vim_match>foo)bar" },
+        .{ .vim = "a\\zsb\\zec", .re = "a(?P<zg_vim_match>b)c" },
+        .{ .vim = "\\(x\\)\\zs\\(y\\)", .re = "(x)(?P<zg_vim_match>(y))" },
     };
     var failed = false;
     for (cases) |cs| {
@@ -587,8 +635,10 @@ test "vim: pattern translation table" {
 
     // Unsupported atoms and syntax errors report their span.
     const bad = [_]struct { vim: []const u8, err: TranslateError, start: usize, end: usize }{
-        .{ .vim = "foo\\zsbar", .err = error.Unsupported, .start = 3, .end = 6 },
-        .{ .vim = "a\\zeb", .err = error.Unsupported, .start = 1, .end = 4 },
+        .{ .vim = "\\(a\\zsb\\)", .err = error.Unsupported, .start = 3, .end = 6 },
+        .{ .vim = "a\\zsb\\zsc", .err = error.Unsupported, .start = 5, .end = 8 },
+        .{ .vim = "a\\zsb\\|c", .err = error.Unsupported, .start = 5, .end = 7 },
+        .{ .vim = "a\\zxb", .err = error.Unsupported, .start = 1, .end = 4 },
         .{ .vim = "\\(a\\)\\@<=b", .err = error.Unsupported, .start = 5, .end = 9 },
         .{ .vim = "a\\@=", .err = error.Unsupported, .start = 1, .end = 4 },
         .{ .vim = "x\\@!y", .err = error.Unsupported, .start = 1, .end = 4 },

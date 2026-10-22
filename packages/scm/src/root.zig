@@ -78,7 +78,7 @@ pub const ai = struct {
     pub const agent_tools = @import("ai/agent_tools.zig");
     /// The files a proposal changes, for review items.
     pub const proposal_files = @import("ai/proposal_files.zig");
-    /// Approving an edited description.
+    /// Drafting change descriptions (and approving edited ones).
     pub const describe = @import("ai/describe.zig");
     /// Proposing and applying conflict resolutions.
     pub const resolve = @import("ai/resolve.zig");

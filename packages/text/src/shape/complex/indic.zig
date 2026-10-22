@@ -218,7 +218,7 @@ fn overrideFeatures(b: *PlanBuilder) Allocator.Error!void {
     try b.addGsubPause(clearSyllables);
 }
 
-fn dataInit(p: *ShapePlan) void {
+fn dataInit(p: *ShapePlan) Allocator.Error!void {
     inline for (@typeInfo(Mask).@"enum".fields) |f| p.shaper_masks[f.value] = p.mask1(tag(f.name[0..4]));
 }
 

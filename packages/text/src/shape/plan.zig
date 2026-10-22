@@ -75,6 +75,9 @@ pub const FeatureMap = struct {
     one: u32,
     /// The stage it runs in, per table (`no_stage` when absent).
     stage: [2]u16 = .{ no_stage, no_stage },
+    /// Kept for its fallback: neither table has it (HarfBuzz's
+    /// `needs_fallback`).
+    needs_fallback: bool = false,
 
     pub const no_stage = std.math.maxInt(u16);
 };
@@ -90,8 +93,9 @@ pub const ComplexShaper = struct {
     /// Adjusts the common features after they are added (before the
     /// user's).
     overrideFeatures: ?*const fn (b: *PlanBuilder) Allocator.Error!void = null,
-    /// Called once the plan is compiled (masks known).
-    dataInit: ?*const fn (plan: *ShapePlan) void = null,
+    /// Called once the plan is compiled (masks known); may allocate from
+    /// the plan's arena.
+    dataInit: ?*const fn (plan: *ShapePlan) Allocator.Error!void = null,
     /// Sets per-glyph feature masks before GSUB.
     setupMasks: ?*const fn (plan: *const ShapePlan, buf: *Buffer) void = null,
     /// Reorders marks within a ccc run [start, end) after normalization.
@@ -105,6 +109,9 @@ pub const ComplexShaper = struct {
     decompose: ?@import("normalize.zig").DecomposeFn = null,
     /// Replaces canonical composition when recomposing (null: compose).
     compose: ?@import("normalize.zig").ComposeFn = null,
+    /// Runs last, on the positioned glyphs in visual order (`dir` is the
+    /// direction the run was shaped in).
+    postprocessGlyphs: ?*const fn (plan: *const ShapePlan, buf: *Buffer, dir: Direction) Allocator.Error!void = null,
     zero_marks: ZeroMarks = .gdef_late,
     fallback_position: bool = true,
 };
@@ -288,6 +295,9 @@ pub const ShapePlan = struct {
     coords: []const i16 = &.{},
     /// Complex-shaper data (Arabic: per-form masks).
     shaper_masks: [8]u32 = @splat(0),
+    /// More complex-shaper data, in the plan's arena (Arabic: the fallback
+    /// lookups).
+    shaper_data: ?*const anyopaque = null,
 
     /// Builds the plan. `user` features are copied; a null `complex_in`
     /// picks the complex shaper from the script and the chosen GSUB script.
@@ -401,7 +411,7 @@ pub const ShapePlan = struct {
             st.regionScalars(inst.coordsSlice(), sc);
             plan.var_scalars = sc;
         };
-        if (complex.dataInit) |f| f(&plan);
+        if (complex.dataInit) |f| try f(&plan);
         plan.space_participates = plan.computeSpaceParticipates();
         return plan;
     }
@@ -513,13 +523,13 @@ pub const ShapePlan = struct {
             if (!found and !info.flags.has_fallback) continue;
             var fm: FeatureMap = undefined;
             if (uses_global) {
-                fm = .{ .tag = info.tag, .mask = global_mask, .shift = 0, .one = global_mask, .stage = info.stage };
+                fm = .{ .tag = info.tag, .mask = global_mask, .shift = 0, .one = global_mask, .stage = info.stage, .needs_fallback = !found };
             } else {
                 const shift: u5 = @intCast(next_bit);
                 const mask: u32 = @intCast((@as(u64, 1) << @intCast(next_bit + bits)) - (@as(u64, 1) << shift));
                 next_bit += bits;
                 p.global_mask |= (info.default_value << shift) & mask;
-                fm = .{ .tag = info.tag, .mask = mask, .shift = shift, .one = (@as(u32, 1) << shift) & mask, .stage = info.stage };
+                fm = .{ .tag = info.tag, .mask = mask, .shift = shift, .one = (@as(u32, 1) << shift) & mask, .stage = info.stage, .needs_fallback = !found };
             }
             try features.append(a, fm);
             try mapped.append(a, .{ .info = info, .index = index, .mask = fm.mask });

@@ -38,7 +38,7 @@ test "scan test fonts metadata" {
     var d = try scanTestFonts(gpa, &stats);
     defer d.deinit(gpa);
     try testing.expectEqual(0, stats.failed);
-    try testing.expectEqual(20, stats.added);
+    try testing.expectEqual(22, stats.added);
 
     const jbm = faceNamed(&d, "jetbrains mono").?;
     try testing.expect(jbm.monospace);

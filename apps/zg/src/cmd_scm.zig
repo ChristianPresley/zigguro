@@ -6,7 +6,9 @@
 //! - `zg scm lane status` (E09.F06.S03.T01) lists the lanes with their
 //!   status and landing ticket.
 //!
-//! Both exit 2 on a usage error or when there is no repository.
+//! - `zg scm ai describe|resolve` (E09.F06) are in `cmd_scm_ai.zig`.
+//!
+//! `fsck` and `lane status` exit 2 on a usage error or when there is no repository.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -18,6 +20,7 @@ const Allocator = std.mem.Allocator;
 pub const usage =
     \\Usage: zg scm debug fsck [--repo DIR] [--json]
     \\       zg scm lane status [--repo DIR] [--json]
+    \\       zg scm ai describe|resolve [REV]   (zg scm ai --help)
     \\
     \\Checks the object store: index checksums and order, that every
     \\record hashes to its ID, that trees, changes and chunked blobs decode,
@@ -74,7 +77,7 @@ pub fn runIn(gpa: Allocator, io: Io, cwd: Io.Dir, argv: []const []const u8, out:
         }
     }
 
-    var repo_dir = (if (repo) |r| openRepoAt(io, cwd, r) else findRepo(io, cwd)) catch |e| switch (e) {
+    var repo_dir = locate(io, cwd, repo) catch |e| switch (e) {
         error.NoRepository => {
             try err.writeAll("zg scm: no zg repository here (looked for .zg/repo/store)\n");
             return 2;
@@ -92,6 +95,12 @@ pub fn runIn(gpa: Allocator, io: Io, cwd: Io.Dir, argv: []const []const u8, out:
     defer report.deinit();
     if (json) try writeJson(&report, out) else try writeText(&report, out);
     return if (report.clean()) 0 else 1;
+}
+
+/// The repository directory (`.zg/repo`) at `path`, or the nearest one
+/// at or above `cwd`; `error.NoRepository` when there is none.
+pub fn locate(io: Io, cwd: Io.Dir, path: ?[]const u8) !Io.Dir {
+    return if (path) |r| openRepoAt(io, cwd, r) else findRepo(io, cwd);
 }
 
 /// The repository at `path`: a workspace root or the `.zg/repo`
@@ -161,7 +170,7 @@ fn repoDir(io: Io, zg: Io.Dir) !Io.Dir {
 
 /// `store/` under `repo` when it has a `seg/` directory (fsck must not
 /// create a store).
-fn storeIn(io: Io, repo: Io.Dir) !?Io.Dir {
+pub fn storeIn(io: Io, repo: Io.Dir) !?Io.Dir {
     var s = repo.openDir(io, "store", .{}) catch return null;
     var seg = s.openDir(io, "seg", .{}) catch {
         s.close(io);
