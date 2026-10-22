@@ -353,3 +353,30 @@ test "fuzz: dock" {
         }
     }.one, .{});
 }
+
+test "openIn within its group reorders inside the pinned or unpinned run" {
+    var m = try DockModel.init(gpa);
+    defer m.deinit();
+    const g = center(&m);
+    var ps: [4]PanelRef = undefined;
+    for (&ps) |*p| p.* = try open(&m, g);
+    try m.setPinned(ps[3], true);
+    // d | a b c, active d.
+    try testing.expectEqualSlices(PanelRef, &.{ ps[3], ps[0], ps[1], ps[2] }, tabs(&m, g));
+    // Drop a after c (index 4 counts a at its old place).
+    try m.openIn(ps[0], g, 4, .{});
+    try testing.expectEqualSlices(PanelRef, &.{ ps[3], ps[1], ps[2], ps[0] }, tabs(&m, g));
+    try testing.expectEqual(@as(u32, 3), m.group(g).?.active);
+    // Unpinned tabs stay after the pinned ones.
+    try m.openIn(ps[2], g, 0, .{});
+    try testing.expectEqualSlices(PanelRef, &.{ ps[3], ps[2], ps[1], ps[0] }, tabs(&m, g));
+    // A pinned tab stays among the pinned.
+    try m.openIn(ps[3], g, 4, .{ .activate = false });
+    try testing.expectEqualSlices(PanelRef, &.{ ps[3], ps[2], ps[1], ps[0] }, tabs(&m, g));
+    try testing.expectEqual(ps[2], tabs(&m, g)[m.group(g).?.active]);
+    // One undo step per reorder.
+    try testing.expect(try m.undo());
+    try testing.expect(try m.undo());
+    try testing.expectEqualSlices(PanelRef, &.{ ps[3], ps[1], ps[2], ps[0] }, tabs(&m, g));
+    try m.validate();
+}
