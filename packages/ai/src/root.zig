@@ -169,14 +169,18 @@ pub const tools = struct {
         _ = @import("tools/builtin/web_test.zig");
     }
 };
-/// Plan mode: the read-only allowlist and `exit_plan_mode` (E10.F09.S02).
+/// Plan mode, todos and questions to the user (E10.F09.S02).
 pub const plan = struct {
     pub const readonly = @import("plan/readonly.zig");
     pub const plan_mode = @import("plan/plan_mode.zig");
     pub const PlanMode = plan_mode.PlanMode;
+    pub const todos = @import("plan/todos.zig");
+    pub const ask_user = @import("plan/ask_user.zig");
     test {
         _ = readonly;
         _ = @import("plan/plan_mode_test.zig");
+        _ = @import("plan/todos_test.zig");
+        _ = @import("plan/ask_user_test.zig");
     }
 };
 /// Subagents: definitions, the runner and the `task` tool (E10.F09.S01).
