@@ -16,10 +16,17 @@
 //! the platform thread outside the mutex, compose rules load when the
 //! thread starts, and key repeat runs on a timerfd in the thread's epoll.
 //!
-//! Cursors, clipboard and drag-and-drop, IME, decorations and activation
-//! come with their own tasks (E01.F04.S02, E01.F04.S03); until then the
-//! related commands are accepted and ignored (cursor, IME, hit test) or
-//! return `error.Unsupported`.
+//! Selections (E01.F04.S03.T02): `wl_data_device` for the clipboard and
+//! `zwp_primary_selection_device_v1` for the primary selection, with the
+//! bookkeeping in `data_device.zig`. Every pipe transfer runs on the
+//! platform thread's epoll (`linux/pipe_transfer.zig`); reads time out
+//! after `InitOptions.transfer_timeout_ns` with empty data. While we own
+//! a selection, reads are answered from our own copy.
+//!
+//! Cursors, drag-and-drop, IME, decorations and activation come with
+//! their own tasks (E01.F04.S02, E01.F04.S03); until then the related
+//! commands are accepted and ignored (cursor, IME, hit test) or return
+//! `error.Unsupported`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -51,6 +58,8 @@ const scale = @import("scale.zig");
 const ShmPresenter = @import("shm.zig").ShmPresenter;
 const dmabuf = @import("dmabuf.zig");
 const seat_mod = @import("seat.zig");
+const data_device = @import("data_device.zig");
+const pipe_transfer = @import("../linux/pipe_transfer.zig");
 const Keymap = @import("../xkb/keymap.zig").Keymap;
 const compose = @import("../xkb/compose.zig");
 
@@ -80,13 +89,15 @@ pub const InitOptions = struct {
     /// Ask wp_presentation for feedback on every present
     /// (`Event.present_feedback`).
     presentation_feedback: bool = true,
+    /// A selection transfer that has not finished by then fails.
+    transfer_timeout_ns: u64 = 5 * std.time.ns_per_s,
 };
 
 /// Ring capacity.
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source };
 
 /// Keymaps larger than this are refused.
 const max_keymap_bytes = 16 * 1024 * 1024;
@@ -149,8 +160,24 @@ pub const WaylandBackend = struct {
     /// Events produced under the mutex, moved to `ring` by the platform
     /// thread.
     staged: std.ArrayList(Event) = .empty,
-    /// Our own selections, answering reads until the data device lands.
+    /// Our own selections: what our sources send, and what reads return
+    /// while we own them (or when there is no data device).
     clip: [2][]ClipItemOwned = .{ &.{}, &.{} },
+    /// Selection globals and devices (on `seat_id`).
+    data_manager: ?wl.wl_data_device_manager.Id = null,
+    data_dev: ?wl.wl_data_device.Id = null,
+    primary_manager: ?wl.zwp_primary_selection_device_manager_v1.Id = null,
+    primary_dev: ?wl.zwp_primary_selection_device_v1.Id = null,
+    /// Offers from the compositor. Guarded by the mutex.
+    offers: data_device.Offers = .{},
+    /// Our current source object per selection, while we own it.
+    sources: [2]?u32 = .{ null, null },
+    /// Pipe transfers in flight. Guarded by the mutex.
+    transfers: pipe_transfer.Transfers = undefined,
+    finished: std.ArrayList(pipe_transfer.Finished) = .empty,
+    /// Payloads over the arena's limit, by id. Guarded by the mutex.
+    large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
+    next_large: u32 = 0,
 
     ring: EventRing(ring_capacity),
     arena: PayloadArena,
@@ -228,6 +255,20 @@ pub const WaylandBackend = struct {
         b.presentation = try registry.bind(wl.wp_presentation, 1, 2, b.handler(.presentation));
         // Capabilities arrive with the roundtrip below.
         b.seat_id = try registry.bind(wl.wl_seat, 5, 9, b.handler(.seat));
+        b.data_manager = try registry.bind(wl.wl_data_device_manager, 1, 3, null);
+        b.primary_manager = try registry.bind(wl.zwp_primary_selection_device_manager_v1, 1, 1, null);
+        if (b.seat_id) |sid| {
+            if (b.data_manager) |m| {
+                const d = try conn.newIdVersion(wl.wl_data_device, conn.version(@intFromEnum(m)), b.handler(.data_device));
+                try wl.wl_data_device_manager.getDataDevice(conn, m, d, sid);
+                b.data_dev = d;
+            }
+            if (b.primary_manager) |m| {
+                const d = try conn.newIdVersion(wl.zwp_primary_selection_device_v1, 1, b.handler(.primary_device));
+                try wl.zwp_primary_selection_device_manager_v1.getDevice(conn, m, d, sid);
+                b.primary_dev = d;
+            }
+        }
         if (opts.environ_map) |env| {
             var copy: std.process.Environ.Map = .init(gpa);
             for (compose_env_keys) |k| if (env.get(k)) |v| try copy.put(k, v);
@@ -243,6 +284,8 @@ pub const WaylandBackend = struct {
         if (linux.errno(ep) != .SUCCESS) return error.SystemResources;
         b.epfd = @intCast(ep);
         errdefer _ = linux.close(b.epfd);
+        b.transfers = .{ .gpa = gpa, .epfd = b.epfd };
+        errdefer b.transfers.deinit();
         try b.watch(conn.pollFd(), 0);
         try b.watch(b.thread_wake.handle().fd, 1);
         const tfd = linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true, .NONBLOCK = true });
@@ -406,13 +449,36 @@ pub const WaylandBackend = struct {
 
     /// See `Platform.VTable.payload`.
     pub fn payload(b: *WaylandBackend, s: types.PayloadSlice) []const u8 {
-        if (s.large) return &.{};
-        return b.arena.get(s);
+        if (!s.large) return b.arena.get(s);
+        b.lock();
+        defer b.unlock();
+        return b.large.get(s.off) orelse &.{};
     }
 
-    /// See `Platform.VTable.release`. Large payloads come with the data
-    /// device; nothing to free yet.
-    pub fn release(_: *WaylandBackend, _: types.PayloadSlice) void {}
+    /// See `Platform.VTable.release`.
+    pub fn release(b: *WaylandBackend, s: types.PayloadSlice) void {
+        if (!s.large) return;
+        b.lock();
+        defer b.unlock();
+        if (b.large.fetchRemove(s.off)) |kv| b.gpa.free(kv.value);
+    }
+
+    /// `bytes` as a payload: inline in the arena, else a large payload
+    /// that takes ownership of `bytes`. Mutex held. `bytes` is freed on
+    /// the inline path and on error.
+    fn putOwned(b: *WaylandBackend, bytes: []u8) types.PayloadSlice {
+        if (b.arena.put(bytes)) |s| {
+            b.gpa.free(bytes);
+            return s;
+        } else |_| {}
+        const id = b.next_large;
+        b.large.put(b.gpa, id, bytes) catch {
+            b.gpa.free(bytes);
+            return .empty;
+        };
+        b.next_large = (b.next_large + 1) & std.math.maxInt(u30);
+        return .{ .off = @intCast(id), .large = true, .len = @intCast(bytes.len) };
+    }
 
     /// See `Platform.VTable.monitors`. The first output is reported as
     /// primary: Wayland has no such notion.
@@ -474,6 +540,7 @@ pub const WaylandBackend = struct {
         b.slots.clearRetainingCapacity();
         b.conn.flush() catch {};
         b.unlock();
+        b.transfers.deinit();
         if (b.epfd >= 0) _ = linux.close(b.epfd);
         if (b.repeat_fd >= 0) _ = linux.close(b.repeat_fd);
         b.freeState();
@@ -504,6 +571,11 @@ pub const WaylandBackend = struct {
         b.compose_table = null;
         if (b.compose_env) |*e| e.deinit();
         b.compose_env = null;
+        b.offers.deinit(gpa);
+        b.finished.deinit(gpa);
+        var it = b.large.valueIterator();
+        while (it.next()) |v| gpa.free(v.*);
+        b.large.deinit(gpa);
     }
 
     // ---- presentation (from shm.zig, mutex held) ----
@@ -623,16 +695,9 @@ pub const WaylandBackend = struct {
                 }
                 freeClip(b.gpa, b.clip[@intFromEnum(t.which)]);
                 b.clip[@intFromEnum(t.which)] = items;
+                try b.offerSelection(t.which);
             },
-            .clipboard_read => |t| {
-                // Only our own selection until the data device (E01.F04.S03).
-                var data: types.PayloadSlice = .empty;
-                for (b.clip[@intFromEnum(t.which)]) |it| if (it.mime == t.mime) {
-                    data = b.arena.put(it.data) catch .empty;
-                    break;
-                };
-                try b.stage(.{ .clipboard_data = .{ .request = t.request, .data = data, .mime = t.mime } });
-            },
+            .clipboard_read => |t| try b.readSelection(t.which, t.mime, t.request),
             .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
     }
@@ -655,14 +720,16 @@ pub const WaylandBackend = struct {
     // ---- the platform thread ----
 
     fn threadMain(b: *WaylandBackend) void {
+        pipe_transfer.blockSigpipe();
         b.loadCompose();
         var moving: std.ArrayList(Event) = .empty;
         defer moving.deinit(b.gpa);
-        var evs: [4]linux.epoll_event = undefined;
+        var evs: [16]linux.epoll_event = undefined;
         while (!b.stopping.load(.acquire)) {
             if (!b.dead.load(.acquire)) b.pump() catch |err| b.fail(err);
             // Move staged events out under the lock, push them without it.
             b.lock();
+            b.finishTransfersLocked(null);
             std.mem.swap(std.ArrayList(Event), &moving, &b.staged);
             const timeout = b.nextTimeoutLocked();
             b.unlock();
@@ -676,9 +743,29 @@ pub const WaylandBackend = struct {
             for (evs[0..rc]) |e| switch (e.data.u64) {
                 1 => b.thread_wake.consume(),
                 2 => b.onRepeatTimer(),
-                else => {},
+                else => |tag| if (pipe_transfer.Transfers.owns(tag)) b.serviceTransfers(tag),
             };
         }
+    }
+
+    /// Drives transfer `tag` (if any), fails overdue ones, and answers
+    /// finished reads with `clipboard_data`. The locked variant runs
+    /// every loop iteration, so deadlines are checked after each wait.
+    fn serviceTransfers(b: *WaylandBackend, tag: u64) void {
+        b.lock();
+        defer b.unlock();
+        b.finishTransfersLocked(tag);
+    }
+
+    fn finishTransfersLocked(b: *WaylandBackend, tag: ?u64) void {
+        if (tag) |t| b.transfers.onReady(t, &b.finished) catch |err| log.warn("selection transfer: {t}", .{err});
+        b.transfers.expire(b.nowNs(), &b.finished) catch {};
+        for (b.finished.items) |f| {
+            if (f.dir != .read) continue;
+            const data: types.PayloadSlice = if (f.ok) b.putOwned(f.data) else .empty;
+            b.stage(.{ .clipboard_data = .{ .request = f.request, .data = data, .mime = f.mime } }) catch {};
+        }
+        b.finished.clearRetainingCapacity();
     }
 
     /// Reads and dispatches everything available, acks configures whose
@@ -703,9 +790,10 @@ pub const WaylandBackend = struct {
         try b.conn.flush();
     }
 
-    /// Milliseconds until the earliest overdue ack, or -1. Mutex held.
+    /// Milliseconds until the earliest overdue ack or transfer, or -1.
+    /// Mutex held.
     fn nextTimeoutLocked(b: *WaylandBackend) i32 {
-        var next: ?u64 = null;
+        var next: ?u64 = b.transfers.nextDeadline();
         for (b.slots.items) |s| if (s.win.pending_ack != null) {
             next = if (next) |n| @min(n, s.win.ack_deadline_ns) else s.win.ack_deadline_ns;
         };
@@ -970,7 +1058,184 @@ pub const WaylandBackend = struct {
                     .shape, .orientation => {},
                 }
             },
+            .data_device => {
+                const ev = try wl.wl_data_device.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .data_offer => |o| {
+                        c.setHandler(@intFromEnum(o.id), b.handler(.data_offer));
+                        try b.offers.add(b.gpa, @intFromEnum(o.id), .clipboard);
+                    },
+                    .selection => |sel| try b.onSelection(.clipboard, if (sel.id) |i| @intFromEnum(i) else null),
+                    // Drag and drop is E01.F04.S03.T03: drop its offers.
+                    .enter => |e| if (e.id) |i| b.dropOffer(@intFromEnum(i)),
+                    .leave, .motion, .drop => {},
+                }
+            },
+            .primary_device => {
+                const ev = try wl.zwp_primary_selection_device_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .data_offer => |o| {
+                        c.setHandler(@intFromEnum(o.offer), b.handler(.primary_offer));
+                        try b.offers.add(b.gpa, @intFromEnum(o.offer), .primary);
+                    },
+                    .selection => |sel| try b.onSelection(.primary, if (sel.id) |i| @intFromEnum(i) else null),
+                }
+            },
+            .data_offer => {
+                const ev = try wl.wl_data_offer.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .offer => |o| try b.offers.addMime(b.gpa, obj, o.mime_type),
+                    .source_actions, .action => {},
+                }
+            },
+            .primary_offer => switch (try wl.zwp_primary_selection_offer_v1.decodeEvent(opcode, body, fds)) {
+                .offer => |o| {
+                    b.lock();
+                    defer b.unlock();
+                    try b.offers.addMime(b.gpa, obj, o.mime_type);
+                },
+            },
+            .data_source => {
+                const ev = try wl.wl_data_source.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .send => |sd| b.sendSelection(.clipboard, sd.mime_type, sd.fd),
+                    .cancelled => b.dropSource(.clipboard, obj),
+                    .target, .dnd_drop_performed, .dnd_finished, .action => {},
+                }
+            },
+            .primary_source => {
+                const ev = try wl.zwp_primary_selection_source_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .send => |sd| b.sendSelection(.primary, sd.mime_type, sd.fd),
+                    .cancelled => b.dropSource(.primary, obj),
+                }
+            },
         }
+    }
+
+    // ---- selections (E01.F04.S03.T02, mutex held) ----
+
+    /// Makes our `clip[which]` the selection: a new source offering its
+    /// formats, set with the latest input serial.
+    fn offerSelection(b: *WaylandBackend, which: clipboard.Selection) !void {
+        const c = b.conn;
+        const items = b.clip[@intFromEnum(which)];
+        const serial = b.seat.last_serial;
+        const old = b.sources[@intFromEnum(which)];
+        b.sources[@intFromEnum(which)] = null;
+        switch (which) {
+            .clipboard => {
+                const dev = b.data_dev orelse return;
+                var src: ?wl.wl_data_source.Id = null;
+                if (items.len > 0) {
+                    const m = b.data_manager.?;
+                    const s = try c.newIdVersion(wl.wl_data_source, c.version(@intFromEnum(m)), b.handler(.data_source));
+                    try wl.wl_data_device_manager.createDataSource(c, m, s);
+                    for (items) |it| for (data_device.mimesFor(it.mime)) |mt| try wl.wl_data_source.offer(c, s, mt);
+                    src = s;
+                }
+                try wl.wl_data_device.setSelection(c, dev, src, serial);
+                if (old) |o| try wl.wl_data_source.destroy(c, @enumFromInt(o));
+                if (src) |s| b.sources[0] = @intFromEnum(s);
+            },
+            .primary => {
+                const dev = b.primary_dev orelse return;
+                var src: ?wl.zwp_primary_selection_source_v1.Id = null;
+                if (items.len > 0) {
+                    const m = b.primary_manager.?;
+                    const s = try c.newIdVersion(wl.zwp_primary_selection_source_v1, 1, b.handler(.primary_source));
+                    try wl.zwp_primary_selection_device_manager_v1.createSource(c, m, s);
+                    for (items) |it| for (data_device.mimesFor(it.mime)) |mt| try wl.zwp_primary_selection_source_v1.offer(c, s, mt);
+                    src = s;
+                }
+                try wl.zwp_primary_selection_device_v1.setSelection(c, dev, src, serial);
+                if (old) |o| try wl.zwp_primary_selection_source_v1.destroy(c, @enumFromInt(o));
+                if (src) |s| b.sources[1] = @intFromEnum(s);
+            },
+        }
+    }
+
+    /// Answers `clipboard_read`: from our copy while we own the selection
+    /// (or without a device), else through a pipe from the current offer.
+    fn readSelection(b: *WaylandBackend, which: clipboard.Selection, mime: clipboard.MimeId, request: u32) !void {
+        const has_device = switch (which) {
+            .clipboard => b.data_dev != null,
+            .primary => b.primary_dev != null,
+        };
+        if (b.sources[@intFromEnum(which)] != null or !has_device) {
+            var data: types.PayloadSlice = .empty;
+            for (b.clip[@intFromEnum(which)]) |it| if (it.mime == mime) {
+                data = b.putOwned(try b.gpa.dupe(u8, it.data));
+                break;
+            };
+            return b.stage(.{ .clipboard_data = .{ .request = request, .data = data, .mime = mime } });
+        }
+        const empty: Event = .{ .clipboard_data = .{ .request = request, .data = .empty, .mime = mime } };
+        const offer = b.offers.currentOf(which) orelse return b.stage(empty);
+        const mt = data_device.pickMime(mime, offer.mimes.items) orelse return b.stage(empty);
+        const fds = try pipe_transfer.pipe();
+        // `send` duplicates the fd, so our write end closes at once and
+        // the read sees EOF when the source closes its copy.
+        defer _ = linux.close(fds[1]);
+        b.receive(which, offer.id, mt, fds[1]) catch |err| {
+            _ = linux.close(fds[0]);
+            return err;
+        };
+        try b.transfers.startRead(fds[0], request, mime, b.nowNs() + b.opts.transfer_timeout_ns);
+        // The platform thread recomputes its timeout.
+        b.thread_wake.signal();
+    }
+
+    fn receive(b: *WaylandBackend, which: clipboard.Selection, offer: u32, mime: [:0]const u8, fd: i32) !void {
+        switch (which) {
+            .clipboard => try wl.wl_data_offer.receive(b.conn, @enumFromInt(offer), mime, fd),
+            .primary => try wl.zwp_primary_selection_offer_v1.receive(b.conn, @enumFromInt(offer), mime, fd),
+        }
+    }
+
+    /// `selection(offer)` from either device.
+    fn onSelection(b: *WaylandBackend, which: clipboard.Selection, id: ?u32) !void {
+        if (b.offers.setSelection(which, id)) |old| b.dropOffer(old);
+        // Ours comes back as an offer too; only others' changes count.
+        if (b.sources[@intFromEnum(which)] == null) try b.stage(.{ .clipboard_changed = which });
+    }
+
+    fn dropOffer(b: *WaylandBackend, id: u32) void {
+        const which = if (b.offers.get(id)) |o| o.which else .clipboard;
+        switch (which) {
+            .clipboard => wl.wl_data_offer.destroy(b.conn, @enumFromInt(id)) catch {},
+            .primary => wl.zwp_primary_selection_offer_v1.destroy(b.conn, @enumFromInt(id)) catch {},
+        }
+        b.offers.remove(b.gpa, id);
+    }
+
+    /// A source's `send(mime, fd)`: write our bytes on the platform thread.
+    fn sendSelection(b: *WaylandBackend, which: clipboard.Selection, mime: []const u8, fd: i32) void {
+        const want = data_device.idForMime(mime);
+        for (b.clip[@intFromEnum(which)]) |it| if (want != null and it.mime == want.?) {
+            b.transfers.startWrite(fd, it.data, b.nowNs() + b.opts.transfer_timeout_ns) catch |err| log.warn("selection send: {t}", .{err});
+            return;
+        };
+        _ = linux.close(fd);
+    }
+
+    /// A source's `cancelled`: another client owns the selection now.
+    fn dropSource(b: *WaylandBackend, which: clipboard.Selection, obj: u32) void {
+        switch (which) {
+            .clipboard => wl.wl_data_source.destroy(b.conn, @enumFromInt(obj)) catch {},
+            .primary => wl.zwp_primary_selection_source_v1.destroy(b.conn, @enumFromInt(obj)) catch {},
+        }
+        if (b.sources[@intFromEnum(which)] == obj) b.sources[@intFromEnum(which)] = null;
     }
 
     // ---- input (E01.F04.S02.T02) ----
@@ -1245,6 +1510,13 @@ const Peer = struct {
     last_bound: ?[]const u8 = null,
     /// Sent in answer to `get_default_feedback`, if set.
     feedback: ?FeedbackScript = null,
+    /// Keep the newest request fd in `kept_fd` instead of closing it.
+    keep_fds: bool = false,
+    kept_fd: ?i32 = null,
+    /// The newest request's `mime_type` and `serial` arguments.
+    last_mime: [64]u8 = undefined,
+    last_mime_len: usize = 0,
+    last_serial: ?u32 = null,
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -1258,6 +1530,7 @@ const Peer = struct {
     }
 
     fn deinit(p: *Peer) void {
+        if (p.kept_fd) |fd| _ = linux.close(fd);
         p.ids.deinit(testing.allocator);
         p.log.deinit(testing.allocator);
         p.fc.deinit();
@@ -1312,7 +1585,17 @@ const Peer = struct {
         if (@typeInfo(T) != .@"struct") return;
         inline for (@typeInfo(T).@"struct".fields) |f| {
             const v = @field(payload, f.name);
-            if (comptime std.mem.eql(u8, f.name, "fd")) _ = linux.close(v);
+            if (comptime std.mem.eql(u8, f.name, "fd")) {
+                if (p.keep_fds) {
+                    if (p.kept_fd) |old| _ = linux.close(old);
+                    p.kept_fd = v;
+                } else _ = linux.close(v);
+            }
+            if (comptime std.mem.eql(u8, f.name, "mime_type") and f.type == [:0]const u8) {
+                p.last_mime_len = @min(v.len, p.last_mime.len);
+                @memcpy(p.last_mime[0..p.last_mime_len], v[0..p.last_mime_len]);
+            }
+            if (comptime std.mem.eql(u8, f.name, "serial")) p.last_serial = v;
             inline for (wl.interfaces) |J| if (f.type == J.Id) {
                 const n = @intFromEnum(v);
                 if (!p.ids.contains(n)) try p.ids.put(testing.allocator, n, J.name);
@@ -1410,6 +1693,12 @@ const all_globals = [_]fake.Global{
 
 /// `all_globals` and a seat.
 const seat_globals = all_globals ++ [_]fake.Global{.{ .name = 7, .interface = "wl_seat", .version = 9 }};
+
+/// `seat_globals` and both selection managers.
+const selection_globals = seat_globals ++ [_]fake.Global{
+    .{ .name = 8, .interface = "wl_data_device_manager", .version = 3 },
+    .{ .name = 9, .interface = "zwp_primary_selection_device_manager_v1", .version = 1 },
+};
 
 /// A backend connected to a fresh `Peer`.
 const Rig = struct {
@@ -1832,4 +2121,145 @@ test "seat: keymap, focus, text, shift, repeat, pointer frame and touch" {
     // Losing focus releases nothing that is not held, and stops repeat.
     try K.leave(fc, kb, 11, surf);
     try testing.expect(!(try expectEvent(p, .window_focus, win)).focused);
+}
+
+/// Writes all of `data` to a non-blocking `fd`, waiting out EAGAIN.
+fn writeAllPipe(fd: i32, data: []const u8) !void {
+    var done: usize = 0;
+    while (done < data.len) {
+        const rc = linux.write(fd, data[done..].ptr, data.len - done);
+        switch (linux.errno(rc)) {
+            .SUCCESS => done += rc,
+            .AGAIN, .INTR => {
+                var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.OUT, .revents = 0 }};
+                _ = linux.poll(&pfd, 1, 1000);
+            },
+            else => return error.Unexpected,
+        }
+    }
+}
+
+/// Reads a non-blocking `fd` to EOF.
+fn readAllPipe(fd: i32, out: *std.ArrayList(u8)) !void {
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const rc = linux.read(fd, &buf, buf.len);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) return;
+                try out.appendSlice(testing.allocator, buf[0..rc]);
+            },
+            .AGAIN, .INTR => {
+                var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+                if (linux.poll(&pfd, 1, 2000) == 0) return error.Timeout;
+            },
+            else => return error.Unexpected,
+        }
+    }
+}
+
+test "selection: write uses the latest input serial; send, paste, large paste, primary" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const dev = rig.peer.id(wl.wl_data_device);
+    const surf = rig.peer.id(wl.wl_surface);
+    const kb = rig.peer.id(wl.wl_keyboard);
+    rig.peer.keep_fds = true;
+
+    // A key press makes 42 the newest serial.
+    try wl.wl_keyboard.server.enter(fc, kb, 41, surf, &.{});
+    try wl.wl_keyboard.server.key(fc, kb, 42, 0, 30, .pressed);
+    _ = try expectEvent(p, .key, win);
+    try p.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = "hello" }} } });
+    _ = try rig.peer.waitFor(wl.wl_data_device, .set_selection, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 42), rig.peer.last_serial);
+    var offered: usize = 0;
+    for (rig.peer.log.items) |s| {
+        if (std.mem.eql(u8, s.iface, wl.wl_data_source.name) and s.opcode == @intFromEnum(wl.wl_data_source.Request.offer)) offered += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), offered);
+
+    // Another client pastes: the source writes our bytes into its pipe.
+    const src = rig.peer.id(wl.wl_data_source);
+    const sp = try pipe_transfer.pipe();
+    defer _ = linux.close(sp[0]);
+    try wl.wl_data_source.server.send(fc, src, "UTF8_STRING", sp[1]);
+    _ = linux.close(sp[1]);
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(testing.allocator);
+    try readAllPipe(sp[0], &got);
+    try testing.expectEqualStrings("hello", got.items);
+
+    // While we own it, reads come from our copy.
+    try p.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 1 } });
+    const own = try expectEvent(p, .clipboard_data, null);
+    try testing.expectEqualStrings("hello", p.payload(own.data));
+
+    // Another client takes the selection.
+    const offer_id: u32 = 0xff000001;
+    try rig.peer.ids.put(testing.allocator, offer_id, wl.wl_data_offer.name);
+    try wl.wl_data_source.server.cancelled(fc, src);
+    try wl.wl_data_device.server.dataOffer(fc, dev, @enumFromInt(offer_id));
+    try wl.wl_data_offer.server.offer(fc, @enumFromInt(offer_id), "text/plain");
+    try wl.wl_data_offer.server.offer(fc, @enumFromInt(offer_id), "UTF8_STRING");
+    try wl.wl_data_device.server.selection(fc, dev, @enumFromInt(offer_id));
+    try testing.expectEqual(clipboard.Selection.clipboard, try expectEvent(p, .clipboard_changed, null));
+
+    try p.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 5 } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .receive, std.time.ns_per_s);
+    try testing.expectEqualStrings("UTF8_STRING", rig.peer.last_mime[0..rig.peer.last_mime_len]);
+    const wfd = rig.peer.kept_fd.?;
+    rig.peer.kept_fd = null;
+    try writeAllPipe(wfd, "pasted");
+    _ = linux.close(wfd);
+    const cd = try expectEvent(p, .clipboard_data, null);
+    try testing.expectEqual(@as(u32, 5), cd.request);
+    try testing.expectEqualStrings("pasted", p.payload(cd.data));
+
+    // Over the arena limit: a large payload, released by the app.
+    try p.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 6 } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .receive, std.time.ns_per_s);
+    const big = try testing.allocator.alloc(u8, 300 * 1024);
+    defer testing.allocator.free(big);
+    @memset(big, 'z');
+    const wfd2 = rig.peer.kept_fd.?;
+    rig.peer.kept_fd = null;
+    try writeAllPipe(wfd2, big);
+    _ = linux.close(wfd2);
+    const lg = try expectEvent(p, .clipboard_data, null);
+    try testing.expect(lg.data.large);
+    try testing.expectEqual(big.len, p.payload(lg.data).len);
+    p.release(lg.data);
+
+    // Primary selection: same model on its own device.
+    try p.submit(.{ .clipboard_write = .{ .which = .primary, .items = &.{.{ .mime = .text_utf8, .data = "sel" }} } });
+    _ = try rig.peer.waitFor(wl.zwp_primary_selection_device_v1, .set_selection, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 42), rig.peer.last_serial);
+}
+
+test "selection: a read with no answer times out with empty data" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s, .transfer_timeout_ns = 50 * std.time.ns_per_ms }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    _ = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const dev = rig.peer.id(wl.wl_data_device);
+    rig.peer.keep_fds = true;
+    const offer_id: u32 = 0xff000001;
+    try rig.peer.ids.put(testing.allocator, offer_id, wl.wl_data_offer.name);
+    try wl.wl_data_device.server.dataOffer(fc, dev, @enumFromInt(offer_id));
+    try wl.wl_data_offer.server.offer(fc, @enumFromInt(offer_id), "text/plain;charset=utf-8");
+    try wl.wl_data_device.server.selection(fc, dev, @enumFromInt(offer_id));
+    _ = try expectEvent(p, .clipboard_changed, null);
+    try p.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 9 } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .receive, std.time.ns_per_s);
+    // The peer holds the write end open and never writes.
+    const cd = try expectEvent(p, .clipboard_data, null);
+    try testing.expectEqual(@as(u32, 9), cd.request);
+    try testing.expectEqual(@as(u32, 0), cd.data.len);
 }
