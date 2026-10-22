@@ -105,7 +105,7 @@ pub fn createWith(m: *AgentManager, cfg: Agent.Config, deps: Agent.Deps) CreateE
             max = @max(max, e.agent.ref.agent);
         };
         ref = .{ .session = p.session, .agent = max + 1, .tool_call = cfg.spawned_by };
-    } else ref.session = m.ulid.next(m.io);
+    } else ref.session = cfg.session orelse m.ulid.next(m.io);
 
     const a = try Agent.create(m.gpa, m.io, ref, cfg, deps);
     errdefer a.destroy();
