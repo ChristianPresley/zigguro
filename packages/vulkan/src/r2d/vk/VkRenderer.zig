@@ -261,6 +261,7 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
 pub fn destroy(self: *VkRenderer) void {
     const gpa = self.gpa;
     self.sched.waitValue(self.sched.submitted) catch {};
+    self.gpu.drainInjected();
     if (self.timer) |*t| t.deinit();
     if (self.ext) |*x| x.deinit();
     if (self.sc) |sc| sc.deinit();
@@ -288,7 +289,8 @@ pub fn destroy(self: *VkRenderer) void {
     self.ring.deinit();
     self.sched.deinit();
     self.pipes.deinit();
-    if (self.opts.cache_dir) |dir| self.cache.saveIfChanged(self.io, dir);
+    // After a device loss the cache data may be corrupt: keep the file.
+    if (self.opts.cache_dir) |dir| if (!self.isLost()) self.cache.saveIfChanged(self.io, dir);
     self.cache.destroy();
     self.heap.deinit();
     self.mem.deinit();
@@ -298,9 +300,26 @@ pub fn destroy(self: *VkRenderer) void {
     if (owns) gpu.destroy();
 }
 
+/// Whether the device was lost (latched by `Gpu.checkLost`); the
+/// renderer must then be destroyed and recreated (`Recovering`).
+pub fn isLost(self: *const VkRenderer) bool {
+    return self.gpu.lost.load(.acquire);
+}
+
 /// The type-erased interface.
 pub fn renderer(self: *VkRenderer) r2d.Renderer {
     return .{ .ptr = self, .vtable = &vtable };
+}
+
+/// Whether `r` is a `VkRenderer`.
+pub fn is(r: r2d.Renderer) bool {
+    return r.vtable == &vtable;
+}
+
+/// The `VkRenderer` behind `r` (`is(r)` must hold).
+pub fn of(r: r2d.Renderer) *VkRenderer {
+    std.debug.assert(is(r));
+    return cast(r.ptr);
 }
 
 const vtable: r2d.Renderer.VTable = .{
@@ -367,6 +386,16 @@ fn mapErr(err: anyerror) RenderError {
 
 /// Creates a zeroed texture; its id is its descriptor slot.
 pub fn createTexture(self: *VkRenderer, desc: r2d.TextureDesc) RenderError!r2d.TextureId {
+    return @enumFromInt(try self.newTexture(desc, null));
+}
+
+/// `createTexture` under a chosen id (recovery recreates textures under
+/// the ids the draw lists use). `InvalidArgument` when the id is taken.
+pub fn createTextureAt(self: *VkRenderer, desc: r2d.TextureDesc, id: r2d.TextureId) RenderError!void {
+    _ = try self.newTexture(desc, @intFromEnum(id));
+}
+
+fn newTexture(self: *VkRenderer, desc: r2d.TextureDesc, at: ?u32) RenderError!u32 {
     if (desc.width == 0 or desc.height == 0 or desc.width > Texture.max_side or desc.height > Texture.max_side) return error.InvalidArgument;
     const fmt: Texture.Format = switch (desc.format) {
         .r8 => .r8_unorm,
@@ -376,13 +405,19 @@ pub fn createTexture(self: *VkRenderer, desc: r2d.TextureDesc) RenderError!r2d.T
     errdefer self.gpa.destroy(t);
     t.* = Texture.create(&self.mem, desc.width, desc.height, fmt, .sampled, "r2d-texture") catch |e| return mapErr(e);
     errdefer t.destroy(&self.mem);
-    const slot = self.heap.allocSlot(t.view, .linear_clamp) catch return error.OutOfMemory;
+    const slot = if (at) |a| blk: {
+        self.heap.allocSlotAt(a, t.view, .linear_clamp) catch |e| return switch (e) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidArgument,
+        };
+        break :blk a;
+    } else self.heap.allocSlot(t.view, .linear_clamp) catch return error.OutOfMemory;
     t.slot = slot;
     // Layer textures take slots too; their entries here stay null.
     while (slot >= self.textures.items.len) self.textures.append(self.gpa, null) catch return error.OutOfMemory;
     self.textures.items[slot] = t;
     self.fresh.append(self.gpa, t) catch return error.OutOfMemory;
-    return @enumFromInt(slot);
+    return slot;
 }
 
 fn texture(self: *VkRenderer, id: r2d.TextureId) ?*Texture {
