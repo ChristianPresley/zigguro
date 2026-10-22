@@ -41,6 +41,10 @@ pub const QueuePanel = struct {
     status: []const u8 = "",
     status_bad: bool = false,
     status_buf: [192]u8 = undefined,
+    /// Opens a changeset in the hunk-by-hunk review view.
+    open_review: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, cs: zg_review.model.ChangesetId) void } = null,
+    /// A Review button's changeset, opened after the build.
+    open_req: ?zg_review.model.ChangesetId = null,
     /// Whether a workspace-relative path is open in an editor.
     is_open: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, rel: []const u8) bool } = null,
     /// The workbench repaints.
@@ -86,7 +90,16 @@ pub const QueuePanel = struct {
 
     pub fn build(p: *QueuePanel, ui: *Ui) void {
         p.glue.mutex.lockUncancelable(p.io);
-        defer p.glue.mutex.unlock(p.io);
+        p.buildLocked(ui);
+        p.glue.mutex.unlock(p.io);
+        // Outside the lock: the review view takes it too.
+        if (p.open_req) |id| {
+            p.open_req = null;
+            if (p.open_review) |o| o.f(o.ctx, id);
+        }
+    }
+
+    fn buildLocked(p: *QueuePanel, ui: *Ui) void {
         const m = p.glue.model;
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .role = .group, .label = "Review queue" });
         defer ui.close();
@@ -241,6 +254,10 @@ pub const QueuePanel = struct {
         if (r.kind == .changeset) if (r.cs) |id| if (p.glue.q.get(id)) |c| switch (c.state) {
             .applied => p.actionButton(ui, id, .undo, "Undo"),
             .pending, .partially_applied => {
+                if (p.open_review != null) {
+                    ui.id(100);
+                    if (zg_gui.w.button(ui, .{ .label = "Review", .variant = .ghost }).clicked) p.open_req = id;
+                }
                 p.actionButton(ui, id, .accept, "Accept");
                 p.actionButton(ui, id, .reject, "Reject");
             },
@@ -344,6 +361,19 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     _ = t.settle();
     try testing.expect(t.find(.{ .name_contains = "Undid Turn 1" }) != null);
     try testing.expectEqualStrings("one\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena_state.allocator(), .limited(64)));
+    // Review opens the changeset (outside the glue's lock).
+    var opened: ?zg_review.model.ChangesetId = null;
+    p.open_review = .{ .ctx = &opened, .f = struct {
+        fn f(ctx: *anyopaque, cs: zg_review.model.ChangesetId) void {
+            const o: *?zg_review.model.ChangesetId = @ptrCast(@alignCast(ctx));
+            o.* = cs;
+        }
+    }.f };
+    t.win.markAllDirty();
+    _ = t.settle();
+    try t.click(.{ .role = .button, .name = "Review" });
+    _ = t.settle();
+    try testing.expect(opened != null);
     try t.click(.{ .role = .button, .name = "Accept" });
     _ = t.settle();
     try testing.expect(t.find(.{ .name_contains = "Applied Turn 1" }) != null);

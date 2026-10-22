@@ -20,6 +20,9 @@ const typed = @import("typed.zig");
 const Registry = @import("registry.zig");
 const Hub = @import("subscriptions.zig");
 const dispatch = @import("dispatch.zig");
+const ctx_mod = @import("ctx.zig");
+const mrtr_seal = @import("mrtr_seal.zig");
+const legacy_requests = @import("legacy_requests.zig");
 
 const messages = protocol.messages;
 const codec = protocol.codec;
@@ -64,47 +67,20 @@ pub const Options = struct {
     /// Tool calls running at once; the rest wait.
     max_concurrent_calls: usize = 16,
     authorizer: ?Authorizer = null,
+    /// The `requestState` key. Null uses a random per-process key; servers
+    /// behind a load balancer set the same key on every instance.
+    seal_key: ?[32]u8 = null,
+    /// How long a sealed `requestState` stays valid.
+    request_state_ttl_ms: i64 = 10 * 60 * 1000,
+    /// MRTR rounds per request (modern and legacy).
+    max_input_rounds: u8 = 8,
+    /// How long a legacy server-to-client request waits for its answer.
+    server_request_timeout: Io.Duration = .fromSeconds(600),
 };
 
-/// One request being served by user code.
-pub const CallCtx = struct {
-    server: *Server,
-    conn: *Conn,
-    /// Request-lifetime memory; results may borrow from it.
-    arena: Allocator,
-    id: RequestId,
-    era: protocol.revision.Era,
-    revision: Revision,
-    progress_token: ?protocol.ProgressToken = null,
-    /// Minimum level of `log` notifications; null sends none.
-    log_level: ?messages.LoggingLevel = null,
-    canceled: std.atomic.Value(bool) = .init(false),
-
-    /// Whether the client cancelled the request.
-    pub fn isCanceled(cc: *const CallCtx) bool {
-        return cc.canceled.load(.acquire);
-    }
-
-    /// The connection's principal.
-    pub fn principal(cc: *const CallCtx) ?[]const u8 {
-        return cc.conn.principal;
-    }
-
-    /// Reports progress when the client asked for it.
-    pub fn progress(cc: *CallCtx, value: f64, total: ?f64, msg: ?[]const u8) void {
-        const token = cc.progress_token orelse return;
-        if (cc.isCanceled()) return;
-        Hub.sendNotification(cc.conn, .{ .progress = .{ .progress_token = token, .progress = value, .total = total, .message = msg } });
-    }
-
-    /// Sends a log notification about this request if `level` is at or
-    /// above the requested minimum.
-    pub fn log(cc: *CallCtx, level: messages.LoggingLevel, data: Value) void {
-        const min = cc.log_level orelse return;
-        if (@intFromEnum(level) < @intFromEnum(min)) return;
-        Hub.sendNotification(cc.conn, .{ .message = .{ .level = level, .logger = cc.server.opts.info.name, .data = data } });
-    }
-};
+/// One request being served by user code (see `ctx.zig`).
+pub const CallCtx = ctx_mod.CallCtx;
+pub const InputError = ctx_mod.InputError;
 
 /// Where a connection's outgoing messages go. `send` must be thread-safe
 /// and must not call back into the connection.
@@ -125,6 +101,9 @@ pub const Conn = struct {
     arena: std.heap.ArenaAllocator,
     inflight: std.ArrayList(*CallCtx) = .empty,
     closed: bool = false,
+    /// Legacy server-to-client requests awaiting answers.
+    out_pending: std.ArrayList(*legacy_requests.OutRequest) = .empty,
+    out_next: u64 = 1,
 
     /// Handles one complete JSON-RPC message from the client.
     pub fn receive(c: *Conn, body: []const u8) void {
@@ -167,6 +146,7 @@ pub const Conn = struct {
     fn deinit(c: *Conn) void {
         if (c.state.legacy) |*l| l.subscribed.deinit(c.server.gpa);
         c.inflight.deinit(c.server.gpa);
+        c.out_pending.deinit(c.server.gpa);
         c.arena.deinit();
     }
 
@@ -193,6 +173,13 @@ conns_mutex: Io.Mutex = .init,
 conns: std.ArrayList(*Conn) = .empty,
 tasks: Io.Group = .init,
 call_slots: Io.Semaphore,
+sealer: mrtr_seal.Sealer,
+once_mutex: Io.Mutex = .init,
+/// Consumed `CallCtx.once` nonces, oldest first (keys owned by `gpa`).
+once_seen: std.StringArrayHashMapUnmanaged(void) = .empty,
+
+/// Entries `CallCtx.once` remembers.
+pub const once_capacity = 10_000;
 
 /// Creates a server.
 pub fn init(gpa: Allocator, io: Io, opts: Options) error{OutOfMemory}!*Server {
@@ -207,6 +194,7 @@ pub fn init(gpa: Allocator, io: Io, opts: Options) error{OutOfMemory}!*Server {
         .arena = .init(gpa),
         .capabilities = undefined,
         .call_slots = .{ .permits = @max(1, opts.max_concurrent_calls) },
+        .sealer = if (opts.seal_key) |k| .{ .key = k } else .random(io),
     };
     errdefer s.registry.deinit();
     errdefer s.arena.deinit();
@@ -231,6 +219,8 @@ pub fn deinit(s: *Server) void {
         s.gpa.destroy(c);
     }
     s.conns.deinit(s.gpa);
+    for (s.once_seen.keys()) |k| s.gpa.free(k);
+    s.once_seen.deinit(s.gpa);
     s.hub.deinit();
     s.registry.deinit();
     s.arena.deinit();
@@ -377,6 +367,24 @@ fn onRegistryChange(ctx: ?*anyopaque, k: Registry.ListKind) void {
     }
 }
 
+/// True the first time `nonce` is seen (see `CallCtx.once`).
+pub fn consumeOnce(s: *Server, nonce: []const u8) bool {
+    s.once_mutex.lockUncancelable(s.io);
+    defer s.once_mutex.unlock(s.io);
+    if (s.once_seen.contains(nonce)) return false;
+    const copy = s.gpa.dupe(u8, nonce) catch return false;
+    if (s.once_seen.count() >= once_capacity) {
+        const oldest = s.once_seen.keys()[0];
+        s.once_seen.orderedRemoveAt(0);
+        s.gpa.free(oldest);
+    }
+    s.once_seen.put(s.gpa, copy, {}) catch {
+        s.gpa.free(copy);
+        return false;
+    };
+    return true;
+}
+
 /// A `CallToolResult` with `isError` and one text block.
 pub fn toolError(arena: Allocator, comptime fmt: []const u8, args: anytype) error{OutOfMemory}!messages.CallToolResult {
     const text = try std.fmt.allocPrint(arena, fmt, args);
@@ -387,4 +395,8 @@ pub fn toolError(arena: Allocator, comptime fmt: []const u8, args: anytype) erro
 
 test {
     _ = @import("server_test.zig");
+    _ = @import("mrtr_test.zig");
+    _ = ctx_mod;
+    _ = mrtr_seal;
+    _ = legacy_requests;
 }
