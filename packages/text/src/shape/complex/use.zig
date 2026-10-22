@@ -25,8 +25,8 @@
 //! their `xxx3` tags. Khmer and Myanmar have their own shapers (HarfBuzz
 //! does not send them to USE).
 //!
-//! Not yet done: HarfBuzz's vowel constraints (dotted circles for
-//! discouraged independent-vowel spellings).
+//! Before normalization, discouraged vowel spellings get a dotted circle
+//! (`vowel_constraints.zig`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -45,6 +45,7 @@ const tag = @import("../../ot/root.zig").tag;
 const arabic = @import("arabic.zig");
 const dfa = @import("syllable_dfa.zig");
 const dotted = @import("dotted_circle.zig");
+const vowel_constraints = @import("vowel_constraints.zig");
 
 /// USE character classes (`unicode.useCategory`).
 pub const UseCategory = unicode.UseCategory;
@@ -58,6 +59,7 @@ pub const shaper: ComplexShaper = .{
     .collectFeatures = collectFeatures,
     .dataInit = dataInit,
     .setupMasks = setupMasks,
+    .preprocessText = vowel_constraints.preprocess,
     .normalize_short_circuit = false,
     .compose = compose,
     .zero_marks = .gdef_early,
@@ -399,7 +401,7 @@ fn reorderSyllable(b: *Buffer, start: usize, end: usize) void {
 }
 
 fn reorder(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
-    _ = try dotted.insertDottedCircles(b, p.inst.face, @intFromEnum(SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R));
+    _ = try dotted.insertDottedCircles(b, p.inst.face, @intFromEnum(SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R), 0);
     const infos = b.infos.items;
     var s: usize = 0;
     while (s < infos.len) {

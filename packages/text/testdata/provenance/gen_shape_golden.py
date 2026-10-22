@@ -99,6 +99,61 @@ SETS = {
         ]],
     ],
     "indic": [
+        # Devanagari (dev2): reph, pre-base matra, conjuncts, half forms,
+        # ZWJ/ZWNJ, nukta, signs, broken clusters.
+        *[("NotoSansDevanagari-Subset.ttf", t, {}, {}, "ltr", "Deva") for t in [
+            "\u0930\u094d\u0915",
+            "\u0915\u093f",
+            "\u0915\u094d\u0937\u0924\u094d\u0930\u093f\u092f",
+            "\u0930\u094d\u0915\u093f \u0930\u094d\u0915\u0947\u0902",
+            "\u0938\u094d\u0924\u094d\u0930\u093f \u0939\u093f\u0928\u094d\u0926\u0940",
+            "\u0915\u094d\u200d\u0937 \u0915\u094d\u200c\u0937 \u0915\u094d\u200c",
+            "\u0930\u094d\u200d\u092f \u0930\u200d\u094d\u092f",
+            "\u0915\u093c \u0921\u093c\u0940 \u0915\u0903 \u0915\u0949",
+            "\u0926\u094d\u0927 \u0924\u094d\u0924 \u0936\u094d\u0930\u0940",
+            "\u093f \u094d\u0915 \u0902",
+            "\u0930\u094d \u0905\u0902 \u0906\u0930\u094d\u092f",
+            # Vowel constraints: dotted circles in discouraged spellings.
+            "\u0905\u093e \u0906\u0947 \u0930\u094d\u0907 \u0909\u0941 \u0905\u093e\u093e",
+        ]],
+        # Old-spec Devanagari (deva only): halant reordering, eyelash Ra.
+        *[("NotoSansDevanagariOld-Subset.ttf", t, {}, {}, "ltr", "Deva") for t in [
+            "\u0915\u094d\u0937\u0924\u094d\u0930\u093f\u092f",
+            "\u0930\u094d\u0915\u093f",
+            "\u0924\u094d\u0930 \u0915\u094d\u0924\u094d\u092f",
+            "\u0924\u094d\u0930\u094d\u0915 \u0924\u094d\u0930\u094d\u200d\u0915",
+            "\u0915\u093f \u0938\u094d\u0924\u094b",
+        ]],
+        # Bengali: ya-phala, reph, split matras, khanda ta, nukta forms.
+        *[("NotoSansBengali-Subset.ttf", t, {}, {}, "ltr", "Beng") for t in [
+            "\u0995\u09cd\u09af",
+            "\u09b0\u09cd\u0995 \u0995\u09bf \u0995\u09cb \u0995\u09cc",
+            "\u0995\u09cd\u09b7 \u09b6\u09cd\u09b0\u09c0",
+            "\u09b0\u200d\u09cd\u09af \u09b0\u09cd\u09af",
+            "\u09af\u09bc \u09a1\u09bc \u09ce",
+            "\u09b8\u09cd\u09a4\u09cd\u09b0\u09c0 \u0995\u09cd\u09b0\u09bf",
+            "\u09c7 \u09cd\u0995",
+            "\u0985\u09be \u098b\u09c3",
+        ]],
+        # Malayalam: chillus (atomic and with ZWJ), pre-base ra, split
+        # matras, logical repha.
+        *[("NotoSansMalayalam-Subset.ttf", t, {}, {}, "ltr", "Mlym") for t in [
+            "\u0d23\u0d4d\u200d \u0d28\u0d4d\u200d \u0d7b \u0d7a",
+            "\u0d15\u0d4d\u0d15 \u0d15\u0d4a \u0d15\u0d46 \u0d15\u0d4c",
+            "\u0d15\u0d4d\u0d30 \u0d15\u0d4d\u0d30\u0d46",
+            "\u0d30\u0d4d\u200d \u0d30\u0d4d\u0d15 \u0d4e\u0d15",
+            "\u0d38\u0d4d\u0d24\u0d4d\u0d30\u0d40 \u0d2e\u0d32\u0d2f\u0d3e\u0d33\u0d02",
+            "\u0d46 \u0d4d",
+            "\u0d07\u0d57 \u0d12\u0d3e \u0d0e\u0d46 \u0d14",
+        ]],
+        # Tamil: pre-base vowels, split vowels, ksha, shri.
+        *[("NotoSansTamil-Subset.ttf", t, {}, {}, "ltr", "Taml") for t in [
+            "\u0b95\u0bca \u0b95\u0bc6 \u0b95\u0bc8 \u0b95\u0bcc",
+            "\u0b95\u0bcd\u0bb7 \u0bb8\u0bcd\u0bb0\u0bc0",
+            "\u0b95\u0bcd\u0b95 \u0ba4\u0bae\u0bbf\u0bb4\u0bcd",
+            "\u0bc6 \u0bcd",
+            "\u0b85\u0bc2",
+        ]],
         # Khmer: coeng stacks, coeng + RO before the base, pre-base and
         # split vowels, robat, a broken cluster.
         *[("NotoSansKhmer-Subset.ttf", t, {}, {}, "ltr", "Khmr") for t in [
@@ -170,7 +225,13 @@ def indic_random_cases():
     khmr = [chr(c) for c in list(range(0x1780, 0x17A3)) + list(range(0x17B6, 0x17D4))] + ["\u17d2"] * 6 + [" ", "\u200c", "\u200d"]
     mymr = [chr(c) for c in list(range(0x1000, 0x1022)) + list(range(0x102B, 0x103F))] + ["\u1039"] * 4 + [" ", "\u200c", "\u200d"]
     cases = []
-    for font, script, chars in [("NotoSansKhmer-Subset.ttf", "Khmr", khmr), ("NotoSansMyanmar-Subset.ttf", "Mymr", mymr)]:
+    deva = [chr(c) for c in list(range(0x0915, 0x093A)) + list(range(0x093E, 0x094D)) + [0x0902, 0x0903, 0x093C, 0x0905, 0x0906]] + ["\u094d"] * 8 + [" ", "\u200c", "\u200d"]
+    beng = [chr(c) for c in list(range(0x0995, 0x09BA)) + list(range(0x09BE, 0x09CD)) + [0x0981, 0x0982, 0x0983, 0x09BC, 0x0985, 0x09CE]] + ["\u09cd"] * 8 + [" ", "\u200c", "\u200d"]
+    mlym = [chr(c) for c in list(range(0x0D15, 0x0D3A)) + list(range(0x0D3E, 0x0D4D)) + [0x0D02, 0x0D03, 0x0D05, 0x0D7A, 0x0D7B, 0x0D4E]] + ["\u0d4d"] * 8 + [" ", "\u200c", "\u200d"]
+    taml = [chr(c) for c in list(range(0x0B95, 0x0BBA)) + list(range(0x0BBE, 0x0BCD)) + [0x0B82, 0x0B83, 0x0B85]] + ["\u0bcd"] * 8 + [" ", "\u200c", "\u200d"]
+    for font, script, chars in [("NotoSansKhmer-Subset.ttf", "Khmr", khmr), ("NotoSansMyanmar-Subset.ttf", "Mymr", mymr),
+                                ("NotoSansDevanagari-Subset.ttf", "Deva", deva), ("NotoSansBengali-Subset.ttf", "Beng", beng),
+                                ("NotoSansMalayalam-Subset.ttf", "Mlym", mlym), ("NotoSansTamil-Subset.ttf", "Taml", taml)]:
         for _ in range(20):
             cases.append((font, "".join(rng.choice(chars) for _ in range(rng.randint(3, 14))), {}, {}, "ltr", script))
     return cases

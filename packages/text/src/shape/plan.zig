@@ -73,6 +73,10 @@ pub const FeatureMap = struct {
     shift: u5,
     /// Its value-1 mask.
     one: u32,
+    /// The stage it runs in, per table (`no_stage` when absent).
+    stage: [2]u16 = .{ no_stage, no_stage },
+
+    pub const no_stage = std.math.maxInt(u16);
 };
 
 /// When mark advances are zeroed relative to GPOS.
@@ -421,6 +425,14 @@ pub const ShapePlan = struct {
         return .{ .tag = t, .mask = 0, .shift = 0, .one = 0 };
     }
 
+    /// The GSUB lookups of the stage feature `t` runs in (HarfBuzz's
+    /// `get_stage_lookups` of `get_feature_stage`); empty when absent.
+    pub fn gsubStageLookups(p: *const ShapePlan, t: Tag) []const LookupMap {
+        const st = p.maskOf(t).stage[0];
+        if (st >= p.gsub_stages.len) return &.{};
+        return p.gsub_stages[st].lookups;
+    }
+
     /// The value-1 mask of feature `t`.
     pub fn mask1(p: *const ShapePlan, t: Tag) u32 {
         return p.maskOf(t).one;
@@ -501,13 +513,13 @@ pub const ShapePlan = struct {
             if (!found and !info.flags.has_fallback) continue;
             var fm: FeatureMap = undefined;
             if (uses_global) {
-                fm = .{ .tag = info.tag, .mask = global_mask, .shift = 0, .one = global_mask };
+                fm = .{ .tag = info.tag, .mask = global_mask, .shift = 0, .one = global_mask, .stage = info.stage };
             } else {
                 const shift: u5 = @intCast(next_bit);
                 const mask: u32 = @intCast((@as(u64, 1) << @intCast(next_bit + bits)) - (@as(u64, 1) << shift));
                 next_bit += bits;
                 p.global_mask |= (info.default_value << shift) & mask;
-                fm = .{ .tag = info.tag, .mask = mask, .shift = shift, .one = (@as(u32, 1) << shift) & mask };
+                fm = .{ .tag = info.tag, .mask = mask, .shift = shift, .one = (@as(u32, 1) << shift) & mask, .stage = info.stage };
             }
             try features.append(a, fm);
             try mapped.append(a, .{ .info = info, .index = index, .mask = fm.mask });

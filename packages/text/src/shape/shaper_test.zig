@@ -129,6 +129,26 @@ test "shape golden: tibetan stacking (USE)" {
     try testing.expectEqual(@as(usize, 0), try checkGoldenFont("use", "NotoSerifTibetan-Subset.ttf", true));
 }
 
+test "shape golden: devanagari (Indic)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansDevanagari-Subset.ttf", true));
+}
+
+test "shape golden: old-spec devanagari (Indic)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansDevanagariOld-Subset.ttf", true));
+}
+
+test "shape golden: bengali (Indic)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansBengali-Subset.ttf", true));
+}
+
+test "shape golden: malayalam (Indic)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansMalayalam-Subset.ttf", true));
+}
+
+test "shape golden: tamil (Indic)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansTamil-Subset.ttf", true));
+}
+
 test "shape golden: khmer coeng stacks" {
     try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansKhmer-Subset.ttf", true));
 }
