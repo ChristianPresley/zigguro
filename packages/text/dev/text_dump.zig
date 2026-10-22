@@ -3,7 +3,7 @@
 //! stdout, is deterministic and uses LF line endings.
 //!
 //!   text-dump metrics <font> [--index N]
-//!   text-dump outline <font> <gid|U+XXXX>... [--coords wght=700,...]
+//!   text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...]
 //!   text-dump shape   <font> <text> [--features ...] [--dir rtl] [--script arab]
 //!   text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
 //!
@@ -42,7 +42,16 @@ pub fn main(init: std.process.Init) !u8 {
         try dumpMetrics(out, &face);
         return 0;
     }
-    if (std.mem.eql(u8, cmd, "outline") or std.mem.eql(u8, cmd, "shape") or std.mem.eql(u8, cmd, "raster")) {
+    if (std.mem.eql(u8, cmd, "outline")) {
+        var font = try ot.MappedFont.openAlloc(io, std.Io.Dir.cwd(), args[2], gpa);
+        defer font.close(io);
+        const face = ot.Face.init(font.bytes(), 0) catch |e| {
+            std.debug.print("text-dump: cannot open face: {t}\n", .{e});
+            return 1;
+        };
+        return dumpOutlines(out, gpa, &face, args[3..]);
+    }
+    if (std.mem.eql(u8, cmd, "shape") or std.mem.eql(u8, cmd, "raster")) {
         std.debug.print("text-dump {s}: not implemented\n", .{cmd});
         return 2;
     }
@@ -52,12 +61,51 @@ pub fn main(init: std.process.Init) !u8 {
 fn usage() u8 {
     std.debug.print(
         \\usage: text-dump metrics <font> [--index N]
-        \\       text-dump outline <font> <gid|U+XXXX>... [--coords wght=700,...]
+        \\       text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...]
         \\       text-dump shape   <font> <text> [--features "liga=0,ss01"] [--dir rtl] [--script arab]
         \\       text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
         \\
     , .{});
     return 2;
+}
+
+/// Writes "<gid> <path>" per requested glyph, in the `Path.format`
+/// grammar of the outline goldens. "all" means every glyph.
+fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face, specs: []const []const u8) !u8 {
+    if (specs.len == 0) return usage();
+    const g = face.glyf() orelse {
+        std.debug.print("text-dump outline: {t} outlines: not implemented\n", .{face.outline_kind});
+        return 2;
+    };
+    var scratch: ot.glyf.Scratch = .{};
+    var path: zg_text.outline.Path = .{};
+    for (specs) |spec| {
+        if (std.mem.startsWith(u8, spec, "--")) {
+            std.debug.print("text-dump outline: {s}: not implemented\n", .{spec});
+            return 2;
+        }
+        var lo: u32 = undefined;
+        var hi: u32 = undefined;
+        if (std.mem.eql(u8, spec, "all")) {
+            lo = 0;
+            hi = face.num_glyphs;
+        } else {
+            lo = if (std.mem.startsWith(u8, spec, "U+"))
+                face.glyphIndex(try std.fmt.parseInt(u21, spec[2..], 16))
+            else
+                try std.fmt.parseInt(u16, spec, 10);
+            hi = lo + 1;
+        }
+        for (lo..hi) |gid| {
+            path.reset();
+            try w.print("{d} ", .{gid});
+            if (g.outline(gpa, @intCast(gid), &scratch, null, &path)) |_| {
+                try path.format(w);
+            } else |e| try w.print("error.{t}", .{e});
+            try w.writeByte('\n');
+        }
+    }
+    return 0;
 }
 
 /// Writes `.{ .metrics = FontMetrics, .style = Style, ... }` as ZON.
