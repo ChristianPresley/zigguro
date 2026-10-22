@@ -62,13 +62,15 @@ pub const ProposalFiles = struct {
             const before_tree: ?ObjectId = if (before) |b| treeOf(b) else null;
             try acc.diff("", before_tree, treeOf(c));
         }
-        const out = acc.list.items;
-        std.mem.sort(FileChange, out, {}, struct {
-            fn lt(_: void, a: FileChange, b: FileChange) bool {
-                return std.mem.order(u8, a.path, b.path) == .lt;
-            }
-        }.lt);
-        return out;
+        return sorted(acc.list.items);
+    }
+
+    /// The paths that differ between trees `before` and `after` (null:
+    /// empty), sorted, allocated in `arena`.
+    pub fn diffTrees(pf: *const ProposalFiles, arena: Allocator, before: ?ObjectId, after: ?ObjectId) ![]const FileChange {
+        var acc: Acc = .{ .pf = pf, .arena = arena };
+        try acc.diff("", before, after);
+        return sorted(acc.list.items);
     }
 
     /// The `PreviewFiles`-shaped callback for E12 (`ctx` is the
@@ -79,8 +81,17 @@ pub const ProposalFiles = struct {
     }
 };
 
+fn sorted(out: []FileChange) []const FileChange {
+    std.mem.sort(FileChange, out, {}, struct {
+        fn lt(_: void, a: FileChange, b: FileChange) bool {
+            return std.mem.order(u8, a.path, b.path) == .lt;
+        }
+    }.lt);
+    return out;
+}
+
 /// A conflicted commit shows its first term.
-fn treeOf(c: Change) ?ObjectId {
+pub fn treeOf(c: Change) ?ObjectId {
     return if (c.tree_terms.len == 0) null else c.tree_terms[0];
 }
 
