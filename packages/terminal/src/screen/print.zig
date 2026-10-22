@@ -166,13 +166,17 @@ fn fastRun(s: *Screen, cps: []const u21) usize {
     var x = s.cursor.x;
     var n: usize = 0;
     var cells: u16 = 0;
-    while (n < cps.len) : (n += 1) {
+    // Widths from the scan, so the write loop does not look them up again.
+    var widths: [256]u8 = undefined;
+    const limit = @min(cps.len, widths.len);
+    while (n < limit) : (n += 1) {
         const cp = cps[n];
         if (cp < 0x80 and !ascii_ok) break;
         const w = unicode.wcwidth(cp, wo);
         if (w != 1 and w != 2) break;
         const wu: u16 = @intCast(w);
         if (x + wu > right + 1) break;
+        widths[n] = @intCast(w);
         x += wu;
         cells += wu;
     }
@@ -186,8 +190,7 @@ fn fastRun(s: *Screen, cps: []const u21) usize {
     const proto: Cell = .{ .style = id, .protected = s.cursor.protected, .semantic = s.cursor.semantic };
     const cs = p.cells();
     var cx = x0;
-    for (cps[0..n]) |cp| {
-        const w = unicode.wcwidth(cp, wo);
+    for (cps[0..n], widths[0..n]) |cp, w| {
         var c = proto;
         c.content = @intCast(cp);
         if (w == 2) {
