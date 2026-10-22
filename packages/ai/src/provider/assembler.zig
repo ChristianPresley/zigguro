@@ -141,6 +141,20 @@ pub const MessageAssembler = struct {
         return .{ .role = .assistant, .content = blocks, .meta = a.meta() };
     }
 
+    /// `finish`, except that a tool call cut by `max_tokens` is dropped
+    /// (reported through `truncated_tool_use`) instead of failing.
+    pub fn finishLenient(a: *MessageAssembler) AssembleError!struct { message: proto.Message, truncated_tool_use: bool } {
+        const m = a.finish() catch |e| switch (e) {
+            error.InvalidToolInput => if (a.stop == .max_tokens) {
+                var p = try a.partial();
+                p.meta.stop = .max_tokens;
+                return .{ .message = p, .truncated_tool_use = true };
+            } else return e,
+            else => return e,
+        };
+        return .{ .message = m, .truncated_tool_use = false };
+    }
+
     /// What can be kept after an interruption: completed blocks plus text
     /// so far. Incomplete tool_use and thinking blocks are dropped (they
     /// cannot be partially recovered).
