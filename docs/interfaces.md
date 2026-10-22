@@ -583,3 +583,61 @@ fds passed to `call`/`emit` stay owned by the caller.
 
 ### Stability
 Experimental until the E01 PR merges.
+
+## zg_platform.wayland.wire.Connection
+
+### Defined in
+`packages/platform/src/wayland/wire/connection.zig`, with `socket.zig`,
+`fdqueue.zig`, `marshal.zig`, `objects.zig` and `registry.zig`; the test
+compositor is `packages/platform/src/wayland/testing/fake_compositor.zig`
+(E01.F03.S01.T02).
+
+### Implemented by
+E01.F03.S01.T02. The typed encoders and decoders it carries are generated
+into `wl_gen` by zg_build's `wayland_scanner` (E01.F03.S01.T01), which also
+emits per-interface `request_fds`, `event_fds`, `event_destructors` and
+`event_new_ids` tables for the connection.
+
+### Consumed by
+The Wayland backend (E01.F04): windows, input, clipboard, IME and the
+presenter. Tests of every Wayland task build on `FakeCompositor`.
+
+### Signature
+```zig
+pub fn connect(gpa: Allocator, io: std.Io, env: *std.process.Environ.Map) !*Connection; // removes WAYLAND_SOCKET from env
+pub fn fromFd(gpa: Allocator, io: std.Io, fd: i32) !*Connection;
+pub fn newId(self: *Connection, comptime I: type, handler: ?Handler) !I.Id;          // version I.version
+pub fn newIdVersion(self: *Connection, comptime I: type, version: u32, handler: ?Handler) !I.Id;
+pub fn setHandler(self: *Connection, obj: u32, handler: ?Handler) void;              // e.g. for objects events create
+pub fn send(self: *Connection, obj: u32, opcode: u16, args: anytype, fds: []const i32) !void; // via generated encoders
+pub fn flush(self: *Connection) !void;
+pub fn readSocket(self: *Connection) !usize;       // non-blocking
+pub fn dispatchPending(self: *Connection) !usize;
+pub fn roundtrip(self: *Connection) !void;
+pub fn roundtripTimeout(self: *Connection, timeout_ns: ?u64) !void;
+pub fn pollFd(self: *const Connection) i32;        // `fd` in the design
+// Handler: on_event(ctx, conn, obj, opcode, body: []const u32, fds: *FdQueue) anyerror!void
+// Registry
+pub fn init(conn: *Connection) !*Registry;         // get_registry + roundtrip
+pub fn bind(self: *Registry, comptime I: type, min_version: u32, max_version: u32, handler: ?Handler) !?I.Id;
+pub fn onGlobalRemove(self: *Registry, cb: ?RemoveCallback) void;
+```
+Usage: `const cb = try conn.newId(wl.wl_callback, h); try wl.wl_surface.frame(conn, surface, cb);`.
+Objects an event creates (server ids, e.g. `wl_data_device.data_offer`) are
+registered automatically with no handler; call `setHandler` from the
+creating event's handler to receive their events.
+
+### Threading
+Reading and dispatching belong to one thread. `send`, `flush`, `newId`,
+`setHandler` and `destroyed` lock, so a render thread may send requests
+while the platform thread dispatches. Handlers run on the dispatching
+thread.
+
+### Ownership/lifetime
+`body` views and string/array views decoded from it are valid only during
+the handler call. A handler owns the fds it pops; fds it leaves are closed
+after it returns. `send` duplicates the fds it is given, so callers keep
+(and close) their own. Client ids are reused only after `delete_id`.
+
+### Stability
+Experimental until the E01 PR merges.
