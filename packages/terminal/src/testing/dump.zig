@@ -62,8 +62,19 @@ pub fn dumpScreen(t: *const Terminal, w: *std.Io.Writer, o: DumpOptions) !void {
 /// followed by a newline.
 pub fn dumpScrollback(t: *const Terminal, w: *std.Io.Writer, o: DumpOptions) !void {
     const pl = &activeScreen(t).pages;
-    var left = pl.scrollbackRows();
-    var p = pl.screenRow(0);
+    // Cold scrollback, decoded into a scratch list at the current width.
+    for (pl.cold_nodes.items) |*c| {
+        var tmp: PageList = try .init(pl.gpa, pl.cols, 1, .{});
+        defer tmp.deinit();
+        try c.page.decode(pl.gpa, &tmp);
+        var q = tmp.screenRow(1);
+        while (q) |pin| : (q = PageList.next(pin)) {
+            try dumpRow(pin, w, o);
+            try w.writeByte('\n');
+        }
+    }
+    var left = pl.scrollbackRows() - pl.coldRows();
+    var p: ?PageList.Pin = pl.firstHot();
     while (left > 0) : (left -= 1) {
         const pin = p orelse break;
         try dumpRow(pin, w, o);
