@@ -520,7 +520,7 @@ pub const Editor = struct {
             },
             .text => |t| {
                 if (v.opts.read_only) return false;
-                try v.insertText(t);
+                try v.typeText(t);
                 ec.respond(.{ .changed = true });
                 ec.repaint();
                 return true;
