@@ -220,6 +220,24 @@ pub const Iterator = struct {
         while (it.pos < bytes.len) {
             const at = it.pos;
             const c0 = bytes[at];
+            // LB28 AL × AL: a run of ASCII letters after a letter has no
+            // opportunity (nor does the code tailoring add one); fold the
+            // run into the context as pushing each letter would.
+            if (std.ascii.isAlphabetic(c0) and it.state.raw == .AL and !it.state.zw and it.state.a.cls == .AL and !it.state.a.sot and it.state.a.cp < 0x80) {
+                var j = at + 1;
+                while (j < bytes.len and std.ascii.isAlphabetic(bytes[j])) j += 1;
+                const s = &it.state;
+                const last: Item = .{ .cls = .AL, .cp = bytes[j - 1] };
+                const before: Item = if (j - at >= 2) .{ .cls = .AL, .cp = bytes[j - 2] } else s.a;
+                s.ri_odd = false;
+                s.num = .none;
+                s.nsp_prev = before;
+                s.nsp = last;
+                s.aa = before;
+                s.a = last;
+                it.pos = j;
+                continue;
+            }
             var len: usize = 1;
             var ci: Item = undefined;
             if (c0 < 0x80) {

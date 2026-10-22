@@ -1,12 +1,13 @@
 //! `SHGetKnownFolderPath` for the folders the installer writes shortcuts
-//! to. Windows only.
+//! to, and the per-user program files folder it installs into. Windows
+//! only.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const w = @import("bindings.zig");
 
-pub const Folder = enum { programs, desktop };
+pub const Folder = enum { programs, desktop, user_program_files };
 
 /// The folder's path in UTF-8 without a trailing `\`, owned by the caller.
 pub fn knownFolderPath(gpa: Allocator, f: Folder) error{ Unsupported, NotFound, OutOfMemory }![]u8 {
@@ -14,6 +15,7 @@ pub fn knownFolderPath(gpa: Allocator, f: Folder) error{ Unsupported, NotFound, 
     const id = switch (f) {
         .programs => &w.FOLDERID_Programs,
         .desktop => &w.FOLDERID_Desktop,
+        .user_program_files => &w.FOLDERID_UserProgramFiles,
     };
     var p: ?w.LPWSTR = null;
     const hr = w.SHGetKnownFolderPath(id, 0, null, &p);
@@ -32,4 +34,13 @@ test "knownFolderPath: programs ends with \\Start Menu\\Programs" {
     const p = try knownFolderPath(std.testing.allocator, .programs);
     defer std.testing.allocator.free(p);
     try std.testing.expect(std.ascii.endsWithIgnoreCase(p, "\\Start Menu\\Programs"));
+}
+
+test "knownFolderPath: user program files ends with \\Programs" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    // Wine does not know this folder; setup falls back to %LOCALAPPDATA%.
+    if (w.underWine()) return error.SkipZigTest;
+    const p = try knownFolderPath(std.testing.allocator, .user_program_files);
+    defer std.testing.allocator.free(p);
+    try std.testing.expect(std.ascii.endsWithIgnoreCase(p, "\\Programs"));
 }

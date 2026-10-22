@@ -20,6 +20,8 @@ pub const path_env = @import("path_env.zig");
 pub const shortcut = @import("shortcut.zig");
 /// Known folders.
 pub const known_folders = @import("known_folders.zig");
+/// The app's and setup's named mutexes.
+pub const instance = @import("instance.zig");
 
 pub const shortcut_name = "zigguro.lnk";
 
@@ -74,6 +76,7 @@ test {
     _ = path_env;
     _ = shortcut;
     _ = known_folders;
+    _ = instance;
 }
 
 test "registry: real HKCU subtree, integrate then unintegrate" {

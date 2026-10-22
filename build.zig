@@ -62,6 +62,22 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(zigguro_exe);
     b.installArtifact(zg_exe);
 
+    // zigguro-setup (E17.F02.S01.T03): without a payload it is the helper
+    // that ships in `app\` (installed for Windows targets); `setup-exe`
+    // builds the installer around `-Dsetup-payload=<release zip>`.
+    const setup_payload = b.option([]const u8, "setup-payload", "setup-exe: the release zip the installer embeds");
+    const setup_optimize: std.builtin.OptimizeMode = if (f.optimize == .Debug) .Debug else .ReleaseSmall;
+    const setup_helper = addSetup(b, f, null, setup_optimize, &mods, options, res);
+    if (f.target.result.os.tag == .windows) b.installArtifact(setup_helper);
+    {
+        const step = b.step("setup-exe", "Build the Windows installer around -Dsetup-payload into zig-out/setup/");
+        if (setup_payload) |zip| {
+            const path: std.Build.LazyPath = if (std.fs.path.isAbsolute(zip)) .{ .cwd_relative = zip } else b.path(zip);
+            const exe = addSetup(b, f, path, setup_optimize, &mods, options, res);
+            step.dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "setup" } }, .pdb_dir = .disabled }).step);
+        } else step.dependOn(&b.addFail("setup-exe needs -Dsetup-payload=<path to zigguro-<version>-<target>.zip>").step);
+    }
+
     const run_zigguro = b.addRunArtifact(zigguro_exe);
     const run_zg = b.addRunArtifact(zg_exe);
     if (b.args) |a| {
@@ -73,6 +89,13 @@ pub fn build(b: *std.Build) void {
 
     // Tests: `test` runs every package; `test-<short>` runs one.
     const test_step = b.step("test", "Run the tests of every package and tool");
+    // zigguro-setup's install logic, on every OS.
+    {
+        const t = b.addTest(.{ .name = "zigguro-setup", .root_module = setupModule(b, f, null, f.optimize, &mods, options), .filters = test_filters });
+        const run = b.addRunArtifact(t);
+        b.step("test-setup", "Run the tests of apps/zigguro-setup").dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
     // The zigguro app's own wiring (agent panel adapters).
     {
         const t = b.addTest(.{ .name = "zigguro-app", .root_module = appModule(b, "apps/zigguro/src/tests.zig", f.target, f.optimize, &mods, options), .filters = test_filters });
@@ -324,6 +347,11 @@ pub fn build(b: *std.Build) void {
         const inst = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dist_dir } }, .pdb_dir = .disabled });
         package_run.step.dependOn(&inst.step);
     }
+    // The uninstall and update helper ships in the Windows app directory.
+    if (f.target.result.os.tag == .windows) {
+        const inst = b.addInstallArtifact(setup_helper, .{ .dest_dir = .{ .override = .{ .custom = dist_dir } }, .pdb_dir = .disabled });
+        package_run.step.dependOn(&inst.step);
+    }
     package_step.dependOn(&package_run.step);
 
     const transcript_run = b.addRunArtifact(transcript);
@@ -573,6 +601,42 @@ fn addApp(
         if (target.result.os.tag == .linux and target.result.abi.isGnu()) exe.root_module.link_libc = true;
     }
     return exe;
+}
+
+/// zigguro-setup.exe: the installer when `payload` is set, else the
+/// helper. A GUI-subsystem exe with the Common Controls v6 manifest.
+fn addSetup(
+    b: *std.Build,
+    f: zg_build.Flags,
+    payload: ?std.Build.LazyPath,
+    optimize: std.builtin.OptimizeMode,
+    mods: []const *std.Build.Module,
+    options: *std.Build.Module,
+    res: release_resources.Values,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{ .name = "zigguro-setup", .root_module = setupModule(b, f, payload, optimize, mods, options) });
+    exe.subsystem = .windows;
+    if (optimize == .ReleaseSmall) exe.root_module.strip = true;
+    release_resources.addWindowsResources(b, exe, .setup, res);
+    return exe;
+}
+
+fn setupModule(
+    b: *std.Build,
+    f: zg_build.Flags,
+    payload: ?std.Build.LazyPath,
+    optimize: std.builtin.OptimizeMode,
+    mods: []const *std.Build.Module,
+    options: *std.Build.Module,
+) *std.Build.Module {
+    const m = appModule(b, "apps/zigguro-setup/src/main.zig", f.target, optimize, mods, options);
+    const o = b.addOptions();
+    o.addOption(bool, "has_payload", payload != null);
+    o.addOption([]const u8, "payload_version", zg_build.versionWithMetadata(b, f));
+    o.addOption([]const u8, "payload_target", zg_build.releaseTarget(b, f.target.result));
+    m.addImport("setup_options", o.createModule());
+    if (payload) |p| m.addAnonymousImport("payload", .{ .root_source_file = p });
+    return m;
 }
 
 /// An app module rooted at `root`, importing every package.
