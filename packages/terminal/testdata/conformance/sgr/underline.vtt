@@ -1,0 +1,62 @@
+# Underline styles (4:n and 21) and underline colour (58, 59).
+@cite https://sw.kovidgoyal.net/kitty/underlines/
+
+@case 4:0 sets none underline
+@size 10x2
+@send "\e[4m\e[4:0mx"
+@expect-cell 1,1 underline=none
+
+@case 4:1 sets single underline
+@size 10x2
+@send "\e[4m\e[4:1mx"
+@expect-cell 1,1 underline=single
+
+@case 4:2 sets double underline
+@size 10x2
+@send "\e[4m\e[4:2mx"
+@expect-cell 1,1 underline=double
+
+@case 4:3 sets curly underline
+@size 10x2
+@send "\e[4m\e[4:3mx"
+@expect-cell 1,1 underline=curly
+
+@case 4:4 sets dotted underline
+@size 10x2
+@send "\e[4m\e[4:4mx"
+@expect-cell 1,1 underline=dotted
+
+@case 4:5 sets dashed underline
+@size 10x2
+@send "\e[4m\e[4:5mx"
+@expect-cell 1,1 underline=dashed
+
+@case SGR 4 sets single underline
+@size 10x2
+@send "\e[4mx"
+@expect-cell 1,1 underline=single
+
+@case SGR 21 sets double underline
+@size 10x2
+@send "\e[21mx"
+@expect-cell 1,1 underline=double
+
+@case SGR 24 clears the underline
+@size 10x2
+@send "\e[4:3m\e[24mx"
+@expect-cell 1,1 underline=none
+
+@case 58;5 sets a palette underline colour
+@size 10x2
+@send "\e[4;58;5;3mx"
+@expect-cell 1,1 ul=3
+
+@case 58:2 sets a truecolour underline colour
+@size 10x2
+@send "\e[4;58:2::255:0:0mx"
+@expect-cell 1,1 ul=rgb:ff0000
+
+@case 59 resets the underline colour
+@size 10x2
+@send "\e[58;5;3m\e[59mx"
+@expect-cell 1,1 ul=default
