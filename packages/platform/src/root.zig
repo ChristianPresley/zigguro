@@ -87,6 +87,34 @@ pub const process = struct {
     pub const spawn_linux = if (@import("builtin").os.tag == .linux) @import("process/spawn_linux.zig") else struct {};
 };
 
+/// XKB keymaps: parsing the text format, keysyms and key resolution.
+pub const xkb = struct {
+    /// See `xkb/keymap.zig`.
+    pub const Keymap = @import("xkb/keymap.zig").Keymap;
+    /// See `xkb/keymap.zig`.
+    pub const ModState = @import("xkb/keymap.zig").ModState;
+    /// See `xkb/keymap.zig`.
+    pub const Resolved = @import("xkb/keymap.zig").Resolved;
+    /// See `xkb/keymap.zig`.
+    pub const ParseError = @import("xkb/keymap.zig").ParseError;
+    /// See `xkb/parser.zig`.
+    pub const Diagnostic = @import("xkb/parser.zig").Diagnostic;
+    /// See `xkb/keysyms.zig`.
+    pub const keysyms = @import("xkb/keysyms.zig");
+    /// See `xkb/keysyms.zig`.
+    pub const keysymToCodepoint = keysyms.keysymToCodepoint;
+    /// See `xkb/keysyms.zig`.
+    pub const keysymName = keysyms.keysymName;
+    /// See `xkb/keysyms.zig`.
+    pub const keysymFromName = keysyms.keysymFromName;
+    /// See `xkb/evdev.zig`.
+    pub const evdevToKey = @import("xkb/evdev.zig").evdevToKey;
+    /// See `xkb/lexer.zig`.
+    pub const lexer = @import("xkb/lexer.zig");
+    /// See `xkb/parser.zig`.
+    pub const parser = @import("xkb/parser.zig");
+};
+
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
 pub const dbus = struct {
     /// See `dbus/signature.zig`.
@@ -171,6 +199,8 @@ test {
     std.testing.refAllDecls(process);
     std.testing.refAllDecls(fswatch);
     std.testing.refAllDecls(dbus);
+    std.testing.refAllDecls(xkb);
+    _ = @import("xkb/resolve.zig");
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
 
@@ -208,6 +238,14 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "dbus/message.zig", .src = @embedFile("dbus/message.zig") },
     .{ .path = "dbus/auth.zig", .src = @embedFile("dbus/auth.zig") },
     .{ .path = "dbus/conn.zig", .src = @embedFile("dbus/conn.zig") },
+    .{ .path = "xkb/lexer.zig", .src = @embedFile("xkb/lexer.zig") },
+    .{ .path = "xkb/ast.zig", .src = @embedFile("xkb/ast.zig") },
+    .{ .path = "xkb/parser.zig", .src = @embedFile("xkb/parser.zig") },
+    .{ .path = "xkb/keymap.zig", .src = @embedFile("xkb/keymap.zig") },
+    .{ .path = "xkb/resolve.zig", .src = @embedFile("xkb/resolve.zig") },
+    .{ .path = "xkb/keysyms.zig", .src = @embedFile("xkb/keysyms.zig") },
+    .{ .path = "xkb/keysym_data.zig", .src = @embedFile("xkb/keysym_data.zig") },
+    .{ .path = "xkb/evdev.zig", .src = @embedFile("xkb/evdev.zig") },
 };
 
 test "init starts the headless backend" {
