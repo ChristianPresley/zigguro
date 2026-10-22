@@ -348,15 +348,21 @@ fn addApp(
     var imports: std.ArrayList(std.Build.Module.Import) = .empty;
     imports.append(b.allocator, .{ .name = "zg_options", .module = options }) catch @panic("OOM");
     inline for (packages.all, 0..) |p, i| imports.append(b.allocator, .{ .name = p.name, .module = mods[i] }) catch @panic("OOM");
-    return b.addExecutable(.{
+    // Crash reports (E17.F05) need frame pointers and a GNU build id, and
+    // the self-hosted aarch64 backend traps before the segfault hook runs.
+    const exe = b.addExecutable(.{
         .name = name,
         .root_module = b.createModule(.{
             .root_source_file = b.path("apps/" ++ name ++ "/src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = imports.items,
+            .omit_frame_pointer = false,
         }),
+        .use_llvm = if (target.result.cpu.arch == .aarch64) true else null,
     });
+    if (target.result.ofmt == .elf) exe.build_id = .sha1;
+    return exe;
 }
 
 fn addTool(
