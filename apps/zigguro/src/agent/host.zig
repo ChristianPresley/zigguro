@@ -20,6 +20,7 @@ const zg_editor = @import("zg_editor");
 const zg_security = @import("zg_security");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
+const PlanCards = @import("plan_card.zig").PlanCards;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -50,6 +51,9 @@ pub const AgentHost = struct {
     mgr: *zg_ai.loop.AgentManager,
     /// The workbench's agent.
     agent: *Agent,
+    /// Plan mode and its approval cards (in the agent panel).
+    plans: PlanCards,
+    plan_mode: zg_ai.plan.PlanMode,
 
     /// An agent on the working folder whose file tools use the documents
     /// of `docs` and whose approvals go through `port`. UI thread.
@@ -113,6 +117,12 @@ pub const AgentHost = struct {
         h.agent = try h.mgr.create(.{ .model = env.get("ZG_MODEL") orelse "sonnet", .cwd = h.cwd });
         // Undo groups name the agent's session.
         h.files.edits.session = @truncate(h.agent.ref.session);
+        // Plan mode: `exit_plan_mode` asks through the panel's plan card.
+        h.plans = .init(gpa, io, app);
+        errdefer h.plans.deinit();
+        h.plan_mode = .init(gpa, h.agent, h.cwd, h.plans.approver(), .{ .tools = &h.agent_tools });
+        errdefer h.plan_mode.deinit();
+        try h.tools.addSource(h.plan_mode.source());
         return h;
     }
 
@@ -121,6 +131,8 @@ pub const AgentHost = struct {
     pub fn destroy(h: *AgentHost) void {
         const gpa = h.gpa;
         h.mgr.deinit();
+        h.plan_mode.deinit();
+        h.plans.deinit();
         h.approvals.deinit();
         h.agent_tools.deinit();
         h.files.deinit();
