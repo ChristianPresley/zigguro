@@ -10,10 +10,16 @@ pub const protocol = @import("gen/protocol.zig");
 pub const json = @import("proto/json.zig");
 /// `${...}` variable substitution for launch configurations and tasks.
 pub const variables = @import("config/variables.zig");
+/// The DAP wire peer: `DapConnection` and the message envelope.
+pub const conn = struct {
+    pub const DapConnection = @import("conn/DapConnection.zig");
+    pub const message = @import("conn/message.zig");
+};
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("config/variables_test.zig");
     _ = @import("proto/protocol_test.zig");
     _ = @import("testing/fake_adapter_test.zig");
+    _ = @import("conn/conn_test.zig");
 }
