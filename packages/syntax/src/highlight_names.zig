@@ -47,6 +47,8 @@ pub const HighlightId = enum(u16) {
     markup_link,
     markup_code,
     invalid,
+    /// GFM `~~strikethrough~~` (appended: values are stable).
+    markup_strikethrough,
     _,
 
     /// Number of named highlights.
