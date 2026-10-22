@@ -464,7 +464,11 @@ fn csiGreater(t: *Terminal, c: *const Csi) void {
         'c' => if (c.get(0, 0) == 0) reports.da2(t),
         'q' => if (c.get(0, 0) == 0) reports.xtversion(t),
         'u' => s.kitty_kb.push(@intCast(@min(c.get(0, 0), 31))),
-        else => {}, // XTMODKEYS and friends belong to key encoding (F04)
+        // XTMODKEYS: only modifyOtherKeys (resource 4) affects encoding.
+        'm' => if (c.get(0, 0) == 4) {
+            t.modify_other_keys = if (c.count >= 2) @intCast(@min(c.get(1, 0), 2)) else 0;
+        },
+        else => {},
     }
 }
 
