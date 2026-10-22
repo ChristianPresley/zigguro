@@ -114,6 +114,8 @@ pub const Workbench = struct {
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
+    /// Code block colours in the agent's replies (with the panel).
+    md_highlight: ?zg_editor.view.MarkdownHighlighter = null,
     /// Slash commands and skills, in the palette and the agent prompt.
     agent_cmds: ?*AgentCommands = null,
     focus_agent: bool = false,
@@ -555,6 +557,8 @@ pub const Workbench = struct {
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.md_highlight) |*h| h.deinit(wb.gpa);
+        wb.md_highlight = null;
         if (wb.review_view) |v| v.destroy();
         wb.review_view = null;
         if (wb.review_panel) |p| p.destroy();
@@ -760,6 +764,8 @@ pub const Workbench = struct {
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
         const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
+        if (wb.md_highlight) |*h| p.highlighter = h.highlighter();
         // Pasted images go to the project's .zigguro/attachments.
         if (std.fs.path.join(wb.gpa, &.{ wb.cwd, ".zigguro", "attachments" })) |dir| {
             defer wb.gpa.free(dir);
