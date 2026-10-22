@@ -20,9 +20,16 @@ const Harness = struct {
     path_buf: [std.fs.max_path_bytes]u8,
 
     fn init(h: *Harness, script: []const u8, ctx: Client.InitContext) !void {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        try h.initPath(try std.fmt.bufPrint(&buf, "{s}/testdata/transcripts/{s}", .{ options.package_root, script }), ctx);
+    }
+
+    /// Like `init`, with the script's full path.
+    fn initPath(h: *Harness, script_path: []const u8, ctx: Client.InitContext) !void {
         h.rt.initTesting();
         errdefer _ = h.rt.deinit();
-        const path = try std.fmt.bufPrint(&h.path_buf, "{s}/testdata/transcripts/{s}", .{ options.package_root, script });
+        const path = h.path_buf[0..script_path.len];
+        @memcpy(path, script_path);
         h.proc = try ServerProcess.start(&h.rt, .{
             .argv = &.{ fake, "--script", path, "--workspace", workspace },
             .name = "fake",
@@ -278,4 +285,72 @@ test "client: server gone during initialize" {
     h.proc.terminate(.fromMilliseconds(0));
     h.client.start() catch {};
     try testing.expectError(error.ServerGone, h.client.waitInitialized(.fromSeconds(10)));
+}
+
+/// The client-visible results of the lifecycle session.
+const LifecycleResults = struct {
+    server: []const u8,
+    first: []const u8,
+    second_null: bool,
+};
+
+fn runLifecycle(h: *Harness, arena: std.mem.Allocator) !LifecycleResults {
+    try h.client.start();
+    try h.client.waitInitialized(.fromSeconds(10));
+    const r1 = try h.client.requestBlocking(.@"textDocument/hover", hoverParams(0, 6), .{ .doc = zig_doc });
+    defer r1.deinit();
+    const r2 = try h.client.requestBlocking(.@"textDocument/hover", hoverParams(1, 0), .{ .doc = zig_doc });
+    defer r2.deinit();
+    const out: LifecycleResults = .{
+        .server = try arena.dupe(u8, h.client.serverInfo().?.name),
+        .first = try arena.dupe(u8, r1.ok.value.?.contents.markup_content.value),
+        .second_null = r2.ok.value == null,
+    };
+    h.client.shutdown();
+    try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, try h.exitStatus());
+    return out;
+}
+
+test "transcript: to-script round trip replays to identical client results" {
+    const transcript = @import("transcript.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ctx: Client.InitContext = .{ .root_uri = "file:///w", .trace_bodies = true };
+
+    // Record a session against the hand-written script.
+    var dumped: Io.Writer.Allocating = .init(a);
+    const want = blk: {
+        var h: Harness = undefined;
+        try h.init("client_lifecycle.script", ctx);
+        defer h.deinit();
+        errdefer h.dumpStderr();
+        const r = try runLifecycle(&h, a);
+        try h.client.traceRing().dump(a, &dumped.writer);
+        break :blk r;
+    };
+
+    // Turn the trace into a script and replay it.
+    var bad: usize = 0;
+    const lines = try transcript.normalize(a, try transcript.parse(a, dumped.written(), &bad), null);
+    var script: Io.Writer.Allocating = .init(a);
+    try transcript.toScript(a, lines, &script.writer);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "replay.script", .data = script.written() });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = dir_buf[0..try tmp.dir.realPath(testing.io, &dir_buf)];
+
+    var h: Harness = undefined;
+    try h.initPath(try std.fs.path.join(a, &.{ dir, "replay.script" }), ctx);
+    defer h.deinit();
+    errdefer {
+        h.dumpStderr();
+        std.debug.print("replayed script:\n{s}\n", .{script.written()});
+    }
+    const got = try runLifecycle(&h, a);
+    try testing.expectEqualStrings(want.server, got.server);
+    try testing.expectEqualStrings(want.first, got.first);
+    try testing.expectEqual(want.second_null, got.second_null);
+    try testing.expect(std.mem.indexOf(u8, script.written(), "> initialize {\"rootUri\":\"file://${workspace}\"}") != null);
 }
