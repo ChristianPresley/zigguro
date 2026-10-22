@@ -3394,7 +3394,9 @@ pub const model.History = struct {
     pub fn get(h, id) ?*const Apply; pub fn items(h) []const Apply; pub fn lastApplyOf(h, cs) ?*const Apply;
 };
 pub const model.Apply = struct { id: u64, kind: enum { apply, undo, restore }, cs: ?ChangesetId, undoes: ?u64,
-    session: ?u128, created_ms: i64, files: []const ApplyFile{ path, pre: ?BlobHash, post: ?BlobHash, pre_exec, post_exec } };
+    session: ?u128, created_ms: i64, files: []const ApplyFile{ path, from: ?[]const u8, pre: ?BlobHash, post: ?BlobHash, pre_exec, post_exec },
+    closed: []const Closed{ cs: ChangesetId, from: State } = &.{} };   // a restore's closed changesets, for redo
+pub fn model.revive(cs: *Changeset, to: State) !void;   // redo only: discarded → pending, rejected → partially_applied
 pub fn model.merge3.merge(gpa, base, ours, theirs, o: Options{ prefer: .ours | .theirs }) !Result{ text, conflicts };
 ```
 Deviations from the spec text:
@@ -3447,19 +3449,28 @@ pub const Checkpoints = struct {
     pub fn get(c, id) ?Checkpoint; pub fn listSession(c, session, out, gpa) !void;
     pub fn changesetsSince(c, id, scope: Scope, out: *ArrayList(ChangesetId), gpa) !void;
     pub fn restoreTo(c, arena, id, o: RestoreOptions{ dry_run = false, scope: .session | .all_agents = .session }) !RestoreReport;
+    pub fn redo(c, arena, restore_id: u64, o: RedoOptions{ dry_run = false }) !RedoReport;   // UnknownRestore, NotARestore, AlreadyRedone
 };
+pub const RedoReport = struct { restored: []const []const u8, conflicts: []const revert.Conflict,
+    revived: []const ChangesetId, record: ?u64, failed: ?txn.Failure };
 pub const RestoreReport = struct { restored: []const []const u8, conflicts: []const revert.Conflict,
     discarded: []const ChangesetId, record: ?u64, failed: ?txn.Failure };
 ```
 Deviations from the spec text:
-- Only agent-only mode. Full mode (E09 op restore), redo, the untracked
+- Only agent-only mode. Full mode (E09 op restore), the untracked
   report, symlink and hard-link skipping, ScmPort, retention and GC are
   not done.
+- A restore is recorded when it writes a file or closes a changeset. Redo
+  is recorded as an `undo` whose `undoes` is the restore; it reverts each
+  file three-way and revives only the closed changesets still in the
+  state the restore left them in. Revived changesets are not rebased (no
+  Rebaser yet).
 - Ordering uses `History` record ids and changeset ids, not store
   sequence numbers.
 - `create` copies the label; out of memory it still returns an id, which
   then restores as `error.UnknownCheckpoint`.
-- zg_review imports only `zg_ai_proto`, so the E10 binding is app glue:
+- zg_review imports only `zg_ai_proto`, so the E10 binding is app glue
+  (`apps/zigguro/src/agent/review_glue.zig`):
   `deps.Checkpoints{ .ctx = &checkpoints, .create = Checkpoints.createErased }`
   plus a `CheckpointRestore.restore_to` adapter that maps `RestoreReport`
   to `RestoreOutcome`.
@@ -3467,7 +3478,7 @@ Deviations from the spec text:
   agent turns on other lines survive (the spec accepted losing them).
 
 ### Threading
-`create` and `get` are thread-safe (`Io.Mutex`). `restoreTo`,
+`create` and `get` are thread-safe (`Io.Mutex`). `restoreTo`, `redo`,
 `changesetsSince` and the store sink run on the queue's owner thread.
 
 ### Ownership/lifetime
