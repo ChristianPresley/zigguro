@@ -4,6 +4,7 @@ const Registry = @import("Registry.zig");
 const routing = @import("routing.zig");
 
 const testing = std.testing;
+const Io = std.Io;
 
 fn ids(r: *const Registry, lang: []const u8, path: ?[]const u8, buf: []u8) ![]const u8 {
     var defs: std.ArrayList(*const Registry.ServerDef) = .empty;
@@ -141,4 +142,42 @@ test "routing: feature allow/deny and merge policy table" {
     try testing.expectEqualStrings("b", out[0..routing.select(u8, .semantic_tokens_full, &no_a, &out)]);
     try testing.expectEqual(routing.Policy.first, routing.policy(.rename));
     try testing.expectEqual(routing.Policy.merge_all, routing.policy(.references));
+}
+
+test "registry: version probe reads the first line" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const def: Registry.ServerDef = .{
+        .id = "sh",
+        .command = &.{"/bin/sh"},
+        .languages = &.{"x"},
+        .version_args = &.{ "-c", "echo; echo '  zls 0.16.0 '; echo more" },
+    };
+    var r: Registry = try .init(testing.allocator, .{});
+    defer r.deinit();
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    const v = (try r.probeVersion(testing.io, testing.allocator, &def, &env, .fromSeconds(2))).?;
+    defer testing.allocator.free(v);
+    try testing.expectEqualStrings("zls 0.16.0", v);
+}
+
+test "registry: version probe timeout" {
+    const io = testing.io;
+    // Sleeps until killed and prints nothing.
+    const def: Registry.ServerDef = .{
+        .id = "sleeper",
+        .command = &.{@import("zg_test_exes").fake_lsp_server},
+        .languages = &.{"x"},
+        .version_args = &.{"--sleep"},
+    };
+    var r: Registry = try .init(testing.allocator, .{});
+    defer r.deinit();
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    const t0 = Io.Clock.Timestamp.now(io, .awake);
+    try testing.expect(try r.probeVersion(io, testing.allocator, &def, &env, .fromSeconds(2)) == null);
+    const took = t0.durationTo(Io.Clock.Timestamp.now(io, .awake)).raw.toMilliseconds();
+    try testing.expect(took >= 1900 and took < 2200);
+    // A missing server is null at once.
+    try testing.expect(try r.probeVersion(io, testing.allocator, r.get("gopls").?, &env, .fromSeconds(2)) == null);
 }
