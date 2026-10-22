@@ -1,0 +1,215 @@
+//! `text-dump`: writes every golden format from zg_text itself so goldens
+//! can be produced and reviewed without third-party tools. Output goes to
+//! stdout, is deterministic and uses LF line endings.
+//!
+//!   text-dump metrics <font> [--index N]
+//!   text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
+//!   text-dump shape   <font> <text> [--features ...] [--dir rtl] [--script arab]
+//!   text-dump raster  <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coords wght=700,...]
+//!
+//! Subcommands whose engine is not merged yet print "not implemented" and
+//! exit with status 2.
+
+const std = @import("std");
+const zg_text = @import("zg_text");
+const ot = zg_text.ot;
+
+pub fn main(init: std.process.Init) !u8 {
+    const gpa = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(gpa);
+    var buf: [4096]u8 = undefined;
+    var fw = std.Io.File.stdout().writer(io, &buf);
+    const out = &fw.interface;
+    defer out.flush() catch {};
+    if (args.len < 3) return usage();
+    const cmd = args[1];
+    if (std.mem.eql(u8, cmd, "metrics")) {
+        var index: u32 = 0;
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--index") and i + 1 < args.len) {
+                i += 1;
+                index = try std.fmt.parseInt(u32, args[i], 10);
+            } else return usage();
+        }
+        var font = try ot.MappedFont.openAlloc(io, std.Io.Dir.cwd(), args[2], gpa);
+        defer font.close(io);
+        const face = ot.Face.init(font.bytes(), index) catch |e| {
+            std.debug.print("text-dump: cannot open face: {t}\n", .{e});
+            return 1;
+        };
+        try dumpMetrics(out, &face);
+        return 0;
+    }
+    if (std.mem.eql(u8, cmd, "outline")) {
+        var font = try ot.MappedFont.openAlloc(io, std.Io.Dir.cwd(), args[2], gpa);
+        defer font.close(io);
+        const face = ot.Face.init(font.bytes(), 0) catch |e| {
+            std.debug.print("text-dump: cannot open face: {t}\n", .{e});
+            return 1;
+        };
+        return dumpOutlines(out, gpa, &face, args[3..]);
+    }
+    if (std.mem.eql(u8, cmd, "raster")) {
+        var font = try ot.MappedFont.openAlloc(io, std.Io.Dir.cwd(), args[2], gpa);
+        defer font.close(io);
+        const face = ot.Face.init(font.bytes(), 0) catch |e| {
+            std.debug.print("text-dump: cannot open face: {t}\n", .{e});
+            return 1;
+        };
+        return dumpRaster(out, gpa, &face, args[3..]);
+    }
+    if (std.mem.eql(u8, cmd, "shape")) {
+        std.debug.print("text-dump {s}: not implemented\n", .{cmd});
+        return 2;
+    }
+    return usage();
+}
+
+fn usage() u8 {
+    std.debug.print(
+        \\usage: text-dump metrics <font> [--index N]
+        \\       text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
+        \\       text-dump shape   <font> <text> [--features "liga=0,ss01"] [--dir rtl] [--script arab]
+        \\       text-dump raster  <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coords wght=700,...]
+        \\
+    , .{});
+    return 2;
+}
+
+/// Writes "<gid> <path>" per requested glyph, in the `Path.format`
+/// grammar of the outline goldens. "all" means every glyph. `--coords`
+/// takes user values (tag=value,...); `--norm` takes normalized F2Dot14
+/// values in fvar axis order (n,n,...).
+fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face, specs: []const []const u8) !u8 {
+    if (specs.len == 0) return usage();
+    const vt = ot.variation;
+    var user: [vt.fvar.max_axes]vt.AxisValue = undefined;
+    var n_user: usize = 0;
+    var norm: [vt.fvar.max_axes]i16 = undefined;
+    var n_norm: ?usize = null;
+    var glyphs: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < specs.len) : (i += 1) {
+        const a = specs[i];
+        if ((std.mem.eql(u8, a, "--coords") or std.mem.eql(u8, a, "--norm")) and i + 1 < specs.len) {
+            i += 1;
+            var it = std.mem.splitScalar(u8, specs[i], ',');
+            if (a[2] == 'c') {
+                while (it.next()) |kv| {
+                    const eq = std.mem.indexOfScalar(u8, kv, '=') orelse return usage();
+                    if (eq != 4) return usage();
+                    user[n_user] = .{ .tag = std.mem.readInt(u32, kv[0..4], .big), .value = try std.fmt.parseFloat(f32, kv[5..]) };
+                    n_user += 1;
+                }
+            } else {
+                var k: usize = 0;
+                while (it.next()) |v| : (k += 1) norm[k] = try std.fmt.parseInt(i16, v, 10);
+                n_norm = k;
+            }
+        } else if (std.mem.startsWith(u8, a, "--")) {
+            return usage();
+        } else try glyphs.append(gpa, a);
+    }
+    var inst = if (n_norm) |k|
+        try vt.FaceInstance.initNormalized(gpa, face, norm[0..k])
+    else
+        try vt.FaceInstance.init(gpa, face, user[0..n_user]);
+    if (face.glyf() == null and face.cff() == null) {
+        std.debug.print("text-dump outline: no supported outlines ({t})\n", .{face.outline_kind});
+        return 1;
+    }
+    var scratch: vt.OutlineScratch = .{};
+    var path: zg_text.outline.Path = .{};
+    for (glyphs.items) |spec| {
+        var lo: u32 = undefined;
+        var hi: u32 = undefined;
+        if (std.mem.eql(u8, spec, "all")) {
+            lo = 0;
+            hi = face.num_glyphs;
+        } else {
+            lo = if (std.mem.startsWith(u8, spec, "U+"))
+                face.glyphIndex(try std.fmt.parseInt(u21, spec[2..], 16))
+            else
+                try std.fmt.parseInt(u16, spec, 10);
+            hi = lo + 1;
+        }
+        for (lo..hi) |gid| {
+            path.reset();
+            try w.print("{d} ", .{gid});
+            if (inst.outline(gpa, @intCast(gid), &scratch, &path)) |_| {
+                try path.format(w);
+            } else |e| try w.print("error.{t}", .{e});
+            try w.writeByte('\n');
+        }
+    }
+    inst.deinit(gpa);
+    return 0;
+}
+
+/// Writes one glyph's coverage bitmap as an ASCII PGM (P2), with the
+/// bearings in a comment line, so raster dumps diff as text.
+fn dumpRaster(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face, specs: []const []const u8) !u8 {
+    if (specs.len < 2) return usage();
+    const vt = ot.variation;
+    const gid: u16 = if (std.mem.startsWith(u8, specs[0], "U+"))
+        face.glyphIndex(try std.fmt.parseInt(u21, specs[0][2..], 16))
+    else
+        try std.fmt.parseInt(u16, specs[0], 10);
+    var params: zg_text.raster.RasterParams = .{ .px_per_em = try std.fmt.parseFloat(f32, specs[1]) };
+    var user: [vt.fvar.max_axes]vt.AxisValue = undefined;
+    var n_user: usize = 0;
+    var i: usize = 2;
+    while (i + 1 < specs.len) : (i += 2) {
+        if (std.mem.eql(u8, specs[i], "--subpixel")) {
+            params.subpixel_x = try std.fmt.parseFloat(f32, specs[i + 1]);
+        } else if (std.mem.eql(u8, specs[i], "--coords")) {
+            var it = std.mem.splitScalar(u8, specs[i + 1], ',');
+            while (it.next()) |kv| {
+                if (kv.len < 6 or kv[4] != '=') return usage();
+                user[n_user] = .{ .tag = std.mem.readInt(u32, kv[0..4], .big), .value = try std.fmt.parseFloat(f32, kv[5..]) };
+                n_user += 1;
+            }
+        } else return usage();
+    }
+    if (i != specs.len) return usage();
+    var inst = try vt.FaceInstance.init(gpa, face, user[0..n_user]);
+    defer inst.deinit(gpa);
+    var r: zg_text.raster.Rasterizer = .init(gpa);
+    defer r.deinit();
+    const bm = r.rasterizeGlyph(&inst, gid, params) catch |e| {
+        std.debug.print("text-dump raster: {t}\n", .{e});
+        return 1;
+    };
+    try w.print("P2\n# gid {d} px {d} left {d} top {d}\n{d} {d}\n255\n", .{ gid, params.px_per_em, bm.left, bm.top, bm.width, bm.height });
+    for (0..bm.height) |y| {
+        for (bm.row(y), 0..) |v, x| try w.print("{s}{d}", .{ if (x == 0) "" else " ", v });
+        try w.writeByte('\n');
+    }
+    return 0;
+}
+
+/// Writes `.{ .metrics = FontMetrics, .style = Style, ... }` as ZON.
+pub fn dumpMetrics(w: *std.Io.Writer, face: *const ot.Face) !void {
+    var nb: [256]u8 = undefined;
+    try w.writeAll(".{\n");
+    try w.print("    .family = \"{f}\",\n", .{std.zig.fmtString(face.names().get(.family, &nb) orelse "")});
+    try w.print("    .subfamily = \"{f}\",\n", .{std.zig.fmtString(face.names().get(.subfamily, &nb) orelse "")});
+    try w.print("    .num_glyphs = {d},\n", .{face.num_glyphs});
+    try w.print("    .outline = .{t},\n", .{face.outline_kind});
+    try w.print("    .metrics = ", .{});
+    try writeStruct(w, face.metrics());
+    try w.print(",\n    .style = ", .{});
+    try writeStruct(w, face.style());
+    try w.writeAll(",\n}\n");
+}
+
+fn writeStruct(w: *std.Io.Writer, v: anytype) !void {
+    try w.writeAll(".{ ");
+    inline for (@typeInfo(@TypeOf(v)).@"struct".fields, 0..) |f, i| {
+        if (i != 0) try w.writeAll(", ");
+        try w.print(".{s} = {any}", .{ f.name, @field(v, f.name) });
+    }
+    try w.writeAll(" }");
+}

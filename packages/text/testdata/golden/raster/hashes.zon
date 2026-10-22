@@ -1,0 +1,12 @@
+// FNV-1a 64 of the golden glyph bitmaps (size, bearings, pixels) per font
+// and pixel size (8, 11, 14, 20, 32, 72), from `goldenHashes` in
+// src/raster/coverage_test.zig. They must be identical on every target; a
+// deliberate rasterizer change regenerates them from the test's output.
+.{
+    .fonts = .{
+        .{ .file = "JetBrainsMono[wght].ttf", .hashes = .{ 0x4dc730dc85da2400, 0x2b8704fc2fd719d5, 0x88727969676110fc, 0x5f704474b7e43785, 0x7d01e77f31fece0b, 0xf8162fec2aeafd92 } },
+        .{ .file = "SourceSerif4-Regular.otf", .hashes = .{ 0xe6adaaa227be1614, 0x2a30d040c3cadf42, 0x8a59468854994e25, 0xb7e1eeecccfa9534, 0xc8389a6b300b906d, 0x2596717cafd19e37 } },
+        .{ .file = "SourceHanSansJP-Subset.otf", .hashes = .{ 0x8aaf1b9989129cfd, 0xde1ed5dcabaccea5, 0x58349b02fc21aa3c, 0x04087400ac6e4d18, 0x2499601fa6f8c85c, 0xf20a03aabe2051a4 } },
+        .{ .file = "NotoSansArabic-Subset.ttf", .hashes = .{ 0xd1537180536849bf, 0xb15c635d859eebf9, 0xb752b431cd10f1d8, 0x0060db87fa3a6ba6, 0xd73fa8352110d068, 0x314b46623f359af5 } },
+    },
+}
