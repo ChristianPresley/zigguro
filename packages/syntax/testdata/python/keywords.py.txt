@@ -1,0 +1,25 @@
+import os
+from sys import argv as args
+def main(n: int) -> None:
+    global counter
+    for i in range(n):
+        if i % 2 == 0 and not done:
+            continue
+        elif i in seen or i is None:
+            break
+        else:
+            pass
+    while True:
+        try:
+            raise ValueError("x")
+        except ValueError as e:
+            del e
+        finally:
+            return
+    with open("f") as fh:
+        yield fh
+    assert counter > 0
+    x = lambda y: y + 1
+async def run():
+    await task
+    nonlocal_value = False
