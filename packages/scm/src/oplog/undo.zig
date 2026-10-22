@@ -2,7 +2,8 @@
 //!
 //! - `undo` (op revert) reverts one operation's effect, even when later
 //!   operations happened: the current view is merged three ways with
-//!   base `view(X)` and `view(parent(X))` as the other side.
+//!   base `view(X)` and `view(parent(X))` as the other side. For an adopt
+//!   operation the parent is the one it was adopted onto.
 //! - `restore` replaces the whole view with an older one; history is kept.
 //! - `abandonAncestors` drops old operations so GC can reclaim them: the
 //!   kept operations are rewritten with their abandoned parents replaced
@@ -34,7 +35,10 @@ pub fn undo(repo: *Repo, which: ObjectId, meta: OpMeta) !*Repo {
     const a = t.arena();
     const x = try op_mod.read(Operation, repo.store, a, which);
     if (x.parents.len == 0) return error.CannotUndoRoot;
-    if (x.parents.len > 1) return error.CannotUndoMerge;
+    // An adopt operation (adopt.zig) is undone against the operation it
+    // was adopted onto, its first parent; other merges have no single
+    // "before".
+    if (x.parents.len > 1 and x.meta.tag("adopted") == null) return error.CannotUndoMerge;
     const parent = try op_mod.read(Operation, repo.store, a, x.parents[0]);
     const base = try op_mod.read(View, repo.store, a, x.view);
     const right = try op_mod.read(View, repo.store, a, parent.view);
@@ -186,7 +190,5 @@ pub fn abandonAncestors(repo: *Repo, upto: ObjectId) !*Repo {
     try b.commit();
     const new_head = mapped.get(repo.op()).?;
     try op_heads.publish(repo.io, repo.heads_dir, new_head, &.{repo.op()});
-    const dir = try repo.dupHeadsDir();
-    errdefer dir.close(repo.io);
-    return Repo.fromOp(gpa, repo.io, repo.store, dir, repo.opts, new_head, false);
+    return repo.reopen(new_head, false);
 }
