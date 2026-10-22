@@ -273,7 +273,7 @@ test "delta hook moves points and phantoms" {
     const g = try f.view(2);
     const Hook = struct {
         calls: u32 = 0,
-        fn apply(ctx: *anyopaque, gid: u16, pts: [][2]f32, ends: []const u16, is_composite: bool) error{Malformed}!void {
+        fn apply(ctx: *anyopaque, gid: u16, pts: [][2]f32, ends: []const u16, is_composite: bool) error{ Malformed, OutOfMemory }!void {
             const h: *@This() = @ptrCast(@alignCast(ctx));
             h.calls += 1;
             if (is_composite) {
@@ -426,7 +426,7 @@ fn fuzzOne(input: []const u8) !void {
     var p: Path = .{};
     defer p.deinit(gpa);
     const Hook = struct {
-        fn apply(_: *anyopaque, _: u16, pts: [][2]f32, _: []const u16, _: bool) error{Malformed}!void {
+        fn apply(_: *anyopaque, _: u16, pts: [][2]f32, _: []const u16, _: bool) error{ Malformed, OutOfMemory }!void {
             for (pts) |*q| q[0] += 1;
         }
     };
