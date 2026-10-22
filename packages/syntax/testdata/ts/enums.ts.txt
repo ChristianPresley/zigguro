@@ -1,0 +1,4 @@
+enum Color { Red, Green = "green", Blue = 4 }
+const enum Flags { None = 0, A = 1 << 0, B = 1 << 1 }
+declare enum Ambient { X }
+const c: Color = Color.Red;

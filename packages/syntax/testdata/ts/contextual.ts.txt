@@ -1,0 +1,8 @@
+const type = "a";
+const as = 1, of = 2, get = 3;
+type T = typeof type;
+let x = value as unknown as string;
+for (const k of keys) {}
+const n: number = obj.number;
+const s = config satisfies Config;
+function isString(v: unknown): v is string { return typeof v === "string"; }

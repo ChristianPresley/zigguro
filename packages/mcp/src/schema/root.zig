@@ -32,6 +32,7 @@ pub const Output = @import("validate.zig").Output;
 pub const ValidateError = @import("validate.zig").ValidateError;
 pub const validate = @import("validate.zig").validate;
 pub const equal = @import("validate.zig").equal;
+pub const hashValue = @import("validate.zig").hash;
 pub const toolValidator = @import("tool_validator.zig").toolValidator;
 
 test {

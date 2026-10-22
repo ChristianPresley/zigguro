@@ -34,6 +34,7 @@ const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
+const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
 const path_crumbs = @import("path_crumbs.zig");
 
 const Ui = zg_gui.Ui;
@@ -69,6 +70,7 @@ pub const Workbench = struct {
     /// The dock panels of the terminal and the agent, once created.
     terminal_ref: ?PanelRef = null,
     agent_ref: ?PanelRef = null,
+    review_ref: ?PanelRef = null,
     /// The current file's panel.
     cur_panel: ?PanelRef = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
@@ -106,6 +108,10 @@ pub const Workbench = struct {
     /// Slash commands and skills, in the palette and the agent prompt.
     agent_cmds: ?*AgentCommands = null,
     focus_agent: bool = false,
+    /// The review queue (needs the agent), created on first show.
+    review_panel: ?*QueuePanel = null,
+    /// Scratch for the review tab's badge.
+    review_badge: [12]u8 = undefined,
 
     /// One open file and its dock panel; the current one is mirrored in
     /// the fields above.
@@ -123,6 +129,7 @@ pub const Workbench = struct {
     const kind_editor: zg_gui.dock.model.PanelKindId = 1;
     const kind_terminal: zg_gui.dock.model.PanelKindId = 2;
     const kind_agent: zg_gui.dock.model.PanelKindId = 3;
+    const kind_review: zg_gui.dock.model.PanelKindId = 4;
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -321,6 +328,8 @@ pub const Workbench = struct {
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.review_panel) |p| p.destroy();
+        wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
@@ -386,6 +395,7 @@ pub const Workbench = struct {
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
+        .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
@@ -512,6 +522,26 @@ pub const Workbench = struct {
         w.afterNextFrame(.{ .ctx = wb, .f = focusAgent });
     }
 
+    /// Shows the review queue in the left area (starting the agent, whose
+    /// edits it lists), or hides it.
+    pub fn toggleReview(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        if (wb.shown(wb.review_ref) and wb.areaOf(wb.review_ref) != .center) {
+            wb.conceal(wb.review_ref.?);
+            return;
+        }
+        if (wb.agent == null) try wb.toggleAgent();
+        const host = wb.agent orelse return;
+        if (wb.review_panel == null) {
+            const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
+            p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            wb.review_panel = p;
+        }
+        if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
+        try wb.reveal(wb.review_ref.?, .left);
+        w.markAllDirty();
+    }
+
     /// A palette "AI: /name" command: opens the agent pane and runs
     /// `/name`, or for one that takes arguments, puts `/name ` in the
     /// prompt.
@@ -601,13 +631,17 @@ pub const Workbench = struct {
         wb.header(ui);
         wb.terminal_node = .none;
         ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
-        wb.sideArea(ui, .left, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.left)].size }, .shrink = 0 });
+        wb.sideArea(ui, .left, .{ .w = .{ .px = wb.areaSize(.left) }, .shrink = 0 });
+        wb.sash(ui, .left);
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
         wb.sideArea(ui, .center, .{ .grow = 1, .basis = .{ .px = 0 } });
-        wb.sideArea(ui, .bottom, .{ .h = .{ .pct = 38 }, .shrink = 0 });
+        wb.sash(ui, .bottom);
+        wb.sideArea(ui, .bottom, .{ .h = .{ .px = wb.areaSize(.bottom) }, .shrink = 0 });
         ui.close();
-        wb.sideArea(ui, .right, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.right)].size }, .shrink = 0 });
-        wb.sideArea(ui, .agent, .{ .w = .{ .px = agent_w }, .shrink = 0 });
+        wb.sash(ui, .right);
+        wb.sideArea(ui, .right, .{ .w = .{ .px = wb.areaSize(.right) }, .shrink = 0 });
+        wb.sash(ui, .agent);
+        wb.sideArea(ui, .agent, .{ .w = .{ .px = wb.areaSize(.agent) }, .shrink = 0 });
         ui.close();
         if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |f| {
             wb.editor_node = f.node;
@@ -620,7 +654,38 @@ pub const Workbench = struct {
         wb.statusBar(ui);
     }
 
-    const agent_w: f32 = 380;
+    /// The room the center keeps when a side area grows.
+    const center_min: f32 = 160;
+
+    fn areaSize(wb: *const Workbench, area: Area) f32 {
+        return wb.dock.areas[@intFromEnum(area)].size;
+    }
+
+    fn areaShown(wb: *const Workbench, area: Area) bool {
+        const a = wb.dock.areas[@intFromEnum(area)];
+        return a.visible and a.root != null;
+    }
+
+    /// The resize handle on `area`'s inner edge, when it is shown. The
+    /// area may grow until the center keeps `center_min`.
+    fn sash(wb: *Workbench, ui: *Ui, area: Area) void {
+        if (!wb.areaShown(area)) return;
+        const win = ui.win.size;
+        const t = zg_gui.dock.splitter.thickness;
+        var others: f32 = 0;
+        const avail = if (area == .bottom) win.h - 120 else blk: {
+            for ([_]Area{ .left, .right, .agent }) |o| {
+                if (o != area and wb.areaShown(o)) others += wb.areaSize(o) + t;
+            }
+            break :blk win.w - others - t;
+        };
+        zg_gui.dock.area_sash.areaSash(ui, .{
+            .dock = &wb.dock,
+            .area = area,
+            .min_px = if (area == .bottom) 80 else 170,
+            .max_px = avail - center_min,
+        });
+    }
 
     /// `area` in a box styled `st`, when shown.
     fn sideArea(wb: *Workbench, ui: *Ui, area: Area, st: zg_gui.Style) void {
@@ -655,6 +720,7 @@ pub const Workbench = struct {
         return switch (wb.kindOf(p) orelse 0) {
             kind_terminal => .{ .title = "Terminal", .badge = if (wb.terminal) |t| t.noteText() else "" },
             kind_agent => .{ .title = "Agent" },
+            kind_review => .{ .title = "Review", .badge = if (wb.review_panel) |r| r.badge(&wb.review_badge) else "" },
             else => .{ .title = "?" },
         };
     }
@@ -675,6 +741,7 @@ pub const Workbench = struct {
                 defer ui.close();
                 a.build(ui);
             },
+            kind_review => if (wb.review_panel) |r| r.build(ui),
             else => {},
         }
     }
@@ -694,7 +761,7 @@ pub const Workbench = struct {
             wb.notify(.warning, "{s} has unsaved changes: save it first", .{if (f.path) |path| std.fs.path.basename(path) else "Untitled"});
             return false;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -719,6 +786,7 @@ pub const Workbench = struct {
             .{ .id = "save", .label = "Save", .tooltip = "Save (Ctrl+S)", .action = "file.save", .priority = 1000, .enabled = wb.path != null },
             .{ .id = "terminal", .label = "Terminal", .tooltip = "Toggle Terminal (Ctrl+`)", .action = "terminal.toggle", .toggled = wb.shown(wb.terminal_ref), .priority = 10 },
             .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.shown(wb.agent_ref), .priority = 20 },
+            .{ .id = "review", .label = "Review", .tooltip = "Toggle Review Queue", .action = "review.queue.toggle", .toggled = wb.shown(wb.review_ref), .priority = 15 },
             .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });

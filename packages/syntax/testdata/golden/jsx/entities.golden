@@ -1,0 +1,2 @@
+1| keyword.storage:const variable:t operator:= punctuation:< tag:p punctuation:> string:Fish  string.escape:&amp; string: Chips  string.escape:&lt; string:3  string.escape:&copy; string: 2024  string.escape:&nbsp; punctuation:</ tag:p punctuation:> punctuation.delimiter:;
+2| keyword.storage:const variable:u operator:= punctuation:< tag:p punctuation:> string:Tom & Jerry punctuation:</ tag:p punctuation:> punctuation.delimiter:;

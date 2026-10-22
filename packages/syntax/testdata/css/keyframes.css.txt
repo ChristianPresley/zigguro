@@ -1,0 +1,6 @@
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  50% { opacity: 0.5; }
+  to { transform: rotate(360deg); }
+}
+.spinner { animation: spin 1s linear infinite; }

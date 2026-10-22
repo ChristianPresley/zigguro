@@ -111,7 +111,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
         .ok => |r| r,
         .denied => |why| return files.errOut(a, try std.fmt.allocPrint(a, "Access to {s} is denied: {s}", .{ path, why })),
     };
-    switch (ft.files.kind(c.io, r.abs)) {
+    switch (ft.files.kindAs(c.io, r.abs, c.agent)) {
         .missing => return files.errOut(a, try std.fmt.allocPrint(a, "File not found: {s}. Use a search tool to locate it.", .{r.rel})),
         .directory => return files.errOut(a, try std.fmt.allocPrint(a, "{s} is a directory; use list_dir.", .{r.rel})),
         .file => {},
@@ -119,7 +119,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
     const offset = files.int(c.input, "offset");
     const limit = files.int(c.input, "limit");
     const max: usize = if (offset != null and limit != null) std.math.maxInt(usize) else @intCast(ft.cfg.large_file_bytes + 1);
-    const read = ft.files.read(c.io, a, r.abs, max) catch |e| switch (e) {
+    const read = ft.files.readAs(c.io, a, r.abs, max, c.agent) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Canceled => return error.Canceled,
         else => return files.errOut(a, try std.fmt.allocPrint(a, "Could not read {s}: {s}", .{ r.rel, @errorName(e) })),
@@ -176,7 +176,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
         if (last < total) w.print("[{d} more lines; read on with offset={d}]\n", .{ total - last, last + 1 }) catch break :write;
     }
     try ft.tracker.record(c.agent, r.abs, read.version, .{ .first = first, .last = last });
-    return files.textOut(a, out.written());
+    return FileTools.withNotes(c, read.notes, try files.textOut(a, out.written()));
 }
 
 fn encoded(c: *proto.ToolCall, ft: *FileTools, r: files.Resolved, read: files.Read, kind: Sniff, as: enum { image, document }) proto.ToolError!proto.ToolOutput {

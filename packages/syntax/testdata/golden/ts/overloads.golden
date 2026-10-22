@@ -1,0 +1,5 @@
+1| keyword.storage:function function:pick punctuation.bracket:( variable:x operator:: type.builtin:string punctuation.bracket:) operator:: type.builtin:string punctuation.delimiter:;
+2| keyword.storage:function function:pick punctuation.bracket:( variable:x operator:: type.builtin:number punctuation.bracket:) operator:: type.builtin:number punctuation.delimiter:;
+3| keyword.storage:function function:pick punctuation.bracket:( variable:x operator:: type.builtin:any punctuation.bracket:) punctuation.bracket:{ keyword.control:return variable:x punctuation.delimiter:; punctuation.bracket:}
+4| keyword.storage:const variable:ratio operator:= variable:total operator:/ variable:count operator:/ number:2 punctuation.delimiter:;
+5| keyword.storage:const variable:re operator:= string.special:/ab+c/g punctuation.delimiter:;

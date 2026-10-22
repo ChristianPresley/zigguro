@@ -1,0 +1,10 @@
+if (a) { return 1; } else if (b) { throw new Error("x"); }
+for (let i = 0; i < n; i++) { continue; }
+while (true) { break; }
+do { x--; } while (x > 0);
+switch (k) { case 1: break; default: void 0; }
+try { f(); } catch (e) { console.error(e); } finally { done(); }
+const t = typeof x === "string" && x instanceof Object;
+var v = this.value ?? null;
+delete obj[key];
+debugger;

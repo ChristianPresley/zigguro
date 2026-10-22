@@ -1,0 +1,7 @@
+/* header comment */
+.a { color: red; /* inline */ }
+/*
+  multi-line
+  comment
+*/
+.b { margin: 0 }

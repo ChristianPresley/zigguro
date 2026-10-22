@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:f operator:= punctuation.bracket:(
+2| punctuation:<>
+3| string:     punctuation:< type:Title punctuation:/>
+4| string:     punctuation.bracket:{ variable:children punctuation.bracket:}
+5| string:   punctuation:</ punctuation:>
+6| punctuation.bracket:) punctuation.delimiter:;

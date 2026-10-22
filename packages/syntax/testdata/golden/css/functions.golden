@@ -1,0 +1,7 @@
+1| type:.f punctuation.bracket:{
+2| property:width punctuation.delimiter:: function.builtin:calc punctuation.bracket:( number:100% operator:- number:2 operator:* function.builtin:var punctuation.bracket:( variable:--gap punctuation.bracket:) punctuation.bracket:) punctuation.delimiter:;
+3| property:color punctuation.delimiter:: function.builtin:hsl punctuation.bracket:( number:210 number:50% number:40% operator:/ number:0.8 punctuation.bracket:) punctuation.delimiter:;
+4| property:background punctuation.delimiter:: function.builtin:linear-gradient punctuation.bracket:( constant:to constant:right punctuation.delimiter:, constant:#fff number:0% punctuation.delimiter:, constant:#000 number:100% punctuation.bracket:) punctuation.delimiter:;
+5| property:grid-template-columns punctuation.delimiter:: function.builtin:repeat punctuation.bracket:( constant:auto-fill punctuation.delimiter:, function.builtin:minmax punctuation.bracket:( number:200px punctuation.delimiter:, number:1fr punctuation.bracket:) punctuation.bracket:) punctuation.delimiter:;
+6| property:inset punctuation.delimiter:: function.builtin:clamp punctuation.bracket:( number:1rem punctuation.delimiter:, number:2vw punctuation.delimiter:, number:3rem punctuation.bracket:) punctuation.delimiter:;
+7| punctuation.bracket:}

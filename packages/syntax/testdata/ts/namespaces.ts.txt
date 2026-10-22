@@ -1,0 +1,7 @@
+namespace Geometry {
+  export interface Point { x: number; y: number }
+  export namespace Shapes {
+    export const unit = 1;
+  }
+}
+module Legacy { export let v = 0; }

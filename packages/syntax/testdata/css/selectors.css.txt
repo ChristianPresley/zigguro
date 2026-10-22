@@ -1,0 +1,6 @@
+body, html { margin: 0; }
+.card > .title + p ~ span { color: red; }
+#main .item:hover::after { content: ""; }
+ul li:nth-child(2n+1) { color: blue; }
+* { box-sizing: border-box; }
+a:not(.active):focus-visible { outline: none; }

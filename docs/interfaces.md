@@ -2731,6 +2731,7 @@ Internal to E02 behind `r2d.Renderer`.
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
 structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
 E05.F04.S02.T03 (JSON/JSONC, TOML and shell),
+E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2814,7 +2815,8 @@ pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
 pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language,
-    json_language, jsonc_language, toml_language, shell_language: Language;
+    json_language, jsonc_language, toml_language, shell_language,
+    javascript_language, typescript_language, jsx_language, tsx_language, css_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
@@ -2840,6 +2842,13 @@ pub fn json.lexLineWith(comptime dialect: enum { json, jsonc }, st, s, out) void
 // langs/shell.zig: `mode` = stack depth | queued here-documents << 8 | in-body 0x800 | continued 0x1000 |
 // case pattern 0x2000; `aux` = context stack (shell.Ctx codes, at most 8), then each here-document as a
 // header byte (0x80 strip tabs, 0x40 quoted, length) and its delimiter (at most 4 queued).
+// langs/js.zig: one lexer for JS/TS/JSX/TSX. `mode` bit 0 = "a `/` divides" (the regex-vs-division heuristic),
+// then block comment and string-continuation bits; `aux` = frame stack (js.Frame: template text, `${ }` and JSX
+// `{ }` expressions with their open-brace count, JSX opening tag, closing tag, children; at most 16).
+pub const js.Dialect = packed struct { typescript: bool = false, jsx: bool = false };
+pub fn js.lexLineWith(comptime d: Dialect, st, s, out) void;
+// langs/css.zig: `depth` = brace depth (selectors at 0, declarations inside; a line whose `{` comes before `;`/`}`
+// is a nested selector); `mode` = block comment | value continues | at-rule prelude.
 ```
 
 ### Threading
@@ -3699,3 +3708,53 @@ Everything returned is in the caller's arena.
 
 ### Stability
 Unstable until E10 binds it.
+
+## zg_review.queue_view (QueueModel)
+
+### Defined in
+`packages/review/src/queue_view/queue_model.zig` (E12.F03.S01.T01); see `packages/review/docs/queue.md`.
+
+### Implemented by
+E12.F03.S01.T01.
+
+### Consumed by
+The review queue panel (apps/zigguro), `zg review` (E12.F03.S05.T01), the E10 agent tabs and the status bar (`counts`).
+
+### Signature
+```zig
+pub const QueueFilter = struct { states: StateMask = pending_like, origins: ?OriginMask = null, agent: ?[]const u8 = null,
+    path_glob: ?[]const u8 = null, has_conflicts: ?bool = null, text: ?[]const u8 = null };
+pub fn parseFilter(arena, text: []const u8) !QueueFilter;   // "state:pending path:src/** agent:x origin:lsp conflicts:yes free text"
+pub const GroupBy = enum { session, agent, origin, path, none };
+pub const Row = struct { kind: enum { group, changeset, file }, depth: u8, label, cs: ?ChangesetId, file: u32,
+    files: u32, added: u32, removed: u32, conflicts: u32, created_ms: i64, expanded: bool, count: u32 };
+pub const Counts = struct { pending_changesets, pending_hunks, conflicts, approvals: u32, per_session: []const SessionCount };
+pub const QueueModel = struct {
+    pub fn init(gpa, q: *Queue, o: Options{ group_by = .session, conflicts: ?*const ConflictIndex, names: ?SessionNames, now_ms: ?fn () i64 }) !*QueueModel;
+    pub fn deinit(m) void;
+    pub fn setFilter(m, f: QueueFilter) !void;
+    pub fn setGroupBy(m, g: GroupBy) void;
+    pub fn toggle(m, row: usize) !void;
+    pub fn rows(m) []const Row;     // rebuilt lazily after a change
+    pub fn counts(m) Counts;
+    version: u64,
+};
+```
+Deviations from the spec text:
+- The model lives in zg_review (`queue_view`), not in a `ui/` module:
+  it imports no GUI code. `parseFilter` takes an arena.
+- Rows are rebuilt with one sort after a change (O(n log n)), not kept
+  sorted by binary-search insertion. Per-changeset display data is still
+  computed at event time.
+- Not done here: the panel widget, the explorer decoration provider (E08
+  has no provider interface yet), notifications, and E15 commands.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Row labels belong to the model and stay valid until the rows are
+rebuilt.
+
+### Stability
+Unstable until the panel binds it.

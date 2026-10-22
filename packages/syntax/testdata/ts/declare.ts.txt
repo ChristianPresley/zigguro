@@ -1,0 +1,9 @@
+declare module "lib" {
+  export function f(x: number): string;
+}
+declare global {
+  interface Window { app: App }
+}
+declare const VERSION: string;
+export type { User } from "./user";
+import type { Config } from "./config";

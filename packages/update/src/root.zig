@@ -10,6 +10,9 @@
 //! - `stage`: extraction and checks into `<root>/staged/`.
 //! - `disk`: free space on the install volume.
 //! - `updater`: the pipeline (`Updater`), its `Status` and schedule loop.
+//! - `journal`: the swap journal.
+//! - `swap`: the journaled `app/` swap, its recovery and rollback.
+//! - `boot_health`: pending/healthy tracking and automatic rollback.
 
 const std = @import("std");
 
@@ -35,6 +38,12 @@ pub const disk = @import("disk.zig");
 pub const updater = @import("updater.zig");
 pub const Updater = updater.Updater;
 pub const Status = updater.Status;
+/// The swap journal.
+pub const journal = @import("journal.zig");
+/// The journaled swap and rollback.
+pub const swap = @import("swap.zig");
+/// Boot health and automatic rollback.
+pub const boot_health = @import("boot_health.zig");
 
 test {
     std.testing.refAllDecls(@This());
@@ -48,4 +57,7 @@ test {
     _ = stage;
     _ = disk;
     _ = updater;
+    _ = journal;
+    _ = swap;
+    _ = boot_health;
 }

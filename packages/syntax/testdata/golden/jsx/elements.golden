@@ -1,0 +1,3 @@
+1| keyword.storage:const variable:a operator:= punctuation:< tag:div punctuation:> string:Hello punctuation:</ tag:div punctuation:> punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= punctuation:< tag:span attribute:className operator:= string:"x" punctuation:> string:text punctuation:</ tag:span punctuation:> punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= punctuation:< tag:img attribute:src operator:= string:"a.png" attribute:alt operator:= string:'pic' punctuation:/> punctuation.delimiter:;

@@ -1,0 +1,6 @@
+1| attribute::root punctuation.bracket:{
+2| variable:--main-color punctuation.delimiter:: constant:#06c punctuation.delimiter:;
+3| variable:--spacing punctuation.delimiter:: number:4px punctuation.delimiter:;
+4| variable:--font-stack punctuation.delimiter:: string:"Inter" punctuation.delimiter:, constant:system-ui punctuation.delimiter:, constant:sans-serif punctuation.delimiter:;
+5| punctuation.bracket:}
+6| type:.a punctuation.bracket:{ property:color punctuation.delimiter:: function.builtin:var punctuation.bracket:( variable:--main-color punctuation.bracket:) punctuation.delimiter:; property:padding punctuation.delimiter:: function.builtin:calc punctuation.bracket:( function.builtin:var punctuation.bracket:( variable:--spacing punctuation.bracket:) operator:* number:2 punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}

@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:v operator:= punctuation.bracket:(
+2| punctuation:< tag:div punctuation:>
+3| string:     punctuation.bracket:{ variable:loading operator:? punctuation:< type:Spinner punctuation:/> operator:: punctuation:< type:Content attribute:data operator:= punctuation.bracket:{ variable:data punctuation.bracket:} punctuation:/> punctuation.bracket:}
+4| string:     punctuation.bracket:{ variable:error operator:&& punctuation:< tag:p attribute:className operator:= string:"err" punctuation:> punctuation.bracket:{ variable:error punctuation.delimiter:. property:message punctuation.bracket:} punctuation:</ tag:p punctuation:> punctuation.bracket:}
+5| string:   punctuation:</ tag:div punctuation:>
+6| punctuation.bracket:) punctuation.delimiter:;

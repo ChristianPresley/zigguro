@@ -1,0 +1,6 @@
+1| keyword.control:return punctuation.bracket:(
+2| punctuation:<>
+3| string:     punctuation:< type:A punctuation:/>
+4| string:     punctuation:< type:B punctuation:/>
+5| string:   punctuation:</ punctuation:>
+6| punctuation.bracket:) punctuation.delimiter:;

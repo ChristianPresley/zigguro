@@ -57,14 +57,14 @@ fn target(ft: *FileTools, c: *proto.ToolCall, path: []const u8) proto.ToolError!
         .ok => |r| r,
         .denied => |why| return .{ .err = try std.fmt.allocPrint(a, "Permission denied: {s}", .{why}) },
     };
-    switch (ft.files.kind(c.io, r.abs)) {
+    switch (ft.files.kindAs(c.io, r.abs, c.agent)) {
         .missing => return .{ .err = try std.fmt.allocPrint(a, "File not found: {s}. Use write_file to create it.", .{r.rel}) },
         .directory => return .{ .err = try std.fmt.allocPrint(a, "{s} is a directory.", .{r.rel}) },
         .file => {},
     }
     if (ft.tracker.version(c.agent, r.abs) == null)
         return .{ .err = try std.fmt.allocPrint(a, "Read {s} with read_file before editing it.", .{r.rel}) };
-    const read = ft.files.read(c.io, a, r.abs, std.math.maxInt(usize)) catch |e| switch (e) {
+    const read = ft.files.readAs(c.io, a, r.abs, std.math.maxInt(usize), c.agent) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Canceled => return error.Canceled,
         else => return .{ .err = try std.fmt.allocPrint(a, "Could not read {s}: {s}", .{ r.rel, @errorName(e) }) },
@@ -111,7 +111,7 @@ fn editCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutpu
     const o = ft.files.propose(c.io, a, t.r.abs, .{ .str_replace = .{ .old = old, .new = new, .occurrence = occ } }, origin(c)) catch |e|
         return proposeErr(a, t.r.rel, e);
     try track(ft, c, t.r.abs, o, after orelse t.read.bytes);
-    return ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, "edit", o, t.read.bytes, after orelse t.read.bytes, ft.cfg.diff_lines));
+    return FileTools.withNotes(c, t.read.notes, try ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, "edit", o, t.read.bytes, after orelse t.read.bytes, ft.cfg.diff_lines)));
 }
 
 fn multiCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
@@ -140,5 +140,5 @@ fn multiCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutp
     const o = ft.files.propose(c.io, a, t.r.abs, .{ .whole_file = .{ .text = text, .base_version = t.read.version } }, origin(c)) catch |e|
         return proposeErr(a, t.r.rel, e);
     try track(ft, c, t.r.abs, o, text);
-    return ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, try std.fmt.allocPrint(a, "{d} edits", .{edits.?.array.items.len}), o, t.read.bytes, text, ft.cfg.diff_lines));
+    return FileTools.withNotes(c, t.read.notes, try ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, try std.fmt.allocPrint(a, "{d} edits", .{edits.?.array.items.len}), o, t.read.bytes, text, ft.cfg.diff_lines)));
 }

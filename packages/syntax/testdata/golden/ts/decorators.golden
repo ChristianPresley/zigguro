@@ -1,0 +1,7 @@
+1| attribute:@Component punctuation.bracket:( punctuation.bracket:{ variable:selector operator:: string:"app-root" punctuation.bracket:} punctuation.bracket:)
+2| keyword:export keyword.storage:class type:AppComponent punctuation.bracket:{
+3| attribute:@Input punctuation.bracket:( punctuation.bracket:) variable:name operator:: type.builtin:string operator:= string:"" punctuation.delimiter:;
+4| attribute:@Output punctuation.bracket:( punctuation.bracket:) variable:changed operator:= keyword.operator:new type:EventEmitter operator:< type.builtin:string operator:> punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+5| attribute:@HostListener punctuation.bracket:( string:"click" punctuation.delimiter:, punctuation.bracket:[ string:"$event" punctuation.bracket:] punctuation.bracket:)
+6| function:onClick punctuation.bracket:( variable:e operator:: type:MouseEvent punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+7| punctuation.bracket:}

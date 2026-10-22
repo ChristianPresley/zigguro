@@ -1,0 +1,10 @@
+1| keyword.storage:const variable:el operator:= punctuation.bracket:(
+2| punctuation:< type:Button
+3| attribute:variant operator:= string:"primary"
+4| attribute:onClick operator:= punctuation.bracket:{ punctuation.bracket:( punctuation.bracket:) operator:=> punctuation.bracket:{
+5| function:save punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+6| punctuation.bracket:} punctuation.bracket:}
+7| punctuation:>
+8| string:    Save
+9| string:   punctuation:</ type:Button punctuation:>
+10| punctuation.bracket:) punctuation.delimiter:;

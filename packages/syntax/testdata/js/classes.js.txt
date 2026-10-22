@@ -1,0 +1,11 @@
+class Animal extends Base {
+  #secret = 1;
+  static count = 0;
+  constructor(name) {
+    super(name);
+    this.name = name;
+  }
+  get label() { return this.#secret; }
+  set label(v) { this.#secret = v; }
+  speak() { console.log(`${this.name} speaks`); }
+}

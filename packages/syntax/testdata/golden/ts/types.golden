@@ -1,0 +1,8 @@
+1| keyword.storage:let variable:a operator:: type.builtin:string operator:= string:"s" punctuation.delimiter:;
+2| keyword.storage:let variable:b operator:: type.builtin:number punctuation.bracket:[ punctuation.bracket:] operator:= punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.bracket:] punctuation.delimiter:;
+3| keyword.storage:let variable:c operator:: type:Array operator:< type.builtin:boolean operator:> operator:= punctuation.bracket:[ punctuation.bracket:] punctuation.delimiter:;
+4| keyword.storage:let variable:d operator:: type.builtin:unknown punctuation.delimiter:;
+5| keyword.storage:let variable:e operator:: type.builtin:never punctuation.delimiter:;
+6| keyword.storage:let variable:f operator:: type:Record operator:< type.builtin:string punctuation.delimiter:, type.builtin:any operator:> operator:= punctuation.bracket:{ punctuation.bracket:} punctuation.delimiter:;
+7| keyword.storage:let variable:g operator:: type.builtin:bigint operator:| type.builtin:symbol operator:| type.builtin:object operator:| constant.builtin:null punctuation.delimiter:;
+8| keyword.storage:type type:Fn operator:= punctuation.bracket:( variable:x operator:: type.builtin:number punctuation.bracket:) operator:=> keyword.operator:void punctuation.delimiter:;

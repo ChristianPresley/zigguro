@@ -24,6 +24,8 @@ pub const langs = struct {
     pub const json = @import("langs/json.zig");
     pub const toml = @import("langs/toml.zig");
     pub const shell = @import("langs/shell.zig");
+    pub const js = @import("langs/js.zig");
+    pub const css = @import("langs/css.zig");
 };
 pub const structure = struct {
     pub const structure = @import("structure/structure.zig");
@@ -79,6 +81,11 @@ pub const builtin_languages = [_]*const Language{
     &langs.json.jsonc_language,
     &langs.toml.toml_language,
     &langs.shell.shell_language,
+    &langs.js.javascript_language,
+    &langs.js.typescript_language,
+    &langs.js.jsx_language,
+    &langs.js.tsx_language,
+    &langs.css.css_language,
 };
 
 /// A registry with plain text and every built-in language.
@@ -108,4 +115,6 @@ test {
     _ = @import("langs/json_test.zig");
     _ = @import("langs/toml_test.zig");
     _ = @import("langs/shell_test.zig");
+    _ = @import("langs/js_test.zig");
+    _ = @import("langs/css_test.zig");
 }

@@ -17,6 +17,10 @@ const io = testing.io;
 const agent: proto.AgentRef = .{ .session = 7 };
 
 pub fn callTool(ft: *files.FileTools, a: std.mem.Allocator, name: []const u8, input: []const u8) !proto.ToolOutput {
+    return callToolAs(ft, a, name, input, agent);
+}
+
+pub fn callToolAs(ft: *files.FileTools, a: std.mem.Allocator, name: []const u8, input: []const u8, as: proto.AgentRef) !proto.ToolOutput {
     const spec = for (ft.specs()) |*s| {
         if (std.mem.eql(u8, s.name, name)) break s;
     } else unreachable;
@@ -27,7 +31,7 @@ pub fn callTool(ft: *files.FileTools, a: std.mem.Allocator, name: []const u8, in
         .input = try std.json.parseFromSliceLeaky(std.json.Value, a, input, .{}),
         .arena = a,
         .io = io,
-        .agent = agent,
+        .agent = as,
     };
     return spec.handler.call(spec.handler.ctx, &c);
 }
