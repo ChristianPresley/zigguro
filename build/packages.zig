@@ -44,6 +44,7 @@ pub const all = [_]Package{
     .{ .name = "zg_vulkan", .dir = "packages/vulkan", .has_bench = true },
     .{ .name = "zg_syntax", .dir = "packages/syntax", .has_bench = true },
     .{ .name = "zg_gui", .dir = "packages/gui", .has_bench = true },
+    .{ .name = "zg_review", .dir = "packages/review", .has_bench = true },
     // pkgtool:insert
 };
 
