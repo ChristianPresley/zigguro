@@ -1,0 +1,75 @@
+# The kitty keyboard protocol through the terminal: pushing, setting and
+# popping flags, then encoding keys with them.
+@cite https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+
+@case CSI > 1 u disambiguates Escape
+@size 10x2
+@send "\e[>1u"
+@key escape
+@expect-input "\e[27u"
+
+@case Flag 1 sends Ctrl+letter as CSI u
+@size 10x2
+@send "\e[>1u"
+@key c ctrl
+@expect-input "\e[99;5u"
+
+@case Flag 1 keeps plain text
+@size 10x2
+@send "\e[>1u"
+@key a
+@expect-input "a"
+
+@case Flag 2 reports releases
+@size 10x2
+@send "\e[>3u"
+@key c ctrl release
+@expect-input "\e[99;5:3u"
+
+@case Flag 8 sends plain keys as CSI u
+@size 10x2
+@send "\e[>8u"
+@key a
+@expect-input "\e[97u"
+
+@case Flag 8 sends Enter as CSI 13u
+@size 10x2
+@send "\e[>8u"
+@key enter
+@expect-input "\e[13u"
+
+@case Flag 8 with 16 adds the text
+@size 10x2
+@send "\e[>24u"
+@key a shift
+@expect-input "\e[97;2;65u"
+
+@case Flag 4 adds the shifted key
+@size 10x2
+@send "\e[>5u"
+@key a ctrl shift shifted=A
+@expect-input "\e[97:65;6u"
+
+@case Popping restores legacy encoding
+@size 10x2
+@send "\e[>1u\e[<u"
+@key escape
+@expect-input "\e"
+
+@case CSI = 1 ; 1 u sets flags without pushing
+@size 10x2
+@send "\e[=1;1u"
+@key escape
+@expect-input "\e[27u"
+
+@case Flags are per screen
+@size 10x2
+@send "\e[>1u\e[?1049h"
+@key escape
+@expect-input "\e"
+
+@case Kitty F3 is CSI 13~
+@size 10x2
+@send "\e[>1u"
+@key f3
+@expect-input "\e[13~"
