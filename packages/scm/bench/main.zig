@@ -1,7 +1,8 @@
 //! zg_scm benchmarks (`zig build bench`): the E09.F01 budgets for hashing
 //! and the canonical encoding, the store, (graph_bench.zig) the commit
 //! index, (oplog_bench.zig) the op log, (preview_bench.zig) preview
-//! operations and (layout_bench.zig) the graph lane layout.
+//! operations, (layout_bench.zig) the graph lane layout and
+//! (gc_bench.zig) GC over 10M objects and the 1 GiB edit.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -10,6 +11,7 @@ const graph_bench = @import("graph_bench.zig");
 const oplog_bench = @import("oplog_bench.zig");
 const preview_bench = @import("preview_bench.zig");
 const layout_bench = @import("layout_bench.zig");
+const gc_bench = @import("gc_bench.zig");
 const bench = zg_core.bench;
 const State = bench.State;
 
@@ -58,6 +60,7 @@ fn register(b: *bench.Bench) !void {
     try oplog_bench.register(b);
     try preview_bench.register(b);
     try layout_bench.register(b);
+    try gc_bench.register(b);
 }
 
 fn chunkBlob(data: []const u8, s: *State) void {
