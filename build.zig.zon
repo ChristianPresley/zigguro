@@ -24,6 +24,7 @@
         .zg_config = .{ .path = "packages/config" },
         .zg_workspace = .{ .path = "packages/workspace" },
         .zg_notes = .{ .path = "packages/notes" },
+        .zg_regex = .{ .path = "packages/regex" },
         // pkgtool:insert
     },
     .paths = .{
