@@ -231,21 +231,6 @@ pub fn windowsBuild() u32 {
     return vi.dwBuildNumber;
 }
 
-/// Whether the user picked the dark app theme
-/// (`HKCU\...\Themes\Personalize\AppsUseLightTheme` = 0).
-pub fn systemDark() bool {
-    if (!is_windows) return false;
-    const advapi32 = @import("bindings/advapi32.zig");
-    const t = @import("bindings/types.zig");
-    const L = @import("wide.zig").L;
-    const HKEY_CURRENT_USER: t.HKEY = @ptrFromInt(0x80000001);
-    const RRF_RT_REG_DWORD: u32 = 0x10;
-    var v: u32 = 1;
-    var size: u32 = @sizeOf(u32);
-    if (advapi32.RegGetValueW(HKEY_CURRENT_USER, L("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), L("AppsUseLightTheme"), RRF_RT_REG_DWORD, null, &v, &size) != 0) return false;
-    return v == 0;
-}
-
 /// Sets the DWM attributes `dwmAttrs` picks for this build; unsupported
 /// ones are skipped, and failures are ignored (they only cost looks).
 pub fn applyDwm(hwnd: anytype, build: u32, dark: bool, backdrop: Backdrop, custom: bool) void {

@@ -94,13 +94,21 @@ pub const StaticTools = struct {
     }
 };
 
-/// Writing tools with a `path` (or `file_path`) input lock that path;
-/// commands use terminal 0; other mutating tools are workspace-global.
+/// Tools lock the paths in their `path`, `file_path`, `file`, `uri` or
+/// `paths` inputs; commands use terminal 0; mutating SCM tools (exported
+/// by the `scm` extension) use `.scm`; other mutating tools are
+/// workspace-global.
 pub fn defaultResources(spec: *const proto.ToolSpec, input: std.json.Value, arena: Allocator) []const scheduler.Resource {
     const e = spec.effectiveEffects();
     if (e.executes) return single(arena, .{ .terminal = 0 });
+    if (!e.read_only and spec.origin == .extension and std.mem.eql(u8, spec.origin.extension, "scm")) return single(arena, .scm);
     if (input == .object) {
-        for ([_][]const u8{ "path", "file_path" }) |k| if (input.object.get(k)) |v| if (v == .string) return single(arena, .{ .path = v.string });
+        for ([_][]const u8{ "path", "file_path", "file", "uri" }) |k| if (input.object.get(k)) |v| if (v == .string) return single(arena, .{ .path = v.string });
+        if (input.object.get("paths")) |v| if (v == .array and v.array.items.len > 0) {
+            const out = arena.alloc(scheduler.Resource, v.array.items.len) catch return single(arena, .workspace_global);
+            for (v.array.items, out) |x, *r| r.* = if (x == .string) .{ .path = x.string } else .workspace_global;
+            return out;
+        };
     }
     return if (e.read_only) &.{} else single(arena, .workspace_global);
 }
@@ -316,4 +324,27 @@ test "default resources" {
     var r = w;
     r.read_only = true;
     try std.testing.expectEqual(@as(usize, 0), defaultResources(&r, .null, a).len);
+    // The resources extraction table.
+    const cases = [_]struct { input: []const u8, want: []const u8 }{
+        .{ .input = "{\"file\":\"a.zig\"}", .want = "path:a.zig" },
+        .{ .input = "{\"uri\":\"file:///w/b.zig\"}", .want = "path:file:///w/b.zig" },
+        .{ .input = "{\"file_path\":\"c.zig\"}", .want = "path:c.zig" },
+        .{ .input = "{\"paths\":[\"d.zig\",\"e.zig\"]}", .want = "path:d.zig path:e.zig" },
+        .{ .input = "{\"query\":\"x\"}", .want = "workspace_global" },
+    };
+    for (cases) |c| {
+        const in = try std.json.parseFromSliceLeaky(std.json.Value, a, c.input, .{});
+        var got: std.ArrayList(u8) = .empty;
+        for (defaultResources(&w, in, a), 0..) |res, i| {
+            if (i > 0) try got.append(a, ' ');
+            switch (res) {
+                .path => |p| try got.print(a, "path:{s}", .{p}),
+                else => try got.appendSlice(a, @tagName(res)),
+            }
+        }
+        try std.testing.expectEqualStrings(c.want, got.items);
+    }
+    var scm = w;
+    scm.origin = .{ .extension = "scm" };
+    try std.testing.expect(defaultResources(&scm, .null, a)[0] == .scm);
 }

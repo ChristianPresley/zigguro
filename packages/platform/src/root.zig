@@ -206,6 +206,8 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/seat.zig`.
+    pub const seat = @import("wayland/seat.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
@@ -325,6 +327,12 @@ pub const win32 = struct {
     pub const ime = @import("win32/ime.zig");
     /// See `win32/pointer.zig`.
     pub const pointer = @import("win32/pointer.zig");
+    /// See `win32/theme.zig`.
+    pub const theme = @import("win32/theme.zig");
+    /// See `win32/dialogs.zig`.
+    pub const dialogs = @import("win32/dialogs.zig");
+    /// See `win32/shell.zig`.
+    pub const shell = @import("win32/shell.zig");
     /// See `win32/backend.zig`.
     pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
     /// See `win32/backend.zig`.
@@ -421,6 +429,7 @@ test {
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
+    _ = wayland.seat;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -499,6 +508,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
     .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
+    .{ .path = "wayland/seat.zig", .src = @embedFile("wayland/seat.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
@@ -539,6 +549,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
     .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
     .{ .path = "win32/pointer.zig", .src = @embedFile("win32/pointer.zig") },
+    .{ .path = "win32/theme.zig", .src = @embedFile("win32/theme.zig") },
+    .{ .path = "win32/dialogs.zig", .src = @embedFile("win32/dialogs.zig") },
+    .{ .path = "win32/shell.zig", .src = @embedFile("win32/shell.zig") },
     .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 

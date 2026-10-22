@@ -876,8 +876,9 @@ E01.F04.S01.T01.
 ### Consumed by
 `zg_platform.init` on Wayland sessions; E02 presents through the
 window's `Presenter`; E04 reads `window_configure` state and
-`WmCapabilities`. Input, cursors, data device, IME and decorations
-(E01.F04.S01.T02, E01.F04.S02, E01.F04.S03) extend this backend.
+`WmCapabilities`; E04 reads key, pointer, scroll and touch events.
+Cursors, data device, IME and decorations (E01.F04.S02, E01.F04.S03)
+extend this backend.
 
 ### Signature
 ```zig
@@ -920,8 +921,23 @@ are described under the presenter contract above. With wp_presentation
 every present asks for feedback (`InitOptions.presentation_feedback`),
 reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
 a discarded frame has `flags = PresentFlags.discarded` and
-`presented_ns = 0`. Until the data device lands,
-`clipboard_read` answers only from our own `clipboard_write`. Move,
+`presented_ns = 0`.
+
+Input (E01.F04.S02.T02, `wayland/seat.zig`): the first `wl_seat` (v5–9)
+gives keyboard, pointer and touch as its capabilities come and go.
+Keymaps are parsed with `xkb.Keymap` on the platform thread; key events
+carry the level-resolved keysym, its codepoint and UTF-8 `text`, except
+Ctrl/Alt chords (not AltGr), which carry the level-0 keysym and no text.
+Compose rules load at thread start from `InitOptions.environ_map`
+(`XCOMPOSEFILE`, `~/.XCompose`, the locale's file, then the built-in
+dead keys); a finished sequence sends `text_input`. Repeat is
+client-side (`repeat_info`, a timerfd) with `action = .repeat`. Pointer
+events are grouped by `wl_pointer.frame` and reported in physical
+pixels; clicks count within 500 ms and 4 px. Wheels scroll in `.lines`
+(`value120`, else `discrete`, else 10 units a line), fingers and
+continuous devices in `.pixels`, fingers with `begin`/`update`/`end`.
+Touch points are reported per `wl_touch.frame`. Until the data device
+lands, `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
 
@@ -1027,7 +1043,13 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`source = .continuous`. `open_dialog` shows `IFileOpenDialog`/`IFileSaveDialog`
+on a thread of its own (modal to `parent`) and answers with
+`dialog_result`; `deinit` joins open dialogs. `open_uri` passes `http`,
+`https` and `mailto` URIs to `ShellExecuteW` and refuses others with
+`error.Unsupported`. `appearance_changed` is staged at start and after a
+`WM_SETTINGCHANGE` that changes the theme, accent, high contrast or
+animation setting (dark-mode switches re-apply the title bars). Touch (`WM_POINTER*`, `pointer.zig`) stages
 `touch` events and still reaches `DefWindowProcW`, so Windows promotes the
 primary touch to mouse messages; pens stage `pointer_pressure` then
 `pointer_move`, with contact as the left button (right with the barrel
@@ -2299,6 +2321,18 @@ pub const Readback = struct {
     pub fn present(self, fs: *const FrameSlot) void;          // after submit
     pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
 };
+pub const Swapchain = struct {                                // present/Swapchain.zig (E02.F04.S01.T01), Win32
+    pub fn init(gpu, sched, hinstance, hwnd, extent: vk.Extent2D, prefs: PresentPrefs) !*Swapchain;
+    pub fn deinit(self) void;                                    // waits on present fences / queue idle
+    pub fn prepare(self) AcquireError!void;                      // recreate if needed; error.Minimized at 0x0
+    pub fn acquire(self, fs) AcquireError!Acquired;              // { image: *Texture, age, index }
+    pub fn beginRendering(self, cb, a) void;  pub fn endRendering(self, cb, a) void;   // UNDEFINED/PRESENT_SRC <-> COLOR_ATTACHMENT
+    pub fn submitInfos(self, fs, a) { wait, signal };            // acquire semaphore per slot, present semaphore per image
+    pub fn present(self, a, ext: PresentExt) PresentError!void;  // PresentExt{ present_id, regions, mode_override }
+    pub fn requestResize(self, extent) void;  pub fn presentWaiter(self) ?FramePacer.PresentWaiter;
+};
+// VkRenderer: pub fn presentWaiter(self) ?FramePacer.PresentWaiter;  pub fn pacerCaps(self) FramePacer.Caps;
+// RenderThread.Options.waiter: ?FramePacer.PresentWaiter (present-wait modes; present ids 1, 2, ... in FrameStats.present_id)
 pub const ExternalRing = struct {                             // present/ExternalRing.zig (E02.F04.S02.T01)
     pub fn init(gpu, mem, sched, presenter: *Presenter) InitError!ExternalRing;   // error.ExportUnsupported -> use Readback(.shm)
     pub fn deinit(self) void;
@@ -2321,6 +2355,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
+- `.win32` targets get a `Swapchain` (device created with the win32 surface extensions); `Readback` gets `Sink.none` and serves `renderToImage` only. Swapchain frames report `present_id` 1, 2, ... (the FramePacer's ids); minimised windows render nothing and carry their damage. While the surface's extent differs from the list's, the frame draws 1:1 into the image and repaints fully. `FrameScheduler.cancel` abandons a begun frame whose acquire failed. Not yet verified on a Windows GPU (cross-compiles; the Linux CI GPU is lavapipe).
 - `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
