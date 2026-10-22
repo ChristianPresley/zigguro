@@ -47,6 +47,7 @@ const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
 const file_sync = @import("file_sync.zig");
 const FileSync = file_sync.FileSync;
 const diff_model = zg_editor.model.diff.diff_model;
+const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -265,6 +266,7 @@ pub const Workbench = struct {
                     f.diff = m;
                     sync.diff = m;
                     f.view.scm = .of(m);
+                    wb.diffAgainstHead(sync, m, p, loaded.?);
                 } else |e| log.warn("diff of {s}: {t}", .{ p, e });
             }
         }
@@ -278,6 +280,26 @@ pub const Workbench = struct {
             f.view.syntax = sx;
         };
         return f;
+    }
+
+    /// In a git working tree, the change bars compare with the file at
+    /// `HEAD` instead of the text on disk.
+    fn diffAgainstHead(wb: *Workbench, sync: *FileSync, m: *diff_model.DiffModel, path: []const u8, loaded: zg_editor.model.buffer.external.Loaded) void {
+        const gpa = wb.gpa;
+        const abs = std.fs.path.resolve(gpa, &.{ wb.cwd, path }) catch return;
+        defer gpa.free(abs);
+        const text = scm_base.headText(gpa, wb.io, abs, loaded.encoding, loaded.eol.style) catch |e| {
+            log.warn("HEAD version of {s}: {t}", .{ path, e });
+            return;
+        } orelse return;
+        defer gpa.free(text);
+        const base = Document.initBytes(gpa, @enumFromInt(0), text) catch return;
+        defer base.deinit();
+        m.setBase(base.snapshot()) catch |e| {
+            log.warn("HEAD diff of {s}: {t}", .{ path, e });
+            return;
+        };
+        sync.diff_head = true;
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {

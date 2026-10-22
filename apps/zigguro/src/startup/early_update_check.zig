@@ -74,11 +74,11 @@ fn runInner(io: Io, min: std.process.Init.Minimal, first_instance: bool, boot: *
     const version = zg_release.current.version_string;
     const exe_path = try std.process.executablePathAlloc(io, arena);
     const exe_dir = std.fs.path.dirname(exe_path) orelse return;
-    const layout = zg_update.layout.detect(exe_dir, builtin.os.tag);
+    const layout = zg_update.layout.detectInstall(io, exe_dir, builtin.os.tag, zg_release.current.distro);
     if (!layout.kind.managed()) return;
 
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const state_path = zg_crash.paths.stateDir(min.environ, &state_buf) orelse return;
+    const state_path = zg_crash.paths.stateDirAt(io, min.environ, &state_buf) orelse return;
     try Io.Dir.cwd().createDirPath(io, state_path);
     const state_dir = try Io.Dir.cwd().openDir(io, state_path, .{});
     boot.state_dir = state_dir;

@@ -43,6 +43,8 @@ pub const merge = @import("merge/merge.zig");
 pub const materialize = @import("merge/materialize.zig");
 /// Reading marker text back.
 pub const parse_markers = @import("merge/parse_markers.zig");
+/// Path-level three-way tree merges.
+pub const tree_merge = @import("merge/tree_merge.zig");
 /// Operation objects and their metadata.
 pub const operation = @import("oplog/operation.zig");
 /// Views: heads, refs, working copies and lanes at one operation.
@@ -68,6 +70,10 @@ pub const rebase = @import("oplog/rebase.zig");
 /// AI workflows (F06): the ports other packages implement, and fakes.
 pub const ai = struct {
     pub const ports = @import("ai/ports.zig");
+    /// The lane landing queue.
+    pub const landing = @import("ai/landing.zig");
+    /// Tools for agents, through zg_ai's foreign-tool contract.
+    pub const agent_tools = @import("ai/agent_tools.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -104,6 +110,7 @@ pub const ReviewDecision = ai.ports.ReviewDecision;
 pub const Proposal = ai.ports.Proposal;
 pub const CheckPort = ai.ports.CheckPort;
 pub const NotificationPort = ai.ports.NotificationPort;
+pub const LandingQueue = ai.landing.LandingQueue;
 
 test {
     std.testing.refAllDecls(@This());
@@ -123,4 +130,6 @@ test {
     _ = @import("oplog/preview_test.zig");
     _ = @import("ai/testing/fake_model.zig");
     _ = @import("ai/testing/fake_review.zig");
+    _ = @import("ai/landing_test.zig");
+    _ = @import("ai/agent_tools_test.zig");
 }
