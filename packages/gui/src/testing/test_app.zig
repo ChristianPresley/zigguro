@@ -303,6 +303,9 @@ pub const TestApp = struct {
             if (info.text.len > 0) try out.print(gpa, " text=\"{s}\"", .{info.text});
             if (info.checked) |c| try out.print(gpa, " checked={}", .{c});
             if (info.value) |v| try out.print(gpa, " value={d:.2}", .{v});
+            if (info.expanded) |e| try out.print(gpa, " expanded={}", .{e});
+            if (info.selected) |e| if (e) try out.appendSlice(gpa, " selected");
+            if (info.level > 0) try out.print(gpa, " level={d}", .{info.level});
             if (info.disabled) try out.appendSlice(gpa, " disabled");
             if (t.win.focus == n) try out.appendSlice(gpa, " focused");
             try out.append(gpa, '\n');
