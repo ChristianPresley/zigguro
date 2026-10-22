@@ -1,5 +1,6 @@
 // Emacs mode layer (E15 keymap format), loaded on top of the preset when
-// `keyboard.emacs.enabled` is set. The editing keys themselves (C-f, C-k,
+// `keyboard.emacs.enabled` is set. It is first-party, so it lives beside
+// the mode rather than under data/ (third-party data with notices). The editing keys themselves (C-f, C-k,
 // C-y, C-s, M-%, C-u, ...) are handled by zg_editor.modes.EmacsState while
 // an editor has focus; this layer gives the C-x chords and M-x their
 // workbench commands, and frees keys the preset uses that Emacs owns.
