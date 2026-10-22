@@ -437,7 +437,11 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, b: Backend, opts: InitOpt
 pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
 pub fn isForced(opts: InitOptions) bool; // opts.backend or a valid ZG_PLATFORM
 // InitOptions.environ_map is `?*std.process.Environ.Map` (mutable: Wayland consumes WAYLAND_SOCKET)
+// InitOptions.raw_mouse: bool = false — also stage Event.pointer_relative (Win32 only)
 pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
+// New variants go at the end, so recorded .zgtrace tags keep their values:
+//   pointer_pressure: { win, pressure: f32 }            // pen tip 0..1, before its pointer_move
+//   pointer_relative: { win, dx: f32, dy: f32, time_ns } // raw mouse counts
 ```
 
 Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
@@ -1002,7 +1006,10 @@ for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
 
 ### Signature
 ```zig
-pub const InitOptions = struct { refresh_ns: ?u32 = null }; // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+pub const InitOptions = struct {
+    refresh_ns: ?u32 = null, // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+    raw_mouse: bool = false, // RegisterRawInputDevices (mouse, focus window) → Event.pointer_relative
+};
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
 pub fn platform(b: *Win32Backend) Platform;
 // cpu_present.zig
@@ -1020,7 +1027,11 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
+`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`touch` events and still reaches `DefWindowProcW`, so Windows promotes the
+primary touch to mouse messages; pens stage `pointer_pressure` then
+`pointer_move`, with contact as the left button (right with the barrel
+button held at contact). A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
@@ -1067,7 +1078,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 
 ### Stability
 Experimental. Not yet: a theme or backdrop command (the system theme
-and no backdrop are used), raw input, pen and touch, TSF and
+and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`
+batching, TSF and
 `set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
 drag and drop, cloaking until the first present, the high-resolution
 waitable pacing timer and per-monitor refresh rates.

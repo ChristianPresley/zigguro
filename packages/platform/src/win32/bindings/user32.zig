@@ -148,6 +148,8 @@ pub extern "user32" fn GetKeyboardLayout(thread: DWORD) callconv(.winapi) ?t.HKL
 pub extern "user32" fn MapVirtualKeyExW(code: UINT, map_type: UINT, layout: ?t.HKL) callconv(.winapi) UINT;
 /// Pointer (pen/touch/mouse) details for WM_POINTER*.
 pub extern "user32" fn GetPointerInfo(id: UINT, info: *t.POINTER_INFO) callconv(.winapi) BOOL;
+/// Pen details (pressure, tilt, barrel button) for a pen pointer.
+pub extern "user32" fn GetPointerPenInfo(id: UINT, info: *t.POINTER_PEN_INFO) callconv(.winapi) BOOL;
 /// Routes mouse input through WM_POINTER.
 pub extern "user32" fn EnableMouseInPointer(BOOL) callconv(.winapi) BOOL;
 
