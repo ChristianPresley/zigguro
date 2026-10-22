@@ -1,0 +1,1 @@
+{"role":"user","content":[{"type":"image","media_type":"image/png","source":{"type":"base64","data":"iVBORw0KGgo="}},{"type":"image","media_type":"image/jpeg","source":{"type":"url","url":"https://example.com/a.jpg"}},{"type":"image","media_type":"image/gif","source":{"type":"file","path":"assets/x.gif"}}]}

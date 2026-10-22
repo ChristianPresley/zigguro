@@ -1,0 +1,1 @@
+{"role":"user","content":[{"type":"text","text":"Hello \"world\"\n😀"},{"type":"text","text":"cited","citations":[{"type":"char_location","start":0}]}]}
