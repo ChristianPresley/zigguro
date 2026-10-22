@@ -55,6 +55,15 @@ pub const CpuPresenter = struct {
     next: u32 = 1,
     /// Presents so far.
     seq: u64 = 0,
+    /// Called after each present with the present count, outside the
+    /// presenter mutex (the backend stages `Event.present_feedback`).
+    on_present: ?Notify = null,
+
+    /// A present notification target.
+    pub const Notify = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, seq: u64) void,
+    };
 
     /// A presenter; `bind` it once it has its final address.
     pub fn init(gpa: std.mem.Allocator, io: Io) CpuPresenter {
@@ -206,6 +215,11 @@ fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.
     if (!is_windows) return error.Unsupported;
     const p = of(ctx);
     if (acquire != .none) return error.Unsupported;
+    const seq = try presentLocked(p, handle, damage);
+    if (p.on_present) |n| n.f(n.ctx, seq);
+}
+
+fn presentLocked(p: *CpuPresenter, handle: surface.BufferHandle, damage: []const types.PxRect) !u64 {
     p.lock();
     defer p.unlock();
     const b = p.find(@intFromEnum(handle)) orelse return error.InvalidArgument;
@@ -228,6 +242,7 @@ fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.
         old.busy = false;
         try p.released.append(p.gpa, @enumFromInt(old.handle));
     };
+    return p.seq;
 }
 
 fn releaseBuffer(ctx: *anyopaque, handle: surface.BufferHandle) void {
