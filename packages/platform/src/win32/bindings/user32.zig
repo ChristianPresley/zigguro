@@ -167,6 +167,8 @@ pub extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi) BOOL;
 /// Subscribes a window to WM_CLIPBOARDUPDATE.
 pub extern "user32" fn AddClipboardFormatListener(HWND) callconv(.winapi) BOOL;
+/// The time (ms since boot) of the last message read from the queue.
+pub extern "user32" fn GetMessageTime() callconv(.winapi) i32;
 /// The window's system (window) menu.
 pub extern "user32" fn GetSystemMenu(HWND, revert: BOOL) callconv(.winapi) ?t.HMENU;
 /// Shows a popup menu; with `TPM_RETURNCMD` it returns the chosen command.
