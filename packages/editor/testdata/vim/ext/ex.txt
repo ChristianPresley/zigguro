@@ -537,3 +537,150 @@ x ¦FOO
 :<BS>
 --- after
 ¦abc
+
+=== g s
+--- before
+¦a1 x
+b x
+a2 x
+--- keys
+:g/a/s/x/y/<CR>
+--- after
+a1 y
+b x
+¦a2 y
+
+=== v s
+--- before
+¦a1 x
+b x
+a2 x
+--- keys
+:v/a/s/x/y/<CR>
+--- after
+a1 x
+¦b y
+a2 x
+
+=== g s joins lines
+--- before
+¦a1
+a2
+b
+a3
+c
+--- keys
+:g/a/s/\n/,/<CR>
+--- after
+a1,a2
+b
+¦a3,c
+
+=== g s undo
+--- before
+¦a1 x
+b x
+a2 x
+--- keys
+:g/a/s/x/y/<CR>u
+--- after
+¦a1 x
+b x
+a2 x
+
+=== g normal append
+--- before
+¦one
+two
+one more
+--- keys
+:g/one/normal Ax<CR>
+--- after
+onex
+two
+one more¦x
+
+=== g normal dd skips deleted lines
+--- before
+¦a
+a
+b
+a
+--- keys
+:g/a/normal jdd<CR>
+--- after
+a
+b
+¦a
+
+=== g normal undo
+--- before
+¦a
+b
+a
+--- keys
+:g/a/norm Iz<CR>u
+--- after
+¦a
+b
+a
+
+=== normal range
+--- before
+¦1
+2
+3
+4
+--- keys
+:2,3normal! A;<CR>
+--- after
+1
+2;
+3¦;
+4
+
+=== normal current line
+--- before
+a ¦b c
+--- keys
+:normal wD<CR>
+--- after
+a b¦ 
+
+=== normal unfinished operator
+--- before
+¦abc
+--- keys
+:norm d<CR>x
+--- after
+¦bc
+
+=== g default prints
+--- before
+¦a
+b
+--- keys
+:g/a/<CR>
+--- after
+¦a
+b
+
+=== g recursive
+--- before
+¦a
+b
+--- keys
+:g/a/g/b/d<CR>
+--- after
+¦a
+b
+
+=== g pattern not found
+--- before
+¦a
+b
+--- keys
+:g/zz/s/a/b/<CR>
+--- after
+¦a
+b
