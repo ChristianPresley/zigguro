@@ -5,6 +5,7 @@ const std = @import("std");
 const zg_core = @import("zg_core");
 const zg_review = @import("zg_review");
 const bench = zg_core.bench;
+const pipeline = @import("pipeline.zig");
 
 const model = zg_review.model;
 const ChangeSet = model.changeset.ChangeSet;
@@ -26,6 +27,7 @@ fn register(b: *bench.Bench) !void {
     try registerSubmit(b);
     try registerApprovals(b);
     try registerReanchor(b);
+    try pipeline.register(b);
 }
 
 const Reanchor = struct {
