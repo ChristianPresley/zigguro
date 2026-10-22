@@ -57,13 +57,8 @@ fn isAsciiBracket(c: u8) bool {
 /// One run of text in a single script.
 pub const Run = struct { start: u32, end: u32, script: Script };
 
-/// True for characters that take the script of their neighbours: Common
-/// and Inherited with no narrower Script_Extensions.
-fn isNeutral(cp: u21) bool {
-    const s = p.props(cp).script;
-    if (s != .Zyyy and s != .Zinh and s != .Zzzz) return false;
-    const ext = p.scriptExtensions(cp);
-    return ext.len == 1 and (ext[0] == .Zyyy or ext[0] == .Zinh or ext[0] == .Zzzz);
+fn isNeutralScript(s: Script) bool {
+    return s == .Zyyy or s == .Zinh or s == .Zzzz;
 }
 
 /// Splits UTF-8 text into script runs.
@@ -74,6 +69,15 @@ pub const ScriptRunIterator = struct {
     /// at the opener.
     stack: [32]struct { close: u21, set: Set, start: u32 } = undefined,
     depth: u8 = 0,
+    /// The last Script_Extensions range looked up (starts empty).
+    scx: p.ScxSpan = .{ .list = null, .lo = 1, .hi = 0 },
+
+    /// Script_Extensions of `cp` (Script `script`), reusing the last
+    /// lookup while text stays inside its range.
+    fn extensions(it: *ScriptRunIterator, cp: u21, script: Script) []const Script {
+        if (cp < it.scx.lo or cp > it.scx.hi) it.scx = p.scriptExtensionsSpan(cp);
+        return it.scx.list orelse p.singleScript(script);
+    }
 
     /// Iterates `text` from the start.
     pub fn init(text: []const u8) ScriptRunIterator {
@@ -92,6 +96,13 @@ pub const ScriptRunIterator = struct {
         var i = start;
         while (i < text.len) {
             const c0 = text[i];
+            // Inside a Latin-only run, ASCII other than brackets changes
+            // nothing.
+            if (determined and c0 < 0x80 and !isAsciiBracket(c0) and std.meta.eql(set, latn)) {
+                i += 1;
+                while (i < text.len and text[i] < 0x80 and !isAsciiBracket(text[i])) i += 1;
+                continue;
+            }
             // ASCII letters are Latin with no other extensions; other ASCII
             // is Common (brackets go the slow way for the stack).
             if (c0 < 0x80 and std.ascii.isAlphabetic(c0)) {
@@ -115,8 +126,11 @@ pub const ScriptRunIterator = struct {
             }
             const u = decode.at(text, i);
             const cp = u.cp;
-            if (isNeutral(cp)) {
-                const pr = p.props(cp);
+            const pr = p.props(cp);
+            const ext_list = it.extensions(cp, pr.script);
+            // Common and Inherited with no narrower Script_Extensions take
+            // the script of their neighbours.
+            if (isNeutralScript(pr.script) and ext_list.len == 1 and isNeutralScript(ext_list[0])) {
                 if (pr.bpt == .o) {
                     if (p.pairedBracket(cp)) |close| {
                         if (it.depth == it.stack.len) {
@@ -143,11 +157,11 @@ pub const ScriptRunIterator = struct {
                 i += u.len;
                 continue;
             }
-            const ext = Set.of(p.scriptExtensions(cp));
+            const ext = Set.of(ext_list);
             if (!determined) {
                 set = ext;
                 determined = true;
-                primary = p.props(cp).script;
+                primary = pr.script;
                 // Brackets opened in the leading neutral part adopt it.
                 for (it.stack[0..it.depth]) |*e| if (e.start >= start and e.set.isEmpty()) {
                     e.set = set;
