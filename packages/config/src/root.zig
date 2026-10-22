@@ -43,6 +43,10 @@ pub const keyspec = @import("keymap/keyspec.zig");
 pub const keymap = @import("keymap/keymap.zig");
 /// Key event resolution, chords and labels.
 pub const resolver = @import("keymap/resolver.zig");
+/// Keymap presets and Vim/Emacs layer selection.
+pub const presets = @import("keymap/presets.zig");
+/// VS Code keybindings.json import.
+pub const import_vscode = @import("keymap/import_vscode.zig");
 
 /// ZEP, the extension protocol: message types and the extension SDK
 /// (also published alone as the `zg_ext_sdk` module).
@@ -59,6 +63,7 @@ test {
     _ = @import("store_test.zig");
     _ = @import("commands/registry_test.zig");
     _ = @import("keymap/resolver_test.zig");
+    _ = @import("keymap/presets_test.zig");
 }
 
 test "settings_schema: aggregates and resolver options read it" {
