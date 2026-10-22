@@ -106,6 +106,20 @@ pub const History = struct {
         if (c.id >= h.next_id.load(.monotonic)) h.next_id.store(c.id + 1, .release);
     }
 
+    /// Ids below `next` are taken: a compaction dropped their records.
+    pub fn reserve(h: *History, next: u64) void {
+        if (next > h.next_id.load(.monotonic)) h.next_id.store(next, .release);
+    }
+
+    /// Drops the records with an id up to `cutoff` (GC); their memory is
+    /// kept until `deinit`. Returns how many.
+    pub fn dropThrough(h: *History, cutoff: u64) u32 {
+        var i: usize = 0;
+        while (i < h.applies.items.len and h.applies.items[i].id <= cutoff) i += 1;
+        h.applies.replaceRangeAssumeCapacity(0, i, &.{});
+        return @intCast(i);
+    }
+
     /// The id of the newest record (0 when none); any thread.
     pub fn lastId(h: *const History) u64 {
         return h.next_id.load(.acquire) - 1;
