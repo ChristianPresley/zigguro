@@ -31,6 +31,7 @@ pub const client = struct {
     pub const Client = @import("client/Client.zig");
     pub const restart = @import("client/restart.zig");
     pub const trace = @import("client/trace.zig");
+    pub const transcript = @import("client/transcript.zig");
 };
 /// Test support shared with zg_dap: the scripted-peer engine behind the
 /// fake language server and debug adapter.
