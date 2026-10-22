@@ -18,6 +18,7 @@ const zg_ai = @import("zg_ai");
 const zg_net = @import("zg_net");
 const zg_crash = @import("zg_crash");
 const zg_config = @import("zg_config");
+const zg_mcp = @import("zg_mcp");
 
 const headless = zg_ai.headless;
 const Cassette = zg_ai.testing.cassette.Cassette;
@@ -129,7 +130,10 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     });
     defer agent_tools.deinit();
 
-    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub), .tools = agent_tools.tools() });
+    // Tool inputs and `--json-schema` are checked by E11's JSON Schema
+    // validator, the one MCP `tools/call` arguments go through.
+    const validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate);
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub), .tools = agent_tools.tools(), .validator = validator });
     defer mgr.deinit();
 
     // Subagents: `.zigguro/agents/*.md` in the workspace, then the
@@ -273,6 +277,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .context = &context,
         .agents = agent_defs.items,
         .hooks = &hook_engine,
+        .validator = validator,
     };
 
     const code = if (one_shot)
