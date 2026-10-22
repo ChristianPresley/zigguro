@@ -29,6 +29,17 @@ pub const native = @import("api/native.zig");
 pub const platform = @import("api/platform.zig");
 /// The shared backend conformance suite.
 pub const conformance = @import("testing/conformance.zig");
+/// The transport between the platform and UI threads, used by backends.
+pub const queue = struct {
+    /// See `queue/event_ring.zig`.
+    pub const EventRing = @import("queue/event_ring.zig").EventRing;
+    /// See `queue/payload_arena.zig`.
+    pub const PayloadArena = @import("queue/payload_arena.zig").PayloadArena;
+    /// See `queue/command_queue.zig`.
+    pub const CommandQueue = @import("queue/command_queue.zig").CommandQueue;
+    /// See `queue/wake.zig`.
+    pub const Wake = @import("queue/wake.zig").Wake;
+};
 
 /// See `types.WindowId`.
 pub const WindowId = types.WindowId;
@@ -81,6 +92,7 @@ pub const detectBackend = platform.detectBackend;
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(queue);
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
