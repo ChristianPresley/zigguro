@@ -1,0 +1,130 @@
+# Nightly: long fuzz campaigns (Linux only in Zig 0.16), full benches for
+# E14, and a cold-cache self-test of the toolchain setup scripts.
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  list:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - id: list
+        run: echo "targets=$(zig build fuzz-list | jq -c '[.targets[].name]')" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: list
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        target: ${{ fromJSON(needs.list.outputs.targets) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - name: restore corpus
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache/f
+          key: fuzz-corpus-${{ runner.arch }}-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ runner.arch }}-${{ matrix.target }}-
+      - name: fuzz for 35 minutes
+        id: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set +e
+          timeout 35m zig build test -Doptimize=ReleaseSafe -Dtest-filter="$TARGET" --fuzz
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: triage
+        env:
+          TARGET: ${{ matrix.target }}
+          CODE: ${{ steps.fuzz.outputs.code }}
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fuzz-triage.sh "$TARGET" "$CODE"
+      - if: steps.fuzz.outputs.code != '0' && steps.fuzz.outputs.code != '124'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ runner.arch }}-${{ strategy.job-index }}
+          path: fuzz-crashes
+      - if: steps.fuzz.outputs.code != '0' && steps.fuzz.outputs.code != '124'
+        run: |
+          echo "fuzz target exited with ${{ steps.fuzz.outputs.code }}" >&2
+          exit 1
+
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - if: runner.os == 'Linux'
+        run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/setup-zig.ps1 -Dest "$HOME\zig-toolchain"
+      - id: date
+        shell: bash
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - shell: bash
+        run: zig build bench --summary line
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-nightly-${{ matrix.os }}-${{ steps.date.outputs.date }}
+          path: zig-out/bench-results
+
+  toolchain-selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: |
+          .github/scripts/setup-zig.sh --dest "$RUNNER_TEMP/zig-cold"
+          "$(tail -n 1 "$GITHUB_PATH")/zig" version
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .github/scripts/setup-zig.ps1 -Dest "$env:RUNNER_TEMP\zig-cold"
+          & (Join-Path (Get-Content $env:GITHUB_PATH | Select-Object -Last 1) "zig.exe") version
