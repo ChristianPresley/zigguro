@@ -14,4 +14,5 @@ test {
     _ = @import("review/queue_panel.zig");
     _ = @import("review/review_view.zig");
     _ = @import("startup/early_update_check.zig");
+    _ = @import("workbench.zig");
 }

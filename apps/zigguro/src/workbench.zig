@@ -48,7 +48,10 @@ const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
 const registry = zg_config.commands;
 const themes = zg_gui.theme.theme;
 const PanelRef = zg_gui.dock.model.PanelRef;
+const PanelKindId = zg_gui.dock.model.PanelKindId;
 const Area = zg_gui.dock.model.Area;
+const persist = zg_gui.dock.persist;
+const log = std.log.scoped(.workbench);
 
 /// See the module doc.
 pub const Workbench = struct {
@@ -121,6 +124,15 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
+    /// This working folder's saved layout (`loadLayout`), and its saver
+    /// (from `attach`).
+    layout_dir: ?std.Io.Dir = null,
+    persister: ?persist.Persister = null,
+    /// The dock revision the saver last saw.
+    layout_rev: u64 = 0,
+    /// The layout was saved on close; later changes (floating panels
+    /// docking back) are not saved.
+    layout_final: bool = false,
 
     /// One open file and its dock panel; the current one is mirrored in
     /// the fields above.
@@ -140,6 +152,8 @@ pub const Workbench = struct {
     const kind_agent: zg_gui.dock.model.PanelKindId = 3;
     const kind_review: zg_gui.dock.model.PanelKindId = 4;
     const kind_review_view: zg_gui.dock.model.PanelKindId = 5;
+    /// The kinds' names in the saved layout (index = kind - 1).
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -238,15 +252,23 @@ pub const Workbench = struct {
         errdefer wb.closeFile(f);
         try wb.files.append(wb.gpa, f);
         const nf = &wb.files.items[wb.files.items.len - 1];
-        nf.panel = try wb.dock.addPanel(kind_editor, null);
+        nf.panel = try wb.addEditorPanel(nf.*);
         try wb.showEditor(nf);
         if (wb.win != null) nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
         return nf;
     }
 
+    /// A dock panel for `f`; its state is the file's absolute path (what
+    /// the saved layout reopens).
+    fn addEditorPanel(wb: *Workbench, f: OpenFile) !PanelRef {
+        const abs = if (f.path) |p| try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) else null;
+        defer if (abs) |a| wb.gpa.free(a);
+        return wb.dock.addPanel(kind_editor, abs);
+    }
+
     /// Opens `f`'s tab (again, if it was closed) and activates it.
     fn showEditor(wb: *Workbench, f: *OpenFile) !void {
-        if (!wb.dock.panels.contains(f.panel)) f.panel = try wb.dock.addPanel(kind_editor, null);
+        if (!wb.dock.panels.contains(f.panel)) f.panel = try wb.addEditorPanel(f.*);
         if (wb.dock.groupOf(f.panel)) |g| {
             try wb.dock.openIn(f.panel, g, null, .{});
             return;
@@ -371,11 +393,162 @@ pub const Workbench = struct {
         const w = wb.win orelse return;
         wb.floater = .init(wb.gpa, &wb.dock, wb.panelHost(), opener, .{});
         wb.floater.?.attachMain(w, &wb.dv);
+        // Saves the layout before floating panels dock back.
+        w.on_close = .{ .ctx = wb, .f = onMainClose };
+        // Restored floating panels get their windows.
+        wb.floater.?.sync() catch |e| log.warn("floating panels not restored: {t}", .{e});
+    }
+
+    // -- the saved layout ------------------------------------------------
+
+    fn kindName(_: ?*anyopaque, k: PanelKindId) ?[]const u8 {
+        return if (k >= 1 and k <= kind_names.len) kind_names[k - 1] else null;
+    }
+
+    fn kindId(_: ?*anyopaque, name: []const u8) ?PanelKindId {
+        for (kind_names, 1..) |n, i| if (std.mem.eql(u8, n, name)) return @intCast(i);
+        return null;
+    }
+
+    const layout_kinds: persist.Kinds = .{ .name = kindName, .id = kindId };
+
+    /// Restores the layout saved for the working folder (in
+    /// `<state_dir>/layouts/<hash of the folder>`): editors reopen their
+    /// files and the terminal, agent and review panels come back where
+    /// they were (started by `attach` when shown). Returns the main
+    /// window's saved size. Call after `init`, before `attach`; without
+    /// it nothing is saved.
+    pub fn loadLayout(wb: *Workbench, state_dir: []const u8) ?zg_gui.core.geom.Size {
+        const sep = std.fs.path.sep;
+        const sub = std.fmt.allocPrint(wb.gpa, "{s}{c}layouts{c}{x:0>16}", .{ state_dir, sep, sep, std.hash.Wyhash.hash(0, wb.cwd) }) catch return null;
+        defer wb.gpa.free(sub);
+        const dir = std.Io.Dir.cwd().createDirPathOpen(wb.io, sub, .{}) catch |e| {
+            log.warn("layout folder {s}: {t}", .{ sub, e });
+            return null;
+        };
+        wb.layout_dir = dir;
+        var r = persist.load(wb.gpa, wb.io, dir);
+        defer r.deinit();
+        const l: *persist.Loaded = switch (r) {
+            .ok, .migrated => |*l| l,
+            else => return null,
+        };
+        const m = persist.toModel(wb.gpa, &l.file, layout_kinds) catch |e| {
+            log.warn("the saved layout was not used: {t}", .{e});
+            return null;
+        };
+        wb.adoptLayout(m) catch |e| log.warn("the saved layout was not fully restored: {t}", .{e});
+        for (l.file.windows) |win| if (std.mem.eql(u8, win.id, "main") and win.rect[2] > 0 and win.rect[3] > 0) {
+            return .{ .w = @floatFromInt(win.rect[2]), .h = @floatFromInt(win.rect[3]) };
+        };
+        return null;
+    }
+
+    /// Replaces the dock with `restored` and matches its panels to files
+    /// and panels; what cannot come back closes.
+    fn adoptLayout(wb: *Workbench, restored: zg_gui.dock.DockModel) !void {
+        wb.dock.deinit();
+        wb.dock = restored;
+        wb.dock.history = false;
+        defer wb.dock.history = true;
+        // `init` opened one file, in the old layout.
+        var first_placed = false;
+        var stale: std.ArrayList(PanelRef) = .empty;
+        defer stale.deinit(wb.gpa);
+        const refs = try wb.gpa.dupe(PanelRef, wb.dock.panels.keys());
+        defer wb.gpa.free(refs);
+        for (refs) |p| {
+            const v = wb.dock.panels.get(p) orelse continue;
+            switch (v.kind) {
+                kind_editor => {
+                    const abs = v.state orelse {
+                        try stale.append(wb.gpa, p);
+                        continue;
+                    };
+                    const first = &wb.files.items[0];
+                    if (!first_placed) if (first.path) |fp| if (wb.samePath(fp, abs)) {
+                        first.panel = p;
+                        first_placed = true;
+                        continue;
+                    };
+                    // A file that is gone stays closed.
+                    _ = std.Io.Dir.cwd().statFile(wb.io, abs, .{}) catch {
+                        try stale.append(wb.gpa, p);
+                        continue;
+                    };
+                    var f = wb.load(abs) catch {
+                        try stale.append(wb.gpa, p);
+                        continue;
+                    };
+                    f.panel = p;
+                    wb.files.append(wb.gpa, f) catch |e| {
+                        wb.closeFile(f);
+                        return e;
+                    };
+                },
+                kind_terminal => wb.terminal_ref = p,
+                kind_agent => wb.agent_ref = p,
+                kind_review => wb.review_ref = p,
+                // Review views are not kept; unknown kinds stay as they are.
+                kind_review_view => try stale.append(wb.gpa, p),
+                else => {},
+            }
+        }
+        for (stale.items) |p| try wb.dock.close(p);
+        // The closed list is for panels the user closed.
+        for (wb.dock.closed.items) |c| if (c.panel.state) |st| wb.gpa.free(st);
+        wb.dock.closed.clearRetainingCapacity();
+        if (!first_placed) {
+            if (wb.files.items[0].path == null and wb.files.items.len > 1) {
+                // An untitled buffer gives way to the restored editors.
+                wb.closeFile(wb.files.orderedRemove(0));
+            } else {
+                const f = &wb.files.items[0];
+                f.panel = try wb.addEditorPanel(f.*);
+                try wb.showEditor(f);
+            }
+        }
+        wb.setCurrent(wb.files.items[0]);
+        wb.followFocus();
+    }
+
+    /// The layout as saved (a `Persister` source).
+    fn layoutSnapshot(ctx: *anyopaque, arena: std.mem.Allocator) anyerror!persist.LayoutFile {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var windows: [1]persist.WindowLayout = .{.{ .id = "main" }};
+        if (wb.win) |w| windows[0].rect = .{ 0, 0, @intFromFloat(@max(0, w.size.w)), @intFromFloat(@max(0, w.size.h)) };
+        return persist.fromModel(arena, &wb.dock, layout_kinds, &windows, &.{});
+    }
+
+    /// Saves the layout now, once (closing).
+    fn saveLayoutNow(wb: *Workbench) void {
+        if (wb.layout_final) return;
+        const p = if (wb.persister) |*p| p else return;
+        wb.layout_final = true;
+        p.saveNow() catch |e| log.warn("layout not saved: {t}", .{e});
+    }
+
+    /// The main window is closing: save the layout, then bring floating
+    /// panels home.
+    fn onMainClose(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.saveLayoutNow();
+        if (wb.floater) |*fl| fl.closeAll();
+        w.close_requested = true;
+    }
+
+    /// Whether the terminal, agent or review panel is shown (`kind` is
+    /// one of "terminal", "agent", "review").
+    pub fn panelShown(wb: *Workbench, comptime kind: []const u8) bool {
+        return wb.shown(@field(wb, kind ++ "_ref"));
     }
 
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        wb.saveLayoutNow();
+        if (wb.persister) |*p| p.deinit();
+        wb.persister = null;
         // Floating panels come home before their windows close.
         if (wb.floater) |*fl| fl.closeAll();
         // The panel stops the agent first: its tools may be waiting on
@@ -421,6 +594,7 @@ pub const Workbench = struct {
         wb.docs.deinit();
         wb.langs.deinit(wb.gpa);
         wb.gpa.free(wb.cwd);
+        if (wb.layout_dir) |d| d.close(wb.io);
     }
 
     /// Hooks the keymap and the palette into `win` and focuses the editor.
@@ -433,6 +607,22 @@ pub const Workbench = struct {
         try wb.palette.registerCommands();
         for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
         wb.approvals = .init(wb.gpa, wb.io, win);
+        win.on_close = .{ .ctx = wb, .f = onMainClose };
+        if (wb.layout_dir) |dir| {
+            wb.persister = .{ .gpa = wb.gpa, .io = wb.io, .app = win.app, .dir = dir, .source = .{ .ctx = wb, .snapshot = layoutSnapshot }, .win = win };
+            wb.layout_rev = wb.dock.revision;
+        }
+        // Panels the restored layout shows start now.
+        if (wb.inLayout(wb.terminal_ref)) try wb.startTerminal(win);
+        if (wb.inLayout(wb.agent_ref)) try wb.startAgent(win);
+        if (wb.inLayout(wb.review_ref)) try wb.startReview(win);
+    }
+
+    /// Whether `p` is in a group (docked or floating) of a shown area.
+    fn inLayout(wb: *Workbench, p: ?PanelRef) bool {
+        const r = p orelse return false;
+        if (wb.dock.groupOf(r) == null) return false;
+        return wb.areaOf(r) == null or wb.shown(r);
     }
 
     fn loadKeymap(wb: *Workbench) !void {
@@ -528,17 +718,21 @@ pub const Workbench = struct {
             if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
             return;
         }
-        if (wb.terminal == null) {
-            const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
-            t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
-            wb.terminal = t;
-            t.start();
-        }
+        try wb.startTerminal(w);
         if (wb.terminal_ref == null) wb.terminal_ref = try wb.dock.addPanel(kind_terminal, null);
         try wb.reveal(wb.terminal_ref.?, .bottom);
         wb.focus_terminal = true;
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
+    }
+
+    /// Creates the terminal and starts its shell, once.
+    fn startTerminal(wb: *Workbench, w: *Window) !void {
+        if (wb.terminal != null) return;
+        const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
+        t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
+        wb.terminal = t;
+        t.start();
     }
 
     /// Shows the agent pane (starting the agent) and focuses its prompt,
@@ -550,36 +744,40 @@ pub const Workbench = struct {
             if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
             return;
         }
-        if (wb.agent_panel == null) {
-            const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, wb.approvals.port());
-            errdefer host.destroy();
-            host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
-            const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
-            p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
-            // Pasted images go to the project's .zigguro/attachments.
-            if (std.fs.path.join(wb.gpa, &.{ wb.cwd, ".zigguro", "attachments" })) |dir| {
-                defer wb.gpa.free(dir);
-                p.enableImagePaste(dir) catch {};
-            } else |_| {}
-            p.plans = &host.plans;
-            p.plan_mode = &host.plan_mode;
-            p.attachChildren(&host.children);
-            // Rewinding code goes through E12's checkpoints.
-            p.restore = host.review.restore();
-            if (wb.agent_cmds) |c| {
-                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs, .context = &host.context };
-                p.commands = c;
-            }
-            host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
-            if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
-            wb.agent = host;
-            wb.agent_panel = p;
-        }
+        try wb.startAgent(w);
         if (wb.agent_ref == null) wb.agent_ref = try wb.dock.addPanel(kind_agent, null);
         try wb.reveal(wb.agent_ref.?, .agent);
         wb.focus_agent = true;
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusAgent });
+    }
+
+    /// Creates the agent and its panel, once.
+    fn startAgent(wb: *Workbench, w: *Window) !void {
+        if (wb.agent_panel != null) return;
+        const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, wb.approvals.port());
+        errdefer host.destroy();
+        host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
+        const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
+        p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        // Pasted images go to the project's .zigguro/attachments.
+        if (std.fs.path.join(wb.gpa, &.{ wb.cwd, ".zigguro", "attachments" })) |dir| {
+            defer wb.gpa.free(dir);
+            p.enableImagePaste(dir) catch {};
+        } else |_| {}
+        p.plans = &host.plans;
+        p.plan_mode = &host.plan_mode;
+        p.attachChildren(&host.children);
+        // Rewinding code goes through E12's checkpoints.
+        p.restore = host.review.restore();
+        if (wb.agent_cmds) |c| {
+            c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs, .context = &host.context };
+            p.commands = c;
+        }
+        host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
+        wb.agent = host;
+        wb.agent_panel = p;
     }
 
     /// Shows the review queue in the left area (starting the agent, whose
@@ -591,17 +789,22 @@ pub const Workbench = struct {
             return;
         }
         if (wb.agent == null) try wb.toggleAgent();
-        const host = wb.agent orelse return;
-        if (wb.review_panel == null) {
-            const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
-            p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
-            p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
-            p.open_review = .{ .ctx = wb, .f = openReview };
-            wb.review_panel = p;
-        }
+        try wb.startReview(w);
         if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
         try wb.reveal(wb.review_ref.?, .left);
         w.markAllDirty();
+    }
+
+    /// Creates the review queue (and the agent it needs), once.
+    fn startReview(wb: *Workbench, w: *Window) !void {
+        if (wb.review_panel != null) return;
+        try wb.startAgent(w);
+        const host = wb.agent orelse return;
+        const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
+        p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
+        p.open_review = .{ .ctx = wb, .f = openReview };
+        wb.review_panel = p;
     }
 
     /// A palette "AI: /name" command: opens the agent pane and runs
@@ -716,6 +919,10 @@ pub const Workbench = struct {
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
+        if (wb.persister) |*p| if (wb.dock.revision != wb.layout_rev and !wb.layout_final) {
+            wb.layout_rev = wb.dock.revision;
+            p.markDirty();
+        };
     }
 
     /// The room the center keeps when a side area grows.
@@ -921,3 +1128,53 @@ pub const Workbench = struct {
         zg_gui.w.statusBar(ui, items[0..n], .{ .chord = wb.adapter.status() });
     }
 };
+
+test "workbench: the layout comes back in the next session" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.zig", .data = "const b = 2;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+    const b = try std.fs.path.join(gpa, &.{ root, "b.zig" });
+    defer gpa.free(b);
+    const state = try std.fs.path.join(gpa, &.{ root, "state" });
+    defer gpa.free(state);
+
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, a);
+        defer wb.deinit();
+        try std.testing.expect(wb.loadLayout(state) == null);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        try wb.openFile(b);
+        wb.dock.setAreaSizeLive(.bottom, 333);
+        _ = t.settle();
+    }
+    {
+        // Untitled: the restored editors replace the empty buffer.
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, null);
+        defer wb.deinit();
+        const size = wb.loadLayout(state).?;
+        try std.testing.expectEqual(@as(f32, 900), size.w);
+        try std.testing.expectEqual(@as(usize, 2), wb.files.items.len);
+        try std.testing.expectEqualStrings("a.zig", std.fs.path.basename(wb.files.items[0].path.?));
+        try std.testing.expectEqualStrings("b.zig", std.fs.path.basename(wb.files.items[1].path.?));
+        try std.testing.expectEqual(@as(f32, 333), wb.dock.areas[@intFromEnum(Area.bottom)].size);
+        for (wb.files.items) |f| try std.testing.expect(wb.dock.groupOf(f.panel) != null);
+        try wb.dock.validate();
+    }
+}
