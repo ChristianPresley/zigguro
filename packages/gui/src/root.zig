@@ -25,6 +25,8 @@ pub const dock = @import("dock/root.zig");
 pub const testing = @import("testing/root.zig");
 /// Markdown parsing (CommonMark, GFM, zigguro extensions).
 pub const markdown = @import("markdown/root.zig");
+/// Accessibility: the semantic tree, snapshots and actions.
+pub const a11y = @import("a11y/root.zig");
 /// Runs windows on a platform and renderer.
 pub const host = @import("host.zig");
 
@@ -73,4 +75,5 @@ test {
     _ = @import("virtual/flat_tree.zig");
     _ = @import("virtual/tree_view_test.zig");
     _ = @import("virtual/table_test.zig");
+    _ = @import("a11y/tree_test.zig");
 }
