@@ -13,19 +13,19 @@ const fake = test_exes.fake_lsp_server;
 const workspace = "/w";
 
 /// A fake server playing `script`, and a client for it.
-const Harness = struct {
+pub const Harness = struct {
     rt: zg_core.Runtime,
     proc: *ServerProcess,
     client: *Client,
     path_buf: [std.fs.max_path_bytes]u8,
 
-    fn init(h: *Harness, script: []const u8, ctx: Client.InitContext) !void {
+    pub fn init(h: *Harness, script: []const u8, ctx: Client.InitContext) !void {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         try h.initPath(try std.fmt.bufPrint(&buf, "{s}/testdata/transcripts/{s}", .{ options.package_root, script }), ctx);
     }
 
     /// Like `init`, with the script's full path.
-    fn initPath(h: *Harness, script_path: []const u8, ctx: Client.InitContext) !void {
+    pub fn initPath(h: *Harness, script_path: []const u8, ctx: Client.InitContext) !void {
         h.rt.initTesting();
         errdefer _ = h.rt.deinit();
         const path = h.path_buf[0..script_path.len];
@@ -38,20 +38,20 @@ const Harness = struct {
         h.client = try Client.create(&h.rt, h.proc, ctx);
     }
 
-    fn deinit(h: *Harness) void {
+    pub fn deinit(h: *Harness) void {
         h.client.deinit();
         h.proc.deinit();
         _ = h.rt.deinit();
     }
 
     /// Waits for the server to exit and returns its status.
-    fn exitStatus(h: *Harness) !std.process.Child.Term {
+    pub fn exitStatus(h: *Harness) !std.process.Child.Term {
         try h.proc.exitEvent().waitTimeout(h.rt.io, .{ .duration = .{ .raw = .fromSeconds(10), .clock = .awake } });
         return h.proc.exitStatus().?;
     }
 
     /// The fake server's stderr, for failure messages.
-    fn dumpStderr(h: *Harness) void {
+    pub fn dumpStderr(h: *Harness) void {
         var tail: std.ArrayList(u8) = .empty;
         defer tail.deinit(testing.allocator);
         h.proc.stderrTail(&tail, 20) catch return;
@@ -203,18 +203,18 @@ test "client: error mapping and timeout" {
 }
 
 /// Counts `test/ready` notifications.
-const Ready = struct {
+pub const Ready = struct {
     event: Io.Event = .unset,
     step: std.atomic.Value(u32) = .init(0),
     io: Io,
 
-    fn onReady(ctx: ?*anyopaque, _: *zg_jsonrpc.Endpoint, _: zg_jsonrpc.message.Notification, _: std.mem.Allocator) void {
+    pub fn onReady(ctx: ?*anyopaque, _: *zg_jsonrpc.Endpoint, _: zg_jsonrpc.message.Notification, _: std.mem.Allocator) void {
         const r: *Ready = @ptrCast(@alignCast(ctx.?));
         _ = r.step.fetchAdd(1, .acq_rel);
         r.event.set(r.io);
     }
 
-    fn waitStep(r: *Ready, n: u32) !void {
+    pub fn waitStep(r: *Ready, n: u32) !void {
         while (r.step.load(.acquire) < n) {
             try r.event.waitTimeout(r.io, .{ .duration = .{ .raw = .fromSeconds(10), .clock = .awake } });
             r.event.reset();
@@ -285,6 +285,17 @@ test "client: server gone during initialize" {
     h.proc.terminate(.fromMilliseconds(0));
     h.client.start() catch {};
     try testing.expectError(error.ServerGone, h.client.waitInitialized(.fromSeconds(10)));
+}
+
+test "client: server exits before answering initialize" {
+    // The fake server fails on the missing rootUri and exits; the failed
+    // handshake must leave closing the endpoint to deinit.
+    var h: Harness = undefined;
+    try h.init("handshake.script", .{});
+    defer h.deinit();
+    try h.client.start();
+    try testing.expectError(error.ServerGone, h.client.waitInitialized(.fromSeconds(10)));
+    try testing.expectEqual(std.process.Child.Term{ .exited = 99 }, try h.exitStatus());
 }
 
 /// The client-visible results of the lifecycle session.
