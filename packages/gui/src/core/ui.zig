@@ -426,14 +426,11 @@ pub const Ui = struct {
         cold.depth = f.depth + 1;
         cold.test_id = if (test_id.len > 0) std.hash.Wyhash.hash(0, test_id) else 0;
 
-        const sh = st.hash();
-        if (fresh or cold.style_hash != sh) {
+        if (fresh or !cold.style.eql(&st)) {
             cold.style = st;
-            cold.style_hash = sh;
             s.markLayout(node);
         }
-        const lh = vt.layoutHash(props);
-        const ph = vt.paintHash(props);
+        const lh, const ph = vt.hashes(props);
         const lchanged = fresh or hot.items(.props_hash)[i] != lh;
         const pchanged = fresh or hot.items(.paint_hash)[i] != ph;
         if (lchanged or pchanged) {
