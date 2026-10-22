@@ -24,6 +24,8 @@ const Page = struct {
     titles: [64][]const u8 = undefined,
     /// Panels that refuse to close.
     keep: ?PanelRef = null,
+    /// A panel whose close hides its area instead (refused).
+    hides: ?PanelRef = null,
 
     pub fn build(p: *Page, ui: *Ui) void {
         p.dv.beginFrame(ui);
@@ -48,6 +50,10 @@ const Page = struct {
 
     fn canClose(ctx: *anyopaque, r: PanelRef) bool {
         const p: *Page = @ptrCast(@alignCast(ctx));
+        if (p.hides == r) {
+            p.dock.areaVisible(.center, false);
+            return false;
+        }
         return p.keep != r;
     }
 };
@@ -152,6 +158,22 @@ test "dock view: close gestures and can_close" {
     f.t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = r.x + r.w - 15, .y = r.y + r.h / 2 } } });
     _ = f.t.settle();
     try testing.expect(f.page.dock.groupOf(ps[2]) == null);
+}
+
+test "dock view: a refused close that hides the area rebuilds" {
+    var f: Fx = undefined;
+    try f.init(800);
+    defer f.deinit();
+    const ps = try f.open(f.center(), 1);
+    defer gpa.free(ps);
+    f.page.hides = ps[0];
+    f.rebuild();
+    try f.t.click(.{ .role = .tab, .name = "a.zig" });
+    f.t.press(.delete, .{});
+    _ = f.t.settle();
+    // Still open, but its area is hidden on screen right away.
+    try testing.expect(f.page.dock.groupOf(ps[0]) != null);
+    try testing.expect(f.t.find(.{ .role = .tab, .name = "a.zig" }) == null);
 }
 
 test "dock view: context menu splits, pins and closes others" {
