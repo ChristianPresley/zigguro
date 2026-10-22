@@ -1,7 +1,8 @@
 //! zg: the headless CLI agent and SCM CLI (works without the GUI).
 //! `zg agent` runs the AI harness (E10.F10), `zg ui-test` runs `.zgui`
 //! scripts headlessly (E04.F01.S03), `zg update` checks for and stages
-//! updates (E17.F04.S01); `--version` is answered by
+//! updates (E17.F04.S01), `zg review` works the review queue
+//! (E12.F03.S05); `--version` is answered by
 //! zg_release before the runtime starts. Other subcommands arrive with
 //! their epics.
 
@@ -13,6 +14,7 @@ const zg_crash = @import("zg_crash");
 const cmd_agent = @import("cmd_agent.zig");
 const cmd_ui_test = @import("cmd_ui_test.zig");
 const cmd_update = @import("cmd_update.zig");
+const review_cmd = @import("review_cmd.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -42,6 +44,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "agent")) return cmd_agent.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "ui-test")) return cmd_ui_test.run(&rt, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "update")) return cmd_update.run(&rt, min, argv[2..]);
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "review")) return review_cmd.runCli(&rt, min, argv[2..]);
 
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
@@ -52,6 +55,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         \\Usage: zg agent [flags]          run the AI agent (zg agent --help)
         \\       zg ui-test FILE.zgui...   run UI scripts headlessly (zg ui-test --help)
         \\       zg update check|download|status   updates (zg update --help)
+        \\       zg review list|show|accept|...    the review queue (zg review --help)
         \\
     , .{zg_release.current.version_string});
     try w.flush();
