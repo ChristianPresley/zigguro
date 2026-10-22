@@ -6,6 +6,7 @@
     .dependencies = .{
         .zg_build = .{ .path = "../build" },
         .zg_core = .{ .path = "../core" },
+        .ucdgen = .{ .path = "../../tools/ucdgen" },
     },
     .paths = .{
         "build.zig",
@@ -15,5 +16,6 @@
         "dev",
         "fuzz",
         "testdata",
+        "ucd",
     },
 }
