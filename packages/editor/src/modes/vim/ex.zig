@@ -1,6 +1,6 @@
 //! A subset of Vim's ex commands (cmdline.txt): ranges (`%`, `.`, `$`,
 //! numbers, marks, `/pat/`, `+n`/`-n`), `:{n}`, `:s` (flags `g`, `i`,
-//! `I`, `e`, `n`, `&`), `:g`/`:v` with any of these commands (`:d` in one
+//! `I`, `e`, `n`, `c`, `&`), `:g`/`:v` with any of these commands (`:d` in one
 //! pass), `:normal`, `:p` (moves the cursor only), `:d`, `:noh`, `:set`
 //! for `number`, `relativenumber`, `wrap`, `ignorecase`, `smartcase`, and
 //! `:w`, `:q`, `:wq`, `:x`, `:e` through the host's actions.
@@ -18,6 +18,7 @@ const ops = @import("operators.zig");
 const text_mod = @import("text.zig");
 const pattern = @import("pattern.zig");
 const search_mod = @import("search.zig");
+const confirm = @import("confirm.zig");
 const registers = @import("registers.zig");
 const find = @import("../../model/search/find.zig");
 const replace_mod = @import("../../model/search/replace.zig");
@@ -338,6 +339,7 @@ const Ex = struct {
         var report_only = false;
         var quiet = false;
         var case: ?bool = null;
+        var ask = false;
         var flags = flags_in;
         if (flags.len > 0 and flags[0] == '&') {
             flags = flags[1..];
@@ -348,7 +350,7 @@ const Ex = struct {
             'I' => case = false,
             'e' => quiet = true,
             'n' => report_only = true,
-            'c' => return e.fail("E5: the c flag (confirm) is not supported yet", .{}),
+            'c' => ask = !ask,
             ' ', '0'...'9' => {},
             else => return e.fail("E488: Trailing characters: {s}", .{flags}),
         };
@@ -454,6 +456,11 @@ const Ex = struct {
             return e.fail("E486: Pattern not found: {s}", .{pat_copy});
         }
         if (report_only) return e.msg("{d} match{s} on {d} line{s}", .{ n, if (n == 1) "" else "es", lines, if (lines == 1) "" else "s" });
+        if (ask) {
+            if (vs.group_held) return e.fail("E5: the c flag under :g or :normal is not supported", .{});
+            try confirm.start(vs, e.host, edits.items, rep_in);
+            return .{ .message = vs.message[0..vs.message_len] };
+        }
 
         // One undo step; the cursor goes to the start of the last line
         // changed.
