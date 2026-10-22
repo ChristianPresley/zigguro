@@ -442,6 +442,7 @@ pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
 // New variants go at the end, so recorded .zgtrace tags keep their values:
 //   pointer_pressure: { win, pressure: f32 }            // pen tip 0..1, before its pointer_move
 //   pointer_relative: { win, dx: f32, dy: f32, time_ns } // raw mouse counts
+//   window_decorations: { win, client: bool, margins_px: [4]u32 } // Wayland CSD margins (l, t, r, b)
 ```
 
 Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
@@ -982,9 +983,8 @@ thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
 shows the default arrow. Animated cursors show their first frame.
-`zg_platform.linux_util.xcursor` parses Xcursor files for X11 too. Move,
-resize, window menu, activation, dialogs and URIs return
-`error.Unsupported`.
+`zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
+Activation, dialogs and URIs return `error.Unsupported`.
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
@@ -1002,6 +1002,29 @@ when a shown preedit is not repeated; -1 offsets hide the cursor). A
 `done` whose serial is not our commit count still applies, and the
 current state is sent again. `leave` clears a shown preedit. Manual
 checklist: `docs/manual-tests/wayland-ime.md`.
+
+Decorations (E01.F04.S01.T02, `wayland/csd.zig`): with
+`zxdg_decoration_manager_v1`, each toplevel gets a decoration object and
+`set_mode(server_side)`, or `client_side` for `Decorations.client`; the
+mode the compositor configures applies with the next surface configure
+and is never sent again. Without the manager windows are
+client-decorated. A client-decorated surface is the window plus 12
+logical px of invisible margin on each edge (none when maximized or
+fullscreen, none on tiled edges): `window_configure.size` covers the
+whole surface, `window_decorations` (staged before it when the mode or
+the physical margins change) tells E04 where the visible window is,
+`set_window_geometry` names it, and the input region adds an 8 px resize
+band around it. At each `wl_pointer.frame` on such a window, a point in
+the margins is a resize edge (16 px corners), elsewhere the app's
+`set_hit_test` answers (`client` without one). A left press on
+`caption` starts `move` with the press serial (a second one within
+500 ms and 4 px toggles maximize), a right press opens
+`show_window_menu`, a left press on a resize region starts `resize`;
+those presses and their releases do not reach the app. Button regions
+reach the app. The margins show resize cursors. `begin_move`,
+`begin_resize` and `show_window_menu` send the same requests with the
+newest button serial on any window. Manual checklist:
+`docs/manual-tests/wayland-csd.md`.
 
 ## zg_platform.x11.X11Backend
 

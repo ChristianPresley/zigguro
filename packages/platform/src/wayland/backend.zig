@@ -36,8 +36,13 @@
 //! `ime_preedit` at `done`. Keys the IME did not consume still arrive as
 //! `wl_keyboard.key` and pass through.
 //!
-//! Decorations and activation come with their own tasks; until then the
-//! related commands are accepted and ignored (hit test) or return
+//! Decorations (E01.F04.S01.T02, `csd.zig`): server-side through
+//! `zxdg_decoration_manager_v1` when offered, else client-side, where
+//! the surface carries invisible resize margins outside the window
+//! geometry and presses on the title bar and borders become move, resize,
+//! window-menu and maximize requests at each `wl_pointer.frame`.
+//!
+//! Activation comes with its own task; until then it returns
 //! `error.Unsupported`.
 
 const std = @import("std");
@@ -74,6 +79,7 @@ const data_device = @import("data_device.zig");
 const dnd = @import("dnd.zig");
 const cursor_mod = @import("cursor.zig");
 const text_input = @import("text_input.zig");
+const csd = @import("csd.zig");
 const xcursor = @import("../linux/xcursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 const pipe_transfer = @import("../linux/pipe_transfer.zig");
@@ -114,7 +120,7 @@ pub const InitOptions = struct {
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input, decoration };
 
 /// Keymaps larger than this are refused.
 const max_keymap_bytes = 16 * 1024 * 1024;
@@ -133,6 +139,12 @@ const Slot = struct {
     cursor: CursorShape = .default,
     /// The latest `set_ime_state`.
     ime: text_input.Want = .{},
+    /// The app's hit test (client-side decorations).
+    hit: ?Hit = null,
+    /// A resize cursor shown over the CSD margins, over `cursor`.
+    auto_cursor: ?CursorShape = null,
+
+    const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
 };
 
 /// A theme cursor ready to attach: frame 0 of the nearest size (animated
@@ -226,6 +238,12 @@ pub const WaylandBackend = struct {
     /// IME: the manager, the seat's text input and its state. Guarded by
     /// the mutex.
     ti_manager: ?wl.zwp_text_input_manager_v3.Id = null,
+    /// Decorations: the manager, title-bar double-click tracking, and
+    /// the button whose release is swallowed after a press started a
+    /// move, resize or menu. Guarded by the mutex.
+    deco_manager: ?wl.zxdg_decoration_manager_v1.Id = null,
+    csd_clicks: csd.Clicks = .{},
+    csd_swallow: ?u32 = null,
     text_input: ?wl.zwp_text_input_v3.Id = null,
     ime: text_input.State = .{},
 
@@ -310,6 +328,7 @@ pub const WaylandBackend = struct {
         b.cursor_manager = try registry.bind(wl.wp_cursor_shape_manager_v1, 1, 2, null);
         if (b.cursor_manager == null) b.cursor_theme = try cursor_mod.Theme.fromEnv(gpa, opts.environ_map);
         b.ti_manager = try registry.bind(wl.zwp_text_input_manager_v3, 1, 1, null);
+        b.deco_manager = try registry.bind(wl.zxdg_decoration_manager_v1, 1, 1, null);
         if (b.seat_id) |sid| {
             if (b.ti_manager) |m| {
                 const ti = try conn.newIdVersion(wl.zwp_text_input_v3, 1, b.handler(.text_input));
@@ -409,6 +428,16 @@ pub const WaylandBackend = struct {
             try wl.xdg_toplevel.setMinSize(c, tl, @intCast(m.w), @intCast(m.h));
         }
         if (opts.parent) |p| if (b.find(p)) |ps| try wl.xdg_toplevel.setParent(c, tl, ps.win.toplevel);
+        // Server-side decorations unless the app draws its own; without
+        // the manager the window is client-decorated.
+        w.csd = true;
+        if (b.deco_manager) |dm| {
+            const d = try c.newIdVersion(wl.zxdg_toplevel_decoration_v1, 1, b.handler(.decoration));
+            try wl.zxdg_decoration_manager_v1.getToplevelDecoration(c, dm, d, tl);
+            try wl.zxdg_toplevel_decoration_v1.setMode(c, d, if (opts.decorations == .client) .client_side else .server_side);
+            w.decoration = d;
+            w.csd = opts.decorations == .client;
+        }
         if (b.viewporter) |vp| {
             const v = try c.newIdVersion(wl.wp_viewport, c.version(@intFromEnum(vp)), null);
             try wl.wp_viewporter.getViewport(c, vp, v, surf);
@@ -465,6 +494,8 @@ pub const WaylandBackend = struct {
             _ = b.pres_pending.swapRemove(i);
         }
         if (w.frac) |f| wl.wp_fractional_scale_v1.destroy(c, f) catch {};
+        // Before the toplevel, or the decoration is orphaned.
+        if (w.decoration) |d| wl.zxdg_toplevel_decoration_v1.destroy(c, d) catch {};
         if (w.viewport) |v| wl.wp_viewport.destroy(c, v) catch {};
         wl.xdg_toplevel.destroy(c, w.toplevel) catch {};
         wl.xdg_surface.destroy(c, w.xdg_surface) catch {};
@@ -682,9 +713,10 @@ pub const WaylandBackend = struct {
                 try wl.wl_surface.setBufferScale(c, w.surface, 1);
                 w.applied_buffer_scale = 1;
             }
-            if (w.applied_destination == null or !std.meta.eql(w.applied_destination.?, w.logical)) {
-                try wl.wp_viewport.setDestination(c, v, @intCast(w.logical.w), @intCast(w.logical.h));
-                w.applied_destination = w.logical;
+            const dest = w.surfaceLogical();
+            if (w.applied_destination == null or !std.meta.eql(w.applied_destination.?, dest)) {
+                try wl.wp_viewport.setDestination(c, v, @intCast(dest.w), @intCast(dest.h));
+                w.applied_destination = dest;
             }
         } else {
             const bs = scale.integerScale(w.scale120);
@@ -730,7 +762,25 @@ pub const WaylandBackend = struct {
                 try s.ime.set(b.gpa, t.enabled, t.purpose, t.caret_rect_px, t.surrounding);
                 if (b.ime.focus == t.win) try b.sendIme(s);
             },
-            .set_hit_test => |t| _ = try b.lookup(t.win),
+            .set_hit_test => |t| {
+                const s = b.find(t.win) orelse return error.InvalidWindow;
+                s.hit = .{ .f = t.f, .ctx = t.ctx };
+            },
+            .begin_move => |win| {
+                const w = try b.lookup(win);
+                try wl.xdg_toplevel.move(c, w.toplevel, b.seat_id orelse return error.Unsupported, b.seat.last_button_serial);
+            },
+            .begin_resize => |t| {
+                const w = try b.lookup(t.win);
+                try wl.xdg_toplevel.resize(c, w.toplevel, b.seat_id orelse return error.Unsupported, b.seat.last_button_serial, csd.wlEdge(t.edge));
+            },
+            .show_window_menu => |t| {
+                const w = try b.lookup(t.win);
+                const s120 = w.effectiveScale120();
+                const x: i32 = @intCast(@divFloor(@as(i64, t.at.x) * scale.unit, s120));
+                const y: i32 = @intCast(@divFloor(@as(i64, t.at.y) * scale.unit, s120));
+                try wl.xdg_toplevel.showWindowMenu(c, w.toplevel, b.seat_id orelse return error.Unsupported, b.seat.last_button_serial, x, y);
+            },
             .set_min_size => |t| {
                 const w = try b.lookup(t.win);
                 const m = scale.logicalSize(t.size, w.effectiveScale120());
@@ -778,7 +828,7 @@ pub const WaylandBackend = struct {
             .clipboard_read => |t| try b.readSelection(t.which, t.mime, t.request),
             .start_drag => |t| try b.startDrag(t.win, t.items, t.allowed),
             .set_drop_effect => |t| try b.setDropEffect(t.win, t.accept, t.effect),
-            .begin_move, .begin_resize, .show_window_menu, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
     }
 
@@ -1119,6 +1169,7 @@ pub const WaylandBackend = struct {
                     .button => |bt| st.ptrButton(bt.serial, bt.button, bt.state == .pressed),
                     .axis => |a| st.ptrAxis(axisOf(a.axis), a.value.toF64()),
                     .frame => {
+                        try b.routeCsd();
                         const s120 = if (b.focusWindow(st.ptr_focus)) |w| w.effectiveScale120() else scale.unit;
                         try st.ptrFrame(out, b.nowNs(), s120);
                     },
@@ -1207,6 +1258,16 @@ pub const WaylandBackend = struct {
                     .target, .dnd_drop_performed, .dnd_finished, .action => {},
                 }
             },
+            .decoration => {
+                const ev = try wl.zxdg_toplevel_decoration_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const w = b.byObject("decoration", obj) orelse return;
+                // Applies with the xdg_surface.configure that follows.
+                switch (ev) {
+                    .configure => |cf| w.csd = cf.mode != .server_side,
+                }
+            },
             .text_input => {
                 const ev = try wl.zwp_text_input_v3.decodeEvent(opcode, body, fds);
                 b.lock();
@@ -1290,7 +1351,7 @@ pub const WaylandBackend = struct {
         const s = b.find(b.seat.ptr_focus orelse return null) orelse return null;
         const k = scale.integerScale(s.win.effectiveScale120());
         const base = if (b.cursor_theme) |t| t.size else 24;
-        return .{ .shape = s.cursor, .serial = b.seat.last_enter_serial, .scale = k, .size_px = base * @as(u32, @intCast(k)) };
+        return .{ .shape = s.auto_cursor orelse s.cursor, .serial = b.seat.last_enter_serial, .scale = k, .size_px = base * @as(u32, @intCast(k)) };
     }
 
     fn cursorCached(b: *WaylandBackend, shape: CursorShape, size_px: u32) ?*CachedCursor {
@@ -1764,7 +1825,111 @@ pub const WaylandBackend = struct {
 
     fn stageConfigure(b: *WaylandBackend, w: *Window, cf: win_mod.Configured) !void {
         if (cf.occluded) |occ| try b.stage(.{ .window_occluded = .{ .win = w.id, .occluded = occ } });
+        try b.applyDecorations(w);
         try b.stage(.{ .window_configure = .{ .win = w.id, .size = cf.size, .scale = cf.scale, .state = cf.state, .serial = cf.serial, .screen_origin_px = null } });
+    }
+
+    /// Sends the CSD window geometry and input region when they changed
+    /// (they apply with the next commit, which carries the new size), and
+    /// stages `window_decorations` when the mode or margins changed.
+    fn applyDecorations(b: *WaylandBackend, w: *Window) !void {
+        const c = b.conn;
+        if (w.csd) {
+            const geo = csd.geometry(w.margins, w.logical);
+            if (w.applied_geometry == null or !std.meta.eql(w.applied_geometry.?, geo)) {
+                try wl.xdg_surface.setWindowGeometry(c, w.xdg_surface, geo[0], geo[1], geo[2], geo[3]);
+                w.applied_geometry = geo;
+            }
+            const in = csd.inputRect(w.margins, w.logical);
+            if (w.applied_input == null or !std.meta.eql(w.applied_input.?, in)) {
+                const r = try c.newIdVersion(wl.wl_region, 1, null);
+                try wl.wl_compositor.createRegion(c, b.compositor, r);
+                try wl.wl_region.add(c, r, in[0], in[1], in[2], in[3]);
+                try wl.wl_surface.setInputRegion(c, w.surface, r);
+                try wl.wl_region.destroy(c, r);
+                w.applied_input = in;
+            }
+        } else if (w.applied_geometry != null) {
+            // Back to server-side: the whole surface is the window.
+            try wl.xdg_surface.setWindowGeometry(c, w.xdg_surface, 0, 0, @intCast(w.logical.w), @intCast(w.logical.h));
+            try wl.wl_surface.setInputRegion(c, w.surface, null);
+            w.applied_geometry = null;
+            w.applied_input = null;
+        }
+        const m = w.margins.scaled(w.effectiveScale120()).array();
+        if (w.reported_client == w.csd and std.meta.eql(w.reported_margins, m)) return;
+        w.reported_client = w.csd;
+        w.reported_margins = m;
+        try b.stage(.{ .window_decorations = .{ .win = w.id, .client = w.csd, .margins_px = m } });
+    }
+
+    /// Client-side decorations: presses on the title bar and borders of
+    /// the pointer's window start a move, resize, window menu or
+    /// maximize instead of reaching the app (their releases are dropped
+    /// too), and the margins show resize cursors. Runs at
+    /// `wl_pointer.frame`, before the frame is turned into events. Mutex
+    /// held.
+    fn routeCsd(b: *WaylandBackend) !void {
+        const st = &b.seat;
+        const s = b.find(st.ptr_focus orelse return) orelse return;
+        const w = &s.win;
+        if (!w.csd) return;
+        const s120 = w.effectiveScale120();
+        const edge = csd.edgeAt(st.ptr_pos, w.bufferSize(), w.margins.scaled(s120), scale.scaleDim(csd.corner_len, s120));
+        const region: types.HitRegion = if (edge) |e| csd.edgeRegion(e) else if (s.hit) |h| h.f(h.ctx, .{
+            .x = @intFromFloat(@floor(st.ptr_pos[0])),
+            .y = @intFromFloat(@floor(st.ptr_pos[1])),
+        }) else .client;
+        const shape: ?CursorShape = if (csd.regionEdge(region)) |e| csd.cursorFor(e) else null;
+        if (!std.meta.eql(shape, s.auto_cursor)) {
+            s.auto_cursor = shape;
+            b.cursor_dirty = true;
+            b.thread_wake.signal();
+        }
+        const f = &st.frame;
+        var kept: usize = 0;
+        for (f.buttons[0..f.n_buttons]) |bt| {
+            if (!bt.pressed) {
+                if (b.csd_swallow == bt.code) {
+                    b.csd_swallow = null;
+                    continue;
+                }
+            } else {
+                const button = seat_mod.buttonOf(bt.code);
+                const double = region == .caption and button == .left and
+                    b.csd_clicks.press(b.nowNs(), st.ptr_pos, seat_mod.double_click_ns, seat_mod.double_click_px);
+                const action = csd.pressAction(region, button, double);
+                if (action != .deliver) {
+                    try b.runCsdAction(w, action);
+                    b.csd_swallow = bt.code;
+                    continue;
+                }
+            }
+            f.buttons[kept] = bt;
+            kept += 1;
+        }
+        f.n_buttons = @intCast(kept);
+    }
+
+    fn runCsdAction(b: *WaylandBackend, w: *Window, action: csd.Action) !void {
+        const c = b.conn;
+        const seat = b.seat_id orelse return;
+        const serial = b.seat.last_button_serial;
+        switch (action) {
+            .deliver => {},
+            .move => try wl.xdg_toplevel.move(c, w.toplevel, seat, serial),
+            .resize => |e| try wl.xdg_toplevel.resize(c, w.toplevel, seat, serial, csd.wlEdge(e)),
+            .window_menu => if (w.wm_caps.window_menu) {
+                const s120 = w.effectiveScale120();
+                const x: i32 = @intFromFloat(b.seat.ptr_pos[0] * scale.unit / @as(f32, @floatFromInt(s120)));
+                const y: i32 = @intFromFloat(b.seat.ptr_pos[1] * scale.unit / @as(f32, @floatFromInt(s120)));
+                try wl.xdg_toplevel.showWindowMenu(c, w.toplevel, seat, serial, x, y);
+            },
+            .toggle_maximize => if (w.wm_caps.maximize) {
+                if (w.state.maximized) try wl.xdg_toplevel.unsetMaximized(c, w.toplevel) else try wl.xdg_toplevel.setMaximized(c, w.toplevel);
+            },
+        }
+        try c.flush();
     }
 
     fn rescaleLocked(b: *WaylandBackend, w: *Window) !void {
@@ -1941,6 +2106,11 @@ const Peer = struct {
     last_purpose: ?u32 = null,
     last_ime_cursor: ?i32 = null,
     last_rect: [2]i32 = .{ -1, -1 },
+    /// The newest `set_window_geometry`, decoration `set_mode` and
+    /// `xdg_toplevel.resize` edges.
+    last_geometry: [4]i32 = .{ -1, -1, -1, -1 },
+    last_mode: ?u32 = null,
+    last_edges: ?u32 = null,
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -2033,6 +2203,13 @@ const Peer = struct {
             if (comptime std.mem.eql(u8, f.name, "hotspot_y")) p.last_hotspot[1] = v;
             if (comptime std.mem.eql(u8, f.name, "scale") and f.type == i32) p.last_scale = v;
             if (f.type == wl.zwp_text_input_v3.ContentPurpose) p.last_purpose = @intFromEnum(v);
+            if (f.type == wl.zxdg_toplevel_decoration_v1.Mode) p.last_mode = @intFromEnum(v);
+            if (f.type == wl.xdg_toplevel.ResizeEdge) p.last_edges = @intFromEnum(v);
+            if (@TypeOf(payload) == @FieldType(wl.xdg_surface.Request, "set_window_geometry")) {
+                inline for (.{ "x", "y", "width", "height" }, 0..) |n, i| if (comptime std.mem.eql(u8, f.name, n)) {
+                    p.last_geometry[i] = v;
+                };
+            }
             if (@TypeOf(payload) == @FieldType(wl.zwp_text_input_v3.Request, "set_surrounding_text") and comptime std.mem.eql(u8, f.name, "cursor")) p.last_ime_cursor = v;
             if (@TypeOf(payload) == @FieldType(wl.zwp_text_input_v3.Request, "set_cursor_rectangle")) {
                 if (comptime std.mem.eql(u8, f.name, "x")) p.last_rect[0] = v;
@@ -2131,6 +2308,8 @@ const all_globals = [_]fake.Global{
     .{ .name = 4, .interface = "wp_viewporter", .version = 1 },
     .{ .name = 5, .interface = "wp_fractional_scale_manager_v1", .version = 1 },
     .{ .name = 6, .interface = "wl_output", .version = 4 },
+    // Server-side decorations, so windows have no CSD margins.
+    .{ .name = 11, .interface = "zxdg_decoration_manager_v1", .version = 1 },
 };
 
 /// `all_globals` and a seat.
@@ -3081,4 +3260,154 @@ test "text input: enable on enter, done order, serial mismatch resend, leave, di
     _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .disable, std.time.ns_per_s);
     _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .commit, std.time.ns_per_s);
     try testing.expectEqual(4, countRequests(&rig.peer, .commit));
+}
+
+/// The globals without a decoration manager (client-side decorations),
+/// with a seat.
+const csd_globals = [_]fake.Global{
+    .{ .name = 1, .interface = "wl_compositor", .version = 6 },
+    .{ .name = 2, .interface = "xdg_wm_base", .version = 6 },
+    .{ .name = 3, .interface = "wl_shm", .version = 1 },
+    .{ .name = 4, .interface = "wp_viewporter", .version = 1 },
+    .{ .name = 5, .interface = "wp_fractional_scale_manager_v1", .version = 1 },
+    .{ .name = 6, .interface = "wl_output", .version = 4 },
+    .{ .name = 7, .interface = "wl_seat", .version = 9 },
+};
+
+/// Waits for `window_decorations` and the `window_configure` after it.
+fn expectDecorated(p: Platform, win: WindowId) !struct { client: bool, margins: [4]u32, size: PxSize } {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var deco: ?@FieldType(Event, "window_decorations") = null;
+    var evs: [32]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| switch (e) {
+            .window_decorations => |d| if (d.win == win) {
+                deco = d;
+            },
+            .window_configure => |cf| if (cf.win == win) if (deco) |d| return .{ .client = d.client, .margins = d.margins_px, .size = cf.size },
+            else => {},
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+fn countIn(peer: *const Peer, comptime I: type, comptime tag: std.meta.Tag(I.Request)) usize {
+    var n: usize = 0;
+    for (peer.log.items) |s| {
+        if (std.mem.eql(u8, s.iface, I.name) and s.opcode == @intFromEnum(tag)) n += 1;
+    }
+    return n;
+}
+
+test "decorations: no decoration global → client mode, geometry inside margins, tiled edges drop them" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &csd_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 400, .h = 300 });
+
+    _ = try rig.peer.configure(400, 300, &.{});
+    const d = try expectDecorated(p, win);
+    try testing.expect(d.client);
+    try testing.expectEqual([4]u32{ 12, 12, 12, 12 }, d.margins);
+    try testing.expectEqual(PxSize{ .w = 424, .h = 324 }, d.size);
+    _ = try rig.peer.waitFor(wl.wl_surface, .set_input_region, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 12, 12, 400, 300 }, rig.peer.last_geometry);
+
+    // Tiled to the left half: only the right edge keeps its margin.
+    _ = try rig.peer.configure(500, 600, &.{ .tiled_left, .tiled_top, .tiled_bottom });
+    const t = try expectDecorated(p, win);
+    try testing.expectEqual([4]u32{ 0, 0, 12, 0 }, t.margins);
+    try testing.expectEqual(PxSize{ .w = 512, .h = 600 }, t.size);
+    _ = try rig.peer.waitFor(wl.wl_surface, .set_input_region, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 0, 0, 500, 600 }, rig.peer.last_geometry);
+
+    // Maximized: no margins.
+    _ = try rig.peer.configure(800, 600, &.{.maximized});
+    const m = try expectDecorated(p, win);
+    try testing.expectEqual([4]u32{ 0, 0, 0, 0 }, m.margins);
+    try testing.expectEqual(PxSize{ .w = 800, .h = 600 }, m.size);
+}
+
+test "decorations: server mode → set_mode(server_side), no margins, no geometry" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &all_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 400, .h = 300 });
+    try testing.expectEqual(@as(?u32, @intFromEnum(wl.zxdg_toplevel_decoration_v1.Mode.server_side)), rig.peer.last_mode);
+    try wl.zxdg_toplevel_decoration_v1.server.configure(rig.peer.fc, rig.peer.id(wl.zxdg_toplevel_decoration_v1), .server_side);
+    _ = try rig.peer.configure(400, 300, &.{});
+    const d = try expectDecorated(p, win);
+    try testing.expect(!d.client);
+    try testing.expectEqual([4]u32{ 0, 0, 0, 0 }, d.margins);
+    try testing.expectEqual(PxSize{ .w = 400, .h = 300 }, d.size);
+    try testing.expectEqual(0, countIn(&rig.peer, wl.xdg_surface, .set_window_geometry));
+
+    // The compositor insists on client-side: margins appear, and the mode
+    // is not sent again.
+    try wl.zxdg_toplevel_decoration_v1.server.configure(rig.peer.fc, rig.peer.id(wl.zxdg_toplevel_decoration_v1), .client_side);
+    _ = try rig.peer.configure(400, 300, &.{});
+    const c = try expectDecorated(p, win);
+    try testing.expect(c.client);
+    try testing.expectEqual(PxSize{ .w = 424, .h = 324 }, c.size);
+    try testing.expectEqual(1, countIn(&rig.peer, wl.zxdg_toplevel_decoration_v1, .set_mode));
+}
+
+test "decorations: title-bar press moves with its serial, margins resize, double click maximizes" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &csd_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 400, .h = 300 });
+    _ = try rig.peer.configure(400, 300, &.{});
+    _ = try expectDecorated(p, win);
+    const Caption = struct {
+        // A 30 px title bar under the 12 px top margin.
+        fn hit(_: *anyopaque, pt: types.PxPoint) types.HitRegion {
+            return if (pt.y < 42) .caption else .client;
+        }
+    };
+    var dummy: u8 = 0;
+    try p.submit(.{ .set_hit_test = .{ .win = win, .f = Caption.hit, .ctx = &dummy } });
+    const fc = rig.peer.fc;
+    const ptr = rig.peer.id(wl.wl_pointer);
+    const P = wl.wl_pointer.server;
+    const left = seat_mod.BTN.left;
+
+    try P.enter(fc, ptr, 50, rig.peer.id(wl.wl_surface), .fromInt(100), .fromInt(20));
+    try P.button(fc, ptr, 77, 0, left, .pressed);
+    try P.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.xdg_toplevel, .move, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
+    try P.button(fc, ptr, 78, 0, left, .released);
+    try P.frame(fc, ptr);
+
+    // A second press there soon after: maximize instead of a move.
+    try P.button(fc, ptr, 79, 0, left, .pressed);
+    try P.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.xdg_toplevel, .set_maximized, std.time.ns_per_s);
+    try P.button(fc, ptr, 80, 0, left, .released);
+    try P.frame(fc, ptr);
+
+    // In the left margin: resize from the left edge.
+    try P.motion(fc, ptr, 0, .fromInt(5), .fromInt(150));
+    try P.button(fc, ptr, 81, 0, left, .pressed);
+    try P.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.xdg_toplevel, .resize, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 81), rig.peer.last_serial);
+    try testing.expectEqual(@as(?u32, 4), rig.peer.last_edges);
+    try P.button(fc, ptr, 82, 0, left, .released);
+    try P.frame(fc, ptr);
+
+    // Content gets its presses; none of the above reached the app.
+    try P.motion(fc, ptr, 0, .fromInt(100), .fromInt(200));
+    try P.button(fc, ptr, 83, 0, left, .pressed);
+    try P.frame(fc, ptr);
+    const pb = try expectEvent(p, .pointer_button, win);
+    try testing.expect(pb.pressed);
+    try testing.expectEqual([2]f32{ 100, 200 }, pb.pos_px);
+    try testing.expectEqual(@as(u8, 1), pb.clicks);
 }
