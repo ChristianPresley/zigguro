@@ -59,6 +59,18 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platfor
     };
 }
 
+/// Child processes: PTYs for terminals, and plain spawns under a policy.
+pub const process = struct {
+    /// See `process/pty.zig`.
+    pub const pty = @import("process/pty.zig");
+    /// See `process/pty.zig`.
+    pub const Pty = pty.Pty;
+    /// See `process/env.zig`.
+    pub const env = @import("process/env.zig");
+    /// Linux process spawning without a PTY.
+    pub const spawn_linux = if (@import("builtin").os.tag == .linux) @import("process/spawn_linux.zig") else struct {};
+};
+
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
     /// See `queue/event_ring.zig`.
@@ -122,6 +134,7 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(queue);
     std.testing.refAllDecls(headless);
+    std.testing.refAllDecls(process);
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -144,6 +157,10 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "queue/wake.zig", .src = @embedFile("queue/wake.zig") },
     .{ .path = "headless/backend.zig", .src = @embedFile("headless/backend.zig") },
     .{ .path = "headless/trace.zig", .src = @embedFile("headless/trace.zig") },
+    .{ .path = "process/pty.zig", .src = @embedFile("process/pty.zig") },
+    .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
+    .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
+    .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
 };
 
 test "init starts the headless backend" {
