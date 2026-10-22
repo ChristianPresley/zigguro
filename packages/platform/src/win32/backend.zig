@@ -28,8 +28,12 @@
 //! Cursors come from `cursor.zig`. Every window gets the DWM dark mode
 //! that matches the system theme.
 //!
-//! Not yet here: raw input, pen and touch (#222), IME (#226), drag and
-//! drop (#232) and cloaking until the first present.
+//! IME composition (`ime.zig`) runs in the window procedure: preedit and
+//! commits become `ime_preedit` and `text_input`, and `set_ime_state`
+//! is posted to the window's thread, where IMM32 contexts live.
+//!
+//! Not yet here: raw input, pen and touch (#222), drag and drop (#232) and
+//! cloaking until the first present.
 
 const std = @import("std");
 const Io = std.Io;
@@ -58,6 +62,8 @@ const wide = @import("wide.zig");
 const CpuPresenter = @import("cpu_present.zig").CpuPresenter;
 const clip_mod = @import("clipboard.zig");
 const frame = @import("frame.zig");
+const ime_mod = @import("ime.zig");
+const ImePurpose = @import("../api/ime.zig").ImePurpose;
 const cursor_mod = @import("cursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
@@ -97,6 +103,8 @@ const WM_APP_SYSDRAG = WM.APP + 8;
 /// To a window: show the window menu at client point lParam (x low, y
 /// high, signed 16-bit).
 const WM_APP_SYSMENU = WM.APP + 9;
+/// To a window: apply `Window.ime_req`.
+const WM_APP_IME = WM.APP + 10;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
@@ -134,7 +142,14 @@ const Window = struct {
     /// button being pressed.
     nc_tracking: bool = false,
     nc_pressed: u32 = 0,
+    /// Window thread only.
+    ime: ime_mod.Ime = .{},
+    /// The latest `set_ime_state`, waiting for the window thread. Guarded
+    /// by the mutex.
+    ime_req: ?ImeRequest = null,
 };
+
+const ImeRequest = struct { enabled: bool, purpose: ImePurpose, caret: types.PxRect };
 
 /// A `createWindow` request carried by `WM_APP_CREATE`.
 const CreateRequest = struct {
@@ -300,7 +315,17 @@ pub const Win32Backend = struct {
                 // SetCursor only works on the window's own thread.
                 _ = user32.PostMessageW(hwnd, WM_APP_CURSOR, 0, 0);
             },
-            .set_ime_state => |c| _ = try b.hwndOf(c.win),
+            .set_ime_state => |c| {
+                const hwnd = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const w = b.find(c.win) orelse return error.InvalidWindow;
+                    w.ime_req = .{ .enabled = c.enabled, .purpose = c.purpose, .caret = c.caret_rect_px };
+                    break :blk w.hwnd orelse return error.InvalidWindow;
+                };
+                // IMM32 contexts belong to the window's thread.
+                _ = user32.PostMessageW(hwnd, WM_APP_IME, 0, 0);
+            },
             .set_hit_test => |c| {
                 b.lock();
                 defer b.unlock();
@@ -891,6 +916,23 @@ pub const Win32Backend = struct {
                 if (w.tracking_leave) b.applyCursor(w);
                 return 0;
             },
+            WM_APP_IME => {
+                const req = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const r = w.ime_req;
+                    w.ime_req = null;
+                    break :blk r;
+                };
+                if (req) |r| w.ime.apply(hwnd, r.enabled, r.purpose, r.caret);
+                return 0;
+            },
+            ime_mod.WM_IME.SETCONTEXT, ime_mod.WM_IME.STARTCOMPOSITION, ime_mod.WM_IME.ENDCOMPOSITION, ime_mod.WM_IME.COMPOSITION, ime_mod.WM_IME.CHAR => {
+                var lp2: t.LPARAM = lp;
+                const sink: ime_mod.Sink = .{ .ctx = w, .preedit = imePreedit, .commit = imeCommit };
+                if (w.ime.onMessage(hwnd, msg, wp, lp, sink, &lp2)) |r| return r;
+                return user32.DefWindowProcW(hwnd, msg, wp, lp2);
+            },
             WM_APP_SYSDRAG => {
                 // The press that started the drag holds the capture.
                 _ = user32.ReleaseCapture();
@@ -1055,7 +1097,27 @@ pub const Win32Backend = struct {
         _ = user32.SetCursor(b.cursors.get(shape, w.dpi));
     }
 
+    fn imePreedit(ctx: *anyopaque, text: []const u8, begin: i32, end: i32) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch types.PayloadSlice.empty;
+        b.stage(.{ .ime_preedit = .{ .win = w.id, .text = p, .cursor_begin = begin, .cursor_end = end } });
+    }
+
+    fn imeCommit(ctx: *anyopaque, text: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch return;
+        b.stage(.{ .text_input = .{ .win = w.id, .text = p } });
+    }
+
     fn onKey(b: *Win32Backend, w: *Window, hwnd: t.HWND, pressed: bool, vk: u16, lp: t.LPARAM) void {
+        // The IME consumed this key; its result arrives as composition.
+        if (vk == ime_mod.VK_PROCESSKEY) return;
         const sc = wkeys.scancodeOf(lp);
         // TranslateMessage has queued the key's WM_CHAR(s); take them now so
         // the text travels with the key event.
@@ -1482,5 +1544,30 @@ test "win32 cursors: every shape builds at 100, 150 and 200%" {
     const win = try p.createWindow(.{ .title = "zg cursor", .size = .{ .w = 320, .h = 200 } });
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .grab } });
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    p.destroyWindow(win);
+}
+
+test "win32 ime: state commands, composition start/end and cancel" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg ime", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .password, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 50, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    // Handled without the default composition window.
+    try testing.expectEqual(@as(t.LRESULT, 0), user32.SendMessageW(hwnd, ime_mod.WM_IME.STARTCOMPOSITION, 0, 0));
+    // No GCS flags: the composition was cancelled.
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.COMPOSITION, 0, 0);
+    const pe = (try waitFor(p, .ime_preedit, win)).ime_preedit;
+    try testing.expectEqual(@as(usize, 0), p.payload(pe.text).len);
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.ENDCOMPOSITION, 0, 0);
+    _ = try waitFor(p, .ime_preedit, win);
+    // A key the IME consumed is not reported.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, ime_mod.VK_PROCESSKEY, 1);
+    var evs: [64]Event = undefined;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .key);
     p.destroyWindow(win);
 }

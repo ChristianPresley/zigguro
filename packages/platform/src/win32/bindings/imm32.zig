@@ -1,6 +1,6 @@
 //! imm32: composition strings and candidate placement.
 //!
-//! planned: E01.F02.S03 (IME).
+//! Used by `ime.zig` (E01.F02.S03).
 
 const t = @import("types.zig");
 
