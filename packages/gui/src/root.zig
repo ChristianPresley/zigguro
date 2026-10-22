@@ -53,4 +53,5 @@ test {
     _ = @import("widgets/text_field/text_field_test.zig");
     _ = @import("widgets/overlay_test.zig");
     _ = @import("widgets/menu_test.zig");
+    _ = @import("widgets/quick_pick_test.zig");
 }

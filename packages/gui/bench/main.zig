@@ -204,6 +204,54 @@ const menu_items = blk: {
     break :blk items;
 };
 
+/// 100k file-like paths behind an async provider; `query` scores them with
+/// the default matcher and pushes batches of 1000 (inline here: the bench
+/// has no runtime, so this measures the whole query plus the merges).
+const QpBench = struct {
+    gpa: std.mem.Allocator,
+    labels: [][]const u8,
+
+    fn query(ptr: ?*anyopaque, q: []const u8, sink: *zg_gui.w.quick_pick_provider.ResultSink, cancel: *const std.atomic.Value(bool)) void {
+        const self: *QpBench = @ptrCast(@alignCast(ptr.?));
+        var hl: std.ArrayList([2]u32) = .empty;
+        defer hl.deinit(self.gpa);
+        var batch: [1000]zg_gui.w.QpItem = undefined;
+        var hls: [1000][4][2]u32 = undefined;
+        var n: usize = 0;
+        for (self.labels, 0..) |l, i| {
+            if (cancel.load(.acquire)) return;
+            hl.clearRetainingCapacity();
+            const sc = zg_gui.w.quick_pick_matcher.scoreOf(q, l, &hl, self.gpa) orelse continue;
+            const k = @min(hl.items.len, 4);
+            @memcpy(hls[n][0..k], hl.items[0..k]);
+            batch[n] = .{ .id = i, .label = l, .score = sc, .highlights = hls[n][0..k] };
+            n += 1;
+            if (n == batch.len) {
+                sink.push(&batch);
+                n = 0;
+            }
+        }
+        sink.push(batch[0..n]);
+    }
+
+    fn accept(_: ?*anyopaque, _: []const zg_gui.w.QpItem, _: ?[]const u8, _: bool) void {}
+
+    const vtable: zg_gui.w.quick_pick_provider.Provider.VTable = .{ .query = query, .accept = accept };
+};
+
+/// Opens a QuickPick over 100k items, streams every match in and closes it.
+fn quickPick(c: *QpCase, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const h = zg_gui.w.openQuickPick(c.t.win, .{ .providers = &.{.{ .ptr = c.qp, .vtable = &QpBench.vtable }}, .initial = "f12" }) catch return;
+        bench.doNotOptimizeAway(c.t.settle());
+        h.close(c.t.win);
+        bench.doNotOptimizeAway(c.t.frame().nodes_painted);
+    }
+}
+
+const QpCase = struct { t: *TestApp, qp: *QpBench };
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -261,6 +309,18 @@ fn register(b: *bench.Bench) !void {
         const t = try scene(b.gpa, .of(&v), .{ .w = 1280, .h = 800 });
         defer t.deinit();
         try b.run("gui.menu.open_50", t, menuOpen);
+    }
+    {
+        var arena: std.heap.ArenaAllocator = .init(b.gpa);
+        defer arena.deinit();
+        const labels = try arena.allocator().alloc([]const u8, 100_000);
+        for (labels, 0..) |*l, i| l.* = try std.fmt.allocPrint(arena.allocator(), "src/pkg{d}/module{d}/file{d}.zig", .{ i % 97, i % 1013, i });
+        var qp: QpBench = .{ .gpa = b.gpa, .labels = labels };
+        var page: ListView = .{ .n = 10 };
+        const t = try scene(b.gpa, .of(&page), .{ .w = 1200, .h = 900 });
+        defer t.deinit();
+        var c: QpCase = .{ .t = t, .qp = &qp };
+        try b.run("gui.quickpick_100k", &c, quickPick);
     }
     {
         var h: zg_gui.w.HeightIndex = .init(b.gpa);

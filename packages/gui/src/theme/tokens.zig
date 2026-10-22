@@ -50,6 +50,8 @@ pub const Token = enum(u16) {
     shadow,
     // Overlays.
     overlay_scrim,
+    /// Matched characters in QuickPick rows.
+    quick_input_highlight,
 
     /// The number of tokens.
     pub const count = @typeInfo(Token).@"enum".fields.len;

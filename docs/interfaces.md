@@ -2116,6 +2116,58 @@ cache are destroyed by their owners before the `Gpu`.
 ### Stability
 Internal to E02.
 
+## zg_vulkan.present (frames in flight, damage tracking)
+
+### Defined in
+`packages/vulkan/src/present/` (E02.F04.S03): `FrameScheduler.zig`,
+`Deferred.zig`, `Damage.zig`; `PxRect` helpers in
+`packages/vulkan/src/r2d/rect.zig` (`zg_vulkan.r2d.rect`).
+
+### Implemented by
+E02. The render-thread mailbox and the frame pacer (rest of
+E02.F04.S03.T01) are still open.
+
+### Consumed by
+E02's targets (swapchain, dmabuf ring, readback) and the Vulkan 2D
+backend. Nothing outside E02.
+
+### Signature
+```zig
+pub const FrameScheduler = struct {   // slots, frames_in_flight, timeline, submitted, frame
+    pub fn init(gpu: *Gpu, mem: *DeviceMemory, frames_in_flight: u8) !FrameScheduler;   // 1..3
+    pub fn deinit(self: *FrameScheduler) void;           // waits, drains deferred objects
+    pub fn begin(self: *FrameScheduler) !*FrameSlot;     // waits for the slot, resets its pool, begins its cb
+    pub fn submit(self, fs: *FrameSlot, waits: []const vk.SemaphoreSubmitInfo, extra_signals: []const vk.SemaphoreSubmitInfo) !void;
+    pub fn deferDestroy(self, item: Deferred) void;      // after every submitted frame and the one being recorded
+    pub fn collect(self) void; pub fn completed(self) u64; pub fn waitValue(self, value: u64) error{DeviceLost}!void;
+};
+pub const FrameSlot = struct { index: u8, pool: vk.CommandPool, cb: vk.CommandBuffer, timeline_value: u64, frame: u64 };
+pub const Deferred = union(enum) { buffer, image, view, texture, semaphore, pipeline, swapchain };
+pub const DamageHistory = struct {   // max_age = 4
+    pub fn push(self, frame_damage: []const PxRect) void;  pub fn pushFull(self) void;
+    pub fn repaintFor(self, age: u32, current: []const PxRect, extent: Size, out: *RectList) void;   // age 0 or > max_age → full
+    pub fn invalidateAll(self) void;
+};
+pub const RectList = struct { items: [16]PxRect, len: u8, pub fn add, slice, area, isFull };
+pub fn simplify(rects: []const PxRect, extent: Size, out: *RectList) void;   // ≤ 16 rects, covers every input pixel, > 60% → full
+pub fn toPresentRegions(rects: []const PxRect, buf: []vk.RectLayerKHR) []vk.RectLayerKHR;
+```
+Deviations from the spec text: `FrameScheduler.init` takes the
+`DeviceMemory` that deferred buffers and images return to;
+`DamageHistory.pushFull` records full-frame repaints; `Deferred` has no
+`fence_gated` or `allocation` variants yet (no user needs them).
+
+### Threading
+A scheduler belongs to the render thread. `DamageHistory` and
+`simplify` are pure.
+
+### Ownership/lifetime
+`deferDestroy` takes ownership of the object. `deinit` blocks until the
+GPU is idle.
+
+### Stability
+Internal to E02.
+
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in
@@ -2254,57 +2306,54 @@ CR and LF of a CRLF are sent as one widened replacement, since LSP positions
 cannot address that point. A rename is sent as close + open (LSP has no
 text-document rename).
 
-## zg_vulkan.present (frames in flight, damage tracking)
+## zg_editor.model.decorations (DecorationStore)
 
 ### Defined in
-`packages/vulkan/src/present/` (E02.F04.S03): `FrameScheduler.zig`,
-`Deferred.zig`, `Damage.zig`; `PxRect` helpers in
-`packages/vulkan/src/r2d/rect.zig` (`zg_vulkan.r2d.rect`).
+`packages/editor/src/model/decorations/store.zig`, `interval_tree.zig` (E05.F05).
 
 ### Implemented by
-E02. The render-thread mailbox and the frame pacer (rest of
-E02.F04.S03.T01) are still open.
+E05.F05.S01.T01.
 
 ### Consumed by
-E02's targets (swapchain, dmabuf ring, readback) and the Vulkan 2D
-backend. Nothing outside E02.
+E07 (diagnostics, inlay hints), E09 (SCM marks), E12 (ghost text, pending edits, review), F06 find,
+F04 bracket matches, F05 display map and `EditorView`.
 
 ### Signature
 ```zig
-pub const FrameScheduler = struct {   // slots, frames_in_flight, timeline, submitted, frame
-    pub fn init(gpu: *Gpu, mem: *DeviceMemory, frames_in_flight: u8) !FrameScheduler;   // 1..3
-    pub fn deinit(self: *FrameScheduler) void;           // waits, drains deferred objects
-    pub fn begin(self: *FrameScheduler) !*FrameSlot;     // waits for the slot, resets its pool, begins its cb
-    pub fn submit(self, fs: *FrameSlot, waits: []const vk.SemaphoreSubmitInfo, extra_signals: []const vk.SemaphoreSubmitInfo) !void;
-    pub fn deferDestroy(self, item: Deferred) void;      // after every submitted frame and the one being recorded
-    pub fn collect(self) void; pub fn completed(self) u64; pub fn waitValue(self, value: u64) error{DeviceLost}!void;
+pub const DecorationId = enum(u64) { _ }; pub const OwnerId = enum(u32) { _ };
+pub const StickMode = enum { shrink, grow_both, grow_start, grow_end, point_left, point_right };
+pub const Kind = union(enum) { highlight: StyleRef, text_style: StyleRef, underline: UnderlineStyle, strike, gutter: GutterMark,
+    overview: OverviewMark, inline_before: InlineText, inline_after: InlineText, block_above: BlockSpec, block_below: BlockSpec, hidden };
+pub const KindMask = std.EnumSet(std.meta.Tag(Kind));
+pub const Decoration = struct { range: Range, owner: OwnerId, z: i16 = 0, stick: StickMode = .shrink, kind: Kind, hover: ?u64 = null };
+pub const DecoRef = struct { id: DecorationId, range: Range, deco: *const Decoration };
+pub const DecorationStore = struct {
+    inline_generation: u64,   // bumped when inline/block/hidden decorations change (display map rebuild)
+    pub fn init(gpa, doc: *const Document) DecorationStore;
+    pub fn listener(s) document.Listener;   // subscribe it to the document
+    pub fn registerOwner(s, name, default_z: i16) !OwnerId;
+    pub fn add(s, d: Decoration) !DecorationId; pub fn remove(s, id) void; pub fn get(s, id) ?DecoRef;
+    pub fn query(s, r: Range, filter: KindMask, gpa, out: *ArrayList(DecoRef)) !void; // touching r; by start, z, owner
+    pub fn setOwnerDecorations(s, owner, version: u64, decos: []const Decoration) !void; // atomic replace, mapped from version
+    pub fn clearOwner(s, owner) void; pub fn ownerCount(s, owner) usize;
+    pub fn onChange(s, ev: *const ChangeEvent) void;   // O(log n + k), never allocates
 };
-pub const FrameSlot = struct { index: u8, pool: vk.CommandPool, cb: vk.CommandBuffer, timeline_value: u64, frame: u64 };
-pub const Deferred = union(enum) { buffer, image, view, texture, semaphore, pipeline, swapchain };
-pub const DamageHistory = struct {   // max_age = 4
-    pub fn push(self, frame_damage: []const PxRect) void;  pub fn pushFull(self) void;
-    pub fn repaintFor(self, age: u32, current: []const PxRect, extent: Size, out: *RectList) void;   // age 0 or > max_age → full
-    pub fn invalidateAll(self) void;
-};
-pub const RectList = struct { items: [16]PxRect, len: u8, pub fn add, slice, area, isFull };
-pub fn simplify(rects: []const PxRect, extent: Size, out: *RectList) void;   // ≤ 16 rects, covers every input pixel, > 60% → full
-pub fn toPresentRegions(rects: []const PxRect, buf: []vk.RectLayerKHR) []vk.RectLayerKHR;
+pub fn mapRange(r: Range, stick: StickMode, a: u64, b: u64, n: u64) ?Range; // one replace [a,b) -> n bytes
 ```
-Deviations from the spec text: `FrameScheduler.init` takes the
-`DeviceMemory` that deferred buffers and images return to;
-`DamageHistory.pushFull` records full-frame repaints; `Deferred` has no
-`fence_gated` or `allocation` variants yet (no user needs them).
 
 ### Threading
-A scheduler belongs to the render thread. `DamageHistory` and
-`simplify` are pure.
+UI thread only, alongside its `Document`.
 
 ### Ownership/lifetime
-`deferDestroy` takes ownership of the object. `deinit` blocks until the
-GPU is idle.
+The store copies inline texts. `DecoRef.deco` pointers are valid until the
+next mutation of the store. Ids of removed decorations (including shrink
+decorations whose text was deleted) are never reused.
 
 ### Stability
-Internal to E02.
+Unstable until the display map (E05.F05.S02) consumes it. Positions inside a
+replaced span collapse to its start; a left-biased edge then stays before the
+inserted text and a right-biased edge moves after it (`shrink`: start right,
+end left; `grow_both`: start left, end right).
 
 ## zg_vulkan.VkRenderer and present.Readback (Vulkan 2D backend)
 
