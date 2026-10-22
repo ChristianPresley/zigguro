@@ -19,6 +19,11 @@
 //! the app shows floating windows: `floating`). The
 //! zone's preview is drawn by `dropOverlay`; Escape cancels. The drop is
 //! one `DockModel.move`, so one undo step.
+//!
+//! With `cross` (dock/floating.zig), a drag that leaves the window may
+//! become a platform drag to another of our windows (`previewAt` and
+//! `dropAt` on the target), and a drop outside every window tears the
+//! panel off into a floating window.
 
 const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
@@ -94,12 +99,26 @@ pub const DockView = struct {
     area_nodes: [5]NodeId = @splat(.none),
     /// The drag in progress.
     drag: ?Drag = null,
+    /// Drags across windows and tear-off (see the module doc).
+    cross: ?CrossWindow = null,
 
     /// A tab being dragged.
     pub const Drag = struct {
         p: PanelRef,
         pos: geom.Vec2,
         zone: ?drop_zones.DropZone = null,
+        /// A platform drag took over (the drop happens elsewhere).
+        external: bool = false,
+    };
+
+    /// See `cross`.
+    pub const CrossWindow = struct {
+        ctx: *anyopaque,
+        /// The drag left the window at `pos`: true when a platform drag
+        /// took over.
+        leave: *const fn (ctx: *anyopaque, dv: *DockView, p: PanelRef, pos: geom.Vec2) bool,
+        /// Dropped outside the window: tear `p` off there.
+        float: *const fn (ctx: *anyopaque, dv: *DockView, p: PanelRef, pos: geom.Vec2) void,
     };
 
     pub fn init(gpa: std.mem.Allocator, dock: *DockModel, host: PanelHost) DockView {
@@ -134,6 +153,15 @@ pub const DockView = struct {
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .align_items = .stretch } });
         defer ui.close();
         dv.area_nodes[@intFromEnum(area)] = ui.current();
+        dv.node(ui, root, true);
+    }
+
+    /// Adds floating window `f`'s tree, filling the current container.
+    pub fn dockFloat(dv: *DockView, ui: *Ui, f: model.FloatId) void {
+        const root = dv.dock.floatRoot(f) orelse return;
+        ui.id(@intFromEnum(f));
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .align_items = .stretch } });
+        defer ui.close();
         dv.node(ui, root, true);
     }
 
@@ -202,16 +230,60 @@ pub const DockView = struct {
         switch (phase) {
             .start => dv.drag = .{ .p = @enumFromInt(@as(u32, @intCast(id))), .pos = pos },
             .move => if (dv.drag) |*d| {
+                if (d.external) return;
                 d.pos = pos;
                 d.zone = dv.zoneAt(pos);
+                if (dv.cross) |c| if (dv.outside(pos) and c.leave(c.ctx, dv, d.p, pos)) {
+                    d.external = true;
+                    d.zone = null;
+                };
             },
             .drop => if (dv.drag) |d| {
                 dv.drag = null;
-                if (dv.zoneAt(pos)) |z| dv.dock.move(d.p, z.target) catch {};
+                if (d.external) return dv.changed();
+                const z = dv.zoneAt(pos) orelse return dv.changed();
+                if (z.target == .float) if (dv.cross) |c| {
+                    c.float(c.ctx, dv, d.p, pos);
+                    return dv.changed();
+                };
+                dv.dock.move(d.p, z.target) catch {};
             },
             .cancel => dv.drag = null,
         }
         dv.changed();
+    }
+
+    fn outside(dv: *const DockView, pos: geom.Vec2) bool {
+        const w = dv.win orelse return false;
+        return pos.x < 0 or pos.y < 0 or pos.x >= w.size.w or pos.y >= w.size.h;
+    }
+
+    /// A drag from another window is over `pos`: shows the drop preview;
+    /// false when nothing here takes it.
+    pub fn previewAt(dv: *DockView, p: PanelRef, pos: geom.Vec2) bool {
+        const z = dv.zoneAt(pos);
+        const ok = z != null and z.?.target != .float;
+        const prev = dv.drag;
+        dv.drag = if (ok) .{ .p = p, .pos = pos, .zone = z, .external = true } else null;
+        if (prev != null or dv.drag != null) dv.changed();
+        return ok;
+    }
+
+    /// The drag from another window left: drops the preview.
+    pub fn clearPreview(dv: *DockView) void {
+        if (dv.drag == null) return;
+        dv.drag = null;
+        dv.changed();
+    }
+
+    /// A drag from another window dropped `p` at `pos`: moves it there.
+    pub fn dropAt(dv: *DockView, p: PanelRef, pos: geom.Vec2) bool {
+        dv.clearPreview();
+        const z = dv.zoneAt(pos) orelse return false;
+        if (z.target == .float) return false;
+        dv.dock.move(p, z.target) catch return false;
+        dv.changed();
+        return true;
     }
 
     /// Each shown group's rectangle from the last layout.
@@ -340,7 +412,8 @@ pub const DockView = struct {
         dv.changed();
     }
 
-    fn changed(dv: *DockView) void {
+    /// Rebuilds the window after a model change.
+    pub fn changed(dv: *DockView) void {
         if (dv.win) |w| w.markAllDirty();
     }
 
