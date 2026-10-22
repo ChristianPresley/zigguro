@@ -23,6 +23,9 @@ pub const VTable = struct {
     request: *const fn (*anyopaque, req: OutgoingRequest, sink: *RequestSink) SendError!void,
     /// Sends one notification.
     notify: *const fn (*anyopaque, n: OutgoingNotification) SendError!void,
+    /// Sends the JSON-RPC response `body` to a server request (legacy
+    /// sampling, elicitation, roots, ping).
+    respond: *const fn (*anyopaque, body: []const u8, revision: protocol.Revision) SendError!void,
     /// Transport-specific cancellation: stdio sends `notifications/cancelled`;
     /// modern HTTP closes the response stream; legacy HTTP POSTs
     /// `notifications/cancelled` (closing a stream is not cancellation there).
@@ -115,6 +118,11 @@ pub fn request(t: Transport, req: OutgoingRequest, sink: *RequestSink) SendError
 /// Sends `n`; see `VTable.notify`.
 pub fn notify(t: Transport, n: OutgoingNotification) SendError!void {
     return t.vtable.notify(t.ptr, n);
+}
+
+/// Answers a server request; see `VTable.respond`.
+pub fn respond(t: Transport, body: []const u8, revision: protocol.Revision) SendError!void {
+    return t.vtable.respond(t.ptr, body, revision);
 }
 
 /// Cancels request `id`; see `VTable.cancel`.
