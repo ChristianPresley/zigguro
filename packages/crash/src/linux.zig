@@ -11,9 +11,9 @@ const builtin = @import("builtin");
 const linux = std.os.linux;
 
 /// The only `std.os.linux` functions a `cp_*` function may call. All are
-/// async-signal-safe (signal-safety(7)); `sigprocmask`, `sigaction` and
-/// `exit_group` are needed to re-raise a fault signal, to keep later
-/// faults waiting for the writer, and to give up on a stuck writer.
+/// async-signal-safe (signal-safety(7)); `sigaction` and `sigprocmask`
+/// re-raise a fault signal with its default action, and `exit_group`
+/// gives up on a stuck writer.
 pub const crash_path_syscalls = [_][]const u8{
     "openat",        "write",       "read",       "fsync",  "close",
     "clock_gettime", "getpid",      "gettid",     "tgkill", "sched_yield",
