@@ -1,7 +1,7 @@
 //! The editable repository inside a transaction: new changes go into a
 //! store write batch, and the view is edited in a `ViewBuilder`.
 //! Rewriting a change hides the old commit (it leaves the heads) and
-//! records the old → new mapping, so the F04 rewrite engine can rebase
+//! records the old → new mapping, so `rebaseDescendants` can move the
 //! descendants before the transaction commits.
 
 const std = @import("std");
@@ -10,6 +10,8 @@ const object = @import("../store/object.zig");
 const enc = @import("../store/encode.zig");
 const store_mod = @import("../store/store.zig");
 const view_mod = @import("view.zig");
+const rebase_mod = @import("rebase.zig");
+const index_mod = @import("../graph/index.zig");
 const ObjectId = id_mod.ObjectId;
 const Change = object.Change;
 const RefTarget = view_mod.RefTarget;
@@ -25,11 +27,26 @@ pub const MutableRepo = struct {
     rewritten: std.AutoArrayHashMapUnmanaged(ObjectId, ObjectId) = .empty,
     /// Commits abandoned in this transaction.
     abandoned: std.AutoArrayHashMapUnmanaged(ObjectId, void) = .empty,
+    /// Encodings of the changes written in this transaction, which the
+    /// store cannot read back until the batch commits.
+    pending: std.AutoHashMapUnmanaged(ObjectId, []const u8) = .empty,
 
     pub fn deinit(m: *MutableRepo) void {
         m.view.deinit();
         m.rewritten.deinit(m.gpa);
         m.abandoned.deinit(m.gpa);
+        m.pending.deinit(m.gpa);
+    }
+
+    /// Reads change `id`, written in this transaction or before. The
+    /// result lives in `arena`.
+    pub fn readChange(m: *MutableRepo, arena: Allocator, id: ObjectId) !Change {
+        if (m.pending.get(id)) |bytes| return enc.decode(Change, arena, bytes) catch error.CorruptObject;
+        const r = try m.batch.store.read(id);
+        defer r.release();
+        if (r.kind != .change) return error.WrongKind;
+        const bytes = try arena.dupe(u8, r.bytes);
+        return enc.decode(Change, arena, bytes) catch error.CorruptObject;
     }
 
     /// Stores `c` and makes it a head in place of its parents.
@@ -37,6 +54,8 @@ pub const MutableRepo = struct {
         const bytes = try enc.encodeAlloc(m.gpa, Change, c);
         defer m.gpa.free(bytes);
         const id = try m.batch.put(.change, bytes);
+        const gop = try m.pending.getOrPut(m.gpa, id);
+        if (!gop.found_existing) gop.value_ptr.* = try m.arena.dupe(u8, bytes);
         for (c.parents) |p| _ = m.view.heads.swapRemove(p);
         try m.view.heads.put(m.gpa, id, {});
         return id;
@@ -62,7 +81,7 @@ pub const MutableRepo = struct {
     }
 
     /// Hides `id`: it leaves the heads and its parents take its place.
-    /// Descendants are rebased by the rewrite engine (F04).
+    /// `rebaseDescendants` moves its descendants onto those parents.
     pub fn abandon(m: *MutableRepo, id: ObjectId, parents: []const ObjectId) !void {
         if (m.view.heads.swapRemove(id)) {
             for (parents) |p| try m.view.heads.put(m.gpa, p, {});
@@ -117,6 +136,13 @@ pub const MutableRepo = struct {
 
     pub fn removeLane(m: *MutableRepo, name: []const u8) void {
         _ = m.view.lanes.orderedRemove(name);
+    }
+
+    /// Rebases every visible descendant of the rewritten and abandoned
+    /// commits and moves bookmarks and working copies off them; see
+    /// `rebase.zig`.
+    pub fn rebaseDescendants(m: *MutableRepo, engine: rebase_mod.Engine, ix: ?*index_mod.CommitIndex) !rebase_mod.Stats {
+        return rebase_mod.rebaseDescendants(m, engine, ix);
     }
 
     fn own(m: *MutableRepo, t: RefTarget) !RefTarget {

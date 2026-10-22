@@ -275,7 +275,7 @@ test "preview: discard then gc collects objects after grace" {
     const gc_opts: gc_mod.GcOptions = .{
         .grace_ns = 0,
         .rewrite_below = 1.01,
-        .edges = .{ .extra_edges = op_mod.gcEdges },
+        .edges = .{ .extra_edges = op_mod.gcEdges, .extra_ctx = f.store },
     };
     _ = try gc_mod.gc(f.store, &.{r.gcRoots()}, gc_opts);
     try t.expect(f.store.contains(x));
