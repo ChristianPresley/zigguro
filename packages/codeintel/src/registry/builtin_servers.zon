@@ -1,0 +1,50 @@
+// Built-in language server definitions (E07.F01.S03.T01). Settings
+// override any field per id (`lsp.servers.<id>`); see Registry.zig.
+.{
+    .{
+        .id = "zls",
+        .command = .{"zls"},
+        .languages = .{ "zig", "zon" },
+        .root_markers = .{ "build.zig", "build.zig.zon" },
+        .settings_section = "zls",
+        .install_hint = "Install ZLS matching your Zig version: https://github.com/zigtools/zls",
+    },
+    .{
+        .id = "clangd",
+        .command = .{"clangd"},
+        .languages = .{ "c", "cpp", "objective-c", "objective-cpp", "cuda" },
+        .root_markers = .{ "compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt" },
+        .install_hint = "Install clangd from LLVM: https://clangd.llvm.org/installation",
+    },
+    .{
+        .id = "rust-analyzer",
+        .command = .{"rust-analyzer"},
+        .languages = .{"rust"},
+        .root_markers = .{ "Cargo.toml", "rust-project.json" },
+        .settings_section = "rust-analyzer",
+        .install_hint = "Install with `rustup component add rust-analyzer`: https://rust-analyzer.github.io/",
+    },
+    .{
+        .id = "gopls",
+        .command = .{"gopls"},
+        .languages = .{ "go", "gomod", "gowork" },
+        .root_markers = .{ "go.work", "go.mod" },
+        .settings_section = "gopls",
+        .install_hint = "Install with `go install golang.org/x/tools/gopls@latest`: https://pkg.go.dev/golang.org/x/tools/gopls",
+    },
+    .{
+        .id = "pyright",
+        .command = .{ "pyright-langserver", "--stdio" },
+        .languages = .{"python"},
+        .root_markers = .{ "pyproject.toml", "setup.py", "pyrightconfig.json" },
+        .settings_section = "python",
+        .install_hint = "Install with `npm install -g pyright`: https://github.com/microsoft/pyright",
+    },
+    .{
+        .id = "typescript-language-server",
+        .command = .{ "typescript-language-server", "--stdio" },
+        .languages = .{ "typescript", "typescriptreact", "javascript", "javascriptreact" },
+        .root_markers = .{ "tsconfig.json", "jsconfig.json", "package.json" },
+        .install_hint = "Install with `npm install -g typescript-language-server typescript`: https://github.com/typescript-language-server/typescript-language-server",
+    },
+}
