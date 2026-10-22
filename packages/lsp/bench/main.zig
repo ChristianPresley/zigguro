@@ -14,6 +14,7 @@ fn register(b: *bench.Bench) !void {
     try b.run("lsp.glob: **/*.{zig,zon} on 60-byte paths", {}, globMatch);
     try b.run("lsp.fuzzy.20k: 20k identifiers x 3 patterns", {}, fuzzy20k);
     try b.run("lsp.caps.supports: 50 registrations, selector match", {}, capsSupports);
+    try b.run("lsp.sched.keystroke: onDocChanged + schedule, 6 keys", {}, schedKeystroke);
 }
 
 const paths = [_][]const u8{
@@ -96,4 +97,27 @@ fn capsSupports(_: void, s: *State) void {
         if (c.supports(if (i & 1 == 0) .hover else .code_lens, doc)) hits += 1;
     }
     bench.doNotOptimizeAway(hits);
+}
+
+fn schedKeystroke(_: void, s: *State) void {
+    const sched = zg_lsp.sync.scheduler;
+    var rt: zg_core.Runtime = undefined;
+    rt.initBorrowed(s.allocator(), s.ioHandle(), 16) catch unreachable;
+    defer _ = rt.deinit();
+    var clock: sched.ManualClock = .{};
+    var q: sched.RequestScheduler = .init(&rt, clock.clock());
+    defer q.deinit();
+    const Noop = struct {
+        fn run(_: ?*anyopaque, _: u64, _: sched.CancelToken) void {}
+    };
+    const run: sched.RunFn = .{ .ctx = null, .func = Noop.run };
+    const features = [_]zg_lsp.client.caps.Feature{ .semantic_tokens_full, .inlay_hint, .code_lens, .folding_range, .document_symbol, .diagnostic_pull };
+    for (features) |f| q.schedule(.{ .doc = 1, .feature = f }, q.debounceFor(f), run) catch unreachable;
+    for (0..s.iterations()) |i| {
+        // One keystroke: the document changes and completion-style
+        // features are rescheduled.
+        q.onDocChanged(1, i);
+        q.schedule(.{ .doc = 1, .feature = .inlay_hint }, q.debounceFor(.inlay_hint), run) catch unreachable;
+    }
+    bench.doNotOptimizeAway(q.version(1));
 }
