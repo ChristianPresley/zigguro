@@ -2,7 +2,8 @@
 //! content-addressed object store: object IDs, the object model and its
 //! canonical encoding, the segmented store, chunked blobs, compaction,
 //! GC and fsck; the commit graph (commit index, ancestry); and conflicts
-//! (the `Merge` algebra and conflict markers).
+//! (the `Merge` algebra and conflict markers); and the operation log
+//! (operations, views, transactions, undo).
 
 const std = @import("std");
 
@@ -38,6 +39,22 @@ pub const merge = @import("merge/merge.zig");
 pub const materialize = @import("merge/materialize.zig");
 /// Reading marker text back.
 pub const parse_markers = @import("merge/parse_markers.zig");
+/// Operation objects and their metadata.
+pub const operation = @import("oplog/operation.zig");
+/// Views: heads, refs, working copies and lanes at one operation.
+pub const view = @import("oplog/view.zig");
+/// The lock-free op heads directory.
+pub const op_heads = @import("oplog/op_heads.zig");
+/// Three-way view merges.
+pub const merge_views = @import("oplog/merge_views.zig");
+/// The editable repository inside a transaction.
+pub const mutable_repo = @import("oplog/mutable_repo.zig");
+/// Transactions: write and publish operations.
+pub const transaction = @import("oplog/transaction.zig");
+/// Loading the repository at an operation.
+pub const repo = @import("oplog/repo.zig");
+/// Undo, restore, the op log and op abandon.
+pub const undo = @import("oplog/undo.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -54,6 +71,12 @@ pub const ObjectRef = store.ObjectRef;
 pub const CommitIndex = index.CommitIndex;
 pub const Pos = index.Pos;
 pub const Merge = merge.Merge;
+pub const Repo = repo.Repo;
+pub const Transaction = transaction.Transaction;
+pub const View = view.View;
+pub const RefTarget = view.RefTarget;
+pub const Operation = operation.Operation;
+pub const OpMeta = operation.OpMeta;
 
 test {
     std.testing.refAllDecls(@This());
@@ -63,4 +86,6 @@ test {
     _ = @import("graph/index_test.zig");
     _ = @import("graph/ancestry_test.zig");
     _ = @import("merge/markers_test.zig");
+    _ = @import("oplog/oplog_test.zig");
+    _ = @import("oplog/oplog_concurrency_test.zig");
 }
