@@ -58,6 +58,8 @@ pub const Search = struct {
     backward: bool = false,
     re: ?zg_regex.Regex = null,
     cache: ?zg_regex.Cache = null,
+    /// The case flags `re` was compiled with.
+    case: struct { ignorecase: bool, smartcase: bool } = .{ .ignorecase = false, .smartcase = false },
 
     pub fn init(gpa: Allocator) Search {
         return .{ .gpa = gpa };
@@ -91,12 +93,22 @@ pub const Search = struct {
 
     /// Makes `vim_pat` the last search pattern.
     pub fn set(s: *Search, vim_pat: []const u8, backward: bool, flags: pattern.Flags) !void {
+        // The same pattern again (`:g/pat/s//x/` runs :s per line) keeps
+        // the compiled regex.
+        if (s.re != null and std.mem.eql(u8, vim_pat, s.pattern.items) and
+            s.case.ignorecase == flags.ignorecase and s.case.smartcase == flags.smartcase)
+        {
+            s.backward = backward;
+            s.offset = .{};
+            return;
+        }
         var re = try compile(s.gpa, vim_pat, flags);
         errdefer re.deinit(s.gpa);
         const cache = try re.newCache(s.gpa);
         s.drop();
         s.re = re;
         s.cache = cache;
+        s.case = .{ .ignorecase = flags.ignorecase, .smartcase = flags.smartcase };
         s.backward = backward;
         s.offset = .{};
         if (vim_pat.ptr != s.pattern.items.ptr) {
