@@ -1,8 +1,8 @@
 # Completion
 
-`zg_review.assist.complete` (E12.F07.S01.T02) builds the request for a
-ghost-text completion. The provider adapters (#944) and the ghost-text controller (#946) build
-on the request builder and the scheduler.
+`zg_review.assist.complete` (E12.F07.S01) builds the request for a
+ghost-text completion, decides when to send it, and streams the answer
+from a FIM provider. The ghost-text controller (#946) builds on these.
 
 ## Request
 
@@ -112,6 +112,45 @@ of the last 2 KiB of prefix and the first 256 bytes of suffix. `extend`
 serves the rest of a cached completion that the user typed through after
 dismissing it. `invalidateDoc` clears a document's completions after a
 non-typing edit.
+
+## Providers
+
+A `FimProvider` (E12.F07.S01.T03) streams the middle for a
+`CompletionRequest` into a `Sink`. The call blocks, so the engine runs it
+on a worker task. Cancelling that task returns `error.Canceled` and drops
+the connection: llama.cpp and Ollama stop generating when the client goes
+away, and a half-read connection never goes back to the pool. Each
+provider's `caps.server_side_template` says whether it fills the middle
+itself; `gate` uses it to decide about mid-line requests.
+
+`HttpFim` talks to three kinds of server through `zg_net`:
+
+| Kind | Request | Stream |
+| --- | --- | --- |
+| llama.cpp | `POST /infill`: `input_prefix`, `input_suffix`, `input_extra` (the snippets), `n_predict`, `stop`, `stream`, `cache_prompt`, optional `id_slot` | SSE, `content` and `stop` |
+| Ollama | `POST /api/generate`: `model`, `prompt` (the snippets as comments, then the prefix), `suffix`, `raw: false`, `keep_alive`, `options.num_predict`, `options.stop`, `options.temperature` | NDJSON, `response` and `done` |
+| OpenAI-style | `POST /v1/completions`: `model`, `prompt` from `fim.render`, `max_tokens`, up to four `stop`s, `temperature`, `stream` | SSE, `choices[0].text`, then `[DONE]` |
+
+- **End tokens.** The OpenAI-style output ends at the first end token or
+  FIM marker of the template, even when it is split across chunks.
+- **No retries.** A failed completion is not retried. Three failures in a
+  row make the provider unhealthy for 30 seconds (`healthy` drives the
+  status-bar indicator). While it is unhealthy, `complete` returns
+  `error.Unhealthy` without sending a request.
+- **Warm-up.** `warm` opens a connection with a cheap request (`/health`,
+  `/api/version` or `/v1/models`) at most once a minute. The host calls it
+  on editor focus.
+- **Endpoints.** HTTPS and loopback are always allowed. Plain HTTP to
+  another host needs `allow_insecure_http` (`completions.allowInsecureHttp`,
+  for LAN servers). The API key comes from E16 secrets, is sent as a bearer
+  token, and is never logged.
+
+`ChatFim` uses a chat model with no FIM support. The system prompt asks
+for only the code that replaces `<CURSOR>`, and the user message is the
+snippets followed by the file with the cursor marked, sent at temperature
+0. A reply wrapped in a Markdown fence is unwrapped. zg_review does not
+import zg_ai, so the app binds a `ChatPort` to E10's `Provider.stream`.
+The app also builds providers from E10's ModelRegistry (role `completion`).
 
 ## Bench
 
