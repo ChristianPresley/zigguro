@@ -57,6 +57,8 @@ pub const width = @import("width.zig");
 pub const casefold = @import("casefold.zig");
 /// Case mapping and case shapes.
 pub const casemap = @import("casemap.zig");
+/// Normalization forms (UAX #15).
+pub const normalize = @import("normalize.zig");
 
 test {
     std.testing.refAllDecls(@This());
