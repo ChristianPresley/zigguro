@@ -1,0 +1,4 @@
+1| property:name operator:= punctuation.bracket:{ property:first operator:= string:"Tom" punctuation.delimiter:, property:last operator:= string:"Preston-Werner" punctuation.bracket:}
+2| property:point operator:= punctuation.bracket:{ property:x operator:= number:1 punctuation.delimiter:, property:y operator:= number:2 punctuation.bracket:}
+3| property:animal operator:= punctuation.bracket:{ property:type punctuation.delimiter:. property:name operator:= string:"pug" punctuation.bracket:}
+4| property:deep operator:= punctuation.bracket:{ property:a operator:= punctuation.bracket:{ property:b operator:= punctuation.bracket:[ number:1 punctuation.delimiter:, punctuation.bracket:{ property:c operator:= constant.builtin:true punctuation.bracket:} punctuation.bracket:] punctuation.bracket:} punctuation.bracket:}

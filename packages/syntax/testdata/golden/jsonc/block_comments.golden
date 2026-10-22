@@ -1,0 +1,6 @@
+1| comment:/* header */
+2| punctuation.bracket:{
+3| property:"a" punctuation.delimiter:: comment:/* inline */ number:1 punctuation.delimiter:,
+4| comment:/** doc-like */
+5| property:"b" punctuation.delimiter:: number:2
+6| punctuation.bracket:}

@@ -1,0 +1,8 @@
+1| punctuation.bracket:{
+2| comment:// Editor
+3| property:"editor.fontSize" punctuation.delimiter:: number:14 punctuation.delimiter:,
+4| property:"editor.rulers" punctuation.delimiter:: punctuation.bracket:[ number:80 punctuation.delimiter:, number:120 punctuation.bracket:] punctuation.delimiter:,
+5| property:"files.exclude" punctuation.delimiter:: punctuation.bracket:{
+6| property:"**/.git" punctuation.delimiter:: constant.builtin:true punctuation.delimiter:, comment:// hide
+7| punctuation.bracket:} punctuation.delimiter:,
+8| punctuation.bracket:}

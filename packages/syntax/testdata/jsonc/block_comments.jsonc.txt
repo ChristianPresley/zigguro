@@ -1,0 +1,6 @@
+/* header */
+{
+  "a": /* inline */ 1,
+  /** doc-like */
+  "b": 2
+}

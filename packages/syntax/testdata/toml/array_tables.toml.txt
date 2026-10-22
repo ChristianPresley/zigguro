@@ -1,0 +1,9 @@
+[[bin]]
+name = "a"
+path = "src/a.rs"
+
+[[bin]]
+name = "b"
+
+[[ products . items ]]
+sku = 1

@@ -1,0 +1,6 @@
+{
+  // strict JSON has no comments
+  "a": 1, /* inline */
+  "b": /* spans
+  two lines */ 2
+}

@@ -1,0 +1,12 @@
+if [ -f file ]; then
+  echo yes
+elif [[ -d dir ]]; then
+  echo dir
+else
+  echo no
+fi
+while read -r line; do echo "$line"; done < input
+until false; do break; done
+for f in *.txt; do cat "$f"; done
+select opt in a b; do :; done
+! true

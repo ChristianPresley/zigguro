@@ -1,0 +1,7 @@
+1| punctuation.bracket:{
+2| property:"level1" punctuation.delimiter:: punctuation.bracket:{
+3| property:"level2" punctuation.delimiter:: punctuation.bracket:{
+4| property:"level3" punctuation.delimiter:: punctuation.bracket:[ number:1 punctuation.delimiter:, punctuation.bracket:{ property:"deep" punctuation.delimiter:: punctuation.bracket:[ constant.builtin:true punctuation.delimiter:, constant.builtin:null punctuation.bracket:] punctuation.bracket:} punctuation.bracket:]
+5| punctuation.bracket:}
+6| punctuation.bracket:}
+7| punctuation.bracket:}

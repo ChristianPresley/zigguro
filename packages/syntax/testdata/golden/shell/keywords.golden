@@ -1,0 +1,12 @@
+1| keyword.control:if function.builtin:[ punctuation.delimiter:; keyword.control:then
+2| function.builtin:echo
+3| keyword.control:elif keyword:[[ keyword:]] punctuation.delimiter:; keyword.control:then
+4| function.builtin:echo
+5| keyword.control:else
+6| function.builtin:echo
+7| keyword.control:fi
+8| keyword.control:while function.builtin:read punctuation.delimiter:; keyword.control:do function.builtin:echo string:" variable:$line string:" punctuation.delimiter:; keyword.control:done operator:<
+9| keyword.control:until function.builtin:false punctuation.delimiter:; keyword.control:do keyword.control:break punctuation.delimiter:; keyword.control:done
+10| keyword.control:for variable:f keyword.control:in punctuation.delimiter:; keyword.control:do function:cat string:" variable:$f string:" punctuation.delimiter:; keyword.control:done
+11| keyword.control:select variable:opt keyword.control:in punctuation.delimiter:; keyword.control:do function.builtin:: punctuation.delimiter:; keyword.control:done
+12| keyword.operator:! function.builtin:true

@@ -1,0 +1,8 @@
+now=$(date +%s)
+files=`ls *.c`
+echo "$(basename "$(pwd)")"
+result=$(
+  cd /tmp &&
+  ls
+)
+diff <(sort a) <(sort b)

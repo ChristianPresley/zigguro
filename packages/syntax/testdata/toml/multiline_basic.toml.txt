@@ -1,0 +1,7 @@
+str = """
+Roses are red
+Violets are \"blue\" \
+  and \t tabs"""
+quotes = """Here are two quotes: "". Done."""
+five = """""ab"""""
+after = 1 # comment

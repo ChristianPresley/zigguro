@@ -1,0 +1,8 @@
+1| type:[package]
+2| property:name operator:= string:"zigguro"
+3|
+4| type:[dependencies.serde]
+5| property:version operator:= string:"1"
+6|
+7| type:[ spaced . "quoted.part" ]
+8| property:x operator:= number:1

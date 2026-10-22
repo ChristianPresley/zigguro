@@ -1,0 +1,4 @@
+1| punctuation.bracket:{
+2| property:"$schema" punctuation.delimiter:: string:"http://json-schema.org/draft-07/schema#" punctuation.delimiter:, comment:// schema
+3| property:"homepage" punctuation.delimiter:: string:"https://zigguro.dev"
+4| punctuation.bracket:}

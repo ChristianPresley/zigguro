@@ -1,0 +1,16 @@
+1| variable:pkgname operator:=
+2| variable:pkgver operator:=
+3| variable:pkgrel operator:=
+4| variable:arch operator:= punctuation.bracket:( string:'x86_64' string:'aarch64' punctuation.bracket:)
+5| variable:depends operator:= punctuation.bracket:( punctuation.bracket:)
+6| variable:makedepends operator:= punctuation.bracket:( string:'zig' punctuation.bracket:)
+7| variable:source operator:= punctuation.bracket:( string:" variable:$pkgname string:- variable:$pkgver string:.tar.gz::https://example.com/v variable:$pkgver string:.tar.gz" punctuation.bracket:)
+8|
+9| function:build punctuation.bracket:( punctuation.bracket:)
+10| function.builtin:cd string:" variable:$srcdir string:/ variable:$pkgname string:- variable:$pkgver string:"
+11| function:zig
+12| punctuation.bracket:}
+13|
+14| function:package punctuation.bracket:( punctuation.bracket:)
+15| function:install string:" variable:$pkgdir string:/usr/bin/zigguro"
+16| punctuation.bracket:}

@@ -1,0 +1,5 @@
+basic = "I'm a string. \"Quoted\" \u00e9 \U0001F600"
+literal = 'C:\Users\nodejs\templates'
+regex = '<\i\c*\s*>'
+empty = ""
+bad = "unterminated

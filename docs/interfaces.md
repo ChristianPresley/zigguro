@@ -2396,6 +2396,7 @@ Internal to E02 behind `r2d.Renderer`.
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
 structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
+E05.F04.S02.T03 (JSON/JSONC, TOML and shell),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2478,7 +2479,8 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
-pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language: Language;
+pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language,
+    json_language, jsonc_language, toml_language, shell_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
@@ -2496,6 +2498,14 @@ pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, s
 // line carries `Kind.indent_flag` or a DEDENT count in `Kind.dedent_mask`; the indent stack follows the frames.
 pub fn python.lexLineWith(comptime o: struct { virtual_tokens: bool = false }, st, s, out) void;
 // langs/yaml.zig: a block scalar keeps its parent indentation + 1 in `depth` and an explicit indentation in `aux[0]`.
+// langs/json.zig: strict JSON gives comments `Kind.bad_comment` (highlighted as comments, context comment);
+// JSONC accepts comments and trailing commas.
+pub fn json.lexLineWith(comptime dialect: enum { json, jsonc }, st, s, out) void;
+// langs/toml.zig: `mode` is the multi-line string kind; open `[`/`{` are in `aux` (count in `depth`), so a
+// `[` that starts a line inside a multi-line array is not a table header.
+// langs/shell.zig: `mode` = stack depth | queued here-documents << 8 | in-body 0x800 | continued 0x1000 |
+// case pattern 0x2000; `aux` = context stack (shell.Ctx codes, at most 8), then each here-document as a
+// header byte (0x80 strip tabs, 0x40 quoted, length) and its delimiter (at most 4 queued).
 ```
 
 ### Threading
