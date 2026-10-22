@@ -83,6 +83,7 @@ const csd = @import("csd.zig");
 const xcursor = @import("../linux/xcursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 const pipe_transfer = @import("../linux/pipe_transfer.zig");
+const memfd = @import("../linux/memfd.zig");
 const Keymap = @import("../xkb/keymap.zig").Keymap;
 const compose = @import("../xkb/compose.zig");
 
@@ -1040,7 +1041,8 @@ pub const WaylandBackend = struct {
                 b.lock();
                 defer b.unlock();
                 for (b.slots.items) |s| if (s.presenter.byObject(obj)) |buf| {
-                    try s.presenter.released.append(b.gpa, @enumFromInt(buf.handle));
+                    try s.presenter.onRelease(buf);
+                    try c.flush();
                     return;
                 };
             },
@@ -1393,15 +1395,12 @@ pub const WaylandBackend = struct {
     /// An shm buffer holding `img` (premultiplied ARGB). Mutex held.
     fn cursorBuffer(b: *WaylandBackend, img: xcursor.CursorImage) !wl.wl_buffer.Id {
         const bytes = std.mem.sliceAsBytes(img.pixels);
-        const fd_rc = linux.memfd_create("zg-cursor", linux.MFD.CLOEXEC);
-        if (linux.errno(fd_rc) != .SUCCESS) return error.SystemResources;
-        const fd: i32 = @intCast(fd_rc);
-        defer _ = linux.close(fd);
-        if (linux.errno(linux.ftruncate(fd, @intCast(bytes.len))) != .SUCCESS) return error.SystemResources;
-        if (linux.pwrite(fd, bytes.ptr, bytes.len, 0) != bytes.len) return error.SystemResources;
+        // The compositor keeps its own mapping of the sealed memfd.
+        var m = try memfd.Memfd.fromBytes("zg-cursor", bytes);
+        defer m.deinit();
         const c = b.conn;
         const pool = try c.newIdVersion(wl.wl_shm_pool, c.version(@intFromEnum(b.shm)), null);
-        try wl.wl_shm.createPool(c, b.shm, pool, fd, @intCast(bytes.len));
+        try wl.wl_shm.createPool(c, b.shm, pool, m.fd, @intCast(m.mem.len));
         const buffer = try c.newIdVersion(wl.wl_buffer, c.version(@intFromEnum(pool)), null);
         try wl.wl_shm_pool.createBuffer(c, pool, buffer, 0, @intCast(img.width), @intCast(img.height), @intCast(img.width * 4), .argb8888);
         try wl.wl_shm_pool.destroy(c, pool);
@@ -2111,6 +2110,10 @@ const Peer = struct {
     last_geometry: [4]i32 = .{ -1, -1, -1, -1 },
     last_mode: ?u32 = null,
     last_edges: ?u32 = null,
+    /// The newest `wl_shm_pool.create_buffer` (offset, width, height,
+    /// stride) and pool size (`create_pool` or `resize`).
+    last_shm_buffer: [4]i32 = .{ -1, -1, -1, -1 },
+    last_pool_size: ?i32 = null,
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -2205,6 +2208,12 @@ const Peer = struct {
             if (f.type == wl.zwp_text_input_v3.ContentPurpose) p.last_purpose = @intFromEnum(v);
             if (f.type == wl.zxdg_toplevel_decoration_v1.Mode) p.last_mode = @intFromEnum(v);
             if (f.type == wl.xdg_toplevel.ResizeEdge) p.last_edges = @intFromEnum(v);
+            if (@TypeOf(payload) == @FieldType(wl.wl_shm_pool.Request, "create_buffer")) {
+                inline for (.{ "offset", "width", "height", "stride" }, 0..) |n, i| if (comptime std.mem.eql(u8, f.name, n)) {
+                    p.last_shm_buffer[i] = v;
+                };
+            }
+            if (comptime std.mem.eql(u8, f.name, "size") and f.type == i32) p.last_pool_size = v;
             if (@TypeOf(payload) == @FieldType(wl.xdg_surface.Request, "set_window_geometry")) {
                 inline for (.{ "x", "y", "width", "height" }, 0..) |n, i| if (comptime std.mem.eql(u8, f.name, n)) {
                     p.last_geometry[i] = v;
@@ -3410,4 +3419,93 @@ test "decorations: title-bar press moves with its serial, margins resize, double
     try testing.expect(pb.pressed);
     try testing.expectEqual([2]f32{ 100, 200 }, pb.pos_px);
     try testing.expectEqual(@as(u8, 1), pb.clicks);
+}
+
+test "shm: buffers share a pool with 64-byte rows; a busy buffer is destroyed at its release" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 100, .h = 50 });
+    const serial = try rig.peer.configure(100, 50, &.{});
+    _ = try expectEvent(p, .window_configure, win);
+    const pr = try p.cpuPresenter(win);
+    const argb = @import("shm.zig").fourcc_argb8888;
+
+    const a = try pr.allocCpuBuffer(100, 50, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual(448, a.stride);
+    try testing.expectEqual(448 * 50, a.pixels.len);
+    try testing.expectEqual([4]i32{ 0, 100, 50, 448 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(@as(?i32, 3 * 448 * 50), rig.peer.last_pool_size);
+    const bb = try pr.allocCpuBuffer(100, 50, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 448 * 50, 100, 50, 448 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(1, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    @memset(a.pixels, 0xff);
+
+    // Presented, then released by the app: kept until the compositor
+    // releases it, and never reported back.
+    try pr.present(a.handle, &.{}, .none, .{ .win = win, .serial = serial });
+    _ = try rig.peer.waitFor(wl.wl_surface, .commit, std.time.ns_per_s);
+    const a_obj = rig.peer.id(wl.wl_buffer);
+    _ = a_obj;
+    pr.releaseBuffer(a.handle);
+    try testing.expectEqual(0, countIn(&rig.peer, wl.wl_buffer, .destroy));
+    var first: ?u32 = null;
+    var it = rig.peer.ids.iterator();
+    while (it.next()) |e| if (std.mem.eql(u8, e.value_ptr.*, wl.wl_buffer.name)) {
+        if (first == null or e.key_ptr.* < first.?) first = e.key_ptr.*;
+    };
+    try wl.wl_buffer.server.release(rig.peer.fc, @enumFromInt(first.?));
+    _ = try rig.peer.waitFor(wl.wl_buffer, .destroy, std.time.ns_per_s);
+    var got: [4]surface.BufferHandle = undefined;
+    try testing.expectEqual(0, pr.pollReleased(&got));
+    // An idle buffer goes at once.
+    pr.releaseBuffer(bb.handle);
+    _ = try rig.peer.waitFor(wl.wl_buffer, .destroy, std.time.ns_per_s);
+}
+
+test "shm: an empty pool grows in place; one with live buffers is replaced" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 100, .h = 50 });
+    const pr = try p.cpuPresenter(win);
+    const argb = @import("shm.zig").fourcc_argb8888;
+    var bufs: [3]surface.CpuBuffer = undefined;
+    for (&bufs) |*x| x.* = try pr.allocCpuBuffer(100, 50, argb);
+    for (bufs) |x| pr.releaseBuffer(x.handle);
+    // Empty: the next, larger buffer resizes the same pool.
+    const big = try pr.allocCpuBuffer(200, 100, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .resize, std.time.ns_per_s);
+    try testing.expectEqual(@as(?i32, 3 * 832 * 100), rig.peer.last_pool_size);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 0, 200, 100, 832 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(1, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    // Not empty: a bigger one needs a new pool; the old one goes with its
+    // last buffer.
+    const huge = try pr.allocCpuBuffer(400, 300, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual(2, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    pr.releaseBuffer(big.handle);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .destroy, std.time.ns_per_s);
+    pr.releaseBuffer(huge.handle);
+}
+
+test "shm: importBuffer(.shm) wraps the caller's memfd" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 64, .h = 32 });
+    const pr = try p.cpuPresenter(win);
+    var m = try memfd.Memfd.create("zg-test", 4096 + 256 * 32);
+    defer m.deinit();
+    const h = try pr.importBuffer(&.{ .width = 64, .height = 32, .fourcc = @import("shm.zig").fourcc_xrgb8888, .modifier = 0, .kind = .shm, .planes = &.{.{ .fd = m.fd, .offset = 4096, .stride = 256 }} });
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 4096, 64, 32, 256 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(@as(?i32, 4096 + 256 * 32), rig.peer.last_pool_size);
+    pr.releaseBuffer(h);
 }
