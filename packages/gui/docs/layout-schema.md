@@ -4,6 +4,14 @@
 layout directory the app picks (per workspace). This page describes the file
 and the rules for changing it.
 
+The zigguro app keeps one layout per working folder in
+`<state dir>/layouts/<16 hex digits of the folder's hash>/layout.zon`, where
+the state dir is `%LOCALAPPDATA%\zigguro`, `$XDG_STATE_HOME/zigguro` or
+`~/.local/state/zigguro` (`ZIGGURO_STATE_DIR` overrides it). Editor panels
+store their file's absolute path as their state; the terminal, agent and
+review panels store nothing. Runs with `--frames` neither read nor write the
+layout.
+
 ## The file (version 1)
 
 ```zig

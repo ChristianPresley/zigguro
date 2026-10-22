@@ -196,6 +196,47 @@ test "unknown kind placeholder roundtrip" {
     try roundTrip(tmp.dir, &m);
 }
 
+test "panels of unsaved kinds leave their groups" {
+    var m = try DockModel.init(gpa);
+    defer m.deinit();
+    const a = try m.addPanel(1, "a.zig");
+    const t = try m.addPanel(99, null);
+    const b = try m.addPanel(1, "b.zig");
+    const g = m.firstGroup(m.areas[@intFromEnum(model.Area.center)].root).?;
+    for ([_]model.PanelRef{ a, t, b }) |p| try m.openIn(p, g, null, .{});
+    m.activate(g, 2);
+    const Only = struct {
+        fn name(_: ?*anyopaque, k: model.PanelKindId) ?[]const u8 {
+            return if (k == 1) "editor" else null;
+        }
+        fn id(_: ?*anyopaque, n: []const u8) ?model.PanelKindId {
+            return if (std.mem.eql(u8, n, "editor")) 1 else null;
+        }
+    };
+    const only: persist.Kinds = .{ .name = Only.name, .id = Only.id };
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const f = try persist.fromModel(arena.allocator(), &m, only, &.{}, &.{});
+    try testing.expectEqual(@as(usize, 2), f.panels.len);
+    var back = try persist.toModel(gpa, &f, only);
+    defer back.deinit();
+    const bg = back.group(g).?;
+    try testing.expectEqualSlices(model.PanelRef, &.{ a, b }, bg.tabs.items);
+    try testing.expectEqual(@as(u32, 1), bg.active);
+}
+
+test "revision counts layout changes" {
+    var m = try DockModel.init(gpa);
+    defer m.deinit();
+    const r0 = m.revision;
+    const p = try m.addPanel(1, null);
+    try m.openIn(p, m.firstGroup(m.areas[@intFromEnum(model.Area.center)].root).?, null, .{});
+    const r1 = m.revision;
+    try testing.expect(r1 != r0);
+    m.setAreaSizeLive(.left, 300);
+    try testing.expect(m.revision != r1);
+}
+
 const Counter = struct {
     m: *DockModel,
     snaps: u32 = 0,

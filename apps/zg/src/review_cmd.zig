@@ -427,7 +427,7 @@ const Cmd = struct {
             const n = render.counts(cs);
             try c.out.print("{s} all of {f} ({d} file{s}, +{d} -{d})? [y/N] ", .{ if (how == .accept) "Accept" else "Reject", cs_id, n.files, if (n.files == 1) "" else "s", n.added, n.removed });
             try c.out.flush();
-            const line = r.takeDelimiterExclusive('\n') catch "";
+            const line = (r.takeDelimiter('\n') catch null) orelse "";
             const ans = std.mem.trim(u8, line, " \t\r");
             if (!eql(ans, "y") and !eql(ans, "Y") and !eql(ans, "yes")) {
                 try c.out.writeAll("Nothing changed.\n");

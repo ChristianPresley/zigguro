@@ -418,6 +418,7 @@ pub const zig_language: language.Language = .{
     .extensions = &.{ ".zig", ".zon" },
     .lexer = .{ .lexLineFn = lexLine },
     .resync = resync,
+    .word_chars = &.{'@'},
     .structure = zig_ast_adapter.parse,
     .edit_rules = .{
         .line_comment = "//",
