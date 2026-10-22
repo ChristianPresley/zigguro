@@ -217,7 +217,7 @@ pub const LoopCompaction = struct {
     reinject: Reinject = .{},
 
     pub fn compaction(l: *LoopCompaction) deps.Compaction {
-        return .{ .ctx = l, .should_compact = should, .compact = run };
+        return .{ .ctx = l, .should_compact = should, .compact = run, .manual = manual };
     }
 
     fn should(ctx: *anyopaque, est_input_tokens: u64, window: u32) bool {
@@ -228,6 +228,12 @@ pub const LoopCompaction = struct {
     fn run(ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, overflow: bool) anyerror!deps.CompactedHistory {
         const l: *LoopCompaction = @ptrCast(@alignCast(ctx));
         const r = try l.compactor.compact(io, arena, base, history, l.reinject, .{ .trigger = if (overflow) .window_overflow else .auto_threshold });
+        return .{ .messages = r.messages, .tokens_before = r.tokens_before, .tokens_after = r.tokens_after, .model = r.model, .fallback = r.fallback };
+    }
+
+    fn manual(ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, focus: ?[]const u8) anyerror!deps.CompactedHistory {
+        const l: *LoopCompaction = @ptrCast(@alignCast(ctx));
+        const r = try l.compactor.compact(io, arena, base, history, l.reinject, .{ .trigger = .manual, .focus = focus });
         return .{ .messages = r.messages, .tokens_before = r.tokens_before, .tokens_after = r.tokens_after, .model = r.model, .fallback = r.fallback };
     }
 };
