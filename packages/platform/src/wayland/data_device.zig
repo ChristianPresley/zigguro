@@ -47,6 +47,10 @@ pub const Offer = struct {
     which: Selection,
     /// MIME types announced so far.
     mimes: std.ArrayList([:0]u8) = .empty,
+    /// Drag and drop (v3): what the source allows, and the action the
+    /// compositor chose.
+    source_actions: clipboard.DragActions = .{},
+    action: clipboard.DragActions = .{},
 
     fn deinit(o: *Offer, gpa: Allocator) void {
         for (o.mimes.items) |m| gpa.free(m);

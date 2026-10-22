@@ -71,11 +71,16 @@ pub const DropPhase = enum(u8) {
     leave,
     /// The user dropped; `data` holds the accepted format's bytes.
     drop,
+    /// A drag we started (`Command.start_drag`) ended: `win` is the
+    /// window it started from and `allowed` holds the action the target
+    /// performed, empty when it was cancelled or refused.
+    source_finished,
 };
 
 /// A drag-and-drop event. The app answers `enter` and `over` with
 /// `Command.set_drop_effect`; the backend caches the answer for OS
-/// callbacks that need it synchronously.
+/// callbacks that need it synchronously. On `drop`, `allowed` holds the
+/// action the drop performs.
 pub const DropEvent = struct {
     /// The window under the pointer.
     win: types.WindowId,
