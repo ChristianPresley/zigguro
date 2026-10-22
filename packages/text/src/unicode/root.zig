@@ -47,6 +47,8 @@ pub const isCaseIgnorable = p.isCaseIgnorable;
 pub const grapheme = @import("grapheme.zig");
 /// UAX #29 word boundaries.
 pub const word = @import("word.zig");
+/// UAX #14 line-break opportunities.
+pub const line_break = @import("line_break.zig");
 
 test {
     std.testing.refAllDecls(@This());
