@@ -1151,3 +1151,178 @@ Host method results are allocated in the caller's arena.
 ### Stability
 Experimental until the E15 PR (#1208) merges; the wire protocol is
 versioned by `protocolVersion` and the host keeps the previous version.
+
+## zg_regex.Regex
+
+### Defined in
+`packages/regex/src/root.zig`, `packages/regex/src/input.zig` (E05.F03).
+
+### Implemented by
+E05.F03.S01.T01 – E05.F03.S03.T01.
+
+### Consumed by
+E05.F04 (TextMate-style grammars), E05.F06 (find and replace), E07 (LSP
+patterns), E08 (workspace search, globs), E11 (JSON Schema `pattern`), E15
+(settings validation).
+
+### Signature
+```zig
+pub const Options = struct {
+    case_insensitive: bool = false, multi_line: bool = false, dot_all: bool = false,
+    crlf: bool = false, swap_greed: bool = false, unicode: bool = true,
+    ignore_whitespace: bool = false,
+    literal: bool = false,      // escape the whole pattern
+    whole_word: bool = false,   // wrap in \b{start-half} ... \b{end-half}
+    size_limit: usize = 10 << 20,
+    dfa_cache_bytes: usize = 2 << 20,
+    nest_limit: u32 = 250,
+    diag: ?*Error = null,       // filled on error.Syntax
+};
+pub const CompileError = error{ Syntax, SizeLimitExceeded } || Allocator.Error;
+pub const Match = struct { start: u64, end: u64 };
+pub const Range = struct { start: u64, end: u64 };
+pub const Chunk = struct { base: u64, bytes: []const u8 };
+pub const ChunkSource = struct {
+    ctx: *const anyopaque,
+    chunkAtFn: *const fn (ctx: *const anyopaque, offset: u64) Chunk, // non-empty chunks tiling the haystack
+};
+pub const Input = struct {
+    source: union(enum) { slice: []const u8, chunks: ChunkSource },
+    total_len: u64,
+    span: Range,            // matches lie inside; context outside it is still read for assertions
+    anchored: bool = false,
+    earliest: bool = false,
+    pub fn fromSlice(s: []const u8) Input;
+    pub fn fromChunks(src: ChunkSource, total_len: u64) Input;
+    pub fn withSpan(in: Input, span: Range) Input;
+    pub fn withAnchored(in: Input, anchored: bool) Input;
+};
+pub const Regex = struct {
+    pub fn compile(gpa: Allocator, pattern: []const u8, o: Options) CompileError!Regex;
+    pub fn deinit(re: *Regex, gpa: Allocator) void;
+    pub fn newCache(re: *const Regex, gpa: Allocator) Allocator.Error!Cache;
+    pub fn newCaptures(re: *const Regex, gpa: Allocator) Allocator.Error!Captures;
+    pub fn isMatch(re: *const Regex, cache: *Cache, input: Input) bool;
+    pub fn find(re: *const Regex, cache: *Cache, input: Input) ?Match;
+    pub fn captures(re: *const Regex, cache: *Cache, input: Input, out: *Captures) bool;
+    pub fn findIter(re: *const Regex, cache: *Cache, input: Input) FindIter; // next() ?Match
+    pub fn captureNames(re: *const Regex) []const ?[]const u8;
+    pub fn groupCount(re: *const Regex) usize;
+};
+pub const Captures = struct { pub fn len(c) usize; pub fn get(c, i: usize) ?Match; pub fn deinit(c, gpa) void };
+pub const RegexSet = struct {
+    pub fn compile(gpa: Allocator, patterns: []const []const u8, o: Options) CompileError!RegexSet;
+    pub fn newCache(set: *const RegexSet, gpa: Allocator) Allocator.Error!SetCache;
+    pub fn matches(set: *const RegexSet, cache: *SetCache, input: Input, out: *std.DynamicBitSetUnmanaged) void;
+};
+pub fn escape(out: *std.ArrayList(u8), gpa: Allocator, literal: []const u8) Allocator.Error!void;
+pub fn smartCaseInsensitive(pattern: []const u8) bool;
+pub fn errorMessage(e: Error) []const u8;
+pub const simd = struct {
+    pub fn memchr(hay: []const u8, b: u8, from: usize) ?usize;
+    pub fn memrchr(hay: []const u8, b: u8, to: usize) ?usize;
+    pub const Memmem = struct { pub fn init(needle: []const u8) Memmem; pub fn find(f: *const Memmem, hay: []const u8, from: usize) ?usize };
+};
+```
+
+### Threading
+A compiled `Regex` or `RegexSet` is immutable and may be shared across
+threads. A `Cache` is per thread (or per concurrent search); searches never
+allocate after the cache is created except when the lazy DFA builds states,
+which stays within `dfa_cache_bytes`.
+
+### Ownership/lifetime
+The caller owns the `Regex`, each `Cache` and each `Captures`, and frees them
+with the allocator passed to `compile` / `newCache` / `newCaptures`. A
+`ChunkSource` must stay valid and unchanged for the duration of one search
+call; chunk slices are only read during that call. Offsets are absolute byte
+offsets into the haystack.
+
+### Stability
+Experimental until the E05.F03 pull request merges. Semantics follow Rust
+`regex` (Unicode by default, leftmost-first, no backreferences or
+look-around); see `docs/regex.md`.
+
+## zg_editor.model (PieceTree, ChangeSet, Document, Snapshot)
+
+### Defined in
+`packages/editor/src/model/buffer/piece_tree.zig`,
+`packages/editor/src/model/edit/change_set.zig`,
+`packages/editor/src/model/document.zig`, `packages/editor/src/model/snapshot.zig`,
+`packages/editor/src/model/change_log.zig`, `packages/editor/src/model/edit/anchor.zig`
+(E05.F01, E05.F02).
+
+### Implemented by
+E05.F01.S01.T01, E05.F01.S03.T01, E05.F02.S01.T01.
+
+### Consumed by
+E05.F04–F08 (syntax, views, find, diff, registry), E07 (position conversion,
+document sync via `toLspChanges`), E12 (ChangeSet, Document).
+
+### Signature
+```zig
+pub const Range = struct { start: u64, end: u64 };
+pub const Point = struct { line: u64, col: u32 };       // col in bytes
+pub const PointUtf16 = struct { line: u64, col: u32 };  // col in UTF-16 units
+pub const Edit = struct { range: Range, text: []const u8 };
+pub const EditError = error{ OutOfMemory, BufferFull, OutOfBounds, Overlap };
+pub const PieceTree = struct {   // persistent; every edit returns a new version
+    pub fn fromOriginal(pool: *NodePool, bt: *BufferTable) Allocator.Error!PieceTree;
+    pub fn clone(t) PieceTree;                       // O(1)
+    pub fn deinit(t: *PieceTree, pool: *NodePool) void;
+    pub fn len(t) u64; pub fn lineCount(t) u64;
+    pub fn insert(t, pool, at: u64, text) EditError!PieceTree;
+    pub fn delete(t, pool, range: Range) EditError!PieceTree;
+    pub fn replace(t, pool, edits: []const Edit) EditError!PieceTree; // sorted, disjoint, old coords
+    pub fn lineOf(t, off) u64; pub fn lineStart(t, line) u64;
+    pub fn lineRange(t, line) struct { start: u64, end: u64, eol_len: u2 };
+    pub fn offsetToPoint(t, off) Point; pub fn pointToOffset(t, p: Point) u64;
+    pub fn offsetToUtf16(t, off) PointUtf16; pub fn utf16ToOffset(t, p: PointUtf16) u64;
+    pub fn slice(t, range) ChunkIterator; pub fn chunks(t, from) ChunkIterator;
+    pub fn chunksRev(t, from) RevChunkIterator;
+    pub fn copyRange(t, gpa, range) Allocator.Error![]u8;
+};
+pub const Bias = enum { left, right };
+pub const MapMode = enum { expand, shrink, delete_if_touched };
+pub const ChangeSet = struct {   // sorted replacements in old coordinates
+    pub fn identity(gpa, base_len: u64) ChangeSet;
+    pub fn fromEdits(gpa, base_len: u64, edits: []const Edit) error{ Overlap, OutOfBounds, OutOfMemory }!ChangeSet;
+    pub fn deinit(cs) void; pub fn clone(cs, gpa) !ChangeSet;
+    pub fn newLen(cs) u64; pub fn isIdentity(cs) bool;
+    pub fn apply(cs, t: PieceTree, pool) EditError!PieceTree;
+    pub fn applyToSlice(cs, gpa, text) ![]u8;
+    pub fn invert(cs, before: PieceTree, gpa) !ChangeSet;
+    pub fn compose(a, b, gpa) !ChangeSet;                    // a then b
+    pub fn transform(a, b, a_wins_ties: bool, gpa) !ChangeSet; // a' such that b·a' == a·b' (TP1); sets .conflicted
+    pub fn mapPos(cs, pos, bias) u64;
+    pub fn mapPosDetail(cs, pos, bias) struct { pos: u64, deleted: bool };
+    pub fn mapRange(cs, r: Range, mode: MapMode) ?Range;
+    pub fn toLspChanges(cs, before: PieceTree, enc: zg_core.utf8.Encoding, out: *ArrayList(LspChange), gpa) !void; // descending, old coords
+};
+pub const Snapshot = struct { tree: PieceTree, version: u64, doc_id: DocId, store: *Store,
+    pub fn retain(s) Snapshot; pub fn release(s: *Snapshot) void; pub fn len(s) u64 };
+pub const Document = struct {
+    pub fn initBytes(gpa, id: DocId, bytes) !*Document; pub fn deinit(d) void;
+    pub fn snapshot(d) Snapshot; pub fn len(d) u64; pub fn isDirty(d) bool;
+    pub fn applyChangeSet(d, cs: *const ChangeSet, origin: EditOrigin) !void;
+    pub fn mapForward(d, from_version: u64, range: Range, bias: Bias) ?Range; // null: evicted or deleted
+    pub fn subscribe(d, l: Listener) !ListenerId; pub fn unsubscribe(d, id) void;
+    pub fn endFrame(d) void;                         // frees nodes released on workers
+};
+pub const Anchor = struct { offset: u64, version: u64, bias: Bias,
+    pub fn at(doc, offset, bias) Anchor };
+pub fn resolve(doc, a: Anchor) ?u64; pub fn refresh(doc, a: *Anchor) bool;
+```
+
+### Threading
+A Document and its edits live on the owner (UI) thread. Snapshots are
+immutable and may be retained, read and released on any thread; nodes
+released off the owner thread are freed at `endFrame`.
+
+### Ownership/lifetime
+The Store (node pool and buffer table) is refcounted; snapshots keep it alive
+after the Document is deinitialized. ChangeSets own their inserted text.
+Line semantics match `zg_core.LineIndex`.
+
+### Stability
+Unstable until E05.F05 views and E12 land.

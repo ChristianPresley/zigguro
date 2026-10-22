@@ -39,6 +39,8 @@ pub const all = [_]Package{
     .{ .name = "zg_config", .dir = "packages/config", .has_bench = true },
     .{ .name = "zg_workspace", .dir = "packages/workspace", .has_bench = true },
     .{ .name = "zg_notes", .dir = "packages/notes", .has_bench = true },
+    .{ .name = "zg_regex", .dir = "packages/regex", .has_bench = true },
+    .{ .name = "zg_editor", .dir = "packages/editor", .has_bench = true },
     // pkgtool:insert
 };
 

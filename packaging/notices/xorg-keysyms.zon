@@ -1,0 +1,16 @@
+// X11 keysym headers and the libX11 Compose subset vendored by zg_platform
+// (E01). keysym_gen compiles the headers into src/xkb/keysym_data.zig and the
+// Compose subset is embedded, so both ship. Details:
+// packages/platform/data/SOURCES.md.
+.{
+    .name = "xorgproto keysyms and libX11 Compose",
+    .version = "xorgproto 2023.2, libX11 1.8.7",
+    .license_spdx = "MIT-open-group AND X11",
+    .source_url = "https://gitlab.freedesktop.org/xorg/proto/xorgproto",
+    .shipped = true,
+    .paths = .{
+        "packages/platform/data/**",
+        "packages/platform/src/xkb/compose_fallback.Compose",
+    },
+    .license_text_files = .{"packages/platform/data/keysymdef.h"},
+}
