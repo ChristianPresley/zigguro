@@ -542,6 +542,7 @@ pub const Workbench = struct {
                 p.commands = c;
             }
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
             wb.agent = host;
             wb.agent_panel = p;
         }
@@ -616,6 +617,8 @@ pub const Workbench = struct {
     fn onTrust(ctx: ?*anyopaque, c: zg_security_ui.TrustChoice) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
         wb.trust = if (c == .restricted) .restricted else .trusted;
+        // A trusted folder's MCP servers may start.
+        if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
         if (wb.win) |w| w.markAllDirty();
     }
 
