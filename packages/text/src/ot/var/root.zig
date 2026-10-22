@@ -8,6 +8,7 @@ pub const fvar = @import("fvar.zig");
 pub const avar = @import("avar.zig");
 pub const hvar = @import("hvar.zig");
 pub const mvar = @import("mvar.zig");
+pub const gvar = @import("gvar.zig");
 pub const instance = @import("instance.zig");
 
 /// Normalized F2Dot14 coordinates, one per axis.
@@ -18,6 +19,8 @@ pub const Axis = fvar.Axis;
 pub const AxisValue = fvar.AxisValue;
 /// One face at one variation position.
 pub const FaceInstance = instance.FaceInstance;
+/// Reusable outline buffers.
+pub const OutlineScratch = instance.OutlineScratch;
 /// Font-wide metrics at an instance.
 pub const FontMetricsF = instance.FontMetricsF;
 /// Named instances of a face.
