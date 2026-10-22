@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const p = @import("props.zig");
 const decode = @import("decode.zig");
+const normalize = @import("normalize.zig");
 
 /// Full folding (C+F, may expand: ß -> ss) or simple folding (C+S, one
 /// code point for one).
@@ -68,16 +69,22 @@ pub const Folder = struct {
     pending: p.Mapping = .{},
     k: u8 = 0,
     start: usize = 0,
+    /// Canonical caseless mode (D145): NFD(toCasefold(NFD(x))).
+    canon: ?normalize.CanonicalFolder = null,
 
-    /// Folds `bytes`. `canonical` (canonical caseless matching) is not
-    /// implemented yet (E03.F05.S04.T06) and must be false.
+    /// Folds `bytes`; with `canonical`, canonically equivalent inputs
+    /// produce the same stream (canonical caseless matching), and code
+    /// points reordered by normalization keep their own source ranges.
     pub fn init(bytes: []const u8, canonical: bool) Folder {
-        std.debug.assert(!canonical);
-        return .{ .bytes = bytes };
+        return .{ .bytes = bytes, .canon = if (canonical) normalize.CanonicalFolder.init(bytes) else null };
     }
 
     /// The next folded code point, or null at the end.
     pub fn next(f: *Folder) ?Folded {
+        if (f.canon) |*c| {
+            const it = c.next() orelse return null;
+            return .{ .cp = it.cp, .src_start = it.src_start, .src_end = it.src_end };
+        }
         if (f.k < f.pending.len) {
             f.k += 1;
             return .{ .cp = f.pending.buf[f.k - 1], .src_start = f.start, .src_end = f.i };
