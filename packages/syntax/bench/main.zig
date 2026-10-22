@@ -185,6 +185,42 @@ const shell_template =
     \\
 ;
 
+const ts_template =
+    \\export class Widget{d}<T extends object> implements Drawable {{
+    \\    private readonly items: Array<T> = [];
+    \\    constructor(public name = "widget {d}", private weight = 0x{x}) {{}}
+    \\    async load(url: string): Promise<number> {{
+    \\        const res = await fetch(`${{url}}/items?seq={d}`);
+    \\        if (!res.ok) throw new Error(`failed: ${{res.status}}`);
+    \\        const data = (await res.json()) as T[];
+    \\        // weighted total
+    \\        const total = data.reduce((acc, w) => acc + this.weight / 2, 0);
+    \\        return /^[a-z]+$/i.test(this.name) ? total : -1;
+    \\    }}
+    \\    get size(): number {{ return this.items.length; }}
+    \\}}
+    \\
+    \\
+;
+
+const css_template =
+    \\.widget-{d} > .title:hover::after {{
+    \\  --accent: #{x};
+    \\  color: var(--accent, #333);
+    \\  margin: 0 auto 1.5rem;
+    \\  font: italic 600 14px/1.4 "Inter", sans-serif;
+    \\  background: url(images/w{d}.png) no-repeat, linear-gradient(to right, #fff 0%, #000 100%);
+    \\  transition: opacity 0.3s ease-in-out !important;
+    \\  /* weighted entry {d} */
+    \\}}
+    \\@media (min-width: 768px) {{
+    \\  .widget {{ width: calc(50% - 2 * var(--gap)); }}
+    \\}}
+    \\[data-state="open"] {{ display: block; }}
+    \\
+    \\
+;
+
 /// A corpus of about `lines` lines from a 14-line template.
 fn genFrom(gpa: std.mem.Allocator, comptime tmpl: []const u8, lines: usize) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -464,6 +500,8 @@ fn register(b: *bench.Bench) !void {
         .{ "json", json_template, &syntax.langs.json.json_language, true },
         .{ "toml", toml_template, &syntax.langs.toml.toml_language, false },
         .{ "shell", shell_template, &syntax.langs.shell.shell_language, false },
+        .{ "ts", ts_template, &syntax.langs.js.typescript_language, true },
+        .{ "css", css_template, &syntax.langs.css.css_language, false },
     }) |l| {
         const spaced = try genFrom(gpa, l[1], n_lines);
         defer gpa.free(spaced);
