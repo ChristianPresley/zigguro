@@ -227,8 +227,8 @@ pub fn hasArabicJoining(s: Script) bool {
     };
 }
 
-fn dataInit(p: *ShapePlan) void {
-    if (hasArabicJoining(p.script)) arabic.dataInit(p);
+fn dataInit(p: *ShapePlan) Allocator.Error!void {
+    if (hasArabicJoining(p.script)) try arabic.dataInit(p);
 }
 
 fn setupMasks(p: *const ShapePlan, b: *Buffer) void {
