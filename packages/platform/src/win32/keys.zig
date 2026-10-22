@@ -104,6 +104,105 @@ pub fn modsFrom(ctx: anytype, comptime down: fn (@TypeOf(ctx), u16) bool, compti
     };
 }
 
+/// The repeat count of a key message (bits 0..15), at least 1 and capped
+/// at 32 events.
+pub fn repeatCount(lparam: isize) u8 {
+    const l: usize = @bitCast(lparam);
+    return @intCast(std.math.clamp(l & 0xffff, 1, 32));
+}
+
+/// `KEY_EVENT_RECORD.dwControlKeyState` bits.
+pub const CtrlState = struct {
+    /// RIGHT_ALT_PRESSED.
+    pub const RIGHT_ALT: u16 = 0x0001;
+    /// LEFT_ALT_PRESSED.
+    pub const LEFT_ALT: u16 = 0x0002;
+    /// RIGHT_CTRL_PRESSED.
+    pub const RIGHT_CTRL: u16 = 0x0004;
+    /// LEFT_CTRL_PRESSED.
+    pub const LEFT_CTRL: u16 = 0x0008;
+    /// SHIFT_PRESSED.
+    pub const SHIFT: u16 = 0x0010;
+    /// NUMLOCK_ON.
+    pub const NUMLOCK: u16 = 0x0020;
+    /// SCROLLLOCK_ON.
+    pub const SCROLLLOCK: u16 = 0x0040;
+    /// CAPSLOCK_ON.
+    pub const CAPSLOCK: u16 = 0x0080;
+    /// ENHANCED_KEY.
+    pub const ENHANCED: u16 = 0x0100;
+};
+
+/// The console control-key state for E06's win32-input-mode, from the
+/// same key-state reader as `modsFrom`; `extended` is lParam bit 24.
+pub fn ctrlStateFrom(ctx: anytype, comptime down: fn (@TypeOf(ctx), u16) bool, comptime toggled: fn (@TypeOf(ctx), u16) bool, extended: bool) u16 {
+    var s: u16 = 0;
+    if (down(ctx, VK.RMENU)) s |= CtrlState.RIGHT_ALT;
+    if (down(ctx, VK.LMENU)) s |= CtrlState.LEFT_ALT;
+    if (down(ctx, VK.RCONTROL)) s |= CtrlState.RIGHT_CTRL;
+    if (down(ctx, VK.LCONTROL)) s |= CtrlState.LEFT_CTRL;
+    if (down(ctx, VK.SHIFT)) s |= CtrlState.SHIFT;
+    if (toggled(ctx, VK.NUMLOCK)) s |= CtrlState.NUMLOCK;
+    if (toggled(ctx, VK.SCROLL)) s |= CtrlState.SCROLLLOCK;
+    if (toggled(ctx, VK.CAPITAL)) s |= CtrlState.CAPSLOCK;
+    if (extended) s |= CtrlState.ENHANCED;
+    return s;
+}
+
+/// A key message as the AltGr check sees it.
+pub const KeyMsg = struct { scancode: u16, time: u32 };
+
+/// Whether a Left Ctrl message is the one Windows synthesizes for AltGr:
+/// non-extended 0x1D immediately followed by Right Alt (E0 38) with the
+/// same message time.
+pub fn isFakeAltGrCtrl(cur: KeyMsg, next: ?KeyMsg) bool {
+    if (cur.scancode != 0x1d) return false;
+    const n = next orelse return false;
+    return n.scancode == 0x138 and n.time == cur.time;
+}
+
+/// Keys held down, so focus loss can release them. Fixed size: no
+/// allocation per message.
+pub const DownKeys = struct {
+    /// A held key.
+    pub const Held = struct { scancode: u16, vk: u16 };
+
+    items: [32]Held = undefined,
+    len: u8 = 0,
+
+    /// Records a press (once per key).
+    pub fn press(d: *DownKeys, h: Held) void {
+        for (d.items[0..d.len]) |x| if (x.scancode == h.scancode) return;
+        if (d.len == d.items.len) return;
+        d.items[d.len] = h;
+        d.len += 1;
+    }
+
+    /// Forgets a key.
+    pub fn release(d: *DownKeys, scancode: u16) void {
+        for (d.items[0..d.len], 0..) |x, i| if (x.scancode == scancode) {
+            d.items[i] = d.items[d.len - 1];
+            d.len -= 1;
+            return;
+        };
+    }
+
+    /// Takes every held key, leaving none.
+    pub fn drain(d: *DownKeys) []const Held {
+        const n = d.len;
+        d.len = 0;
+        return d.items[0..n];
+    }
+};
+
+/// Whether a `WM_SYSKEYDOWN` goes to `DefWindowProcW` for the system:
+/// Alt alone and Alt+Space (the window menu), and Alt+F4. F10 is
+/// swallowed: we have no menu bar for it to activate.
+pub fn systemKey(vk: u16, alt: bool) bool {
+    if (vk == VK.F10) return false;
+    return vk == VK.MENU or vk == VK.LMENU or vk == VK.RMENU or (alt and (vk == VK.SPACE or vk == VK.F1 + 3));
+}
+
 test "scancodeOf and isRepeat read lParam" {
     // 'A' down: scancode 0x1E, repeat count 1.
     try std.testing.expectEqual(@as(u16, 0x1e), scancodeOf(0x001E0001));
@@ -143,4 +242,52 @@ test "modsFrom" {
     };
     const m = modsFrom(State{ .held = &.{ VK.SHIFT, VK.CONTROL, VK.RMENU } }, State.down, State.toggled);
     try std.testing.expect(m.shift and m.ctrl and m.alt_gr and m.caps_lock and !m.num_lock and !m.super);
+}
+
+test "ctrl_state bits from synthetic GetKeyState snapshots" {
+    const Snap = struct {
+        down: []const u16,
+        on: []const u16,
+        fn isDown(x: @This(), vk: u16) bool {
+            return std.mem.indexOfScalar(u16, x.down, vk) != null;
+        }
+        fn isOn(x: @This(), vk: u16) bool {
+            return std.mem.indexOfScalar(u16, x.on, vk) != null;
+        }
+    };
+    // AltGr = LEFT_CTRL | RIGHT_ALT.
+    const altgr: Snap = .{ .down = &.{ VK.CONTROL, VK.LCONTROL, VK.MENU, VK.RMENU }, .on = &.{} };
+    try std.testing.expectEqual(CtrlState.LEFT_CTRL | CtrlState.RIGHT_ALT, ctrlStateFrom(altgr, Snap.isDown, Snap.isOn, false));
+    try std.testing.expect(modsFrom(altgr, Snap.isDown, Snap.isOn).alt_gr);
+    // Numpad Enter is enhanced; locks are reported when toggled.
+    const locks: Snap = .{ .down = &.{ VK.SHIFT, VK.RCONTROL }, .on = &.{ VK.NUMLOCK, VK.CAPITAL, VK.SCROLL } };
+    try std.testing.expectEqual(CtrlState.SHIFT | CtrlState.RIGHT_CTRL | CtrlState.NUMLOCK | CtrlState.CAPSLOCK | CtrlState.SCROLLLOCK | CtrlState.ENHANCED, ctrlStateFrom(locks, Snap.isDown, Snap.isOn, true));
+}
+
+test "AltGr fake-ctrl suppression" {
+    try std.testing.expect(isFakeAltGrCtrl(.{ .scancode = 0x1d, .time = 500 }, .{ .scancode = 0x138, .time = 500 }));
+    // A real Left Ctrl: later Right Alt, or nothing queued.
+    try std.testing.expect(!isFakeAltGrCtrl(.{ .scancode = 0x1d, .time = 500 }, .{ .scancode = 0x138, .time = 530 }));
+    try std.testing.expect(!isFakeAltGrCtrl(.{ .scancode = 0x1d, .time = 500 }, null));
+    try std.testing.expect(!isFakeAltGrCtrl(.{ .scancode = 0x11d, .time = 500 }, .{ .scancode = 0x138, .time = 500 }));
+}
+
+test "repeat counts, held keys and system keys" {
+    try std.testing.expectEqual(@as(u8, 1), repeatCount(0x001E0000));
+    try std.testing.expectEqual(@as(u8, 3), repeatCount(0x401E0003));
+    try std.testing.expectEqual(@as(u8, 32), repeatCount(0x401E00FF));
+    var d: DownKeys = .{};
+    d.press(.{ .scancode = 0x1e, .vk = 'A' });
+    d.press(.{ .scancode = 0x1e, .vk = 'A' });
+    d.press(.{ .scancode = 0x2a, .vk = VK.SHIFT });
+    d.release(0x1e);
+    const held = d.drain();
+    try std.testing.expectEqual(@as(usize, 1), held.len);
+    try std.testing.expectEqual(@as(u16, 0x2a), held[0].scancode);
+    try std.testing.expectEqual(@as(usize, 0), d.drain().len);
+    try std.testing.expect(systemKey(VK.MENU, true));
+    try std.testing.expect(systemKey(VK.SPACE, true));
+    try std.testing.expect(systemKey(VK.F1 + 3, true));
+    try std.testing.expect(!systemKey(VK.F10, false));
+    try std.testing.expect(!systemKey('X', true));
 }
