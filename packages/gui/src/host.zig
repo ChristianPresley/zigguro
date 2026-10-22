@@ -44,6 +44,7 @@ const DrawListCanvas = @import("paint/draw_list.zig").DrawListCanvas;
 const FontText = @import("paint/font_text.zig").FontText;
 const chrome = @import("dock/chrome.zig");
 const hit_map = @import("dock/hit_map.zig");
+const floating = @import("dock/floating.zig");
 const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
@@ -255,6 +256,22 @@ pub const Host = struct {
         return hw;
     }
 
+    /// Opens floating dock windows on this Host (`dock.floating`).
+    pub fn windowOpener(h: *Host) floating.WindowOpener {
+        return .{ .ctx = h, .open = openForFloat, .monitors = monitorsForFloat };
+    }
+
+    fn openForFloat(ctx: *anyopaque, title: []const u8, size: geom.Size, root: view_mod.AnyView) anyerror!*Window {
+        const h: *Host = @ptrCast(@alignCast(ctx));
+        const hw = try h.open(.{ .title = title, .size = size, .root = root });
+        return hw.win;
+    }
+
+    fn monitorsForFloat(ctx: *anyopaque, out: []zg_platform.types.MonitorInfo) usize {
+        const h: *Host = @ptrCast(@alignCast(ctx));
+        return h.platform.monitors(out);
+    }
+
     /// Closes `hw` and its platform window.
     pub fn close(h: *Host, hw: *HostWindow) void {
         for (h.windows.items, 0..) |x, i| if (x == hw) {
@@ -320,7 +337,16 @@ pub const Host = struct {
             }
             if (hw.win.drop.pending) |accept| {
                 hw.win.drop.pending = null;
-                try h.platform.submit(.{ .set_drop_effect = .{ .win = hw.id, .accept = if (accept) .uri_list else null, .effect = if (accept) .{ .copy = true } else .{} } });
+                const mime = hw.win.drop.mime;
+                const effect: zg_platform.clipboard.DragActions = if (mime == .zigguro_internal) .{ .move = true } else .{ .copy = true };
+                try h.platform.submit(.{ .set_drop_effect = .{ .win = hw.id, .accept = if (accept) mime else null, .effect = if (accept) effect else .{} } });
+            }
+            if (hw.win.drag_out) |bytes| {
+                hw.win.drag_out = null;
+                defer h.gpa.free(bytes);
+                const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .zigguro_internal, .data = bytes }};
+                // Without platform drags, end it at once: nothing took it.
+                h.platform.submit(.{ .start_drag = .{ .win = hw.id, .items = &items, .allowed = .{ .move = true } } }) catch hw.win.dragFinished(.{});
             }
             hw.win.window_ops.clearRetainingCapacity();
             try h.updateHitMap(hw);
