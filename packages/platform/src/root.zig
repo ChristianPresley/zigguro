@@ -29,6 +29,36 @@ pub const native = @import("api/native.zig");
 pub const platform = @import("api/platform.zig");
 /// The shared backend conformance suite.
 pub const conformance = @import("testing/conformance.zig");
+/// The headless backend and `.zgtrace` traces.
+pub const headless = struct {
+    /// See `headless/backend.zig`.
+    pub const Headless = @import("headless/backend.zig").Headless;
+    /// See `headless/backend.zig`.
+    pub const HeadlessOptions = @import("headless/backend.zig").HeadlessOptions;
+    /// See `headless/backend.zig`.
+    pub const FrameImage = @import("headless/backend.zig").FrameImage;
+    /// See `headless/backend.zig`.
+    pub const DialogAnswer = @import("headless/backend.zig").DialogAnswer;
+    /// See `headless/trace.zig`.
+    pub const trace = @import("headless/trace.zig");
+};
+
+/// Starts the backend chosen by `platform.selectBackend`. Only headless
+/// exists so far; the OS backends (E01.F02, E01.F04, E01.F05) return
+/// `error.BackendUnavailable` until they land.
+pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform {
+    return switch (platform.selectBackend(opts)) {
+        .headless => {
+            const h = headless.Headless.init(gpa, io, .{}) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SystemResources,
+            };
+            return h.platform();
+        },
+        else => error.BackendUnavailable,
+    };
+}
+
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
     /// See `queue/event_ring.zig`.
@@ -85,14 +115,13 @@ pub const Backend = platform.Backend;
 pub const Error = platform.Error;
 /// See `platform.InitOptions`.
 pub const InitOptions = platform.InitOptions;
-/// See `platform.init`.
-pub const init = platform.init;
 /// See `platform.detectBackend`.
 pub const detectBackend = platform.detectBackend;
 
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(queue);
+    std.testing.refAllDecls(headless);
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -109,9 +138,21 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "api/native.zig", .src = @embedFile("api/native.zig") },
     .{ .path = "api/platform.zig", .src = @embedFile("api/platform.zig") },
     .{ .path = "testing/conformance.zig", .src = @embedFile("testing/conformance.zig") },
+    .{ .path = "queue/event_ring.zig", .src = @embedFile("queue/event_ring.zig") },
+    .{ .path = "queue/payload_arena.zig", .src = @embedFile("queue/payload_arena.zig") },
+    .{ .path = "queue/command_queue.zig", .src = @embedFile("queue/command_queue.zig") },
+    .{ .path = "queue/wake.zig", .src = @embedFile("queue/wake.zig") },
+    .{ .path = "headless/backend.zig", .src = @embedFile("headless/backend.zig") },
+    .{ .path = "headless/trace.zig", .src = @embedFile("headless/trace.zig") },
 };
 
-test "every pub declaration in api/ has a doc comment" {
+test "init starts the headless backend" {
+    const p = try init(std.testing.allocator, std.testing.io, .{ .backend = .headless });
+    defer p.deinit();
+    try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .wayland }));
+}
+
+test "every pub declaration has a doc comment" {
     var missing: usize = 0;
     for (documented_sources) |f| {
         var prev: []const u8 = "";
