@@ -38,7 +38,10 @@ Limits: patterns up to 1 MiB, repetition counts up to 1000, nesting depth
 1. A pattern that is a single literal uses SIMD `memmem`.
 2. Otherwise the forward lazy DFA finds the match end. When every match
    starts with one of a few literals, a prefilter (SIMD memchr for 1–3
-   first bytes, packed-pair memmem, or Aho-Corasick) skips to candidates.
+   first bytes, packed-pair memmem, case-folding memmem for `(?i)` literals,
+   or Aho-Corasick) skips to candidates. Case-insensitive literals become
+   up to four lower-cased needles (for example `sherl` and `ſherl` for
+   `(?i)sherlock`), each searched with ASCII letters folded.
    The DFA jumps ahead whenever it is idle, but only with the SIMD
    prefilters; Aho-Corasick is about as fast as the DFA itself.
 3. The reverse lazy DFA finds the match start.
@@ -58,6 +61,7 @@ and CJK):
 |---|---|---|
 | `regex.memchr_1byte` | ~22 GB/s | ≥ 4 GB/s |
 | `regex.memmem` | ~17 GB/s | ≥ 2 GB/s |
+| `regex.memmem_icase` (`(?i)sherlock`) | ~7.5 GB/s | ≥ 1 GB/s |
 | `regex.literal_alt_20` (Aho-Corasick) | ~500 MB/s | ≥ 1 GB/s |
 | `regex.dfa_no_match`, `regex.dfa_ident` | ~500–550 MB/s | ≥ 500 MB/s |
 | `regex.dfa_word_suffix` (Unicode `\b`, PikeVM fallback on CJK) | ~23 MB/s | ≥ 30 MB/s PikeVM |
