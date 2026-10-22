@@ -1,6 +1,9 @@
 //! A tiny MCP-ish stdio server for transport tests. Reads NDJSON requests
 //! from stdin and acts on the method:
 //!
+//! - `initialize`: a legacy (2025-06-18) server; `server/discover` and any
+//!   other unknown method get `-32601`.
+//! - `ping`: answers `{}`.
 //! - `echo`: answers `{"echo": <params>}`.
 //! - `slow`: never answers (cancellation tests).
 //! - `stderr`: writes `params.bytes` bytes of `x` (in lines) to stderr, then
@@ -86,6 +89,10 @@ pub fn main(init: std.process.Init) !u8 {
         if (id == null) continue;
         if (std.mem.eql(u8, method, "echo")) {
             try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"echo\":{f}}}}}\n", .{ id_json, std.json.fmt(params, .{}) });
+        } else if (std.mem.eql(u8, method, "initialize")) {
+            try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{}},\"serverInfo\":{{\"name\":\"echo\",\"version\":\"1\"}}}}}}\n", .{id_json});
+        } else if (std.mem.eql(u8, method, "ping")) {
+            try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{}}}}\n", .{id_json});
         } else if (std.mem.eql(u8, method, "slow")) {
             continue;
         } else if (std.mem.eql(u8, method, "crash")) {
