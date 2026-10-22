@@ -86,6 +86,11 @@ pub const EditRules = struct {
     line_comment: ?[]const u8 = null,
     block_comment: ?BracketPair = null,
     auto_close: []const BracketPair = &.{},
+    /// Pairs typed around a selection; null uses `auto_close`.
+    surround: ?[]const BracketPair = null,
+    /// Enter between an opening and a closing tag (`<p>|</p>`) indents
+    /// and moves the closing tag to its own line.
+    tag_pairs: bool = false,
     /// Whether to indent with spaces by default; null leaves it to the
     /// user's settings (Go defaults to tabs).
     insert_spaces: ?bool = null,

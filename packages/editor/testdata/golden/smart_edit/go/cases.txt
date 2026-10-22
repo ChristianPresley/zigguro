@@ -1,0 +1,95 @@
+=== enter between braces
+--- before
+func main() {¦}
+--- keys
+<enter>
+--- after
+func main() {
+	¦
+}
+
+=== electric closer
+--- before
+func f() {
+	x()
+	¦
+--- keys
+}
+--- after
+func f() {
+	x()
+}¦
+
+=== tabs indent
+--- before
+func f() {
+	if x {¦}
+}
+--- keys
+<enter>
+--- after
+func f() {
+	if x {
+		¦
+	}
+}
+
+=== autoclose
+--- before
+x := ¦
+--- keys
+[]int{1
+--- after
+x := []int{1¦}
+
+=== backtick string
+--- before
+s := ¦
+--- keys
+`a
+--- after
+s := `a¦`
+
+=== surround
+--- before
+x := «y»
+--- keys
+(
+--- after
+x := («y»)
+
+=== line comment
+--- before
+«x := 1
+y := 2»
+--- keys
+<lc>
+--- after
+«// x := 1
+// y := 2»
+
+=== line comment off
+--- before
+«// x := 1
+// y := 2»
+--- keys
+<lc>
+--- after
+«x := 1
+y := 2»
+
+=== no autoclose in string
+--- before
+s := "a¦"
+--- keys
+{
+--- after
+s := "a{¦"
+
+=== backspace pair
+--- before
+f¦
+--- keys
+(<bs>
+--- after
+f¦

@@ -1,0 +1,126 @@
+=== enter between braces
+--- before
+fn f() {¦}
+--- keys
+<enter>
+--- after
+fn f() {
+    ¦
+}
+
+=== enter after open brace keeps going
+--- before
+pub fn main() void {¦
+--- keys
+<enter>x();
+--- after
+pub fn main() void {
+    x();¦
+
+=== electric closer
+--- before
+fn f() {
+    x();
+    ¦
+--- keys
+}
+--- after
+fn f() {
+    x();
+}¦
+
+=== autoclose paren
+--- before
+const a = f¦;
+--- keys
+(1
+--- after
+const a = f(1¦);
+
+=== overtype closer
+--- before
+const a = f¦;
+--- keys
+(1)
+--- after
+const a = f(1)¦;
+
+=== no autoclose in string
+--- before
+const s = "a¦";
+--- keys
+(
+--- after
+const s = "a(¦";
+
+=== no autoclose in comment
+--- before
+// see ¦
+--- keys
+[
+--- after
+// see [¦
+
+=== quote pair and backspace
+--- before
+const s = ¦;
+--- keys
+"<bs>
+--- after
+const s = ¦;
+
+=== surround selection
+--- before
+const a = «b + c»;
+--- keys
+(
+--- after
+const a = («b + c»);
+
+=== multi cursor enter
+--- before
+fn f() {¦}
+fn g() {¦}
+--- keys
+<enter>
+--- after
+fn f() {
+    ¦
+}
+fn g() {
+    ¦
+}
+
+=== line comment toggle on
+--- before
+«fn f() void {
+    x();
+}»
+--- keys
+<lc>
+--- after
+«// fn f() void {
+//     x();
+// }»
+
+=== line comment toggle off
+--- before
+«// a
+    // b»
+--- keys
+<lc>
+--- after
+«a
+    b»
+
+=== trailing whitespace on enter
+--- before
+fn f() {
+    ¦
+--- keys
+<enter><enter>x
+--- after
+fn f() {
+
+
+    x¦
