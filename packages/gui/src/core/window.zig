@@ -127,6 +127,12 @@ fn wrapMod(v: i32, n: u32) i32 {
 }
 
 /// A window: node tree, views, layout, paint cache and input state.
+/// A pending clipboard read for a node.
+pub const ClipRead = struct {
+    node: NodeId,
+    mime: zg_platform.clipboard.MimeId,
+};
+
 pub const Window = struct {
     app: *App,
     gpa: std.mem.Allocator,
@@ -208,6 +214,9 @@ pub const Window = struct {
     /// The external drag over this window; the Host sends
     /// `drop.pending` as `set_drop_effect`.
     drop: drop_mod.DropState = .{},
+    /// A widget's clipboard read (`EventCx.readClipboard`): `send` for the
+    /// Host to submit, then `wait` until the data arrives.
+    clip_read: struct { send: ?ClipRead = null, wait: ?ClipRead = null } = .{},
 
     /// What the focused text input asked of the platform IME
     /// (`EventCx.setIme`); the Host sends it when `serial` changes.
@@ -1326,6 +1335,7 @@ pub const Window = struct {
         .clipboardSet = sinkClipSet,
         .primaryGet = sinkPrimaryGet,
         .primarySet = sinkPrimarySet,
+        .readClipboard = sinkReadClipboard,
         .nowMs = sinkNow,
         .setIme = sinkIme,
         .allocator = sinkGpa,
@@ -1388,6 +1398,10 @@ pub const Window = struct {
     fn sinkPrimarySet(p: *anyopaque, s: []const u8) void {
         const w: *Window = @ptrCast(@alignCast(p));
         if (w.app.has_primary) w.app.primary.set(w.gpa, s);
+    }
+    fn sinkReadClipboard(p: *anyopaque, n: NodeId, mime: zg_platform.clipboard.MimeId) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.clip_read.send = .{ .node = n, .mime = mime };
     }
     fn sinkIme(p: *anyopaque, n: NodeId, r: ?event.ImeRequest) void {
         const w: *Window = @ptrCast(@alignCast(p));
@@ -1532,7 +1546,19 @@ pub const Window = struct {
             },
             .drag_files_over => |p| w.drop.answer(w.deliver(w.hitTest(p), ev, true)),
             .drop_files => |d| _ = w.deliver(w.hitTest(d.pos), ev, true),
+            .clipboard_data => if (!w.focus.isNone()) {
+                _ = w.deliver(w.focus, ev, false);
+            },
         }
+    }
+
+    /// Delivers clipboard data the Host read for `clip_read.wait`.
+    pub fn clipboardArrived(w: *Window, mime: zg_platform.clipboard.MimeId, bytes: []const u8) void {
+        const r = w.clip_read.wait orelse return;
+        w.clip_read.wait = null;
+        if (r.mime != mime) return;
+        w.needs_frame = true;
+        _ = w.deliver(r.node, .{ .clipboard_data = .{ .mime = mime, .bytes = bytes } }, false);
     }
 
     /// An external drag over the window (see input/drop.zig).
