@@ -5,7 +5,8 @@
 //!                   [--desktop-shortcut] [--no-open-with] [--no-folder-menu] [--no-launch]
 //! zigguro-setup.exe --uninstall [--silent] [--remove-user-data]
 //!                   (internal: --stage2 --root <root> [--parent-pid <pid>])
-//! zigguro-setup.exe --apply --root <root> --wait-pid <pid> [--relaunch <args>]
+//! zigguro-setup.exe --apply --root <root> --wait-pid <pid> [--rollback]
+//!                   [--crash-report <path>] [--relaunch <args>]
 //! ```
 
 const std = @import("std");
@@ -43,7 +44,12 @@ pub const Uninstall = struct {
 pub const Apply = struct {
     root: []const u8,
     wait_pid: u32,
-    /// Arguments for the relaunched app, as one string.
+    /// Put `app.prev` back instead of swapping in `staged`.
+    rollback: bool = false,
+    /// The crash report behind a rollback.
+    crash_report: ?[]const u8 = null,
+    /// Arguments for the relaunched app, as one command-line string
+    /// (`zg_install.win.cmdline`).
     relaunch: ?[]const u8 = null,
 };
 
@@ -75,7 +81,7 @@ pub fn parse(args: []const []const u8) Error!Command {
     var un: Uninstall = .{};
     var root: ?[]const u8 = null;
     var pid: ?u32 = null;
-    var relaunch: ?[]const u8 = null;
+    var ap: Apply = .{ .root = "", .wait_pid = 0 };
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -133,8 +139,12 @@ pub fn parse(args: []const []const u8) Error!Command {
                     root = try value(args, &i);
                 } else if (eql(a, "--wait-pid")) {
                     pid = std.fmt.parseInt(u32, try value(args, &i), 10) catch return error.BadPid;
+                } else if (eql(a, "--rollback")) {
+                    ap.rollback = true;
+                } else if (eql(a, "--crash-report")) {
+                    ap.crash_report = try value(args, &i);
                 } else if (eql(a, "--relaunch")) {
-                    relaunch = try value(args, &i);
+                    ap.relaunch = try value(args, &i);
                 } else return unknown(a);
             },
         }
@@ -142,13 +152,17 @@ pub fn parse(args: []const []const u8) Error!Command {
     return switch (mode) {
         .install => .{ .install = inst },
         .uninstall => .{ .uninstall = un },
-        .apply => .{ .apply = .{ .root = root orelse return error.MissingRoot, .wait_pid = pid orelse return error.BadPid, .relaunch = relaunch } },
+        .apply => blk: {
+            ap.root = root orelse return error.MissingRoot;
+            ap.wait_pid = pid orelse return error.BadPid;
+            break :blk .{ .apply = ap };
+        },
     };
 }
 
 /// A flag of another mode is `WrongMode`; anything else `UnknownFlag`.
 fn unknown(a: []const u8) Error {
-    const all = [_][]const u8{ "--dir", "--no-path", "--no-start-menu", "--desktop-shortcut", "--no-open-with", "--no-folder-menu", "--no-launch", "--remove-user-data", "--stage2", "--parent-pid", "--root", "--wait-pid", "--relaunch" };
+    const all = [_][]const u8{ "--dir", "--no-path", "--no-start-menu", "--desktop-shortcut", "--no-open-with", "--no-folder-menu", "--no-launch", "--remove-user-data", "--stage2", "--parent-pid", "--root", "--wait-pid", "--rollback", "--crash-report", "--relaunch" };
     for (all) |f| if (std.mem.eql(u8, a, f)) return error.WrongMode;
     return error.UnknownFlag;
 }
@@ -175,6 +189,10 @@ test "args: parse all flags" {
     try testing.expectEqualStrings("C:\\zg", ap.root);
     try testing.expectEqual(@as(u32, 4242), ap.wait_pid);
     try testing.expectEqualStrings("--new-window x.zig", ap.relaunch.?);
+    try testing.expect(!ap.rollback and ap.crash_report == null);
+    const rb = (try parse(&.{ "--apply", "--rollback", "--crash-report", "C:\\c.zgcrash", "--root", "C:\\zg", "--wait-pid", "1" })).apply;
+    try testing.expect(rb.rollback and rb.relaunch == null);
+    try testing.expectEqualStrings("C:\\c.zgcrash", rb.crash_report.?);
 }
 
 test "args: unknown flag, missing values, wrong mode" {
@@ -182,6 +200,7 @@ test "args: unknown flag, missing values, wrong mode" {
     try testing.expectError(error.MissingValue, parse(&.{"--dir"}));
     try testing.expectError(error.WrongMode, parse(&.{ "--uninstall", "--dir", "x" }));
     try testing.expectError(error.WrongMode, parse(&.{"--remove-user-data"}));
+    try testing.expectError(error.WrongMode, parse(&.{"--rollback"}));
     try testing.expectError(error.WrongMode, parse(&.{ "--apply", "--silent", "--root", "r", "--wait-pid", "1" }));
     try testing.expectError(error.MissingRoot, parse(&.{ "--apply", "--wait-pid", "1" }));
     try testing.expectError(error.BadPid, parse(&.{ "--apply", "--root", "r", "--wait-pid", "x" }));
