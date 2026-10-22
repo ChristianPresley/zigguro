@@ -36,6 +36,16 @@ pub const Step = union(enum) {
     expect_scrollback: []const []const u8,
     expect_title: []const u8,
     expect_mark: MarkExpect,
+    /// `@key` words, parsed by the runner (`input_steps.parseKey`).
+    key: []const []const u8,
+    /// `@mouse` words (`input_steps.parseMouse`).
+    mouse: []const []const u8,
+    paste: []const u8,
+    /// `@focus in` (true) or `@focus out`.
+    focus: bool,
+    /// The bytes the input steps produced since the last matching
+    /// `@expect-input`.
+    expect_input: []const u8,
 };
 
 /// One case.
@@ -130,6 +140,21 @@ pub fn parseFile(arena: Allocator, file_name: []const u8, src: []const u8, diag:
             const row = std.fmt.parseInt(u16, words.next() orelse "", 10) catch return fail(diag, ln, "expected LETTER at ROW");
             if (letter.len != 1 or !std.mem.eql(u8, at, "at")) return fail(diag, ln, "expected LETTER at ROW");
             try addStep(arena, &steps, &step_lines, ln, .{ .expect_mark = .{ .letter = letter[0], .row = row } });
+        } else if (std.mem.eql(u8, dir, "key") or std.mem.eql(u8, dir, "mouse")) {
+            var words: std.ArrayList([]const u8) = .empty;
+            var wi = std.mem.tokenizeAny(u8, arg, " \t");
+            while (wi.next()) |w| try words.append(arena, w);
+            if (words.items.len == 0) return fail(diag, ln, "expected the event's words");
+            const ws = try words.toOwnedSlice(arena);
+            try addStep(arena, &steps, &step_lines, ln, if (dir[0] == 'k') .{ .key = ws } else .{ .mouse = ws });
+        } else if (std.mem.eql(u8, dir, "paste")) {
+            try addStep(arena, &steps, &step_lines, ln, .{ .paste = unquote(arena, arg) catch return fail(diag, ln, "bad string") });
+        } else if (std.mem.eql(u8, dir, "focus")) {
+            const in = std.mem.eql(u8, arg, "in");
+            if (!in and !std.mem.eql(u8, arg, "out")) return fail(diag, ln, "expected in or out");
+            try addStep(arena, &steps, &step_lines, ln, .{ .focus = in });
+        } else if (std.mem.eql(u8, dir, "expect-input")) {
+            try addStep(arena, &steps, &step_lines, ln, .{ .expect_input = unquote(arena, arg) catch return fail(diag, ln, "bad string") });
         } else return fail(diag, ln, "unknown directive");
     }
     if (cite == null) return fail(diag, 1, "missing @cite");
