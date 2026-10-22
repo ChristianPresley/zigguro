@@ -1,0 +1,9 @@
+L1
+same
+<<<<<<< ours
+L2x
+=======
+L2y
+>>>>>>> theirs
+same2
+L3

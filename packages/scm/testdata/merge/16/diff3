@@ -1,0 +1,13 @@
+L1
+<<<<<<< ours
+same
+L2x
+same2
+||||||| base
+L2
+=======
+same
+L2y
+same2
+>>>>>>> theirs
+L3
