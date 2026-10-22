@@ -203,7 +203,7 @@ pub const A11yTree = struct {
         const u = t.diff(old, s) catch return null;
         for (t.announcements.items) |a| t.gpa.free(a.text);
         t.announcements.clearRetainingCapacity();
-        if (old != null and u.added.len == 0 and u.changed.len == 0 and u.removed.len == 0 and u.events.len == 0) return null;
+        if (old != null and old.?.active == s.active and u.added.len == 0 and u.changed.len == 0 and u.removed.len == 0 and u.events.len == 0) return null;
         t.publisher.publish(s);
         t.stats.updates += 1;
         t.last = u;
@@ -256,6 +256,7 @@ pub const A11yTree = struct {
         s.window = t.window_id;
         s.scale = win.scale;
         s.screen_origin = if (win.screen_origin_px) |o| .{ o.x, o.y } else null;
+        s.active = win.chrome.focused;
         const fid = snap.idOf(t.window_id, win.focus);
         s.focus = if (!win.focus.isNone() and s.index.contains(fid)) fid else 0;
         return s;
