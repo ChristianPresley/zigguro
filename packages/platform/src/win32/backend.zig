@@ -35,8 +35,14 @@
 //! commits become `ime_preedit` and `text_input`, and `set_ime_state`
 //! is posted to the window's thread, where IMM32 contexts live.
 //!
-//! Not yet here: raw input, pen and touch (#222), drag and drop (#232) and
-//! cloaking until the first present.
+//! Drag and drop is OLE's (`dnd.zig`, `data_object.zig`): the platform
+//! thread calls `OleInitialize`, every window registers an `IDropTarget`
+//! whose callbacks become `Event.drop`, and `start_drag` runs
+//! `DoDragDrop` on the platform thread from a message to the message
+//! window, with a `WM_TIMER` keeping frames flowing inside its modal loop.
+//! When OLE cannot start, drag and drop is `Unsupported`.
+//!
+//! Not yet here: cloaking until the first present.
 
 const std = @import("std");
 const Io = std.Io;
@@ -55,6 +61,7 @@ const Wake = @import("../queue/wake.zig").Wake;
 const t = @import("bindings/types.zig");
 const user32 = @import("bindings/user32.zig");
 const kernel32 = @import("bindings/kernel32.zig");
+const ole32 = @import("bindings/ole32.zig");
 const dwmapi = @import("bindings/dwmapi.zig");
 const msgs = @import("msgs.zig");
 const WM = msgs.WM;
@@ -72,6 +79,9 @@ const pointer = @import("pointer.zig");
 const theme = @import("theme.zig");
 const dialogs = @import("dialogs.zig");
 const shell = @import("shell.zig");
+const com = @import("com.zig");
+const dnd = @import("dnd.zig");
+const data_object = @import("data_object.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
 const Event = event_api.Event;
@@ -114,6 +124,8 @@ const WM_APP_SYSDRAG = WM.APP + 8;
 const WM_APP_SYSMENU = WM.APP + 9;
 /// To a window: apply `Window.ime_req`.
 const WM_APP_IME = WM.APP + 10;
+/// lParam: a `*DragRequest` the platform thread frees.
+const WM_APP_DRAG = WM.APP + 11;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
@@ -162,6 +174,10 @@ const Window = struct {
     /// AltGr fake Left Ctrl being held.
     down: wkeys.DownKeys = .{},
     fake_ctrl: bool = false,
+    /// The registered drop target (our reference). Platform thread only.
+    drop_target: ?*dnd.Target = null,
+    /// The app's latest `set_drop_effect`. Guarded by the mutex.
+    drop_answer: dnd.Answer = .{},
 };
 
 const no_cp: u32 = 0xFFFF_FFFF;
@@ -181,6 +197,9 @@ const ClipItemOwned = struct { mime: clipboard.MimeId, data: []u8 };
 /// A clipboard write on its way to the platform thread.
 const ClipWrite = struct { items: []ClipItemOwned };
 
+/// A `start_drag` on its way to the platform thread.
+const DragRequest = struct { win: WindowId, items: []ClipItemOwned, allowed: clipboard.DragActions };
+
 /// The Win32 backend.
 pub const Win32Backend = struct {
     gpa: Allocator,
@@ -195,6 +214,11 @@ pub const Win32Backend = struct {
     /// Platform thread only.
     clip: clip_mod.ClipState = undefined,
     clip_ready: bool = false,
+    /// Whether `OleInitialize` succeeded (drag and drop works). Set
+    /// before `init` returns.
+    ole: bool = false,
+    /// Drag-and-drop formats. Platform thread only.
+    formats: data_object.Formats = undefined,
     /// Payloads over the arena's inline limit, by id. Guarded by the mutex.
     large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
     next_large: u32 = 0,
@@ -437,7 +461,31 @@ pub const Win32Backend = struct {
                 b.dialog_threads.appendAssumeCapacity(th);
             },
             .open_uri => |uri| try shell.open(b.gpa, uri),
-            .start_drag, .set_drop_effect, .activate, .request_attention => return error.Unsupported,
+            .set_drop_effect => |c| {
+                if (!b.ole) return error.Unsupported;
+                b.lock();
+                defer b.unlock();
+                const w = b.find(c.win) orelse return error.InvalidWindow;
+                w.drop_answer = .{ .accept = c.accept, .effect = c.effect };
+            },
+            .start_drag => |c| {
+                if (!b.ole) return error.Unsupported;
+                _ = try b.hwndOf(c.win);
+                const items = b.gpa.alloc(ClipItemOwned, c.items.len) catch return error.OutOfMemory;
+                var done: usize = 0;
+                errdefer freeClip(b.gpa, items[0..done]);
+                for (c.items, 0..) |it, i| {
+                    items[i] = .{ .mime = it.mime, .data = b.gpa.dupe(u8, it.data) catch return error.OutOfMemory };
+                    done = i + 1;
+                }
+                const req = b.gpa.create(DragRequest) catch return error.OutOfMemory;
+                req.* = .{ .win = c.win, .items = items, .allowed = c.allowed };
+                if (user32.PostMessageW(b.msg_hwnd, WM_APP_DRAG, 0, @bitCast(@intFromPtr(req))) == 0) {
+                    b.gpa.destroy(req);
+                    return error.SystemResources;
+                }
+            },
+            .activate, .request_attention => return error.Unsupported,
         }
     }
 
@@ -673,6 +721,11 @@ pub const Win32Backend = struct {
         }
         b.clip = .init(b.gpa, b.msg_hwnd.?);
         b.clip_ready = true;
+        // OLE (STA) for drag and drop; fails when the thread already has
+        // another COM apartment.
+        b.ole = ole32.OleInitialize(null) >= 0;
+        if (!b.ole) log.warn("OleInitialize failed: drag and drop unavailable", .{});
+        b.formats = .{ .html = @truncate(b.clip.cf_html), .png = @truncate(b.clip.cf_png), .internal = @truncate(b.clip.cf_internal) };
         b.ready.set(b.io);
 
         var msg: t.MSG = undefined;
@@ -699,6 +752,12 @@ pub const Win32Backend = struct {
             freeClip(b.gpa, req.items);
             b.gpa.destroy(req);
         }
+        while (user32.PeekMessageW(&msg, b.msg_hwnd, WM_APP_DRAG, WM_APP_DRAG, msgs.PM_REMOVE) != 0) {
+            const req: *DragRequest = @ptrFromInt(@as(usize, @bitCast(msg.lParam)));
+            freeClip(b.gpa, req.items);
+            b.gpa.destroy(req);
+        }
+        if (b.ole) ole32.OleUninitialize();
         b.clip_ready = false;
         b.clip.deinit();
         b.cursors.deinit();
@@ -770,6 +829,7 @@ pub const Win32Backend = struct {
             _ = user32.SetWindowPos(hwnd, null, 0, 0, 0, 0, msgs.SWP_FRAMECHANGED | msgs.SWP_NOMOVE | msgs.SWP_NOSIZE | msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE);
         }
         frame.applyDwm(hwnd, b.build, b.dark, .auto, w.custom);
+        if (b.ole) b.registerDrop(w, hwnd);
         _ = user32.ShowWindow(hwnd, msgs.SW_SHOWNORMAL);
         var cr: t.RECT = undefined;
         _ = user32.GetClientRect(hwnd, &cr);
@@ -790,6 +850,14 @@ pub const Win32Backend = struct {
         w.presenter.hwnd = null;
         b.unlock();
         if (hwnd) |h| {
+            if (w.drop_target) |dt| {
+                _ = ole32.RevokeDragDrop(h);
+                // OLE may hold the target a little longer.
+                dt.impl.detach();
+                const it: *com.IDropTarget = @ptrCast(@alignCast(dt.iface()));
+                _ = com.IUnknown.release(it);
+                w.drop_target = null;
+            }
             _ = user32.SetWindowLongPtrW(h, msgs.GWLP_USERDATA, 0);
             _ = user32.DestroyWindow(h);
         }
@@ -861,10 +929,93 @@ pub const Win32Backend = struct {
                 b.unlock();
                 if (w) |x| b.destroyOnThread(x);
             },
+            WM_APP_DRAG => {
+                const req: *DragRequest = @ptrFromInt(@as(usize, @bitCast(lp)));
+                defer {
+                    freeClip(b.gpa, req.items);
+                    b.gpa.destroy(req);
+                }
+                b.runDrag(req);
+            },
+            WM.TIMER => {
+                if (wp != msgs.modal_timer_id) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                b.dueFrames();
+            },
             WM_APP_WAKE => {},
             else => return user32.DefWindowProcW(hwnd, msg, wp, lp),
         }
         return 0;
+    }
+
+    /// Registers `w`'s drop target. Platform thread.
+    fn registerDrop(b: *Win32Backend, w: *Window, hwnd: t.HWND) void {
+        const sink: dnd.Sink = .{ .ctx = w, .emit = dropEmit, .answer = dropAnswer, .toClient = dropToClient };
+        const dt = dnd.Target.create(b.gpa, .{ .gpa = b.gpa, .sink = sink, .formats = b.formats, .mem = &data_object.windows_memory }) catch return;
+        const it: *com.IDropTarget = @ptrCast(@alignCast(dt.iface()));
+        const hr = ole32.RegisterDragDrop(hwnd, it);
+        if (hr < 0) {
+            log.warn("RegisterDragDrop failed (0x{x})", .{@as(u32, @bitCast(hr))});
+            _ = com.IUnknown.release(it);
+            return;
+        }
+        w.drop_target = dt;
+    }
+
+    /// `dnd.Sink.emit` for a window.
+    fn dropEmit(ctx: *anyopaque, phase: clipboard.DropPhase, allowed: clipboard.DragActions, pos: [2]f32, mimes: []const clipboard.MimeId, data: ?[]u8) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        if (phase == .enter) w.drop_answer = .{};
+        var packed_ids: [2 * data_object.Formats.known.len]u8 = undefined;
+        const n = @min(mimes.len, data_object.Formats.known.len);
+        for (mimes[0..n], 0..) |m, i| std.mem.writeInt(u16, packed_ids[2 * i ..][0..2], @intFromEnum(m), .little);
+        const ms = if (n > 0) b.arena.put(packed_ids[0 .. 2 * n]) catch types.PayloadSlice.empty else types.PayloadSlice.empty;
+        const ds = if (data) |d| b.putOwned(d) else types.PayloadSlice.empty;
+        b.stage(.{ .drop = .{ .win = w.id, .phase = phase, .allowed = allowed, .pos_px = pos, .mimes = ms, .data = ds } });
+    }
+
+    /// `dnd.Sink.answer` for a window.
+    fn dropAnswer(ctx: *anyopaque) dnd.Answer {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        w.b.lock();
+        defer w.b.unlock();
+        return w.drop_answer;
+    }
+
+    /// `dnd.Sink.toClient` for a window.
+    fn dropToClient(ctx: *anyopaque, pt: t.POINTL) [2]f32 {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        var p: t.POINT = .{ .x = pt.x, .y = pt.y };
+        if (w.hwnd) |h| _ = user32.ScreenToClient(h, &p);
+        return .{ @floatFromInt(p.x), @floatFromInt(p.y) };
+    }
+
+    /// Runs a drag we start; `source_finished` reports the target's
+    /// effect. Platform thread.
+    fn runDrag(b: *Win32Backend, req: *DragRequest) void {
+        var items: [16]clipboard.ClipItem = undefined;
+        const n = @min(items.len, req.items.len);
+        for (req.items[0..n], 0..) |it, i| items[i] = .{ .mime = it.mime, .data = it.data };
+        var effect: t.DWORD = 0;
+        var dropped = false;
+        drag: {
+            const dobj = data_object.create(b.gpa, items[0..n], b.formats, &data_object.windows_memory) catch break :drag;
+            const di: *com.IDataObject = @ptrCast(@alignCast(dobj.iface()));
+            defer _ = com.IUnknown.release(di);
+            const src = dnd.Source.create(b.gpa, .{}) catch break :drag;
+            const si: *com.IDropSource = @ptrCast(@alignCast(src.iface()));
+            defer _ = com.IUnknown.release(si);
+            // DoDragDrop runs its own message loop until the drop; the
+            // timer keeps frames flowing meanwhile.
+            _ = user32.SetTimer(b.msg_hwnd, msgs.modal_timer_id, msgs.USER_TIMER_MINIMUM, null);
+            defer _ = user32.KillTimer(b.msg_hwnd, msgs.modal_timer_id);
+            dropped = ole32.DoDragDrop(di, si, dnd.toEffect(req.allowed), &effect) == t.DRAGDROP_S_DROP;
+        }
+        b.lock();
+        defer b.unlock();
+        b.stage(.{ .drop = .{ .win = req.win, .phase = .source_finished, .allowed = if (dropped) dnd.fromEffect(effect) else .{}, .pos_px = .{ 0, 0 } } });
     }
 
     fn wndProc(hwnd: t.HWND, msg: t.UINT, wp: t.WPARAM, lp: t.LPARAM) callconv(t.winapi) t.LRESULT {
@@ -1856,5 +2007,83 @@ test "win32 shell: appearance at start, settings changes, dialogs and URIs" {
     var evs: [64]Event = undefined;
     for (evs[0..p.pollEvents(&evs)]) |e| try testing.expect(e != .appearance_changed);
     try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "file:///C:/windows/notepad.exe" }));
+    p.destroyWindow(win);
+}
+
+/// Waits for the next `drop` event of `phase` on `win`.
+fn waitDrop(p: Platform, win: WindowId, phase: clipboard.DropPhase) !clipboard.DropEvent {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 5 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .drop and e.drop.win == win and e.drop.phase == phase) return e.drop;
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+test "win32 dnd: the registered drop target turns OLE calls into drop events" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    if (!b.ole) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg dnd", .size = .{ .w = 320, .h = 200 } });
+    _ = try waitFor(p, .window_configure, win);
+    const tgt: *com.IDropTarget = blk: {
+        b.lock();
+        defer b.unlock();
+        const dt = b.find(win).?.drop_target orelse return error.NotRegistered;
+        break :blk @ptrCast(@alignCast(dt.iface()));
+    };
+    const dobj = try data_object.create(testing.allocator, &.{
+        .{ .mime = .text_utf8, .data = "drag ✓" },
+        .{ .mime = .uri_list, .data = "file:///C:/zg/a.txt\r\n" },
+    }, b.formats, &data_object.windows_memory);
+    const d: *com.IDataObject = @ptrCast(@alignCast(dobj.iface()));
+    defer _ = com.IUnknown.release(d);
+    var origin: t.POINT = .{ .x = 0, .y = 0 };
+    _ = user32.ClientToScreen(try b.hwndOf(win), &origin);
+
+    var eff: t.DWORD = ole32.DROPEFFECT_COPY | ole32.DROPEFFECT_MOVE;
+    try testing.expectEqual(t.S_OK, tgt.vtbl.DragEnter(tgt, d, dnd.MK.LBUTTON, .{ .x = origin.x + 10, .y = origin.y + 20 }, &eff));
+    try testing.expectEqual(ole32.DROPEFFECT_NONE, eff);
+    const enter = try waitDrop(p, win, .enter);
+    try testing.expectEqual([2]f32{ 10, 20 }, enter.pos_px);
+    try testing.expectEqual(clipboard.DragActions{ .copy = true, .move = true }, enter.allowed);
+    const ids = p.payload(enter.mimes);
+    try testing.expectEqual(4, ids.len);
+    try testing.expectEqual(@intFromEnum(clipboard.MimeId.uri_list), std.mem.readInt(u16, ids[0..2], .little));
+    try testing.expectEqual(@intFromEnum(clipboard.MimeId.text_utf8), std.mem.readInt(u16, ids[2..4], .little));
+
+    try p.submit(.{ .set_drop_effect = .{ .win = win, .accept = .text_utf8, .effect = .{ .copy = true } } });
+    eff = ole32.DROPEFFECT_COPY | ole32.DROPEFFECT_MOVE;
+    _ = tgt.vtbl.DragOver(tgt, dnd.MK.LBUTTON, .{ .x = origin.x + 15, .y = origin.y + 20 }, &eff);
+    try testing.expectEqual(ole32.DROPEFFECT_COPY, eff);
+    const over = try waitDrop(p, win, .over);
+    try testing.expectEqual([2]f32{ 15, 20 }, over.pos_px);
+
+    eff = ole32.DROPEFFECT_COPY | ole32.DROPEFFECT_MOVE;
+    try testing.expectEqual(t.S_OK, tgt.vtbl.Drop(tgt, d, 0, .{ .x = origin.x + 15, .y = origin.y + 25 }, &eff));
+    try testing.expectEqual(ole32.DROPEFFECT_COPY, eff);
+    const drop = try waitDrop(p, win, .drop);
+    try testing.expectEqual(clipboard.DragActions{ .copy = true }, drop.allowed);
+    try testing.expectEqualStrings("drag ✓", p.payload(drop.data));
+    // The target let go of the data object.
+    try testing.expectEqual(1, dobj.refCount());
+    p.destroyWindow(win);
+}
+
+test "win32 dnd: start_drag with no button held ends with source_finished" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    if (!b.ole) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg drag", .size = .{ .w = 320, .h = 200 } });
+    _ = try waitFor(p, .window_configure, win);
+    try p.submit(.{ .start_drag = .{ .win = win, .items = &.{.{ .mime = .text_utf8, .data = "x" }}, .allowed = .{ .copy = true } } });
+    // OLE asks the source right away: no button is down, so it drops on
+    // whatever is under the pointer, which accepts nothing.
+    const fin = try waitDrop(p, win, .source_finished);
+    try testing.expectEqual(clipboard.DragActions{}, fin.allowed);
     p.destroyWindow(win);
 }
