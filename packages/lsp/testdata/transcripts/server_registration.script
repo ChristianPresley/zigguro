@@ -1,0 +1,17 @@
+# Server requests: watched-file and configuration registrations,
+# push-mode settings and workspace/configuration, then unregistration.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2}}}
+> initialized
+< {"id": 1, "method": "client/registerCapability", "params": {"registrations": [{"id": "w1", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.zig"}, {"globPattern": "build.zig.zon", "kind": 2}]}}, {"id": "c1", "method": "workspace/didChangeConfiguration"}]}}
+> response {"id": 1, "result": null}
+< {"method": "test/ready"}
+> workspace/didChangeConfiguration {"settings": null}
+< {"id": 2, "method": "workspace/configuration", "params": {"items": [{"section": "zls"}, {"scopeUri": "file:///w/a", "section": "zls.build"}, {"section": "nope"}]}}
+> response {"id": 2, "result": [{"enable_snippets": true}, "file:///w/a:zls.build", null]}
+< {"id": 3, "method": "client/unregisterCapability", "params": {"unregisterations": [{"id": "w1", "method": "workspace/didChangeWatchedFiles"}, {"id": "c1", "method": "workspace/didChangeConfiguration"}]}}
+> response {"id": 3, "result": null}
+< {"method": "test/ready"}
+> shutdown
+< {"id": $1, "result": null}
+> exit
