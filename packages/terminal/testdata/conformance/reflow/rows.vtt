@@ -1,0 +1,154 @@
+# Reflow and the active area: scrollback, blank rows below the cursor,
+# bottom anchoring, the alternate screen and the saved cursor.
+@cite https://ghostty.org/docs/vt
+
+@case Blank rows below the cursor absorb growth
+@size 10x4
+@send "0123456789ab"
+@resize 5x4
+@expect-screen
+|01234|
+|56789|
+|ab···|
+@expect-scrollback
+
+@case Growth beyond the blank rows scrolls into scrollback
+@size 10x2
+@send "0123456789\r\nabcdefghij"
+@resize 5x2
+@expect-screen
+|abcde|
+|fghij|
+@expect-scrollback
+|01234|
+|56789|
+
+@case Scrollback lines re-wrap too
+@size 10x2
+@send "0123456789\r\nx\r\ny"
+@resize 5x2
+@expect-scrollback
+|01234|
+|56789|
+@expect-screen
+|x····|
+|y····|
+
+@case Widening pulls rows back from scrollback
+@size 5x2
+@send "0123456789\r\nx"
+@resize 10x2
+@expect-screen
+|0123456789|
+|x·········|
+@expect-scrollback
+
+@case The cursor row moves down when rows come back
+@size 5x2
+@send "0123456789\r\nx"
+@resize 10x2
+@expect-cursor 2,2
+
+@case Growing rows and columns together
+@size 5x2
+@send "0123456789\r\nx"
+@resize 10x4
+@expect-screen
+|0123456789|
+|x·········|
+@expect-cursor 2,2
+
+@case Shrinking rows and columns together
+@size 10x4
+@send "0123456789\r\nx"
+@resize 5x2
+@expect-screen
+|56789|
+|x····|
+@expect-scrollback
+|01234|
+
+@case The alternate screen is truncated, not reflowed
+@size 10x3
+@send "\e[?1049h\e[HABCDEFGHIJ"
+@resize 5x3
+@expect-screen
+|ABCDE|
+
+@case The primary screen under the alternate one is reflowed
+@size 10x3
+@send "0123456789x\e[?1049h"
+@resize 5x3
+@send "\e[?1049l"
+@expect-screen
+|01234|
+|56789|
+|x····|
+
+@case Leaving the alternate screen after reflow restores the cursor
+@size 10x3
+@send "0123456789x\e[?1049h"
+@resize 5x3
+@send "\e[?1049ly"
+@expect-screen
+|01234|
+|56789|
+|xy···|
+
+@case The saved cursor follows its character
+@size 10x4
+@send "abcdefgh\e[1;7H\e7\e[3;1H"
+@resize 5x4
+@send "\e8X"
+@expect-screen
+|abcde|
+|fXh··|
+
+@case Margins reset on resize
+@size 10x4
+@send "\e[2;3r"
+@resize 5x4
+@send "\eP$qr\e\\"
+@expect-reply "\eP1$r1;4r\e\\"
+
+@case Height-only resize does not reflow
+@size 5x3
+@send "abcdefgh"
+@resize 5x4
+@expect-screen
+|abcde|
+|fgh··|
+
+@case Reflow keeps the scrollback order
+@size 6x2
+@send "aaaaaaaa\r\nbbbbbbbb\r\ncc"
+@resize 4x2
+@expect-scrollback
+|aaaa|
+|aaaa|
+|bbbb|
+@expect-screen
+|bbbb|
+|cc··|
+
+@case Repeated resizes converge
+@size 10x3
+@send "hello world\r\nfoo"
+@resize 4x3
+@resize 7x3
+@resize 10x3
+@expect-screen
+|hello worl|
+|d·········|
+|foo·······|
+
+@case Prompt row marks move with the prompt
+@size 10x4
+@send "0123456789ab\r\n$ "
+@resize 5x4
+@expect-screen
+|01234|
+|56789|
+|ab···|
+|$ ···|
+@expect-cursor 4,3
