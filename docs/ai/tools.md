@@ -297,3 +297,29 @@ returns the feedback to the model and stays in plan mode.
 
 `zg agent --permission-mode plan` and `-p` runs start in plan mode, with
 read-only commands allowed; they do not register `exit_plan_mode` yet.
+
+## Todos and questions
+
+`todo_write` (`plan/todos.zig`) replaces the calling agent's todo list:
+items with `content`, `status` (`pending`, `in_progress`, `completed`), an
+optional `id` (assigned when missing) and `active_form`, the text shown
+while the item runs. At most one item may be in progress; otherwise the
+call fails with that rule and nothing changes. A changed list publishes
+`todo_changed`, which the session records, so `--resume` restores it
+(`TodoStore.restore`). For the main agent the list also goes to the
+assembler, which reminds the model of it only when it differs from the
+last one sent. `TodoStore.snapshot` gives the UI a copy.
+
+`ask_user` (`plan/ask_user.zig`) asks one to four questions, each with two
+to four options and optionally `multi_select`; the user may also answer in
+their own words. It publishes `approval_needed{kind=question}` (labelled
+with the subagent's name when a subagent asks) and waits on the asker:
+
+- `AskQueue`, for the UI: `pending` lists open tickets, `answer` and
+  `dismiss` close them, and `timeout_ms` (`ai.askUser.timeoutMs`) is off by
+  default. Cancelling the turn withdraws the ticket.
+- `CliAsker`, for the `zg agent` REPL: numbered options on stderr, the
+  last one "Other".
+- None, for `zg agent -p`: `ask_user` is left out of the toolset, and a
+  call made anyway is told that no user is available and to state its
+  assumption.

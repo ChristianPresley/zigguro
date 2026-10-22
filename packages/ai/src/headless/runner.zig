@@ -139,6 +139,7 @@ pub const Runner = struct {
                 .model_override = if (r.opts.model != null) r.model_id else null,
             }, .{ .store = store, .config = cfg });
             r.agent = r.resumed.?.agent;
+            if (env.todos) |ts| if (r.resumed.?.state.todos_json) |j| ts.restore(r.agent.ref, j) catch |e| r.note("could not restore the todo list: {s}", .{@errorName(e)});
         } else if (env.store != null and !r.opts.no_session_persistence) {
             const w = try env.store.?.create(r.io, .{ .id = env.session, .cwd = env.cwd, .model = r.model_id, .origin = .cli });
             r.writer = w;

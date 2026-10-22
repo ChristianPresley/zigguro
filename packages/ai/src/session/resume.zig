@@ -59,6 +59,9 @@ pub const Restored = struct {
     /// The agent definition in use, when it still exists.
     agent: ?[]const u8 = null,
     title: ?[]const u8 = null,
+    /// The last `todo_changed` record's data (restore with
+    /// `TodoStore.restore`).
+    todos_json: ?[]const u8 = null,
     checkpoints: []const Agent.CheckpointMark,
     warnings: []const []const u8,
     /// Background tasks that died with the previous process.
@@ -79,6 +82,7 @@ pub fn restore(a: Allocator, l: *const loader.LoadedSession, complete: bool, o: 
     var mode: PermissionMode = .default;
     var agent: ?[]const u8 = null;
     var title: ?[]const u8 = null;
+    var todos_json: ?[]const u8 = null;
     var last_seq: u64 = 0;
     var first_seq: u64 = std.math.maxInt(u64);
 
@@ -112,6 +116,8 @@ pub fn restore(a: Allocator, l: *const loader.LoadedSession, complete: bool, o: 
                     };
                 } else if (std.mem.eql(u8, e.kind, "agent")) {
                     if (obj) |ob| agent = json.str(ob, "name");
+                } else if (std.mem.eql(u8, e.kind, "todo_changed")) {
+                    todos_json = e.data_json;
                 } else if (std.mem.eql(u8, e.kind, "task_started")) {
                     if (obj) |ob| if (json.str(ob, "id")) |id| try tasks.put(a, id, json.str(ob, "command") orelse id);
                 } else if (std.mem.eql(u8, e.kind, "task_finished")) {
@@ -181,6 +187,7 @@ pub fn restore(a: Allocator, l: *const loader.LoadedSession, complete: bool, o: 
         .mode = mode,
         .agent = agent,
         .title = title,
+        .todos_json = todos_json,
         .checkpoints = marks.items,
         .warnings = warnings.items,
         .notes = notes.items,

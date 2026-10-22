@@ -2125,7 +2125,17 @@ test "missing xdg_wm_base is MissingGlobal" {
     var peer = try Peer.init();
     defer peer.deinit();
     const globals = [_]fake.Global{ all_globals[0], all_globals[2] };
-    const t = try std.Thread.spawn(.{}, Peer.serveInitThread, .{ &peer, &globals, 1 });
+    const Serve = struct {
+        // The client hangs up once it sees the registry, so the peer may
+        // lose the connection while it answers.
+        fn run(p: *Peer, g: []const fake.Global) void {
+            p.serveInit(g, 1) catch |err| switch (err) {
+                error.ConnectionLost => {},
+                else => std.debug.panic("peer: {t}", .{err}),
+            };
+        }
+    };
+    const t = try std.Thread.spawn(.{}, Serve.run, .{ &peer, &globals });
     const r = WaylandBackend.init(testing.allocator, testing.io, .{ .fd = peer.fc.client_fd });
     t.join();
     try testing.expectError(error.MissingGlobal, r);

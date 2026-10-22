@@ -81,6 +81,25 @@ pub const CheckpointInfo = struct {
     label: []const u8,
 };
 
+/// One `todo_write` item.
+pub const Todo = struct {
+    id: []const u8,
+    content: []const u8,
+    status: enum { pending, in_progress, completed },
+    active_form: ?[]const u8 = null,
+};
+
+/// The agent waits on the user (`ask_user`; `exit_plan_mode` later).
+pub const ApprovalNeeded = struct {
+    kind: enum { question, plan },
+    /// The tool call id; the answer names it.
+    id: []const u8,
+    /// Who asks: empty for the main agent, else the subagent's name.
+    label: []const u8 = "",
+    /// The questions or plan as JSON.
+    json: []const u8,
+};
+
 pub const FinishReason = enum { end_turn, budget, blocked, canceled, failed, max_turns, refusal, max_tokens };
 
 pub const TurnFinished = struct {
@@ -117,6 +136,9 @@ pub const AgentEvent = union(enum) {
     plan_proposed: []const u8,
     /// The plan was approved; the agent now runs in `mode`.
     plan_approved: struct { mode: []const u8, path: []const u8 },
+    /// `todo_write` changed the agent's list (the whole new list).
+    todo_changed: []const Todo,
+    approval_needed: ApprovalNeeded,
 
     /// Structural events are never coalesced or dropped.
     pub fn isDelta(e: AgentEvent) bool {

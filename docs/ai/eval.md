@@ -59,7 +59,7 @@ The model is one of:
   exchanges are recorded into `cassettes/<name>.jsonl` (`record_missing`).
 
 The agent runs headless (`runPrint`) with stream-json output and no memory
-files, with the file and command tools rooted in the workspace and `task`
+files, with the file and command tools rooted in the workspace, `todo_write` and `task`
 with the built-in subagents. Subagents play the same script, so their
 turns sit between the parent's, in order. A scenario also sets `permission_mode` (default `accept-edits`), `max_turns`,
 `allowed_tools` and `disallowed_tools` (flag syntax), `hooks`

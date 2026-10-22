@@ -148,6 +148,14 @@ pub const SubagentRunner = struct {
         return if (r.main_tools) |t| t.cfg.mode else .default;
     }
 
+    /// The definition name of child `ref`, while it is alive.
+    pub fn nameOf(r: *SubagentRunner, ref: proto.AgentRef) ?[]const u8 {
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
+        for (r.children.items) |c| if (c.agent.ref.session == ref.session and c.agent.ref.agent == ref.agent) return c.def.name;
+        return null;
+    }
+
     /// Creates the child and submits `prompt`. The caller holds a slot.
     pub fn spawn(r: *SubagentRunner, parent: *Agent, def: *const defs.AgentDef, prompt: []const u8, opts: SpawnOpts) !*Agent {
         const c = try r.gpa.create(Child);
