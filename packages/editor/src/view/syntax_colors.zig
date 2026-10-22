@@ -40,6 +40,7 @@ pub const dark: Palette = build(&.{
     .{ .attribute, 0xffcb6bff },
     .{ .markup_heading_1, 0x82aaffff },
     .{ .markup_link, 0x89ddffff },
+    .{ .markup_strikethrough, 0x7f8c98ff },
     .{ .invalid, 0xff5370ff },
 });
 
@@ -63,6 +64,7 @@ pub const light: Palette = build(&.{
     .{ .attribute, 0x6f42c1ff },
     .{ .markup_heading_1, 0x005cc5ff },
     .{ .markup_link, 0x032f62ff },
+    .{ .markup_strikethrough, 0x6a737dff },
     .{ .invalid, 0xcb2431ff },
 });
 
@@ -95,6 +97,12 @@ test "interned names take their ancestor's colour" {
     const id = try names.intern("keyword.control.custom");
     try std.testing.expectEqual(colorOf(&dark, .keyword_control, fg), colorOfNamed(&dark, &names, id, fg));
     try std.testing.expectEqual(fg, colorOfNamed(&dark, null, id, fg));
+}
+
+test "struck-through Markdown is muted" {
+    const fg: Color = .hex(0xffffff);
+    try std.testing.expectEqual(colorOf(&dark, .comment, fg), colorOf(&dark, .markup_strikethrough, fg));
+    try std.testing.expectEqual(colorOf(&light, .comment, fg), colorOf(&light, .markup_strikethrough, fg));
 }
 
 test "prefix fallback and background choice" {
