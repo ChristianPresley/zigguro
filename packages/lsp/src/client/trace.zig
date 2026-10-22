@@ -104,6 +104,13 @@ pub const Trace = struct {
         }
         return out;
     }
+
+    /// Writes the entries, oldest first, as `zg-transcript` trace lines
+    /// (see transcript.zig). `scratch` holds the snapshot.
+    pub fn dump(t: *Trace, scratch: Allocator, w: *std.Io.Writer) !void {
+        const transcript = @import("transcript.zig");
+        for (try t.snapshot(scratch)) |e| try transcript.writeEntry(scratch, w, e);
+    }
 };
 
 test "trace: ring evicts oldest and copies" {
