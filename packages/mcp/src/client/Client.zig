@@ -247,6 +247,8 @@ pub fn request(c: *Client, comptime M: Method, params: messages.ParamsType(M), o
     var reinitialized = false;
     while (true) {
         if (M != .ping) try c.waitReady(o);
+        // Each attempt gets a fresh progress token with its new id.
+        p.meta = params.meta;
         const generation = c.generation.load(.acquire);
         const call = try c.exchange(M, &p, c.info.revision, c.info.era, &o, false);
         defer call.destroy();
@@ -278,19 +280,29 @@ pub fn request(c: *Client, comptime M: Method, params: messages.ParamsType(M), o
                 switch (decoded) {
                     .complete => |v| return v,
                     .task => return error.ProtocolViolation, // Only with allow_task (F03.S04).
-                    .input_required => |ir| {
-                        const P = messages.ParamsType(M);
-                        if (!@hasField(P, "input_responses")) return error.ProtocolViolation;
+                    .input_required => |ir| if (comptime request_mod.mrtrAllowed(M)) {
                         rounds += 1;
                         if (rounds > o.max_input_rounds) return error.TooManyInputRounds;
-                        const h = o.input orelse return error.InputDeclined;
                         const reqs = ir.input_requests orelse messages.InputRequests{};
-                        const answers = (h.func(h.ctx, o.arena, reqs) catch return error.InputDeclined) orelse return error.InputDeclined;
-                        if (@hasField(P, "input_responses")) {
-                            p.input_responses = answers;
-                            p.request_state = if (ir.request_state) |s| try o.arena.dupe(u8, s) else null;
+                        for (reqs.entries) |e| if (!request_mod.inputDeclared(c.modern_caps, e.value)) {
+                            if (o.error_info) |info| info.detail = std.fmt.allocPrint(o.arena, "undeclared input request {s} ({s})", .{ e.key, e.value.method() }) catch "";
+                            return error.ProtocolViolation;
+                        };
+                        // Only `requestState`: retry at once.
+                        var answers: ?messages.InputResponses = null;
+                        if (reqs.entries.len > 0) {
+                            const h = o.input orelse return error.InputDeclined;
+                            answers = (h.func(h.ctx, o.arena, reqs) catch |err| return switch (err) {
+                                error.Canceled => error.Canceled,
+                                error.OutOfMemory => error.OutOfMemory,
+                                else => error.InputDeclined,
+                            }) orelse return error.InputDeclined;
                         }
-                    },
+                        // A new id (exchange), the original params, the
+                        // answers and `requestState` byte for byte.
+                        p.input_responses = answers;
+                        p.request_state = if (ir.request_state) |s| try o.arena.dupe(u8, s) else null;
+                    } else return error.ProtocolViolation,
                 }
             },
         }
