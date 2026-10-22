@@ -32,6 +32,7 @@ pub const Output = @import("validate.zig").Output;
 pub const ValidateError = @import("validate.zig").ValidateError;
 pub const validate = @import("validate.zig").validate;
 pub const equal = @import("validate.zig").equal;
+pub const toolValidator = @import("tool_validator.zig").toolValidator;
 
 test {
     _ = @import("number.zig");
@@ -40,4 +41,6 @@ test {
     _ = @import("compile.zig");
     _ = @import("schema_test.zig");
     _ = @import("suite_test.zig");
+    _ = @import("tool_validator.zig");
+    _ = @import("tool_validator_test.zig");
 }
