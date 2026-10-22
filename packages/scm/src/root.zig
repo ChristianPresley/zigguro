@@ -33,6 +33,8 @@ pub const index_segment = @import("graph/index_segment.zig");
 pub const index = @import("graph/index.zig");
 /// Ancestry queries over the commit index.
 pub const ancestry = @import("graph/ancestry.zig");
+/// Lane layout for drawing history as a graph (CLI and GUI).
+pub const layout = @import("graph/layout.zig");
 /// The revset query language.
 pub const revset = @import("graph/revset.zig");
 /// `Merge(T)`: first-class conflicts and their algebra.
@@ -92,6 +94,7 @@ test {
     _ = @import("store/gc_test.zig");
     _ = @import("graph/index_test.zig");
     _ = @import("graph/ancestry_test.zig");
+    _ = @import("graph/layout_test.zig");
     _ = @import("graph/revset_test.zig");
     _ = @import("merge/markers_test.zig");
     _ = @import("oplog/oplog_test.zig");
