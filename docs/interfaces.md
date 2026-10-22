@@ -1326,3 +1326,126 @@ Line semantics match `zg_core.LineIndex`.
 
 ### Stability
 Unstable until E05.F05 views and E12 land.
+
+## zg_gui.paint.Canvas
+
+### Defined in
+`packages/gui/src/paint/canvas.zig` (E04.F04; decision in ADR 0009).
+
+### Implemented by
+`zg_gui.paint.Recorder` (headless, used by `TestApp` snapshots) and an
+adapter onto E02's `r2d.DrawList` (E02.F06), added by whichever of the
+two lands second.
+
+### Consumed by
+`zg_gui.Window` paint and present. Widgets never call it directly; they
+draw through `PaintCx`, which records ops into a per-node cache that the
+window replays into the canvas.
+
+### Signature
+```zig
+pub const GlyphQuad = zg_text.cache.GlyphQuad;
+pub const TextAa = enum(u2) { grayscale, subpixel_rgb, subpixel_bgr, none };
+pub const TextureId = enum(u32) { none = 0, _ };
+pub const Canvas = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        begin: *const fn (*anyopaque, size: Size, scale: f32) void,
+        rect: *const fn (*anyopaque, r: Rect, fill: Color, radii: Radii) void,
+        border: *const fn (*anyopaque, r: Rect, widths: Insets, color: Color, radii: Radii) void,
+        shadow: *const fn (*anyopaque, r: Rect, radii: Radii, sigma: f32, spread: f32, color: Color) void,
+        linearGradient: *const fn (*anyopaque, r: Rect, p0: Vec2, p1: Vec2, c0: Color, c1: Color, radii: Radii) void,
+        glyphs: *const fn (*anyopaque, run: []const GlyphQuad, color: Color, aa: TextAa) void,
+        image: *const fn (*anyopaque, tex: TextureId, dst: Rect, uv: Rect, tint: Color, radii: Radii) void,
+        pushClip: *const fn (*anyopaque, r: Rect, radii: Radii) void,
+        popClip: *const fn (*anyopaque) void,
+        addDamage: *const fn (*anyopaque, r: Rect) void,
+        end: *const fn (*anyopaque) void,
+    };
+};
+```
+Coordinates are logical pixels; `begin` passes the scale. Method names and
+argument order match `r2d.DrawList` one for one, so the adapter is a
+forwarding table.
+
+### Threading
+UI thread only. A frame is `begin`, draw calls, `addDamage` (zero or more),
+`end`; nothing is retained by the canvas past `end` except what it copied.
+
+### Ownership/lifetime
+Slices passed to `glyphs` are valid only for the call.
+
+### Stability
+Experimental until the r2d adapter merges.
+
+## zg_gui.paint.TextSystem
+
+### Defined in
+`packages/gui/src/paint/text.zig` (E04.F05).
+
+### Implemented by
+`zg_gui.paint.MonoText` (deterministic metrics for tests and headless runs).
+E03's shaper and glyph cache implement it once F06–F08 land.
+
+### Consumed by
+zg_gui layout (measuring text leaves) and paint (`PaintCx.textLine`,
+`textBox`).
+
+### Signature
+```zig
+pub const FontId = enum(u16) { ui = 0, mono = 1, _ };
+pub const TextStyle = struct { font: FontId = .ui, size: f32 = 13, weight: u16 = 400, italic: bool = false };
+pub const LineMetrics = struct { ascent: f32, descent: f32, line_h: f32 };
+pub const TextSystem = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        metrics: *const fn (*anyopaque, TextStyle) LineMetrics,
+        advance: *const fn (*anyopaque, TextStyle, cp: u21) f32,
+        glyph: *const fn (*anyopaque, TextStyle, cp: u21, pen: Vec2) ?GlyphQuad, // null: blank glyph
+    };
+};
+```
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+The window borrows the text system for its whole life (`Window.Options.text`).
+
+### Stability
+Experimental: per-codepoint advances are a placeholder; shaped runs replace
+`advance`/`glyph` when E03.F06 merges (additive `shape` entry first).
+
+## zg_gui.input.KeyHandler
+
+### Defined in
+`packages/gui/src/input/keys.zig` (E04.F03).
+
+### Implemented by
+E15's keymap resolver adapter (#1077).
+
+### Consumed by
+`zg_gui.Window.dispatchKey`: keys not consumed by the focused widget's
+bubble path go to `Window.key_handler` before the built-in Tab, Enter,
+Space and Escape handling.
+
+### Signature
+```zig
+pub const KeyHandler = struct {
+    ptr: *anyopaque,
+    handle: *const fn (ptr: *anyopaque, key: event.KeyPress, contexts: []const []const u8) bool, // true: consumed
+};
+```
+`contexts` lists the `BoxDesc.key_context` strings from the focused node up
+to the root, innermost first.
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+`contexts` is valid only for the call.
+
+### Stability
+Experimental until the E15 adapter merges.
