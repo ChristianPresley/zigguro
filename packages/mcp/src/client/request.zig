@@ -72,8 +72,9 @@ pub const ProgressCallback = struct {
     func: *const fn (ctx: ?*anyopaque, p: protocol.messages.Progress) void,
 };
 
-/// Answers MRTR `inputRequests` (F03.S03 plugs the InputBroker in here).
-/// Returns null to decline. Memory comes from `arena`.
+/// Answers MRTR `inputRequests` (`mrtr.runWithInput` plugs the
+/// InputBroker in here). Returns null to decline; `error.Canceled` ends
+/// the request as canceled. Memory comes from `arena`.
 pub const InputHandler = struct {
     ctx: ?*anyopaque,
     func: *const fn (ctx: ?*anyopaque, arena: Allocator, requests: protocol.messages.InputRequests) anyerror!?protocol.messages.InputResponses,
@@ -352,6 +353,29 @@ pub fn isIdempotent(m: protocol.Method) bool {
     };
 }
 
+/// Whether `m` may answer `input_required` (MRTR "Supported Requests").
+pub fn mrtrAllowed(m: protocol.Method) bool {
+    return switch (m) {
+        .tools_call, .resources_read, .prompts_get => true,
+        else => false,
+    };
+}
+
+/// Whether `caps` (what we declared) covers input request `r`. A server
+/// asking for anything else breaks the protocol (MRTR "Client
+/// Requirements"); the user is never prompted for it.
+pub fn inputDeclared(caps: protocol.ClientCapabilities, r: protocol.messages.InputRequest) bool {
+    return switch (r) {
+        .sampling => caps.has("sampling"),
+        .elicitation => |e| switch (e.kind()) {
+            .form => caps.has("elicitation.form"),
+            .url => caps.has("elicitation.url"),
+        },
+        .roots => caps.has("roots"),
+        .unknown => false,
+    };
+}
+
 /// Maps a JSON-RPC error response to an error, filling `info`.
 pub fn mapRpcError(arena: Allocator, code: i64, msg: []const u8, data_bytes: ?[]const u8, info: ?*ErrorInfo) RequestError {
     const data: ?Value = if (data_bytes) |d| std.json.parseFromSliceLeaky(Value, arena, d, .{}) catch null else null;
@@ -480,4 +504,17 @@ test "request: error mapping" {
     try testing.expectEqual(error.ProcessExited, mapFailure(a, .{ .process_exited = .{ .code = 1 } }, &info));
     try testing.expectEqual(@as(?u32, 1), info.exit.?.code);
     try testing.expect(isIdempotent(.tools_list) and !isIdempotent(.tools_call));
+}
+
+test "request: MRTR methods and declared input" {
+    try testing.expect(mrtrAllowed(.tools_call) and mrtrAllowed(.resources_read) and mrtrAllowed(.prompts_get));
+    try testing.expect(!mrtrAllowed(.tools_list));
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const caps = try protocol.capabilities.defaultClient(arena.allocator(), .{ .sampling = false, .elicitation_url = false });
+    try testing.expect(inputDeclared(caps, .{ .elicitation = .{ .message = "?" } }));
+    try testing.expect(!inputDeclared(caps, .{ .elicitation = .{ .mode = .url, .message = "?", .url = "https://x" } }));
+    try testing.expect(!inputDeclared(caps, .{ .sampling = .{ .messages = &.{}, .max_tokens = 1 } }));
+    try testing.expect(inputDeclared(caps, .{ .roots = .{} }));
+    try testing.expect(!inputDeclared(caps, .{ .unknown = .{ .method = "x/y", .params = null } }));
 }
