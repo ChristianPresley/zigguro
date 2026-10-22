@@ -154,3 +154,13 @@ zig build text-dump -- raster <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coor
 ```
 
 Subcommands whose engine has not landed print `not implemented` and exit 2.
+
+## Font discovery fixtures
+
+`fontconfig/root/` and `fontconfig/noconfig/` are fake file system roots
+for the Linux discovery tests (`src/fonts/discovery_test.zig`), passed as
+`Options.sysroot` with `HOME=/home/u`. The `.conf` files are hand-written
+in fontconfig's format (fonts-conf(5)) to cover dir prefixes, `conf.d`
+ordering, include cycles, aliases, the match-prepend pattern and a
+malformed file. The `.ttf`/`.otf`/`.ttc`/`.otc` files there are one-line
+placeholders, not fonts: discovery only looks at names.
