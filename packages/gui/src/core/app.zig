@@ -181,6 +181,15 @@ pub const App = struct {
         }
     }
 
+    /// Runs the long-lived loop `func(args)` on its own worker, never
+    /// inline (a loop run through `spawn` can take over the UI thread).
+    /// Fails when no worker is free; without a runtime the loop cannot
+    /// run at all.
+    pub fn spawnLoop(app: *App, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) std.Io.ConcurrentError!void {
+        const wk = if (app.work) |*wk| wk else return error.ConcurrencyUnavailable;
+        return wk.spawnLoop(func, args);
+    }
+
     /// Waits for every spawned task to finish (tests, shutdown).
     pub fn joinWork(app: *App) void {
         if (app.work) |*wk| wk.join() catch {};
@@ -521,4 +530,29 @@ test "spawn with 1 000 concurrent tasks delivers all results" {
     while (app.drainMessages() > 0) {}
     try std.testing.expectEqual(@as(u32, 1000), t.n.load(.monotonic));
     try std.testing.expectEqual(@as(u32, 1000), t.seen);
+}
+
+test "spawnLoop never runs the loop on the calling thread" {
+    const Loop = struct {
+        fn run(tid: *std.atomic.Value(std.Thread.Id)) void {
+            tid.store(std.Thread.getCurrentId(), .release);
+        }
+    };
+    var tid: std.atomic.Value(std.Thread.Id) = .init(0);
+    {
+        var app = App.init(std.testing.allocator);
+        defer app.deinit();
+        try std.testing.expectError(error.ConcurrencyUnavailable, app.spawnLoop(Loop.run, .{&tid}));
+    }
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    rt.bindUiThread(.noop);
+    var app = App.init(std.testing.allocator);
+    defer app.deinit();
+    app.attachRuntime(&rt);
+    try app.spawnLoop(Loop.run, .{&tid});
+    app.joinWork();
+    try std.testing.expect(tid.load(.acquire) != 0);
+    try std.testing.expect(tid.load(.acquire) != std.Thread.getCurrentId());
 }
