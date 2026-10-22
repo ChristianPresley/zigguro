@@ -204,6 +204,8 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/dmabuf.zig`.
+    pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
@@ -404,6 +406,7 @@ test {
         _ = @import("wayland/wire/fuzz.zig");
         _ = @import("wayland/backend.zig");
         _ = @import("wayland/shm.zig");
+        _ = @import("wayland/dmabuf.zig");
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
@@ -473,6 +476,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
     .{ .path = "wayland/shm.zig", .src = @embedFile("wayland/shm.zig") },
+    .{ .path = "wayland/dmabuf.zig", .src = @embedFile("wayland/dmabuf.zig") },
     .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
     .{ .path = "x11/conn.zig", .src = @embedFile("x11/conn.zig") },
     .{ .path = "x11/auth.zig", .src = @embedFile("x11/auth.zig") },
