@@ -176,6 +176,38 @@ pub const Checkpoints = struct {
     create: *const fn (ctx: *anyopaque, io: Io, origin: proto.AgentRef, turn: u32, label: []const u8) u64,
 };
 
+/// The history after a compaction.
+pub const CompactedHistory = struct {
+    messages: []const proto.Message,
+    tokens_before: u64 = 0,
+    tokens_after: u64 = 0,
+    /// The summarizer model.
+    model: []const u8 = "",
+    /// The summarizer failed and old tool results were cleared instead.
+    fallback: bool = false,
+};
+
+/// Transcript compaction (F07.S03): before a request whose input crosses
+/// the threshold, and after the context builder or the provider reports
+/// that the conversation no longer fits.
+pub const Compaction = struct {
+    ctx: *anyopaque,
+    should_compact: *const fn (ctx: *anyopaque, est_input_tokens: u64, window: u32) bool,
+    /// `base` is the request the agent would send (system prompt, tools);
+    /// the result is allocated in `arena` and copied by the loop.
+    compact: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, overflow: bool) anyerror!CompactedHistory,
+};
+
+/// A compaction as recorded in the session log.
+pub const CompactionInfo = struct {
+    /// The first message of the new history.
+    head_seq: u64,
+    trigger: []const u8,
+    tokens_before: u64,
+    tokens_after: u64,
+    model: []const u8,
+};
+
 /// Receives committed messages (F08 writes them to the session JSONL).
 pub const SessionLog = struct {
     ctx: *anyopaque,
@@ -185,6 +217,8 @@ pub const SessionLog = struct {
         message: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, seq: u64, m: *const proto.Message) anyerror!void,
         /// Durability point at the end of a turn.
         sync: *const fn (ctx: *anyopaque, io: Io) anyerror!void,
+        /// A compaction; the new history follows as messages.
+        compaction: ?*const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, seq: u64, info: CompactionInfo) anyerror!void = null,
     };
 };
 
