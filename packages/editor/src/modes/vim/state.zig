@@ -129,6 +129,9 @@ pub const VimState = struct {
     /// registers when it is done.
     reg: Register = .{},
     group: mode_mod.ChangeGroup,
+    /// `:g` and `:normal` hold one undo step open around the commands
+    /// they run; those commands' own begin/commit do nothing meanwhile.
+    group_held: bool = false,
     last_find: ?motions.LastFind = null,
     /// Registers, file marks, the last search and options; `own` unless
     /// the editor shares one between its Vim states.
@@ -350,6 +353,22 @@ pub const VimState = struct {
         const res = try vs.feedKey(k, host);
         try vs.drain(host);
         return res;
+    }
+
+    /// `:normal {keys}`: runs `keys` as typed in Normal mode from the
+    /// cursors as they are; a command left unfinished ends as with
+    /// `<Esc>`. Stops at the first key that fails.
+    pub fn runNormal(vs: *VimState, keys: []const Key, host: *Host) !void {
+        try vs.syncOut(host);
+        vs.mode = .normal;
+        for (keys) |k| {
+            _ = try vs.feedKey(k, host);
+            if (vs.bell) break;
+        }
+        if (vs.mode != .normal and vs.mode != .op_pending) _ = try vs.feedKey(.named(.esc), host);
+        vs.pending.reset();
+        vs.mode = .normal;
+        try vs.syncOut(host);
     }
 
     /// Runs the keys a macro queued, stopping at the first that fails.
@@ -576,6 +595,7 @@ pub const VimState = struct {
     }
 
     pub fn beginChange(vs: *VimState, host: *Host) !void {
+        if (vs.group_held) return;
         try vs.group.begin(try vs.caretsOf());
         _ = host;
     }
@@ -589,6 +609,7 @@ pub const VimState = struct {
     }
 
     pub fn commitChange(vs: *VimState, host: *Host) !void {
+        if (vs.group_held) return;
         try vs.group.commit(host.undo, try vs.caretsOf(), .{ .label = "Vim", .origin = host.edit.origin, .timestamp = host.now() });
     }
 
