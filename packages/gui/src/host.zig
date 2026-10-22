@@ -6,7 +6,11 @@
 //! - a window that wants a frame asks the platform with `request_frame`
 //!   and renders when the platform's `frame` event arrives (frame pacing
 //!   comes from the compositor, so idle windows cost nothing);
-//! - appearance changes switch the app theme.
+//! - appearance changes switch the app theme;
+//! - the app clipboard is kept in sync with the system clipboard (local
+//!   writes go out as `clipboard_write`; a `clipboard_changed` is read
+//!   back into `App.clipboard`);
+//! - `App.now_ms` is refreshed from the awake clock on every pump.
 //!
 //! The app (`apps/zigguro`) creates the platform and calls `run`; tests
 //! drive `pump` against the headless backend.
@@ -44,6 +48,9 @@ pub const HostWindow = struct {
     occluded: bool = false,
     frames: u64 = 0,
 };
+
+/// The request id of the Host's own clipboard reads.
+const clipboard_request: u32 = 0x4704_0001;
 
 /// Drives windows of one `App` on one `Platform`.
 pub const Host = struct {
@@ -123,6 +130,7 @@ pub const Host = struct {
     /// platform asked to draw and requests frames for dirty windows.
     /// Returns the number of events handled.
     pub fn pump(h: *Host) !usize {
+        h.app.now_ms = @intCast(@max(0, @divFloor(std.Io.Clock.awake.now(h.io).nanoseconds, std.time.ns_per_ms)));
         var total: usize = 0;
         while (true) {
             const n = h.platform.pollEvents(&h.events);
@@ -131,6 +139,11 @@ pub const Host = struct {
             if (n < h.events.len) break;
         }
         h.app.flushEffects();
+        if (h.app.clipboard.pending_write) {
+            h.app.clipboard.pending_write = false;
+            const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .text_utf8, .data = h.app.clipboard.get() }};
+            try h.platform.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &items } });
+        }
         var i: usize = 0;
         while (i < h.windows.items.len) {
             const hw = h.windows.items[i];
@@ -151,6 +164,15 @@ pub const Host = struct {
         switch (ev) {
             .appearance_changed => |a| {
                 h.app.onAppearance(a);
+                return;
+            },
+            .clipboard_changed => |which| {
+                if (which == .clipboard) try h.platform.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = clipboard_request } });
+                return;
+            },
+            .clipboard_data => |d| {
+                if (d.request == clipboard_request and d.mime == .text_utf8) h.app.clipboard.replace(h.gpa, h.platform.payload(d.data));
+                if (d.data.large) h.platform.release(d.data);
                 return;
             },
             else => {},
