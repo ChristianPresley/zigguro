@@ -16,6 +16,7 @@
 const Registry = @This();
 const std = @import("std");
 const builtin = @import("builtin");
+const zg_core = @import("zg_core");
 const zg_lsp = @import("zg_lsp");
 
 const Allocator = std.mem.Allocator;
@@ -229,6 +230,68 @@ pub fn resolveExecutable(r: *Registry, io: Io, def: *const ServerDef, env: *cons
     try r.exe_cache.put(r.cache_arena.child_allocator, try ca.dupe(u8, name), found);
     return found;
 }
+
+/// Runs `<executable> <version_args>` and returns the first non-empty line
+/// of its output, or null when the server is missing, cannot start, or
+/// prints nothing within `timeout` (the process is then killed). The
+/// initialize result's `serverInfo.version` takes precedence once a server
+/// runs. Worker only; the result is `gpa`'s.
+pub fn probeVersion(r: *Registry, io: Io, gpa: Allocator, def: *const ServerDef, env: *const std.process.Environ.Map, timeout: Io.Duration) Allocator.Error!?[]u8 {
+    const exe = (try r.resolveExecutable(io, def, env)) orelse return null;
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, exe);
+    try argv.appendSlice(gpa, def.version_args);
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .environ_map = env,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+        .create_no_window = true,
+    }) catch return null;
+    // The read runs in its own task and the deadline is a plain wait:
+    // blocking pipe reads are not cancelable on Windows, so a timeout kills
+    // the process, which ends the read.
+    var rd: FirstLine = .{};
+    var task = io.concurrent(FirstLine.run, .{ &rd, io, child.stdout.? }) catch {
+        child.kill(io);
+        return null;
+    };
+    const timed_out = if (rd.done.waitTimeout(io, zg_core.runtime.Deadline.after(io, timeout).timeout())) false else |_| true;
+    if (builtin.os.tag == .windows)
+        _ = std.os.windows.ntdll.NtTerminateProcess(child.id.?, @enumFromInt(1))
+    else
+        std.posix.kill(child.id.?, .KILL) catch {};
+    task.await(io);
+    _ = child.wait(io) catch {};
+    if (timed_out) return null;
+    const buf = &rd.buf;
+    const n = rd.n;
+    var lines = std.mem.tokenizeAny(u8, buf[0..n], "\r\n");
+    const line = std.mem.trim(u8, lines.next() orelse return null, " \t");
+    if (line.len == 0) return null;
+    return try gpa.dupe(u8, line);
+}
+
+/// The start of a probed process's output.
+const FirstLine = struct {
+    buf: [512]u8 = undefined,
+    n: usize = 0,
+    done: Io.Event = .unset,
+
+    /// Reads until a line ends, end of input, or `buf` is full.
+    fn run(f: *FirstLine, io: Io, file: Io.File) void {
+        defer f.done.set(io);
+        while (f.n < f.buf.len) {
+            const got = file.readStreaming(io, &.{f.buf[f.n..]}) catch break;
+            if (got == 0) break;
+            f.n += got;
+            const text = std.mem.trimStart(u8, f.buf[0..f.n], " \t\r\n");
+            if (std.mem.indexOfScalar(u8, text, '\n') != null) break;
+        }
+    }
+};
 
 /// Forgets the executable cache ("Rescan", or PATH changed).
 pub fn rescan(r: *Registry) void {
