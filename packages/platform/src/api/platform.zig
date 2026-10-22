@@ -49,8 +49,9 @@ pub const InitOptions = struct {
     /// Force a backend; null selects one with `detectBackend`.
     backend: ?Backend = null,
     /// The process environment (`init.environ_map` from `main`), read for
-    /// `ZG_PLATFORM`, `WAYLAND_DISPLAY`, `DISPLAY` and theme settings.
-    environ_map: ?*const std.process.Environ.Map = null,
+    /// `ZG_PLATFORM`, `WAYLAND_DISPLAY`, `DISPLAY` and theme settings. The
+    /// Wayland backend removes `WAYLAND_SOCKET` once it has used it.
+    environ_map: ?*std.process.Environ.Map = null,
     /// Default application id for new windows.
     app_id: []const u8 = "dev.zigguro.zigguro",
     /// Event ring capacity; rounded up to a power of two.
@@ -214,6 +215,15 @@ fn nonEmpty(v: ?[]const u8) bool {
     return if (v) |s| s.len > 0 else false;
 }
 
+/// Whether the backend was chosen explicitly, by `opts.backend` or a
+/// valid `ZG_PLATFORM`, so `init` must not fall back to another one.
+pub fn isForced(opts: InitOptions) bool {
+    if (opts.backend != null) return true;
+    const env = opts.environ_map orelse return false;
+    const v = env.get("ZG_PLATFORM") orelse return false;
+    return std.meta.stringToEnum(Backend, v) != null;
+}
+
 /// The backend `init` will try first: `opts.backend`, else `detectBackend`
 /// on `opts.environ_map` (headless when no map is given).
 pub fn selectBackend(opts: InitOptions) Backend {
@@ -257,6 +267,10 @@ test "selectBackend prefers the explicit option" {
     try env.put("ZG_PLATFORM", "x11");
     try std.testing.expectEqual(Backend.wayland, selectBackend(.{ .backend = .wayland, .environ_map = &env }));
     try std.testing.expectEqual(Backend.headless, selectBackend(.{}));
+    try std.testing.expect(isForced(.{ .environ_map = &env }));
+    try env.put("ZG_PLATFORM", "bogus");
+    try std.testing.expect(!isForced(.{ .environ_map = &env }));
+    try std.testing.expect(isForced(.{ .backend = .x11 }));
 }
 
 test "fromImpl dispatches to the concrete type" {
