@@ -7,6 +7,7 @@ const std = @import("std");
 const golden = @import("../../model/edit/golden_testing.zig");
 const mode_mod = @import("../mode.zig");
 const core = @import("vim_core_test.zig");
+const ops = @import("operators.zig");
 
 const gpa = std.testing.allocator;
 const Harness = core.Harness;
@@ -69,6 +70,29 @@ test "vim: ex substitute is one undo step" {
     const got = try h.render("");
     defer gpa.free(got);
     try std.testing.expectEqualStrings("¦a a\na a\na a", got);
+}
+
+test "vim: ex substitute with c prompts, counts and stops on outside edits" {
+    var h: Harness = undefined;
+    try h.init("¦a a\na a\na a");
+    defer h.deinit();
+    try h.keys(":%s/a/b/gc<CR>");
+    try std.testing.expectEqualStrings("replace with b (y/n/a/q/l/^E/^Y)?", h.vs.statusText());
+    try h.keys("ya");
+    try std.testing.expectEqualStrings("6 substitutions on 3 lines", h.vs.statusText());
+    try std.testing.expect(h.vs.confirm == null);
+    // Under :g it is refused.
+    try h.keys(":g/b/s/b/c/c<CR>");
+    try std.testing.expect(std.mem.startsWith(u8, h.vs.statusText(), "E5:"));
+    // An edit from elsewhere ends the prompt and leaves the text alone.
+    try h.keys(":%s/b/c/gc<CR>");
+    try ops.replace(&h.host, 0, 0, "x");
+    try h.keys("y");
+    try std.testing.expect(h.vs.confirm == null);
+    try std.testing.expect(std.mem.startsWith(u8, h.vs.statusText(), "E: the document changed"));
+    const got = try h.doc.tree.copyRange(gpa, .{ .start = 0, .end = h.doc.len() });
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("xb b\nb b\nb b", got);
 }
 
 /// Records the actions `:w`, `:q` and friends ask the host for.
