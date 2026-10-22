@@ -1031,8 +1031,10 @@ compositor decides: a token it does not trust usually marks the window
 urgent instead of raising it, which is what `request_attention` wants.
 Without the global both return `error.Unsupported`. `open_dialog`,
 `open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`
-(see that section); Wayland dialogs are not parented yet (that needs an
-xdg-foreign export handle).
+(see that section). When the compositor offers `zxdg_exporter_v2`, every
+toplevel is exported at creation; a dialog whose `parent` has received its
+handle (and `open_uri`, for the focused window) passes `wayland:<handle>`
+as the portal's parent window, otherwise "" (an unparented dialog).
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
