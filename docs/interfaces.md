@@ -1311,6 +1311,22 @@ platform thread (one presenter mutex covers both).
 A window's presenter and its DIB sections die with `destroyWindow`;
 `deinit` stops the thread after it destroys every window.
 
+Native hooks (E01.F01.S03.T01, `win32/hooks.zig`):
+`NativeHooks.win32SetMessageHook` runs on the platform thread (sent to
+the message window) and keeps up to 8 hooks per window, each for up to 8
+messages and keyed by its `ctx` (setting again replaces, null removes);
+the window procedure asks them first, in order, and the first non-null
+answer is the `LRESULT`. A missing window or a full table returns
+`error.Unsupported`. `hooks.isUiaRoot` compares a `WM_GETOBJECT` lParam
+as a DWORD with `UiaRootObjectId`. `win32CreateMessageWindow` creates an
+`HWND_MESSAGE` window on the platform thread whose every message goes to
+its hook (then `DefWindowProcW`); `deinit` destroys any left.
+`activate` restores a minimized window and calls `SetForegroundWindow`,
+flashing the window and taskbar button until it is focused when Windows
+refuses; `request_attention` flashes the taskbar button. Tokens are
+ignored. `window_configure.screen_origin_px` is the client area's
+screen position, re-reported on `WM_MOVE`.
+
 ### Stability
 Experimental. Not yet: a theme or backdrop command (the system theme
 and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`

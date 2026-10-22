@@ -311,6 +311,10 @@ pub const Host = struct {
         if (h.app.has_primary) try h.flushClipboard(&h.app.primary, .primary);
         for (h.windows.items) |hw| {
             for (hw.win.window_ops.items) |op| try h.platform.submit(.{ .request_state = .{ .win = hw.id, .op = op } });
+            if (hw.win.drop.pending) |accept| {
+                hw.win.drop.pending = null;
+                try h.platform.submit(.{ .set_drop_effect = .{ .win = hw.id, .accept = if (accept) .uri_list else null, .effect = if (accept) .{ .copy = true } else .{} } });
+            }
             hw.win.window_ops.clearRetainingCapacity();
             try h.updateHitMap(hw);
         }

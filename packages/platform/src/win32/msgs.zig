@@ -7,6 +7,8 @@ pub const WM = struct {
     pub const CREATE: u32 = 0x0001;
     /// WM_DESTROY.
     pub const DESTROY: u32 = 0x0002;
+    /// WM_MOVE.
+    pub const MOVE: u32 = 0x0003;
     /// WM_SIZE.
     pub const SIZE: u32 = 0x0005;
     /// WM_ACTIVATE.
@@ -147,6 +149,12 @@ pub const SW_SHOWMINIMIZED: i32 = 2;
 pub const SW_MAXIMIZE: i32 = 3;
 /// `SW_RESTORE`.
 pub const SW_RESTORE: i32 = 9;
+/// `FLASHW_ALL`: flash the caption and the taskbar button.
+pub const FLASHW_ALL: u32 = 0x3;
+/// `FLASHW_TIMERNOFG`: until the window comes to the foreground.
+pub const FLASHW_TIMERNOFG: u32 = 0xC;
+/// `FLASHW_TRAY`: the taskbar button only.
+pub const FLASHW_TRAY: u32 = 0x2;
 /// `SIZE_MINIMIZED` (WM_SIZE wParam).
 pub const SIZE_MINIMIZED: usize = 1;
 /// `SIZE_MAXIMIZED` (WM_SIZE wParam).

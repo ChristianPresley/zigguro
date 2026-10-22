@@ -42,6 +42,12 @@
 //! window, with a `WM_TIMER` keeping frames flowing inside its modal loop.
 //! When OLE cannot start, drag and drop is `Unsupported`.
 //!
+//! Native hooks (`hooks.zig`, E01.F01.S03.T01): per-window message hooks
+//! run first in the window procedure, and message-only windows send every
+//! message to their hook; both live on the platform thread. `activate`
+//! restores and foregrounds a window, flashing it when Windows refuses;
+//! `window_configure.screen_origin_px` is the client area's screen origin.
+//!
 //! Not yet here: cloaking until the first present.
 
 const std = @import("std");
@@ -81,6 +87,7 @@ const dialogs = @import("dialogs.zig");
 const shell = @import("shell.zig");
 const com = @import("com.zig");
 const dnd = @import("dnd.zig");
+const hooks_mod = @import("hooks.zig");
 const data_object = @import("data_object.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
@@ -126,9 +133,18 @@ const WM_APP_SYSMENU = WM.APP + 9;
 const WM_APP_IME = WM.APP + 10;
 /// lParam: a `*DragRequest` the platform thread frees.
 const WM_APP_DRAG = WM.APP + 11;
+/// Sent to the message window: lParam = *HookRequest.
+const WM_APP_HOOK = WM.APP + 12;
+/// Sent to the message window: lParam = *MsgWindow to create.
+const WM_APP_MSGWIN = WM.APP + 13;
+/// Sent to the message window: wParam = the message-only HWND to destroy.
+const WM_APP_MSGWIN_DESTROY = WM.APP + 14;
+/// Posted to a window: wParam 1 activates it, 0 asks for attention.
+const WM_APP_ACTIVATE = WM.APP + 15;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
+const hook_class_name = L("zigguro.hooked");
 
 const double_click_ns: u64 = 500 * std.time.ns_per_ms;
 const double_click_px: f32 = 4;
@@ -178,6 +194,26 @@ const Window = struct {
     drop_target: ?*dnd.Target = null,
     /// The app's latest `set_drop_effect`. Guarded by the mutex.
     drop_answer: dnd.Answer = .{},
+    /// Native message hooks. Platform thread only.
+    hooks: hooks_mod.Table = .{},
+    /// The client area's screen origin. Guarded by the mutex.
+    origin: ?types.PxPoint = null,
+};
+
+/// A `win32SetMessageHook` call on its way to the platform thread.
+const HookRequest = struct {
+    win: WindowId,
+    msgs: []const u32,
+    hook: ?native_api.Win32MsgHook,
+    ctx: *anyopaque,
+    ok: bool = false,
+};
+
+/// A message-only window and its hook. Platform thread only.
+const MsgWindow = struct {
+    hook: native_api.Win32MsgHook,
+    ctx: *anyopaque,
+    hwnd: ?t.HWND = null,
 };
 
 const no_cp: u32 = 0xFFFF_FFFF;
@@ -244,6 +280,9 @@ pub const Win32Backend = struct {
     dialog_threads: std.ArrayList(std.Thread) = .empty,
     /// Platform thread only.
     cursors: cursor_mod.Cache = .{},
+    /// Message-only windows from `win32CreateMessageWindow`. Platform
+    /// thread only.
+    msg_windows: std.ArrayList(*MsgWindow) = .empty,
     /// Platform thread only: each scancode's unshifted codepoint under the
     /// current layout (`no_cp` = not looked up yet), for shortcut keysyms.
     unshifted: [512]u32 = @splat(no_cp),
@@ -265,9 +304,9 @@ pub const Win32Backend = struct {
             .ui_wake = ui_wake,
             .hooks = .{
                 .ptr = b,
-                .win32SetMessageHook = noHook,
-                .win32CreateMessageWindow = noMsgWindow,
-                .win32DestroyMessageWindow = noDestroy,
+                .win32SetMessageHook = setMessageHook,
+                .win32CreateMessageWindow = createMessageWindow,
+                .win32DestroyMessageWindow = destroyMessageWindow,
                 .windowHandle = windowHandle,
             },
         };
@@ -485,7 +524,9 @@ pub const Win32Backend = struct {
                     return error.SystemResources;
                 }
             },
-            .activate, .request_attention => return error.Unsupported,
+            // Foreground changes belong to the window's thread.
+            .activate => |c| _ = user32.PostMessageW(try b.hwndOf(c.win), WM_APP_ACTIVATE, 1, 0),
+            .request_attention => |win| _ = user32.PostMessageW(try b.hwndOf(win), WM_APP_ACTIVATE, 0, 0),
         }
     }
 
@@ -704,9 +745,11 @@ pub const Win32Backend = struct {
             .lpszClassName = class_name,
         };
         const mc: t.WNDCLASSEXW = .{ .lpfnWndProc = msgProc, .hInstance = b.hinstance, .lpszClassName = msg_class_name };
+        const hc: t.WNDCLASSEXW = .{ .lpfnWndProc = hookProc, .hInstance = b.hinstance, .lpszClassName = hook_class_name };
         // A second backend in the same process finds the classes registered.
         _ = user32.RegisterClassExW(&wc);
         _ = user32.RegisterClassExW(&mc);
+        _ = user32.RegisterClassExW(&hc);
         b.msg_hwnd = user32.CreateWindowExW(0, msg_class_name, null, 0, 0, 0, 0, 0, user32.HWND_MESSAGE, null, b.hinstance, b);
         if (b.msg_hwnd == null) {
             log.err("cannot create the message window (error {d})", .{kernel32.GetLastError()});
@@ -757,6 +800,8 @@ pub const Win32Backend = struct {
             freeClip(b.gpa, req.items);
             b.gpa.destroy(req);
         }
+        for (b.msg_windows.items) |mw| b.destroyMsgWindow(mw);
+        b.msg_windows.deinit(b.gpa);
         if (b.ole) ole32.OleUninitialize();
         b.clip_ready = false;
         b.clip.deinit();
@@ -872,7 +917,15 @@ pub const Win32Backend = struct {
         if (!force and size.w == w.size.w and size.h == w.size.h) return;
         w.size = size;
         w.serial +%= 1;
-        b.stage(.{ .window_configure = .{ .win = w.id, .size = size, .scale = .{ .factor = dpi.scaleOf(w.dpi) }, .state = .{ .maximized = w.maximized, .activated = w.focused }, .serial = w.serial, .screen_origin_px = null } });
+        w.origin = clientOrigin(w);
+        b.stage(.{ .window_configure = .{ .win = w.id, .size = size, .scale = .{ .factor = dpi.scaleOf(w.dpi) }, .state = .{ .maximized = w.maximized, .activated = w.focused }, .serial = w.serial, .screen_origin_px = w.origin } });
+    }
+
+    /// The client area's top-left in screen pixels.
+    fn clientOrigin(w: *const Window) ?types.PxPoint {
+        var pt: t.POINT = .{ .x = 0, .y = 0 };
+        if (user32.ClientToScreen(w.hwnd orelse return null, &pt) == 0) return null;
+        return .{ .x = pt.x, .y = pt.y };
     }
 
     fn setOccluded(b: *Win32Backend, w: *Window, occluded: bool) void {
@@ -941,10 +994,61 @@ pub const Win32Backend = struct {
                 if (wp != msgs.modal_timer_id) return user32.DefWindowProcW(hwnd, msg, wp, lp);
                 b.dueFrames();
             },
+            WM_APP_HOOK => {
+                const req: *HookRequest = @ptrFromInt(@as(usize, @bitCast(lp)));
+                b.lock();
+                const w = b.find(req.win);
+                b.unlock();
+                // The table is the platform thread's: no lock.
+                if (w) |x| {
+                    x.hooks.set(req.msgs, req.hook, req.ctx) catch |err| {
+                        log.warn("message hook: {t}", .{err});
+                        return 0;
+                    };
+                    req.ok = true;
+                }
+            },
+            WM_APP_MSGWIN => {
+                const mw: *MsgWindow = @ptrFromInt(@as(usize, @bitCast(lp)));
+                b.msg_windows.ensureUnusedCapacity(b.gpa, 1) catch return 0;
+                mw.hwnd = user32.CreateWindowExW(0, hook_class_name, null, 0, 0, 0, 0, 0, user32.HWND_MESSAGE, null, b.hinstance, mw);
+                if (mw.hwnd != null) b.msg_windows.appendAssumeCapacity(mw);
+            },
+            WM_APP_MSGWIN_DESTROY => {
+                for (b.msg_windows.items, 0..) |mw, i| if (@intFromPtr(mw.hwnd) == wp) {
+                    _ = b.msg_windows.swapRemove(i);
+                    b.destroyMsgWindow(mw);
+                    break;
+                };
+            },
             WM_APP_WAKE => {},
             else => return user32.DefWindowProcW(hwnd, msg, wp, lp),
         }
         return 0;
+    }
+
+    /// Destroys a message-only window and frees it. Platform thread.
+    fn destroyMsgWindow(b: *Win32Backend, mw: *MsgWindow) void {
+        if (mw.hwnd) |h| {
+            _ = user32.SetWindowLongPtrW(h, msgs.GWLP_USERDATA, 0);
+            _ = user32.DestroyWindow(h);
+        }
+        b.gpa.destroy(mw);
+    }
+
+    /// The window procedure of message-only windows: everything goes to
+    /// the hook first.
+    fn hookProc(hwnd: t.HWND, msg: t.UINT, wp: t.WPARAM, lp: t.LPARAM) callconv(t.winapi) t.LRESULT {
+        if (msg == WM.NCCREATE) {
+            const cs: *const msgs.CREATESTRUCTW_prefix = @ptrFromInt(@as(usize, @bitCast(lp)));
+            _ = user32.SetWindowLongPtrW(hwnd, msgs.GWLP_USERDATA, @bitCast(@intFromPtr(cs.lpCreateParams)));
+            return user32.DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        const raw: usize = @bitCast(user32.GetWindowLongPtrW(hwnd, msgs.GWLP_USERDATA));
+        if (raw == 0) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+        const mw: *MsgWindow = @ptrFromInt(raw);
+        if (mw.hook(mw.ctx, @ptrCast(hwnd), msg, wp, lp)) |r| return r;
+        return user32.DefWindowProcW(hwnd, msg, wp, lp);
     }
 
     /// Registers `w`'s drop target. Platform thread.
@@ -1031,7 +1135,25 @@ pub const Win32Backend = struct {
         if (raw == 0) return user32.DefWindowProcW(hwnd, msg, wp, lp);
         const w: *Window = @ptrFromInt(raw);
         const b = w.b;
+        if (w.hooks.dispatch(@ptrCast(hwnd), msg, wp, lp)) |r| return r;
         switch (msg) {
+            WM_APP_ACTIVATE => {
+                if (wp == 1) {
+                    if (user32.IsIconic(hwnd) != 0) _ = user32.ShowWindow(hwnd, msgs.SW_RESTORE);
+                    if (user32.SetForegroundWindow(hwnd) != 0) return 0;
+                }
+                // Windows refuses the foreground to background processes:
+                // flash until the user comes.
+                const fi: t.FLASHWINFO = .{ .hwnd = hwnd, .dwFlags = (if (wp == 1) msgs.FLASHW_ALL else msgs.FLASHW_TRAY) | msgs.FLASHW_TIMERNOFG, .uCount = 0, .dwTimeout = 0 };
+                _ = user32.FlashWindowEx(&fi);
+                return 0;
+            },
+            WM.MOVE => {
+                b.lock();
+                defer b.unlock();
+                if (!std.meta.eql(clientOrigin(w), w.origin)) b.configure(w, w.size, true);
+                return 0;
+            },
             WM.NCCALCSIZE => {
                 if (!w.custom or wp == 0) return user32.DefWindowProcW(hwnd, msg, wp, lp);
                 // The whole window is client area; a maximized window
@@ -1548,15 +1670,33 @@ pub const Win32Backend = struct {
 
     // ---- native hooks ----
 
-    fn noHook(_: *anyopaque, _: WindowId, _: []const u32, _: ?native_api.Win32MsgHook, _: *anyopaque) error{Unsupported}!void {
-        return error.Unsupported;
+    /// `NativeHooks.win32SetMessageHook`: runs on the platform thread.
+    /// A missing window or a full table is `Unsupported` (logged).
+    fn setMessageHook(ctx: *anyopaque, win: WindowId, msg_list: []const u32, hook: ?native_api.Win32MsgHook, hctx: *anyopaque) error{Unsupported}!void {
+        const b: *Win32Backend = @ptrCast(@alignCast(ctx));
+        var req: HookRequest = .{ .win = win, .msgs = msg_list, .hook = hook, .ctx = hctx };
+        _ = user32.SendMessageW(b.msg_hwnd.?, WM_APP_HOOK, 0, @bitCast(@intFromPtr(&req)));
+        if (!req.ok) return error.Unsupported;
     }
 
-    fn noMsgWindow(_: *anyopaque, _: native_api.Win32MsgHook, _: *anyopaque) error{ Unsupported, SystemResources }!*anyopaque {
-        return error.Unsupported;
+    /// `NativeHooks.win32CreateMessageWindow`.
+    fn createMessageWindow(ctx: *anyopaque, hook: native_api.Win32MsgHook, hctx: *anyopaque) error{ Unsupported, SystemResources }!*anyopaque {
+        const b: *Win32Backend = @ptrCast(@alignCast(ctx));
+        const mw = b.gpa.create(MsgWindow) catch return error.SystemResources;
+        mw.* = .{ .hook = hook, .ctx = hctx };
+        _ = user32.SendMessageW(b.msg_hwnd.?, WM_APP_MSGWIN, 0, @bitCast(@intFromPtr(mw)));
+        const hwnd = mw.hwnd orelse {
+            b.gpa.destroy(mw);
+            return error.SystemResources;
+        };
+        return @ptrCast(hwnd);
     }
 
-    fn noDestroy(_: *anyopaque, _: *anyopaque) void {}
+    /// `NativeHooks.win32DestroyMessageWindow`.
+    fn destroyMessageWindow(ctx: *anyopaque, hwnd: *anyopaque) void {
+        const b: *Win32Backend = @ptrCast(@alignCast(ctx));
+        _ = user32.SendMessageW(b.msg_hwnd.?, WM_APP_MSGWIN_DESTROY, @intFromPtr(hwnd), 0);
+    }
 
     fn windowHandle(ctx: *anyopaque, win: WindowId) native_api.NativeWindow {
         const b: *Win32Backend = @ptrCast(@alignCast(ctx));
@@ -2085,5 +2225,74 @@ test "win32 dnd: start_drag with no button held ends with source_finished" {
     // whatever is under the pointer, which accepts nothing.
     const fin = try waitDrop(p, win, .source_finished);
     try testing.expectEqual(clipboard.DragActions{}, fin.allowed);
+    p.destroyWindow(win);
+}
+
+test "win32 native hooks: message hooks, message windows, activation, screen origin" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg hooks", .size = .{ .w = 320, .h = 200 } });
+    const first = (try waitFor(p, .window_configure, win)).window_configure;
+    try testing.expect(first.screen_origin_px != null);
+    const hwnd = try b.hwndOf(win);
+
+    const Uia = struct {
+        seen: std.atomic.Value(u32) = .init(0),
+        fn hook(ctx: *anyopaque, _: *anyopaque, msg: u32, _: usize, lp: isize) ?isize {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            _ = self.seen.fetchAdd(1, .monotonic);
+            if (msg == hooks_mod.WM_GETOBJECT and hooks_mod.isUiaRoot(lp)) return 1234;
+            return null;
+        }
+    };
+    var uia: Uia = .{};
+    const native = p.native();
+    try native.win32SetMessageHook(native.ptr, win, &.{hooks_mod.WM_GETOBJECT}, Uia.hook, &uia);
+    try testing.expectEqual(1234, user32.SendMessageW(hwnd, hooks_mod.WM_GETOBJECT, 0, hooks_mod.UiaRootObjectId));
+    // Other object ids fall through to the default handling.
+    _ = user32.SendMessageW(hwnd, hooks_mod.WM_GETOBJECT, 0, -4);
+    try testing.expectEqual(2, uia.seen.load(.monotonic));
+    try native.win32SetMessageHook(native.ptr, win, &.{}, null, &uia);
+    try testing.expect(user32.SendMessageW(hwnd, hooks_mod.WM_GETOBJECT, 0, hooks_mod.UiaRootObjectId) != 1234);
+    try testing.expectError(error.Unsupported, native.win32SetMessageHook(native.ptr, @enumFromInt(999), &.{1}, Uia.hook, &uia));
+
+    // A message-only window hands posted messages to its hook.
+    const Box = struct {
+        got: std.atomic.Value(usize) = .init(0),
+        fn hook(ctx: *anyopaque, _: *anyopaque, msg: u32, wp: usize, _: isize) ?isize {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (msg != WM.APP + 5) return null;
+            self.got.store(wp, .release);
+            return 0;
+        }
+    };
+    var box: Box = .{};
+    const mw = try native.win32CreateMessageWindow(native.ptr, Box.hook, &box);
+    try testing.expect(user32.PostMessageW(@ptrCast(@alignCast(mw)), WM.APP + 5, 77, 0) != 0);
+    var spins: usize = 0;
+    while (box.got.load(.acquire) != 77) : (spins += 1) {
+        if (spins > 2000) return error.Timeout;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    native.win32DestroyMessageWindow(native.ptr, mw);
+    try testing.expectEqual(0, user32.IsWindow(@ptrCast(@alignCast(mw))));
+
+    try p.submit(.{ .activate = .{ .win = win, .token = null } });
+    try p.submit(.{ .request_attention = win });
+
+    // Moving the window reports the new origin.
+    _ = user32.SetWindowPos(hwnd, null, 150, 120, 0, 0, msgs.SWP_NOSIZE | msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE);
+    var pt: t.POINT = .{ .x = 0, .y = 0 };
+    _ = user32.ClientToScreen(hwnd, &pt);
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var evs: [32]Event = undefined;
+    outer: while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .window_configure) if (e.window_configure.screen_origin_px) |o| if (o.x == pt.x and o.y == pt.y) break :outer;
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
     p.destroyWindow(win);
 }

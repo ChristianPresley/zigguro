@@ -60,6 +60,17 @@ pub const InputEvent = union(enum) {
     focus_lost,
     /// Activation by keyboard (Enter/Space on a focused control).
     activate,
+    /// Files from another app are dragged over this point (to the node
+    /// under it, bubbling); return true to accept a drop (input/drop.zig).
+    drag_files_over: geom.Vec2,
+    /// Files were dropped here (after an accepted `drag_files_over`).
+    drop_files: DropFiles,
+};
+
+/// Dropped files: local paths, valid during the event only.
+pub const DropFiles = struct {
+    pos: geom.Vec2,
+    paths: []const []const u8,
 };
 
 /// IME composition text, shown inline until committed.
