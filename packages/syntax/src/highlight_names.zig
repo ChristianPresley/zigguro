@@ -89,6 +89,68 @@ const names: [HighlightId.count][]const u8 = blk: {
     break :blk out;
 };
 
+/// Highlight names beyond the fixed set, such as the semantic-token names
+/// `variable.readonly` or `semantic.lifetime`: interned on first use with
+/// ids from `HighlightId.count` up. Themes resolve them by dotted prefix
+/// through `parentOf`, so `variable.readonly` falls back to `variable`.
+pub const HighlightNames = struct {
+    gpa: std.mem.Allocator,
+    extra: std.ArrayList([]const u8) = .empty,
+    map: std.StringHashMapUnmanaged(u16) = .empty,
+
+    /// An empty registry.
+    pub fn init(gpa: std.mem.Allocator) HighlightNames {
+        return .{ .gpa = gpa };
+    }
+
+    /// Frees the names.
+    pub fn deinit(n: *HighlightNames) void {
+        for (n.extra.items) |s| n.gpa.free(s);
+        n.extra.deinit(n.gpa);
+        n.map.deinit(n.gpa);
+        n.* = undefined;
+    }
+
+    /// The id of `dotted`, adding it when new.
+    pub fn intern(n: *HighlightNames, dotted: []const u8) std.mem.Allocator.Error!HighlightId {
+        if (HighlightId.fromName(dotted)) |id| return id;
+        if (n.map.get(dotted)) |v| return @enumFromInt(v);
+        const owned = try n.gpa.dupe(u8, dotted);
+        errdefer n.gpa.free(owned);
+        const v: u16 = @intCast(HighlightId.count + n.extra.items.len);
+        try n.extra.append(n.gpa, owned);
+        errdefer _ = n.extra.pop();
+        try n.map.put(n.gpa, owned, v);
+        return @enumFromInt(v);
+    }
+
+    /// The dotted name of any id ("" when unknown).
+    pub fn name(n: *const HighlightNames, id: HighlightId) []const u8 {
+        const i = @intFromEnum(id);
+        if (i < HighlightId.count) return id.name();
+        const k = i - HighlightId.count;
+        return if (k < n.extra.items.len) n.extra.items[k] else "";
+    }
+
+    /// The nearest named ancestor of any id, fixed or interned.
+    pub fn parentOf(n: *const HighlightNames, id: HighlightId) ?HighlightId {
+        var s = n.name(id);
+        while (std.mem.lastIndexOfScalar(u8, s, '.')) |dot| {
+            s = s[0..dot];
+            if (HighlightId.fromName(s)) |p| return p;
+            if (n.map.get(s)) |v| return @enumFromInt(v);
+        }
+        return null;
+    }
+
+    /// Whether `id` is `ancestor` or below it.
+    pub fn isWithin(n: *const HighlightNames, id: HighlightId, ancestor: HighlightId) bool {
+        var cur: ?HighlightId = id;
+        while (cur) |c| : (cur = n.parentOf(c)) if (c == ancestor) return true;
+        return false;
+    }
+};
+
 /// Resolves `id` against a theme: the value of the longest dotted prefix
 /// present in `table` (indexed by `HighlightId`), or null.
 pub fn resolve(comptime T: type, table: []const ?T, id: HighlightId) ?T {
@@ -116,4 +178,19 @@ test "highlight names: dotted names and prefix resolution" {
     try std.testing.expectEqual(@as(?u32, 1), resolve(u32, &theme, .keyword_control));
     try std.testing.expectEqual(@as(?u32, 2), resolve(u32, &theme, .string_escape));
     try std.testing.expectEqual(@as(?u32, null), resolve(u32, &theme, .string));
+}
+
+test "highlight names: interned extra names" {
+    var n: HighlightNames = .init(std.testing.allocator);
+    defer n.deinit();
+    const ro = try n.intern("variable.readonly");
+    try std.testing.expect(@intFromEnum(ro) >= HighlightId.count);
+    try std.testing.expectEqual(ro, try n.intern("variable.readonly"));
+    try std.testing.expectEqual(HighlightId.function_builtin, try n.intern("function.builtin"));
+    try std.testing.expectEqualStrings("variable.readonly", n.name(ro));
+    try std.testing.expectEqual(HighlightId.variable, n.parentOf(ro).?);
+    const deep = try n.intern("variable.readonly.static");
+    try std.testing.expectEqual(ro, n.parentOf(deep).?);
+    try std.testing.expect(n.isWithin(deep, .variable));
+    try std.testing.expect(!n.isWithin(deep, .string));
 }
