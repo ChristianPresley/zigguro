@@ -1,6 +1,8 @@
 # Installs the pinned Zig toolchain on a Windows runner (x86_64 or ARM64).
 #
-#   setup-zig.ps1 [-Pin .github/zig-toolchain.txt] [-Dest "$env:RUNNER_TOOL_CACHE\zig"]
+#   setup-zig.ps1 [-Pin .github/zig-toolchain.txt] [-Dest "$env:RUNNER_TOOL_CACHE\zig"] [-Arch x86_64|aarch64]
+#
+# -Arch overrides the runner's architecture (default: PROCESSOR_ARCHITECTURE).
 #
 # Tries the community mirrors in shuffled order, then ziglang.org, checks the
 # archive's SHA-256 against the pin before extracting, and appends the zig
@@ -12,7 +14,8 @@
 # arch or missing pin entry. Requires PowerShell 7.
 param(
     [string]$Pin = ".github/zig-toolchain.txt",
-    [string]$Dest = $(if ($env:RUNNER_TOOL_CACHE) { Join-Path $env:RUNNER_TOOL_CACHE "zig" } else { Join-Path $env:LOCALAPPDATA "zig-toolchain" })
+    [string]$Dest = $(if ($env:RUNNER_TOOL_CACHE) { Join-Path $env:RUNNER_TOOL_CACHE "zig" } else { Join-Path $env:LOCALAPPDATA "zig-toolchain" }),
+    [ValidateSet("", "x86_64", "aarch64")][string]$Arch = ""
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -21,10 +24,12 @@ $ProgressPreference = "SilentlyContinue"
 $mirrorsUrl = if ($env:ZIGGURO_MIRRORS_URL) { $env:ZIGGURO_MIRRORS_URL } else { "https://ziglang.org/download/community-mirrors.txt" }
 $fallback = if ($env:ZIGGURO_FALLBACK_URL) { $env:ZIGGURO_FALLBACK_URL } else { "https://ziglang.org/download" }
 
-switch ($env:PROCESSOR_ARCHITECTURE) {
-    "AMD64" { $arch = "x86_64" }
-    "ARM64" { $arch = "aarch64" }
-    default { Write-Error "setup-zig: unsupported architecture $($env:PROCESSOR_ARCHITECTURE)" -ErrorAction Continue; exit 12 }
+if ($Arch) { $arch = $Arch } else {
+    switch ($env:PROCESSOR_ARCHITECTURE) {
+        "AMD64" { $arch = "x86_64" }
+        "ARM64" { $arch = "aarch64" }
+        default { Write-Error "setup-zig: unsupported architecture $($env:PROCESSOR_ARCHITECTURE)" -ErrorAction Continue; exit 12 }
+    }
 }
 $triple = "$arch-windows"
 
