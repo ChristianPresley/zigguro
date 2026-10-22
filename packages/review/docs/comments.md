@@ -103,6 +103,29 @@ Compaction (`gc.collect` with `Live.comments`) writes one `snapshot` per
 thread of each kept changeset. The threads of dropped changesets are
 dropped with them (`dropTarget`).
 
+## In the IDE
+
+The review glue (`apps/zigguro/src/agent/review_glue.zig`) owns the
+workspace's `CommentStore`. It binds the store to the review store when
+the store opens: comments are written at once, like approvals, and
+`refresh` takes the threads that other windows or `zg review` wrote.
+
+The hunk review view (`apps/zigguro/src/review/review_view.zig`) shows
+the threads:
+
+- Each hunk has a Comment button. A new thread anchors to the hunk's
+  added lines, or to its removed lines when it only removes, and keeps
+  the hunk's key. The label and blocking flag come from the body's prefix.
+- A thread is shown under the hunk its lines overlap. Threads on no hunk
+  (outdated, or on unchanged lines) are listed first.
+- Thread rows have Reply and Resolve (Reopen once resolved). A resolved
+  thread collapses to its first line.
+- The header warns "⚠ N blocking comments unresolved". Accept all still
+  works.
+
+Still to come: re-anchoring when an accepted hunk rebases the others,
+the `m`/`r`/`R` keys, and Markdown rendering of the comment bodies.
+
 ## Threading
 
 The store is used on the queue's owner thread. Agents' replies are
