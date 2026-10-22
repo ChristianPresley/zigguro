@@ -29,6 +29,7 @@ Every package's `build.zig` calls `zg_build.flags(b)` exactly once and passes `f
 | `-Dbench-filter` | string | none | no (root only) | (none) | E00 | Only run benchmarks whose name contains this. |
 | `-Dtest-filter` | string | none | no (root only) | (none) | E00 | Only run tests whose name contains this. |
 | `-Dzig-version` | string | 0.16.0 | no (root only) | (none) | E00 | Toolchain version for `zig build zig-pin` (E00.F02). |
+| `-Dsegment-heap` | bool | false | no (root only) | (none) | E17 | Windows: add `heapType SegmentHeap` to the app manifest. |
 | `-Dname`, `-Ddir`, `-Dlayer` | string, string, int | none | no (root only) | (none) | E00 | Arguments of `zig build new-package`. |
 
 ## The duplicate-module error
