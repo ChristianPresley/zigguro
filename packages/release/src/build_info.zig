@@ -33,6 +33,12 @@ pub const BuildInfo = struct {
     update_mode: UpdateMode,
     /// Built for a distro package (FHS layout, updates disabled).
     distro: bool,
+    /// The debug id of each shipped executable (GNU build-id, or PDB GUID
+    /// and age), for matching crash reports to symbols. Written by
+    /// `zg-release package`; empty in the binary itself.
+    debug_ids: []const DebugId = &.{},
+
+    pub const DebugId = struct { exe: []const u8, id: []const u8 };
 
     /// Writes the `--version` line:
     /// `<name> <version_string> (<channel>, <target>, <optimize>, <commit>)`.
@@ -55,6 +61,11 @@ pub const BuildInfo = struct {
         try w.print("    .source_date_epoch = {d},\n", .{bi.source_date_epoch});
         try w.print("    .update_mode = .{s},\n", .{@tagName(bi.update_mode)});
         try w.print("    .distro = {},\n", .{bi.distro});
+        if (bi.debug_ids.len > 0) {
+            try w.writeAll("    .debug_ids = .{\n");
+            for (bi.debug_ids) |d| try w.print("        .{{ .exe = \"{f}\", .id = \"{f}\" }},\n", .{ std.zig.fmtString(d.exe), std.zig.fmtString(d.id) });
+            try w.writeAll("    },\n");
+        }
         try w.writeAll("}\n");
     }
 };
@@ -134,6 +145,20 @@ test "build_info: --version line format" {
         \\}
         \\
     , zw.buffered());
+
+    var with_ids = bi;
+    with_ids.debug_ids = &.{.{ .exe = "zg", .id = "deadbeef" }};
+    var ibuf: [512]u8 = undefined;
+    var iw: std.Io.Writer = .fixed(&ibuf);
+    try with_ids.writeZon(&iw);
+    try testing.expect(std.mem.endsWith(u8, iw.buffered(),
+        \\    .distro = false,
+        \\    .debug_ids = .{
+        \\        .{ .exe = "zg", .id = "deadbeef" },
+        \\    },
+        \\}
+        \\
+    ));
 }
 
 test "build_info: current is consistent" {
