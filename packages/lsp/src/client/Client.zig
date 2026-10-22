@@ -712,6 +712,15 @@ pub fn notify(c: *Client, comptime N: protocol.NotificationMethod, params: proto
     try c.ep.notify(@tagName(N), message.RawJson{ .bytes = body });
 }
 
+/// Sends notification `method` with `params`, already serialized JSON
+/// (for bodies built by streaming, like `didOpen` text). Same rules as
+/// `notify`.
+pub fn notifyRaw(c: *Client, method: []const u8, params: []const u8) !void {
+    if (c.state() != .running) return error.NotRunning;
+    c.trace.record(.{ .dir = .send, .kind = .notification, .method = method, .size = params.len, .at_ns = c.nowNs(), .body = params });
+    try c.ep.notify(method, message.RawJson{ .bytes = params });
+}
+
 // ------------------------------------------------------------- server requests
 
 pub const FolderChange = server_requests.FolderChange;

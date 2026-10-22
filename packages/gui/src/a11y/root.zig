@@ -3,6 +3,7 @@
 
 pub const tree = @import("tree.zig");
 pub const snapshot = @import("snapshot.zig");
+pub const uia = @import("uia/root.zig");
 
 pub const A11yTree = tree.A11yTree;
 pub const Snapshot = snapshot.Snapshot;

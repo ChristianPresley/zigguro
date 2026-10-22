@@ -20,6 +20,7 @@ Each package belongs to one epic; the epic's reviewers approve changes to it (CO
 | zg_ai | `packages/ai/` | E10 | @ChristianPresley |
 | zg_mcp, zg_mcp_servers | `packages/mcp/`, `packages/mcp-servers/` | E11 | @ChristianPresley |
 | zg_review | `packages/review/` | E12 | @ChristianPresley |
+| zg_codeintel | `packages/codeintel/` | E07 | @ChristianPresley |
 | zg_agents | `packages/agents/` | E13 | @ChristianPresley |
 | zg_perf | `packages/perf/` | E14 | @ChristianPresley |
 | zg_config | `packages/config/` | E15 | @ChristianPresley |
