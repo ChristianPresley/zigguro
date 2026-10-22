@@ -2,7 +2,7 @@
 //! in the editor is read and edited through E05's `AgentEditSession` on
 //! the UI thread: reads see the unsaved buffer, and edits are rebased over
 //! the user's typing and land as one undo step. Every other path goes to
-//! disk through zg_ai's `DiskFiles`.
+//! disk through zg_ai's `DiskFiles`, or through `outside` when set.
 //!
 //! Tools call in from agent tasks; editor work is posted to the UI thread
 //! (`App.post`) while the task waits on an `Io.Event`, so the documents
@@ -36,6 +36,9 @@ pub const EditorFiles = struct {
     /// Runs on the UI thread after an agent edit landed in an open
     /// document.
     on_edit: ?Hook = null,
+    /// The `Files` for paths not open in the editor (E12's recording
+    /// `ReviewGlue`); the plain disk when null.
+    outside: ?zfiles.Files = null,
 
     pub const Hook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, doc: DocHandle, tool: []const u8) void };
 
@@ -64,7 +67,7 @@ pub const EditorFiles = struct {
     }
 
     fn diskFiles(self: *EditorFiles) zfiles.Files {
-        return self.disk.asFiles();
+        return self.outside orelse self.disk.asFiles();
     }
 
     /// Editor work for the UI thread.
