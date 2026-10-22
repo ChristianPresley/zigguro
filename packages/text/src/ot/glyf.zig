@@ -76,7 +76,7 @@ pub const Scratch = struct {
 /// are ignored.
 pub const DeltaHook = struct {
     ctx: *anyopaque,
-    apply: *const fn (ctx: *anyopaque, gid: GlyphId, pts: [][2]f32, ends: []const u16, is_composite: bool) error{Malformed}!void,
+    apply: *const fn (ctx: *anyopaque, gid: GlyphId, pts: [][2]f32, ends: []const u16, is_composite: bool) error{ Malformed, OutOfMemory }!void,
 };
 
 /// What `outline` learned besides the path.
@@ -134,6 +134,24 @@ pub const Glyf = struct {
             .x1 = @floatFromInt(try reader.readAt(i16, d, 6)),
             .y1 = @floatFromInt(try reader.readAt(i16, d, 8)),
         };
+    }
+
+    /// Number of points of a simple glyph, components of a composite, or 0
+    /// for an empty glyph: the count gvar deltas index before the phantoms.
+    pub fn pointCount(g: *const Glyf, gid: GlyphId) error{Malformed}!usize {
+        const d = try g.glyphData(gid);
+        if (d.len == 0) return 0;
+        const n = try reader.readAt(i16, d, 0);
+        if (n > 0) return @as(usize, try reader.readAt(u16, d, 10 + 2 * (@as(usize, @intCast(n)) - 1))) + 1;
+        if (n == 0) return 0;
+        var r = try reader.Reader.at(d, 10);
+        var count: usize = 0;
+        while (true) {
+            count += 1;
+            if (count > max_components) return error.Malformed;
+            const c = try readComponent(&r);
+            if (c.flags & more_components == 0) return count;
+        }
     }
 
     /// Decodes glyph `gid` (flattening composites) into `scratch`, lets
