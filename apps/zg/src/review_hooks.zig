@@ -14,6 +14,9 @@
 //!   what it auto-applies; the rest waits as with `defer`.
 //!
 //! The agent reads its own pending changes back (the glue's agent view).
+//! Review outcomes (`bindOutcomes`): when a changeset this run made is
+//! decided, here or by `zg review` in another shell, the agent learns of
+//! it as a reminder at its next turn.
 //! The `review` events of `zg.stream/1` come later.
 
 const std = @import("std");
@@ -67,6 +70,7 @@ pub const Review = struct {
     mode: Mode,
     /// Changesets with this id or larger came from this run.
     first: u64,
+    reminders: ?*zg_ai.context.reminders.ReminderQueue = null,
 
     /// `permission_mode` is the name of `zg agent`'s `--permission-mode`.
     pub fn init(gpa: Allocator, io: Io, cwd: []const u8, mode: Mode, permission_mode: []const u8) !Review {
@@ -85,6 +89,24 @@ pub const Review = struct {
 
     pub fn deinit(r: *Review) void {
         r.glue.destroy();
+    }
+
+    /// Outcomes of this run's changesets go to `reminders` (the agent's
+    /// context stack). `r` must not move afterwards.
+    pub fn bindOutcomes(r: *Review, reminders: *zg_ai.context.reminders.ReminderQueue) !void {
+        r.reminders = reminders;
+        try r.glue.bindOutcomes(.{ .ctx = r, .deliver = deliverOutcome });
+    }
+
+    fn deliverOutcome(ctx: *anyopaque, o: *const zg_review.feedback.Outcome) void {
+        const r: *Review = @ptrCast(@alignCast(ctx));
+        const q = r.reminders orelse return;
+        // Earlier runs' changesets have no agent to tell.
+        if (@intFromEnum(o.cs) < r.first) return;
+        var aw: std.Io.Writer.Allocating = .init(q.gpa);
+        defer aw.deinit();
+        zg_review.feedback.outcome.render(o, &aw.writer, 2000) catch return;
+        q.push(.other, aw.written());
     }
 
     /// The pending changesets this run made.
@@ -215,4 +237,46 @@ test "review hooks: a held turn is listed, then accepted interactively" {
     try std.testing.expect(std.mem.indexOf(u8, err.written(), "+ONE\n") != null);
     try std.testing.expect(std.mem.endsWith(u8, err.written(), "#1 applied.\n"));
     try std.testing.expectEqualStrings("ONE\n", try tmp.dir.readFileAlloc(io, "a.txt", arena, .limited(64)));
+}
+
+test "review hooks: a decision made by `zg review` reaches the agent at its next turn" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\n" });
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var reminders: zg_ai.context.reminders.ReminderQueue = .init(gpa, io);
+    defer reminders.deinit();
+    var r: Review = try .init(gpa, io, root, .@"defer", "default");
+    defer r.deinit();
+    try r.bindOutcomes(&reminders);
+    const fs = r.glue.files();
+    const agent: zg_ai.proto.AgentRef = .{ .session = 7 };
+    const abs = (try fs.resolve(io, arena, "a.txt")).abs;
+    _ = try fs.propose(io, arena, abs, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, .{ .agent = agent, .turn = 1, .tool = "edit_file", .tool_call_id = "t" });
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(io, agent, 1)).?);
+
+    // Another process accepts it.
+    {
+        const other = try ReviewGlue.create(gpa, io, root, .{ .persist = true });
+        defer other.destroy();
+        other.mutex.lockUncancelable(io);
+        defer other.mutex.unlock(io);
+        try std.testing.expect(try other.actLocked(arena, id, .accept) == .ok);
+    }
+    try std.testing.expectEqual(@as(usize, 0), reminders.len());
+
+    // The agent's next turn ends: the outcome waits for its next request.
+    _ = try fs.propose(io, arena, abs, .{ .str_replace = .{ .old = "ONE", .new = "1" } }, .{ .agent = agent, .turn = 2, .tool = "edit_file", .tool_call_id = "u" });
+    _ = try fs.endTurn(io, agent, 2);
+    try std.testing.expectEqual(@as(usize, 1), reminders.len());
+    const got = try reminders.drain(arena);
+    try std.testing.expect(std.mem.indexOf(u8, got[0], "Review outcome #1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got[0], "- a.txt: accepted (1/1)") != null);
 }
