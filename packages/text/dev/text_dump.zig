@@ -3,7 +3,7 @@
 //! stdout, is deterministic and uses LF line endings.
 //!
 //!   text-dump metrics <font> [--index N]
-//!   text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...]
+//!   text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
 //!   text-dump shape   <font> <text> [--features ...] [--dir rtl] [--script arab]
 //!   text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
 //!
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !u8 {
 fn usage() u8 {
     std.debug.print(
         \\usage: text-dump metrics <font> [--index N]
-        \\       text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...]
+        \\       text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
         \\       text-dump shape   <font> <text> [--features "liga=0,ss01"] [--dir rtl] [--script arab]
         \\       text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
         \\
@@ -70,20 +70,50 @@ fn usage() u8 {
 }
 
 /// Writes "<gid> <path>" per requested glyph, in the `Path.format`
-/// grammar of the outline goldens. "all" means every glyph.
+/// grammar of the outline goldens. "all" means every glyph. `--coords`
+/// takes user values (tag=value,...); `--norm` takes normalized F2Dot14
+/// values in fvar axis order (n,n,...).
 fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face, specs: []const []const u8) !u8 {
     if (specs.len == 0) return usage();
-    const g = face.glyf() orelse {
+    const vt = ot.variation;
+    var user: [vt.fvar.max_axes]vt.AxisValue = undefined;
+    var n_user: usize = 0;
+    var norm: [vt.fvar.max_axes]i16 = undefined;
+    var n_norm: ?usize = null;
+    var glyphs: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < specs.len) : (i += 1) {
+        const a = specs[i];
+        if ((std.mem.eql(u8, a, "--coords") or std.mem.eql(u8, a, "--norm")) and i + 1 < specs.len) {
+            i += 1;
+            var it = std.mem.splitScalar(u8, specs[i], ',');
+            if (a[2] == 'c') {
+                while (it.next()) |kv| {
+                    const eq = std.mem.indexOfScalar(u8, kv, '=') orelse return usage();
+                    if (eq != 4) return usage();
+                    user[n_user] = .{ .tag = std.mem.readInt(u32, kv[0..4], .big), .value = try std.fmt.parseFloat(f32, kv[5..]) };
+                    n_user += 1;
+                }
+            } else {
+                var k: usize = 0;
+                while (it.next()) |v| : (k += 1) norm[k] = try std.fmt.parseInt(i16, v, 10);
+                n_norm = k;
+            }
+        } else if (std.mem.startsWith(u8, a, "--")) {
+            return usage();
+        } else try glyphs.append(gpa, a);
+    }
+    var inst = if (n_norm) |k|
+        try vt.FaceInstance.initNormalized(gpa, face, norm[0..k])
+    else
+        try vt.FaceInstance.init(gpa, face, user[0..n_user]);
+    if (face.glyf() == null) {
         std.debug.print("text-dump outline: {t} outlines: not implemented\n", .{face.outline_kind});
         return 2;
-    };
-    var scratch: ot.glyf.Scratch = .{};
+    }
+    var scratch: vt.OutlineScratch = .{};
     var path: zg_text.outline.Path = .{};
-    for (specs) |spec| {
-        if (std.mem.startsWith(u8, spec, "--")) {
-            std.debug.print("text-dump outline: {s}: not implemented\n", .{spec});
-            return 2;
-        }
+    for (glyphs.items) |spec| {
         var lo: u32 = undefined;
         var hi: u32 = undefined;
         if (std.mem.eql(u8, spec, "all")) {
@@ -99,12 +129,13 @@ fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face,
         for (lo..hi) |gid| {
             path.reset();
             try w.print("{d} ", .{gid});
-            if (g.outline(gpa, @intCast(gid), &scratch, null, &path)) |_| {
+            if (inst.outline(gpa, @intCast(gid), &scratch, &path)) |_| {
                 try path.format(w);
             } else |e| try w.print("error.{t}", .{e});
             try w.writeByte('\n');
         }
     }
+    inst.deinit(gpa);
     return 0;
 }
 
