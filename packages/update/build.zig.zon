@@ -1,0 +1,20 @@
+.{
+    .name = .zg_update,
+    .version = "0.0.0",
+    .fingerprint = 0xa5d0f9c2244fe94b,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_release = .{ .path = "../release" },
+        .zg_net = .{ .path = "../net" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+    },
+}
