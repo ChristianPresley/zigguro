@@ -336,7 +336,7 @@ fn finishInitialize(c: *Client, r: Endpoint.Result) !void {
         .method = "initialize",
         .size = if (resp.response.result) |x| x.bytes.len else 0,
         .at_ns = c.nowNs(),
-        .body = if (resp.response.result) |x| x.bytes else null,
+        .body = traceBody(resp),
     });
     if (resp.response.err) |e| {
         log.warn("initialize error {d}: {s}", .{ e.code, e.message });
@@ -416,9 +416,19 @@ pub fn shutdown(c: *Client) void {
     }
     c.setState(.shutting_down);
     c.failQueued(.server_gone);
-    c.trace.record(.{ .dir = .send, .kind = .request, .method = "shutdown", .at_ns = c.nowNs() });
+    const sent_ns = c.nowNs();
+    c.trace.record(.{ .dir = .send, .kind = .request, .method = "shutdown", .at_ns = sent_ns });
     if (c.ep.request("shutdown", {}, .{ .timeout = .fromSeconds(2) })) |r| {
-        r.deinit();
+        defer r.deinit();
+        const now = c.nowNs();
+        c.trace.record(.{
+            .dir = .recv,
+            .kind = if (r.response.err != null) .error_response else .response,
+            .method = "shutdown",
+            .latency_ns = @intCast(@max(0, now - sent_ns)),
+            .at_ns = now,
+            .body = traceBody(r),
+        });
     } else |err| log.debug("shutdown: {t}", .{err});
     c.ep.notify("exit", {}) catch {};
     c.trace.record(.{ .dir = .send, .kind = .notification, .method = "exit", .at_ns = c.nowNs() });
@@ -593,12 +603,22 @@ fn onResponse(ctx: ?*anyopaque, res: Endpoint.Result) void {
             .size = if (o.response.result) |x| x.bytes.len else 0,
             .latency_ns = @intCast(@max(0, now - r.sent_ns)),
             .at_ns = now,
-            .body = if (o.response.result) |x| x.bytes else null,
+            .body = traceBody(o),
         }),
         .err => {},
     }
     r.finish(r, res);
     c.freeReq(r);
+}
+
+/// The trace body of a response: the result, or the error's code and
+/// message.
+fn traceBody(o: Endpoint.OwnedResponse) ?[]const u8 {
+    if (o.response.err) |e| return std.json.Stringify.valueAlloc(o.arena.allocator(), .{
+        .code = e.code,
+        .message = e.message,
+    }, .{}) catch null;
+    return if (o.response.result) |x| x.bytes else null;
 }
 
 fn flushQueued(c: *Client) void {
