@@ -79,6 +79,12 @@ pub const FakeCompositor = struct {
 
     /// Blocks until one whole request has arrived.
     pub fn recv(fc: *FakeCompositor) !Request {
+        return (try fc.recvTimeout(null)).?;
+    }
+
+    /// Like `recv`, but returns null when nothing complete arrives within
+    /// `timeout_ns` (null waits forever).
+    pub fn recvTimeout(fc: *FakeCompositor, timeout_ns: ?u64) !?Request {
         while (true) {
             const avail = fc.in_end - fc.in_start;
             if (avail >= 8) {
@@ -95,6 +101,7 @@ pub const FakeCompositor = struct {
                 fc.in_start = 0;
                 fc.in_end = avail;
             }
+            if (timeout_ns) |ns| if (!readable(fc.sock, ns)) return null;
             fc.in_end += try socket.recvMsg(fc.sock, fc.in[fc.in_end..], &fc.fds, false);
         }
     }
@@ -124,3 +131,16 @@ pub const FakeCompositor = struct {
         fc.serveCore(globals, syncs) catch |err| std.debug.panic("fake compositor: {s}", .{@errorName(err)});
     }
 };
+
+fn readable(fd: i32, timeout_ns: u64) bool {
+    var pfd = [1]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+    var ts: linux.timespec = .{ .sec = @intCast(timeout_ns / std.time.ns_per_s), .nsec = @intCast(timeout_ns % std.time.ns_per_s) };
+    while (true) {
+        const rc = linux.ppoll(&pfd, 1, &ts, null);
+        switch (linux.errno(rc)) {
+            .SUCCESS => return rc > 0,
+            .INTR => continue,
+            else => return true, // let the read report it
+        }
+    }
+}
