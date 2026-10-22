@@ -18,6 +18,10 @@ pub const RenderThread = @import("RenderThread.zig");
 /// The offscreen render plus copy-to-CPU target.
 pub const Readback = @import("Readback.zig");
 pub const ShmRing = @import("ShmRing.zig");
+/// The zero-copy dmabuf target for Wayland and X11 presenters.
+pub const ExternalRing = @import("ExternalRing.zig");
+/// DRM fourcc codes and modifier negotiation.
+pub const drm_formats = @import("drm_formats.zig");
 
 test {
     _ = FrameScheduler;
@@ -25,6 +29,8 @@ test {
     _ = Damage;
     _ = Readback;
     _ = ShmRing;
+    _ = ExternalRing;
+    _ = drm_formats;
     _ = FramePacer;
     _ = RenderThread;
     _ = @import("gpu_test.zig");
