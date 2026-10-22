@@ -413,10 +413,13 @@ pub const WaylandBackend = struct {
             b.cursor_timer_fd = @intCast(cfd);
             try b.watch(b.cursor_timer_fd, 3);
         } else log.warn("timerfd_create failed; cursors do not animate", .{});
-        b.thread = try std.Thread.spawn(.{}, threadMain, .{b});
+        // The platform thread takes portal answers, so the portal must be
+        // ready before it starts.
         var abuf: [256]u8 = undefined;
         const address = opts.dbus_address orelse if (opts.environ_map) |env| portal.sessionAddress(&abuf, env) else null;
         b.desktop.init(gpa, io, .{ .ctx = b, .func = wakeForPortal }, .{ .address = address });
+        errdefer b.desktop.deinit();
+        b.thread = try std.Thread.spawn(.{}, threadMain, .{b});
         return b;
     }
 
@@ -686,10 +689,11 @@ pub const WaylandBackend = struct {
 
     /// See `Platform.VTable.deinit`.
     pub fn deinit(b: *WaylandBackend) void {
-        b.desktop.deinit();
         b.stopping.store(true, .release);
         b.thread_wake.signal();
         if (b.thread) |t| t.join();
+        // After the join: the platform thread takes portal answers.
+        b.desktop.deinit();
         b.lock();
         for (b.slots.items) |s| b.destroySlot(s);
         b.slots.clearRetainingCapacity();
