@@ -9,6 +9,7 @@
         .zg_text = .{ .path = "../text" },
         .zg_regex = .{ .path = "../regex" },
         .zg_syntax = .{ .path = "../syntax" },
+        .zg_gui = .{ .path = "../gui" },
     },
     .paths = .{
         "build.zig",
