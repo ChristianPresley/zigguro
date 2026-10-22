@@ -596,6 +596,12 @@ fn appModule(
         inline for (.{ "zg_core", "zg_net", "zg_mcp", "zg_ai" }) |n| servers.addImport(n, mods[comptime packages.indexOf(n)]);
         imports.append(b.allocator, .{ .name = "zg_mcp_servers", .module = servers }) catch @panic("OOM");
     }
+    // `zg agent` keeps agent edits for review the way the IDE does.
+    if (std.mem.startsWith(u8, root, "apps/zg/")) {
+        const glue = b.createModule(.{ .root_source_file = b.path("apps/zigguro/src/agent/review_glue.zig"), .target = target, .optimize = optimize });
+        inline for (.{ "zg_ai", "zg_review" }) |n| glue.addImport(n, mods[comptime packages.indexOf(n)]);
+        imports.append(b.allocator, .{ .name = "zg_review_glue", .module = glue }) catch @panic("OOM");
+    }
     // Crash reports (E17.F05) need frame pointers and a GNU build id, and
     // the self-hosted aarch64 backend traps before the segfault hook runs.
     return b.createModule(.{
