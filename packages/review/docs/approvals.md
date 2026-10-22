@@ -13,7 +13,7 @@ session), the review panel's inbox, toasts and `zg review approvals`.
 
 | Call | What it does |
 | --- | --- |
-| `present(req)` | Copies the request and adds it as `pending`. Any thread. |
+| `present(req)` | Copies the request and adds it as `pending` (a `created_ms` of 0 becomes now). Any thread. |
 | `presentChained(req, previous)` | The same, for a request that re-asks an edited input. |
 | `await(id, io)` | Blocks until answered, cancelled or expired. Cancelling `io` cancels the request and returns `error.Canceled`. |
 | `answer(id, answer, view)` | First answer wins; later ones get `error.AlreadyAnswered`. `edit` needs `req.editable` (`error.NotEditable`). |
@@ -26,6 +26,17 @@ session), the review panel's inbox, toasts and `zg review approvals`.
 `commandView(req, arena)` gives a command request's line with the `cwd`,
 `terminal` and `shell` keys of `req.detail_json` (E06 and E10 put them
 there).
+
+## In the IDE
+
+The workbench owns one broker for the window and passes it to the agent
+host (`ToolApprovals` presents through its port) and to the review glue,
+which `bind`s it to the review store when that opens. The review queue
+panel lists the requests at its top (`apps/zigguro/src/review/
+approvals_view.zig`): one card per request (`approval_card.zig`), with
+keys `y` `s` `Y` `n` `e` `j` `k` `o`. A new request shows the panel; while
+the window is unfocused, requests within 1.5 s share one toast. The
+status bar shows "⚑ N approvals".
 
 ## States
 
