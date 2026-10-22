@@ -23,6 +23,7 @@ const request = @import("../provider/request.zig");
 const registry = @import("../models/registry.zig");
 const asm_mod = @import("assembler.zig");
 const memory = @import("memory.zig");
+const deps = @import("../loop/deps.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -206,6 +207,28 @@ pub const Compactor = struct {
             for (re.background) |b| try t.print(arena, "- {s}\n", .{b});
         }
         return std.mem.trimEnd(u8, t.items, "\n");
+    }
+};
+
+/// Adapts a compactor to the loop's `deps.Compaction` seam. `reinject`
+/// is read at each compaction, so its owner keeps it current.
+pub const LoopCompaction = struct {
+    compactor: *Compactor,
+    reinject: Reinject = .{},
+
+    pub fn compaction(l: *LoopCompaction) deps.Compaction {
+        return .{ .ctx = l, .should_compact = should, .compact = run };
+    }
+
+    fn should(ctx: *anyopaque, est_input_tokens: u64, window: u32) bool {
+        const l: *LoopCompaction = @ptrCast(@alignCast(ctx));
+        return l.compactor.shouldCompact(est_input_tokens, window) != null;
+    }
+
+    fn run(ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, overflow: bool) anyerror!deps.CompactedHistory {
+        const l: *LoopCompaction = @ptrCast(@alignCast(ctx));
+        const r = try l.compactor.compact(io, arena, base, history, l.reinject, .{ .trigger = if (overflow) .window_overflow else .auto_threshold });
+        return .{ .messages = r.messages, .tokens_before = r.tokens_before, .tokens_after = r.tokens_after, .model = r.model, .fallback = r.fallback };
     }
 };
 
