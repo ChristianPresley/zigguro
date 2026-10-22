@@ -281,6 +281,12 @@ pub const Queue = struct {
         q.emit(if (replaced) .{ .updated = cs.id } else .{ .submitted = cs.id });
     }
 
+    /// Ids below `next` are taken: a compaction dropped their changesets.
+    pub fn reserve(q: *Queue, next: u64) void {
+        var cur = q.next_id.load(.monotonic);
+        while (cur < next) cur = q.next_id.cmpxchgWeak(cur, next, .monotonic, .monotonic) orelse break;
+    }
+
     /// Owner thread: another process removed `id`. Not journaled.
     pub fn restoreRemoved(q: *Queue, id: ChangesetId) void {
         q.forget(id);
