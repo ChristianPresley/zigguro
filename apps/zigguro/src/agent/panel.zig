@@ -3,7 +3,9 @@
 //! streamed replies, tool calls with their outcome, and the permission,
 //! hook and validation decisions about them), the agent's status and a
 //! prompt field: Enter sends, Shift+Enter breaks the line, Stop cancels
-//! the turn.
+//! the turn. With plan mode wired (`plans`, `plan_mode`), a "Plan mode"
+//! switch in the header enters and leaves it, and a proposed plan shows
+//! as a card above the prompt (plan_card.zig).
 //!
 //! The agent publishes on its own tasks: a queued bus subscriber copies
 //! each batch into an inbox under a mutex and posts one drain to the UI
@@ -21,6 +23,7 @@ const Ui = zg_gui.Ui;
 const Agent = zg_ai.loop.Agent;
 const ev = zg_ai.loop.events;
 const bus = zg_ai.loop.bus;
+const PlanCards = @import("plan_card.zig").PlanCards;
 
 /// See the module doc.
 pub const AgentPanel = struct {
@@ -49,6 +52,9 @@ pub const AgentPanel = struct {
     input_node: zg_gui.core.NodeId = .none,
     /// Scroll to the end after the next frame (new content).
     follow: bool = false,
+    /// Plan approvals and the plan mode switch (optional).
+    plans: ?*PlanCards = null,
+    plan_mode: ?*zg_ai.plan.PlanMode = null,
     /// Called after the transcript changed (the workbench repaints).
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
 
@@ -215,6 +221,7 @@ pub const AgentPanel = struct {
                 else => .{ .note = try std.fmt.allocPrint(a, "The turn ended: {t}.", .{t.reason}) },
             },
             .status => |s| .{ .status = s },
+            .plan_approved => |pa| .{ .note = try std.fmt.allocPrint(a, "Plan approved ({s}); saved to {s}.", .{ pa.mode, pa.path }) },
             else => null,
         };
     }
@@ -289,6 +296,14 @@ pub const AgentPanel = struct {
         ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
         ui.text("AGENT", .{ .color = .fg_muted, .wrap = false });
         ui.text(statusText(p.status), .{ .color = if (p.status == .failed) .danger else .fg_muted, .wrap = false });
+        if (p.plan_mode) |pm| {
+            ui.open(.{ .style = .{ .grow = 1 } });
+            ui.close();
+            var on = pm.mode == .plan;
+            if (zg_gui.w.toggle(ui, "Plan mode", &on).changed and !busy(p.status)) {
+                if (on) pm.enter() else pm.leave(.default);
+            }
+        }
         ui.close();
 
         p.area = zg_gui.w.scrollArea(ui, .{ .style = .{ .grow = 1, .basis = .{ .px = 0 }, .dir = .column, .gap = 8, .padding = .all(10) }, .test_id = "agent-transcript" });
@@ -302,6 +317,8 @@ pub const AgentPanel = struct {
             p.follow = false;
             ui.win.afterNextFrame(.{ .ctx = p, .f = scrollToEnd });
         }
+
+        if (p.plans) |pc| pc.build(ui);
 
         ui.open(.{ .style = .{ .dir = .column, .gap = 6, .padding = .all(10), .shrink = 0 } });
         defer ui.close();
