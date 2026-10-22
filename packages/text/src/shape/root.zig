@@ -33,9 +33,11 @@ pub const complex = struct {
     pub const default = @import("complex/default.zig");
     pub const arabic = @import("complex/arabic.zig");
     pub const use = @import("complex/use.zig");
+    pub const would_apply = @import("would_apply.zig");
     pub const syllable_dfa = @import("complex/syllable_dfa.zig");
     pub const dotted_circle = @import("complex/dotted_circle.zig");
     pub const indic_tables = @import("complex/indic_tables.zig");
+    pub const indic = @import("complex/indic.zig");
     pub const khmer = @import("complex/khmer.zig");
     pub const myanmar = @import("complex/myanmar.zig");
 };
@@ -59,4 +61,6 @@ test {
     _ = @import("complex/use_test.zig");
     _ = @import("complex/indic_tables.zig");
     _ = @import("complex/khmer_myanmar_test.zig");
+    _ = @import("would_apply.zig");
+    _ = @import("complex/indic_test.zig");
 }
