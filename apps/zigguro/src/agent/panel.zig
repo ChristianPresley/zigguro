@@ -30,6 +30,7 @@ const Agent = zg_ai.loop.Agent;
 const ev = zg_ai.loop.events;
 const bus = zg_ai.loop.bus;
 const PlanCards = @import("plan_card.zig").PlanCards;
+const AgentCommands = @import("commands.zig").AgentCommands;
 
 /// See the module doc.
 pub const AgentPanel = struct {
@@ -60,6 +61,8 @@ pub const AgentPanel = struct {
     follow: bool = false,
     /// Plan approvals and the plan mode switch (optional).
     plans: ?*PlanCards = null,
+    /// Slash commands and skills (`/help`, `/plan`, ...), when wired.
+    commands: ?*AgentCommands = null,
     /// Where subagent events come from, while attached.
     relay: ?*ChildRelay = null,
     plan_mode: ?*zg_ai.plan.PlanMode = null,
@@ -175,8 +178,29 @@ pub const AgentPanel = struct {
         if (t.len == 0) return;
         try p.addItem(.user, t);
         p.streaming = false;
+        defer p.changed();
+        if (p.commands) |c| {
+            var arena: std.heap.ArenaAllocator = .init(p.gpa);
+            defer arena.deinit();
+            if (try c.handle(arena.allocator(), t)) |out| switch (out) {
+                .prompt => |prompt| {
+                    _ = try p.agent.submit(.{ .text = prompt, .source = .ui });
+                    return;
+                },
+                .note => |note| return p.addItem(.note, note),
+                .clear => return p.clear(),
+            };
+        }
         _ = try p.agent.submit(.{ .text = t, .source = .ui });
-        p.changed();
+    }
+
+    /// Starts a new conversation: the transcript and the agent's history
+    /// (only while it is idle).
+    pub fn clear(p: *AgentPanel) !void {
+        p.agent.truncate(0) catch return p.addItem(.note, "Stop the agent before clearing the conversation.");
+        for (p.items.items) |*it| it.deinit(p.gpa);
+        p.items.clearRetainingCapacity();
+        p.streaming = false;
     }
 
     /// Cancels the running turn (queued prompts then run).
@@ -796,4 +820,43 @@ test "agent panel: a subagent's transcript nests under its task call" {
     _ = t.settle();
     try testing.expect(call.open());
     try testing.expectEqual(@as(usize, 1), t.count(.{ .test_id = "subagent" }));
+}
+
+test "agent panel: slash commands answer in the transcript; /clear starts over" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    rt.bindUiThread(.noop);
+    defer _ = rt.deinit();
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &.{}, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var tools: zg_ai.loop.deps.StaticTools = .{ .specs = &.{} };
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &models, .providers = .fixed(&provider), .tools = tools.tools() });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+    const cmds = try AgentCommands.init(gpa, io, ".zig-cache/no-such-project");
+    defer cmds.deinit();
+    cmds.target = .{ .agent = agent };
+
+    const t = try zg_gui.testing.TestApp.init(gpa, .{});
+    defer t.deinit();
+    t.app.attachRuntime(&rt);
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+    p.commands = cmds;
+
+    try p.submit("/help");
+    try testing.expectEqual(AgentPanel.Kind.user, p.items.items[0].kind);
+    _ = find(p, .note, "Commands:").?;
+    try p.submit("/cost");
+    _ = find(p, .note, "$0.00").?;
+    // Nothing reached the model.
+    try testing.expectEqual(@as(usize, 0), sp.requests().len);
+
+    try p.submit("/clear");
+    try testing.expectEqual(@as(usize, 0), p.items.items.len);
 }
