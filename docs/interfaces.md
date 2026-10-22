@@ -556,6 +556,9 @@ pub fn callAsync(self: *Bus, dest, path, iface, member: []const u8, comptime sig
 pub fn emit(self: *Bus, path, iface, member: []const u8, comptime sig: []const u8, args: anytype) !void;
 pub fn addMatch(self: *Bus, rule: []const u8, handler: SignalHandler) !MatchId;
 pub fn removeMatch(self: *Bus, id: MatchId) void;
+pub fn setMethodHandler(self: *Bus, handler: ?MethodHandler) void; // serve calls (services, test fakes)
+pub fn replyTo(self: *Bus, in: *const Incoming, comptime sig: []const u8, args: anytype) !void;
+pub fn replyError(self: *Bus, in: *const Incoming, name: []const u8, text: []const u8) !void;
 pub fn pollFd(self: *const Bus) i32;  // with Options.own_thread = false
 pub fn pump(self: *Bus) !void;
 // Pending
@@ -580,6 +583,55 @@ A `Reply` owns its bytes and fds; `deinit` frees them, `takeFd` moves an fd
 out. Values decoded from a reply are views into it plus containers in the
 caller's arena. An `Incoming` signal is valid only during the handler call.
 fds passed to `call`/`emit` stay owned by the caller.
+
+### Stability
+Experimental until the E01 PR merges.
+
+## zg_platform.portal
+
+### Defined in
+`packages/platform/src/portal/{request,file_chooser,open_uri,settings,window_handle}.zig`;
+the test fake is `portal/fake_portal.zig` (E01.F07.S01.T02).
+
+### Implemented by
+E01.F07.S01.T02, on `zg_platform.dbus.Bus`.
+
+### Consumed by
+The Wayland and X11 backends (E01.F04, E01.F05), which turn responses into
+`Event.dialog_result` and `Event.appearance_changed`; E04 falls back to its
+built-in picker when a response is `unavailable`.
+
+### Signature
+```zig
+// request.zig
+pub fn Request.begin(gpa: Allocator, bus: *Bus, cb: ?Callback) !*Request; // token() for handle_token
+pub fn Request.replyHandler(self: *Request) ReplyHandler;                  // pass to bus.callAsync
+pub fn Request.wait(self: *Request, timeout_ns: ?u64) !Response;           // when cb is null
+pub const Response = struct { code: Code, unavailable: bool, results: Dict, ... };
+pub fn fileUriToPath(out: []u8, uri: []const u8) ?[]const u8;
+// file_chooser.zig
+pub fn open(gpa: Allocator, bus: *Bus, req: DialogRequest, parent: []const u8, cb: Callback) !*Request;
+pub fn paths(resp: *const Response, gpa: Allocator, out: *std.ArrayList(u8)) !usize; // NUL-separated
+// open_uri.zig
+pub fn open(gpa: Allocator, bus: *Bus, parent: []const u8, uri: []const u8, policy: SchemePolicy, cb: ?Callback) !*Request;
+// settings.zig
+pub fn read(gpa: Allocator, bus: *Bus, timeout_ns: ?u64) Appearance;     // ReadOne, then Read on old portals
+pub const Watcher = struct { bus, current: Appearance, callback: ChangeCallback, ... }; // start/stop
+// window_handle.zig
+pub fn wayland(out: []u8, handle: []const u8) ![]const u8;               // "wayland:<handle>"
+pub fn x11(out: []u8, xid: u32) ![]const u8;                              // "x11:<hex>"
+```
+`Event.dialog_result` has no `unavailable` field yet: adding one changes
+the `.zgtrace` layout, so it lands with the first backend that emits it,
+together with a trace version bump.
+
+### Threading
+Callbacks run on the bus reader thread. `settings.read` blocks on calls,
+so run it off the UI thread.
+
+### Ownership/lifetime
+A `Response` owns its results; the callback (or the `wait` caller) must
+`deinit` it. Free a `Request` after its response arrived, or to abandon it.
 
 ### Stability
 Experimental until the E01 PR merges.
