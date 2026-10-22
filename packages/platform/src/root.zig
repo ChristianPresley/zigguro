@@ -113,6 +113,14 @@ pub const xkb = struct {
     pub const lexer = @import("xkb/lexer.zig");
     /// See `xkb/parser.zig`.
     pub const parser = @import("xkb/parser.zig");
+    /// See `xkb/compose.zig`.
+    pub const ComposeTable = @import("xkb/compose.zig").ComposeTable;
+    /// See `xkb/compose.zig`.
+    pub const ComposeState = @import("xkb/compose.zig").ComposeState;
+    /// See `xkb/compose.zig`.
+    pub const compose = @import("xkb/compose.zig");
+    /// See `xkb/compose_parser.zig`.
+    pub const compose_parser = @import("xkb/compose_parser.zig");
 };
 
 /// The Wayland client: generated protocol bindings (`wl_gen`) and the
@@ -288,6 +296,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "xkb/keysyms.zig", .src = @embedFile("xkb/keysyms.zig") },
     .{ .path = "xkb/keysym_data.zig", .src = @embedFile("xkb/keysym_data.zig") },
     .{ .path = "xkb/evdev.zig", .src = @embedFile("xkb/evdev.zig") },
+    .{ .path = "xkb/compose.zig", .src = @embedFile("xkb/compose.zig") },
+    .{ .path = "xkb/compose_parser.zig", .src = @embedFile("xkb/compose_parser.zig") },
     .{ .path = "wayland/wire/connection.zig", .src = @embedFile("wayland/wire/connection.zig") },
     .{ .path = "wayland/wire/socket.zig", .src = @embedFile("wayland/wire/socket.zig") },
     .{ .path = "wayland/wire/fdqueue.zig", .src = @embedFile("wayland/wire/fdqueue.zig") },
