@@ -8,6 +8,7 @@
         .zg_core = .{ .path = "../core" },
         .zg_jsonrpc = .{ .path = "../jsonrpc" },
         .zg_net = .{ .path = "../net" },
+        .zg_regex = .{ .path = "../regex" },
     },
     .paths = .{
         "build.zig",
