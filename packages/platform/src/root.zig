@@ -365,6 +365,8 @@ pub const win32 = struct {
     pub const data_object = @import("win32/data_object.zig");
     /// See `win32/dnd.zig`.
     pub const dnd = @import("win32/dnd.zig");
+    /// See `win32/hooks.zig`.
+    pub const hooks = @import("win32/hooks.zig");
     /// See `win32/frame.zig`.
     pub const frame = @import("win32/frame.zig");
     /// See `win32/cursor.zig`.
@@ -475,6 +477,7 @@ test {
     _ = win32.enum_formatetc;
     _ = win32.data_object;
     _ = win32.dnd;
+    _ = win32.hooks;
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
@@ -630,6 +633,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/hdrop.zig", .src = @embedFile("win32/hdrop.zig") },
     .{ .path = "win32/clipboard.zig", .src = @embedFile("win32/clipboard.zig") },
     .{ .path = "win32/frame.zig", .src = @embedFile("win32/frame.zig") },
+    .{ .path = "win32/hooks.zig", .src = @embedFile("win32/hooks.zig") },
     .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
     .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
     .{ .path = "win32/pointer.zig", .src = @embedFile("win32/pointer.zig") },

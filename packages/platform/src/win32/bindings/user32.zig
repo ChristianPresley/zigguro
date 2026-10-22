@@ -179,6 +179,8 @@ pub extern "user32" fn TrackPopupMenu(t.HMENU, flags: UINT, x: i32, y: i32, rese
 pub extern "user32" fn IsZoomed(HWND) callconv(.winapi) BOOL;
 /// Whether the window is minimized.
 pub extern "user32" fn IsIconic(HWND) callconv(.winapi) BOOL;
+/// Whether the handle names an existing window.
+pub extern "user32" fn IsWindow(?HWND) callconv(.winapi) BOOL;
 /// Unsubscribes a window from WM_CLIPBOARDUPDATE.
 pub extern "user32" fn RemoveClipboardFormatListener(HWND) callconv(.winapi) BOOL;
 /// The window that owns the clipboard.
