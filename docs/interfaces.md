@@ -1903,7 +1903,9 @@ pub const SelectionSet = struct { gpa, items, primary_id: u32, word_search: bool
 // multi_cursor.zig
 pub const DisplayPos = struct { row: u64, col_px: f32 };
 pub const Hit = struct { offset: u64, virtual: u32 = 0 };
-pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn; pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit };
+pub const RowPos = struct { row: u64, x: f32 };
+pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn, rowOfFn;
+    pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit; pub fn rowOf(q, pos) RowPos };
 pub const ColumnOptions = struct { tab_size: u32 = 4, width: zg_text.unicode.width.WidthOptions = .{} };
 pub const ColumnMap = struct { gpa, snap: *const Snapshot, o: ColumnOptions; pub fn query(m) DisplayMapQuery }; // headless
 pub const BoxSelection = struct { anchor: DisplayPos, head: DisplayPos, virtual_space: bool = false };
@@ -1937,6 +1939,56 @@ The set owns its selections and history. `ColumnMap` borrows the snapshot.
 
 ### Stability
 Unstable until the F05 display map supplies `DisplayMapQuery`.
+
+## zg_editor.model.edit movement (movement, word, commands_move)
+
+### Defined in
+`packages/editor/src/model/edit/{movement.zig, word.zig, word_tailoring.zig, commands_move.zig}`
+(E05.F02.S01). Word rules and the stop table: `docs/editor/word-movement.md`.
+
+### Implemented by
+E05.F02.S01.T03.
+
+### Consumed by
+`EditorView` and E15 keybindings (command ids), F07 smart typing, E05.F09 Vim/Emacs motions.
+
+### Signature
+```zig
+pub const Unit = enum { grapheme, word, word_end, subword, whitespace_word, line_boundary, smart_home,
+    display_row, buffer_line, paragraph, page, bracket, document };
+pub const Dir = enum { backward, forward };
+pub const MoveContext = struct { display: ?DisplayMapQuery = null, goal_x: ?f32 = null, page_rows: u32 = 40,
+    lang: ?*const zg_syntax.Language = null, tab_size: u8 = 4 };
+pub fn move(snap: *const Snapshot, pos: u64, unit: Unit, dir: Dir, ctx: MoveContext) u64; // no allocation
+pub fn goalOf(snap, pos, ctx) f32; pub fn isVertical(unit) bool;
+pub fn matchingBracketPos(snap, pos) ?u64;              // plain scan, 1 MiB cap
+// word.zig
+pub const WordClass = enum { space, newline, ident, punct, other };
+pub fn classify(cp: u21, lang_word_chars: []const u21) WordClass;
+pub fn subwordBoundary(a: u21, b: u21, c: u21) bool; pub fn isSubwordSeparator(cp) bool;
+// commands_move.zig
+pub const MoveCommand = struct { id: []const u8, unit: Unit, dir: Dir, select: bool = false };
+pub const move_commands: [32]MoveCommand;               // cursor.* and cursor.*Select
+pub const DeleteCommand = struct { id: []const u8, unit: Unit, dir: Dir };
+pub const delete_commands: [8]DeleteCommand;            // delete.* (delete.line is deleteLines)
+pub fn moveCommand(id) ?MoveCommand;
+pub fn moveSelections(snap, sels: *SelectionSet, unit, dir, select: bool, ctx) void;
+pub const DeleteOptions = struct { ctx: MoveContext = .{}, use_tab_stops: bool = true };
+pub fn deleteBy(doc, sels, unit, dir, o: DeleteOptions, origin) !RunResult;
+pub fn deleteLines(doc, sels, origin) !RunResult;
+```
+`Language.word_chars` now set: `@` for Zig, `#` for C/C++ (with `$` for JS/TS and `-` for CSS/HTML).
+Moves read a 512-byte window or stream chunks; line moves scan for EOLs instead of indexing
+lines, and `paragraph` streams until a blank line (the whole file when there is none).
+
+### Threading
+Owner (UI) thread, or any thread holding the snapshot (`move` is pure).
+
+### Ownership/lifetime
+Nothing is retained between calls.
+
+### Stability
+Unstable until the F05 display map and the bracket tree replace the fallbacks.
 
 ## zg_editor.model.diff
 
