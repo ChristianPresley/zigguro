@@ -1,0 +1,9 @@
+//! Crate docs.
+/// Item docs.
+//// Not docs.
+/** Block docs */
+/*! Inner block docs */
+/*** Not docs */
+/**/ let a = 1;
+// plain
+fn documented() {}
