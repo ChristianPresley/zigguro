@@ -652,9 +652,18 @@ the test fake is `portal/fake_portal.zig` (E01.F07.S01.T02).
 E01.F07.S01.T02, on `zg_platform.dbus.Bus`.
 
 ### Consumed by
-The Wayland and X11 backends (E01.F04, E01.F05), which turn responses into
-`Event.dialog_result` and `Event.appearance_changed`; E04 falls back to its
-built-in picker when a response is `unavailable`.
+The Wayland and X11 backends (E01.F04, E01.F05) through `desktop.zig`,
+which they turn into `Event.dialog_result` and `Event.appearance_changed`.
+`desktop.Desktop` connects to the session bus (`InitOptions.dbus_address`,
+else `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus` from
+`environ_map`) and reads the settings on a start-up thread, so backend
+start-up never waits for the portal; the first `appearance_changed`
+arrives once they are read, with defaults when no portal answers. Without
+a bus, `open_dialog` and `open_uri` return `error.Unsupported`. When the
+bus has no portal, the first dialog answers `cancelled` and later
+`open_dialog`/`open_uri` calls return `error.Unsupported`, which is E04's
+cue to use its built-in picker. `open_uri` allows `http`, `https`,
+`mailto` and `file` (as an fd, via `OpenFile`).
 
 ### Signature
 ```zig
@@ -675,18 +684,31 @@ pub const Watcher = struct { bus, current: Appearance, callback: ChangeCallback,
 // window_handle.zig
 pub fn wayland(out: []u8, handle: []const u8) ![]const u8;               // "wayland:<handle>"
 pub fn x11(out: []u8, xid: u32) ![]const u8;                              // "x11:<hex>"
+// desktop.zig
+pub fn Desktop.init(self: *Desktop, gpa: Allocator, io: std.Io, notify: Notify, opts: Options) void;
+pub fn Desktop.openDialog(self: *Desktop, req: DialogRequest, parent: []const u8) !void;
+pub fn Desktop.openUri(self: *Desktop, uri: []const u8, parent: []const u8) !void;
+pub fn Desktop.take(self: *Desktop) ?Answer; // dialog (paths owned by the taker) or appearance
+pub fn sessionAddress(buf: []u8, env: *const std.process.Environ.Map) ?[]const u8;
 ```
-`Event.dialog_result` has no `unavailable` field yet: adding one changes
-the `.zgtrace` layout, so it lands with the first backend that emits it,
-together with a trace version bump.
+`Event.dialog_result` has no `unavailable` field: adding one would change
+the `.zgtrace` layout (and the recorded fixtures), so a missing portal is
+reported as one `cancelled` answer followed by `error.Unsupported`, as
+above.
 
 ### Threading
 Callbacks run on the bus reader thread. `settings.read` blocks on calls,
-so run it off the UI thread.
+so run it off the UI thread. `Desktop` queues answers under its own lock
+and calls `notify` (the Wayland platform thread's or the X11 UI thread's
+wake); the backend takes them on that thread. `openDialog` waits for the
+start-up thread if it is still running.
 
 ### Ownership/lifetime
 A `Response` owns its results; the callback (or the `wait` caller) must
-`deinit` it. Free a `Request` after its response arrived, or to abandon it.
+`deinit` it. A `Request` may be freed once it has `settled`: `wait`
+returns only then, and with a callback both the callback and the call's
+reply must have run (the Response can arrive first). After the bus is
+closed, `free` releases a request without touching the bus.
 
 ### Stability
 Experimental until the E01 PR merges.
@@ -1007,8 +1029,10 @@ carrying the newest input serial (for `activate` only), the focused surface
 and the window's app id, and activates with it when `done` arrives. The
 compositor decides: a token it does not trust usually marks the window
 urgent instead of raising it, which is what `request_attention` wants.
-Without the global both return `error.Unsupported`. Dialogs and URIs
-return `error.Unsupported`.
+Without the global both return `error.Unsupported`. `open_dialog`,
+`open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`
+(see that section); Wayland dialogs are not parented yet (that needs an
+xdg-foreign export handle).
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
@@ -1202,8 +1226,9 @@ destroys every window and closes the connection.
 
 ### Stability
 Experimental. Not yet: explicit sync (`PresentPixmapSynced`), XFIXES update regions
-(presents update the whole window) and MSC-based pacing. Dialogs and
-URIs return `error.Unsupported`.
+(presents update the whole window) and MSC-based pacing. `open_dialog`,
+`open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`,
+with dialogs parented by `x11:<xid>`.
 
 ## zg_platform.win32.Win32Backend
 

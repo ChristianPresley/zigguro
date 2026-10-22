@@ -84,6 +84,8 @@ const ewmh = @import("ewmh.zig");
 const cursor_mod = @import("cursor.zig");
 const randr = @import("randr.zig");
 const xsync = @import("xsync.zig");
+const portal = @import("../portal/desktop.zig");
+const portal_handle = @import("../portal/window_handle.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 const csd = @import("../wayland/csd.zig");
 const seat_mod = @import("../wayland/seat.zig");
@@ -109,6 +111,10 @@ pub const InitOptions = struct {
     present: ?present_mod.Path = null,
     /// Frame interval while frames are requested.
     refresh_ns: u32 = 16_666_667,
+    /// The session bus for the portals (file dialogs, `open_uri`,
+    /// appearance); null finds it in `environ_map`, and without either
+    /// those commands return `error.Unsupported`.
+    dbus_address: ?[]const u8 = null,
 };
 
 const atom_names = [_][]const u8{
@@ -279,6 +285,8 @@ pub const X11Backend = struct {
     /// Set when the connection failed.
     dead: bool = false,
     hooks: native_api.NativeHooks,
+    /// File dialogs, `open_uri` and appearance through the portals.
+    desktop: portal.Desktop = undefined,
 
     /// Connects, reads the keyboard mapping and scale, and picks the
     /// presenter path.
@@ -341,7 +349,26 @@ pub const X11Backend = struct {
         errdefer if (b.gpu) |*g| g.deinit(gpa);
         if (b.xkb_event != null) b.startCompose(env);
         log.info("X11 display ready: {d}x{d}, scale {d}, presenting with {t}{s}", .{ conn.screen().width_px, conn.screen().height_px, b.scale, b.path, if (b.gpu != null) " and DRI3/Present" else "" });
+        var abuf: [256]u8 = undefined;
+        const address = opts.dbus_address orelse if (opts.environ_map) |e| portal.sessionAddress(&abuf, e) else null;
+        b.desktop.init(gpa, io, .{ .ctx = b, .func = wakeForPortal }, .{ .address = address });
         return b;
+    }
+
+    fn wakeForPortal(ctx: *anyopaque) void {
+        const b: *X11Backend = @ptrCast(@alignCast(ctx));
+        b.ui_wake.signal();
+    }
+
+    /// Turns portal answers into events. Mutex held.
+    fn takePortal(b: *X11Backend) void {
+        while (b.desktop.take()) |a| switch (a) {
+            .dialog => |r| {
+                const paths: types.PayloadSlice = if (r.paths.len > 0) b.putOwned(r.paths) else .empty;
+                b.stage(.{ .dialog_result = .{ .request = r.request, .paths = paths, .cancelled = r.cancelled } });
+            },
+            .appearance => |app| b.stage(.{ .appearance_changed = app }),
+        };
     }
 
     fn loadKeymap(b: *X11Backend) !void {
@@ -662,7 +689,12 @@ pub const X11Backend = struct {
                 const w = try b.lookup(win);
                 try b.sendRoot(w.xid, b.atoms.get("_NET_WM_STATE"), .{ ewmh.StateAction.add, b.atoms.get("_NET_WM_STATE_DEMANDS_ATTENTION"), 0, ewmh.Source.application, 0 });
             },
-            .open_dialog, .open_uri => return error.Unsupported,
+            .open_dialog => |d| {
+                var hbuf: [32]u8 = undefined;
+                const parent = if (d.parent) |p| portal_handle.x11(&hbuf, (try b.lookup(p)).xid) catch unreachable else "";
+                try b.desktop.openDialog(d, parent);
+            },
+            .open_uri => |uri| try b.desktop.openUri(uri, ""),
         }
     }
 
@@ -949,6 +981,7 @@ pub const X11Backend = struct {
         b.drainSelections();
         b.xdndExpire(b.nowNs());
         b.dueFrames(b.nowNs());
+        b.takePortal();
         const take = @min(out.len - n, b.staged.items.len);
         for (b.staged.items[0..take], 0..) |e, i| {
             out[n + i] = e;
@@ -991,6 +1024,7 @@ pub const X11Backend = struct {
                 b.sel.expire(now);
                 b.drainSelections();
                 b.xdndExpire(now);
+                b.takePortal();
                 if (b.staged.items.len > 0) return;
                 if (b.nextFrameNs()) |t| until = if (until) |d| @min(d, t) else t;
                 if (b.sel.nextDeadline()) |t| until = if (until) |d| @min(d, t) else t;
@@ -1020,6 +1054,7 @@ pub const X11Backend = struct {
 
     /// See `Platform.VTable.deinit`.
     pub fn deinit(b: *X11Backend) void {
+        b.desktop.deinit();
         b.lock();
         for (b.windows.items) |w| b.destroyX(w);
         b.windows.deinit(b.gpa);
@@ -1823,6 +1858,40 @@ fn waitFor(p: Platform, comptime kind: Event.Tag, win: WindowId) !Event {
         if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
         p.waitEvents(deadline);
     }
+}
+
+test "Xvfb: a parented save dialog and the appearance through the portal" {
+    const conn_dbus = @import("../dbus/conn.zig");
+    var daemon: conn_dbus.TestDaemon = undefined;
+    if (!try daemon.start()) return error.SkipZigTest;
+    defer daemon.stop();
+    var fp: @import("../portal/fake_portal.zig").FakePortal = .{ .uris = &.{"file:///tmp/x"} };
+    try fp.start(testing.allocator, testing.io, daemon.address());
+    defer fp.stop();
+    var x = XvfbForTest.start(14) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display(), .dbus_address = daemon.address() });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg portal", .size = .{ .w = 64, .h = 48 } });
+    try p.submit(.{ .open_dialog = .{ .request = 3, .kind = .save_file, .parent = win, .default_path = "/tmp/x" } });
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    var seen_app = false;
+    const res = outer: while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| switch (e) {
+            .dialog_result => |r| break :outer r,
+            .appearance_changed => seen_app = true,
+            else => {},
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    };
+    try testing.expect(seen_app);
+    try testing.expectEqual(3, res.request);
+    try testing.expectEqualStrings("/tmp/x\x00", p.payload(res.paths));
+    try testing.expectEqualStrings("SaveFile", fp.lastMethod());
 }
 
 test "Xvfb: presented pixels read back with GetImage on both paths" {

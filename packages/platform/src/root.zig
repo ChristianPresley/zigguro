@@ -268,6 +268,8 @@ pub const portal = if (is_linux) struct {
     pub const settings = @import("portal/settings.zig");
     /// See `portal/window_handle.zig`.
     pub const window_handle = @import("portal/window_handle.zig");
+    /// See `portal/desktop.zig`.
+    pub const desktop = @import("portal/desktop.zig");
 } else struct {};
 
 /// A pure-Zig X11 client: connection setup, request serialization,
@@ -499,6 +501,7 @@ test {
         _ = linux_util.pipe_transfer;
         _ = linux_util.memfd;
         _ = @import("portal/fake_portal.zig");
+        _ = @import("portal/desktop.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
         _ = @import("x11/backend.zig");
