@@ -56,15 +56,53 @@ pub const NodeHot = struct {
 };
 
 /// Inputs and output of a node's last layout, for cache hits.
+/// One cached layout result: the constraints it was computed for and the
+/// border-box size it produced. `-1` encodes an absent constraint.
+pub const CacheEntry = struct {
+    known_w: f32 = -2,
+    known_h: f32 = -2,
+    avail_w: f32 = -2,
+    avail_h: f32 = -2,
+    size: geom.Size = .{},
+
+    /// True when computed for exactly these constraints.
+    pub fn matches(c: CacheEntry, kw: f32, kh: f32, aw: f32, ah: f32) bool {
+        return c.known_w == kw and c.known_h == kh and c.avail_w == aw and c.avail_h == ah;
+    }
+};
+
+/// Per-node layout caches. `final` is the last full layout (children
+/// positioned for it); `sizes` remembers recent size-only queries, which
+/// flex issues several times per child (basis, cross size, stretch).
 pub const LayoutCache = struct {
     valid: bool = false,
-    known_w: f32 = 0,
-    known_h: f32 = 0,
-    avail_w: f32 = 0,
-    avail_h: f32 = 0,
-    size: geom.Size = .{},
+    final: CacheEntry = .{},
+    /// The children's rects belong to `final`.
+    final_ok: bool = false,
+    sizes: [4]CacheEntry = @splat(.{}),
+    next: u2 = 0,
     /// Distance from the top of the node to its first baseline.
     baseline: f32 = 0,
+
+    /// Forgets every entry.
+    pub fn clear(c: *LayoutCache) void {
+        c.* = .{};
+    }
+
+    /// The cached size for these constraints, if any.
+    pub fn lookup(c: *const LayoutCache, kw: f32, kh: f32, aw: f32, ah: f32) ?geom.Size {
+        if (!c.valid) return null;
+        if (c.final_ok and c.final.matches(kw, kh, aw, ah)) return c.final.size;
+        for (c.sizes) |e| if (e.matches(kw, kh, aw, ah)) return e.size;
+        return null;
+    }
+
+    /// Remembers a size-only result.
+    pub fn putSize(c: *LayoutCache, e: CacheEntry) void {
+        c.valid = true;
+        c.sizes[c.next] = e;
+        c.next +%= 1;
+    }
 };
 
 /// The cold fields of a node.
@@ -72,7 +110,6 @@ pub const NodeCold = struct {
     gen: u8 = 0,
     depth: u16 = 0,
     style: style_mod.Style = .{},
-    style_hash: u64 = 0,
     blob: widget.Blob = .{},
     cache: LayoutCache = .{},
     test_id: u64 = 0,
@@ -99,6 +136,9 @@ pub const NodeStore = struct {
     cold: std.ArrayList(NodeCold) = .empty,
     free_list: std.ArrayList(u24) = .empty,
     live: u32 = 0,
+    /// Set by every mark and by `free`; the window clears it after a
+    /// paint pass, and skips the pass while it stays clear.
+    paint_pending: bool = false,
     /// Called for every freed node (damage, focus fix-ups).
     on_free: ?struct { ctx: *anyopaque, f: *const fn (*anyopaque, NodeId) void } = null,
 
@@ -175,7 +215,6 @@ pub const NodeStore = struct {
         if (c.gen == 0) c.gen = 1;
         c.cache = .{};
         c.style = .{};
-        c.style_hash = 0;
         c.test_id = 0;
         s.live += 1;
         return .{ .index = index, .gen = c.gen };
@@ -186,12 +225,13 @@ pub const NodeStore = struct {
     pub fn free(s: *NodeStore, id: NodeId) void {
         std.debug.assert(s.valid(id));
         if (s.on_free) |cb| cb.f(cb.ctx, id);
+        s.paint_pending = true;
         const i = id.index;
         if (s.hot.items(.state)[i]) |st| freeState(s.gpa, s.hot.items(.kind)[i], st);
         s.hot.items(.state)[i] = null;
         s.hot.items(.key)[i] = 0;
         s.cold.items[i].gen +%= 1; // stale ids stop validating immediately
-        s.cold.items[i].cache.valid = false;
+        s.cold.items[i].cache.clear();
         s.free_list.append(s.gpa, i) catch {
             // The slot leaks until the store is freed; ids stay safe.
         };
@@ -269,6 +309,7 @@ pub const NodeStore = struct {
         const par = s.hot.items(.parent);
         fl[id.index].layout_dirty = true;
         fl[id.index].paint_dirty = true;
+        s.paint_pending = true;
         var p = id;
         while (!p.isNone()) : (p = par[p.index]) {
             if (fl[p.index].subtree_dirty and !p.eql(id)) break;
@@ -281,6 +322,7 @@ pub const NodeStore = struct {
     pub fn markChildren(s: *NodeStore, id: NodeId) void {
         const fl = s.hot.items(.flags);
         const par = s.hot.items(.parent);
+        s.paint_pending = true;
         var p = id;
         var first = true;
         while (!p.isNone()) : (p = par[p.index]) {
@@ -293,6 +335,7 @@ pub const NodeStore = struct {
     /// Marks `id` for repaint.
     pub fn markPaint(s: *NodeStore, id: NodeId) void {
         s.hot.items(.flags)[id.index].paint_dirty = true;
+        s.paint_pending = true;
     }
 
     /// True when `anc` is `id` or one of its ancestors.
