@@ -136,7 +136,7 @@ pub const TextLayout = struct {
     pub fn layoutLine(tl: *TextLayout, arena: Allocator, text: []const u8, styles: []const StyleRun, o: LineOptions) !Line {
         const lv = try itemize_mod.resolveLevels(arena, text, o.base_dir);
         const levels = if (lv.paragraph) |*para| try itemize_mod.lineByteLevels(arena, para, 0, @intCast(text.len)) else null;
-        return tl.buildLine(arena, text, 0, styles, levels, lv.base, o.tab_width_px);
+        return tl.buildLine(arena, text, 0, styles, levels, lv.base, o.tab_width_px, true);
     }
 
     /// The width of `text` in one style, from the width cache when present.
@@ -223,9 +223,10 @@ pub const TextLayout = struct {
 
     /// Builds the line for `text` (a slice of the caller's text starting at
     /// byte `offset`) with per-byte `levels` (null: all at `base`).
-    pub fn buildLine(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, levels: ?[]const u8, base: u8, tab_width_px: f32) !Line {
+    /// Without `carets` the line's carets stay empty (for measuring).
+    pub fn buildLine(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, levels: ?[]const u8, base: u8, tab_width_px: f32, carets: bool) !Line {
         std.debug.assert(styles.len > 0);
-        if (try tl.fastLine(arena, text, offset, styles, levels, tab_width_px)) |l| return l;
+        if (try tl.fastLine(arena, text, offset, styles, levels, tab_width_px, carets)) |l| return l;
         var shaped: std.ArrayList(Shaped) = .empty;
         {
             var items: std.ArrayList(Item) = .empty;
@@ -244,7 +245,7 @@ pub const TextLayout = struct {
                 shaped.appendAssumeCapacity(.{ .item = it, .run = run, .style = st });
             }
         }
-        return tl.position(arena, text, offset, styles, shaped.items, base, tab_width_px);
+        return tl.position(arena, text, offset, styles, shaped.items, base, tab_width_px, carets);
     }
 
     /// The bytes `[start, e)` of left-to-right line `m` (with no bidi
@@ -289,8 +290,17 @@ pub const TextLayout = struct {
         }
         const xs = try arena.alloc(f32, g1 - g0);
         for (xs, m.x[g0..g1]) |*d, x| d.* = x - shift;
+        // Level 0 throughout: graphemes are in logical order, so carets
+        // come straight from them.
         const graphemes = try arena.alloc(VisGrapheme, r1 - r0);
-        for (graphemes, gs[r0..r1]) |*d, g| d.* = .{ .x0 = g.x0 - shift, .x1 = g.x1 - shift, .start = g.start, .end = g.end, .rtl = false };
+        const carets = try arena.alloc(Caret, r1 - r0 + 1);
+        var up: f32 = 0;
+        for (graphemes, carets[0 .. r1 - r0], gs[r0..r1]) |*d, *c, g| {
+            d.* = .{ .x0 = g.x0 - shift, .x1 = g.x1 - shift, .start = g.start, .end = g.end, .rtl = false };
+            c.* = .{ .offset = g.start, .x = d.x0, .x_up = up, .rtl = false };
+            up = d.x1;
+        }
+        carets[r1 - r0] = .{ .offset = e, .x = up, .x_up = up, .rtl = false };
         line.runs = runs.items;
         line.glyphs = m.glyphs[g0..g1];
         line.x = xs;
@@ -298,8 +308,8 @@ pub const TextLayout = struct {
         line.clusters = cl[g0..g1];
         if (m.unsafe_to_break.len > 0) line.unsafe_to_break = m.unsafe_to_break[g0..g1];
         line.graphemes = graphemes;
-        line.width = graphemes[graphemes.len - 1].x1;
-        line.carets = try buildCarets(arena, graphemes, e, false, start);
+        line.width = up;
+        line.carets = carets;
         return line;
     }
 
@@ -336,7 +346,7 @@ pub const TextLayout = struct {
     /// The line for ASCII text in one style whose glyphs need no shaping,
     /// or null when the text does not qualify. Same results as `position`
     /// over the shaped text: one glyph, cluster and grapheme per byte.
-    fn fastLine(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, levels: ?[]const u8, tab_width_px: f32) !?Line {
+    fn fastLine(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, levels: ?[]const u8, tab_width_px: f32, want_carets: bool) !?Line {
         if (!tl.fast_path or levels != null or text.len == 0) return null;
         const st = styles[0].style;
         for (styles[1..]) |s| if (!s.style.sameShape(st)) return null;
@@ -352,7 +362,7 @@ pub const TextLayout = struct {
         const ys = try arena.alloc(f32, n);
         const clusters = try arena.alloc(u32, n);
         const graphemes = try arena.alloc(VisGrapheme, n);
-        const carets = try arena.alloc(Caret, n + 1);
+        const carets = try arena.alloc(Caret, if (want_carets) n + 1 else 0);
         const scale = st.size_px / reg.upem;
         const ls = st.letter_spacing;
         var tab: f32 = tab_width_px;
@@ -368,14 +378,14 @@ pub const TextLayout = struct {
             xs[i] = pen;
             ys[i] = 0;
             clusters[i] = at;
-            carets[i] = .{ .offset = at, .x = pen, .x_up = pen, .rtl = false };
+            if (want_carets) carets[i] = .{ .offset = at, .x = pen, .x_up = pen, .rtl = false };
             const x0 = pen;
             pen += adv;
             pen += ls;
             graphemes[i] = .{ .x0 = x0, .x1 = pen, .start = at, .end = at + 1, .rtl = false };
         }
         const end = offset + @as(u32, @intCast(n));
-        carets[n] = .{ .offset = end, .x = pen, .x_up = pen, .rtl = false };
+        if (want_carets) carets[n] = .{ .offset = end, .x = pen, .x_up = pen, .rtl = false };
         const runs = try arena.alloc(VisualRun, 1);
         runs[0] = .{ .instance = id, .level = 0, .glyph_start = 0, .glyph_end = @intCast(n), .x = 0, .size_px = st.size_px, .mode = modeOf(reg, st.size_px) };
         const m = reg.inst.metrics();
@@ -398,7 +408,7 @@ pub const TextLayout = struct {
 
     /// Positions shaped items in visual order and derives runs, graphemes
     /// and carets.
-    fn position(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, shaped: []const Shaped, base: u8, tab_width_px: f32) !Line {
+    fn position(tl: *TextLayout, arena: Allocator, text: []const u8, offset: u32, styles: []const StyleRun, shaped: []const Shaped, base: u8, tab_width_px: f32, want_carets: bool) !Line {
         var n_glyphs: usize = 0;
         for (shaped) |s| n_glyphs += s.run.len();
         const glyphs = try arena.alloc(GlyphId, n_glyphs);
@@ -469,7 +479,8 @@ pub const TextLayout = struct {
                     g_out += 1;
                     pen += @as(f32, @floatFromInt(run.x_adv[i])) * scale;
                     pen += s.style.letter_spacing;
-                    try graphemes.append(arena, .{ .x0 = gx0, .x1 = pen, .start = cs + offset, .end = ce + offset, .rtl = rtl });
+                    // Capacity: a grapheme has at least one byte.
+                    graphemes.appendAssumeCapacity(.{ .x0 = gx0, .x1 = pen, .start = cs + offset, .end = ce + offset, .rtl = rtl });
                     i = j;
                     continue;
                 }
@@ -534,7 +545,7 @@ pub const TextLayout = struct {
         line.clusters = clusters;
         if (any_unsafe) line.unsafe_to_break = unsafe;
         line.graphemes = graphemes.items;
-        line.carets = try buildCarets(arena, graphemes.items, line.end, base & 1 == 1, offset);
+        if (want_carets) line.carets = try buildCarets(arena, graphemes.items, line.end, base & 1 == 1, offset);
         return line;
     }
 };
