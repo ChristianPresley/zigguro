@@ -167,6 +167,7 @@ pub const Host = struct {
             total += n;
             if (n < h.events.len) break;
         }
+        for (h.windows.items) |hw| hw.win.tick(h.app.now_ms);
         h.app.flushEffects();
         if (h.app.clipboard.pending_write) {
             h.app.clipboard.pending_write = false;
@@ -274,7 +275,12 @@ pub const Host = struct {
         while (h.windows.items.len > 0) {
             _ = try h.pump();
             if (h.windows.items.len == 0) break;
-            h.platform.waitEvents(null);
+            // Sleep until the next event or the earliest window timer.
+            var deadline: ?u64 = null;
+            for (h.windows.items) |hw| if (hw.win.nextDeadline()) |d| {
+                deadline = if (deadline) |x| @min(x, d) else d;
+            };
+            h.platform.waitEvents(if (deadline) |d| d *| std.time.ns_per_ms else null);
         }
     }
 };
