@@ -66,10 +66,12 @@ pub const TestApp = struct {
         return t.win.frame();
     }
 
-    /// Runs frames until one is idle (at most 8); returns how many did work.
+    /// Runs frames until one is idle (at most 8), running posted calls
+    /// first; returns how many did work.
     pub fn settle(t: *TestApp) u32 {
         var n: u32 = 0;
         while (n < 8) : (n += 1) {
+            _ = t.app.drainMessages();
             if (t.win.frame().idle) break;
         }
         return n;
