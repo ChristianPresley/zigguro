@@ -231,7 +231,18 @@ const Work = struct {
     match: []u32,
     base: Level,
     n: usize,
+    /// Classes (`bit`) present in the text; rules for absent ones are
+    /// skipped.
+    present: u32 = ~@as(u32, 0),
 };
+
+inline fn bit(c: BC) u32 {
+    return @as(u32, 1) << @intFromEnum(c);
+}
+
+comptime {
+    std.debug.assert(@typeInfo(BC).@"enum".fields.len <= 32);
+}
 
 /// Runs the algorithm over original classes (and code points for N0;
 /// null means no brackets). Writes one level per input element (removed
@@ -240,6 +251,10 @@ pub fn resolveClasses(gpa: Allocator, orig: []const BC, cps: ?[]const u21, dir: 
     const n = orig.len;
     const cls = try gpa.dupe(BC, orig);
     defer gpa.free(cls);
+    if (n > 0) {
+        const present = classesOf(orig);
+        if (present & explicit_classes == 0) return simpleParagraph(gpa, orig, cps, cls, dir, levels, present);
+    }
     const match = try gpa.alloc(u32, n);
     defer gpa.free(match);
     var w: Work = .{ .gpa = gpa, .orig = orig, .cps = cps, .cls = cls, .levels = levels, .match = match, .base = 0, .n = n };
@@ -258,6 +273,41 @@ pub fn resolveClasses(gpa: Allocator, orig: []const BC, cps: ?[]const u21, dir: 
     for (0..n) |i| {
         if (removedByX9(orig[i])) levels[i] = prev else prev = levels[i];
     }
+    return w.base;
+}
+
+/// Explicit formatting characters and BN: X1-X9 have work to do.
+const explicit_classes = bit(.RLE) | bit(.LRE) | bit(.RLO) | bit(.LRO) | bit(.PDF) | bit(.BN) | bit(.LRI) | bit(.RLI) | bit(.FSI) | bit(.PDI);
+
+fn classesOf(orig: []const BC) u32 {
+    var m: u32 = 0;
+    for (orig) |c| m |= bit(c);
+    return m;
+}
+
+/// The common paragraph without explicit formatting: X1-X10 leave every
+/// character at the paragraph level in one isolating run sequence, so
+/// only the weak, neutral and implicit rules run, over the whole text.
+fn simpleParagraph(gpa: Allocator, orig: []const BC, cps: ?[]const u21, cls: []BC, dir: Direction, levels: []Level, present: u32) !Level {
+    const n = orig.len;
+    const seq = try gpa.alloc(u32, n);
+    defer gpa.free(seq);
+    for (seq, 0..) |*x, i| x.* = @intCast(i);
+    var w: Work = .{ .gpa = gpa, .orig = orig, .cps = cps, .cls = cls, .levels = levels, .match = &.{}, .base = 0, .n = n, .present = present };
+    w.base = switch (dir) {
+        .ltr => 0,
+        .rtl => 1,
+        .auto => firstStrong(&w, 0, n) orelse 0,
+    };
+    @memset(levels, w.base);
+    w.explicit = levels[0..1];
+    // sos and eos are both the paragraph direction (nothing retained
+    // before or after the sequence).
+    const sos = dirOf(w.base);
+    weakRules(&w, seq, sos);
+    try bracketPairs(&w, seq, sos, w.base);
+    neutralRules(&w, seq, sos, sos, w.base);
+    implicitLevels(&w, seq);
     return w.base;
 }
 
@@ -488,9 +538,10 @@ fn resolveSequence(w: *Work, seq: []const u32) !void {
 /// W1-W7.
 fn weakRules(w: *Work, seq: []const u32, sos: BC) void {
     const cls = w.cls;
+    const has = w.present;
     // W1: NSM takes the previous type (ON after an isolate formatter).
     var prev: BC = sos;
-    for (seq) |i| {
+    if (has & bit(.NSM) != 0) for (seq) |i| {
         if (cls[i] == .NSM) {
             cls[i] = switch (prev) {
                 .LRI, .RLI, .FSI, .PDI => .ON,
@@ -498,24 +549,28 @@ fn weakRules(w: *Work, seq: []const u32, sos: BC) void {
             };
         }
         prev = cls[i];
-    }
-    // W2: EN after AL (searching back to sos) becomes AN. W3: AL -> R.
-    var strong: BC = sos;
-    for (seq) |i| {
-        switch (cls[i]) {
-            .L, .R, .AL => strong = cls[i],
-            .EN => if (strong == .AL) {
-                cls[i] = .AN;
-            },
-            else => {},
-        }
-    }
-    for (seq) |i| if (cls[i] == .AL) {
-        cls[i] = .R;
     };
+    // W1 only copies classes already present (or sos, or ON), so `has`
+    // still rules out what the text does not hold.
+    var strong: BC = sos;
+    // W2: EN after AL (searching back to sos) becomes AN. W3: AL -> R.
+    if (has & bit(.AL) != 0) {
+        for (seq) |i| {
+            switch (cls[i]) {
+                .L, .R, .AL => strong = cls[i],
+                .EN => if (strong == .AL) {
+                    cls[i] = .AN;
+                },
+                else => {},
+            }
+        }
+        for (seq) |i| if (cls[i] == .AL) {
+            cls[i] = .R;
+        };
+    }
     // W4: a single ES between ENs, or a single CS between numbers of the
     // same type.
-    if (seq.len >= 3) {
+    if (seq.len >= 3 and has & (bit(.ES) | bit(.CS)) != 0) {
         for (1..seq.len - 1) |k| {
             const c = cls[seq[k]];
             if (c != .ES and c != .CS) continue;
@@ -529,7 +584,7 @@ fn weakRules(w: *Work, seq: []const u32, sos: BC) void {
         }
     }
     // W5: a sequence of ETs next to an EN becomes EN.
-    var k: usize = 0;
+    var k: usize = if (has & bit(.ET) != 0) 0 else seq.len;
     while (k < seq.len) {
         if (cls[seq[k]] != .ET) {
             k += 1;
@@ -544,13 +599,13 @@ fn weakRules(w: *Work, seq: []const u32, sos: BC) void {
         k = e;
     }
     // W6: remaining separators and terminators become ON.
-    for (seq) |i| switch (cls[i]) {
+    if (has & (bit(.ES) | bit(.ET) | bit(.CS)) != 0) for (seq) |i| switch (cls[i]) {
         .ES, .ET, .CS => cls[i] = .ON,
         else => {},
     };
     // W7: EN after L (searching back to sos) becomes L.
     strong = sos;
-    for (seq) |i| switch (cls[i]) {
+    if (has & bit(.EN) != 0) for (seq) |i| switch (cls[i]) {
         .L, .R => strong = cls[i],
         .EN => if (strong == .L) {
             cls[i] = .L;
