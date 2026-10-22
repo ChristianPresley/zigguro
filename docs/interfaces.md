@@ -506,8 +506,11 @@ pub const PresenterVTable = struct {
 thread for that window.
 
 ### Ownership/lifetime
-`importBuffer` does not take ownership of plane fds. A `CpuBuffer` from
-`allocCpuBuffer` is owned by the presenter until `releaseBuffer`.
+`importBuffer` does not take ownership of plane fds; E02 keeps them open
+until `releaseBuffer` (the Wayland presenter uses them for implicit
+sync). A `CpuBuffer` from `allocCpuBuffer` is owned by the presenter
+until `releaseBuffer`. `present` takes ownership of a `.sync_file`
+acquire fd and closes it, also on error.
 
 `present` with `ack = null` (E02's software path) answers the newest
 pending configure on Wayland. On X11 the newest presented buffer stays
@@ -515,10 +518,25 @@ busy (it repaints `Expose` damage) until a newer one is presented, and
 MIT-SHM buffers also until their `ShmCompletion`.
 
 ### Stability
-Experimental. Until DRI3/dmabuf (E01.F04.S04.T01, E01.F05.S03.T02) the
-Wayland and X11 presenters are CPU-only (`syncMode() == .cpu_only`,
-`importBuffer` → `error.Unsupported`), so E02 renders with the software
-renderer into `allocCpuBuffer` buffers.
+Experimental. The Wayland presenter imports dmabufs when the compositor
+offers zwp_linux_dmabuf_v1 (v3+): `drmDevice()` is the first tranche's
+device of the default feedback (or `main_device`), `formats()` lists the
+feedback's pairs in tranche order (preferred first), and `syncMode()` is
+`.implicit_sync_file`. A `.sync_file` acquire is imported into the
+dmabuf with `DMA_BUF_IOCTL_IMPORT_SYNC_FILE`; without the ioctl the
+presenter waits on it on the calling thread. A `.syncobj` acquire is
+`error.Unsupported` until the contract carries a release point. Shm
+`importBuffer` (an E02 memfd) works on Wayland too. The X11 presenter
+imports dmabufs as DRI3 pixmaps when the server has DRI3 1.2 and
+Present 1.2 and DRI3 `Open` succeeds: `drmDevice()` is the device behind
+that fd, `formats()` pairs XRGB8888 and ARGB8888 with each modifier from
+`GetSupportedModifiers` (depth 24, 32 bpp), sync is the same
+`.implicit_sync_file` import, and a pixmap is released on `IdleNotify`.
+Shm imports are `error.Unsupported` on X11 (use `allocCpuBuffer`).
+Without dmabuf support presenters are CPU-only (`.cpu_only`,
+`importBuffer` → `error.Unsupported`). Per-surface feedback
+is not requested yet; a later change of the default feedback is logged
+and applies to the next ring E02 builds.
 
 ## zg_platform.headless.Headless and .zgtrace
 
@@ -893,8 +911,12 @@ A window's presenter and its buffers die with `destroyWindow`.
 connection.
 
 ### Stability
-Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
-`Unsupported` until E01.F04.S04. Until the data device lands,
+Experimental until the E01 PR merges. dmabuf import and implicit sync
+are described under the presenter contract above. With wp_presentation
+every present asks for feedback (`InitOptions.presentation_feedback`),
+reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
+a discarded frame has `flags = PresentFlags.discarded` and
+`presented_ns = 0`. Until the data device lands,
 `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
@@ -902,11 +924,13 @@ resize, window menu, drag, activation, dialogs and URIs return
 ## zg_platform.x11.X11Backend
 
 ### Defined in
-`packages/platform/src/x11/backend.zig`, with `present.zig` (the CPU
-presenter: MIT-SHM `AttachFd` memfds or core `PutImage`), `keymap.zig`
+`packages/platform/src/x11/backend.zig`, with `present.zig` (the
+presenter: DRI3 pixmaps shown with `PresentPixmap`, MIT-SHM `AttachFd`
+memfds or core `PutImage`), `dri3.zig` (DRI3/Present requests, events
+and the startup probe), `keymap.zig`
 (core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
 requests and event codes are in `proto.zig` (E01.F05.S02.T01, first
-part, and the SHM/PutImage half of E01.F05.S03.T02).
+part, and E01.F05.S03.T02).
 
 ### Implemented by
 E01.F05.S02.T01 / E01.F05.S03.T02.
@@ -919,9 +943,9 @@ unreachable Wayland display); E02's software renderer through
 ### Signature
 ```zig
 pub const InitOptions = struct {
-    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=putimage
+    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=dri3|shm|putimage
     display: ?[]const u8 = null,
-    present: ?present.Path = null,                        // .shm or .put_image; null picks MIT-SHM 1.2 when present
+    present: ?present.Path = null,                        // .shm or .put_image (also turns DRI3 off); null picks MIT-SHM 1.2 when present
     refresh_ns: u32 = 16_666_667,                         // frame timer while frames are requested
 };
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*X11Backend;
@@ -934,7 +958,11 @@ zigguro/Zigguro`, `_NET_WM_NAME`, `_NET_WM_PID`, `_NET_WM_WINDOW_TYPE_NORMAL`
 and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
 `_NET_ACTIVE_WINDOW` and `WM_CHANGE_STATE` client messages. The first
 `window_configure` (serial 0) is staged by `createWindow`. Wheel buttons
-4–7 become `scroll` in lines.
+4–7 become `scroll` in lines. With DRI3, each window selects Present
+`CompleteNotify` and `IdleNotify`; `CompleteNotify` becomes
+`Event.present_feedback` (UST in the `Io.Clock.awake` timebase, `seq` =
+MSC, flip → `zero_copy`, skip → `discarded`). Frame pacing stays on the
+timer.
 
 ### Threading
 No platform thread: the UI thread reads and translates X events in
@@ -950,7 +978,9 @@ Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
 use the core mapping, and auto-repeat arrives as release/press pairs),
 RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
-our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
+our own `clipboard_write`), explicit sync (`PresentPixmapSynced`), XFIXES
+update regions (presents update the whole window), MSC-based pacing and
+XDND. Move, resize, window
 menu, drag, activation, dialogs and URIs return `error.Unsupported`.
 
 ## zg_platform.win32.Win32Backend
@@ -971,7 +1001,7 @@ for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
 
 ### Signature
 ```zig
-pub const InitOptions = struct { refresh_ns: u32 = 16_666_667 };
+pub const InitOptions = struct { refresh_ns: ?u32 = null }; // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
 pub fn platform(b: *Win32Backend) Platform;
 // cpu_present.zig
@@ -982,7 +1012,12 @@ pub fn platform(b: *Win32Backend) Platform;
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
 chords carry none. Wheel notches are `scroll` lines with forward
-negative.
+negative. A window created on a non-96 DPI monitor is resized for that
+DPI before it is shown. Each CPU present stages `Event.present_feedback`
+(stamped when the blit returns, `flags = 0`). `monitors` reports each
+monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
+rate; `WM_DISPLAYCHANGE` and `WM_DPICHANGED` stage `monitors_changed`.
+Frames keep coming inside the modal size/move loop (a `WM_TIMER`).
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -997,9 +1032,9 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 ### Stability
 Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
 raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
-answers only from our own `clipboard_write`), OLE drag and drop, the
-modal size-move timer, cursors, DWM refresh timing (the frame timer
-assumes 60 Hz) and monitor DPI (monitors report scale 1).
+answers only from our own `clipboard_write`), OLE drag and drop,
+cursors, cloaking until the first present, the high-resolution waitable
+pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
 
@@ -1739,6 +1774,41 @@ UI thread only.
 ### Stability
 Experimental until the E15 adapter merges.
 
+## zg_gui.input.ActionHandler
+
+### Defined in
+`packages/gui/src/input/actions.zig` (E04.F05.S03.T02, ahead of the full
+dispatcher in E04.F03.S02.T01).
+
+### Implemented by
+E15's command registry adapter (#1077).
+
+### Consumed by
+`zg_gui.Window.dispatchAction`, which menus and the menubar call when an
+item is chosen (unless the menu was given its own `on_action`). Menus call
+`label_for` once per open to fill in shortcut labels for items without one.
+
+### Signature
+```zig
+pub const ActionId = []const u8; // command id, e.g. "file.open"
+pub const ActionHandler = struct {
+    ptr: *anyopaque,
+    run: *const fn (ptr: *anyopaque, action: ActionId, arg: ?[]const u8) bool, // true: handled
+    label_for: ?*const fn (ptr: *anyopaque, action: ActionId) ?[]const u8 = null,
+};
+```
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+`action` and `arg` are valid only for the call. A `label_for` result must
+stay valid until the next call; menus copy it.
+
+### Stability
+Experimental: `ActionId` may become an interned id when the E15 registry
+lands.
+
 ## zg_vulkan.vk and zg_vulkan.loader (Vulkan bindings and loader)
 
 ### Defined in
@@ -2125,3 +2195,61 @@ call that mutates the highlighter. `LineSource` text is borrowed per call.
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
+
+## zg_editor.model.api (DocumentRegistry, LspSync)
+
+### Defined in
+`packages/editor/src/model/api/registry.zig`, `packages/editor/src/model/api/lsp_sync.zig` (E05.F08).
+
+### Implemented by
+E05.F08.S01.T01.
+
+### Consumed by
+E07 (implements `LspSink`, serializes JSON-RPC), E08 (opens files, reports renames), E10/E12 (agent documents),
+E05.F08.S01.T02 (AgentEditSession).
+
+### Signature
+```zig
+pub const DocHandle = struct { id: DocId, gen: u32 };
+pub const PathStyle = enum { posix, windows, pub const native: PathStyle };
+pub const RegistryEvent = union(enum) { opened: DocHandle, closed: DocHandle, renamed: struct { handle, old_uri, new_uri } };
+pub const DocumentRegistry = struct {
+    pub fn init(gpa, style: PathStyle) DocumentRegistry;
+    pub fn openFile(r, abs_path, bytes) !DocHandle;          // existing doc for the same normalized path: +1 ref
+    pub fn findFile(r, path) !?DocHandle;
+    pub fn openUntitled(r, bytes) !DocHandle;                // untitled:Untitled-N
+    pub fn openAgent(r, session: u64, name, bytes) !DocHandle; // zigguro-agent://<session>/<name>
+    pub fn get(r, h) ?*Document; pub fn uri(r, h) ?[]const u8; pub fn name(r, h) ?[]const u8;
+    pub fn retain(r, h) !void; pub fn release(r, h) void;     // last release: `closed` event, then free
+    pub fn rename(r, h, new_abs_path) !void;                 // `renamed` event
+    pub fn subscribe(r, RegistryListener) !u32; pub fn unsubscribe(r, id) void;
+};
+pub fn normalizePath(gpa, path, style) ![]u8; pub fn pathKey(gpa, normalized, style) ![]u8;
+pub fn fileUri(gpa, abs_path) ![]u8;   // file:///home/a%20b, file:///c%3A/Users/x, file://server/share/x
+pub const SyncKind = enum(u2) { none, full, incremental };
+pub const LspSink = struct { ctx, didOpen, didChange, didSave, didClose };   // text as ChunkIterator
+pub const LspSync = struct {
+    include_text_on_save: bool = false, max_bytes: u64 = 64 << 20,
+    pub fn init(gpa, reg: *DocumentRegistry, enc: zg_core.utf8.Encoding, kind: SyncKind, sink: LspSink) LspSync;
+    pub fn track(s, h, language_id) !void;   // didOpen v1; error.TooLarge past max_bytes
+    pub fn untrack(s, h) void;               // didClose
+    pub fn flush(s) void;                    // once per frame: one coalesced didChange per document
+    pub fn saved(s, h) void;                 // flush + didSave
+};
+```
+
+### Threading
+UI thread only, like `Document`. Other threads read documents through
+snapshots.
+
+### Ownership/lifetime
+The registry owns documents; a handle is valid until its last `release`
+(stale handles return null or `error.StaleHandle`). URIs and names are
+valid until the document is renamed or closed. Sink arguments are valid
+during the call only. `LspSync` must not move after the first `track`.
+
+### Stability
+Unstable until E07 implements the sink. Edits whose edges fall between the
+CR and LF of a CRLF are sent as one widened replacement, since LSP positions
+cannot address that point. A rename is sent as close + open (LSP has no
+text-document rename).

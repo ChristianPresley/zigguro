@@ -115,6 +115,7 @@ pub const Ui = struct {
             fl.disabled = d.disabled;
             fl.clips = d.style.clip or scrolls;
             fl.rebuild_on_scroll = d.rebuild_on_scroll and scrolls;
+            fl.context_menu = false;
         }
         ui.push(node, @src());
     }
@@ -159,6 +160,14 @@ pub const Ui = struct {
     pub fn response(ui: *Ui) Response {
         const f = ui.top() orelse return .{};
         return ui.responseOf(f.node);
+    }
+
+    /// The last node emitted under the current parent (`.none` before the
+    /// first).
+    pub fn lastNode(ui: *Ui) NodeId {
+        const f = ui.top() orelse return .none;
+        if (ui.kids.items.len <= f.kids_start) return .none;
+        return ui.kids.items[ui.kids.items.len - 1];
     }
 
     /// The state of the last `leaf` of type `W` emitted under the current parent.

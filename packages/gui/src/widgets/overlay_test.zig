@@ -32,12 +32,14 @@ test "place: preferred side, flip, shift" {
     try expectRect(.{ .x = 20, .y = 166, .w = 100, .h = 80 }, overlay.place(.{ .x = 20, .y = 250, .w = 60, .h = 30 }, size, vp, .{}));
     // Wants above but no room: flips below.
     try expectRect(.{ .x = 20, .y = 34, .w = 100, .h = 80 }, overlay.place(.{ .x = 20, .y = 10, .w = 60, .h = 20 }, size, vp, .{ .side = .above }));
-    // Near the right edge: shifted to stay 8 px inside.
-    try expectRect(.{ .x = 292, .y = 54, .w = 100, .h = 80 }, overlay.place(.{ .x = 350, .y = 20, .w = 40, .h = 30 }, size, vp, .{}));
+    // Near the right edge: aligned to the anchor's right edge.
+    try expectRect(.{ .x = 290, .y = 54, .w = 100, .h = 80 }, overlay.place(.{ .x = 350, .y = 20, .w = 40, .h = 30 }, size, vp, .{}));
     // End alignment.
     try expectRect(.{ .x = 100, .y = 54, .w = 100, .h = 80 }, overlay.place(.{ .x = 140, .y = 20, .w = 60, .h = 30 }, size, vp, .{ .alignment = .end }));
     // Right side flips left.
     try expectRect(.{ .x = 246, .y = 100, .w = 100, .h = 80 }, overlay.place(.{ .x = 350, .y = 100, .w = 40, .h = 20 }, size, vp, .{ .side = .right }));
+    // A wide anchor near the edge with no room either way: shifted.
+    try expectRect(.{ .x = 92, .y = 54, .w = 300, .h = 80 }, overlay.place(.{ .x = 200, .y = 20, .w = 50, .h = 30 }, .{ .w = 300, .h = 80 }, vp, .{}));
     // Neither side fits: stays on the roomier side, clamped.
     const tall: geom.Size = .{ .w = 100, .h = 280 };
     try expectRect(.{ .x = 20, .y = 12, .w = 100, .h = 280 }, overlay.place(.{ .x = 20, .y = 100, .w = 60, .h = 30 }, tall, vp, .{}));

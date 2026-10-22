@@ -51,6 +51,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
     var app = zg_gui.App.init(rt.gpa);
     defer app.deinit();
+    app.attachRuntime(&rt);
     var mono: zg_gui.paint.text.MonoText = .{};
     const font_files = fonts.load(rt.gpa, rt.io, &env);
     defer if (font_files) |f| f.deinit(rt.gpa);

@@ -27,6 +27,8 @@ pub const WM = struct {
     pub const SETCURSOR: u32 = 0x0020;
     /// WM_GETMINMAXINFO.
     pub const GETMINMAXINFO: u32 = 0x0024;
+    /// WM_DISPLAYCHANGE.
+    pub const DISPLAYCHANGE: u32 = 0x007E;
     /// WM_NCCREATE.
     pub const NCCREATE: u32 = 0x0081;
     /// WM_KEYDOWN.
@@ -103,6 +105,16 @@ pub const MWMO_INPUTAVAILABLE: u32 = 0x0004;
 pub const WAIT_TIMEOUT: u32 = 258;
 /// `INFINITE`.
 pub const INFINITE: u32 = 0xFFFF_FFFF;
+/// `MDT_EFFECTIVE_DPI` for `GetDpiForMonitor`.
+pub const MDT_EFFECTIVE_DPI: u32 = 0;
+/// `LOAD_LIBRARY_SEARCH_SYSTEM32`.
+pub const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+/// The `WM_TIMER` id that keeps frames flowing inside the modal size/move
+/// loop.
+pub const modal_timer_id: usize = 0x7a67;
+/// `USER_TIMER_MINIMUM` (ms).
+pub const USER_TIMER_MINIMUM: u32 = 0x0A;
+
 /// `SW_SHOWNORMAL`.
 pub const SW_SHOWNORMAL: i32 = 1;
 /// `SW_SHOWMINIMIZED`.
@@ -115,6 +127,8 @@ pub const SW_RESTORE: i32 = 9;
 pub const SIZE_MINIMIZED: usize = 1;
 /// `SIZE_MAXIMIZED` (WM_SIZE wParam).
 pub const SIZE_MAXIMIZED: usize = 2;
+/// `SWP_NOMOVE`.
+pub const SWP_NOMOVE: u32 = 0x0002;
 /// `SWP_NOZORDER`.
 pub const SWP_NOZORDER: u32 = 0x0004;
 /// `SWP_NOACTIVATE`.
