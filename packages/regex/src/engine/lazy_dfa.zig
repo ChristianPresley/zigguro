@@ -53,10 +53,19 @@ pub const Error = error{
     GaveUp,
 } || Allocator.Error;
 
+// Transition table entries are premultiplied state offsets (`id * stride`)
+// with tag bits, so the hot loop needs one load and one test per byte. The
+// sentinels have every tag bit set, so they also take the slow path.
 const unknown: u32 = std.math.maxInt(u32);
 const dead: u32 = unknown - 1;
 const quit: u32 = unknown - 2;
-const max_id: u32 = unknown - 3;
+/// The target is a match state.
+const tag_match: u32 = 1 << 31;
+/// The target is an unanchored start state (only with `Cache.tag_starts`).
+const tag_start: u32 = 1 << 30;
+const tag_mask: u32 = tag_match | tag_start | (1 << 29);
+/// Offsets stay below the tag bits.
+const max_offset: u32 = 1 << 29;
 
 const Flags = packed struct(u8) {
     is_match: bool = false,
@@ -114,6 +123,10 @@ pub const Cache = struct {
     key_buf: std.ArrayList(u8) = .empty,
     saved_key: std.ArrayList(u8) = .empty,
     capacity: usize,
+    /// Tag transitions into unanchored start states so a prefilter can skip
+    /// ahead. Set it when searches pass a prefilter; it costs a slow-path
+    /// step per start-state transition otherwise.
+    tag_starts: bool = false,
     clears: u32 = 0,
     progress: u64 = 0,
     /// Total states created over the cache's life (for tests).
@@ -235,7 +248,7 @@ pub const Dfa = struct {
         // Room for one more state?
         const need_bytes = c.key_buf.items.len + @sizeOf(State) + d.stride * 4 + 16;
         if (c.memory(d.stride) + need_bytes > c.capacity) return null;
-        if (c.states.items.len >= max_id) return null;
+        if ((c.states.items.len + 1) * d.stride >= max_offset) return null;
         const key = try c.keys.allocator().dupe(u8, c.key_buf.items);
         c.key_bytes += key.len;
         const id: u32 = @intCast(c.states.items.len);
@@ -254,6 +267,15 @@ pub const Dfa = struct {
 
     fn keyOf(c: *const Cache, id: u32) []const u8 {
         return c.states.items[id].key;
+    }
+
+    /// The tagged transition entry for state `id`.
+    fn ptrOf(d: *const Dfa, c: *const Cache, id: u32) u32 {
+        const st = &c.states.items[id];
+        var p: u32 = id * @as(u32, @intCast(d.stride));
+        if (st.flags.is_match) p |= tag_match;
+        if (st.is_start and c.tag_starts) p |= tag_start;
+        return p;
     }
 
     /// Look-behind assertions that hold after `prev` (or at text start).
@@ -369,8 +391,8 @@ pub const Dfa = struct {
     }
 
     /// Computes (and caches) the transition of `cur` on `unit`. Returns the
-    /// possibly renumbered current state (after a cache clear) and the next
-    /// state.
+    /// possibly renumbered current state id (after a cache clear) and the
+    /// tagged entry for the next state (or `dead` / `quit`).
     fn computeNext(d: *const Dfa, c: *Cache, cur_in: u32, unit: ?u8) Error!struct { cur: u32, next: u32 } {
         if (unit) |b| if (d.quit_non_ascii and b >= 0x80) {
             const cls = d.program.classes.get(b);
@@ -450,8 +472,9 @@ pub const Dfa = struct {
             cur = try d.reinsert(c, c.saved_key.items);
             break :blk try d.reinsert(c, next_key.items);
         };
-        c.trans.items[cur * d.stride + cls] = next;
-        return .{ .cur = cur, .next = next };
+        const next_ptr = d.ptrOf(c, next);
+        c.trans.items[cur * d.stride + cls] = next_ptr;
+        return .{ .cur = cur, .next = next_ptr };
     }
 
     fn reinsert(d: *const Dfa, c: *Cache, key: []const u8) Error!u32 {
@@ -462,8 +485,8 @@ pub const Dfa = struct {
         return (try d.intern(c, @bitCast(hdr.flags), .{ .bits = hdr.look_have }, .{ .bits = hdr.look_need }, hdr.match_pid)) orelse error.GaveUp;
     }
 
-    inline fn isMatch(c: *const Cache, id: u32) bool {
-        return c.states.items[id].flags.is_match;
+    inline fn isMatchPtr(p: u32) bool {
+        return p != dead and p != quit and p & tag_match != 0;
     }
 
     // -- searches ----------------------------------------------------------
@@ -482,10 +505,13 @@ pub const Dfa = struct {
         c.progress = 0;
         const span = in.span;
         const prev: ?u8 = if (span.start > 0) in.byteAt(span.start - 1) else null;
-        var cur = try d.startState(c, in.anchored, prev);
+        const stride: u32 = @intCast(d.stride);
+        // `cur` is the untagged offset of the current state.
+        var cur: u32 = (try d.startState(c, in.anchored, prev)) * stride;
         var last: ?u64 = null;
         var at = span.start;
-        const classes = &d.program.classes;
+        const map = &d.program.classes.map;
+        var trans = c.trans.items.ptr;
         // Hot loop over chunks.
         chunks: while (at < span.end) {
             const ch = in.chunkAt(at);
@@ -493,44 +519,55 @@ pub const Dfa = struct {
             const stop: usize = @intCast(@min(ch.end(), span.end) - ch.base);
             const bytes = ch.bytes;
             var i = off;
+            // Bytes before `mark` are already counted in `c.progress`.
+            var mark = off;
             while (i < stop) : (i += 1) {
-                const b = bytes[i];
-                var next = c.trans.items[cur * d.stride + classes.get(b)];
-                if (next >= max_id) {
+                var next = trans[cur + map[bytes[i]]];
+                if (next & tag_mask == 0) {
+                    cur = next;
+                    continue;
+                }
+                if (next >= quit) {
                     if (next == unknown) {
-                        const r = try d.computeNext(c, cur, b);
-                        cur = r.cur;
+                        const r = try d.computeNext(c, cur / stride, bytes[i]);
+                        trans = c.trans.items.ptr;
                         next = r.next;
+                        c.progress += i - mark;
+                        mark = i;
                     }
                     if (next == dead) return last;
                     if (next == quit) return error.Quit;
+                    if (next & tag_mask == 0) {
+                        cur = next;
+                        continue;
+                    }
                 }
-                cur = next;
-                c.progress += 1;
-                const st = &c.states.items[cur];
-                if (st.flags.is_match) {
+                cur = next & ~tag_mask;
+                if (next & tag_match != 0) {
                     last = ch.base + i;
                     if (in.earliest) return last;
-                } else if (st.is_start) if (pf) |p| {
+                } else if (next & tag_start != 0) if (pf) |p| {
                     // Nothing in progress: jump to the next candidate.
                     const pos = ch.base + i + 1;
                     const cand = p.find(in, pos) orelse return last;
                     if (cand != pos) {
-                        cur = try d.startState(c, false, in.byteAt(cand - 1));
+                        cur = (try d.startState(c, false, in.byteAt(cand - 1))) * stride;
+                        trans = c.trans.items.ptr;
                         at = cand;
                         continue :chunks;
                     }
                 };
             }
+            c.progress += stop - mark;
             at = ch.base + stop;
         }
         // Final transition: the byte after the span, or end of input.
         const unit: ?u8 = if (span.end < in.total_len) in.byteAt(span.end) else null;
-        const cls: usize = if (unit) |b| classes.get(b) else d.eoi_class;
-        var next = c.trans.items[cur * d.stride + cls];
-        if (next == unknown) next = (try d.computeNext(c, cur, unit)).next;
+        const cls: usize = if (unit) |b| map[b] else d.eoi_class;
+        var next = c.trans.items[cur + cls];
+        if (next == unknown) next = (try d.computeNext(c, cur / stride, unit)).next;
         if (next == quit) return error.Quit;
-        if (next != dead and isMatch(c, next)) last = span.end;
+        if (isMatchPtr(next)) last = span.end;
         return last;
     }
 
@@ -542,40 +579,49 @@ pub const Dfa = struct {
         c.progress = 0;
         const span = in.span;
         const prev: ?u8 = if (span.end < in.total_len) in.byteAt(span.end) else null;
-        var cur = try d.startState(c, true, prev);
+        const stride: u32 = @intCast(d.stride);
+        var cur: u32 = (try d.startState(c, true, prev)) * stride;
         var last: ?u64 = null;
         var at = span.end;
-        const classes = &d.program.classes;
+        const map = &d.program.classes.map;
+        var trans = c.trans.items.ptr;
         while (at > span.start) {
             const ch = in.chunkAt(at - 1);
             const lo: usize = @intCast(@max(ch.base, span.start) - ch.base);
-            var i: usize = @intCast(at - ch.base);
+            const hi: usize = @intCast(at - ch.base);
+            var i: usize = hi;
+            var mark = hi;
             const bytes = ch.bytes;
             while (i > lo) {
                 i -= 1;
-                const b = bytes[i];
-                var next = c.trans.items[cur * d.stride + classes.get(b)];
-                if (next >= max_id) {
+                var next = trans[cur + map[bytes[i]]];
+                if (next & tag_mask == 0) {
+                    cur = next;
+                    continue;
+                }
+                if (next >= quit) {
                     if (next == unknown) {
-                        const r = try d.computeNext(c, cur, b);
-                        cur = r.cur;
+                        const r = try d.computeNext(c, cur / stride, bytes[i]);
+                        trans = c.trans.items.ptr;
                         next = r.next;
+                        c.progress += mark - i;
+                        mark = i;
                     }
                     if (next == dead) return last;
                     if (next == quit) return error.Quit;
                 }
-                cur = next;
-                c.progress += 1;
-                if (isMatch(c, cur)) last = ch.base + i + 1;
+                cur = next & ~tag_mask;
+                if (next & tag_match != 0) last = ch.base + i + 1;
             }
+            c.progress += mark - lo;
             at = ch.base + lo;
         }
         const unit: ?u8 = if (span.start > 0) in.byteAt(span.start - 1) else null;
-        const cls: usize = if (unit) |b| classes.get(b) else d.eoi_class;
-        var next = c.trans.items[cur * d.stride + cls];
-        if (next == unknown) next = (try d.computeNext(c, cur, unit)).next;
+        const cls: usize = if (unit) |b| map[b] else d.eoi_class;
+        var next = c.trans.items[cur + cls];
+        if (next == unknown) next = (try d.computeNext(c, cur / stride, unit)).next;
         if (next == quit) return error.Quit;
-        if (next != dead and isMatch(c, next)) last = span.start;
+        if (isMatchPtr(next)) last = span.start;
         return last;
     }
 
