@@ -5,6 +5,7 @@ const std = @import("std");
 
 pub const protocol = @import("protocol/root.zig");
 pub const transport = @import("transport/root.zig");
+pub const schema = @import("schema/root.zig");
 
 test {
     std.testing.refAllDecls(@This());
