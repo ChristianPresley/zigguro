@@ -1,0 +1,897 @@
+=== h
+--- before
+abc¦def
+--- keys
+h
+--- after
+ab¦cdef
+
+=== h at start
+--- before
+¦abc
+--- keys
+h
+--- after
+¦abc
+
+=== 3h
+--- before
+abcd¦ef
+--- keys
+3h
+--- after
+a¦bcdef
+
+=== 10h clamps
+--- before
+ab¦cd
+--- keys
+10h
+--- after
+¦abcd
+
+=== l
+--- before
+a¦bc
+--- keys
+l
+--- after
+ab¦c
+
+=== l at end
+--- before
+ab¦c
+--- keys
+l
+--- after
+ab¦c
+
+=== 5l clamps
+--- before
+a¦bcdef
+--- keys
+9l
+--- after
+abcde¦f
+
+=== j keeps column
+--- before
+abc¦def
+xy
+longer line
+--- keys
+j
+--- after
+abcdef
+x¦y
+longer line
+
+=== jj restores column
+--- before
+abc¦def
+xy
+longer line
+--- keys
+jj
+--- after
+abcdef
+xy
+lon¦ger line
+
+=== k
+--- before
+first
+se¦cond
+--- keys
+k
+--- after
+fi¦rst
+second
+
+=== 5j partial
+--- before
+a¦a
+bb
+cc
+--- keys
+5j
+--- after
+aa
+bb
+c¦c
+
+=== j last line
+--- before
+aa
+b¦b
+--- keys
+j
+--- after
+aa
+b¦b
+
+=== w
+--- before
+¦one two  three
+four-five six
+
+seven
+--- keys
+w
+--- after
+one ¦two  three
+four-five six
+
+seven
+
+=== 3w
+--- before
+¦one two  three
+four-five six
+
+seven
+--- keys
+3w
+--- after
+one two  three
+¦four-five six
+
+seven
+
+=== w punctuation
+--- before
+¦foo.bar(baz)
+--- keys
+w
+--- after
+foo¦.bar(baz)
+
+=== 2w punctuation
+--- before
+¦foo.bar(baz)
+--- keys
+2w
+--- after
+foo.¦bar(baz)
+
+=== w across empty line
+--- before
+on¦e
+
+two
+--- keys
+w
+--- after
+one
+¦
+two
+
+=== w empty to next
+--- before
+one
+¦
+two
+--- keys
+w
+--- after
+one
+
+¦two
+
+=== W
+--- before
+¦a.b c-d e
+--- keys
+W
+--- after
+a.b ¦c-d e
+
+=== 2W
+--- before
+¦a.b c-d e
+--- keys
+2W
+--- after
+a.b c-d ¦e
+
+=== w last word of file
+--- before
+one tw¦o
+--- keys
+w
+--- after
+one tw¦o
+
+=== w end of line
+--- before
+one tw¦o
+three
+--- keys
+w
+--- after
+one two
+¦three
+
+=== b
+--- before
+one two thr¦ee
+--- keys
+b
+--- after
+one two ¦three
+
+=== 2b
+--- before
+one two thr¦ee
+--- keys
+2b
+--- after
+one ¦two three
+
+=== b across line
+--- before
+one two
+¦three
+--- keys
+b
+--- after
+one ¦two
+three
+
+=== b punctuation
+--- before
+foo.bar¦(x)
+--- keys
+b
+--- after
+foo.¦bar(x)
+
+=== B
+--- before
+a.b c-d e¦f
+--- keys
+B
+--- after
+a.b c-d ¦ef
+
+=== e
+--- before
+¦one two three
+--- keys
+e
+--- after
+on¦e two three
+
+=== e at word end
+--- before
+on¦e two three
+--- keys
+e
+--- after
+one tw¦o three
+
+=== 3e
+--- before
+¦one two three four
+--- keys
+3e
+--- after
+one two thre¦e four
+
+=== E
+--- before
+¦a.b c-d
+--- keys
+E
+--- after
+a.¦b c-d
+
+=== ge
+--- before
+one two thr¦ee
+--- keys
+ge
+--- after
+one tw¦o three
+
+=== 2ge
+--- before
+one two thr¦ee
+--- keys
+2ge
+--- after
+on¦e two three
+
+=== gE
+--- before
+a.b c-d e¦f
+--- keys
+gE
+--- after
+a.b c-¦d ef
+
+=== 0
+--- before
+  abc ¦def
+--- keys
+0
+--- after
+¦  abc def
+
+=== ^
+--- before
+  abc ¦def
+--- keys
+^
+--- after
+  ¦abc def
+
+=== $
+--- before
+a¦bc def
+--- keys
+$
+--- after
+abc de¦f
+
+=== 2$
+--- before
+a¦bc
+def ghi
+x
+--- keys
+2$
+--- after
+abc
+def gh¦i
+x
+
+=== $ then j sticks to end
+--- before
+ab¦c
+longer line
+xy
+--- keys
+$j
+--- after
+abc
+longer lin¦e
+xy
+
+=== g_
+--- before
+a¦bc def   
+--- keys
+g_
+--- after
+abc de¦f   
+
+=== |
+--- before
+abcdef¦gh
+--- keys
+3|
+--- after
+ab¦cdefgh
+
+=== gg
+--- before
+one
+  two
+thr¦ee
+--- keys
+gg
+--- after
+¦one
+  two
+three
+
+=== G
+--- before
+o¦ne
+  two
+three
+--- keys
+G
+--- after
+one
+  two
+¦three
+
+=== 2G
+--- before
+o¦ne
+  two
+three
+--- keys
+2G
+--- after
+one
+  ¦two
+three
+
+=== 5G clamps
+--- before
+o¦ne
+two
+--- keys
+5G
+--- after
+one
+¦two
+
+=== fx
+--- before
+a¦bcxdefx
+--- keys
+fx
+--- after
+abc¦xdefx
+
+=== 2fx
+--- before
+a¦bcxdefx
+--- keys
+2fx
+--- after
+abcxdef¦x
+
+=== fx missing
+--- before
+a¦bcd
+--- keys
+fz
+--- after
+a¦bcd
+
+=== Fx
+--- before
+axbcxd¦ef
+--- keys
+Fx
+--- after
+axbc¦xdef
+
+=== tx
+--- before
+a¦bcxdefx
+--- keys
+tx
+--- after
+ab¦cxdefx
+
+=== Tx
+--- before
+axbcxd¦ef
+--- keys
+Tx
+--- after
+axbcx¦def
+
+=== f then ;
+--- before
+a¦b,c,d,e
+--- keys
+f,;
+--- after
+ab,c¦,d,e
+
+=== f then ,
+--- before
+a,b,c¦d,e
+--- keys
+f,;,
+--- after
+a,b¦,cd,e
+
+=== t then ; skips adjacent
+--- before
+a¦b,c,d
+--- keys
+t,;
+--- after
+ab,¦c,d
+
+=== T then ;
+--- before
+a,b,c,d¦e
+--- keys
+T,;
+--- after
+a,b,¦c,de
+
+=== % paren
+--- before
+if ¦(a (b) c) end
+--- keys
+%
+--- after
+if (a (b) c¦) end
+
+=== % from inside
+--- before
+x¦ = foo(bar[1])
+--- keys
+%
+--- after
+x = foo(bar[1]¦)
+
+=== % back
+--- before
+foo(bar[1]¦)
+--- keys
+%
+--- after
+foo¦(bar[1])
+
+=== % braces lines
+--- before
+fn {
+  x
+¦}
+--- keys
+%
+--- after
+fn ¦{
+  x
+}
+
+=== 50%
+--- before
+a
+b
+c
+d
+¦e
+f
+g
+h
+i
+j
+--- keys
+50%
+--- after
+a
+b
+c
+d
+¦e
+f
+g
+h
+i
+j
+
+=== }
+--- before
+¦a
+b
+
+c
+d
+
+e
+--- keys
+}
+--- after
+a
+b
+¦
+c
+d
+
+e
+
+=== 2}
+--- before
+¦a
+b
+
+c
+d
+
+e
+--- keys
+2}
+--- after
+a
+b
+
+c
+d
+¦
+e
+
+=== } last paragraph
+--- before
+a
+
+b¦
+c
+--- keys
+}
+--- after
+a
+
+b
+¦c
+
+=== {
+--- before
+a
+b
+
+c
+d¦
+--- keys
+{
+--- after
+a
+b
+¦
+c
+d
+
+=== 2{
+--- before
+a
+
+b
+
+c¦
+--- keys
+2{
+--- after
+a
+¦
+b
+
+c
+
+=== )
+--- before
+¦One two. Three four. Five.
+--- keys
+)
+--- after
+One two. ¦Three four. Five.
+
+=== 2)
+--- before
+¦One two. Three four. Five.
+--- keys
+2)
+--- after
+One two. Three four. ¦Five.
+
+=== (
+--- before
+One two. Three ¦four. Five.
+--- keys
+(
+--- after
+One two. ¦Three four. Five.
+
+=== 2(
+--- before
+One two. Three four. Fi¦ve.
+--- keys
+2(
+--- after
+One two. ¦Three four. Five.
+
+=== ) across lines
+--- before
+First one.
+Second ¦one.
+Third.
+--- keys
+)
+--- after
+First one.
+Second one.
+¦Third.
+
+=== +
+--- before
+a¦bc
+  def
+--- keys
++
+--- after
+abc
+  ¦def
+
+=== enter
+--- before
+a¦bc
+  def
+--- keys
+<CR>
+--- after
+abc
+  ¦def
+
+=== -
+--- before
+  abc
+d¦ef
+--- keys
+-
+--- after
+  ¦abc
+def
+
+=== _
+--- before
+  a¦bc
+--- keys
+_
+--- after
+  ¦abc
+
+=== 2_
+--- before
+a¦bc
+  def
+--- keys
+2_
+--- after
+abc
+  ¦def
+
+=== *
+--- before
+foo ¦bar baz bar qux
+--- keys
+*
+--- after
+foo bar baz ¦bar qux
+
+=== * wraps
+--- before
+bar foo b¦ar
+--- keys
+*
+--- after
+¦bar foo bar
+
+=== #
+--- before
+bar foo ¦bar baz
+--- keys
+#
+--- after
+¦bar foo bar baz
+
+=== * whole word
+--- before
+¦foo foobar foo
+--- keys
+*
+--- after
+foo foobar ¦foo
+
+=== * then n
+--- before
+¦x a x b x
+--- keys
+*n
+--- after
+x a x b ¦x
+
+=== * then N
+--- before
+¦x a x b x
+--- keys
+*N
+--- after
+¦x a x b x
+
+=== space wraps
+--- before
+ab¦c
+def
+--- keys
+<Space><Space>
+--- after
+abc
+d¦ef
+
+=== bs wraps
+--- before
+abc
+d¦ef
+--- keys
+<BS><BS><BS>
+--- after
+a¦bc
+def
+
+=== count w across lines
+--- before
+a ¦b
+c d
+e
+--- keys
+3w
+--- after
+a b
+c d
+¦e
+
+=== e across empty lines
+--- before
+a¦b
+
+
+cd
+--- keys
+e
+--- after
+ab
+
+
+c¦d
+
+=== w on blank line end
+--- before
+foo   ¦
+bar
+--- keys
+w
+--- after
+foo   
+¦bar
+
+=== b to start of file
+--- before
+  fo¦o
+--- keys
+b
+--- after
+  ¦foo
+
+=== ge at first word
+--- before
+fo¦o bar
+--- keys
+ge
+--- after
+¦foo bar
+
+=== j onto empty line
+--- before
+abc¦d
+
+xyzw
+--- keys
+jj
+--- after
+abcd
+
+xyz¦w
+
+=== utf8 l
+--- before
+h¦éllo
+--- keys
+l
+--- after
+hé¦llo
+
+=== utf8 w
+--- before
+¦héllo wörld
+--- keys
+w
+--- after
+héllo ¦wörld
+
+=== utf8 e
+--- before
+¦héllo wörld
+--- keys
+e
+--- after
+héll¦o wörld

@@ -1,0 +1,810 @@
+=== v
+--- before
+a¦bcdef
+--- keys
+v
+--- after
+a«b»cdef
+[visual]
+
+=== vl
+--- before
+a¦bcdef
+--- keys
+vll
+--- after
+a«bcd»ef
+[visual]
+
+=== vh
+--- before
+abc¦def
+--- keys
+vhh
+--- after
+a«bcd»ef
+[visual]
+
+=== vj
+--- before
+a¦bc
+def
+ghi
+--- keys
+vj
+--- after
+a«bc
+de»f
+ghi
+[visual]
+
+=== v$
+--- before
+a¦bc
+def
+--- keys
+v$
+--- after
+a«bc
+»def
+[visual]
+
+=== vw
+--- before
+¦one two
+--- keys
+vw
+--- after
+«one t»wo
+[visual]
+
+=== ve
+--- before
+¦one two
+--- keys
+ve
+--- after
+«one» two
+[visual]
+
+=== vd
+--- before
+a¦bcdef
+--- keys
+vlld
+--- after
+a¦ef
+
+=== vx
+--- before
+a¦bcdef
+--- keys
+vllx
+--- after
+a¦ef
+
+=== v backward d
+--- before
+abc¦def
+--- keys
+vhhd
+--- after
+a¦ef
+
+=== vjd
+--- before
+a¦bc
+def
+ghi
+--- keys
+vjd
+--- after
+a¦f
+ghi
+
+=== v$d
+--- before
+a¦bc
+def
+--- keys
+v$d
+--- after
+a¦def
+
+=== vy
+--- before
+a¦bcdef
+--- keys
+vlly
+--- after
+a¦bcdef
+
+=== vy +reg
+--- before
+a¦bcdef
+--- keys
+vlly
+--- after
+a¦bcdef
+[reg v] "bcd"
+
+=== vc
+--- before
+a¦bcdef
+--- keys
+vllcX<Esc>
+--- after
+a¦Xef
+
+=== vs
+--- before
+a¦bcdef
+--- keys
+vlsX<Esc>
+--- after
+a¦Xdef
+
+=== vr
+--- before
+a¦bcdef
+--- keys
+vllrx
+--- after
+a¦xxxef
+
+=== vjr
+--- before
+a¦bc
+def
+--- keys
+vjrx
+--- after
+a¦xx
+xxf
+
+=== v~
+--- before
+a¦bcDEF
+--- keys
+vllll~
+--- after
+a¦BCdef
+
+=== vu
+--- before
+A¦BCDEF
+--- keys
+vlllu
+--- after
+A¦bcdeF
+
+=== vU
+--- before
+a¦bcdef
+--- keys
+vlllU
+--- after
+a¦BCDEf
+
+=== v>
+--- before
+a¦bc
+def
+--- keys
+vj>
+--- after
+    ¦abc
+    def
+
+=== v<
+--- before
+        a¦bc
+--- keys
+v<
+--- after
+    ¦abc
+
+=== v3>
+--- before
+a¦bc
+--- keys
+v3>
+--- after
+            ¦abc
+
+=== vJ
+--- before
+¦a
+b
+c
+--- keys
+vjjJ
+--- after
+a b¦ c
+
+=== vJ one line
+--- before
+¦a
+b
+c
+--- keys
+vJ
+--- after
+a¦ b
+c
+
+=== vo
+--- before
+a¦bcdef
+--- keys
+vllo
+--- after
+a«bcd»ef
+[visual]
+
+=== vo then h
+--- before
+a¦bcdef
+--- keys
+vlloh
+--- after
+«abcd»ef
+[visual]
+
+=== v esc
+--- before
+a¦bcdef
+--- keys
+vll<Esc>
+--- after
+abc¦def
+
+=== viw
+--- before
+foo b¦ar baz
+--- keys
+viw
+--- after
+foo «bar» baz
+[visual]
+
+=== vaw
+--- before
+foo b¦ar baz
+--- keys
+vaw
+--- after
+foo «bar »baz
+[visual]
+
+=== viwiw
+--- before
+foo b¦ar baz
+--- keys
+viwiw
+--- after
+foo «bar »baz
+[visual]
+
+=== v2aw
+--- before
+¦one two three
+--- keys
+v2aw
+--- after
+«one two »three
+[visual]
+
+=== vi(
+--- before
+f(a, ¦b)
+--- keys
+vi(
+--- after
+f(«a, b»)
+[visual]
+
+=== va(
+--- before
+f(a, ¦b)
+--- keys
+va(
+--- after
+f«(a, b)»
+[visual]
+
+=== vi"
+--- before
+x "a¦b" y
+--- keys
+vi"
+--- after
+x "«ab»" y
+[visual]
+
+=== vip
+--- before
+a
+b¦
+
+c
+--- keys
+vip
+--- after
+«a
+b
+»
+c
+[visual_line]
+
+=== vap
+--- before
+a
+b¦
+
+c
+--- keys
+vap
+--- after
+«a
+b
+
+»c
+[visual_line]
+
+=== V
+--- before
+a¦bc
+def
+--- keys
+V
+--- after
+«abc
+»def
+[visual_line]
+
+=== Vj
+--- before
+a¦bc
+def
+ghi
+--- keys
+Vj
+--- after
+«abc
+def
+»ghi
+[visual_line]
+
+=== Vd
+--- before
+a
+b¦c
+d
+--- keys
+Vd
+--- after
+a
+¦d
+
+=== Vjd
+--- before
+a
+b¦c
+d
+e
+--- keys
+Vjd
+--- after
+a
+¦e
+
+=== Vy +reg
+--- before
+a
+b¦c
+d
+--- keys
+Vy
+--- after
+a
+¦bc
+d
+[reg V] "bc\n"
+
+=== Vjy
+--- before
+a
+b¦c
+de
+--- keys
+jVky
+--- after
+a
+b¦c
+de
+
+=== V>
+--- before
+a
+b¦c
+d
+--- keys
+Vj>
+--- after
+a
+    ¦bc
+    d
+
+=== Vc
+--- before
+a
+  b¦c
+d
+--- keys
+VcX<Esc>
+--- after
+a
+  ¦X
+d
+
+=== VJ
+--- before
+¦a
+b
+c
+--- keys
+VjJ
+--- after
+a¦ b
+c
+
+=== V~
+--- before
+a¦b
+cd
+--- keys
+Vj~
+--- after
+¦AB
+CD
+
+=== Vu
+--- before
+A¦B
+CD
+--- keys
+Vju
+--- after
+¦ab
+cd
+
+=== vV switches
+--- before
+a¦bc
+def
+--- keys
+vV
+--- after
+«abc
+»def
+[visual_line]
+
+=== Vv switches
+--- before
+a¦bc
+def
+--- keys
+Vv
+--- after
+a«b»c
+def
+[visual]
+
+=== vv exits
+--- before
+a¦bc
+--- keys
+vv
+--- after
+a¦bc
+
+=== Vx
+--- before
+a
+b¦c
+d
+--- keys
+Vx
+--- after
+a
+¦d
+
+=== vD
+--- before
+a¦b
+cd
+ef
+--- keys
+vjD
+--- after
+¦ef
+
+=== vX
+--- before
+a¦b
+cd
+ef
+--- keys
+vX
+--- after
+¦cd
+ef
+
+=== vY
+--- before
+a¦b
+cd
+--- keys
+vYP
+--- after
+¦ab
+ab
+cd
+
+=== vC
+--- before
+a¦b
+cd
+--- keys
+vCX<Esc>
+--- after
+¦X
+cd
+
+=== vS
+--- before
+a¦b
+cd
+--- keys
+vSX<Esc>
+--- after
+¦X
+cd
+
+=== vp
+--- before
+a¦bc def
+--- keys
+ylwvlp
+--- after
+abc ¦bf
+
+=== Vp
+--- before
+one
+t¦wo
+three
+--- keys
+yyjVp
+--- after
+one
+two
+¦two
+
+=== ctrl-v
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jl
+--- after
+a«bc»
+d«ef»
+ghi
+[visual_block]
+
+=== ctrl-v d
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jld
+--- after
+¦a
+d
+ghi
+
+=== ctrl-v y +reg
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jly
+--- after
+a¦bc
+def
+ghi
+[reg b] "bc\nef"
+
+=== ctrl-v $
+--- before
+a¦bc
+de
+fghi
+--- keys
+<C-v>jj$
+--- after
+a«bc»
+d«e»
+f«ghi»
+[visual_block]
+
+=== ctrl-v $d
+--- before
+a¦bc
+de
+fghi
+--- keys
+<C-v>jj$d
+--- after
+¦a
+d
+f
+
+=== ctrl-v I
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jjIX<Esc>
+--- after
+a¦Xbc
+dXef
+gXhi
+
+=== ctrl-v A
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jjAX<Esc>
+--- after
+a¦bXc
+deXf
+ghXi
+
+=== ctrl-v A short lines
+--- before
+a¦bc
+d
+ghi
+--- keys
+<C-v>jjlAX<Esc>
+--- after
+a¦bcX
+d  X
+ghiX
+
+=== ctrl-v $A
+--- before
+a¦bc
+d
+ghij
+--- keys
+<C-v>jj$AX<Esc>
+--- after
+a¦bcX
+dX
+ghijX
+
+=== ctrl-v I short line
+--- before
+abc¦d
+x
+efgh
+--- keys
+<C-v>jjIX<Esc>
+--- after
+abc¦Xd
+x
+efgXh
+
+=== ctrl-v c
+--- before
+a¦bc
+def
+ghi
+--- keys
+<C-v>jlcX<Esc>
+--- after
+a¦X
+dX
+ghi
+
+=== ctrl-v r
+--- before
+a¦bc
+def
+--- keys
+<C-v>jlrx
+--- after
+a¦xx
+dxx
+
+=== ctrl-v ~
+--- before
+a¦bc
+def
+--- keys
+<C-v>jl~
+--- after
+a¦BC
+dEF
+
+=== ctrl-v o
+--- before
+a¦bc
+def
+--- keys
+<C-v>jlo
+--- after
+a«bc»
+d«ef»
+[visual_block]
+
+=== ctrl-v O
+--- before
+a¦bc
+def
+--- keys
+<C-v>jlO
+--- after
+a«bc»
+d«ef»
+[visual_block]
+
+=== gv
+--- before
+a¦bcdef
+--- keys
+vl<Esc>0gv
+--- after
+a«bc»def
+[visual]
+
+=== v count motion
+--- before
+¦a b c d
+--- keys
+v2w
+--- after
+«a b c» d
+[visual]
+
+=== v G
+--- before
+a¦b
+cd
+ef
+--- keys
+vG
+--- after
+a«b
+cd
+e»f
+[visual]
+
+=== v%
+--- before
+f¦(a)
+--- keys
+v%
+--- after
+f«(a)»
+[visual]

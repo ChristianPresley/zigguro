@@ -173,6 +173,42 @@ test "lastOpportunityBefore equals forward scan" {
     }
 }
 
+fn expectSameAsRuleChain(text: []const u8, opts: lb.Options) !void {
+    var fast = lb.Iterator.init(text, opts);
+    var slow = lb.Iterator.init(text, opts);
+    slow.fast = false;
+    while (true) {
+        const a = fast.next();
+        const b = slow.next();
+        testing.expectEqual(b, a) catch |e| {
+            std.debug.print("text: \"{s}\"\n", .{text});
+            return e;
+        };
+        if (a == null) break;
+    }
+}
+
+test "ASCII shortcuts match the rule chain" {
+    const words = [_][]const u8{ "a", "the", "Quick", "x", "fox", "(lazy)", "dogs,", "12.5%", "co-op", "\"q\"", "naïve", "日本", "e\u{301}", "\t", "\n", "http://a.b/c", "a=b", "--", "[x]", "“q”", "\u{200B}", "\u{00A0}" };
+    var buf: [4096]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(0x14);
+    const r = rng.random();
+    for (0..200) |_| {
+        var len: usize = 0;
+        while (len < 200) {
+            const w = words[r.uintLessThan(usize, words.len)];
+            @memcpy(buf[len..][0..w.len], w);
+            len += w.len;
+            for (0..r.uintLessThan(usize, 3)) |_| {
+                buf[len] = ' ';
+                len += 1;
+            }
+        }
+        try expectSameAsRuleChain(buf[0..len], .{});
+        try expectSameAsRuleChain(buf[0..len], .{ .code_tailoring = true });
+    }
+}
+
 fn checkConsistency(input: []const u8) !void {
     var it = lb.Iterator.init(input, .{});
     var prev: usize = 0;

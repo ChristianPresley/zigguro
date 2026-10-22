@@ -22,6 +22,8 @@ pub const shortcut = @import("shortcut.zig");
 pub const known_folders = @import("known_folders.zig");
 /// The app's and setup's named mutexes.
 pub const instance = @import("instance.zig");
+/// Command-line tails for the update helper's `--relaunch`.
+pub const cmdline = @import("cmdline.zig");
 
 pub const shortcut_name = "zigguro.lnk";
 
@@ -77,6 +79,7 @@ test {
     _ = shortcut;
     _ = known_folders;
     _ = instance;
+    _ = cmdline;
 }
 
 test "registry: real HKCU subtree, integrate then unintegrate" {

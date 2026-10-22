@@ -72,6 +72,25 @@ pub fn detect(exe_dir: []const u8, os: std.Target.Os.Tag) Layout {
     return .{ .root = exe_dir, .kind = .unmanaged };
 }
 
+/// The folder next to the executable that makes an install portable
+/// (zg_config's `ConfigPaths.portable`, zg_crash's `paths.portable_dir`).
+pub const portable_dir = "zigguro-data";
+
+/// `detect`, refined by what is on disk and how the binary was built: a
+/// distro build is `.distro`; a binary next to a `zigguro-data` folder is
+/// `.portable` (rooted at `exe_dir`), which never downloads or applies
+/// updates and never registers anything. One stat.
+pub fn detectInstall(io: std.Io, exe_dir: []const u8, os: std.Target.Os.Tag, distro: bool) Layout {
+    if (distro) return .{ .root = exe_dir, .kind = .distro };
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ exe_dir, std.fs.path.sep, portable_dir })) |data| {
+        if (std.Io.Dir.cwd().statFile(io, data, .{})) |st| {
+            if (st.kind == .directory) return .{ .root = exe_dir, .kind = .portable };
+        } else |_| {}
+    } else |_| {}
+    return detect(exe_dir, os);
+}
+
 test "layout: detect" {
     const sep = std.fs.path.sep_str;
     const l = detect("x" ++ sep ++ "zigguro" ++ sep ++ "app", .linux);
@@ -86,4 +105,25 @@ test "layout: managed kinds" {
     try std.testing.expect(InstallKind.appimage.managed());
     try std.testing.expect(!InstallKind.portable.managed());
     try std.testing.expect(!InstallKind.unmanaged.managed());
+}
+
+test "layout: portable, distro and managed on disk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = buf[0..try tmp.dir.realPathFile(io, ".", &buf)];
+    try tmp.dir.createDirPath(io, "zg" ++ std.fs.path.sep_str ++ "app");
+    const app_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "zg", "app" });
+    defer std.testing.allocator.free(app_dir);
+
+    try std.testing.expectEqual(InstallKind.user, detectInstall(io, app_dir, .windows, false).kind);
+    try std.testing.expectEqual(InstallKind.unmanaged, detectInstall(io, base, .windows, false).kind);
+    try std.testing.expectEqual(InstallKind.distro, detectInstall(io, app_dir, .linux, true).kind);
+    // A zigguro-data folder wins, even inside an `app` directory.
+    try tmp.dir.createDirPath(io, "zg" ++ std.fs.path.sep_str ++ "app" ++ std.fs.path.sep_str ++ portable_dir);
+    const p = detectInstall(io, app_dir, .windows, false);
+    try std.testing.expectEqual(InstallKind.portable, p.kind);
+    try std.testing.expectEqualStrings(app_dir, p.root);
+    try std.testing.expect(!p.kind.managed());
 }

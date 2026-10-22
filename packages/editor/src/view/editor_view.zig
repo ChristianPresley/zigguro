@@ -13,6 +13,14 @@
 //! next/all occurrences, split into lines, box selection, cursor undo)
 //! run on the view directly; box selection and vertical cursors measure
 //! rows through the view's `displayMap` (unwrapped lines, pixel x).
+//!
+//! Smart typing (`Options.smart_typing`): typed characters, Enter and
+//! Backspace run the model's `smart_edit` commands with the document's
+//! language rules: auto-closed and surrounding pairs, typing over an
+//! auto-inserted closer, electric re-indent, auto-indent (in the indent
+//! unit guessed when the view opened) and pair-aware delete. Their changes
+//! are captured from the document's change events and recorded as one undo
+//! step each.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -24,6 +32,9 @@ const undo_mod = @import("../model/edit/undo.zig");
 const syntax_mod = @import("../model/syntax.zig");
 const deco_store = @import("../model/decorations/store.zig");
 const multi = @import("../model/edit/multi_cursor.zig");
+const gutter = @import("gutter.zig");
+const smart = @import("../model/edit/smart_edit.zig");
+const indent_mod = @import("../model/edit/indent.zig");
 
 const Allocator = std.mem.Allocator;
 const Document = document.Document;
@@ -49,6 +60,9 @@ pub const Options = struct {
     line_numbers: bool = true,
     font_size: f32 = 13,
     read_only: bool = false,
+    /// Typing, Enter and Backspace follow the language's pair and indent
+    /// rules (see the module doc).
+    smart_typing: bool = true,
 };
 
 /// Maps a decoration's `StyleRef` to a colour (E15 theme tokens); null
@@ -68,6 +82,48 @@ pub const ChangeHook = struct {
 /// Horizontal moves.
 pub const Unit = enum { char, word };
 
+/// The changes a model command made, from the document's change events:
+/// composed forward and inverse ChangeSets.
+const Capture = struct {
+    fwd: ?ChangeSet = null,
+    inv: ?ChangeSet = null,
+    failed: bool = false,
+
+    fn add(c: *Capture, gpa: Allocator, ev: *const document.ChangeEvent) void {
+        c.addOrFail(gpa, ev) catch {
+            c.failed = true;
+        };
+    }
+
+    fn addOrFail(c: *Capture, gpa: Allocator, ev: *const document.ChangeEvent) !void {
+        var f = try ev.changes.clone(gpa);
+        errdefer f.deinit();
+        var i = try ev.changes.invert(ev.before, gpa);
+        errdefer i.deinit();
+        if (c.fwd) |*pf| {
+            const nf = try pf.compose(&f, gpa);
+            var nf_owned = nf;
+            errdefer nf_owned.deinit();
+            // Undo the newest change first.
+            const ni = try i.compose(&c.inv.?, gpa);
+            pf.deinit();
+            c.inv.?.deinit();
+            f.deinit();
+            i.deinit();
+            c.fwd = nf;
+            c.inv = ni;
+        } else {
+            c.fwd = f;
+            c.inv = i;
+        }
+    }
+
+    fn deinit(c: *Capture) void {
+        if (c.fwd) |*f| f.deinit();
+        if (c.inv) |*i| i.deinit();
+    }
+};
+
 /// See the module doc.
 pub const EditorView = struct {
     gpa: Allocator,
@@ -83,6 +139,19 @@ pub const EditorView = struct {
     /// Decorations to draw (fed by its own listener). Not owned.
     decorations: ?*const deco_store.DecorationStore = null,
     styles: ?StyleResolver = null,
+    /// Names of highlight ids beyond the fixed set (LSP semantic token
+    /// types, from E07's legend), so they colour like their ancestors.
+    /// Not owned.
+    hl_names: ?*const @import("zg_syntax").HighlightNames = null,
+    /// Closers auto-inserted by smart typing (cleared when the caret
+    /// jumps).
+    auto_pairs: smart.AutoPairs,
+    /// The document's indentation unit, guessed when the view opened.
+    indent_unit: ?indent_mod.IndentUnit = null,
+    /// Collects the changes of a running model command (`runSmart`).
+    capture: ?*Capture = null,
+    /// The SCM bar's hunks (a dirty diff); none: no bar. Not owned.
+    scm: ?gutter.ScmGutterSource = null,
     on_change: ?ChangeHook = null,
     /// Called when the primary caret moved or the number of selections
     /// changed (a status bar's position).
@@ -114,10 +183,13 @@ pub const EditorView = struct {
     pub fn init(gpa: Allocator, doc: *Document, opts: Options) !*EditorView {
         const v = try gpa.create(EditorView);
         errdefer gpa.destroy(v);
-        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .sels = try .init(gpa, .caret(0)), .undo = .init(gpa, .{}), .opts = opts };
+        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .sels = try .init(gpa, .caret(0)), .undo = .init(gpa, .{}), .opts = opts, .auto_pairs = .{ .gpa = gpa } };
         errdefer v.undo.deinit();
         errdefer v.sels.deinit();
         v.listener = try doc.subscribe(.{ .ctx = v, .onChange = onDocChange });
+        var snap = doc.snapshot();
+        defer snap.release();
+        v.indent_unit = indent_mod.guess(&snap);
         return v;
     }
 
@@ -126,6 +198,7 @@ pub const EditorView = struct {
         v.doc.unsubscribe(v.listener);
         v.sels.deinit();
         v.undo.deinit();
+        v.auto_pairs.deinit();
         v.scratch.deinit(v.gpa);
         v.gpa.destroy(v);
     }
@@ -193,6 +266,7 @@ pub const EditorView = struct {
     fn onDocChange(ctx: *anyopaque, ev: *const document.ChangeEvent) void {
         const v: *EditorView = @ptrCast(@alignCast(ctx));
         if (v.syntax) |ds| ds.onChange(ev, &v.doc.tree, null) catch {};
+        if (v.capture) |c| c.add(v.gpa, ev);
         if (v.in_edit) return;
         if (ev.origin != .reload) v.foreign = true;
         for (v.sels.items.items) |*s| s.* = s.map(ev.changes);
@@ -535,6 +609,7 @@ pub const EditorView = struct {
     }
 
     fn afterMove(v: *EditorView) void {
+        v.auto_pairs.clear();
         v.normalize();
         v.undo.breakGroup();
         v.revealPrimary();
@@ -657,6 +732,18 @@ pub const EditorView = struct {
         v.touch();
     }
 
+    /// Typed text: one character goes through smart typing (pairs,
+    /// electric indent); anything longer (an IME commit) is inserted as
+    /// is.
+    pub fn typeText(v: *EditorView, t: []const u8) !void {
+        if (v.opts.smart_typing and t.len > 0 and t.len == (std.unicode.utf8ByteSequenceLength(t[0]) catch 0) and t[0] != '\n') {
+            const cp = std.unicode.utf8Decode(t) catch return v.insertText(t);
+            const space = cp == ' ' or cp == '\t';
+            return v.runSmart(.{ .type_char = cp }, if (space) .typing_space else .typing_word);
+        }
+        return v.insertText(t);
+    }
+
     /// Types `t` over every selection.
     pub fn insertText(v: *EditorView, t: []const u8) !void {
         const edits = try v.gpa.alloc(Replace, v.sels.count());
@@ -667,8 +754,13 @@ pub const EditorView = struct {
         try v.applyPerSelection(edits, key);
     }
 
-    /// Inserts a line break that keeps the current line's indentation.
+    /// Inserts a line break that keeps the current line's indentation
+    /// (smart typing: indents after openers and splits a bracket pair).
     pub fn newline(v: *EditorView) !void {
+        if (v.opts.smart_typing) {
+            v.undo.breakGroup();
+            return v.runSmart(.newline, null);
+        }
         var arena: std.heap.ArenaAllocator = .init(v.gpa);
         defer arena.deinit();
         const a = arena.allocator();
@@ -706,8 +798,11 @@ pub const EditorView = struct {
         try v.applyPerSelection(edits, .typing_space);
     }
 
-    /// Deletes the selections, or one character or word before each caret.
+    /// Deletes the selections, or one character or word before each caret
+    /// (smart typing: an auto-inserted pair goes as one, leading spaces
+    /// back to the previous tab stop).
     pub fn backspace(v: *EditorView, unit: Unit) !void {
+        if (v.opts.smart_typing and unit == .char) return v.runSmart(.delete_left, .delete_left);
         const edits = try v.gpa.alloc(Replace, v.sels.count());
         defer v.gpa.free(edits);
         for (v.sels.slice(), edits) |s, *e| {
@@ -732,6 +827,57 @@ pub const EditorView = struct {
             e.* = .{ .range = r, .text = "" };
         }
         try v.applyPerSelection(edits, .delete_right);
+    }
+
+    /// The smart typing context: the language and its tokens when the
+    /// view has syntax.
+    fn smartCtx(v: *EditorView, tokens: *syntax_mod.SyntaxTokens) smart.EditCtx {
+        var c: smart.EditCtx = .{ .tab_size = v.opts.tab_size, .insert_spaces = v.opts.insert_spaces, .unit = v.indent_unit, .auto_pairs = &v.auto_pairs };
+        if (v.syntax) |ds| {
+            tokens.* = .{ .ds = ds, .tree = &v.doc.tree };
+            c.lang = ds.lang;
+            c.tokens = tokens.query();
+        }
+        return c;
+    }
+
+    const SmartOp = union(enum) { type_char: u21, newline, delete_left };
+
+    /// Runs a `smart_edit` command and records what it changed as one
+    /// undo step.
+    fn runSmart(v: *EditorView, op: SmartOp, key: ?CoalesceKey) !void {
+        if (v.opts.read_only) return;
+        var tokens: syntax_mod.SyntaxTokens = undefined;
+        const ctx = v.smartCtx(&tokens);
+        const before = try sel_mod.dupe(v.gpa, v.sels.slice());
+        defer v.gpa.free(before);
+        var cap: Capture = .{};
+        defer cap.deinit();
+        {
+            v.capture = &cap;
+            v.in_edit = true;
+            defer {
+                v.capture = null;
+                v.in_edit = false;
+            }
+            _ = switch (op) {
+                .type_char => |cp| try smart.typeChar(v.doc, &v.sels, cp, ctx),
+                .newline => try smart.newline(v.doc, &v.sels, ctx),
+                .delete_left => try smart.deleteLeft(v.doc, &v.sels, ctx, true),
+            };
+        }
+        if (cap.failed) return error.OutOfMemory;
+        v.sels.clearHistory();
+        v.sels.word_search = false;
+        v.normalize();
+        if (cap.fwd) |f| {
+            cap.fwd = null;
+            const inv = cap.inv.?;
+            cap.inv = null;
+            try v.undo.record(f, inv, before, v.sels.slice(), .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = key });
+        }
+        v.revealPrimary();
+        v.touch();
     }
 
     /// The text Copy takes (caller frees): the selections joined by

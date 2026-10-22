@@ -36,6 +36,7 @@ const Welcome = @import("welcome.zig").Welcome;
 const Workbench = @import("workbench.zig").Workbench;
 const fonts = @import("fonts.zig");
 const early_update = @import("startup/early_update_check.zig");
+const install_kind = @import("startup/install_kind.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -63,7 +64,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer _ = rt.deinit();
     // Before GPU and window init: apply a staged update or roll back one
     // that cannot start (may re-execute the process).
-    var boot = early_update.run(&rt, min);
+    var boot = early_update.run(&rt, min, running.first);
     defer boot.deinit(rt.io);
 
     var buf: [256]u8 = undefined;
@@ -72,6 +73,15 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
     var env = try min.environ.createMap(rt.gpa);
     defer env.deinit();
+    var kind_arena: std.heap.ArenaAllocator = .init(rt.gpa);
+    defer kind_arena.deinit();
+    const kind = try install_kind.resolve(kind_arena.allocator(), rt.io, &env, min.environ);
+    if (hasFlag(min, rt.gpa, "--self-check")) {
+        try install_kind.write(kind, w);
+        try w.flush();
+        return 0;
+    }
+    try install_kind.usePortableTmp(rt.io, kind, &env);
     // `ZG_RENDERER`, `ZG_GPU`, `ZG_VK_*` for every renderer.
     zg_vulkan.setProcessEnv(.fromMap(&env));
     if (hasFlag(min, rt.gpa, "--doctor-gpu")) {
@@ -118,7 +128,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         var size: zg_gui.core.geom.Size = .{ .w = 1280, .h = 800 };
         if (use_wb and frames_arg == null) {
             var state_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (zg_crash.paths.stateDir(min.environ, &state_buf)) |state| {
+            if (zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf)) |state| {
                 wb.enableUndoFiles(state);
                 if (wb.loadLayout(state)) |s| size = s;
             }
@@ -230,6 +240,10 @@ fn pathArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator) ?[]u8 {
             _ = it.next();
             continue;
         }
+        if (early_update.flags.match(a)) |m| {
+            if (m.value) _ = it.next();
+            continue;
+        }
         if (std.mem.startsWith(u8, a, "-")) continue;
         return gpa.dupe(u8, a) catch null;
     }
@@ -261,12 +275,14 @@ fn framesArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator) ?u32 {
     return null;
 }
 
-/// Crash reports go to `<state>/crashes` (E17.F05); `install` copies the
-/// paths. A failure here only means no reports.
+/// Crash reports go to `<state>/crashes` (E17.F05), inside
+/// `zigguro-data` for a portable install; `install` copies the paths. A failure here only means no reports.
 fn installCrashHandler(min: std.process.Init.Minimal, product: []const u8) void {
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     var crash_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const state = zg_crash.paths.stateDir(min.environ, &state_buf) orelse return;
+    // Before the runtime exists: the one stat for portable mode runs on
+    // std's single-threaded Io.
+    const state = zg_crash.paths.stateDirAt(std.Io.Threaded.global_single_threaded.io(), min.environ, &state_buf) orelse return;
     const crashes = zg_crash.paths.crashDir(state, &crash_buf) orelse return;
     zg_crash.install(.{ .crash_dir = crashes, .state_dir = state, .product = product }) catch {};
 }

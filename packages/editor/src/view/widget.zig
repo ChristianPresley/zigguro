@@ -2,7 +2,8 @@
 //! editing operations (E05.F05.S02.T02/T04, first cut).
 //!
 //! Paint order per visible row: current-line background, decoration
-//! highlights, selections, syntax-coloured text, underlines, carets; then
+//! highlights, selections, syntax-coloured text (lexical tokens with LSP
+//! semantic ones merged in), underlines, carets; then
 //! the line-number gutter over the horizontally scrolled text. Only the
 //! visible rows are read, highlighted (`DocumentSyntax.ensure`) and drawn.
 //!
@@ -31,6 +32,7 @@ const view_mod = @import("editor_view.zig");
 const colors = @import("syntax_colors.zig");
 const deco_store = @import("../model/decorations/store.zig");
 const cs_mod = @import("../model/edit/change_set.zig");
+const gutter = @import("gutter.zig");
 
 const EditorView = view_mod.EditorView;
 const Ui = zg_gui.Ui;
@@ -50,6 +52,9 @@ const A11y = zg_gui.core.widget.A11y;
 const text_pad: f32 = 6;
 /// Width of a caret.
 const caret_w: f32 = 2;
+/// Width of the SCM bar, and the room it takes at the gutter's left.
+const scm_bar_w: f32 = 3;
+const scm_lane_w: f32 = 6;
 
 /// The editor widget.
 pub const Editor = struct {
@@ -77,11 +82,30 @@ pub const Editor = struct {
         primary_pub: [2]u64 = .{ 0, 0 },
         decos: std.ArrayList(deco_store.DecoRef) = .empty,
         gpa: ?std.mem.Allocator = null,
+        /// A row's tokens, lexical merged with semantic (allocated by
+        /// the DocumentSyntax's allocator, `toks_gpa`).
+        toks: std.ArrayList(zg_syntax.Token) = .empty,
+        toks_gpa: ?std.mem.Allocator = null,
     };
 
-    /// Frees the decoration scratch list.
+    /// Frees the scratch lists.
     pub fn deinitState(s: *State) void {
         if (s.gpa) |g| s.decos.deinit(g);
+        if (s.toks_gpa) |g| s.toks.deinit(g);
+    }
+
+    /// Row `line`'s tokens: the lexical ones with the semantic overlay's
+    /// merged in (`DocumentSyntax.mergedTokens`); lexical alone if the
+    /// merge fails.
+    fn rowTokens(state: *State, v: *const EditorView, line: u64) []const zg_syntax.Token {
+        const ds = v.syntax orelse return &.{};
+        if (state.toks_gpa) |g| if (g.ptr != ds.gpa.ptr or g.vtable != ds.gpa.vtable) {
+            state.toks.deinit(g);
+            state.toks = .empty;
+        };
+        state.toks_gpa = ds.gpa;
+        ds.mergedTokens(&v.doc.tree, line, &state.toks) catch return ds.hl.tokens(line);
+        return state.toks.items;
     }
 
     /// Fills the space it is given.
@@ -96,7 +120,8 @@ pub const Editor = struct {
 
     /// Any visible change repaints.
     pub fn paintHash(props: *const Props) u64 {
-        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15);
+        const scm: u64 = if (props.view.scm) |s| s.version() else 0;
+        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f);
     }
 
     /// Takes whatever room the parent offers (80x24 cells otherwise).
@@ -108,12 +133,13 @@ pub const Editor = struct {
 
     /// The gutter width for the view's line count.
     fn gutterWidth(v: *const EditorView) f32 {
-        if (!v.opts.line_numbers) return text_pad;
+        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+        if (!v.opts.line_numbers) return text_pad + lane;
         var digits: f32 = 1;
         var n = v.lineCount();
         while (n >= 10) : (n /= 10) digits += 1;
-        const ts = v.text_sys orelse return 8 * (@max(digits, 3) + 2) + text_pad;
-        return ts.advance(v.textStyle(), '0') * (@max(digits, 3) + 2) + text_pad;
+        const ts = v.text_sys orelse return 8 * (@max(digits, 3) + 2) + text_pad + lane;
+        return ts.advance(v.textStyle(), '0') * (@max(digits, 3) + 2) + text_pad + lane;
     }
 
     /// Where the text origin (line 0, column 0) is, in node coordinates.
@@ -210,7 +236,7 @@ pub const Editor = struct {
                 pc.rect(.{ .x = o.x + x0, .y = y, .w = x1 - x0, .h = lh }, sel_color, .{});
             }
             // Text, in syntax-coloured runs.
-            drawRow(pc, v, row_text, line, palette, fg, .{ .x = o.x, .y = y + base });
+            drawRow(pc, v, row_text, rowTokens(state, v, line), palette, fg, .{ .x = o.x, .y = y + base });
             // Underlines and strikes.
             for (state.decos.items) |d| {
                 const c: Color, const yy: f32 = switch (d.deco.kind) {
@@ -247,7 +273,51 @@ pub const Editor = struct {
                 pc.textLine(label, st, c, .{ .x = v.gutter_w - text_pad - pc.text_sys.advance(st, '0') - w, .y = y + base });
             }
         }
+        if (v.scm) |*src| paintScm(pc, v, src, vis, o.y, lh);
         pc.focusRing(r, 0);
+    }
+
+    /// The SCM bar: added lines solid, modified lines striped, deletions
+    /// a triangle on the boundary where the lines were.
+    fn paintScm(pc: *PaintCx, v: *const EditorView, src: *const gutter.ScmGutterSource, vis: [2]u64, oy: f32, lh: f32) void {
+        if (vis[1] < vis[0]) return;
+        if (!v.opts.line_numbers) pc.rect(.{ .x = 0, .y = 0, .w = v.gutter_w - text_pad / 2, .h = pc.bounds().h }, pc.color(.bg_base), .{});
+        var rows: [256]gutter.ScmRow = undefined;
+        const added = pc.color(.success);
+        const modified = pc.color(.info);
+        const deleted = pc.color(.danger);
+        const x: f32 = 1;
+        var first = vis[0];
+        while (first <= vis[1]) {
+            const n: usize = @intCast(@min(rows.len, vis[1] - first + 1));
+            gutter.scmRows(src.hunks(), first, v.lineCount(), rows[0..n]);
+            for (rows[0..n], 0..) |row, i| {
+                const y = oy + @as(f32, @floatFromInt(first + i)) * lh;
+                switch (row.bar) {
+                    .none => {},
+                    .added => pc.rect(.{ .x = x, .y = y, .w = scm_bar_w, .h = lh }, added, .{}),
+                    .modified => {
+                        // Stripes: 2 px on, 1 px off.
+                        var sy = y;
+                        while (sy < y + lh) : (sy += 3) pc.rect(.{ .x = x, .y = sy, .w = scm_bar_w, .h = @min(2, y + lh - sy) }, modified, .{});
+                    },
+                }
+                if (row.deleted_above) deletionMark(pc, x, y, deleted);
+                if (row.deleted_below) deletionMark(pc, x, y + lh, deleted);
+            }
+            first += n;
+        }
+    }
+
+    /// A small right-pointing triangle centred on boundary `y`, drawn as
+    /// shrinking rows.
+    fn deletionMark(pc: *PaintCx, x: f32, y: f32, c: Color) void {
+        var i: f32 = 0;
+        while (i < 4) : (i += 1) {
+            const w = 2 + i;
+            pc.rect(.{ .x = x, .y = y - 4 + i, .w = w, .h = 1 }, c, .{});
+            pc.rect(.{ .x = x, .y = y + 3 - i, .w = w, .h = 1 }, c, .{});
+        }
     }
 
     /// The part of `d` on row `lr`, as byte columns, or null.
@@ -260,15 +330,14 @@ pub const Editor = struct {
     }
 
     /// Draws a row's text in runs of one colour, expanding tabs.
-    fn drawRow(pc: *PaintCx, v: *const EditorView, s: []const u8, line: u64, palette: *const colors.Palette, fg: Color, pen: Vec2) void {
+    fn drawRow(pc: *PaintCx, v: *const EditorView, s: []const u8, toks: []const zg_syntax.Token, palette: *const colors.Palette, fg: Color, pen: Vec2) void {
         const st = v.textStyle();
-        const toks: []const zg_syntax.Token = if (v.syntax) |ds| ds.hl.tokens(line) else &.{};
         var ti: usize = 0;
         var i: usize = 0;
         while (i < s.len) {
             // The run: up to the next token start or tab.
             while (ti + 1 < toks.len and toks[ti + 1].start <= i) ti += 1;
-            const color = if (ti < toks.len and toks[ti].start <= i) colors.colorOf(palette, toks[ti].hl, fg) else fg;
+            const color = if (ti < toks.len and toks[ti].start <= i) colors.colorOfNamed(palette, v.hl_names, toks[ti].hl, fg) else fg;
             var j = i;
             const next_tok: usize = if (ti + 1 < toks.len) toks[ti + 1].start else s.len;
             if (s[i] == '\t') {
@@ -451,7 +520,7 @@ pub const Editor = struct {
             },
             .text => |t| {
                 if (v.opts.read_only) return false;
-                try v.insertText(t);
+                try v.typeText(t);
                 ec.respond(.{ .changed = true });
                 ec.repaint();
                 return true;
@@ -545,4 +614,45 @@ pub const Editor = struct {
 /// Adds an editor for `view` to the tree.
 pub fn editor(ui: *Ui, props: Editor.Props) zg_gui.Response {
     return ui.leaf(Editor, props);
+}
+
+test "editor: rows draw semantic tokens over lexical ones" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    const model_syntax = @import("../model/syntax.zig");
+    const Document = @import("../model/document.zig").Document;
+    var reg = try zg_syntax.defaultRegistry(gpa);
+    defer reg.deinit(gpa);
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), "const a = 1;\n");
+    defer doc.deinit();
+    var ds = try model_syntax.DocumentSyntax.init(gpa, reg.get(.zig).?, &reg, &doc.tree, doc.version);
+    defer ds.deinit();
+    const v = try EditorView.init(gpa, doc, .{});
+    defer v.deinit();
+    v.syntax = &ds;
+    var state: Editor.State = .{};
+    defer Editor.deinitState(&state);
+
+    // Lexical only: no overlay yet.
+    try ds.ensure(&doc.tree, 0, 0);
+    try testing.expectEqualSlices(zg_syntax.Token, ds.hl.tokens(0), Editor.rowTokens(&state, v, 0));
+
+    // An LSP result marks `a` with a type outside the fixed names.
+    var names: zg_syntax.HighlightNames = .init(gpa);
+    defer names.deinit();
+    var legend = try (zg_syntax.SemanticLegend{ .types = &.{"keyword"}, .modifiers = &.{"custom"} }).compile(gpa, &names);
+    defer legend.deinit();
+    const o = try ds.semanticOverlay(&doc.tree);
+    try testing.expect(try o.applyFull(doc.version, null, &.{ 0, 6, 1, 0, 1 }, &legend, model_syntax.lineSource(&doc.tree)));
+    const toks = Editor.rowTokens(&state, v, 0);
+    var at_a: zg_syntax.HighlightId = .none;
+    for (toks) |t| if (t.start <= 6) {
+        at_a = t.hl;
+    };
+    try testing.expectEqualStrings("keyword.custom", names.name(at_a));
+    // Its colour is its ancestor's once the view knows the names.
+    v.hl_names = &names;
+    const pal = &colors.dark;
+    const fg: Color = .hex(0xffffff);
+    try testing.expectEqual(colors.colorOf(pal, .keyword, fg), colors.colorOfNamed(pal, v.hl_names, at_a, fg));
 }
