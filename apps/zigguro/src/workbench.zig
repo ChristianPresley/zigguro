@@ -158,6 +158,8 @@ pub const Workbench = struct {
     /// The layout was saved on close; later changes (floating panels
     /// docking back) are not saved.
     layout_final: bool = false,
+    /// Where files' undo histories persist (`enableUndoFiles`).
+    undo_dir: ?std.Io.Dir = null,
 
     /// One open file and its dock panel; the current one is mirrored in
     /// the fields above.
@@ -253,6 +255,7 @@ pub const Workbench = struct {
             const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
             f.sync = sync;
+            if (loaded != null) wb.persistUndo(sync, p, bytes);
         }
         errdefer if (f.sync) |x| x.destroy();
         if (wb.langs.detect(f.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
@@ -294,7 +297,10 @@ pub const Workbench = struct {
         const nf = &wb.files.items[wb.files.items.len - 1];
         nf.panel = try wb.addEditorPanel(nf.*);
         try wb.showEditor(nf);
-        if (wb.win != null) nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        if (wb.win != null) {
+            nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
         return nf;
     }
 
@@ -484,6 +490,34 @@ pub const Workbench = struct {
         return null;
     }
 
+    /// Keeps open files' undo histories in `<state_dir>/undo` across
+    /// sessions (`undo_file`): written on save, restored on open while the
+    /// file is unchanged. Call before `loadLayout`, so the files it opens
+    /// get theirs back too.
+    pub fn enableUndoFiles(wb: *Workbench, state_dir: []const u8) void {
+        const sub = std.fs.path.join(wb.gpa, &.{ state_dir, "undo" }) catch return;
+        defer wb.gpa.free(sub);
+        wb.undo_dir = std.Io.Dir.cwd().createDirPathOpen(wb.io, sub, .{}) catch |e| {
+            log.warn("undo folder {s}: {t}", .{ sub, e });
+            return;
+        };
+        // `init` opened a file already: unedited, it can take its history.
+        for (wb.files.items) |f| if (f.sync) |fs| if (f.path) |p| if (!f.view.undo.canUndo()) {
+            const text = f.doc.tree.copyRange(wb.gpa, .{ .start = 0, .end = f.doc.len() }) catch continue;
+            defer wb.gpa.free(text);
+            wb.persistUndo(fs, p, text);
+        };
+    }
+
+    /// Hands `fs` (the file at `path`, just read as `text`) the undo
+    /// folder.
+    fn persistUndo(wb: *Workbench, fs: *FileSync, path: []const u8, text: []const u8) void {
+        const dir = wb.undo_dir orelse return;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path }) catch return;
+        defer wb.gpa.free(abs);
+        _ = fs.enableUndoFile(dir, abs, text);
+    }
+
     /// Replaces the dock with `restored` and matches its panels to files
     /// and panels; what cannot come back closes.
     fn adoptLayout(wb: *Workbench, restored: zg_gui.dock.DockModel) !void {
@@ -615,7 +649,10 @@ pub const Workbench = struct {
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        for (wb.files.items) |f| f.view.on_change = null;
+        for (wb.files.items) |f| {
+            f.view.on_change = null;
+            f.view.on_caret = null;
+        }
         wb.win = null;
     }
 
@@ -642,6 +679,7 @@ pub const Workbench = struct {
         wb.langs.deinit(wb.gpa);
         wb.gpa.free(wb.cwd);
         if (wb.layout_dir) |d| d.close(wb.io);
+        if (wb.undo_dir) |d| d.close(wb.io);
     }
 
     /// Hooks the keymap and the palette into `win` and focuses the editor.
@@ -655,7 +693,10 @@ pub const Workbench = struct {
         wb.adapter.on_status = .{ .ctx = wb, .f = onStatus };
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
-        for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        for (wb.files.items) |f| {
+            f.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
         wb.approvals = .init(wb.gpa, wb.io, .{});
         if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
             inb.win = win;
@@ -706,6 +747,8 @@ pub const Workbench = struct {
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
+        .{ .id = "editor.addCursorAbove", .title = "Add Cursor Above", .category = "Selection", .run = addCursorAbove },
+        .{ .id = "editor.addCursorBelow", .title = "Add Cursor Below", .category = "Selection", .run = addCursorBelow },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
@@ -808,6 +851,16 @@ pub const Workbench = struct {
 
     fn redo(wb: *Workbench) !void {
         _ = try wb.view.redoStep();
+    }
+
+    /// The keymap's binding (Shift+Alt+Up/Down on Linux, Ctrl+Alt+Up/Down
+    /// elsewhere; the editor also takes Ctrl+Alt itself).
+    fn addCursorAbove(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_above);
+    }
+
+    fn addCursorBelow(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_below);
     }
 
     fn selectAll(wb: *Workbench) !void {
@@ -1340,5 +1393,52 @@ test "workbench: the layout comes back in the next session" {
         try std.testing.expectEqual(@as(f32, 333), wb.dock.areas[@intFromEnum(Area.bottom)].size);
         for (wb.files.items) |f| try std.testing.expect(wb.dock.groupOf(f.panel) != null);
         try wb.dock.validate();
+    }
+}
+
+test "workbench: undo history survives the session" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "abc\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.txt" });
+    defer gpa.free(a);
+    const state = try std.fs.path.join(gpa, &.{ root, "state" });
+    defer gpa.free(state);
+
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, a);
+        defer wb.deinit();
+        wb.enableUndoFiles(state);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        _ = t.settle();
+        t.typeText("x");
+        _ = t.settle();
+        try std.testing.expect(wb.doc.isDirty());
+        try wb.save();
+        _ = t.settle();
+        try std.testing.expect(!wb.doc.isDirty());
+    }
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, a);
+        defer wb.deinit();
+        try std.testing.expect(!wb.files.items[0].view.undo.canUndo());
+        wb.enableUndoFiles(state);
+        const u = &wb.files.items[0].view.undo;
+        try std.testing.expect(u.canUndo());
+        try std.testing.expect(u.isAtSaved());
     }
 }

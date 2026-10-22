@@ -103,6 +103,8 @@ pub const IID_IPersistFile = guid("0000010B-0000-0000-C000-000000000046");
 pub const IID_IPropertyStore = guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
 pub const FOLDERID_Programs = guid("A77F5D77-2E2B-44C3-A6A2-ABA601054A51");
 pub const FOLDERID_Desktop = guid("B4BFCC3A-DB2C-424C-B029-7FE99A87C641");
+/// `%LOCALAPPDATA%\Programs` (KnownFolders.h).
+pub const FOLDERID_UserProgramFiles = guid("5CD7AEE2-2219-4A67-B85D-6C9CE15660CB");
 
 pub const PROPERTYKEY = extern struct { fmtid: GUID, pid: DWORD };
 /// `System.AppUserModel.ID`.
@@ -192,6 +194,14 @@ pub fn underWine() bool {
     const ntdll = GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("ntdll.dll")) orelse return false;
     return GetProcAddress(ntdll, "wine_get_version") != null;
 }
+
+pub const HANDLE = *anyopaque;
+pub const SYNCHRONIZE: DWORD = 0x00100000;
+pub const ERROR_ALREADY_EXISTS: DWORD = 183;
+pub extern "kernel32" fn CreateMutexW(attrs: ?*anyopaque, initial_owner: BOOL, name: ?LPCWSTR) callconv(WINAPI) ?HANDLE;
+pub extern "kernel32" fn OpenMutexW(access: DWORD, inherit: BOOL, name: LPCWSTR) callconv(WINAPI) ?HANDLE;
+pub extern "kernel32" fn CloseHandle(h: HANDLE) callconv(WINAPI) BOOL;
+pub extern "kernel32" fn GetLastError() callconv(WINAPI) DWORD;
 
 pub extern "ole32" fn PropVariantClear(pv: *PROPVARIANT) callconv(WINAPI) HRESULT;
 
