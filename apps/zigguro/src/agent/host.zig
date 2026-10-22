@@ -2,8 +2,8 @@
 //! (apps/zg/src/cmd_agent.zig) but with the IDE's seams: file tools
 //! through `EditorFiles` (open documents are read and edited in the
 //! editor, other writes recorded by E12's `ReviewGlue`, which also takes
-//! a checkpoint per user turn), approvals through `ToolApprovals` over the workbench's dialog
-//! `ApprovalPort`, and command tools over child processes until E06's
+//! a checkpoint per user turn), approvals through `ToolApprovals` over the workbench's
+//! approvals inbox (E12's `ApprovalBroker`, journaled in the review store), and command tools over child processes until E06's
 //! terminals take them. The other subsystems' tools (LSP, tasks, SCM,
 //! MCP, ...) come through zg_ai's adapters as each package exports them;
 //! none does yet.
@@ -31,6 +31,7 @@ const zg_net = @import("zg_net");
 const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 const zg_security = @import("zg_security");
+const zg_review = @import("zg_review");
 const zg_mcp = @import("zg_mcp");
 const zg_mcp_servers = @import("zg_mcp_servers");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
@@ -90,8 +91,9 @@ pub const AgentHost = struct {
     mcp_task: ?Io.Future(void) = null,
 
     /// An agent on the working folder whose file tools use the documents
-    /// of `docs` and whose approvals go through `port`. UI thread.
-    pub fn create(rt: *zg_core.Runtime, env: *const std.process.Environ.Map, app: *zg_gui.App, docs: *zg_editor.model.api.registry.DocumentRegistry, port: zg_security.contracts.ApprovalPort) !*AgentHost {
+    /// of `docs` and whose approvals go to `approvals` (which outlives the
+    /// host). UI thread.
+    pub fn create(rt: *zg_core.Runtime, env: *const std.process.Environ.Map, app: *zg_gui.App, docs: *zg_editor.model.api.registry.DocumentRegistry, approvals: *zg_review.approvals.ApprovalBroker) !*AgentHost {
         const gpa = rt.gpa;
         const io = rt.io;
         const h = try gpa.create(AgentHost);
@@ -131,7 +133,7 @@ pub const AgentHost = struct {
         errdefer h.tracker.deinit();
         h.files = .init(gpa, app, h.cwd, docs, 0);
         errdefer h.files.deinit();
-        h.review = try ReviewGlue.create(gpa, io, h.cwd, .{ .persist = true });
+        h.review = try ReviewGlue.create(gpa, io, h.cwd, .{ .persist = true, .approvals = approvals });
         errdefer h.review.destroy();
         h.files.outside = h.review.files();
         h.file_tools = .{ .files = h.files.files(), .tracker = &h.tracker };
@@ -141,7 +143,7 @@ pub const AgentHost = struct {
         try h.adapters.registerAll(&h.tools, &.{}, .{}, .{});
         h.agent_tools = .init(gpa, io, &h.tools, .{});
         errdefer h.agent_tools.deinit();
-        h.approvals = .init(gpa, port);
+        h.approvals = .init(gpa, approvals.approvalPort());
         errdefer h.approvals.deinit();
 
         h.mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{

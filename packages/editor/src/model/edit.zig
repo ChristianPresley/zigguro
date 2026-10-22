@@ -24,6 +24,10 @@ pub const pairs = @import("edit/pairs.zig");
 pub const comment = @import("edit/comment.zig");
 /// Smart typing: typeChar, newline, deleteLeft.
 pub const smart_edit = @import("edit/smart_edit.zig");
+/// Line operations: move, duplicate, sort, join, case, indent.
+pub const line_ops = @import("edit/line_ops.zig");
+/// Multi-cursor copy, cut and paste.
+pub const clipboard = @import("edit/clipboard.zig");
 /// The per-selection command runner.
 pub const runner = @import("edit/runner.zig");
 /// The undo tree.
@@ -36,4 +40,5 @@ test {
     _ = @import("edit/selection_test.zig");
     _ = @import("edit/movement_test.zig");
     _ = @import("edit/smart_edit_test.zig");
+    _ = @import("edit/line_ops_test.zig");
 }

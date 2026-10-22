@@ -1,0 +1,528 @@
+=== move up
+--- before
+a
+b¦
+c
+--- keys
+move_up
+--- after
+b¦
+a
+c
+
+=== move up first line no-op
+--- before
+a¦
+b
+--- keys
+move_up
+--- after
+a¦
+b
+
+=== move down
+--- before
+a¦
+b
+c
+--- keys
+move_down
+--- after
+b
+a¦
+c
+
+=== move down last line no-op
+--- before
+a
+b¦
+--- keys
+move_down
+--- after
+a
+b¦
+
+=== move down into last line without eol
+--- before
+a¦
+b
+--- keys
+move_down
+--- after
+b
+a¦
+
+=== move up last line without eol
+--- before
+a
+b¦
+--- keys
+move_up
+--- after
+b¦
+a
+
+=== move block up
+--- before
+a
+«b
+c»
+d
+--- keys
+move_up
+--- after
+«b
+c»
+a
+d
+
+=== move block down twice
+--- before
+«a
+b»
+c
+d
+e
+--- keys
+move_down move_down
+--- after
+c
+d
+«a
+b»
+e
+
+=== move two blocks
+--- before
+a
+b¦
+c
+d¦
+e
+--- keys
+move_up
+--- after
+b¦
+a
+d¦
+c
+e
+
+=== move adjacent carets as one block
+--- before
+a
+b¦
+c¦
+d
+--- keys
+move_down
+--- after
+a
+d
+b¦
+c¦
+
+=== move crlf
+--- before
+a␍
+b¦␍
+c
+--- keys
+move_up
+--- after
+b¦␍
+a␍
+c
+
+=== move mixed eols
+--- before
+a␍
+b¦
+c
+--- keys
+move_up
+--- after
+b¦
+a␍
+c
+
+=== duplicate down
+--- before
+a¦b
+c
+--- keys
+duplicate_down
+--- after
+ab
+a¦b
+c
+
+=== duplicate up
+--- before
+a¦b
+c
+--- keys
+duplicate_up
+--- after
+a¦b
+ab
+c
+
+=== duplicate last line down
+--- before
+a
+b¦
+--- keys
+duplicate_down
+--- after
+a
+b
+b¦
+
+=== duplicate last line up
+--- before
+a
+b¦
+--- keys
+duplicate_up
+--- after
+a
+b¦
+b
+
+=== duplicate selection block
+--- before
+«a
+b»
+c
+--- keys
+duplicate_down
+--- after
+a
+b
+«a
+b»
+c
+
+=== duplicate multi cursor
+--- before
+x¦
+y
+z¦
+--- keys
+duplicate_down
+--- after
+x
+x¦
+y
+z
+z¦
+
+=== join
+--- before
+a¦
+    b
+--- keys
+join
+--- after
+a¦ b
+
+=== join after paren
+--- before
+f(¦
+    x)
+--- keys
+join
+--- after
+f(¦x)
+
+=== join before paren
+--- before
+f(x¦
+)
+--- keys
+join
+--- after
+f(x¦)
+
+=== join empty line
+--- before
+¦
+b
+--- keys
+join
+--- after
+¦b
+
+=== join selection
+--- before
+«a
+b
+c»
+d
+--- keys
+join
+--- after
+«a b c»
+d
+
+=== join trailing blanks
+--- before
+a  ¦
+	b
+--- keys
+join
+--- after
+a¦ b
+
+=== join last line no-op
+--- before
+a
+b¦
+--- keys
+join
+--- after
+a
+b¦
+
+=== sort asc
+--- before
+«c
+a
+b»
+--- keys
+sort_asc
+--- after
+«a
+b
+c»
+
+=== sort desc
+--- before
+«a
+c
+b»
+--- keys
+sort_desc
+--- after
+«c
+b
+a»
+
+=== sort unique
+--- before
+«b
+a
+b
+a»
+--- keys
+sort_unique
+--- after
+«a
+b»
+
+=== sort single line no-op
+--- before
+c¦b
+--- keys
+sort_asc
+--- after
+c¦b
+
+=== sort keeps eol at end
+--- before
+«b
+a»
+--- keys
+sort_asc
+--- after
+«a
+b»
+
+=== reverse
+--- before
+«1
+2
+3»
+4
+--- keys
+reverse
+--- after
+«3
+2
+1»
+4
+
+=== transpose chars
+--- before
+ab¦c
+--- keys
+transpose_chars
+--- after
+acb¦
+
+=== transpose chars at eol
+--- before
+abc¦
+d
+--- keys
+transpose_chars
+--- after
+acb¦
+d
+
+=== transpose chars at start no-op
+--- before
+¦ab
+--- keys
+transpose_chars
+--- after
+¦ab
+
+=== transpose grapheme
+--- before
+é¦x
+--- keys
+transpose_chars
+--- after
+xé¦
+
+=== transpose lines
+--- before
+a
+b¦
+c
+--- keys
+transpose_lines
+--- after
+b
+a¦
+c
+
+=== delete line
+--- before
+a
+b¦
+c
+--- keys
+delete_line
+--- after
+a
+¦c
+
+=== delete last line
+--- before
+a
+b¦
+--- keys
+delete_line
+--- after
+a¦
+
+=== indent
+--- before
+a¦
+«b
+
+c»
+--- keys
+indent
+--- after
+    a¦
+«    b
+
+    c»
+
+=== outdent spaces
+--- before
+      a¦
+--- keys
+outdent
+--- after
+    a¦
+
+=== outdent tab
+--- before
+		b¦
+--- keys
+outdent
+--- after
+	b¦
+
+=== outdent nothing
+--- before
+a¦
+--- keys
+outdent
+--- after
+a¦
+
+=== upper
+--- before
+«hello» world
+--- keys
+upper
+--- after
+«HELLO» world
+
+=== upper caret word
+--- before
+hel¦lo world
+--- keys
+upper
+--- after
+HEL¦LO world
+
+=== lower
+--- before
+«HELLO World»
+--- keys
+lower
+--- after
+«hello world»
+
+=== title
+--- before
+«hello wide world»
+--- keys
+title
+--- after
+«Hello Wide World»
+
+=== upper sharp s
+--- before
+«groß»
+--- keys
+upper
+--- after
+«GROSS»
+
+=== trim trailing whitespace
+--- before
+a  
+b	¦
+c 
+--- keys
+trim_trailing_ws
+--- after
+a
+b¦
+c
+
+=== trim crlf
+--- before
+a  ␍
+b
+--- keys
+trim_trailing_ws
+--- after
+¦a␍
+b
+
+=== multi cursor upper
+--- before
+a¦b c¦d
+--- keys
+upper
+--- after
+A¦B C¦D

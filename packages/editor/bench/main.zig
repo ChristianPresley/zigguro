@@ -361,6 +361,9 @@ fn register(b: *bench.Bench) !void {
     try registerCursors(b, text);
     try registerMoves(b, text);
     try registerSmart(b, text);
+    try registerLineOps(b, text);
+    try registerEncoding(b, text);
+    try registerSave(b, text);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -482,6 +485,121 @@ fn newlineCursors(c: *SmartBench, s: *bench.State) void {
         _ = zg_editor.model.edit.smart_edit.newline(c.doc, c.sels, smartCtx(c)) catch unreachable;
         c.doc.endFrame();
     }
+}
+
+const LineBench = struct {
+    doc: *zg_editor.model.document.Document,
+    sels: *zg_editor.model.edit.selection.SelectionSet,
+    flip: bool = false,
+};
+
+/// Move-line with 1k carets (alternating up and down so the document
+/// stays the same size) and a 1 MB paste with re-indent at one caret.
+fn registerLineOps(b: *bench.Bench, text: []const u8) !void {
+    const edit = zg_editor.model.edit;
+    {
+        const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+        defer doc.deinit();
+        var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(0));
+        defer sels.deinit();
+        const n = 1_000;
+        const lines = doc.tree.lineCount() - 1;
+        const carets = try b.gpa.alloc(edit.selection.Selection, n);
+        defer b.gpa.free(carets);
+        for (carets, 0..) |*sel, i| sel.* = .caret(doc.tree.lineStart(i * lines / n + 1));
+        try sels.set(carets, 0);
+        var lb: LineBench = .{ .doc = doc, .sels = &sels };
+        try b.run("editor.line.move_1k_cursors", &lb, moveLines);
+    }
+    {
+        const piece = try b.gpa.dupe(u8, text[0..@min(text.len, 1 << 20)]);
+        defer b.gpa.free(piece);
+        var pieces = [_][]u8{piece};
+        var cb: edit.clipboard.Clipboard = .{ .gpa = b.gpa, .pieces = &pieces, .linewise = false };
+        var pb: PasteBench = .{ .gpa = b.gpa, .cb = &cb };
+        try b.run("editor.clipboard.paste_1mb_reindent", &pb, pasteReindent);
+    }
+}
+
+const PasteBench = struct { gpa: std.mem.Allocator, cb: *const zg_editor.model.edit.clipboard.Clipboard };
+
+fn moveLines(c: *LineBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const op: zg_editor.model.edit.line_ops.LineOp = if (c.flip) .move_down else .move_up;
+        c.flip = !c.flip;
+        _ = zg_editor.model.edit.line_ops.lineOp(c.doc, c.sels, op, .{}) catch unreachable;
+        c.doc.endFrame();
+    }
+}
+
+/// Each iteration pastes into a fresh small document (so memory stays
+/// flat): normalizing EOLs, re-indenting 1 MB and inserting it.
+fn pasteReindent(c: *PasteBench, s: *bench.State) void {
+    const edit = zg_editor.model.edit;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const doc = zg_editor.model.document.Document.initBytes(c.gpa, @enumFromInt(1), "    x\n") catch unreachable;
+        defer doc.deinit();
+        var sels = edit.selection.SelectionSet.init(c.gpa, .caret(4)) catch unreachable;
+        defer sels.deinit();
+        _ = edit.clipboard.paste(doc, &sels, c.cb, .{ .reindent_on_paste = true }) catch unreachable;
+    }
+}
+
+const EncBench = struct { bytes: []const u8, enc: zg_editor.model.encoding.Encoding, out: std.ArrayList(u8) = .empty, gpa: std.mem.Allocator };
+
+/// Decoding the 3.5 MB corpus re-encoded as UTF-16LE (ASCII fast path)
+/// and as windows-1252.
+fn registerEncoding(b: *bench.Bench, text: []const u8) !void {
+    const encoding = zg_editor.model.encoding;
+    inline for (.{ .{ "editor.encoding.utf16le_decode", encoding.Encoding.utf16le }, .{ "editor.encoding.windows1252_decode", encoding.Encoding.windows_1252 } }) |c| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(b.gpa);
+        // The corpus is ASCII Zig; any byte a legacy encoding lacks would
+        // fail, so encode only what it can hold.
+        encoding.encode(c[1], text, &bytes, b.gpa) catch {
+            bytes.clearRetainingCapacity();
+            for (text) |ch| if (ch < 0x80) try bytes.append(b.gpa, ch);
+        };
+        var eb: EncBench = .{ .bytes = bytes.items, .enc = c[1], .gpa = b.gpa };
+        defer eb.out.deinit(b.gpa);
+        try b.run(c[0], &eb, decodeBench);
+    }
+}
+
+fn decodeBench(c: *EncBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.out.clearRetainingCapacity();
+        var d: zg_editor.model.encoding.Decoder = .init(c.enc);
+        d.decode(c.bytes, &c.out, c.gpa, true) catch unreachable;
+    }
+}
+
+/// Saving 100 MB of UTF-8 through the atomic path (temp file, sync,
+/// rename) into `.zig-cache/bench-save`.
+fn registerSave(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.save.100mb_utf8", f) == null) return;
+    const save = buffer.save;
+    const big = try b.gpa.alloc(u8, 100 << 20);
+    defer b.gpa.free(big);
+    for (0..big.len) |k| big[k] = text[k % text.len];
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), big);
+    defer doc.deinit();
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(b.io, ".zig-cache/bench-save", .{});
+    defer dir.close(b.io);
+    var job: save.SaveJob = .{ .gpa = b.gpa, .snap = doc.snapshot(), .dir = dir, .path = "big.txt", .encoding = .utf8, .expect = null };
+    defer job.deinit();
+    try b.run("editor.save.100mb_utf8", &job, saveBench);
+    dir.deleteFile(b.io, "big.txt") catch {};
+}
+
+fn saveBench(job: *buffer.save.SaveJob, s: *bench.State) void {
+    s.setBytes(job.snap.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) _ = job.run(s.io) catch unreachable;
 }
 
 const AgentBench = struct {

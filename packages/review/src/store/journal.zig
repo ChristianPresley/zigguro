@@ -29,6 +29,9 @@ pub const Kind = enum(u8) {
     /// An approval request and its outcome (F05.S02); a later one with the
     /// same id wins.
     approval = 6,
+    /// A comment thread change (F03.S03): create, reply, edit, resolve,
+    /// label, reanchor, outdated, or a compaction's snapshot.
+    comment = 7,
     _,
 };
 

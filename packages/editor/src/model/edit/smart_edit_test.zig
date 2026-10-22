@@ -2,39 +2,25 @@
 //! (`testdata/golden/smart_edit/<lang>/cases.txt`) and unit tests for
 //! pairs, comments and indentation guessing.
 //!
-//! A golden file holds scenarios:
-//!
-//!     === name
-//!     --- before
-//!     text with ¦ carets and «ranges»
-//!     --- keys
-//!     typed text, with <enter> <bs> <lc> (line comment) <bc> (block
-//!     comment) <lt> (a literal '<') <tab>
-//!     --- after
-//!     the expected text and selections
-//!
-//! `-Dupdate-golden` rewrites the `after` sections.
+//! Golden files use golden_testing.zig's format; keys are typed text,
+//! with <enter> <bs> <lc> (line comment) <bc> (block comment) <lt> (a
+//! literal '<') <tab>.
 
 const std = @import("std");
 const zg_syntax = @import("zg_syntax");
-const options = @import("zg_options");
 const smart = @import("smart_edit.zig");
 const indent = @import("indent.zig");
 const pairs = @import("pairs.zig");
 const sel_mod = @import("selection.zig");
+const golden = @import("golden_testing.zig");
 const document = @import("../document.zig");
 const syntax_mod = @import("../syntax.zig");
 
 const gpa = std.testing.allocator;
-const io = std.testing.io;
 const Selection = sel_mod.Selection;
 const SelectionSet = sel_mod.SelectionSet;
 const Document = document.Document;
 const langs = zg_syntax.langs;
-
-const caret = "¦";
-const open_mark = "«";
-const close_mark = "»";
 
 /// A document with live syntax, auto pairs and selections.
 const Harness = struct {
@@ -51,7 +37,7 @@ const Harness = struct {
         defer text.deinit(gpa);
         var sels: std.ArrayList(Selection) = .empty;
         defer sels.deinit(gpa);
-        try parseMarked(marked, &text, &sels);
+        try golden.parseMarked(marked, &text, &sels);
         h.lang = lang;
         h.doc = try Document.initBytes(gpa, @enumFromInt(1), text.items);
         errdefer h.doc.deinit();
@@ -116,124 +102,29 @@ const Harness = struct {
     fn render(h: *Harness, out: *std.ArrayList(u8)) !void {
         const text = try h.doc.tree.copyRange(gpa, .{ .start = 0, .end = h.doc.len() });
         defer gpa.free(text);
-        var marks: std.ArrayList(struct { at: u64, s: []const u8 }) = .empty;
-        defer marks.deinit(gpa);
-        for (h.sels.slice()) |s| {
-            if (s.isCaret()) {
-                try marks.append(gpa, .{ .at = s.head, .s = caret });
-            } else {
-                try marks.append(gpa, .{ .at = s.start(), .s = open_mark });
-                try marks.append(gpa, .{ .at = s.end(), .s = close_mark });
-            }
-        }
-        var prev: usize = 0;
-        for (marks.items) |m| {
-            try out.appendSlice(gpa, text[prev..@intCast(m.at)]);
-            try out.appendSlice(gpa, m.s);
-            prev = @intCast(m.at);
-        }
-        try out.appendSlice(gpa, text[prev..]);
+        try golden.renderMarked(text, h.sels.slice(), out);
     }
 };
 
-fn parseMarked(marked: []const u8, text: *std.ArrayList(u8), sels: *std.ArrayList(Selection)) !void {
-    var i: usize = 0;
-    var anchor: ?u64 = null;
-    while (i < marked.len) {
-        if (std.mem.startsWith(u8, marked[i..], caret)) {
-            try sels.append(gpa, .caret(text.items.len));
-            i += caret.len;
-        } else if (std.mem.startsWith(u8, marked[i..], open_mark)) {
-            anchor = text.items.len;
-            i += open_mark.len;
-        } else if (std.mem.startsWith(u8, marked[i..], close_mark)) {
-            try sels.append(gpa, .{ .anchor = anchor.?, .head = text.items.len });
-            i += close_mark.len;
-        } else {
-            try text.append(gpa, marked[i]);
-            i += 1;
-        }
-    }
-}
-
-const Scenario = struct { name: []const u8, before: []const u8, keys: []const u8, after: []const u8 };
-
-/// Sections of a golden file. Section bodies end before the next "---"
-/// or "===" line; the final newline of each body is dropped.
-fn parseScenarios(text: []const u8, out: *std.ArrayList(Scenario)) !void {
-    var it = std.mem.splitSequence(u8, text, "\n=== ");
-    var first = true;
-    while (it.next()) |chunk_in| {
-        var chunk = chunk_in;
-        if (first) {
-            first = false;
-            if (!std.mem.startsWith(u8, chunk, "=== ")) continue;
-            chunk = chunk[4..];
-        }
-        const nl = std.mem.indexOfScalar(u8, chunk, '\n') orelse continue;
-        var sc: Scenario = .{ .name = chunk[0..nl], .before = "", .keys = "", .after = "" };
-        var rest = chunk[nl + 1 ..];
-        while (std.mem.startsWith(u8, rest, "--- ")) {
-            const hdr_end = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
-            const name = rest[4..hdr_end];
-            rest = if (hdr_end < rest.len) rest[hdr_end + 1 ..] else "";
-            const end = std.mem.indexOf(u8, rest, "\n--- ") orelse rest.len;
-            var body = rest[0..end];
-            body = std.mem.trimEnd(u8, body, "\n");
-            rest = if (end < rest.len) rest[end + 1 ..] else "";
-            if (std.mem.eql(u8, name, "before")) sc.before = body else if (std.mem.eql(u8, name, "keys")) sc.keys = body else if (std.mem.eql(u8, name, "after")) sc.after = body;
-        }
-        try out.append(gpa, sc);
-    }
+fn runScenario(lang: *const zg_syntax.Language, sc: golden.Scenario) ![]u8 {
+    var h: Harness = undefined;
+    try h.init(lang, sc.before);
+    defer h.deinit();
+    // Keys may span lines; the line breaks between them are not typed.
+    var keys: std.ArrayList(u8) = .empty;
+    defer keys.deinit(gpa);
+    var kit = std.mem.splitScalar(u8, sc.keys, '\n');
+    while (kit.next()) |k| try keys.appendSlice(gpa, k);
+    try h.run(keys.items);
+    var out: std.ArrayList(u8) = .empty;
+    try h.render(&out);
+    return out.toOwnedSlice(gpa);
 }
 
 fn runGolden(dir: []const u8, lang: *const zg_syntax.Language) !void {
-    var root = try std.Io.Dir.openDirAbsolute(io, options.package_root, .{});
-    defer root.close(io);
     const path = try std.fmt.allocPrint(gpa, "testdata/golden/smart_edit/{s}/cases.txt", .{dir});
     defer gpa.free(path);
-    const text = try root.readFileAlloc(io, path, gpa, .limited(1 << 20));
-    defer gpa.free(text);
-    var scenarios: std.ArrayList(Scenario) = .empty;
-    defer scenarios.deinit(gpa);
-    try parseScenarios(text, &scenarios);
-    try std.testing.expect(scenarios.items.len >= 10);
-    var actuals: std.ArrayList([]u8) = .empty;
-    defer {
-        for (actuals.items) |a| gpa.free(a);
-        actuals.deinit(gpa);
-    }
-    var failed: usize = 0;
-    for (scenarios.items) |sc| {
-        var h: Harness = undefined;
-        try h.init(lang, sc.before);
-        defer h.deinit();
-        // Keys may span lines; the line breaks between them are not typed.
-        var keys: std.ArrayList(u8) = .empty;
-        defer keys.deinit(gpa);
-        var kit = std.mem.splitScalar(u8, sc.keys, '\n');
-        while (kit.next()) |k| try keys.appendSlice(gpa, k);
-        try h.run(keys.items);
-        var out: std.ArrayList(u8) = .empty;
-        try h.render(&out);
-        const got = try out.toOwnedSlice(gpa);
-        try actuals.append(gpa, got);
-        if (!std.mem.eql(u8, got, sc.after)) {
-            failed += 1;
-            if (!options.update_golden) std.debug.print("smart_edit {s} \"{s}\":\n--- want\n{s}\n--- got\n{s}\n", .{ dir, sc.name, sc.after, got });
-        }
-    }
-    if (failed > 0 and options.update_golden) {
-        var w: std.ArrayList(u8) = .empty;
-        defer w.deinit(gpa);
-        for (scenarios.items, actuals.items, 0..) |sc, got, i| {
-            if (i > 0) try w.append(gpa, '\n');
-            try w.print(gpa, "=== {s}\n--- before\n{s}\n--- keys\n{s}\n--- after\n{s}\n", .{ sc.name, sc.before, sc.keys, got });
-        }
-        try root.writeFile(io, .{ .sub_path = path, .data = w.items });
-        return;
-    }
-    try std.testing.expectEqual(@as(usize, 0), failed);
+    try golden.runGolden(path, 10, lang, runScenario);
 }
 
 test "smart_edit: golden zig" {
