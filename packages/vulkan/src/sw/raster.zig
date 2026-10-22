@@ -158,9 +158,10 @@ inline fn lane(comptime T: type, v: T, i: usize) f32 {
 
 /// Fetches texel (x, y) of `t` as premultiplied r, g, b, a (r8 is gray
 /// coverage replicated, alpha = coverage).
-fn texel(t: *const CpuTexture, x: i64, y: i64) [4]f32 {
-    const cx: u32 = @intCast(std.math.clamp(x, 0, @as(i64, t.width) - 1));
-    const cy: u32 = @intCast(std.math.clamp(y, 0, @as(i64, t.height) - 1));
+fn texel(t: *const CpuTexture, x: i64, y: i64, wrap: bool) [4]f32 {
+    // Clamp to edge, or repeat (scroll layers), as the GPU samplers do.
+    const cx: u32 = @intCast(if (wrap) @mod(x, @as(i64, t.width)) else std.math.clamp(x, 0, @as(i64, t.width) - 1));
+    const cy: u32 = @intCast(if (wrap) @mod(y, @as(i64, t.height)) else std.math.clamp(y, 0, @as(i64, t.height) - 1));
     switch (t.format) {
         .r8 => {
             const v = r2d.color.unorm(t.pixels[@as(usize, cy) * t.stride + cx]);
@@ -175,7 +176,7 @@ fn texel(t: *const CpuTexture, x: i64, y: i64) [4]f32 {
 
 /// Samples `t` at texel-space coordinates (`u`, `v` in texels, pixel
 /// centres at +0.5) with nearest or bilinear (clamp-to-edge) filtering.
-fn sample(comptime T: type, t: ?*const CpuTexture, u: T, v: T, nearest: bool) [4]T {
+fn sample(comptime T: type, t: ?*const CpuTexture, u: T, v: T, nearest: bool, wrap: bool) [4]T {
     var out: [4]T = .{ sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0) };
     const tex = t orelse return out;
     if (nearest) {
@@ -183,7 +184,7 @@ fn sample(comptime T: type, t: ?*const CpuTexture, u: T, v: T, nearest: bool) [4
         const fv = @floor(v);
         const n = if (T == f32) 1 else @typeInfo(T).vector.len;
         inline for (0..n) |i| {
-            const px = texel(tex, toInt(lane(T, fu, i)), toInt(lane(T, fv, i)));
+            const px = texel(tex, toInt(lane(T, fu, i)), toInt(lane(T, fv, i)), wrap);
             inline for (0..4) |c| setLane(T, &out[c], i, px[c]);
         }
         return out;
@@ -202,10 +203,10 @@ fn sample(comptime T: type, t: ?*const CpuTexture, u: T, v: T, nearest: bool) [4
     inline for (0..n) |i| {
         const ix = toInt(lane(T, x0, i));
         const iy = toInt(lane(T, y0, i));
-        const a = texel(tex, ix, iy);
-        const b = texel(tex, ix + 1, iy);
-        const c = texel(tex, ix, iy + 1);
-        const d = texel(tex, ix + 1, iy + 1);
+        const a = texel(tex, ix, iy, wrap);
+        const b = texel(tex, ix + 1, iy, wrap);
+        const c = texel(tex, ix, iy + 1, wrap);
+        const d = texel(tex, ix + 1, iy + 1, wrap);
         inline for (0..4) |ch| {
             setLane(T, &t00[ch], i, a[ch]);
             setLane(T, &t10[ch], i, b[ch]);
@@ -312,7 +313,7 @@ fn shadeGroup(comptime T: type, p: *const Prim, ctx: *const ShadeCtx, px: T, py:
             const th: f32 = if (tex) |t| @floatFromInt(t.height) else 1;
             const u = (sh.splat(T, p.uv[0]) + (px - sh.splat(T, b[0])) / sh.splat(T, b[2]) * sh.splat(T, p.uv[2] - p.uv[0])) * sh.splat(T, tw);
             const v = (sh.splat(T, p.uv[1]) + (py - sh.splat(T, b[1])) / sh.splat(T, b[3]) * sh.splat(T, p.uv[3] - p.uv[1])) * sh.splat(T, th);
-            const tx = sample(T, tex, u, v, true);
+            const tx = sample(T, tex, u, v, true, false);
             cov = one;
             const l = textLuma(c0);
             switch (p.kind) {
@@ -363,7 +364,7 @@ fn shadeGroup(comptime T: type, p: *const Prim, ctx: *const ShadeCtx, px: T, py:
                 u = (sh.splat(T, p.uv[0]) + (px - sh.splat(T, b[0])) / sh.splat(T, b[2]) * sh.splat(T, p.uv[2] - p.uv[0])) * sh.splat(T, tw);
                 v = (sh.splat(T, p.uv[1]) + (py - sh.splat(T, b[1])) / sh.splat(T, b[3]) * sh.splat(T, p.uv[3] - p.uv[1])) * sh.splat(T, th);
             }
-            const tx = sample(T, tex, u, v, nearest);
+            const tx = sample(T, tex, u, v, nearest, is_layer and p.flags.wrap);
             inline for (0..4) |ch| src[ch] = tx[ch] * sh.splat(T, c0[ch]);
         },
         _ => return,

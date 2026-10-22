@@ -303,6 +303,82 @@ fn scrollLayerOffsets(dl: *DrawList, ctx: *SceneCtx) void {
     if (ctx.frame > 0) dl.addDamage(.{ .x = 20, .y = 10, .w = 80, .h = 70 });
 }
 
+/// The scroll layer seam scene (E02.F06.S03.T01): a 400 px striped
+/// document in a 80×100 wraparound layer (viewport 80×60 plus overscan),
+/// scrolled across the texture seam at integer and fractional offsets.
+pub const seam = struct {
+    /// Document scroll position per frame.
+    pub const scrolls = [_]f32{ 0, 3, 17, 40.5, 77.25, 130, 211, 209.5, 150 };
+    /// Viewport in the window.
+    pub const viewport: RectF = .{ .x = 20, .y = 10, .w = 80, .h = 60 };
+    /// Layer size: the viewport plus 20 px above and below.
+    pub const layer_size: r2d.Size = .{ .w = 80, .h = 100 };
+    const overscan = 20;
+    pub const doc_h = 400;
+
+    /// Document y at the top of the layer for `frame`.
+    pub fn windowTop(frame: usize) i32 {
+        const top = @as(i32, @intFromFloat(@floor(scrolls[frame]))) - overscan;
+        return std.math.clamp(top, 0, doc_h - @as(i32, layer_size.h));
+    }
+
+    /// Draws the document rows in `[top, top + h)`, row y at
+    /// (x0, y0 + y - top).
+    pub fn document(dl: *DrawList, top: i32, h: i32, x0: f32, y0: f32) void {
+        var i: i32 = @divFloor(top, 10);
+        while (i * 10 < top + h and i < doc_h / 10) : (i += 1) {
+            const y: f32 = y0 + @as(f32, @floatFromInt(i * 10 - top));
+            const u: u32 = @intCast(i);
+            dl.rect(.{ .x = x0, .y = y, .w = 80, .h = 10 }, if (u % 2 == 0) Color.fromHex("#fafafa") else Color.fromHex("#e0e7ff"), .{});
+            dl.rect(.{ .x = x0 + 70, .y = y + 2, .w = 6, .h = 6 }, accent, Radii.all(3));
+            text(dl, x0 + 2, y, 8, 10, 7, page_gray, .r8, ink, .grayscale, u);
+        }
+    }
+
+    /// The scene frame drawn without a scroll layer: the document
+    /// clipped to the viewport (integer scrolls), or a plain layer of the
+    /// whole document composited at the same offset (fractional ones).
+    pub fn reference(dl: *DrawList, frame: usize) void {
+        bg(dl, light);
+        const s = scrolls[frame];
+        if (s == @floor(s)) {
+            dl.pushClip(viewport, .{});
+            document(dl, 0, doc_h, viewport.x, viewport.y - s);
+            dl.popClip();
+            return;
+        }
+        const id: r2d.LayerId = @enumFromInt(9);
+        if (dl.beginLayer(id, .{ .w = 80, .h = doc_h }, &.{})) {
+            document(dl, 0, doc_h, 0, 0);
+            dl.endLayer();
+        }
+        dl.drawLayer(id, viewport, .{ .y = s }, 1);
+    }
+
+    /// The scene frame (see `scrollLayerSeam`).
+    pub fn layered(dl: *DrawList, frame: u8, image: r2d.TextureId, rnd: std.Random) void {
+        var ctx: SceneCtx = .{ .frame = frame, .image = image, .rnd = rnd };
+        scrollLayerSeam(dl, &ctx);
+    }
+};
+
+fn scrollLayerSeam(dl: *DrawList, ctx: *SceneCtx) void {
+    bg(dl, light);
+    const id: r2d.LayerId = @enumFromInt(3);
+    const top = seam.windowTop(ctx.frame);
+    const origin: [2]i32 = .{ 0, @mod(top, @as(i32, seam.layer_size.h)) };
+    var strips: [2]r2d.PxRect = undefined;
+    const n = if (ctx.frame == 0) 0 else r2d.layers.scrollDamage(.{ 0, top - seam.windowTop(ctx.frame - 1) }, seam.layer_size, &strips);
+    const full = [_]r2d.PxRect{.{ .x = 0, .y = 0, .w = seam.layer_size.w, .h = seam.layer_size.h }};
+    const dmg: []const r2d.PxRect = if (ctx.frame == 0) &full else strips[0..n];
+    if (dl.beginScrollLayer(id, seam.layer_size, origin, dmg)) {
+        seam.document(dl, top, seam.layer_size.h, 0, 0);
+        dl.endLayer();
+    }
+    dl.drawLayer(id, seam.viewport, .{ .y = seam.scrolls[ctx.frame] - @as(f32, @floatFromInt(top)) }, 1);
+    if (ctx.frame > 0) dl.addDamage(.{ .x = 20, .y = 10, .w = 80, .h = 60 });
+}
+
 fn damageKeystroke(dl: *DrawList, ctx: *SceneCtx) void {
     bg(dl, light);
     const n: u32 = 6 + ctx.frame;
@@ -446,6 +522,7 @@ pub const all = [_]Scene{
     .{ .name = "image_rounded", .size = sz(128, 96), .build = imageRounded },
     .{ .name = "layer_plain_opacity", .size = sz(128, 96), .build = layerPlainOpacity, .needs = .{ .layers = true } },
     .{ .name = "scroll_layer_offsets", .size = sz(120, 90), .build = scrollLayerOffsets, .frames = 6, .needs = .{ .layers = true } },
+    .{ .name = "scroll_layer_seam", .size = sz(120, 90), .build = scrollLayerSeam, .frames = seam.scrolls.len, .needs = .{ .layers = true } },
     .{ .name = "damage_keystroke", .size = sz(128, 80), .build = damageKeystroke, .frames = 3 },
     .{ .name = "hidpi_scale_2x", .size = sz(128, 96), .scale = 2, .build = hidpi2x },
     .{ .name = "subpixel_positions", .size = sz(128, 96), .build = subpixelPositions },
