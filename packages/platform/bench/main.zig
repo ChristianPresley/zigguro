@@ -1,6 +1,6 @@
 //! zg_platform benchmarks (`zig build bench`): event ring push/pop and
 //! cross-thread wake round trips (E01.F01 budgets: ring < 30 ns per push+pop,
-//! wake < 100 µs p99), and PTY spawn (E01.F06: < 5 ms on Linux).
+//! wake < 100 µs p99), PTY spawn (E01.F06: < 5 ms on Linux) and watch setup (>= 50k dirs/s).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -23,7 +23,38 @@ fn register(b: *bench.Bench) !void {
     try b.run("ring: push + pop one event", ring, ringPushPop);
     try b.run("ring: push 256 then popMany", ring, ringBatch);
     try b.run("wake: cross-thread round trip", b.io, wakeRoundTrip);
-    if (@import("builtin").os.tag == .linux) try b.run("pty: spawn /bin/true and wait", b, ptySpawnTrue);
+    if (@import("builtin").os.tag == .linux) {
+        try b.run("pty: spawn /bin/true and wait", b, ptySpawnTrue);
+        try watchSetup(b);
+    }
+}
+
+const watch_dirs = 50_000;
+
+/// Watch setup over a generated tree of 50k directories (100 x 500); the
+/// reported bytes/s figure is directories per second.
+fn watchSetup(b: *bench.Bench) !void {
+    const io = b.io;
+    var rnd: [8]u8 = undefined;
+    io.random(&rnd);
+    const base = try std.fmt.allocPrint(b.gpa, "/tmp/zg-watch-bench-{x}", .{rnd});
+    defer b.gpa.free(base);
+    const cwd = std.Io.Dir.cwd();
+    defer cwd.deleteTree(io, base) catch {};
+    var buf: [256]u8 = undefined;
+    for (0..100) |i| for (0..watch_dirs / 100) |j| {
+        try cwd.createDirPath(io, try std.fmt.bufPrint(&buf, "{s}/d{d}/e{d}", .{ base, i, j }));
+    };
+    try b.run("fswatch: watch a 50k-directory tree", base, watchTree);
+}
+
+fn watchTree(base: []const u8, s: *State) void {
+    s.setBytes(watch_dirs);
+    for (0..s.iterations()) |_| {
+        var w = zg_platform.fswatch.Watcher.init(s.allocator(), s.ioHandle(), .{}) catch unreachable;
+        _ = w.addRoot(base, &.none) catch unreachable;
+        w.deinit();
+    }
 }
 
 fn ptySpawnTrue(b: *bench.Bench, s: *State) void {
