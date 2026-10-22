@@ -1,0 +1,7 @@
+# initialize / initialized / shutdown / exit with a minimal server.
+> initialize {"rootUri": "file://${workspace}"}
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2}, "serverInfo": {"name": "fake", "version": "1.0"}}}
+> initialized
+> shutdown
+< {"id": $1, "result": null}
+> exit
