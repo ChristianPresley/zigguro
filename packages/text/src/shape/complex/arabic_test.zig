@@ -64,7 +64,7 @@ test "arabic: shaper selection" {
     try testing.expectEqualStrings("arabic", default.select(.Syrc, ot.tag("syrc")).name);
     try testing.expectEqualStrings("default", default.select(.Syrc, ot.tag("DFLT")).name);
     try testing.expectEqualStrings("default", default.select(.Syrc, null).name);
-    try testing.expectEqualStrings("arabic", default.select(.Nkoo, null).name);
+    try testing.expectEqualStrings("use", default.select(.Nkoo, null).name);
     try testing.expectEqualStrings("default", default.select(.Latn, ot.tag("latn")).name);
 }
 

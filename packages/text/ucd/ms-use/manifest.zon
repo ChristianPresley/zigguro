@@ -1,0 +1,10 @@
+// Microsoft's Universal Shaping Engine override files (Unicode 18.0
+// update, 2026-09-04), vendored unchanged from
+// https://github.com/harfbuzz/harfbuzz/tree/main/src/ms-use, which mirrors
+// the USE folder of https://github.com/microsoft/font-tools; fetched
+// 2026-10-22. MIT license (LICENSE). ucdgen verifies both against these
+// digests.
+.{
+    .{ .file = "IndicPositionalCategory-Additional.txt", .sha256 = "2baa1c1efe5a5f108c304b1e27d0d97864c806764eb2b0a1bd91db80ae26b5b8" },
+    .{ .file = "IndicSyllabicCategory-Additional.txt", .sha256 = "b9472e3e72d5fba8cb3f2e0578e73012aaae786db25779de0f1a5a5ab69b84a6" },
+}
