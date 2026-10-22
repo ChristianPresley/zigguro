@@ -38,6 +38,7 @@ const Keymap = @import("keymap.zig").Keymap;
 const modsFromState = @import("keymap.zig").modsFromState;
 const present_mod = @import("present.zig");
 const Presenter = present_mod.Presenter;
+const dri3 = @import("dri3.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -124,6 +125,8 @@ pub const X11Backend = struct {
     path: present_mod.Path,
     /// The MIT-SHM event base, for ShmCompletion.
     shm_event: ?u8 = null,
+    /// DRI3/Present support (dmabuf import), or null.
+    gpu: ?dri3.Dri3 = null,
 
     mutex: Io.Mutex = .init,
     windows: std.ArrayList(*Window) = .empty,
@@ -175,7 +178,12 @@ pub const X11Backend = struct {
         b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
         const shm_ok = b.shmUsable();
         b.path = b.pickPath(env, shm_ok);
-        log.info("X11 display ready: {d}x{d}, scale {d}, presenting with {t}", .{ conn.screen().width_px, conn.screen().height_px, b.scale, b.path });
+        // ZG_X11_PRESENT=shm|putimage (or a forced path) keeps E02 on CPU
+        // buffers.
+        const cpu_forced = opts.present != null or env.get("ZG_X11_PRESENT") != null and !std.mem.eql(u8, env.get("ZG_X11_PRESENT").?, "dri3");
+        if (!cpu_forced) b.gpu = b.probeGpu();
+        errdefer if (b.gpu) |*g| g.deinit(gpa);
+        log.info("X11 display ready: {d}x{d}, scale {d}, presenting with {t}{s}", .{ conn.screen().width_px, conn.screen().height_px, b.scale, b.path, if (b.gpu != null) " and DRI3/Present" else "" });
         return b;
     }
 
@@ -201,6 +209,11 @@ pub const X11Backend = struct {
             if (std.mem.eql(u8, v, "putimage")) return .put_image;
         }
         return if (shm_ok) .shm else .put_image;
+    }
+
+    fn probeGpu(b: *X11Backend) ?dri3.Dri3 {
+        const p = (dri3.Probe.send(b.conn, b.conn.screen().root) catch return null) orelse return null;
+        return p.finish(b.gpa, b.conn) catch null;
     }
 
     fn shmUsable(b: *X11Backend) bool {
@@ -259,6 +272,7 @@ pub const X11Backend = struct {
         b.next_win += 1;
         w.* = .{ .id = id, .xid = xid, .gc = gc, .size = size, .presenter = .init(b.gpa, b.io, c, b.path, xid, gc, s.root_depth, id) };
         w.presenter.bind();
+        if (b.gpu) |*g| w.presenter.gpu = g;
         b.createX(w, opts) catch return error.SystemResources;
         b.windows.append(b.gpa, w) catch {
             _ = c.request(proto.DestroyWindow, .{ .window = xid }, &.{}) catch {};
@@ -291,6 +305,7 @@ pub const X11Backend = struct {
             },
         }, &.{});
         _ = try c.request(proto.CreateGC, .{ .cid = w.gc, .drawable = w.xid, .values = .{ .values = .{ .graphics_exposures = 0 } } }, &.{});
+        if (b.gpu != null) _ = try c.request(dri3.PresentSelectInput, .{ .eid = try c.newXid(), .window = w.xid, .event_mask = dri3.EventMask.complete | dri3.EventMask.idle }, &.{});
         const a = &b.atoms;
         try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
         try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
@@ -431,8 +446,8 @@ pub const X11Backend = struct {
         }, &.{});
     }
 
-    /// See `Platform.VTable.surfaceTarget`: E02 presents through the
-    /// window's CPU presenter until DRI3 lands.
+    /// See `Platform.VTable.surfaceTarget`: E02 imports its images into
+    /// the window's presenter (DRI3) or renders into its CPU buffers.
     pub fn surfaceTarget(b: *X11Backend, win: WindowId) Error!surface.SurfaceTarget {
         return .{ .external = try b.cpuPresenter(win) };
     }
@@ -558,6 +573,7 @@ pub const X11Backend = struct {
         b.staged.deinit(b.gpa);
         for (&b.clip) |items| freeClip(b.gpa, items);
         b.keymap.deinit(b.gpa);
+        if (b.gpu) |*g| g.deinit(b.gpa);
         b.conn.deinit();
         b.arena.deinit(b.gpa);
         b.ui_wake.deinit();
@@ -591,6 +607,7 @@ pub const X11Backend = struct {
             if (b.byXid(drawable)) |w| _ = w.presenter.onShmCompletion(u32At(ev, 12));
             return;
         };
+        if (b.gpu) |g| if (code == proto.generic_event and ev[1] == g.present_opcode) return b.onPresentEvent(ev);
         switch (code) {
             proto.EventCode.key_press, proto.EventCode.key_release => b.onKey(ev, code == proto.EventCode.key_press),
             proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
@@ -644,6 +661,29 @@ pub const X11Backend = struct {
                 b.loadKeymap() catch |err| log.warn("keyboard mapping refresh failed: {t}", .{err});
             },
             else => {},
+        }
+    }
+
+    /// A Present event: IdleNotify releases a pixmap, CompleteNotify
+    /// becomes `Event.present_feedback` (UST is µs on CLOCK_MONOTONIC,
+    /// our clock). Mutex held.
+    fn onPresentEvent(b: *X11Backend, ev: []const u8) void {
+        switch (dri3.decodeEvent(ev) orelse return) {
+            .idle => |i| if (b.byXid(i.window)) |w| {
+                _ = w.presenter.onIdle(i.pixmap);
+            },
+            .complete => |c| {
+                if (!c.is_pixmap) return;
+                const w = b.byXid(c.window) orelse return;
+                const F = event_api.PresentFlags;
+                const flags: u8 = switch (c.mode) {
+                    .skip => F.discarded,
+                    .flip => F.vsync | F.zero_copy,
+                    else => F.vsync,
+                };
+                b.stage(.{ .present_feedback = .{ .win = w.id, .presented_ns = if (c.mode == .skip) 0 else c.ust *| std.time.ns_per_us, .seq = c.msc, .flags = flags } });
+            },
+            .other => {},
         }
     }
 
