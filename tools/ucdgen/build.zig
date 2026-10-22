@@ -7,6 +7,8 @@ const std = @import("std");
 
 /// The UCD input files in the order `ucdgen` expects them (for build scripts).
 pub const files = @import("src/tables.zig").files;
+/// Microsoft's USE override files, passed after `--ms-use <manifest>`.
+pub const ms_use_files = @import("src/tables.zig").ms_use_files;
 /// The UCD input files of `ucdgen regex`, in argument order (zg_regex).
 pub const regex_files = @import("src/emit_regex.zig").files;
 

@@ -786,6 +786,16 @@ pub const TableBox = struct {
     pub fn a11y(props: *const Props, _: *widget.NoState) widget.A11y {
         return .{ .role = .grid, .name = props.label, .row_count = props.rows, .col_count = props.cols };
     }
+
+    /// `scroll_into_view` with a data row index reveals a row that may not
+    /// be built yet.
+    pub fn a11yAction(props: *const Props, _: *widget.NoState, a: widget.A11yAction, arg: ?widget.A11yArg) bool {
+        if (a != .scroll_into_view) return false;
+        const x = arg orelse return false;
+        if (x != .index or x.index >= props.rows) return false;
+        props.t.reveal(x.index, 0);
+        return true;
+    }
 };
 
 /// A row (or the header row): background, selection and the frozen

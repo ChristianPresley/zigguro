@@ -32,6 +32,9 @@ pub const shape_cache = @import("shape_cache.zig");
 pub const complex = struct {
     pub const default = @import("complex/default.zig");
     pub const arabic = @import("complex/arabic.zig");
+    pub const use = @import("complex/use.zig");
+    pub const syllable_dfa = @import("complex/syllable_dfa.zig");
+    pub const dotted_circle = @import("complex/dotted_circle.zig");
 };
 
 pub const Buffer = buffer.Buffer;
@@ -49,4 +52,6 @@ test {
     _ = @import("shaper_test.zig");
     _ = @import("fuzz_test.zig");
     _ = @import("complex/arabic_test.zig");
+    _ = @import("complex/syllable_dfa.zig");
+    _ = @import("complex/use_test.zig");
 }

@@ -39,8 +39,15 @@
 //! header and the view's key scope carry the focused hunk's description
 //! ("Hunk 3 of 12, 4 lines added, 2 removed, pending") for screen readers.
 //!
-//! Still open (E05's DiffView): editing in place in the diff, the 3-way
-//! conflict view, binary previews. The session lives on the glue's queue, so the
+//! Conflicted hunks say why (the user edited the lines, the disk or
+//! another change did, or the base is gone) and show the text there now
+//! against the agent's, with Take agent (accept), Take mine (reject),
+//! Edit merge (edit-before-accept seeded with the agent's lines) and
+//! Re-ask agent (both sides sent through `Feedback.requestFix`).
+//!
+//! Still open (E05's DiffView): editing in place in the diff, the base
+//! pane of a 3-way conflict (the text the agent started from), binary
+//! previews. The session lives on the glue's queue, so the
 //! view reads and acts under the glue's mutex, like the queue panel.
 
 const std = @import("std");
@@ -159,6 +166,8 @@ pub const ReviewView = struct {
         post,
         cancel_comment,
         request_fix,
+        /// Sends a conflicted hunk's two sides to the agent to redo.
+        reask: u32,
         toggle_interdiff,
         toggle_layout,
         toggle_lines: u32,
@@ -344,6 +353,15 @@ pub const ReviewView = struct {
         for (fc.hunks, 0..) |h, i| {
             const hi: u32 = @intCast(i);
             try out.append(a, .{ .kind = .hunk, .hunk = hi });
+            if (h.conflict) |c| if (!v.collapsed(h)) try out.append(a, .{
+                .kind = .note,
+                .hunk = hi,
+                .text = try std.fmt.allocPrint(a, "⚠ {s}. {s} your text now, {s} the agent's.", .{
+                    conflictReason(c.kind),
+                    if (v.layout == .side_by_side) "Left:" else "−",
+                    if (v.layout == .side_by_side) "right:" else "+",
+                }),
+            });
             if (!v.collapsed(h)) {
                 const ol = old[@min(h.base_lines.start, old.len)..@min(h.base_lines.start + h.base_lines.count, old.len)];
                 const nl = new[@min(h.new_lines.start, new.len)..@min(h.new_lines.start + h.new_lines.count, new.len)];
@@ -383,20 +401,23 @@ pub const ReviewView = struct {
                     if (h.conflict != null) "  ·  ⚠ conflict" else "",
                 }) catch "", .{ .color = if (h.conflict != null) .danger else .fg_muted, .wrap = false });
                 ui.close();
-                ui.id(r.hunk * 5 + 3);
+                ui.id(r.hunk * 6 + 3);
                 if (v.collapsed(h)) {
                     v.button(ui, showLabel(&buf, h.base_lines.count + h.new_lines.count), .{ .toggle_lines = r.hunk });
                 } else if (h.decision == .accepted or h.base_lines.count + h.new_lines.count > collapse_lines) {
                     v.button(ui, "Hide lines", .{ .toggle_lines = r.hunk });
                 }
-                ui.id(r.hunk * 5);
-                v.button(ui, "Accept", .{ .accept_hunk = r.hunk });
-                ui.id(r.hunk * 5 + 1);
-                v.button(ui, "Reject", .{ .reject_hunk = r.hunk });
-                ui.id(r.hunk * 5 + 2);
+                const conflicted = h.conflict != null;
+                ui.id(r.hunk * 6);
+                v.button(ui, if (conflicted) "Take agent" else "Accept", .{ .accept_hunk = r.hunk });
+                ui.id(r.hunk * 6 + 1);
+                v.button(ui, if (conflicted) "Take mine" else "Reject", .{ .reject_hunk = r.hunk });
+                ui.id(r.hunk * 6 + 4);
+                if (conflicted or h.new_lines.count > 0) v.button(ui, if (conflicted) "Edit merge" else "Edit", .{ .edit_hunk = r.hunk });
+                ui.id(r.hunk * 6 + 5);
+                if (conflicted and v.glue.feedback != null) v.button(ui, "Re-ask agent", .{ .reask = r.hunk });
+                ui.id(r.hunk * 6 + 2);
                 v.button(ui, "Comment", .{ .comment_hunk = r.hunk });
-                ui.id(r.hunk * 5 + 4);
-                if (h.new_lines.count > 0) v.button(ui, "Edit", .{ .edit_hunk = r.hunk });
             },
             .thread => {
                 const t = r.thread.?;
@@ -493,6 +514,7 @@ pub const ReviewView = struct {
                 break :blk null;
             },
             .request_fix => v.requestFix(),
+            .reask => |h| v.reask(h),
             .toggle_interdiff => blk: {
                 v.interdiff = !v.interdiff;
                 break :blk null;
@@ -654,7 +676,29 @@ pub const ReviewView = struct {
         const a = v.arena.allocator();
         var ids: std.ArrayList(feedback.ThreadId) = .empty;
         for (v.glue.comments.threadsOf(cs)) |t| if (!t.resolved) try ids.append(a, t.id);
-        v.notice = switch (try f.requestFix(cs, ids.items, "", nowMs(v.io))) {
+        return v.send(f, cs, ids.items, "");
+    }
+
+    /// Asks the agent to redo conflicted hunk `hi` of the focused file on
+    /// top of the current text, with both sides in the message.
+    fn reask(v: *ReviewView, hi: u32) anyerror!?zg_review.session.Failure {
+        const f = &(v.glue.feedback orelse return null);
+        const cs = v.focusedCs() orelse return null;
+        const s = v.session;
+        const fc = s.fileChange(s.cursor.file) orelse return null;
+        if (hi >= fc.hunks.len) return null;
+        const h = fc.hunks[hi];
+        const c = h.conflict orelse return null;
+        const a = v.arena.allocator();
+        const theirs = try s.proposedText(a, s.cursor.file, hi) orelse "";
+        const msg = try std.fmt.allocPrint(a, "Your change to {s} (hunk {d}) conflicts: {s}.\n\nThe text there now:\n```\n{s}```\n\nYou proposed:\n```\n{s}```\n\nRedo this change on top of the current text.", .{
+            fc.path, hi + 1, conflictReason(c.kind), c.theirs_text, theirs,
+        });
+        return v.send(f, cs, &.{}, msg);
+    }
+
+    fn send(v: *ReviewView, f: *feedback.Feedback, cs: zg_review.model.ChangesetId, ids: []const feedback.ThreadId, extra: []const u8) anyerror!?zg_review.session.Failure {
+        v.notice = switch (try f.requestFix(cs, ids, extra, nowMs(v.io))) {
             .steered => "Sent to the agent: it reads it after its current step.",
             .new_turn => "Sent to the agent as a new turn.",
             .ask_resume => blk: {
@@ -903,6 +947,16 @@ fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
         try w.writer.writeByte('\n');
     }
     return w.written();
+}
+
+/// Why a hunk conflicts, as a sentence fragment.
+fn conflictReason(k: zg_review.model.changeset.ConflictKind) []const u8 {
+    return switch (k) {
+        .user_edit => "You edited these lines after the agent proposed its change",
+        .external_change => "These lines changed on disk after the agent proposed its change",
+        .sibling_changeset => "Another accepted change touched these lines",
+        .base_missing => "The text the agent changed is gone",
+    };
 }
 
 /// "Hunk 3 of 12, 4 lines added, 2 removed, pending"
@@ -1459,4 +1513,90 @@ test "review view: edit a hunk's proposed lines, then accept the edit" {
     try t.click(.{ .role = .button, .name = "Undo" });
     _ = t.settle();
     try testing.expectEqualStrings("one\n.\n.\n.\n.\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", ar, .limited(64)));
+}
+
+test "review view: a conflicted hunk shows both sides, re-asks the agent, takes mine" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\n.\n.\n.\ntwo\n" });
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+
+    const Agent = struct {
+        sent: std.ArrayList(u8) = .empty,
+        status: feedback.AgentStatus = .idle,
+        fn port(x: *@This()) feedback.AgentPort {
+            return .{ .ctx = x, .status = st, .submit = sub, .resumeSession = res, .newSession = ns };
+        }
+        fn st(ctx: *anyopaque, _: u128) feedback.AgentStatus {
+            return @as(*@This(), @ptrCast(@alignCast(ctx))).status;
+        }
+        fn sub(ctx: *anyopaque, _: u128, m: *const feedback.FeedbackMessage, _: feedback.SubmitMode) anyerror!void {
+            const x: *@This() = @ptrCast(@alignCast(ctx));
+            x.sent.clearRetainingCapacity();
+            try x.sent.appendSlice(gpa, m.text);
+        }
+        fn res(_: *anyopaque, _: u128) anyerror!void {
+            return error.Unsupported;
+        }
+        fn ns(ctx: *anyopaque, m: *const feedback.FeedbackMessage) anyerror!u128 {
+            try sub(ctx, 0x51, m, .new_turn);
+            return 0x51;
+        }
+    };
+    var agent: Agent = .{};
+    defer agent.sent.deinit(gpa);
+    try g.bindAgent(agent.port());
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x51 };
+    const abs = (try fs.resolve(testing.io, ar, "a.txt")).abs;
+    const o1: @import("zg_ai").tools.builtin.files.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    _ = try fs.propose(testing.io, ar, abs, .{ .whole_file = .{ .text = "ONE\n.\n.\n.\n.\nTWO\n", .base_version = null } }, o1);
+    const id: zg_review.model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+    // The second hunk conflicts: the user changed "two" meanwhile.
+    {
+        const h = &g.q.getMut(id).?.files[0].hunks[1];
+        h.conflict = .{ .kind = .user_edit, .ours_lines = h.base_lines, .theirs_text = "two\n" };
+    }
+
+    const Root = struct {
+        v: ?*ReviewView = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.v) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1200, .h = 600 }, .root = .of(&view) });
+    defer t.deinit();
+    const v = try ReviewView.create(gpa, testing.io, &t.app, g, .{ .changeset = id });
+    defer v.destroy();
+    view.v = v;
+    t.win.markAllDirty();
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name_contains = "You edited these lines after the agent proposed its change. Left: your text now" }) != null);
+    try testing.expect(t.find(.{ .role = .button, .name = "Take agent" }) != null);
+    try testing.expect(t.find(.{ .role = .button, .name = "Edit merge" }) != null);
+    try testing.expect(t.find(.{ .name_contains = "Hunk 2 of 2, 1 line added, 1 removed, conflict" }) != null);
+
+    // Re-ask sends both sides to the agent.
+    try t.click(.{ .role = .button, .name = "Re-ask agent" });
+    _ = t.settle();
+    try testing.expect(std.mem.indexOf(u8, agent.sent.items, "The text there now:\n```\ntwo\n```") != null);
+    try testing.expect(std.mem.indexOf(u8, agent.sent.items, "You proposed:\n```\nTWO\n```") != null);
+    try testing.expect(t.find(.{ .name = "Sent to the agent as a new turn." }) != null);
+
+    // Take mine keeps the file and decides the hunk.
+    try t.click(.{ .role = .button, .name = "Take mine" });
+    _ = t.settle();
+    try testing.expectEqualStrings("one\n.\n.\n.\n.\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", ar, .limited(64)));
+    try testing.expect(t.find(.{ .name_contains = "1 of 2 decided" }) != null);
 }

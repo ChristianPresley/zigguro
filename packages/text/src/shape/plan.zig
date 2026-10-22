@@ -44,8 +44,9 @@ pub const FeatureFlags = packed struct(u8) {
     pub const manual_joiners: FeatureFlags = .{ .global = true, .manual_zwj = true, .manual_zwnj = true };
 };
 
-/// A pause between stages: complex shapers reorder or retag here.
-pub const PauseFn = *const fn (plan: *const ShapePlan, buf: *Buffer) void;
+/// A pause between stages: complex shapers reorder or retag here (and may
+/// insert glyphs).
+pub const PauseFn = *const fn (plan: *const ShapePlan, buf: *Buffer) Allocator.Error!void;
 
 /// One lookup of a stage with the mask and joiner rules it runs under.
 pub const LookupMap = struct {
@@ -88,6 +89,13 @@ pub const ComplexShaper = struct {
     setupMasks: ?*const fn (plan: *const ShapePlan, buf: *Buffer) void = null,
     /// Reorders marks within a ccc run [start, end) after normalization.
     reorderMarks: ?@import("normalize.zig").ReorderFn = null,
+    /// Runs on the characters before normalization (may insert some).
+    preprocessText: ?*const fn (plan: *const ShapePlan, buf: *Buffer) Allocator.Error!void = null,
+    /// False: decompose every character the font can draw decomposed, even
+    /// when it has the composed one (HarfBuzz's "no short circuit" mode).
+    normalize_short_circuit: bool = true,
+    /// Replaces canonical composition when recomposing (null: compose).
+    compose: ?@import("normalize.zig").ComposeFn = null,
     zero_marks: ZeroMarks = .gdef_late,
     fallback_position: bool = true,
 };

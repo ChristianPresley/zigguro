@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) void {
     gen.addArgs(&.{ "--version", ucd_version, "--manifest" });
     gen.addFileArg(b.path("ucd/" ++ ucd_version ++ "/manifest.zon"));
     inline for (ucdgen.files) |rel| gen.addFileArg(b.path("ucd/" ++ ucd_version ++ "/" ++ rel));
+    // Microsoft's USE override files, outside the UCD version directory.
+    gen.addArg("--ms-use");
+    gen.addFileArg(b.path("ucd/ms-use/manifest.zon"));
+    inline for (ucdgen.ms_use_files) |rel| gen.addFileArg(b.path("ucd/ms-use/" ++ rel));
     const out = gen.addOutputDirectoryArg("ucd");
     const tables = b.createModule(.{ .root_source_file = out.path(b, "ucd_tables.zig") });
 

@@ -24,23 +24,44 @@ fn readInputs(gpa: std.mem.Allocator) !ref.Inputs {
     return inputs;
 }
 
-/// Builds the reference tables from `ucd/<version>/`.
+/// Reads Microsoft's USE override files; free each with `gpa`.
+fn readMsUse(gpa: std.mem.Allocator) !ref.MsUseInputs {
+    const io = testing.io;
+    var root = try std.Io.Dir.openDirAbsolute(io, options.package_root, .{});
+    defer root.close(io);
+    var dir = try root.openDir(io, "ucd/ms-use", .{});
+    defer dir.close(io);
+    var inputs: ref.MsUseInputs = undefined;
+    var loaded: usize = 0;
+    errdefer for (inputs[0..loaded]) |x| gpa.free(x);
+    for (ref.ms_use_files, 0..) |f, i| {
+        inputs[i] = try dir.readFileAlloc(io, f, gpa, .limited(1 << 20));
+        loaded += 1;
+    }
+    return inputs;
+}
+
+/// Builds the reference tables from `ucd/<version>/` and `ucd/ms-use/`.
 pub fn loadReference(gpa: std.mem.Allocator) !ref.Ucd {
     const inputs = try readInputs(gpa);
     defer for (inputs) |x| gpa.free(x);
+    const ms = try readMsUse(gpa);
+    defer for (ms) |x| gpa.free(x);
     var diag: ref.Diag = .{};
-    return ref.build(gpa, &inputs, &diag);
+    return ref.build(gpa, &inputs, &ms, &diag);
 }
 
 test "generated blob equals the build's and is deterministic" {
     const gpa = testing.allocator;
     const inputs = try readInputs(gpa);
     defer for (inputs) |x| gpa.free(x);
+    const ms = try readMsUse(gpa);
+    defer for (ms) |x| gpa.free(x);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var diag: ref.Diag = .{};
-    const a = try ref.generate(arena.allocator(), gpa, &inputs, &diag);
-    const b = try ref.generate(arena.allocator(), gpa, &inputs, &diag);
+    const a = try ref.generate(arena.allocator(), gpa, &inputs, &ms, &diag);
+    const b = try ref.generate(arena.allocator(), gpa, &inputs, &ms, &diag);
     try testing.expectEqualSlices(u8, a, b);
     try testing.expectEqualSlices(u8, a, &@import("ucd_tables").blob);
     try testing.expect(a.len < 600 * 1024);
