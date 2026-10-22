@@ -17,6 +17,8 @@ pub const paint = @import("paint/root.zig");
 pub const w = @import("widgets/root.zig");
 /// Design tokens and themes.
 pub const theme = @import("theme/root.zig");
+/// Docking: the workbench layout model.
+pub const dock = @import("dock/root.zig");
 /// Headless test driver.
 pub const testing = @import("testing/root.zig");
 /// Runs windows on a platform and renderer.
@@ -55,5 +57,6 @@ test {
     _ = @import("widgets/overlay_test.zig");
     _ = @import("widgets/menu_test.zig");
     _ = @import("widgets/chrome_test.zig");
+    _ = @import("dock/model_test.zig");
     _ = @import("widgets/quick_pick_test.zig");
 }
