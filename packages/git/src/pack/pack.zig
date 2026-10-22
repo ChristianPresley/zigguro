@@ -206,8 +206,7 @@ pub const Pack = struct {
         if (h.size > std.math.maxInt(usize) or h.size > p.bytes.len * 1032 + 1024) return error.CorruptPack;
         const out = try gpa.alloc(u8, @intCast(h.size));
         errdefer gpa.free(out);
-        var r: std.Io.Reader = .fixed(p.body()[@intCast(h.data_offset)..]);
-        zlib.inflateExact(&r, out) catch return error.CorruptPack;
+        _ = zlib.inflateExact(p.body()[@intCast(h.data_offset)..], out) catch return error.CorruptPack;
         return out;
     }
 
@@ -263,8 +262,7 @@ pub const Pack = struct {
         const h = try p.entryHeader(off);
         if (h.kind.objectType()) |t| return .{ .type = t, .size = h.size };
         var buf: [512]u8 = undefined;
-        var r: std.Io.Reader = .fixed(p.body()[@intCast(h.data_offset)..]);
-        const prefix = zlib.inflatePrefix(&r, &buf) catch return error.CorruptPack;
+        const prefix = zlib.inflatePrefix(p.body()[@intCast(h.data_offset)..], &buf) catch return error.CorruptPack;
         const dh = delta.parseHeader(prefix) catch return error.CorruptPack;
         var cur = try p.baseOffset(h);
         var steps: usize = 0;

@@ -1,8 +1,13 @@
-//! zlib helpers over `std.compress.flate`. The 0.16 decompressor reads the
-//! zlib trailer but does not check it, so the adler32 is verified here.
+//! zlib helpers. Slices inflate with zg_git's own decoder; streams still
+//! go through `std.compress.flate`, whose 0.16 decompressor reads the zlib
+//! trailer but does not check it, so the adler32 is verified here.
 
 const std = @import("std");
 const flate = std.compress.flate;
+const inflate_mod = @import("zlib/inflate.zig");
+
+/// The one-shot decoder behind `inflateExact` and `inflatePrefix`.
+pub const inflate = inflate_mod;
 
 /// Errors from inflating a zlib stream.
 pub const Error = error{ CorruptObject, ReadFailed };
@@ -23,49 +28,19 @@ pub fn checkAdler(dec: *const flate.Decompress, adler: u32) error{CorruptObject}
     }
 }
 
-/// Inflates a zlib stream that must produce exactly `out.len` bytes and
-/// then end. No window buffer is needed: `out` is the history. On success
-/// `input` is positioned just past the zlib trailer.
-///
-/// The decoder is always driven with an unlimited `stream` call: a limit
-/// shorter than a pending match makes 0.16's decoder return 0 without
-/// progress. Output past `out.len` fails in the fixed writer instead.
-pub fn inflateExact(input: *std.Io.Reader, out: []u8) Error!void {
-    var dec: flate.Decompress = .init(input, .zlib, &.{});
-    var w: std.Io.Writer = .fixed(out);
-    try drive(&dec, &w);
-    if (w.end != out.len) return error.CorruptObject;
-    try checkAdler(&dec, std.hash.Adler32.permute(1, out));
-}
-
-fn drive(dec: *flate.Decompress, w: *std.Io.Writer) Error!void {
-    var stalls: u32 = 0;
-    while (true) {
-        const n = dec.reader.stream(w, .unlimited) catch |e| switch (e) {
-            error.EndOfStream => return,
-            error.WriteFailed => return error.CorruptObject,
-            error.ReadFailed => return mapRead(e, dec),
-        };
-        if (n != 0) {
-            stalls = 0;
-        } else {
-            stalls += 1;
-            if (stalls > 64) return error.CorruptObject;
-        }
-    }
+/// Inflates the zlib stream at the start of `input`, which must produce
+/// exactly `out.len` bytes and then end with a valid trailer. Returns the
+/// input bytes the stream took. Uses zg_git's own decoder
+/// (`zlib/inflate.zig`).
+pub fn inflateExact(input: []const u8, out: []u8) error{CorruptObject}!usize {
+    return (try inflate_mod.zlibInflate(input, out, .exact)).consumed;
 }
 
 /// Inflates up to `out.len` bytes from the start of a zlib stream without
-/// checking its end (for peeking at delta headers). The result can be a
-/// little shorter than `out` when a match straddles its end.
-pub fn inflatePrefix(input: *std.Io.Reader, out: []u8) Error![]u8 {
-    var dec: flate.Decompress = .init(input, .zlib, &.{});
-    var w: std.Io.Writer = .fixed(out);
-    drive(&dec, &w) catch |e| switch (e) {
-        error.CorruptObject => if (dec.err != null) return e,
-        else => return e,
-    };
-    return w.buffered();
+/// checking its end (for peeking at delta headers). The result is shorter
+/// than `out` only when the stream is.
+pub fn inflatePrefix(input: []const u8, out: []u8) error{CorruptObject}![]u8 {
+    return out[0..(try inflate_mod.zlibInflate(input, out, .prefix)).written];
 }
 
 test "zlib: inflateExact checks length and trailer" {
@@ -81,27 +56,25 @@ test "zlib: inflateExact checks length and trailer" {
     const z = aw.written();
 
     var out: [payload.len]u8 = undefined;
-    var r1: std.Io.Reader = .fixed(z);
-    try inflateExact(&r1, &out);
+    try t.expectEqual(z.len, try inflateExact(z, &out));
     try t.expectEqualStrings(payload, &out);
-    try t.expectEqual(z.len, r1.seek);
 
     var short: [payload.len - 1]u8 = undefined;
-    var r2: std.Io.Reader = .fixed(z);
-    try t.expectError(error.CorruptObject, inflateExact(&r2, &short));
+    try t.expectError(error.CorruptObject, inflateExact(z, &short));
     var long: [payload.len + 1]u8 = undefined;
-    var r3: std.Io.Reader = .fixed(z);
-    try t.expectError(error.CorruptObject, inflateExact(&r3, &long));
+    try t.expectError(error.CorruptObject, inflateExact(z, &long));
 
     const bad = try t.allocator.dupe(u8, z);
     defer t.allocator.free(bad);
     bad[bad.len - 2] ^= 0x40;
-    var r4: std.Io.Reader = .fixed(bad);
-    try t.expectError(error.CorruptObject, inflateExact(&r4, &out));
+    try t.expectError(error.CorruptObject, inflateExact(bad, &out));
 
-    var r5: std.Io.Reader = .fixed(z);
     var pre: [64]u8 = undefined;
-    const got = try inflatePrefix(&r5, &pre);
-    try t.expect(got.len >= 3);
+    const got = try inflatePrefix(z, &pre);
+    try t.expectEqual(@as(usize, 64), got.len);
     try t.expectEqualStrings(payload[0..got.len], got);
+}
+
+test {
+    _ = inflate_mod;
 }
