@@ -432,15 +432,32 @@ pub const Platform = struct {
     pub fn payload(self: Platform, s: PayloadSlice) []const u8; // event payload bytes
     pub fn fromImpl(comptime T: type, impl: *T) Platform;
 };
-pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;
+pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;          // detected backend, Wayland → X11 fallback
+pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, b: Backend, opts: InitOptions) Error!Platform; // exactly `b`
 pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
+pub fn isForced(opts: InitOptions) bool; // opts.backend or a valid ZG_PLATFORM
+// InitOptions.environ_map is `?*std.process.Environ.Map` (mutable: Wayland consumes WAYLAND_SOCKET)
 pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
 ```
 
+Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
+forces a backend and disables fallback; otherwise Windows → win32, a
+non-empty `WAYLAND_DISPLAY` → wayland, a non-empty `DISPLAY` → x11, else
+headless. A detected Wayland backend that cannot connect falls back to
+X11 when `DISPLAY` is set. `init` never falls back to headless: the app
+does that (apps/zigguro renders `--frames N` headless frames and exits).
+Win32 and Cocoa return `error.BackendUnavailable` until they land.
+
+Frame pacing: request a frame with `Command.request_frame` and render on
+`Event.frame`. Until a window's first present, every backend answers the
+request at once (Wayland sends no frame callbacks for an unmapped
+surface), so frame 0 is what maps the window.
+
 ### Threading
 `pollEvents` and `waitEvents` are UI-thread only. `submit` and `wake` may
-be called from any thread. Backends own a platform thread that produces
-events and runs commands.
+be called from any thread. Wayland and headless own a platform thread
+that produces events; X11 dispatches on the UI thread inside
+`pollEvents`/`waitEvents` (its connection has one reader).
 
 ### Ownership/lifetime
 A `PayloadSlice` in an event stays valid until the next `pollEvents`; one
@@ -485,8 +502,16 @@ thread for that window.
 `importBuffer` does not take ownership of plane fds. A `CpuBuffer` from
 `allocCpuBuffer` is owned by the presenter until `releaseBuffer`.
 
+`present` with `ack = null` (E02's software path) answers the newest
+pending configure on Wayland. On X11 the newest presented buffer stays
+busy (it repaints `Expose` damage) until a newer one is presented, and
+MIT-SHM buffers also until their `ShmCompletion`.
+
 ### Stability
-Experimental until the first OS presenter merges.
+Experimental. Until DRI3/dmabuf (E01.F04.S04.T01, E01.F05.S03.T02) the
+Wayland and X11 presenters are CPU-only (`syncMode() == .cpu_only`,
+`importBuffer` → `error.Unsupported`), so E02 renders with the software
+renderer into `allocCpuBuffer` buffers.
 
 ## zg_platform.headless.Headless and .zgtrace
 
@@ -866,6 +891,60 @@ Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
 `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
+
+## zg_platform.x11.X11Backend
+
+### Defined in
+`packages/platform/src/x11/backend.zig`, with `present.zig` (the CPU
+presenter: MIT-SHM `AttachFd` memfds or core `PutImage`), `keymap.zig`
+(core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
+requests and event codes are in `proto.zig` (E01.F05.S02.T01, first
+part, and the SHM/PutImage half of E01.F05.S03.T02).
+
+### Implemented by
+E01.F05.S02.T01 / E01.F05.S03.T02.
+
+### Consumed by
+`zg_platform.init` on X11 sessions (and as the fallback from an
+unreachable Wayland display); E02's software renderer through
+`surfaceTarget` → `.external` presenter.
+
+### Signature
+```zig
+pub const InitOptions = struct {
+    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=putimage
+    display: ?[]const u8 = null,
+    present: ?present.Path = null,                        // .shm or .put_image; null picks MIT-SHM 1.2 when present
+    refresh_ns: u32 = 16_666_667,                         // frame timer while frames are requested
+};
+pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*X11Backend;
+pub fn platform(b: *X11Backend) Platform;
+pub fn xidOf(b: *X11Backend, win: WindowId) ?u32; // tests
+pub const XvfbForTest = struct { pub fn start(seed: u32) !XvfbForTest; pub fn display(*const XvfbForTest) []const u8; pub fn stop(*XvfbForTest) void };
+```
+Windows map at creation and get `WM_DELETE_WINDOW`, `WM_CLASS =
+zigguro/Zigguro`, `_NET_WM_NAME`, `_NET_WM_PID`, `_NET_WM_WINDOW_TYPE_NORMAL`
+and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
+`_NET_ACTIVE_WINDOW` and `WM_CHANGE_STATE` client messages. The first
+`window_configure` (serial 0) is staged by `createWindow`. Wheel buttons
+4–7 become `scroll` in lines.
+
+### Threading
+No platform thread: the UI thread reads and translates X events in
+`pollEvents` and `waitEvents`. `submit`, `wake` and presenter calls may
+come from any thread (the connection's request queue locks).
+
+### Ownership/lifetime
+A window's presenter and its buffers die with `destroyWindow`; `deinit`
+destroys every window and closes the connection.
+
+### Stability
+Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
+use the core mapping, and auto-repeat arrives as release/press pairs),
+RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
+`_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
+our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
+menu, drag, activation, dialogs and URIs return `error.Unsupported`.
 
 ## zg_config.store.SettingsStore and Snapshot
 

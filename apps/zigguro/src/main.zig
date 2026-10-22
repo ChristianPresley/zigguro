@@ -1,10 +1,12 @@
 //! zigguro: the GUI application (composition root). It handles `--version`
 //! (through zg_release, before the runtime starts), then opens the welcome
-//! window through `zg_gui.Host` on the detected platform backend.
+//! window through `zg_gui.Host` on the detected platform backend (Wayland,
+//! then X11, on Linux; `ZG_PLATFORM` forces one).
 //!
-//! With `ZG_PLATFORM=headless` (or no display) it renders `--frames N`
-//! frames (default 3) on the headless platform and exits, which smoke-tests
-//! the whole UI stack without a display.
+//! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
+//! or when no display can be reached, it renders `--frames N` frames
+//! (default 3) on the headless platform and exits, which smoke-tests the
+//! whole UI stack without a display.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -47,37 +49,57 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var mono: zg_gui.paint.text.MonoText = .{};
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
 
-    if (backend == .headless) {
-        const frames = framesArg(min, rt.gpa) orelse 3;
-        const hl = try zg_platform.headless.Headless.init(rt.gpa, rt.io, .{});
-        defer hl.deinit();
-        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), mono.system(), .{});
+    const frames_arg = framesArg(min, rt.gpa);
+    if (backend != .headless) native: {
+        const platform = zg_platform.init(rt.gpa, rt.io, .{ .environ_map = &env }) catch |err| {
+            try w.print("zigguro {s}: no {t} display ({t}); falling back to the headless platform\n", .{ zg_release.current.version_string, backend, err });
+            try w.flush();
+            break :native;
+        };
+        defer platform.deinit();
+        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, mono.system(), .{});
         defer host.deinit();
-        const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = .of(&welcome) });
-        var drawn: u64 = 0;
-        var i: u32 = 0;
-        while (i < frames) : (i += 1) {
+        const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = .of(&welcome) });
+        // `--frames N` exits after N presented frames (smoke tests,
+        // screenshots); otherwise run until the window closes.
+        const frames = frames_arg orelse {
+            try host.run();
+            return 0;
+        };
+        var seen: u64 = 0;
+        while (host.windows.items.len > 0 and hw.frames < frames) {
             _ = try host.pump();
-            try hl.tick(hl.opts.refresh_ns);
-            _ = try host.pump();
-            drawn = hw.frames;
-            hw.win.themeChanged(false); // force a full repaint next frame
+            if (host.windows.items.len == 0 or hw.frames >= frames) break;
+            if (hw.frames != seen) {
+                seen = hw.frames;
+                hw.win.themeChanged(false); // force a full repaint next frame
+                continue;
+            }
+            platform.waitEvents(null);
         }
-        try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
+        const drawn = if (host.windows.items.len > 0) hw.frames else seen;
+        try w.print("zigguro {s}: rendered {d} frame(s) on the {t} platform\n", .{ zg_release.current.version_string, drawn, backend });
         try w.flush();
         return 0;
     }
 
-    const platform = zg_platform.init(rt.gpa, rt.io, .{ .environ_map = &env }) catch |err| {
-        try w.print("zigguro {s}: the {t} window backend is not available yet ({t}); set ZG_PLATFORM=headless to exercise the UI\n", .{ zg_release.current.version_string, backend, err });
-        try w.flush();
-        return 0;
-    };
-    defer platform.deinit();
-    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, mono.system(), .{});
+    const frames = frames_arg orelse 3;
+    const hl = try zg_platform.headless.Headless.init(rt.gpa, rt.io, .{});
+    defer hl.deinit();
+    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), mono.system(), .{});
     defer host.deinit();
-    _ = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = .of(&welcome) });
-    try host.run();
+    const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = .of(&welcome) });
+    var drawn: u64 = 0;
+    var i: u32 = 0;
+    while (i < frames) : (i += 1) {
+        _ = try host.pump();
+        try hl.tick(hl.opts.refresh_ns);
+        _ = try host.pump();
+        drawn = hw.frames;
+        hw.win.themeChanged(false); // force a full repaint next frame
+    }
+    try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
+    try w.flush();
     return 0;
 }
 

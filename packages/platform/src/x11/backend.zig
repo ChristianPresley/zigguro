@@ -1,0 +1,921 @@
+//! The X11 backend (E01.F05.S02.T01, first part): top-level windows with
+//! ICCCM/EWMH basics (WM_DELETE_WINDOW, WM_CLASS, _NET_WM_NAME, _NET_WM_PID,
+//! WM_NORMAL_HINTS, _NET_WM_STATE requests), core-protocol keyboard and
+//! pointer input, `Xft.dpi` scaling, Expose repaint, and frame pacing from
+//! a refresh-rate timer. Frames reach the window through the CPU presenter
+//! in `present.zig` (MIT-SHM or PutImage).
+//!
+//! Threads: `Conn` reads on one thread only, so this backend has no
+//! platform thread. The UI thread dispatches X events inside `pollEvents`
+//! and `waitEvents`. Any thread may `submit`, `wake` or present; requests
+//! go through the connection's lock. One mutex guards the windows and the
+//! staged events.
+//!
+//! Not yet here (later E01.F05 tasks): XInput2 and XKB keymaps (#245),
+//! RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
+//! selections (#249), DRI3/Present (#251), XDND (#253).
+
+const std = @import("std");
+const Io = std.Io;
+const linux = std.os.linux;
+const Allocator = std.mem.Allocator;
+
+const types = @import("../api/types.zig");
+const event_api = @import("../api/event.zig");
+const window_api = @import("../api/window.zig");
+const surface = @import("../api/surface.zig");
+const clipboard = @import("../api/clipboard.zig");
+const native_api = @import("../api/native.zig");
+const platform_api = @import("../api/platform.zig");
+const PayloadArena = @import("../queue/payload_arena.zig").PayloadArena;
+const Wake = @import("../queue/wake.zig").Wake;
+
+const conn_mod = @import("conn.zig");
+const Conn = conn_mod.Conn;
+const proto = @import("proto.zig");
+const dpi = @import("dpi.zig");
+const Keymap = @import("keymap.zig").Keymap;
+const modsFromState = @import("keymap.zig").modsFromState;
+const present_mod = @import("present.zig");
+const Presenter = present_mod.Presenter;
+
+const Event = event_api.Event;
+const Command = window_api.Command;
+const WindowId = types.WindowId;
+const PxSize = types.PxSize;
+const Platform = platform_api.Platform;
+const Error = platform_api.Error;
+
+const log = std.log.scoped(.x11);
+
+/// Options for `X11Backend.init`.
+pub const InitOptions = struct {
+    /// The environment (`DISPLAY`, `XAUTHORITY`, `ZG_SCALE`,
+    /// `ZG_X11_PRESENT`).
+    environ_map: ?*const std.process.Environ.Map = null,
+    /// Overrides `DISPLAY`.
+    display: ?[]const u8 = null,
+    /// Forces a presenter path; null picks MIT-SHM when available.
+    present: ?present_mod.Path = null,
+    /// Frame interval while frames are requested.
+    refresh_ns: u32 = 16_666_667,
+};
+
+const atom_names = [_][]const u8{
+    "WM_PROTOCOLS",
+    "WM_DELETE_WINDOW",
+    "WM_CHANGE_STATE",
+    "UTF8_STRING",
+    "_NET_WM_NAME",
+    "_NET_WM_PID",
+    "_NET_WM_STATE",
+    "_NET_WM_STATE_MAXIMIZED_VERT",
+    "_NET_WM_STATE_MAXIMIZED_HORZ",
+    "_NET_WM_STATE_FULLSCREEN",
+    "_NET_WM_WINDOW_TYPE",
+    "_NET_WM_WINDOW_TYPE_NORMAL",
+    "_NET_ACTIVE_WINDOW",
+};
+const Atoms = @import("atoms.zig").AtomTable(&atom_names);
+
+/// Events a top-level window listens for.
+const window_events = proto.EventMask.key_press | proto.EventMask.key_release |
+    proto.EventMask.button_press | proto.EventMask.button_release |
+    proto.EventMask.enter_window | proto.EventMask.leave_window |
+    proto.EventMask.pointer_motion | proto.EventMask.exposure |
+    proto.EventMask.visibility_change | proto.EventMask.structure_notify |
+    proto.EventMask.focus_change | proto.EventMask.property_change;
+
+/// Multi-click timing.
+const double_click_ns: u64 = 400 * std.time.ns_per_ms;
+const double_click_px: f32 = 4;
+
+/// One window and its presenter, allocated together so pointers stay put.
+const Window = struct {
+    id: WindowId,
+    xid: u32,
+    gc: u32,
+    size: PxSize,
+    serial: u32 = 0,
+    presenter: Presenter,
+    frame_requested: bool = false,
+    last_frame_ns: u64 = 0,
+    occluded: bool = false,
+    focused: bool = false,
+    maximized: bool = false,
+    fullscreen: bool = false,
+    last_click_ns: u64 = 0,
+    last_click_pos: [2]f32 = .{ -100, -100 },
+    last_click_button: u8 = 0,
+    clicks: u8 = 0,
+};
+
+const ClipItemOwned = struct { mime: clipboard.MimeId, data: []u8 };
+
+/// The X11 backend.
+pub const X11Backend = struct {
+    gpa: Allocator,
+    io: Io,
+    opts: InitOptions,
+    conn: *Conn,
+    atoms: Atoms,
+    keymap: Keymap = .{},
+    scale: f32 = 1.0,
+    path: present_mod.Path,
+    /// The MIT-SHM event base, for ShmCompletion.
+    shm_event: ?u8 = null,
+
+    mutex: Io.Mutex = .init,
+    windows: std.ArrayList(*Window) = .empty,
+    next_win: u32 = 1,
+    staged: std.ArrayList(Event) = .empty,
+    clip: [2][]ClipItemOwned = .{ &.{}, &.{} },
+
+    arena: PayloadArena,
+    ui_wake: Wake,
+    wake_pending: std.atomic.Value(bool) = .init(false),
+    /// Set when the connection failed.
+    dead: bool = false,
+    hooks: native_api.NativeHooks,
+
+    /// Connects, reads the keyboard mapping and scale, and picks the
+    /// presenter path.
+    pub fn init(gpa: Allocator, io: Io, opts: InitOptions) !*X11Backend {
+        var empty_env: std.process.Environ.Map = .init(gpa);
+        defer empty_env.deinit();
+        const env = opts.environ_map orelse &empty_env;
+        const conn = try Conn.connect(gpa, io, env, .{ .display = opts.display });
+        errdefer conn.deinit();
+        var arena = try PayloadArena.init(gpa);
+        errdefer arena.deinit(gpa);
+        var ui_wake = try Wake.init(io);
+        errdefer ui_wake.deinit();
+
+        const b = try gpa.create(X11Backend);
+        errdefer gpa.destroy(b);
+        b.* = .{
+            .gpa = gpa,
+            .io = io,
+            .opts = opts,
+            .conn = conn,
+            .atoms = try conn.internAtoms(&atom_names),
+            .path = .put_image,
+            .arena = arena,
+            .ui_wake = ui_wake,
+            .hooks = .{
+                .ptr = b,
+                .win32SetMessageHook = noHook,
+                .win32CreateMessageWindow = noMsgWindow,
+                .win32DestroyMessageWindow = noDestroy,
+                .windowHandle = windowHandle,
+            },
+        };
+        try b.loadKeymap();
+        errdefer b.keymap.deinit(gpa);
+        b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
+        const shm_ok = b.shmUsable();
+        b.path = b.pickPath(env, shm_ok);
+        log.info("X11 display ready: {d}x{d}, scale {d}, presenting with {t}", .{ conn.screen().width_px, conn.screen().height_px, b.scale, b.path });
+        return b;
+    }
+
+    fn loadKeymap(b: *X11Backend) !void {
+        const s = &b.conn.setup;
+        const count: u8 = s.max_keycode - s.min_keycode + 1;
+        const r = try b.conn.reply(try b.conn.request(proto.GetKeyboardMapping, .{ .first_keycode = s.min_keycode, .count = count }, &.{}));
+        const km = try Keymap.init(b.gpa, s.min_keycode, r.keysyms_per_keycode, r.keysyms);
+        b.keymap.deinit(b.gpa);
+        b.keymap = km;
+    }
+
+    fn readXftScale(b: *X11Backend) f32 {
+        const ck = b.conn.request(proto.GetProperty, .{ .window = b.conn.screen().root, .property = proto.Atom.resource_manager, .type = proto.Atom.string }, &.{}) catch return 1.0;
+        const r = b.conn.reply(ck) catch return 1.0;
+        const d = dpi.parseXftDpi(r.value) orelse return 1.0;
+        return dpi.scaleForDpi(d);
+    }
+
+    fn pickPath(b: *X11Backend, env: *const std.process.Environ.Map, shm_ok: bool) present_mod.Path {
+        if (b.opts.present) |p| return if (p == .shm and !shm_ok) .put_image else p;
+        if (env.get("ZG_X11_PRESENT")) |v| {
+            if (std.mem.eql(u8, v, "putimage")) return .put_image;
+        }
+        return if (shm_ok) .shm else .put_image;
+    }
+
+    fn shmUsable(b: *X11Backend) bool {
+        const info = b.conn.extension("MIT-SHM") orelse return false;
+        const v = b.conn.reply(b.conn.request(proto.ShmQueryVersion, .{}, &.{}) catch return false) catch return false;
+        if (v.major < 1 or (v.major == 1 and v.minor < 2)) return false;
+        b.shm_event = info.first_event;
+        return true;
+    }
+
+    /// The type-erased interface.
+    pub fn platform(b: *X11Backend) Platform {
+        return Platform.fromImpl(X11Backend, b);
+    }
+
+    fn lock(b: *X11Backend) void {
+        b.mutex.lockUncancelable(b.io);
+    }
+    fn unlock(b: *X11Backend) void {
+        b.mutex.unlock(b.io);
+    }
+
+    fn nowNs(b: *X11Backend) u64 {
+        return @intCast(@max(0, Io.Clock.awake.now(b.io).nanoseconds));
+    }
+
+    fn find(b: *X11Backend, id: WindowId) ?*Window {
+        for (b.windows.items) |w| if (w.id == id) return w;
+        return null;
+    }
+
+    fn byXid(b: *X11Backend, xid: u32) ?*Window {
+        for (b.windows.items) |w| if (w.xid == xid) return w;
+        return null;
+    }
+
+    fn stage(b: *X11Backend, ev: Event) void {
+        b.staged.append(b.gpa, ev) catch log.warn("event dropped: out of memory", .{});
+    }
+
+    // ---- Platform.VTable ----
+
+    /// See `Platform.VTable.createWindow`. The window maps at once; its
+    /// background stays untouched (no flash) until the first present.
+    pub fn createWindow(b: *X11Backend, opts: window_api.WindowOptions) Error!WindowId {
+        const c = b.conn;
+        const s = c.screen();
+        const w = b.gpa.create(Window) catch return error.OutOfMemory;
+        errdefer b.gpa.destroy(w);
+        const xid = c.newXid() catch return error.SystemResources;
+        const gc = c.newXid() catch return error.SystemResources;
+        const size: PxSize = .{ .w = std.math.clamp(opts.size.w, 1, 16384), .h = std.math.clamp(opts.size.h, 1, 16384) };
+        b.lock();
+        defer b.unlock();
+        const id: WindowId = @enumFromInt(b.next_win);
+        b.next_win += 1;
+        w.* = .{ .id = id, .xid = xid, .gc = gc, .size = size, .presenter = .init(b.gpa, b.io, c, b.path, xid, gc, s.root_depth, id) };
+        w.presenter.bind();
+        b.createX(w, opts) catch return error.SystemResources;
+        b.windows.append(b.gpa, w) catch {
+            _ = c.request(proto.DestroyWindow, .{ .window = xid }, &.{}) catch {};
+            return error.OutOfMemory;
+        };
+        b.stage(.{ .window_configure = .{ .win = id, .size = size, .scale = .{ .factor = b.scale }, .state = .{}, .serial = 0, .screen_origin_px = null } });
+        return id;
+    }
+
+    fn createX(b: *X11Backend, w: *Window, opts: window_api.WindowOptions) !void {
+        const c = b.conn;
+        const s = c.screen();
+        _ = try c.request(proto.CreateWindow, .{
+            .data = s.root_depth,
+            .wid = w.xid,
+            .parent = s.root,
+            .x = 0,
+            .y = 0,
+            .width = @intCast(w.size.w),
+            .height = @intCast(w.size.h),
+            .visual = s.root_visual,
+            .values = .{
+                .values = .{
+                    .background_pixmap = 0,
+                    .border_pixel = 0,
+                    .bit_gravity = 1, // NorthWest: keep pixels on resize
+                    .event_mask = window_events,
+                    .colormap = s.default_colormap,
+                },
+            },
+        }, &.{});
+        _ = try c.request(proto.CreateGC, .{ .cid = w.gc, .drawable = w.xid, .values = .{ .values = .{ .graphics_exposures = 0 } } }, &.{});
+        const a = &b.atoms;
+        try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
+        try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
+        try b.setTitle(w.xid, opts.title);
+        // WM_CLASS must match the desktop file's StartupWMClass (E17).
+        try b.setProp(w.xid, proto.Atom.wm_class, proto.Atom.string, 8, "zigguro\x00Zigguro\x00");
+        var pid: [4]u8 = undefined;
+        std.mem.writeInt(u32, &pid, @intCast(linux.getpid()), .little);
+        try b.setProp(w.xid, a.get("_NET_WM_PID"), proto.Atom.cardinal, 32, &pid);
+        if (opts.min_size) |m| try b.setMinSize(w.xid, m);
+        _ = try c.request(proto.MapWindow, .{ .window = w.xid }, &.{});
+        try c.flush();
+    }
+
+    fn setProp(b: *X11Backend, xid: u32, prop: u32, ty: u32, format: u8, bytes: []const u8) !void {
+        _ = try b.conn.request(proto.ChangeProperty, .{ .window = xid, .property = prop, .type = ty, .format = format, .length = @intCast(bytes.len / (format / 8)), .bytes = bytes }, &.{});
+    }
+
+    fn setAtoms(b: *X11Backend, xid: u32, prop: u32, atoms: []const u32) !void {
+        var buf: [16]u8 = undefined;
+        for (atoms, 0..) |x, i| std.mem.writeInt(u32, buf[i * 4 ..][0..4], x, .little);
+        try b.setProp(xid, prop, proto.Atom.atom, 32, buf[0 .. atoms.len * 4]);
+    }
+
+    fn setTitle(b: *X11Backend, xid: u32, title: []const u8) !void {
+        try b.setProp(xid, b.atoms.get("_NET_WM_NAME"), b.atoms.get("UTF8_STRING"), 8, title);
+        try b.setProp(xid, proto.Atom.wm_name, proto.Atom.string, 8, title);
+    }
+
+    fn setMinSize(b: *X11Backend, xid: u32, m: PxSize) !void {
+        // WM_SIZE_HINTS: 18 longs; PMinSize (16) with min at longs 5 and 6.
+        var hints: [18 * 4]u8 = @splat(0);
+        std.mem.writeInt(u32, hints[0..4], 16, .little);
+        std.mem.writeInt(u32, hints[20..24], m.w, .little);
+        std.mem.writeInt(u32, hints[24..28], m.h, .little);
+        try b.setProp(xid, proto.Atom.wm_normal_hints, proto.Atom.wm_size_hints, 32, &hints);
+    }
+
+    /// See `Platform.VTable.destroyWindow`.
+    pub fn destroyWindow(b: *X11Backend, win: WindowId) void {
+        b.lock();
+        defer b.unlock();
+        for (b.windows.items, 0..) |w, i| if (w.id == win) {
+            _ = b.windows.swapRemove(i);
+            b.destroyX(w);
+            return;
+        };
+    }
+
+    fn destroyX(b: *X11Backend, w: *Window) void {
+        w.presenter.deinit();
+        _ = b.conn.request(proto.FreeGC, .{ .gc = w.gc }, &.{}) catch {};
+        _ = b.conn.request(proto.DestroyWindow, .{ .window = w.xid }, &.{}) catch {};
+        b.conn.flush() catch {};
+        b.gpa.destroy(w);
+    }
+
+    /// See `Platform.VTable.submit`. Commands apply at once (the
+    /// connection is thread-safe); frame requests wake `waitEvents`.
+    pub fn submit(b: *X11Backend, cmd: Command) Error!void {
+        b.lock();
+        defer b.unlock();
+        b.run(cmd) catch |err| return switch (err) {
+            error.InvalidWindow, error.Unsupported, error.OutOfMemory => |e| e,
+            else => error.SystemResources,
+        };
+        b.conn.flush() catch return error.SystemResources;
+    }
+
+    fn lookup(b: *X11Backend, id: WindowId) error{InvalidWindow}!*Window {
+        return b.find(id) orelse error.InvalidWindow;
+    }
+
+    fn run(b: *X11Backend, cmd: Command) !void {
+        switch (cmd) {
+            .set_title => |t| try b.setTitle((try b.lookup(t.win)).xid, t.title),
+            // Cursors, the IME and hit-testing come with later E01.F05
+            // tasks; the window must exist.
+            .set_cursor => |t| _ = try b.lookup(t.win),
+            .set_ime_state => |t| _ = try b.lookup(t.win),
+            .set_hit_test => |t| _ = try b.lookup(t.win),
+            .set_min_size => |t| try b.setMinSize((try b.lookup(t.win)).xid, t.size),
+            .request_state => |t| {
+                const w = try b.lookup(t.win);
+                const a = &b.atoms;
+                switch (t.op) {
+                    .show => try b.sendRoot(w.xid, a.get("_NET_ACTIVE_WINDOW"), .{ 1, 0, 0, 0, 0 }),
+                    .maximize, .unmaximize => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .maximize), a.get("_NET_WM_STATE_MAXIMIZED_VERT"), a.get("_NET_WM_STATE_MAXIMIZED_HORZ"), 1, 0 }),
+                    .fullscreen, .unfullscreen => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .fullscreen), a.get("_NET_WM_STATE_FULLSCREEN"), 0, 1, 0 }),
+                    .minimize => try b.sendRoot(w.xid, a.get("WM_CHANGE_STATE"), .{ 3, 0, 0, 0, 0 }), // IconicState
+                }
+            },
+            .request_frame => |win| {
+                const w = try b.lookup(win);
+                w.frame_requested = true;
+                b.ui_wake.signal();
+            },
+            .clipboard_write => |t| {
+                const items = try b.gpa.alloc(ClipItemOwned, t.items.len);
+                var done: usize = 0;
+                errdefer {
+                    for (items[0..done]) |it| b.gpa.free(it.data);
+                    b.gpa.free(items);
+                }
+                for (t.items, 0..) |it, i| {
+                    items[i] = .{ .mime = it.mime, .data = try b.gpa.dupe(u8, it.data) };
+                    done = i + 1;
+                }
+                freeClip(b.gpa, b.clip[@intFromEnum(t.which)]);
+                b.clip[@intFromEnum(t.which)] = items;
+            },
+            .clipboard_read => |t| {
+                // Only our own selection until X11 selections (E01.F05.S03.T01).
+                var data: types.PayloadSlice = .empty;
+                for (b.clip[@intFromEnum(t.which)]) |it| if (it.mime == t.mime) {
+                    data = b.arena.put(it.data) catch .empty;
+                    break;
+                };
+                b.stage(.{ .clipboard_data = .{ .request = t.request, .data = data, .mime = t.mime } });
+                b.ui_wake.signal();
+            },
+            .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+        }
+    }
+
+    /// Sends an EWMH client message about `xid` to the root window.
+    fn sendRoot(b: *X11Backend, xid: u32, msg_type: u32, data: [5]u32) !void {
+        var ev: [32]u8 = @splat(0);
+        ev[0] = proto.EventCode.client_message;
+        ev[1] = 32;
+        std.mem.writeInt(u32, ev[4..8], xid, .little);
+        std.mem.writeInt(u32, ev[8..12], msg_type, .little);
+        for (data, 0..) |d, i| std.mem.writeInt(u32, ev[12 + i * 4 ..][0..4], d, .little);
+        _ = try b.conn.request(proto.SendEvent, .{
+            .destination = b.conn.screen().root,
+            .event_mask = proto.EventMask.substructure_notify | proto.EventMask.substructure_redirect,
+            .event = ev,
+        }, &.{});
+    }
+
+    /// See `Platform.VTable.surfaceTarget`: E02 presents through the
+    /// window's CPU presenter until DRI3 lands.
+    pub fn surfaceTarget(b: *X11Backend, win: WindowId) Error!surface.SurfaceTarget {
+        return .{ .external = try b.cpuPresenter(win) };
+    }
+
+    /// See `Platform.VTable.cpuPresenter`.
+    pub fn cpuPresenter(b: *X11Backend, win: WindowId) Error!*surface.Presenter {
+        b.lock();
+        defer b.unlock();
+        const w = b.find(win) orelse return error.InvalidWindow;
+        return &w.presenter.presenter;
+    }
+
+    /// See `Platform.VTable.native`.
+    pub fn native(b: *X11Backend) *const native_api.NativeHooks {
+        return &b.hooks;
+    }
+
+    /// See `Platform.VTable.payload`.
+    pub fn payload(b: *X11Backend, s: types.PayloadSlice) []const u8 {
+        if (s.large) return &.{};
+        return b.arena.get(s);
+    }
+
+    /// See `Platform.VTable.release`. No large payloads yet.
+    pub fn release(_: *X11Backend, _: types.PayloadSlice) void {}
+
+    /// See `Platform.VTable.monitors`: the screen, until RandR monitors.
+    pub fn monitors(b: *X11Backend, out: []types.MonitorInfo) usize {
+        const s = b.conn.screen();
+        if (out.len > 0) {
+            const r: types.PxRect = .{ .x = 0, .y = 0, .w = s.width_px, .h = s.height_px };
+            out[0] = .{ .id = 0, .rect_px = r, .work_px = r, .scale = .{ .factor = b.scale }, .refresh_mhz = @intCast(@divTrunc(std.time.ns_per_s * 1000, @as(u64, b.opts.refresh_ns))), .primary = true };
+            const name = "X11 screen";
+            @memcpy(out[0].name_buf[0..name.len], name);
+            out[0].name_len = name.len;
+        }
+        return 1;
+    }
+
+    /// See `Platform.VTable.pollEvents`. Reads the X socket first.
+    pub fn pollEvents(b: *X11Backend, out: []Event) usize {
+        if (out.len == 0) return 0;
+        _ = b.arena.flip();
+        b.dispatch();
+        var n: usize = 0;
+        if (b.wake_pending.swap(false, .acquire)) {
+            out[0] = .wake;
+            n = 1;
+        }
+        b.lock();
+        defer b.unlock();
+        b.dueFrames(b.nowNs());
+        const take = @min(out.len - n, b.staged.items.len);
+        for (b.staged.items[0..take], 0..) |e, i| {
+            out[n + i] = e;
+            b.arena.retire(&e);
+        }
+        b.staged.replaceRangeAssumeCapacity(0, take, &.{});
+        return n + take;
+    }
+
+    /// Stages `frame` for windows whose request is due. Mutex held.
+    fn dueFrames(b: *X11Backend, now: u64) void {
+        for (b.windows.items) |w| {
+            if (!w.frame_requested) continue;
+            if (now < w.last_frame_ns + b.opts.refresh_ns) continue;
+            w.frame_requested = false;
+            w.last_frame_ns = now;
+            b.stage(.{ .frame = .{ .win = w.id, .target_ns = now + b.opts.refresh_ns, .refresh_ns = b.opts.refresh_ns } });
+        }
+    }
+
+    /// The earliest due frame, if any is requested. Mutex held.
+    fn nextFrameNs(b: *X11Backend) ?u64 {
+        var next: ?u64 = null;
+        for (b.windows.items) |w| if (w.frame_requested) {
+            const t = w.last_frame_ns + b.opts.refresh_ns;
+            next = if (next) |x| @min(x, t) else t;
+        };
+        return next;
+    }
+
+    /// See `Platform.VTable.waitEvents`.
+    pub fn waitEvents(b: *X11Backend, deadline_ns: ?u64) void {
+        while (true) {
+            b.dispatch();
+            const now = b.nowNs();
+            var until = deadline_ns;
+            {
+                b.lock();
+                defer b.unlock();
+                if (b.staged.items.len > 0) return;
+                if (b.nextFrameNs()) |t| until = if (until) |d| @min(d, t) else t;
+            }
+            if (b.wake_pending.load(.acquire)) return;
+            if (until) |u| if (now >= u) return;
+            b.conn.flush() catch {};
+            var fds = [_]linux.pollfd{
+                .{ .fd = b.conn.pollFd(), .events = linux.POLL.IN, .revents = 0 },
+                .{ .fd = b.ui_wake.handle().fd, .events = linux.POLL.IN, .revents = 0 },
+            };
+            const nfds: usize = if (b.dead) 1 else 2;
+            const timeout_ms: i32 = if (until) |u| @intCast(@min((u - now + std.time.ns_per_ms - 1) / std.time.ns_per_ms, std.math.maxInt(i32))) else -1;
+            const rc = linux.poll(if (b.dead) fds[1..].ptr else &fds, nfds, timeout_ms);
+            if (linux.errno(rc) != .SUCCESS) return;
+            if (fds[1].revents != 0) b.ui_wake.consume();
+            // Loop: dispatch, then return once something is staged or due.
+        }
+    }
+
+    /// See `Platform.VTable.wake`.
+    pub fn wake(b: *X11Backend) void {
+        b.wake_pending.store(true, .release);
+        b.ui_wake.signal();
+    }
+
+    /// See `Platform.VTable.deinit`.
+    pub fn deinit(b: *X11Backend) void {
+        b.lock();
+        for (b.windows.items) |w| b.destroyX(w);
+        b.windows.deinit(b.gpa);
+        b.unlock();
+        b.staged.deinit(b.gpa);
+        for (&b.clip) |items| freeClip(b.gpa, items);
+        b.keymap.deinit(b.gpa);
+        b.conn.deinit();
+        b.arena.deinit(b.gpa);
+        b.ui_wake.deinit();
+        b.gpa.destroy(b);
+    }
+
+    // ---- event dispatch (UI thread) ----
+
+    /// Translates every X event the socket has.
+    fn dispatch(b: *X11Backend) void {
+        if (b.dead) return;
+        while (true) {
+            const ev = b.conn.pollEvent() catch |err| {
+                log.err("X connection lost: {t}", .{err});
+                b.dead = true;
+                b.lock();
+                for (b.windows.items) |w| b.stage(.{ .window_close_requested = w.id });
+                b.unlock();
+                return;
+            } orelse return;
+            b.lock();
+            defer b.unlock();
+            b.translate(ev);
+        }
+    }
+
+    fn translate(b: *X11Backend, ev: []const u8) void {
+        const code = ev[0] & 0x7f;
+        if (b.shm_event) |base| if (code == base) {
+            const drawable = u32At(ev, 4);
+            if (b.byXid(drawable)) |w| _ = w.presenter.onShmCompletion(u32At(ev, 12));
+            return;
+        };
+        switch (code) {
+            proto.EventCode.key_press, proto.EventCode.key_release => b.onKey(ev, code == proto.EventCode.key_press),
+            proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
+            proto.EventCode.motion_notify => {
+                const w = b.byXid(u32At(ev, 12)) orelse return;
+                b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = eventPos(ev), .mods = modsFromState(u16At(ev, 28)), .time_ns = b.nowNs() } });
+            },
+            proto.EventCode.enter_notify, proto.EventCode.leave_notify => {
+                const w = b.byXid(u32At(ev, 12)) orelse return;
+                b.stage(.{ .pointer_enter_leave = .{ .win = w.id, .entered = code == proto.EventCode.enter_notify } });
+            },
+            proto.EventCode.focus_in, proto.EventCode.focus_out => {
+                const w = b.byXid(u32At(ev, 4)) orelse return;
+                // NotifyPointer (5) and beyond are pointer-root noise.
+                if (ev[1] >= 5) return;
+                const focused = code == proto.EventCode.focus_in;
+                if (w.focused == focused) return;
+                w.focused = focused;
+                b.stage(.{ .window_focus = .{ .win = w.id, .focused = focused } });
+            },
+            proto.EventCode.expose => {
+                const w = b.byXid(u32At(ev, 4)) orelse return;
+                const r: types.PxRect = .{ .x = u16At(ev, 8), .y = u16At(ev, 10), .w = u16At(ev, 12), .h = u16At(ev, 14) };
+                // Repaint from the newest buffer; before the first present
+                // the window needs a frame anyway.
+                if (!w.presenter.repaint(r)) w.frame_requested = true;
+            },
+            proto.EventCode.visibility_notify => {
+                const w = b.byXid(u32At(ev, 4)) orelse return;
+                b.setOccluded(w, ev[8] == 2); // FullyObscured
+            },
+            proto.EventCode.unmap_notify => if (b.byXid(u32At(ev, 8))) |w| b.setOccluded(w, true),
+            proto.EventCode.map_notify => if (b.byXid(u32At(ev, 8))) |w| b.setOccluded(w, false),
+            proto.EventCode.configure_notify => {
+                const w = b.byXid(u32At(ev, 8)) orelse return;
+                const size: PxSize = .{ .w = u16At(ev, 20), .h = u16At(ev, 22) };
+                if (size.w == 0 or size.h == 0 or (size.w == w.size.w and size.h == w.size.h)) return;
+                w.size = size;
+                w.serial +%= 1;
+                b.stage(.{ .window_configure = .{ .win = w.id, .size = size, .scale = .{ .factor = b.scale }, .state = .{ .maximized = w.maximized, .fullscreen = w.fullscreen, .activated = w.focused }, .serial = w.serial, .screen_origin_px = .{ .x = @as(i16, @bitCast(u16At(ev, 16))), .y = @as(i16, @bitCast(u16At(ev, 18))) } } });
+            },
+            proto.EventCode.client_message => {
+                const w = b.byXid(u32At(ev, 4)) orelse return;
+                if (u32At(ev, 8) == b.atoms.get("WM_PROTOCOLS") and u32At(ev, 12) == b.atoms.get("WM_DELETE_WINDOW")) {
+                    b.stage(.{ .window_close_requested = w.id });
+                }
+            },
+            proto.EventCode.mapping_notify => if (ev[4] == 1) {
+                // MappingKeyboard: refetch. The reply may queue more events;
+                // the dispatch loop picks them up.
+                b.loadKeymap() catch |err| log.warn("keyboard mapping refresh failed: {t}", .{err});
+            },
+            else => {},
+        }
+    }
+
+    fn setOccluded(b: *X11Backend, w: *Window, occluded: bool) void {
+        if (w.occluded == occluded) return;
+        w.occluded = occluded;
+        b.stage(.{ .window_occluded = .{ .win = w.id, .occluded = occluded } });
+    }
+
+    fn onKey(b: *X11Backend, ev: []const u8, pressed: bool) void {
+        const w = b.byXid(u32At(ev, 12)) orelse return;
+        const keycode = ev[1];
+        const state = u16At(ev, 28);
+        const r = b.keymap.resolve(keycode, state);
+        var text: types.PayloadSlice = .empty;
+        if (pressed and r.codepoint != 0) {
+            var buf: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(r.codepoint, &buf) catch 0;
+            text = b.arena.put(buf[0..n]) catch .empty;
+        }
+        b.stage(.{ .key = .{ .win = w.id, .ev = .{
+            .key = r.key,
+            .keysym = r.keysym,
+            .codepoint = r.codepoint,
+            .mods = modsFromState(state),
+            .action = if (pressed) .press else .release,
+            .text = text,
+            .native_scancode = if (keycode >= 8) keycode - 8 else 0,
+            .time_ns = b.nowNs(),
+        } } });
+    }
+
+    fn onButton(b: *X11Backend, ev: []const u8, pressed: bool) void {
+        const w = b.byXid(u32At(ev, 12)) orelse return;
+        const detail = ev[1];
+        const pos = eventPos(ev);
+        const mods = modsFromState(u16At(ev, 28));
+        const now = b.nowNs();
+        switch (detail) {
+            4, 5, 6, 7 => {
+                if (!pressed) return;
+                const d: f32 = if (detail == 4 or detail == 6) -1 else 1;
+                const vertical = detail <= 5;
+                b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else d, .dy = if (vertical) d else 0, .unit = .lines, .source = .wheel, .phase = .none } });
+                return;
+            },
+            else => {},
+        }
+        const button: types.Button = switch (detail) {
+            1 => .left,
+            2 => .middle,
+            3 => .right,
+            8 => .back,
+            9 => .forward,
+            else => @enumFromInt(detail),
+        };
+        if (pressed) {
+            const near = @abs(pos[0] - w.last_click_pos[0]) <= double_click_px and @abs(pos[1] - w.last_click_pos[1]) <= double_click_px;
+            if (detail == w.last_click_button and near and now - w.last_click_ns <= double_click_ns and w.clicks < 3) w.clicks += 1 else w.clicks = 1;
+            w.last_click_ns = now;
+            w.last_click_pos = pos;
+            w.last_click_button = detail;
+        }
+        b.stage(.{ .pointer_button = .{ .win = w.id, .button = button, .pressed = pressed, .pos_px = pos, .mods = mods, .clicks = if (pressed) w.clicks else 0, .time_ns = now } });
+    }
+
+    // ---- native hooks ----
+
+    fn noHook(_: *anyopaque, _: WindowId, _: []const u32, _: ?native_api.Win32MsgHook, _: *anyopaque) error{Unsupported}!void {
+        return error.Unsupported;
+    }
+
+    fn noMsgWindow(_: *anyopaque, _: native_api.Win32MsgHook, _: *anyopaque) error{ Unsupported, SystemResources }!*anyopaque {
+        return error.Unsupported;
+    }
+
+    fn noDestroy(_: *anyopaque, _: *anyopaque) void {}
+
+    fn windowHandle(ctx: *anyopaque, win: WindowId) native_api.NativeWindow {
+        const b: *X11Backend = @ptrCast(@alignCast(ctx));
+        b.lock();
+        defer b.unlock();
+        return if (b.find(win)) |w| .{ .x11 = w.xid } else .headless;
+    }
+
+    // ---- test access ----
+
+    /// The X window id of `win`, for tests that inspect the server.
+    pub fn xidOf(b: *X11Backend, win: WindowId) ?u32 {
+        b.lock();
+        defer b.unlock();
+        return if (b.find(win)) |w| w.xid else null;
+    }
+};
+
+fn freeClip(gpa: Allocator, items: []ClipItemOwned) void {
+    for (items) |it| gpa.free(it.data);
+    gpa.free(items);
+}
+
+fn u16At(b: []const u8, at: usize) u16 {
+    return std.mem.readInt(u16, b[at..][0..2], .little);
+}
+fn u32At(b: []const u8, at: usize) u32 {
+    return std.mem.readInt(u32, b[at..][0..4], .little);
+}
+
+/// The event-window position of a key, button or motion event.
+fn eventPos(ev: []const u8) [2]f32 {
+    return .{ @floatFromInt(@as(i16, @bitCast(u16At(ev, 24)))), @floatFromInt(@as(i16, @bitCast(u16At(ev, 26)))) };
+}
+
+// ---- tests (on a private Xvfb; skipped without one) ----
+
+const testing = std.testing;
+const conformance = @import("../testing/conformance.zig");
+
+/// A private Xvfb; an absent Xvfb skips. `-noreset` keeps the server up
+/// between clients (by default it regenerates when the last one leaves,
+/// and a client connecting then fails its handshake).
+pub const XvfbForTest = struct {
+    child: std.process.Child,
+    name_buf: [16]u8,
+    name_len: usize,
+    sock_buf: [32]u8,
+    sock_len: usize,
+
+    /// Starts Xvfb on a display number derived from `seed` and the pid.
+    pub fn start(seed: u32) !XvfbForTest {
+        var x: XvfbForTest = undefined;
+        const n = 450 + (seed * 37 + @as(u32, @intCast(linux.getpid()))) % 400;
+        x.name_len = (try std.fmt.bufPrint(&x.name_buf, ":{d}", .{n})).len;
+        x.sock_len = (try std.fmt.bufPrint(&x.sock_buf, "/tmp/.X11-unix/X{d}", .{n})).len;
+        x.child = try std.process.spawn(testing.io, .{
+            .argv = &.{ "Xvfb", x.display(), "-nolisten", "tcp", "-noreset", "-screen", "0", "640x480x24" },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        errdefer x.child.kill(testing.io);
+        var tries: usize = 0;
+        while (tries < 300) : (tries += 1) {
+            if (Io.Dir.cwd().access(testing.io, x.sock_buf[0..x.sock_len], .{})) |_| return x else |_| {}
+            try testing.io.sleep(.fromMilliseconds(10), .awake);
+        }
+        return error.XvfbDidNotStart;
+    }
+
+    /// The `DISPLAY` value.
+    pub fn display(x: *const XvfbForTest) []const u8 {
+        return x.name_buf[0..x.name_len];
+    }
+
+    /// Stops Xvfb.
+    pub fn stop(x: *XvfbForTest) void {
+        x.child.kill(testing.io);
+    }
+};
+
+const Harness = struct {
+    io: Io,
+    display: []const u8,
+    path: present_mod.Path = .shm,
+    current: ?*X11Backend = null,
+
+    /// A fresh backend on the harness display.
+    pub fn create(h: *Harness) !Platform {
+        const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = h.display, .present = h.path });
+        h.current = b;
+        return b.platform();
+    }
+
+    /// Sends WM_DELETE_WINDOW from a second client, as a window manager would.
+    pub fn requestClose(h: *Harness, win: WindowId) !void {
+        const b = h.current.?;
+        const xid = b.xidOf(win) orelse return error.InvalidWindow;
+        var ev: [32]u8 = @splat(0);
+        ev[0] = proto.EventCode.client_message;
+        ev[1] = 32;
+        std.mem.writeInt(u32, ev[4..8], xid, .little);
+        std.mem.writeInt(u32, ev[8..12], b.atoms.get("WM_PROTOCOLS"), .little);
+        std.mem.writeInt(u32, ev[12..16], b.atoms.get("WM_DELETE_WINDOW"), .little);
+        var env: std.process.Environ.Map = .init(testing.allocator);
+        defer env.deinit();
+        const other = try Conn.connect(testing.allocator, testing.io, &env, .{ .display = h.display });
+        defer other.deinit();
+        try other.checked(proto.SendEvent, .{ .destination = xid, .event_mask = 0, .event = ev }, &.{});
+    }
+};
+
+test "Xvfb conformance (MIT-SHM and PutImage)" {
+    var x = XvfbForTest.start(1) catch return error.SkipZigTest;
+    defer x.stop();
+    for ([_]present_mod.Path{ .shm, .put_image }) |path| {
+        var h: Harness = .{ .io = testing.io, .display = x.display(), .path = path };
+        try conformance.runConformance(Harness, &h);
+    }
+}
+
+/// Waits for an event matching `kind` for `win`.
+fn waitFor(p: Platform, comptime kind: Event.Tag, win: WindowId) !Event {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == kind and e.window() == win) return e;
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+test "Xvfb: presented pixels read back with GetImage on both paths" {
+    var x = XvfbForTest.start(2) catch return error.SkipZigTest;
+    defer x.stop();
+    for ([_]present_mod.Path{ .shm, .put_image }) |path| {
+        const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display(), .present = path });
+        defer b.deinit();
+        try testing.expectEqual(path, b.path);
+        const p = b.platform();
+        const win = try p.createWindow(.{ .title = "zg present", .size = .{ .w = 64, .h = 48 } });
+        _ = try waitFor(p, .window_configure, win);
+        try p.submit(.{ .request_frame = win });
+        _ = try waitFor(p, .frame, win);
+
+        const pr = try p.cpuPresenter(win);
+        const buf = try pr.allocCpuBuffer(64, 48, present_mod.fourcc_argb8888);
+        var y: usize = 0;
+        while (y < 48) : (y += 1) {
+            const row = buf.pixels[y * buf.stride ..][0 .. 64 * 4];
+            var i: usize = 0;
+            while (i < 64) : (i += 1) {
+                // Left half orange, right half teal (B, G, R, A in memory).
+                const c: [4]u8 = if (i < 32) .{ 0x10, 0x80, 0xf0, 0xff } else .{ 0x90, 0x90, 0x10, 0xff };
+                @memcpy(row[i * 4 ..][0..4], &c);
+            }
+        }
+        try pr.present(buf.handle, &.{}, .none, null);
+        // A round trip on our connection: the server has drawn by then.
+        try b.conn.sync();
+        const img = try b.conn.reply(try b.conn.request(proto.GetImage, .{ .drawable = b.xidOf(win).?, .x = 0, .y = 0, .width = 64, .height = 48 }, &.{}));
+        try testing.expectEqual(@as(usize, 64 * 48 * 4), img.pixels.len);
+        try testing.expectEqualSlices(u8, &.{ 0x10, 0x80, 0xf0 }, img.pixels[0..3]);
+        try testing.expectEqualSlices(u8, &.{ 0x90, 0x90, 0x10 }, img.pixels[(47 * 64 + 63) * 4 ..][0..3]);
+        p.destroyWindow(win);
+    }
+}
+
+test "Xvfb: a newer present releases the older buffer" {
+    var x = XvfbForTest.start(3) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg release", .size = .{ .w = 16, .h = 16 } });
+    const pr = try p.cpuPresenter(win);
+    const a = try pr.allocCpuBuffer(16, 16, present_mod.fourcc_argb8888);
+    const c = try pr.allocCpuBuffer(16, 16, present_mod.fourcc_argb8888);
+    try pr.present(a.handle, &.{}, .none, null);
+    try pr.present(c.handle, &.{.{ .x = 0, .y = 0, .w = 4, .h = 4 }}, .none, null);
+    var got: [4]surface.BufferHandle = undefined;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var n: usize = 0;
+    while (n == 0) {
+        var evs: [16]Event = undefined;
+        _ = p.pollEvents(&evs);
+        n = pr.pollReleased(&got);
+        if (n != 0) break;
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        // Completions are not events: poll in short steps.
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqual(a.handle, got[0]);
+}
