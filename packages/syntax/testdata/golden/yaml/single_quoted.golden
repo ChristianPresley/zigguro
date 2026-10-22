@@ -1,0 +1,5 @@
+1| property:a punctuation.delimiter:: string:'simple'
+2| property:b punctuation.delimiter:: string:'it string.escape:'' string:s quoted'
+3| property:c punctuation.delimiter:: string:'spans
+4| string:  lines'
+5| property:d punctuation.delimiter:: string:'\n is literal'
