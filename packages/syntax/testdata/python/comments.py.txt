@@ -1,0 +1,5 @@
+# a comment
+x = 1  # trailing comment
+# comment with "string" and 'quotes'
+#!not a shebang here
+y = "#notcomment"  # real comment
