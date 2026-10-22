@@ -1485,9 +1485,11 @@ Stable for E04/E03 consumers; additive changes only.
 `packages/gui/src/paint/canvas.zig` (E04.F04; decision in ADR 0009).
 
 ### Implemented by
-`zg_gui.paint.Recorder` (headless, used by `TestApp` snapshots) and an
-adapter onto E02's `r2d.DrawList` (E02.F06), added by whichever of the
-two lands second.
+`zg_gui.paint.Recorder` (headless, used by `TestApp` snapshots) and
+`zg_gui.paint.DrawListCanvas` (`packages/gui/src/paint/draw_list.zig`),
+which forwards to E02's `r2d.DrawList`. Glyph runs pass through without
+copying (`GlyphQuad` layouts are asserted equal at compile time); damage
+is rounded outwards to physical pixels.
 
 ### Consumed by
 `zg_gui.Window` paint and present. Widgets never call it directly; they
@@ -1529,7 +1531,8 @@ UI thread only. A frame is `begin`, draw calls, `addDamage` (zero or more),
 Slices passed to `glyphs` are valid only for the call.
 
 ### Stability
-Experimental until the r2d adapter merges.
+Experimental: E02 additions (`imageFiltered`, layers, `damageAll`) are not
+yet exposed through `Canvas`.
 
 ## zg_gui.paint.TextSystem
 

@@ -1,5 +1,5 @@
 //! `Ui`: the declarative builder view `build` functions call, and keyed
-//! reconciliation against the previous frame's children (ADR E04-0001).
+//! reconciliation against the previous frame's children (ADR 0009).
 //!
 //! Per opened parent, a cursor walks the old child list. A child whose key
 //! matches the cursor is reused in O(1); otherwise a key → node map of the

@@ -6,12 +6,14 @@ pub fn build(b: *std.Build) void {
     const core = b.dependency("zg_core", f.args()).module("zg_core");
     const platform = b.dependency("zg_platform", f.args()).module("zg_platform");
     const text = b.dependency("zg_text", f.args()).module("zg_text");
+    const vulkan = b.dependency("zg_vulkan", f.args()).module("zg_vulkan");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_gui",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_platform", .module = platform },
             .{ .name = "zg_text", .module = text },
+            .{ .name = "zg_vulkan", .module = vulkan },
         },
         .bench = "bench/main.zig",
     });

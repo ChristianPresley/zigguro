@@ -1,5 +1,5 @@
 //! Node identity: generational `NodeId`s, identity-path `Key`s and widget
-//! `KindId`s (ADR E04-0001).
+//! `KindId`s (ADR 0009).
 
 const std = @import("std");
 
