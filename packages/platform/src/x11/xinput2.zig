@@ -103,6 +103,47 @@ pub const SelectEvents = struct {
     mask: u32,
 };
 
+/// XIGrabDevice: an active grab of one device (a drag's pointer grab).
+pub const GrabDevice = struct {
+    /// The extension that owns this request.
+    pub const extension = "XInputExtension";
+    /// The minor opcode.
+    pub const minor = 51;
+    grab_window: u32,
+    time: u32 = 0,
+    cursor: u32 = 0,
+    device_id: u16,
+    /// 0 Sync, 1 Async.
+    grab_mode: u8 = 1,
+    paired_device_mode: u8 = 1,
+    owner_events: u8 = 0,
+    _pad: u8 = 0,
+    mask_len: u16 = 1,
+    mask: u32,
+
+    /// 0 Success; otherwise AlreadyGrabbed, InvalidTime, NotViewable or
+    /// Frozen.
+    pub const Reply = struct {
+        status: u8,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .status = b[8] };
+        }
+    };
+};
+
+/// XIUngrabDevice.
+pub const UngrabDevice = struct {
+    /// The extension that owns this request.
+    pub const extension = "XInputExtension";
+    /// The minor opcode.
+    pub const minor = 52;
+    time: u32 = 0,
+    device_id: u16,
+    _pad: u16 = 0,
+};
+
 /// XIQueryDevice.
 pub const QueryDevice = struct {
     /// The extension that owns this request.
@@ -143,7 +184,11 @@ pub const DeviceEvent = struct {
     source_id: u16,
     /// Button number or touch id.
     detail: u32,
+    /// Server time in ms.
+    time: u32,
     window: u32,
+    /// Root and event-window positions.
+    root: [2]f32,
     pos: [2]f32,
     flags: u32,
     /// Effective modifiers (core state bits).
@@ -187,7 +232,9 @@ pub fn decodeDeviceEvent(ev: []const u8) ?DeviceEvent {
         .device_id = u16At(ev, 10),
         .source_id = u16At(ev, 52),
         .detail = u32At(ev, 16),
+        .time = u32At(ev, 12),
         .window = u32At(ev, 24),
+        .root = .{ fp1616(u32At(ev, 32)), fp1616(u32At(ev, 36)) },
         .pos = .{ fp1616(u32At(ev, 40)), fp1616(u32At(ev, 44)) },
         .flags = u32At(ev, 56),
         .mods = @truncate(u32At(ev, 72)),
@@ -417,4 +464,6 @@ test "request sizes" {
     try testing.expectEqual(@as(usize, 20), try proto.writeRequest(&buf, SelectEvents, .{ .window = 1, .device_id = Device.all_master, .mask = windowMask(true) }, 131, false));
     try testing.expectEqual(@as(usize, 8), try proto.writeRequest(&buf, QueryDevice, .{}, 131, false));
     try testing.expectEqual(@as(usize, 8), try proto.writeRequest(&buf, QueryVersion, .{}, 131, false));
+    try testing.expectEqual(@as(usize, 28), try proto.writeRequest(&buf, GrabDevice, .{ .grab_window = 1, .device_id = 2, .mask = 1 << EventType.motion }, 131, false));
+    try testing.expectEqual(@as(usize, 12), try proto.writeRequest(&buf, UngrabDevice, .{ .device_id = 2 }, 131, false));
 }
