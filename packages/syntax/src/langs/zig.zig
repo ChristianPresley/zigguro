@@ -9,6 +9,7 @@ const language = @import("../language.zig");
 const scanner_mod = @import("../lex/scanner.zig");
 const LexState = @import("../lex/state.zig").LexState;
 const HighlightId = @import("../highlight_names.zig").HighlightId;
+const zig_ast_adapter = @import("../structure/zig_ast_adapter.zig");
 
 const Scanner = scanner_mod.Scanner;
 const TokenSink = scanner_mod.TokenSink;
@@ -417,6 +418,7 @@ pub const zig_language: language.Language = .{
     .extensions = &.{ ".zig", ".zon" },
     .lexer = .{ .lexLineFn = lexLine },
     .resync = resync,
+    .structure = zig_ast_adapter.parse,
     .edit_rules = .{
         .line_comment = "//",
         .auto_close = &.{

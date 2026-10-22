@@ -5,6 +5,7 @@ const std = @import("std");
 const state_mod = @import("lex/state.zig");
 const scanner_mod = @import("lex/scanner.zig");
 const HighlightId = @import("highlight_names.zig").HighlightId;
+const structure = @import("structure/structure.zig");
 
 const LexState = state_mod.LexState;
 const Scanner = scanner_mod.Scanner;
@@ -83,6 +84,9 @@ pub const Language = struct {
     /// declaration at column 0). Used to approximate a far viewport before
     /// background relexing reaches it.
     resync: ?*const fn (line: []const u8) bool = null,
+    /// Tier-2 structure (folds, outline, scopes, selection ranges). Null:
+    /// the bracket tree and indentation are the only structure.
+    structure: ?structure.ParseFn = null,
     /// Context of a token kind, overriding the highlight-based default.
     context_of: ?*const fn (kind: u16) ?ContextKind = null,
     edit_rules: EditRules = .{},

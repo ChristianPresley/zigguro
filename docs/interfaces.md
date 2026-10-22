@@ -446,7 +446,12 @@ non-empty `WAYLAND_DISPLAY` → wayland, a non-empty `DISPLAY` → x11, else
 headless. A detected Wayland backend that cannot connect falls back to
 X11 when `DISPLAY` is set. `init` never falls back to headless: the app
 does that (apps/zigguro renders `--frames N` headless frames and exits).
-Win32 and Cocoa return `error.BackendUnavailable` until they land.
+Cocoa returns `error.BackendUnavailable` until it lands.
+
+Win32's `surfaceTarget` is `.win32 = .{ hinstance, hwnd }` for a Vulkan
+swapchain. Until then `zg_gui.Host` retries the renderer with
+`.external = cpuPresenter(win)` when the renderer answers
+`error.Unsupported` for a target (the software renderer does for `.win32`).
 
 Frame pacing: request a frame with `Command.request_frame` and render on
 `Event.frame`. Until a window's first present, every backend answers the
@@ -457,7 +462,9 @@ surface), so frame 0 is what maps the window.
 `pollEvents` and `waitEvents` are UI-thread only. `submit` and `wake` may
 be called from any thread. Wayland and headless own a platform thread
 that produces events; X11 dispatches on the UI thread inside
-`pollEvents`/`waitEvents` (its connection has one reader).
+`pollEvents`/`waitEvents` (its connection has one reader). Win32 owns a
+platform thread with the message pump; `createWindow`/`destroyWindow`
+run there through `SendMessageW`.
 
 ### Ownership/lifetime
 A `PayloadSlice` in an event stays valid until the next `pollEvents`; one
@@ -945,6 +952,54 @@ RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
 our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
 menu, drag, activation, dialogs and URIs return `error.Unsupported`.
+
+## zg_platform.win32.Win32Backend
+
+### Defined in
+`packages/platform/src/win32/backend.zig`, with `cpu_present.zig` (the
+DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
+→ keysym, modifiers), `dpi.zig` (PMv2 arithmetic) and `msgs.zig`
+(message and style constants) (E01.F02.S01.T02 and E01.F02.S05.T01,
+first parts; input basics of E01.F02.S02.T01).
+
+### Implemented by
+E01.F02.S01.T02 / E01.F02.S05.T01.
+
+### Consumed by
+`zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
+for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
+
+### Signature
+```zig
+pub const InitOptions = struct { refresh_ns: u32 = 16_666_667 };
+pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
+pub fn platform(b: *Win32Backend) Platform;
+// cpu_present.zig
+// PresenterVTable: allocCpuBuffer → top-down 32 bpp DIB (ARGB8888); present → BitBlt of the damage (> 16 rects: their union)
+```
+`WindowOptions.size` is the client size in physical pixels. The first
+`window_configure` comes from `createWindow`; later ones from `WM_SIZE`
+and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
+key's `WM_CHAR` text (taken from the queue with the key-down); Control
+chords carry none. Wheel notches are `scroll` lines with forward
+negative.
+
+### Threading
+Windows belong to the platform thread. The window procedure stages
+events under the backend mutex and signals the UI `Wake`. `present`
+blits on the calling thread; `WM_PAINT` replays the newest buffer on the
+platform thread (one presenter mutex covers both).
+
+### Ownership/lifetime
+A window's presenter and its DIB sections die with `destroyWindow`;
+`deinit` stops the thread after it destroys every window.
+
+### Stability
+Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
+raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
+answers only from our own `clipboard_write`), OLE drag and drop, the
+modal size-move timer, cursors, DWM refresh timing (the frame timer
+assumes 60 Hz) and monitor DPI (monitors report scale 1).
 
 ## zg_config.store.SettingsStore and Snapshot
 
@@ -1933,14 +1988,17 @@ Internal to E02. The descriptor and push-constant interface of the
 production shaders is frozen by E02.F05.S01.T05 and documented in
 `docs/rendering.md`.
 
-## zg_syntax (Language, Registry, Highlighter)
+## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in
 `packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
-`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig` (E05.F04).
+`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig`,
+`structure/*.zig` (E05.F04); the document adapter is
+`packages/editor/src/model/syntax.zig`.
 
 ### Implemented by
-E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer).
+E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
+structure from `std.zig.Ast`).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -1958,7 +2016,7 @@ pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: 
 pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
 pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
     lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
-    context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
+    structure: ?ParseFn, context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
 pub const Registry = struct { pub fn init(gpa) !Registry; pub fn register(r, gpa, l: *const Language) !void;
     pub fn detect(r, path: ?[]const u8, head: []const u8) ?LanguageId; pub fn byName(r, name) ?LanguageId };
 pub fn defaultRegistry(gpa) !Registry;
@@ -1968,17 +2026,37 @@ pub const Highlighter = struct {
     pub fn init(gpa, lang: *const Language, reg: *const Registry) !Highlighter;
     pub fn reset(h, src: LineSource) !void;
     pub fn onEdit(h, e: LineEdit, src: LineSource, deadline: ?Deadline) !void; // to convergence, 4096-line cap
+    pub fn onEdits(h, edits: []const LineEdit, src: LineSource, deadline: ?Deadline) !void; // multi-cursor, old coords
     pub fn ensure(h, src: LineSource, first: u64, last: u64) !void;          // viewport exact (or approximate after resync)
     pub fn idle(h, src: LineSource, deadline: ?Deadline) !bool;              // true when done
     pub fn tokens(h, line: u64) []const Token;
     pub fn isExact(h, line: u64) bool; pub fn isApprox(h, line: u64) bool;
     pub fn kindAt(h, line: u64, col: u32, line_len: u32) ContextKind;
 };
+// Tier 2: structure parsed from a whole text (off the UI thread).
+pub const ParseFn = *const fn (gpa, text: []const u8, version: u64) (Allocator.Error || error{TooLarge})!Structure;
+pub const Structure = struct { version: u64, folds: []const FoldRange, symbols: []const Symbol, scopes: []const Scope, ...,
+    pub fn deinit(s) void;
+    pub fn outline(s) []const Symbol;                                        // pre-order, `parent` indexes
+    pub fn enclosingScopes(s, gpa, pos: u32, out: *ArrayList(Scope)) !void;  // innermost first
+    pub fn selectionRanges(s, gpa, pos: u32, out: *ArrayList(ByteRange)) !void; // innermost first
+    pub fn indentDepth(s, pos: u32) ?u32;
+};
+// zg_editor.model.syntax: the document adapter.
+pub fn lineSource(tree: *const PieceTree) LineSource;
+pub fn lineEdits(gpa, ev: *const ChangeEvent, after: PieceTree, out: *ArrayList(LineEdit)) !?[]const LineEdit;
+pub const DocumentSyntax = struct { hl: Highlighter, version: u64,
+    pub fn init(gpa, lang, reg, tree: *const PieceTree, version: u64) !DocumentSyntax;
+    pub fn onChange(ds, ev: *const ChangeEvent, after: *const PieceTree, deadline: ?Deadline) !void; // from a Listener
+    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool };
+pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 ```
 
 ### Threading
-One `Highlighter` per document, used from one thread (the UI thread). A
-`Registry` is read-only after setup and can be shared.
+One `Highlighter` (or `DocumentSyntax`) per document, used from one thread
+(the UI thread). A `Registry` is read-only after setup and can be shared.
+`parseStructure` runs on any thread from a retained `Snapshot`; the result is
+immutable and tagged with the snapshot's version, so a stale one is dropped.
 
 ### Ownership/lifetime
 `Language` definitions and the `Registry` are borrowed and must outlive every

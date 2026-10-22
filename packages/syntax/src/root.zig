@@ -16,6 +16,10 @@ pub const lex = struct {
 pub const langs = struct {
     pub const zig = @import("langs/zig.zig");
 };
+pub const structure = struct {
+    pub const structure = @import("structure/structure.zig");
+    pub const zig_ast_adapter = @import("structure/zig_ast_adapter.zig");
+};
 pub const highlight = struct {
     pub const token_store = @import("highlight/token_store.zig");
     pub const highlighter = @import("highlight/highlighter.zig");
@@ -38,6 +42,11 @@ pub const Highlighter = highlight.highlighter.Highlighter;
 pub const LineSource = highlight.highlighter.LineSource;
 pub const LineEdit = highlight.highlighter.LineEdit;
 pub const Deadline = highlight.highlighter.Deadline;
+pub const Structure = structure.structure.Structure;
+pub const ByteRange = structure.structure.ByteRange;
+pub const FoldRange = structure.structure.FoldRange;
+pub const Symbol = structure.structure.Symbol;
+pub const Scope = structure.structure.Scope;
 
 /// Every built-in language, in registration order.
 pub const builtin_languages = [_]*const Language{&langs.zig.zig_language};
@@ -55,6 +64,7 @@ test {
     std.testing.refAllDecls(lex);
     std.testing.refAllDecls(highlight);
     std.testing.refAllDecls(langs);
+    std.testing.refAllDecls(structure);
     _ = @import("highlight/highlighter_test.zig");
     _ = @import("langs/zig_test.zig");
 }
