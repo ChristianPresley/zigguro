@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const parse = @import("parse.zig");
+const lib = @import("lib.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -425,7 +426,7 @@ pub fn main(arena: Allocator, io: std.Io, args: []const []const u8, verify: anyt
     var inputs: Inputs = undefined;
     for (files, 0..) |rel, i| {
         const path = args[4 + i];
-        if (!std.mem.endsWith(u8, path, rel)) {
+        if (!lib.pathEndsWith(path, rel)) {
             std.debug.print("ucdgen regex: argument {d} should be {s}, got {s}\n", .{ i + 1, rel, path });
             return 2;
         }
