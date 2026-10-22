@@ -1,0 +1,17 @@
+// Emacs arg cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "C-u C-f", .before = "¦abcdefgh", .keys = "<C-u><C-f>", .after = "abcd¦efgh" },
+    .{ .name = "C-u C-u self insert", .before = "¦", .keys = "<C-u><C-u>x", .after = "xxxxxxxxxxxxxxxx¦" },
+    .{ .name = "C-u 3 C-f", .before = "¦abcdefgh", .keys = "<C-u>3<C-f>", .after = "abc¦defgh" },
+    .{ .name = "C-u 12 insert", .before = "¦", .keys = "<C-u>12x", .after = "xxxxxxxxxxxx¦" },
+    .{ .name = "M-5 C-f", .before = "¦abcdefgh", .keys = "<M-5><C-f>", .after = "abcde¦fgh" },
+    .{ .name = "M-1 2 insert", .before = "¦", .keys = "<M-1>2x", .after = "xxxxxxxxxxxx¦" },
+    .{ .name = "M-- C-f", .before = "abcd¦efgh", .keys = "<M--><C-f>", .after = "abc¦defgh" },
+    .{ .name = "C-u - 2 C-f", .before = "abcd¦efgh", .keys = "<C-u>-2<C-f>", .after = "ab¦cdefgh" },
+    .{ .name = "M-3 M-f", .before = "¦a b c d e", .keys = "<M-3><M-f>", .after = "a b c¦ d e" },
+    .{ .name = "M-- M-d +kill", .before = "foo bar¦", .keys = "<M--><M-d>", .after = "foo ¦\n[kill] \"bar\"" },
+    .{ .name = "C-u 3 C-n", .before = "¦a\nb\nc\nd\ne", .keys = "<C-u>3<C-n>", .after = "a\nb\nc\n¦d\ne" },
+    .{ .name = "arg too far fails", .before = "¦abc", .keys = "<M-9><C-f>x", .after = "abc¦" },
+    .{ .name = "C-u 2 C-o", .before = "a¦b", .keys = "<C-u>2<C-o>", .after = "a¦\n\nb" },
+    .{ .name = "C-u 0 insert", .before = "a¦b", .keys = "<C-u>0x", .after = "a¦b" },
+}
