@@ -66,3 +66,31 @@ older first.
   merges from the base the change has at that time.
 - The app binding: E10 appending `warningFor` to `read_file` and
   `edit_file` results, and the queue UI badges.
+
+## Views
+
+`zg_review.overlay.OverlayFs` reads the workspace as a view sees it,
+without writing anything:
+
+- `disk`;
+- `agent` (one session's pending changes taken);
+- `changeset` (one changeset's "after" side);
+- `all_pending`.
+
+It takes three ports:
+
+- `Files` for the disk;
+- an optional `DocSource`, for open documents' text;
+- an optional `Lister`, for directory entries.
+
+Changes compose in submission order. A change made against text that has
+since changed is merged three ways onto the current text, and the read is
+marked `stale`. `AgentView` wraps the agent view for E10's tools; see
+`contracts.md`.
+
+Not yet:
+
+- the `Materializer`, which turns pending file changes into E05
+  `PendingChange`s when a document opens, and back again when it closes;
+- virtual documents for proposals;
+- the composed-text cache.
