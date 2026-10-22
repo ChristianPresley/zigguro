@@ -1326,3 +1326,95 @@ Line semantics match `zg_core.LineIndex`.
 
 ### Stability
 Unstable until E05.F05 views and E12 land.
+
+## zg_editor.model.edit.undo (UndoTree)
+
+### Defined in
+`packages/editor/src/model/edit/undo.zig`, `packages/editor/src/model/edit/selection.zig`
+(E05.F02.S02).
+
+### Implemented by
+E05.F02.S02.T01.
+
+### Consumed by
+E05.F08 (AgentEditSession), E05.F09 (Vim `u`/`g-`/`:earlier`), E04/E12 (undo-history
+panel, "undo agent change"), E12 checkpoints.
+
+### Signature
+```zig
+pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0 };
+pub const CoalesceKey = enum { typing_word, typing_space, delete_left, delete_right };
+pub const GroupMeta = struct { label: []const u8 = "", origin: EditOrigin, timestamp: std.Io.Timestamp, coalesce_key: ?CoalesceKey = null };
+pub const NodeId = enum(u32) { root = 0, none = maxInt(u32), _ };
+pub const Limits = struct { max_nodes: u32 = 10_000, max_bytes: usize = 64 << 20, group_ms: u32 = 1000 };
+pub const Step = struct { changes: *const ChangeSet, selections: []const Selection };
+pub const UndoTree = struct {
+    pub fn init(gpa, limits: Limits) UndoTree; pub fn deinit(u) void;
+    pub fn record(u, forward: ChangeSet, inverse: ChangeSet, sel_before, sel_after, meta: GroupMeta) !void; // takes both ChangeSets
+    pub fn breakGroup(u) void;
+    pub fn undo(u) ?Step; pub fn redo(u) ?Step; pub fn canUndo(u) bool; pub fn canRedo(u) bool;
+    pub fn older(u) !?[]const Step; pub fn newer(u) !?[]const Step;   // g- / g+
+    pub fn travel(u, target: NodeId) ![]const Step;                    // via the LCA
+    pub fn nodeAtTime(u, t: std.Io.Timestamp) NodeId;
+    pub fn changesTo(u, target: NodeId, base_len: u64, gpa) !PathChange; // revert-to-time as one new step
+    pub fn markSaved(u, id: NodeId) void; pub fn isAtSaved(u) bool;
+    pub fn selectiveUndo(u, id: NodeId, current: Snapshot) !union(enum) { ok: ChangeSet, conflict: ConflictInfo };
+    pub fn nodes(u) []const Node; pub fn selectionsAt(u, id) []const Selection;
+};
+```
+
+### Threading
+Owner (UI) thread only, like the Document it belongs to.
+
+### Ownership/lifetime
+`record` takes ownership of both ChangeSets. Steps borrow from the tree and
+are valid until the next `record`. Pruning compacts the tree, so NodeIds are
+invalidated by a `record` that prunes.
+
+### Stability
+Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+
+## zg_editor.model.diff
+
+### Defined in
+`packages/editor/src/model/diff.zig` and `packages/editor/src/model/diff/*.zig` (E05.F07).
+
+### Implemented by
+E05.F07.S01.T01, E05.F07.S01.T02.
+
+### Consumed by
+E05.F07.S02 (DiffModel, diff views), E09 (SCM diffs), E12 (review), the `zg` CLI.
+
+### Signature
+```zig
+pub const Edit = struct { kind: enum { equal, insert, delete }, a_start: u32, b_start: u32, len: u32 };
+pub const Algorithm = enum { myers, minimal, patience, histogram };
+pub const WsMode = enum { none, trailing, all, amount };
+pub const Deadline = struct { io: std.Io, at: std.Io.Timestamp, pub fn after(io, ns: u64) Deadline };
+pub const DiffOptions = struct { algorithm: Algorithm = .histogram, ignore_ws: WsMode = .none, context_lines: u32 = 3,
+    indent_heuristic: bool = true, intraline: enum { none, word, char } = .word, detect_moves: bool = false,
+    timeout_ns: u64 = 200 ms, io: ?std.Io = null };
+pub const LineSource = struct { pub fn fromBytes(gpa, text) !LineSource; pub fn fromTree(gpa, t: PieceTree) !LineSource;
+    pub fn line(s, i) []const u8; pub fn count(s) usize; pub fn deinit(s, gpa) void };
+pub const LineHunk = struct { old: LineSpan, new: LineSpan, intraline: []const DiffRange = &.{}, moved_from: ?u32 = null };
+pub const DiffRange = struct { side: enum { old, new }, range: Range, kind: enum { changed, moved } };
+pub const DiffResult = struct { edits: []Edit, hunks: []LineHunk, ranges: []DiffRange, moves: []Move, pub fn deinit(r, gpa) void };
+pub fn diffLines(gpa, a: *const LineSource, b: *const LineSource, o: DiffOptions) !DiffResult;
+pub fn diffTokens(gpa, a: []const u32, b: []const u32, alg: Algorithm, deadline: ?Deadline) ![]Edit;
+pub fn unified.writeUnified(w: *std.Io.Writer, edits, hunks, a, b, names: [2][]const u8) !void;
+pub fn intraline.intralineEdits(gpa, edits, a, b, mode: enum { word, char }) ![]DiffRange;
+pub fn postprocess.slideHunks(edits: []Edit, ids_a, ids_b, a, b) usize;      // returns the new length
+pub fn moves.detectMoves(gpa, edits, a, b, o: struct { min_lines = 3, min_chars = 60 }) ![]Move;
+```
+
+### Threading
+Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`).
+
+### Ownership/lifetime
+Results are owned by the caller (`DiffResult.deinit`). `LineSource.fromBytes`
+borrows the text; `fromTree` copies it.
+
+### Stability
+Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
+`git diff` hunk headers; histogram ties prefer the run nearest the middle of
+the region (JGit takes the first).
