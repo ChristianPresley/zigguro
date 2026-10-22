@@ -14,6 +14,8 @@ pub const os2 = @import("os2.zig");
 pub const post = @import("post.zig");
 pub const name = @import("name.zig");
 pub const glyf = @import("glyf.zig");
+pub const cff = @import("cff.zig");
+pub const cff_charstring = @import("cff_charstring.zig");
 pub const variation = @import("var/root.zig");
 
 /// A glyph index; 0 is `.notdef`.
