@@ -1,0 +1,5 @@
+1| punctuation:< tag:a attribute:href operator:= string:"https://example.com/?a=1&amp;b=2" attribute:target operator:= string:_blank attribute:rel operator:= string:'noopener' punctuation:> punctuation:</ tag:a punctuation:>
+2| punctuation:< tag:input attribute:disabled attribute:type operator:= string:"checkbox" attribute:checked punctuation:>
+3| punctuation:< tag:div attribute:data-id operator:= string:"42" attribute:aria-label operator:= string:'Close "dialog"' attribute:hidden punctuation:> punctuation:</ tag:div punctuation:>
+4| punctuation:< tag:img attribute:src operator:= string:logo.png attribute:alt operator:= string:"" punctuation:>
+5| punctuation:< tag:button attribute:onclick operator:= string:"go()" attribute:class operator:= string:"btn btn-primary" punctuation:> punctuation:</ tag:button punctuation:>
