@@ -358,6 +358,41 @@ fn register(b: *bench.Bench) !void {
     try registerAiOverlays(b, text);
     try registerAgentEdit(b, text);
     try registerCursors(b, text);
+    try registerMoves(b, text);
+}
+
+const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
+
+/// One move by `unit` from scattered positions in a 100k-line document,
+/// alternating direction.
+fn registerMoves(b: *bench.Bench, text: []const u8) !void {
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    inline for (.{
+        .{ "editor.move.grapheme_100k", .grapheme },
+        .{ "editor.move.word_100k", .word },
+        .{ "editor.move.subword_100k", .subword },
+        .{ "editor.move.buffer_line_100k", .buffer_line },
+        .{ "editor.move.smart_home_100k", .smart_home },
+        .{ "editor.move.paragraph_100k", .paragraph },
+    }) |c| {
+        var mb: MoveBench = .{ .snap = doc.snapshot(), .unit = c[1] };
+        defer mb.snap.release();
+        try b.run(c[0], &mb, moveOnce);
+    }
+}
+
+fn moveOnce(m: *MoveBench, s: *bench.State) void {
+    const movement = zg_editor.model.edit.movement;
+    var rng: std.Random.DefaultPrng = .init(7);
+    const r = rng.random();
+    const len = m.snap.len();
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const at = r.uintLessThan(u64, len);
+        const dir: movement.Dir = if (i & 1 == 0) .forward else .backward;
+        bench.doNotOptimizeAway(movement.move(&m.snap, at, m.unit, dir, .{}));
+    }
 }
 
 const CursorBench = struct { doc: *zg_editor.model.document.Document, sels: *zg_editor.model.edit.selection.SelectionSet };
