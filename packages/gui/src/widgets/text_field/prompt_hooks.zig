@@ -7,8 +7,11 @@
 //! (window logical) to anchor a completion popover. Pasted or IME
 //! committed text never fires a trigger.
 //!
-//! Not yet: file drop and rich (image) paste; they wait on drag-and-drop
-//! and clipboard formats reaching the GUI from the platform.
+//! Files dragged from another app are accepted when `on_drop_files` is
+//! set, and handed over as local paths on drop (input/drop.zig).
+//!
+//! Not yet: rich (image) paste; it waits on clipboard formats reaching
+//! the GUI from the platform.
 
 const std = @import("std");
 const geom = @import("../../core/geom.zig");
@@ -20,6 +23,8 @@ pub const PromptHooks = struct {
     /// ASCII characters that open a completion.
     trigger_chars: []const u8 = "@/",
     on_trigger: ?*const fn (ctx: *anyopaque, ch: u8, byte_offset: u32, caret_rect: Rect) void = null,
+    /// Local paths dropped on the field (valid during the call only).
+    on_drop_files: ?*const fn (ctx: *anyopaque, paths: []const []const u8) void = null,
 };
 
 /// The trigger character `typed` at `offset` in `t` (after insertion),
