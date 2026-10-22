@@ -7,8 +7,10 @@ const model = @import("model.zig");
 const undo_mod = @import("undo.zig");
 const commands = @import("commands.zig");
 const view = @import("view.zig");
+const prompt_hooks = @import("prompt_hooks.zig");
 const ui_mod = @import("../../core/ui.zig");
 const view_mod = @import("../../core/view.zig");
+const geom = @import("../../core/geom.zig");
 const TestApp = @import("../../testing/test_app.zig").TestApp;
 
 const testing = std.testing;
@@ -271,6 +273,7 @@ const Form = struct {
     name: *TextBuffer,
     notes: *TextBuffer,
     password: bool = false,
+    prompt: ?*const prompt_hooks.PromptHooks = null,
     changed: u32 = 0,
     submitted: u32 = 0,
 
@@ -278,7 +281,7 @@ const Form = struct {
         ui.open(.{ .style = .{ .dir = .column, .gap = 8, .padding = .all(8) } });
         defer ui.close();
         ui.with(.{ .w = .{ .px = 200 } });
-        const r = view.textField(ui, .{ .buffer = self.name, .placeholder = "Name", .password = self.password });
+        const r = view.textField(ui, .{ .buffer = self.name, .placeholder = "Name", .password = self.password, .prompt = self.prompt });
         if (r.changed) self.changed += 1;
         if (r.submitted) self.submitted += 1;
         ui.with(.{ .w = .{ .px = 200 } });
@@ -402,6 +405,85 @@ test "pointer: click places caret, double-click selects a word, drag extends" {
     try testing.expectEqual(Selection{ .anchor = 0, .head = 16 }, st.sel);
 }
 
+test "PRIMARY: a new selection is published, middle click pastes it" {
+    var h: Harness = .{ .name = undefined, .notes = undefined };
+    try h.init();
+    defer h.deinit();
+    const t = h.t;
+    t.app.has_primary = true;
+    try t.click(.{ .name = "Name" });
+    t.typeText("alpha beta");
+    try testing.expectEqualStrings("", t.app.primary.get());
+    // Shift+Ctrl+Left selects "beta"; it becomes PRIMARY, not the clipboard.
+    t.press(.arrow_left, .{ .ctrl = true, .shift = true });
+    try testing.expectEqualStrings("beta", t.app.primary.get());
+    try testing.expect(t.app.primary.pending_write);
+    try testing.expectEqualStrings("", t.app.clipboard.get());
+    // Moving the caret keeps PRIMARY; selecting again republishes.
+    t.app.primary.pending_write = false;
+    t.press(.arrow_left, .{});
+    try testing.expect(!t.app.primary.pending_write);
+    try testing.expectEqualStrings("beta", t.app.primary.get());
+    t.press(.arrow_right, .{ .shift = true, .ctrl = true });
+    try testing.expect(t.app.primary.pending_write);
+
+    // Middle click in the notes field pastes PRIMARY at the click, as one
+    // undo step, and focuses the field.
+    t.app.primary.replace(gpa, "from elsewhere");
+    const r = try t.rectOf(.{ .name = "Notes" });
+    const p: geom.Vec2 = .{ .x = r.x + 8, .y = r.y + 10 };
+    t.win.dispatch(.{ .pointer_down = .{ .pos = p, .button = .middle } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = p, .button = .middle } });
+    _ = t.settle();
+    try testing.expectEqualStrings("from elsewhere", h.notes.slice());
+    try testing.expectEqual(t.find(.{ .name = "Notes" }).?, t.win.focus);
+    h.ctrl(.key_z);
+    try testing.expectEqualStrings("", h.notes.slice());
+
+    // Without a PRIMARY selection (Windows) the middle button is ignored.
+    t.app.has_primary = false;
+    t.win.dispatch(.{ .pointer_down = .{ .pos = p, .button = .middle } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = p, .button = .middle } });
+    _ = t.settle();
+    try testing.expectEqualStrings("", h.notes.slice());
+}
+
+test "prompt hooks: @ and / at a word start report offset and caret" {
+    var h: Harness = .{ .name = undefined, .notes = undefined };
+    try h.init();
+    defer h.deinit();
+    const Rec = struct {
+        hits: [4]struct { ch: u8, off: u32, x: f32 } = undefined,
+        n: usize = 0,
+        fn on(ctx: *anyopaque, ch: u8, off: u32, caret: geom.Rect) void {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            r.hits[r.n] = .{ .ch = ch, .off = off, .x = caret.x };
+            r.n += 1;
+        }
+    };
+    var rec: Rec = .{};
+    const hooks: prompt_hooks.PromptHooks = .{ .ctx = &rec, .on_trigger = Rec.on };
+    h.form.prompt = &hooks;
+    h.t.win.markAllDirty();
+    const t = h.t;
+    try t.click(.{ .name = "Name" });
+    t.typeText("@");
+    t.typeText("me");
+    t.typeText("@");
+    t.typeText(" ");
+    t.typeText("/");
+    // A paste never triggers.
+    t.app.clipboard.replace(gpa, "@x");
+    h.ctrl(.key_v);
+    try testing.expectEqual(@as(usize, 2), rec.n);
+    try testing.expectEqual(@as(u8, '@'), rec.hits[0].ch);
+    try testing.expectEqual(@as(u32, 0), rec.hits[0].off);
+    try testing.expectEqual(@as(u8, '/'), rec.hits[1].ch);
+    try testing.expectEqual(@as(u32, 5), rec.hits[1].off);
+    // The caret rect is after the trigger character.
+    try testing.expect(rec.hits[1].x > rec.hits[0].x);
+}
+
 test "password copy blocked" {
     var h: Harness = .{ .name = undefined, .notes = undefined };
     try h.init();
@@ -414,6 +496,7 @@ test "password copy blocked" {
     h.ctrl(.key_c);
     h.ctrl(.key_x);
     try testing.expectEqualStrings("", h.t.app.clipboard.get());
+    try testing.expectEqualStrings("", h.t.app.primary.get());
     try testing.expectEqualStrings("secret", h.name.slice());
     // The text is drawn as bullets, never as itself.
     try testing.expect(std.mem.indexOf(u8, h.t.paintSnapshot(), "secret") == null);
