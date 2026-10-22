@@ -5,6 +5,7 @@
 //! hashes to ids, so the index can be rebuilt (`gc`) without moving entries.
 
 const std = @import("std");
+const fill = @import("fill.zig");
 
 /// A cell color.
 pub const Color = extern struct {
@@ -220,7 +221,7 @@ pub const StyleSet = struct {
     pub fn gc(s: StyleSet, base: [*]u8, state: *State) void {
         const ents = s.entries(base);
         const idx = s.index(base);
-        @memset(idx, empty_slot);
+        fill.fill16(idx, empty_slot);
         const mask = idx.len - 1;
         for (ents[0..state.used], 0..) |e, k| {
             if (e.refs == 0) continue;
@@ -233,7 +234,7 @@ pub const StyleSet = struct {
 
     /// Zeroes the table.
     pub fn clear(s: StyleSet, base: [*]u8, state: *State) void {
-        @memset(s.index(base), empty_slot);
+        fill.fill16(s.index(base), empty_slot);
         state.* = .{};
     }
 
