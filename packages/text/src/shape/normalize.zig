@@ -20,6 +20,20 @@ pub const max_combining_marks = 32;
 /// Reorders a sorted mark run [start, end) further (Arabic modifier marks).
 pub const ReorderFn = *const fn (buf: *Buffer, start: usize, end: usize) void;
 
+/// Composes `a` + `b` when recomposing (a complex shaper's filter).
+pub const ComposeFn = *const fn (a: u21, b: u21) ?u21;
+
+/// How a complex shaper normalizes.
+pub const Options = struct {
+    /// Runs on each sorted mark run.
+    reorder: ?ReorderFn = null,
+    /// Keep a character the font maps instead of decomposing it (false is
+    /// HarfBuzz's "composed diacritics, no short circuit" mode).
+    short_circuit: bool = true,
+    /// Replaces `compose` in the recomposition round.
+    compose: ?ComposeFn = null,
+};
+
 const s_base = 0xAC00;
 const l_base = 0x1100;
 const v_base = 0x1161;
@@ -185,9 +199,8 @@ const Ctx = struct {
     }
 };
 
-/// Normalizes `b` against `face`'s cmap. `reorder` runs on each sorted
-/// mark run.
-pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.Error!void {
+/// Normalizes `b` against `face`'s cmap.
+pub fn normalize(face: *const Face, b: *Buffer, opts: Options) Allocator.Error!void {
     if (b.len() == 0) return;
     const count = b.len();
     // Most text: no marks, and the font maps every character, so each
@@ -200,6 +213,7 @@ pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.E
         while (done < count) : (done += 1) {
             const g = &infos[done];
             if (g.isUnicodeMark()) break;
+            if (!opts.short_circuit and decompose(g.cp) != null) break;
             const gid = face.glyphIndex(g.cp);
             if (gid == 0) break;
             g.gid = gid;
@@ -218,7 +232,7 @@ pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.E
         var end = c.idx + 1;
         while (end < count and !b.infos.items[end].isUnicodeMark()) end += 1;
         if (end < count) end -= 1; // leave one base for the marks
-        while (c.idx < end) try c.decomposeCurrent(true);
+        while (c.idx < end) try c.decomposeCurrent(opts.short_circuit);
         if (c.idx == count) break;
         all_simple = false;
         end = c.idx + 1;
@@ -238,7 +252,7 @@ pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.E
             while (end < infos.len and infos[end].ccc != 0) end += 1;
             if (end - i <= max_combining_marks) {
                 sortMarks(b, i, end);
-                if (reorder) |f| f(b, i, end);
+                if (opts.reorder) |f| f(b, i, end);
             }
             i = end;
         }
@@ -249,13 +263,14 @@ pub fn normalize(face: *const Face, b: *Buffer, reorder: ?ReorderFn) Allocator.E
     try b.out.ensureTotalCapacity(b.gpa, b.len());
     const infos = b.infos.items;
     const out = &b.out;
+    const composeFn = opts.compose orelse &compose;
     var starter: usize = 0;
     out.appendAssumeCapacity(infos[0]);
     for (infos[1..]) |g| {
         if (g.isUnicodeMark()) {
             const last = out.items[out.items.len - 1];
             if (starter == out.items.len - 1 or last.ccc < g.ccc) {
-                if (compose(out.items[starter].cp, g.cp)) |composed| {
+                if (composeFn(out.items[starter].cp, g.cp)) |composed| {
                     const gid = face.glyphIndex(composed);
                     if (gid != 0) {
                         const s = &out.items[starter];
