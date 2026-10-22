@@ -1,0 +1,14 @@
+# prefer_first_parent_straight off.
+!straight=0
+a: c
+b: x c
+x: c
+c:
+====
+o  a
+|
+| o  b
+|/|
+| o  x
+|/
+o  c

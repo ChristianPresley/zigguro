@@ -1,0 +1,19 @@
+# An octopus merge of four branches.
+m: a b c d
+a: r
+b: r
+c: r
+d: r
+r:
+====
+o  m
+|\____
+o | | |  a
+| | | |
+| o | |  b
+|/  | |
+|   o |  c
+|__/  |
+|     o  d
+|____/
+o  r

@@ -1,0 +1,11 @@
+# A parent that is not displayed keeps its lane to the bottom.
+a: zz
+b: c
+c:
+====
+o  a
+|
+| o  b
+| |
+| o  c
+|

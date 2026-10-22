@@ -1,0 +1,23 @@
+# An octopus merge wider than max_columns.
+!max_columns=4
+m: a b c d e
+a: r
+b: r
+c: r
+d: r
+e: r
+r:
+====
+o  m
+|\____
+o | | .  a
+| | | .
+| o | .  b
+|/  | .
+|   o .  c
+|__/  .
+| o   .  d
+|/    .
+| o  e
+|/
+o  r

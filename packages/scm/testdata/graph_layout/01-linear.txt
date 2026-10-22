@@ -1,0 +1,13 @@
+# A linear stack.
+a@: b
+b: c
+c: d
+d#:
+====
+@  a
+|
+o  b
+|
+o  c
+|
+#  d

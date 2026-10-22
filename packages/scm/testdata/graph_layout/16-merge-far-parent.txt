@@ -1,0 +1,16 @@
+# A merge whose second parent is far below.
+m: a z
+a: b
+b: c
+c: z
+z:
+====
+o  m
+|\
+o |  a
+| |
+o |  b
+| |
+o |  c
+|/
+o  z

@@ -1,0 +1,10 @@
+# Two heads on one base.
+a: c
+b: c
+c:
+====
+o  a
+|
+| o  b
+|/
+o  c

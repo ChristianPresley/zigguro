@@ -1,0 +1,19 @@
+# A branch off a branch.
+a: b
+c: d
+b: d
+d: e
+f: e
+e:
+====
+o  a
+|
+| o  c
+| |
+o |  b
+|/
+o  d
+|
+| o  f
+|/
+o  e

@@ -1,0 +1,19 @@
+# Commits on top of a merge.
+x: y
+y: m
+m: a b
+a: r
+b: r
+r:
+====
+o  x
+|
+o  y
+|
+o  m
+|\
+o |  a
+| |
+| o  b
+|/
+o  r

@@ -1,0 +1,25 @@
+# A stack containing two merges.
+a: m1
+m1: b c
+b: m2
+c: m2
+m2: d e
+d: r
+e: r
+r:
+====
+o  a
+|
+o  m1
+|\
+o |  b
+| |
+| o  c
+|/
+o  m2
+|\
+o |  d
+| |
+| o  e
+|/
+o  r

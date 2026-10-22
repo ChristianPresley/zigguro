@@ -1,0 +1,22 @@
+# Two diamonds in a row.
+m2: a2 b2
+a2: m1
+b2: m1
+m1: a1 b1
+a1: r
+b1: r
+r:
+====
+o  m2
+|\
+o |  a2
+| |
+| o  b2
+|/
+o  m1
+|\
+o |  a1
+| |
+| o  b1
+|/
+o  r

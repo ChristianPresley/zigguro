@@ -1,0 +1,17 @@
+# More heads than columns.
+!max_columns=3
+a: r
+b: r
+c: r
+d: r
+r:
+====
+o  a
+|
+| o  b
+|/
+| o  c
+|/
+| o  d
+|/
+o  r

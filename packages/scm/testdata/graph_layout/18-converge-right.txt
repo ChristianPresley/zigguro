@@ -1,0 +1,16 @@
+# Two children whose lanes converge on the right.
+p: q
+a: r
+b: r
+q: r
+r:
+====
+o  p
+|
+| o  a
+| |
+| | o  b
+| |/
+o |  q
+|/
+o  r

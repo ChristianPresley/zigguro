@@ -1,0 +1,25 @@
+# Merges pulling in one branch after another.
+m3: m2 d
+m2: m1 c
+m1: a b
+a: r
+b: r
+c: r
+d: r
+r:
+====
+o  m3
+|\
+o |  m2
+|\|_
+o | |  m1
+|\|_|_
+o | | |  a
+| | | |
+| | | o  b
+|_|_|/
+| | o  c
+|_|/
+| o  d
+|/
+o  r
