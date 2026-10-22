@@ -6,6 +6,8 @@ const std = @import("std");
 
 /// The document model.
 pub const model = @import("model.zig");
+/// Vim and Emacs modes.
+pub const modes = @import("modes.zig");
 /// The editor view and widget.
 pub const view = @import("view/root.zig");
 

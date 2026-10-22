@@ -1,0 +1,514 @@
+=== diw
+--- before
+foo b¦ar baz
+--- keys
+diw
+--- after
+foo ¦ baz
+
+=== daw
+--- before
+foo b¦ar baz
+--- keys
+daw
+--- after
+foo ¦baz
+
+=== daw last word
+--- before
+foo b¦ar
+--- keys
+daw
+--- after
+fo¦o
+
+=== daw on space
+--- before
+foo¦ bar baz
+--- keys
+daw
+--- after
+foo¦ baz
+
+=== diw on space
+--- before
+foo ¦  bar
+--- keys
+diw
+--- after
+foo¦bar
+
+=== d2aw
+--- before
+¦one two three four
+--- keys
+d2aw
+--- after
+¦three four
+
+=== d3iw
+--- before
+¦one two three
+--- keys
+d3iw
+--- after
+¦ three
+
+=== ciw
+--- before
+foo b¦ar baz
+--- keys
+ciwX<Esc>
+--- after
+foo ¦X baz
+
+=== caw
+--- before
+foo b¦ar baz
+--- keys
+cawX<Esc>
+--- after
+foo ¦Xbaz
+
+=== yiw +reg
+--- before
+foo b¦ar baz
+--- keys
+yiw
+--- after
+foo ¦bar baz
+[reg v] "bar"
+
+=== diW
+--- before
+x a.b¦.c y
+--- keys
+diW
+--- after
+x ¦ y
+
+=== daW
+--- before
+x a.b¦.c y
+--- keys
+daW
+--- after
+x ¦y
+
+=== diw punctuation
+--- before
+foo.b¦ar(x)
+--- keys
+diw
+--- after
+foo.¦(x)
+
+=== daw indented
+--- before
+    fo¦o bar
+--- keys
+daw
+--- after
+    ¦bar
+
+=== daw at end of sentence
+--- before
+one two thr¦ee.
+--- keys
+daw
+--- after
+one two¦.
+
+=== dis
+--- before
+One two. Three f¦our. Five.
+--- keys
+dis
+--- after
+One two. ¦ Five.
+
+=== das
+--- before
+One two. Three f¦our. Five.
+--- keys
+das
+--- after
+One two. ¦Five.
+
+=== das last
+--- before
+One two. Three f¦our.
+--- keys
+das
+--- after
+One two¦.
+
+=== dip
+--- before
+a
+b¦
+
+c
+--- keys
+dip
+--- after
+¦
+c
+
+=== dap
+--- before
+a
+b¦
+
+c
+--- keys
+dap
+--- after
+¦c
+
+=== dap last
+--- before
+a
+
+b¦
+c
+--- keys
+dap
+--- after
+¦a
+
+=== dip on blank
+--- before
+a
+
+¦
+
+c
+--- keys
+dip
+--- after
+a
+¦c
+
+=== dap on blank
+--- before
+a
+
+¦
+
+c
+--- keys
+dap
+--- after
+¦a
+
+=== d2ap
+--- before
+a
+
+¦b
+
+c
+
+d
+--- keys
+d2ap
+--- after
+a
+
+¦d
+
+=== yip +reg
+--- before
+a¦
+b
+
+c
+--- keys
+yip
+--- after
+¦a
+b
+
+c
+[reg V] "a\nb\n"
+
+=== di(
+--- before
+f(a, ¦b) x
+--- keys
+di(
+--- after
+f(¦) x
+
+=== da(
+--- before
+f(a, ¦b) x
+--- keys
+da(
+--- after
+f¦ x
+
+=== dib
+--- before
+f(a, ¦b) x
+--- keys
+dib
+--- after
+f(¦) x
+
+=== di) on paren
+--- before
+f(a, b¦) x
+--- keys
+di)
+--- after
+f(¦) x
+
+=== di( on open
+--- before
+f¦(a, b) x
+--- keys
+di(
+--- after
+f(¦) x
+
+=== di( nested
+--- before
+f(a (b¦) c)
+--- keys
+di(
+--- after
+f(a (¦) c)
+
+=== d2i(
+--- before
+f(a (b¦) c)
+--- keys
+d2i(
+--- after
+f(¦)
+
+=== di( empty
+--- before
+f(¦)
+--- keys
+di(
+--- after
+f(¦)
+
+=== di( none
+--- before
+f ¦x
+--- keys
+di(
+--- after
+f ¦x
+
+=== ci(
+--- before
+f(a, ¦b) x
+--- keys
+ci(X<Esc>
+--- after
+f(¦X) x
+
+=== di( multiline
+--- before
+f(
+    a¦,
+    b
+)
+--- keys
+di(
+--- after
+f(
+¦)
+
+=== di{ block
+--- before
+fn {
+    a¦;
+    b;
+}
+--- keys
+di{
+--- after
+fn {
+¦}
+
+=== da{
+--- before
+x {a¦} y
+--- keys
+da{
+--- after
+x ¦ y
+
+=== diB
+--- before
+x {a¦} y
+--- keys
+diB
+--- after
+x {¦} y
+
+=== di[
+--- before
+a[1, ¦2]
+--- keys
+di[
+--- after
+a[¦]
+
+=== da[
+--- before
+a[1, ¦2] b
+--- keys
+da[
+--- after
+a¦ b
+
+=== di<
+--- before
+<a¦b>
+--- keys
+di<
+--- after
+<¦>
+
+=== da<
+--- before
+x <a¦b> y
+--- keys
+da<
+--- after
+x ¦ y
+
+=== di"
+--- before
+x = "he¦llo" y
+--- keys
+di"
+--- after
+x = "¦" y
+
+=== da"
+--- before
+x = "he¦llo" y
+--- keys
+da"
+--- after
+x = ¦y
+
+=== da" no trailing
+--- before
+x = "he¦llo"
+--- keys
+da"
+--- after
+x ¦=
+
+=== di" before quotes
+--- before
+¦x = "hello" y
+--- keys
+di"
+--- after
+x = "¦" y
+
+=== di" on quote
+--- before
+x = ¦"hello" y
+--- keys
+di"
+--- after
+x = "¦" y
+
+=== di" escaped
+--- before
+"a\"b¦c"
+--- keys
+di"
+--- after
+"¦"
+
+=== di'
+--- before
+say 'h¦i' now
+--- keys
+di'
+--- after
+say '¦' now
+
+=== da'
+--- before
+say 'h¦i' now
+--- keys
+da'
+--- after
+say ¦now
+
+=== di`
+--- before
+run `l¦s` now
+--- keys
+di`
+--- after
+run `¦` now
+
+=== ci"
+--- before
+x = "he¦llo" y
+--- keys
+ci"X<Esc>
+--- after
+x = "¦X" y
+
+=== di" empty
+--- before
+x "¦" y
+--- keys
+di"
+--- after
+x "¦" y
+
+=== dit
+--- before
+<a><b>x¦y</b></a>
+--- keys
+dit
+--- after
+<a><b>¦</b></a>
+
+=== dat
+--- before
+<a><b>x¦y</b></a>
+--- keys
+dat
+--- after
+<a>¦</a>
+
+=== d2it
+--- before
+<a><b>x¦y</b></a>
+--- keys
+d2it
+--- after
+<a>¦</a>
+
+=== dit on tag
+--- before
+<a>¦<b>xy</b></a>
+--- keys
+dit
+--- after
+<a><b>¦</b></a>
+
+=== dit attrs
+--- before
+<p class="x">te¦xt</p>
+--- keys
+dit
+--- after
+<p class="x">¦</p>
