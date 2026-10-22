@@ -25,7 +25,6 @@ pub const pending = [_][]const u8{
     "text.layout_200col",
     "text.measure_hit",
     "text.registry_get",
-    "text.sdf_48px",
     "text.shape_code_line_200",
     "text.shape_latin_1k",
     "text.shape_word_cache_hit",
@@ -136,12 +135,17 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.cff_outline", VarOutlineCtx{ .inst = &serif_inst, .gids = &serif_gids, .gpa = b.gpa }, gvarOutline);
 
     // Outline + coverage raster of one JetBrains Mono ASCII glyph at 14 px.
+    var rast: [4]zg_text.raster.Rasterizer = @splat(.init(b.gpa));
+    defer for (&rast) |*r| r.deinit();
     var jb_inst = try vt.FaceInstance.init(b.gpa, &jb, &.{});
     defer jb_inst.deinit(b.gpa);
-    try b.run("text.raster_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .gpa = b.gpa, .px = 14 }, rasterGlyph);
+    try b.run("text.raster_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .r = &rast[0], .px = 14 }, rasterGlyph);
 
     // LCD (3× raster plus FIR filter) of the same glyphs.
-    try b.run("text.raster_lcd_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .gpa = b.gpa, .px = 14, .mode = .lcd_rgb }, rasterGlyph);
+    try b.run("text.raster_lcd_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .r = &rast[1], .px = 14, .mode = .lcd_rgb }, rasterGlyph);
+
+    // SDF at the 48 px base with a 4 px spread.
+    try b.run("text.sdf_48px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .r = &rast[2], .px = 48, .mode = .sdf }, rasterGlyph);
 
     // The same for Source Han Sans JP (CFF, CJK) at 64 px.
     const han = try zg_text.ot.Face.init(fonts.data[4], 0);
@@ -149,7 +153,7 @@ fn register(b: *bench.Bench) !void {
     defer han_inst.deinit(b.gpa);
     var han_gids: [12]u16 = undefined;
     for (&han_gids, han_cps) |*g, c| g.* = han.glyphIndex(c);
-    try b.run("text.raster_64px_cjk", RasterCtx{ .inst = &han_inst, .gids = &han_gids, .gpa = b.gpa, .px = 64 }, rasterGlyph);
+    try b.run("text.raster_64px_cjk", RasterCtx{ .inst = &han_inst, .gids = &han_gids, .r = &rast[3], .px = 64 }, rasterGlyph);
 
     // Prefix-sum integration of a 256×256 accumulator; bytes/s = pixels/s.
     try b.run("text.integrate_gpix", b.gpa, integrate);
@@ -157,12 +161,22 @@ fn register(b: *bench.Bench) !void {
 
 const han_cps = [12]u21{ '語', '漢', '字', '日', '本', 'あ', 'い', 'う', 'え', 'お', 'か', 'き' };
 
-const RasterCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator, px: f32, mode: zg_text.raster.RasterParams.Mode = .gray };
+const RasterCtx = struct {
+    inst: *const zg_text.ot.variation.FaceInstance,
+    gids: []const u16,
+    /// One rasterizer per bench, warmed by its first call.
+    r: *zg_text.raster.Rasterizer,
+    px: f32,
+    mode: zg_text.raster.RasterParams.Mode = .gray,
+};
 
 fn rasterGlyph(ctx: RasterCtx, s: *State) void {
-    var r: zg_text.raster.Rasterizer = .init(ctx.gpa);
-    defer r.deinit();
-    for (ctx.gids) |gid| _ = r.rasterizeGlyph(ctx.inst, gid, .{ .px_per_em = ctx.px, .mode = ctx.mode }) catch unreachable;
+    // Warm once per bench, outside the timed calls: the buffers grow to
+    // the largest glyph and stay.
+    const r = ctx.r;
+    if (r.out.capacity == 0) {
+        for (ctx.gids) |gid| _ = r.rasterizeGlyph(ctx.inst, gid, .{ .px_per_em = ctx.px, .mode = ctx.mode }) catch unreachable;
+    }
     var k: usize = 0;
     for (0..s.iterations()) |_| {
         const bm = r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = ctx.px, .mode = ctx.mode }) catch unreachable;
