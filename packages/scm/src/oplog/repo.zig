@@ -16,6 +16,7 @@ const op_mod = @import("operation.zig");
 const view_mod = @import("view.zig");
 const op_heads = @import("op_heads.zig");
 const merge_views = @import("merge_views.zig");
+const view_delta = @import("view_delta.zig");
 const tx_mod = @import("transaction.zig");
 const ObjectId = id_mod.ObjectId;
 const Store = store_mod.Store;
@@ -155,8 +156,8 @@ pub const Repo = struct {
     }
 
     /// GC roots: the current op heads and the detached (preview)
-    /// operations. With `op_mod.gcEdges` as extra edges, everything the op
-    /// log references stays alive.
+    /// operations. With `op_mod.gcEdges` as extra edges (and the store as
+    /// their context), everything the op log references stays alive.
     pub fn gcRoots(r: *Repo) gc_mod.RootProvider {
         return .{ .ctx = r, .forEachRoot = struct {
             fn each(ctx: *anyopaque, sink: *gc_mod.RootSink) anyerror!void {
@@ -382,9 +383,7 @@ fn mergeHeads(gpa: Allocator, io: std.Io, store: *Store, dir: std.Io.Dir, opts: 
     };
     var batch = store.batch();
     defer batch.abort();
-    const view_bytes = try enc.encodeAlloc(gpa, View, acc);
-    defer gpa.free(view_bytes);
-    const view_id = try batch.put(.view, view_bytes);
+    const view_id = try view_delta.write(gpa, store, &batch, acc, (try g.get(heads.items[0])).view);
     const op_bytes = try enc.encodeAlloc(gpa, Operation, .{ .parents = heads.items, .view = view_id, .meta = meta });
     defer gpa.free(op_bytes);
     const op_id = try batch.put(.operation, op_bytes);

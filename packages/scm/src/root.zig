@@ -63,6 +63,8 @@ pub const undo = @import("oplog/undo.zig");
 pub const preview = @import("oplog/preview.zig");
 /// Adopting a preview onto the current repo.
 pub const adopt = @import("oplog/adopt.zig");
+/// Rebasing descendants of rewritten and abandoned commits.
+pub const rebase = @import("oplog/rebase.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -100,6 +102,7 @@ test {
     _ = @import("graph/revset_test.zig");
     _ = @import("merge/markers_test.zig");
     _ = @import("oplog/oplog_test.zig");
+    _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
     _ = @import("oplog/preview_test.zig");
 }

@@ -55,51 +55,60 @@ fn checkFinal(gpa: Allocator, f: *fx.Fixture, ops: []const ObjectId, last: []con
     }
 }
 
-test "oplog: random interleavings of 4 writers x 200 ops" {
-    const gpa = std.testing.allocator;
-    // One full-size run, plus smaller runs on other seeds.
-    for ([_][2]u64{ .{ 1, 200 }, .{ 2, 50 }, .{ 3, 50 } }) |run| {
-        const seed = run[0];
-        const per = run[1];
-        var f = try fx.Fixture.init(gpa);
-        defer f.deinit();
-        const root = try f.initRepo();
-        root.close();
-        var prng: std.Random.DefaultPrng = .init(seed);
-        const rng = prng.random();
-        const writers = 4;
-        var repos: [writers]*Repo = undefined;
-        for (&repos) |*r| r.* = try f.load(.head);
-        defer for (repos) |r| r.close();
-        var done = [_]usize{0} ** writers;
-        var last = [_]?ObjectId{null} ** writers;
-        var ops: std.ArrayList(ObjectId) = .empty;
-        defer ops.deinit(gpa);
-        while (true) {
-            var open: [writers]usize = undefined;
-            var n: usize = 0;
-            for (done, 0..) |d, w| if (d < per) {
-                open[n] = w;
-                n += 1;
-            };
-            if (n == 0) break;
-            const w = open[rng.uintLessThan(usize, n)];
-            // Sometimes catch up with the others first (merging their
-            // heads); otherwise commit on a stale repo.
-            if (rng.uintLessThan(u8, 4) == 0) {
-                repos[w].close();
-                repos[w] = try f.load(.head);
-            }
-            const next = try step(repos[w], w, done[w], &last[w]);
+/// One seeded interleaving of 4 writers making `per` operations each.
+fn interleave(gpa: Allocator, seed: u64, per: usize) !void {
+    var f = try fx.Fixture.init(gpa);
+    defer f.deinit();
+    const root = try f.initRepo();
+    root.close();
+    var prng: std.Random.DefaultPrng = .init(seed);
+    const rng = prng.random();
+    const writers = 4;
+    var repos: [writers]*Repo = undefined;
+    for (&repos) |*r| r.* = try f.load(.head);
+    defer for (repos) |r| r.close();
+    var done = [_]usize{0} ** writers;
+    var last = [_]?ObjectId{null} ** writers;
+    var ops: std.ArrayList(ObjectId) = .empty;
+    defer ops.deinit(gpa);
+    while (true) {
+        var open: [writers]usize = undefined;
+        var n: usize = 0;
+        for (done, 0..) |d, w| if (d < per) {
+            open[n] = w;
+            n += 1;
+        };
+        if (n == 0) break;
+        const w = open[rng.uintLessThan(usize, n)];
+        // Sometimes catch up with the others first (merging their
+        // heads); otherwise commit on a stale repo.
+        if (rng.uintLessThan(u8, 4) == 0) {
             repos[w].close();
-            repos[w] = next;
-            try ops.append(gpa, next.op());
-            done[w] += 1;
-            // Keep the segment count logarithmic, as a running repo would.
-            if (ops.items.len % 64 == 0) _ = try compaction.compact(f.store, .{ .deflate = false });
+            repos[w] = try f.load(.head);
         }
-        try checkFinal(gpa, &f, ops.items, &last);
+        const next = try step(repos[w], w, done[w], &last[w]);
+        repos[w].close();
+        repos[w] = next;
+        try ops.append(gpa, next.op());
+        done[w] += 1;
+        // Keep the segment count logarithmic, as a running repo would.
+        if (ops.items.len % 64 == 0) _ = try compaction.compact(f.store, .{ .deflate = false });
     }
+    try checkFinal(gpa, &f, ops.items, &last);
+}
+
+test "oplog: random interleavings of 4 writers x 200 ops" {
+    // One full-size run, plus smaller runs on other seeds.
+    for ([_][2]u64{ .{ 1, 200 }, .{ 2, 50 }, .{ 3, 50 } }) |run| try interleave(std.testing.allocator, run[0], run[1]);
+}
+
+// The nightly campaign runs this on many more seeds.
+test "fuzz: oplog concurrent writers" {
+    try std.testing.fuzz({}, struct {
+        fn one(_: void, sm: *std.testing.Smith) anyerror!void {
+            try interleave(std.testing.allocator, sm.value(u64), 30);
+        }
+    }.one, .{});
 }
 
 const Shared = struct {
