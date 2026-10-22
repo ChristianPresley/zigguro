@@ -14,6 +14,10 @@ pub const tab_strip = @import("tab_strip.zig");
 pub const drop_zones = @import("drop_zones.zig");
 /// The `view.zig` module.
 pub const view = @import("view.zig");
+/// The `hit_map.zig` module.
+pub const hit_map = @import("hit_map.zig");
+/// The `chrome.zig` module.
+pub const chrome = @import("chrome.zig");
 
 /// See `model.DockModel`.
 pub const DockModel = model.DockModel;
