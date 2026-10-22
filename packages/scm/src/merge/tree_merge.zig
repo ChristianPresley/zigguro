@@ -37,6 +37,10 @@ pub const TreeMerger = struct {
     blobs: std.AutoHashMapUnmanaged(ObjectId, []const u8) = .empty,
     /// Merge text files changed on both sides by lines.
     content: bool = true,
+    /// Decided entries by full path (null: deleted), used where a path
+    /// changed on both sides and would otherwise merge or conflict (the
+    /// resolve proposer's decisions).
+    overrides: ?*const std.StringHashMapUnmanaged(?TreeEntry) = null,
 
     pub fn init(gpa: Allocator, store: *store_mod.Store, batch: *store_mod.WriteBatch) TreeMerger {
         return .{ .arena_state = .init(gpa), .store = store, .batch = batch };
@@ -132,6 +136,15 @@ pub const TreeMerger = struct {
         return tm.mergeAt("", base, left, right);
     }
 
+    /// The override for `prefix/name`, if there is one.
+    fn overrideAt(tm: *TreeMerger, prefix: []const u8, name: []const u8) !??TreeEntry {
+        const ov = tm.overrides orelse return null;
+        var buf: [4096]u8 = undefined;
+        const path = if (prefix.len == 0) name else std.fmt.bufPrint(&buf, "{s}/{s}", .{ prefix, name }) catch return error.NameTooLong;
+        const e = ov.get(path) orelse return null;
+        return @as(??TreeEntry, e);
+    }
+
     fn mergeAt(tm: *TreeMerger, prefix: []const u8, base: ?ObjectId, left: ObjectId, right: ObjectId) anyerror!?ObjectId {
         if (left.eql(right)) return left;
         if (base) |b| {
@@ -158,7 +171,11 @@ pub const TreeMerger = struct {
                 r
             else if (sameEntry(b, r))
                 l
-            else if (isDir(l) and isDir(r) and (b == null or isDir(b))) blk: {
+            else if (try tm.overrideAt(prefix, name)) |o| blk: {
+                var e = o orelse break :blk null;
+                e.name = name;
+                break :blk e;
+            } else if (isDir(l) and isDir(r) and (b == null or isDir(b))) blk: {
                 const path = try join(a, prefix, name);
                 const sub = (try tm.mergeAt(path, if (b) |x| x.id else null, l.?.id, r.?.id)) orelse {
                     ok = false;
@@ -310,4 +327,14 @@ test "tree merge: mode + content, file vs dir, binary" {
     // With content merging off, any two-sided edit conflicts.
     tm.content = false;
     try testing.expectEqual(@as(?ObjectId, null), try tm.merge3(base, left, right));
+
+    // Overrides decide two-sided paths, deletions included.
+    var ov: std.StringHashMapUnmanaged(?TreeEntry) = .empty;
+    try ov.put(tm.arena(), "f", .{ .name = "", .kind = .file, .id = try tm.putBlob("decided\n") });
+    tm.overrides = &ov;
+    const decided = try tm.read((try tm.merge3(base, left, clash)).?);
+    try testing.expectEqualStrings("f", decided.entries[0].name);
+    try testing.expectEqualStrings("decided\n", (try tm.readBlob(decided.entries[0].id)).?);
+    ov.putAssumeCapacity("f", null);
+    try testing.expectEqual(@as(usize, 0), (try tm.read((try tm.merge3(base, left, dir)).?)).entries.len);
 }
