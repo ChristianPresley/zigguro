@@ -9,7 +9,8 @@ with feedkeys() followed by a <Cmd> that records the state, and the result is wr
 render: the text with `¦` for the cursor (normal, insert, replace mode; an
 operator still pending counts as normal) or
 `«…»` around the Visual area, then `[mode]` on its own line unless the mode is
-normal, then `[reg TYPE] "TEXT"` when the scenario name ends in `+reg`.
+normal, then `[reg TYPE] "TEXT"` when the scenario name ends in `+reg`, or
+`[reg:X TYPE] "TEXT"` for each register X when it ends in `+reg:XYZ`.
 Scenarios whose name starts with `mc:` (several cursors) are written by hand
 and left alone.
 """
@@ -63,7 +64,7 @@ def vim_string(keys):
     return '"' + "".join(out) + '"'
 
 
-def run(before, keys):
+def run(before, keys, regs=""):
     off = before.index(CARET)
     text = before.replace(CARET, "", 1)
     lines = text.split("\n")
@@ -82,7 +83,8 @@ def run(before, keys):
             # <Cmd> runs in whatever mode the keys left Vim in, without leaving it.
             f.write(
                 "function Dump()\n  call writefile([json_encode({'m': mode(1), 'l': getline(1, '$'), "
-                "'c': getcurpos(), 'v': getpos('v'), 'r': getreg('\"'), 't': getregtype('\"')})], '" + out + "')\nendfunction\n"
+                "'c': getcurpos(), 'v': getpos('v'), 'r': getreg('\"'), 't': getregtype('\"'), "
+                "'x': map(split('" + regs + "', '\\zs'), {_, n -> [getreg(n), getregtype(n)]})})], '" + out + "')\nendfunction\n"
             )
             f.write("call feedkeys(" + vim_string(keys)[:-1] + "\\<Cmd>call Dump()\\<CR>\", 'tx')\n")
             f.write("qa!\n")
@@ -155,10 +157,13 @@ def main():
         for name, secs in scenarios:
             after = secs.get("after", "")
             if not name.startswith("mc:"):
-                r = run(secs["before"], secs["keys"])
+                regs = name.rsplit("+reg:", 1)[1] if "+reg:" in name else ""
+                r = run(secs["before"], secs["keys"], regs)
                 after = render(r)
                 if name.endswith("+reg"):
                     after += "\n[reg %s] %s" % (r["t"] if r["t"] in ("v", "V") else "b", json.dumps(r["r"], ensure_ascii=False))
+                for n, (text, t) in zip(regs, r["x"]):
+                    after += "\n[reg:%s %s] %s" % (n, t if t in ("v", "V") else "-" if t == "" else "b", json.dumps(text, ensure_ascii=False))
             parts.append("=== %s\n--- before\n%s\n--- keys\n%s\n--- after\n%s\n" % (name, secs["before"], secs["keys"], after))
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(parts))

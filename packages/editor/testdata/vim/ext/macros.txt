@@ -1,0 +1,149 @@
+=== record and play
+--- before
+¦1
+2
+3
+--- keys
+qaA!<Esc>jq@a
+--- after
+1!
+2!
+¦3
+
+=== play count
+--- before
+¦1
+2
+3
+4
+--- keys
+qaA!<Esc>jq2@a
+--- after
+1!
+2!
+3!
+¦4
+
+=== at at
+--- before
+¦1
+2
+3
+--- keys
+qaA!<Esc>jq@a@@
+--- after
+1!
+2!
+3¦!
+
+=== macro register +reg:a
+--- before
+¦x
+--- keys
+qaixy<Esc>q
+--- after
+x¦yx
+[reg:a v] "ixy\u001b"
+
+=== macro stops at failure
+--- before
+¦a1
+a2
+b
+a3
+--- keys
+qa0fax<Esc>jq10@a
+--- after
+1
+¦a2
+b
+a3
+
+=== recursive macro
+--- before
+¦a1
+a2
+a3
+b
+--- keys
+qaqqa0xj@aq@a
+--- after
+1
+2
+3
+¦
+
+=== put macro
+--- before
+¦x
+--- keys
+qadwq"ap
+--- after
+d¦w
+
+=== edited register runs
+--- before
+¦abc
+--- keys
+"ayy:let @a='x'<CR>@a
+--- after
+¦bc
+
+=== macro with count inside
+--- before
+¦a b c d e f
+--- keys
+qa2dwq@a
+--- after
+¦e f
+
+=== macro append register +reg:a
+--- before
+¦x
+--- keys
+qaxqqAiy<Esc>q
+--- after
+¦y
+[reg:a v] "xiy\u001b"
+
+=== macro search
+--- before
+¦a x b x c x
+--- keys
+qa/x<CR>rYq@a@a
+--- after
+a Y b Y c ¦Y
+
+=== macro ex
+--- before
+¦a
+a
+a
+--- keys
+qa:s/a/b/<CR>jq@a
+--- after
+b
+b
+¦a
+
+=== at colon
+--- before
+¦a
+a
+a
+--- keys
+:s/a/b/<CR>j@:j@:
+--- after
+b
+b
+¦b
+
+=== macro visual
+--- before
+¦abc
+def
+--- keys
+qavlUjq@a
+--- after
+ABc
+¦DEf

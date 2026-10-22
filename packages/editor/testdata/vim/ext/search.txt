@@ -1,0 +1,209 @@
+=== slash
+--- before
+¦foo bar baz
+--- keys
+/ba<CR>
+--- after
+foo ¦bar baz
+
+=== slash n
+--- before
+¦foo bar baz
+--- keys
+/ba<CR>n
+--- after
+foo bar ¦baz
+
+=== slash wraps
+--- before
+foo bar b¦az
+--- keys
+/foo<CR>
+--- after
+¦foo bar baz
+
+=== question
+--- before
+foo bar ¦baz
+--- keys
+?foo<CR>
+--- after
+¦foo bar baz
+
+=== question n
+--- before
+a x b x c ¦x
+--- keys
+?x<CR>n
+--- after
+a ¦x b x c x
+
+=== question N
+--- before
+a x b x c ¦x
+--- keys
+?x<CR>N
+--- after
+a x b x c ¦x
+
+=== slash regex
+--- before
+¦foo1 bar22 baz
+--- keys
+/\d\+<CR>n
+--- after
+foo1 bar¦22 baz
+
+=== slash word bound
+--- before
+¦this is
+--- keys
+/\<lt>is<CR>
+--- after
+this ¦is
+
+=== slash very magic
+--- before
+¦ab aab xaab
+--- keys
+/\v(a)+b<CR>n
+--- after
+ab aab x¦aab
+
+=== slash dollar
+--- before
+¦xa
+bx
+x
+--- keys
+/x$<CR>
+--- after
+xa
+b¦x
+x
+
+=== slash caret
+--- before
+¦ax
+xb
+--- keys
+/^x<CR>
+--- after
+ax
+¦xb
+
+=== slash empty reuses
+--- before
+¦a x b x c
+--- keys
+/x<CR>0/<CR>
+--- after
+a ¦x b x c
+
+=== slash with count
+--- before
+¦a x b x c x
+--- keys
+2/x<CR>
+--- after
+a x b ¦x c x
+
+=== d slash
+--- before
+¦foo bar baz
+--- keys
+d/baz<CR>
+--- after
+¦baz
+
+=== c slash
+--- before
+¦foo bar baz
+--- keys
+c/bar<CR>X<Esc>
+--- after
+¦Xbar baz
+
+=== y slash +reg
+--- before
+¦foo bar baz
+--- keys
+y/baz<CR>
+--- after
+¦foo bar baz
+[reg v] "foo bar "
+
+=== visual slash
+--- before
+¦foo bar baz
+--- keys
+v/baz<CR>
+--- after
+«foo bar b»az
+[visual]
+
+=== slash escape cancels
+--- before
+¦foo bar
+--- keys
+/bar<Esc>
+--- after
+¦foo bar
+
+=== slash backspace
+--- before
+¦foo bar baz
+--- keys
+/bax<BS>r<CR>
+--- after
+foo ¦bar baz
+
+=== slash not found
+--- before
+¦foo bar
+--- keys
+/zzz<CR>
+--- after
+¦foo bar
+
+=== star then slash n
+--- before
+¦foo bar foo
+--- keys
+*n
+--- after
+¦foo bar foo
+
+=== slash offset ignored
+--- before
+¦foo bar
+--- keys
+/bar/e<CR>
+--- after
+foo ba¦r
+
+=== slash case
+--- before
+¦foo Foo foo
+--- keys
+/Foo<CR>
+--- after
+foo ¦Foo foo
+
+=== slash multiline
+--- before
+¦ab
+cd
+--- keys
+/b\nc<CR>
+--- after
+a¦b
+cd
+
+=== slash class
+--- before
+¦a1 b2
+--- keys
+/[0-9]<CR>n
+--- after
+a1 b¦2

@@ -1,0 +1,224 @@
+=== mark jump exact
+--- before
+one ¦two
+three
+--- keys
+majj`a
+--- after
+one ¦two
+three
+
+=== mark jump line
+--- before
+one ¦two
+  three
+--- keys
+maj'a
+--- after
+¦one two
+  three
+
+=== mark after insert above
+--- before
+one ¦two
+three
+--- keys
+maggOnew<Esc>`a
+--- after
+new
+one ¦two
+three
+
+=== mark after insert below
+--- before
+one ¦two
+x
+--- keys
+majiXX<Esc>`a
+--- after
+one ¦two
+XXx
+
+=== d mark line
+--- before
+¦a
+b
+c
+d
+--- keys
+majjd'a
+--- after
+¦d
+
+=== d mark exact
+--- before
+a¦bcdef
+--- keys
+mallld`a
+--- after
+a¦ef
+
+=== y mark +reg
+--- before
+a¦bcdef
+--- keys
+mally`a
+--- after
+a¦bcdef
+[reg v] "bc"
+
+=== backtick backtick
+--- before
+¦a
+b
+c
+d
+--- keys
+G``
+--- after
+¦a
+b
+c
+d
+
+=== quote quote
+--- before
+¦a
+  b
+c
+d
+--- keys
+jlG''
+--- after
+a
+  ¦b
+c
+d
+
+=== quote quote twice
+--- before
+¦a
+b
+c
+--- keys
+G''''
+--- after
+a
+b
+¦c
+
+=== unset mark
+--- before
+¦abc
+--- keys
+`b
+--- after
+¦abc
+
+=== ctrl-o
+--- before
+¦a
+b
+c
+d
+e
+--- keys
+3GG<C-o>
+--- after
+a
+b
+¦c
+d
+e
+
+=== ctrl-o twice
+--- before
+¦a
+b
+c
+d
+e
+--- keys
+3GG<C-o><C-o>
+--- after
+¦a
+b
+c
+d
+e
+
+=== ctrl-o ctrl-i
+--- before
+¦a
+b
+c
+d
+e
+--- keys
+3GG<C-o><C-o><Tab>
+--- after
+a
+b
+¦c
+d
+e
+
+=== ctrl-o after search
+--- before
+¦a x
+b x
+c
+--- keys
+/x<CR>n<C-o>
+--- after
+a ¦x
+b x
+c
+
+=== ctrl-o past start
+--- before
+¦a
+b
+c
+--- keys
+G<C-o><C-o><C-o>
+--- after
+¦a
+b
+c
+
+=== global mark
+--- before
+one ¦two
+three
+--- keys
+mAj`A
+--- after
+one ¦two
+three
+
+=== mark visual
+--- before
+¦abc def
+--- keys
+vly`>
+--- after
+a¦bc def
+
+=== mark visual start
+--- before
+¦abc def
+--- keys
+wvly0`<
+--- after
+abc ¦def
+
+=== dot mark
+--- before
+¦abc
+def
+--- keys
+jx gg`.
+--- after
+abc
+¦ef

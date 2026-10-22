@@ -2297,8 +2297,9 @@ the region (JGit takes the first).
 `packages/editor/src/modes/vim/*.zig` (E05.F09).
 
 ### Implemented by
-E05.F09.S01.T01 (Vim core). Registers, dot repeat, macros, marks and ex come
-with E05.F09.S01.T02; Emacs with E05.F09.S02.
+E05.F09.S01.T01 (Vim core) and E05.F09.S01.T02 (registers, dot repeat,
+macros, marks and the jumplist, searches, the Ex subset). Emacs comes with
+E05.F09.S02.
 
 ### Consumed by
 EditorView (E04/E05 view: builds a `Host` per editor and routes keys), the
@@ -2314,19 +2315,38 @@ pub fn parse(notation: []const u8, out: []Key) !usize;   // "d2w<Esc><C-v>"
 pub const CaretShape = enum { bar, block, underline, half_block };
 pub const KeyResult = enum { consumed, passthrough };
 pub const Host = struct { doc: *Document, sels: *SelectionSet, undo: *UndoTree,
-    edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null };
+    edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null,
+    actions: ?Actions = null };   // :w :q :x :e go here; without it they fail with a message
+pub const Action = union(enum) { write: struct { path: ?[]const u8, force: bool }, quit: struct { force: bool },
+    exit, edit: struct { path: ?[]const u8, force: bool } };
+pub const Actions = struct { ctx: *anyopaque, runFn: *const fn (ctx, Action) anyerror!void };
 pub const ModeHandler = struct { ctx: *anyopaque, handleKeyFn, statusTextFn, caretShapeFn,
     pub fn handleKey(h, k: Key, host: *Host) !KeyResult; pub fn statusText(h) []const u8; pub fn caretShape(h) CaretShape };
 pub const ChangeGroup = struct { // one undo step from several document changes
     pub fn begin(g, sels) !void; pub fn commit(g, undo, sels_after, meta) !void; pub fn cancel(g) void; pub fn listener(g) Listener };
 // vim/state.zig
-pub const Mode = enum { normal, insert, replace, visual, visual_line, visual_block, op_pending };
+pub const Mode = enum { normal, insert, replace, visual, visual_line, visual_block, op_pending, cmdline };
+pub const Options = struct { number, relativenumber, wrap, ignorecase, smartcase: bool };   // :set
+pub const Shared = struct { regs: Registers, global_marks: GlobalMarks, search: Search, options: Options,
+    highlight_off: bool,   // :noh
+    pub fn init(gpa) Shared; pub fn deinit(sh) void };
 pub const VimState = struct {
+    shared: ?*Shared = null;   // one per window: registers, A-Z marks, last search, options
+    pub fn sh(vs) *Shared;     // `shared`, else the state's own
+    pub fn markPos(vs, name: u21) ?u64;
+    pub fn runCmdline(vs, kind: u8, line: []const u8, host) !void;   // ":", "/", "?" without the prefix
     pub fn init(gpa) VimState; pub fn deinit(vs) void; pub fn handler(vs) ModeHandler;
     pub fn handleKey(vs, k: Key, host: *Host) !KeyResult;
-    pub fn statusText(vs) []const u8;   // "-- INSERT --", "-- VISUAL BLOCK --", pending "2d"
+    pub fn statusText(vs) []const u8;   // "-- INSERT --", ":%s/a/b", "recording @q", messages, pending "2d"
     pub fn caretShape(vs) CaretShape; pub fn detach(vs) void;
 };
+// vim/registers.zig: a-z (A-Z append), 0-9, -, +, * (through ClipboardPort), . : / (read-only), _
+pub const ClipboardPort = struct { ctx, getFn(ctx, Which{clipboard, primary}, gpa) !?[]u8, setFn(ctx, Which, []const u8) !void };
+pub const Registers = struct { clipboard: ?ClipboardPort = null,
+    pub fn get(r, name: u8) ?*const Register; pub fn put(r, name: u8, text, kind) !void };
+// vim/pattern.zig: Vim regex -> zg_regex syntax
+pub fn translatePattern(gpa, vim_pat, Flags{ ignorecase, smartcase, diag: ?*Diag }) error{Unsupported, Syntax, OutOfMemory}![]u8;
+pub fn translateReplacement(gpa, rep, previous, diag) ![]u8;
 ```
 Vim keeps one cursor per host selection and writes them back after every key
 (a caret in Normal mode, the inclusive area in Visual modes); in Insert and
@@ -2335,7 +2355,23 @@ Replace mode the host selections are the truth and typing goes through
 operator, a command, or a whole insert session with its count) is one undo
 step. Behaviour is checked against Vim 9.1: `testdata/vim/core/*.txt` (405
 scenarios) are recorded by `testdata/vim/oracle.py` from real Vim and replayed
-by `vim_core_test.zig`.
+by `vim_core_test.zig`; `testdata/vim/ext/*.txt` (176 scenarios: registers,
+dot repeat, macros, marks, searches, Ex) are replayed by `vim_ext_test.zig`.
+
+Registers follow Vim: yanks go to `0`, deletes over lines (or with `%`, `(`,
+`)`, `` ` ``, `/`, `?`, `n`, `N`, `{`, `}`) shift `1`-`9`, smaller deletes go
+to `-`. Macros record Vim's bytes (`<Esc>` is 0x1B, named keys use Vim's
+`K_SPECIAL` codes), so a register can be put, edited and run again; a count
+or a recursive macro stops at the first command that fails. `.` replays the
+command and the keys typed in its insert session, so smart typing applies
+again. Marks are offsets mapped through every change, so a mark moves with
+its text; `'<`/`'>` and `` `. `` are kept, and the jumplist (100 entries)
+follows Vim's `Ctrl-O`/`Ctrl-I`. Patterns are Vim's (`\v \m \M \V`, `\<
+\>`, `\{n,m}`, `\{-}`, `\c`, `\_s`, `\%x41`...), translated for zg_regex;
+search offsets (`/pat/e+1`, `s-1`, `+2`) work. The Ex subset is ranges (`%`,
+`.`, `$`, `'x`, `/pat/`, `+n`), `:s` with `g i I e n &` (`:s`, `:&&`, `~`),
+`:g`/`:v` with `d`, `:d`, `:noh`, `:set`, `:let @r = '...'`, and `:w` `:q`
+`:wq` `:x` `:e` through `Host.actions`.
 
 ### Threading
 UI thread only, like the document it edits.
@@ -2346,8 +2382,12 @@ listener on the first document it sees and removes it in `detach`/`deinit`.
 The `Host` and what it points to belong to the caller.
 
 ### Stability
-Unstable until EditorView routes keys to modes. Gaps: `=`, `!`, `H`/`M`/`L`,
-blockwise put, counts on Visual operators other than shifts.
+Unstable. Gaps: `=`, `!`, `H`/`M`/`L`, blockwise put, counts on Visual
+operators other than shifts; `:s` flag `c`; `\zs`, `\ze`, look-around and
+back references in patterns (reported with their span); `:g` with commands
+other than `d`; jumping to a file mark in another document (the host has to
+open it); marks on deleted lines move to the deletion instead of being
+dropped, and a mark keeps its place in the text where Vim keeps its column.
 
 ## zg_vulkan.r2d (DrawList, Renderer, Prim)
 
