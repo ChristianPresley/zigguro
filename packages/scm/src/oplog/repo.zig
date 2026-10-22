@@ -43,6 +43,8 @@ pub const Repo = struct {
     gpa: Allocator,
     io: std.Io,
     store: *Store,
+    /// The repository directory (holding `op_heads/` and `detached/`).
+    repo_dir: std.Io.Dir,
     heads_dir: std.Io.Dir,
     opts: Options,
     arena_state: std.heap.ArenaAllocator,
@@ -57,7 +59,7 @@ pub const Repo = struct {
     /// root operation whose view is empty.
     pub fn init(gpa: Allocator, io: std.Io, repo_dir: std.Io.Dir, store: *Store, opts: Options, meta: OpMeta) !*Repo {
         const dir = try repo_dir.createDirPathOpen(io, "op_heads", .{ .open_options = .{ .iterate = true } });
-        errdefer dir.close(io);
+        defer dir.close(io);
         const existing = try op_heads.list(gpa, io, dir);
         defer gpa.free(existing);
         if (existing.len != 0) return error.AlreadyInitialized;
@@ -71,7 +73,7 @@ pub const Repo = struct {
         const op_id = try batch.put(.operation, op_bytes);
         try batch.commit();
         try op_heads.add(io, dir, op_id);
-        return fromOp(gpa, io, store, dir, opts, op_id, false);
+        return fromOp(gpa, io, store, repo_dir, opts, op_id, false);
     }
 
     /// Loads the repository in `repo_dir`.
@@ -80,28 +82,35 @@ pub const Repo = struct {
             error.FileNotFound => return error.NotInitialized,
             else => return e,
         };
-        errdefer dir.close(io);
-        switch (at) {
-            .op => |id| return fromOp(gpa, io, store, dir, opts, id, true),
-            .op_prefix => |p| return fromOp(gpa, io, store, dir, opts, try resolveOpPrefix(gpa, io, store, dir, p), true),
-            .head => {},
-        }
-        const heads = try op_heads.list(gpa, io, dir);
-        defer gpa.free(heads);
-        if (heads.len == 0) return error.NoOpHeads;
-        if (heads.len == 1) return fromOp(gpa, io, store, dir, opts, heads[0], false);
-        const merged = try mergeHeads(gpa, io, store, dir, opts, heads);
-        return fromOp(gpa, io, store, dir, opts, merged, false);
+        defer dir.close(io);
+        const id = switch (at) {
+            .op => |id| return fromOp(gpa, io, store, repo_dir, opts, id, true),
+            .op_prefix => |p| return fromOp(gpa, io, store, repo_dir, opts, try resolveOpPrefix(gpa, io, store, dir, p), true),
+            .head => blk: {
+                const heads = try op_heads.list(gpa, io, dir);
+                defer gpa.free(heads);
+                if (heads.len == 0) return error.NoOpHeads;
+                if (heads.len == 1) break :blk heads[0];
+                break :blk try mergeHeads(gpa, io, store, dir, opts, heads);
+            },
+        };
+        return fromOp(gpa, io, store, repo_dir, opts, id, false);
     }
 
-    /// Builds a repo at `op_id` (taking ownership of `heads_dir`).
-    pub fn fromOp(gpa: Allocator, io: std.Io, store: *Store, heads_dir: std.Io.Dir, opts: Options, op_id: ObjectId, read_only: bool) !*Repo {
+    /// Builds a repo at `op_id`. `repo_dir` is borrowed: the repo opens
+    /// its own handles.
+    pub fn fromOp(gpa: Allocator, io: std.Io, store: *Store, repo_dir: std.Io.Dir, opts: Options, op_id: ObjectId, read_only: bool) !*Repo {
+        const own_dir = try repo_dir.openDir(io, ".", .{ .iterate = true });
+        errdefer own_dir.close(io);
+        const heads_dir = try repo_dir.openDir(io, "op_heads", .{ .iterate = true });
+        errdefer heads_dir.close(io);
         const r = try gpa.create(Repo);
         errdefer gpa.destroy(r);
         r.* = .{
             .gpa = gpa,
             .io = io,
             .store = store,
+            .repo_dir = own_dir,
             .heads_dir = heads_dir,
             .opts = opts,
             .arena_state = .init(gpa),
@@ -122,6 +131,7 @@ pub const Repo = struct {
     pub fn close(r: *Repo) void {
         r.arena_state.deinit();
         r.heads_dir.close(r.io);
+        r.repo_dir.close(r.io);
         r.gpa.destroy(r);
     }
 
@@ -139,13 +149,14 @@ pub const Repo = struct {
         return tx_mod.Transaction.begin(r, meta);
     }
 
-    /// A second handle on the op heads directory (for a new `Repo`).
-    pub fn dupHeadsDir(r: *const Repo) !std.Io.Dir {
-        return r.heads_dir.openDir(r.io, ".", .{ .iterate = true });
+    /// The same repository at another operation (after a commit).
+    pub fn reopen(r: *const Repo, op_id: ObjectId, read_only: bool) !*Repo {
+        return fromOp(r.gpa, r.io, r.store, r.repo_dir, r.opts, op_id, read_only);
     }
 
-    /// GC roots: the current op heads. With `op_mod.gcEdges` as extra
-    /// edges, everything the op log references stays alive.
+    /// GC roots: the current op heads and the detached (preview)
+    /// operations. With `op_mod.gcEdges` as extra edges, everything the op
+    /// log references stays alive.
     pub fn gcRoots(r: *Repo) gc_mod.RootProvider {
         return .{ .ctx = r, .forEachRoot = struct {
             fn each(ctx: *anyopaque, sink: *gc_mod.RootSink) anyerror!void {
@@ -153,6 +164,9 @@ pub const Repo = struct {
                 const heads = try op_heads.list(self.gpa, self.io, self.heads_dir);
                 defer self.gpa.free(heads);
                 for (heads) |h| try sink.add(h);
+                const detached = try listMarkers(self.gpa, self.io, self.repo_dir);
+                defer self.gpa.free(detached);
+                for (detached) |d| try sink.add(d);
             }
         }.each };
     }
@@ -400,6 +414,21 @@ pub fn normalizeHeads(arena: Allocator, ix: *index_mod.CommitIndex, v: View) !Vi
     var out = v;
     out.heads = keep.items;
     return out;
+}
+
+/// The directory under the repo directory holding one empty marker file
+/// per detached (preview) operation, named by its hex ID.
+pub const detached_dir_name = "detached";
+
+/// The detached operation IDs, sorted (none when the directory is
+/// missing).
+pub fn listMarkers(gpa: Allocator, io: std.Io, repo_dir: std.Io.Dir) ![]ObjectId {
+    var dir = repo_dir.openDir(io, detached_dir_name, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound => return gpa.alloc(ObjectId, 0),
+        else => return e,
+    };
+    defer dir.close(io);
+    return op_heads.list(gpa, io, dir);
 }
 
 /// Finds the operation whose hex ID starts with `prefix`, searching back
