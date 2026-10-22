@@ -772,7 +772,7 @@ test "weston: connect, registry lists wl_compositor, roundtrip under 5 ms" {
     defer w.stop();
     var env: std.process.Environ.Map = .init(testing.allocator);
     defer env.deinit();
-    try env.put("XDG_RUNTIME_DIR", w.dir_path);
+    try env.put("XDG_RUNTIME_DIR", w.dirPath());
     try env.put("WAYLAND_DISPLAY", "zg-test");
     const c = try Connection.connect(testing.allocator, testing.io, &env);
     defer c.deinit();
@@ -786,39 +786,4 @@ test "weston: connect, registry lists wl_compositor, roundtrip under 5 ms" {
 }
 
 /// A headless weston on a private runtime dir; absent weston skips.
-const WestonForTest = struct {
-    tmp: testing.TmpDir,
-    path_buf: [Io.Dir.max_path_bytes]u8,
-    dir_path: []const u8,
-    child: std.process.Child,
-
-    fn start() !WestonForTest {
-        var w: WestonForTest = undefined;
-        w.tmp = testing.tmpDir(.{});
-        errdefer w.tmp.cleanup();
-        const n = try w.tmp.dir.realPath(testing.io, &w.path_buf);
-        w.dir_path = w.path_buf[0..n];
-        var env: std.process.Environ.Map = .init(testing.allocator);
-        defer env.deinit();
-        try env.put("XDG_RUNTIME_DIR", w.dir_path);
-        w.child = try std.process.spawn(testing.io, .{
-            .argv = &.{ "weston", "--backend=headless", "--socket=zg-test", "--idle-time=0", "--no-config" },
-            .environ_map = &env,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-        errdefer w.child.kill(testing.io);
-        var tries: usize = 0;
-        while (tries < 200) : (tries += 1) {
-            if (w.tmp.dir.access(testing.io, "zg-test", .{})) |_| return w else |_| {}
-            try testing.io.sleep(.fromMilliseconds(10), .awake);
-        }
-        return error.WestonDidNotStart;
-    }
-
-    fn stop(w: *WestonForTest) void {
-        w.child.kill(testing.io);
-        w.tmp.cleanup();
-    }
-};
+const WestonForTest = @import("../testing/weston.zig").WestonForTest;
