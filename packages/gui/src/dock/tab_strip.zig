@@ -39,6 +39,8 @@ pub const TabStripProps = struct {
     focused: bool = false,
     /// Receives the overflow menu's `activate_action` (arg: the tab id).
     on_action: ?menu.ActionCb = null,
+    /// Makes the tabs draggable; each reports its `TabSpec.id`.
+    drag: ?tabs_w.DragHook = null,
     test_id: []const u8 = "tab_strip",
 };
 
@@ -56,6 +58,8 @@ pub const TabStripResponse = struct {
     /// A tab asked for its context menu, at `context_node`.
     context: ?u32 = null,
     context_node: NodeId = .none,
+    /// The strip's box.
+    strip: NodeId = .none,
     /// Each tab's node, for drag-to-dock (valid until the next build).
     nodes: []const NodeId = &.{},
 };
@@ -67,6 +71,7 @@ pub fn tabStrip(ui: *Ui, specs: []const TabSpec, active: u32, p: TabStripProps) 
     const nodes: []NodeId = ui.arena().alloc(NodeId, specs.len) catch &[_]NodeId{};
     ui.open(.{ .style = .{ .dir = .row, .h = .{ .px = height }, .shrink = 0, .bg = .{ .token = .bg_elevated }, .align_items = .stretch }, .test_id = p.test_id });
     defer ui.close();
+    out.strip = ui.current();
     const sc = scroll.scrollArea(ui, .{ .x = true, .y = false, .style = .{ .grow = 1, .basis = .{ .px = 0 }, .dir = .row } });
     {
         defer ui.close();
@@ -89,6 +94,7 @@ pub fn tabStrip(ui: *Ui, specs: []const TabSpec, active: u32, p: TabStripProps) 
                 .min_w = 80,
                 .max_w = 240,
                 .height = height,
+                .drag = if (p.drag) |d| .{ .ctx = d.ctx, .f = d.f, .id = t.id } else null,
             });
             const n = ui.lastNode();
             group.add(n);
