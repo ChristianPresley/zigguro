@@ -82,6 +82,10 @@ pub const ai = struct {
     pub const describe = @import("ai/describe.zig");
     /// Proposing and applying conflict resolutions.
     pub const resolve = @import("ai/resolve.zig");
+    /// Token-budgeted prompt context (diffs, statistics).
+    pub const context = @import("ai/context.zig");
+    /// The prompt template renderer.
+    pub const prompts = @import("ai/prompts.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -144,4 +148,6 @@ test {
     _ = @import("ai/proposal_files.zig");
     _ = @import("ai/describe.zig");
     _ = @import("ai/resolve.zig");
+    _ = @import("ai/context.zig");
+    _ = @import("ai/prompts.zig");
 }
