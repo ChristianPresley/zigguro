@@ -204,6 +204,7 @@ pub const SessionWriter = struct {
                     break :blk null;
                 },
                 .usage => |u| .{ .usage = .{ .model = w.model, .usage = u.last, .cost_micros = u.cost_micros, .estimated = u.estimated } },
+                .checkpoint => |c| .{ .checkpoint = .{ .id = c.id, .turn = c.turn, .label = c.label } },
                 .error_ => |er| .{ .event = .{ .kind = "error", .data_json = jsonOf(a, er) } },
                 .budget => |b| .{ .event = .{ .kind = "budget", .data_json = jsonOf(a, b) } },
                 .recovery => |r| .{ .event = .{ .kind = "recovery", .data_json = jsonOf(a, r) } },

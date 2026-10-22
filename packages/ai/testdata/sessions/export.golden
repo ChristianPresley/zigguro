@@ -1,0 +1,31 @@
+# What a.zig does
+
+Started in `/work/repo` with `claude-x`.
+
+## User
+
+Read a.zig and tell me what it does.
+
+## Assistant
+
+Reading it.
+
+**Tool call:** `read_file`
+
+```json
+{"path":"a.zig"}
+```
+
+## Tool results
+
+**Output of:** `read_file`
+
+````
+```xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+````
+
+_(240 more bytes not shown)_
+
+## Assistant
+
+It defines `a`.

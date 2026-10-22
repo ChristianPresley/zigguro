@@ -117,6 +117,18 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
             .add_context => |extra| text = std.mem.concat(scratch, u8, &.{ in.text, "\n\n", extra }) catch in.text,
         }
     };
+    if (a.deps.checkpoints) |c| {
+        // E12 checkpoint for rewind; the session log records it.
+        const label = labelPrefix(in.text, 80);
+        const id = c.create(c.ctx, a.io, a.ref, a.turn_id, label);
+        const seq = a.bus.lastSeq() + 1;
+        {
+            a.mutex.lockUncancelable(a.io);
+            defer a.mutex.unlock(a.io);
+            a.checkpoints.append(ar, .{ .seq = seq, .id = id }) catch {};
+        }
+        a.publish(.{ .checkpoint = .{ .id = id, .turn = a.turn_id, .label = ar.dupe(u8, label) catch "" } });
+    }
     commitText(a, .user, text, false) catch return fail(a, "out_of_memory", "could not record the input", null);
 
     var stop_continuations: u8 = 0;
@@ -344,16 +356,28 @@ fn recordUsage(a: *Agent, model: *const registry.ModelInfo, req: *const request.
 fn commit(a: *Agent, m: proto.Message) Allocator.Error!*const proto.Message {
     var c = try json.cloneMessage(a.arena.allocator(), m);
     if (c.meta.time_ms == null) c.meta.time_ms = Io.Timestamp.now(a.io, .real).toMilliseconds();
+    const seq = a.bus.lastSeq() + 1;
     const index = blk: {
         a.mutex.lockUncancelable(a.io);
         defer a.mutex.unlock(a.io);
-        try a.transcript.append(a.arena.allocator(), c);
+        try a.transcript.ensureUnusedCapacity(a.arena.allocator(), 1);
+        try a.seqs.append(a.arena.allocator(), seq);
+        a.transcript.appendAssumeCapacity(c);
         break :blk a.transcript.items.len - 1;
     };
     const stored = &a.transcript.items[index];
-    if (a.deps.session) |s| s.vtable.message(s.ctx, a.io, a.ref, a.bus.lastSeq() + 1, stored) catch |e| a.publish(.{ .warning = @errorName(e) });
+    if (a.deps.session) |s| s.vtable.message(s.ctx, a.io, a.ref, seq, stored) catch |e| a.publish(.{ .warning = @errorName(e) });
     a.publish(.{ .message_committed = .{ .index = @intCast(index), .role = c.role, .interrupted = c.meta.interrupted } });
     return stored;
+}
+
+/// At most `max` bytes of the first line of `text`, cut at a UTF-8 boundary.
+fn labelPrefix(text: []const u8, max: usize) []const u8 {
+    const line = std.mem.trim(u8, text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len], " \t\r");
+    if (line.len <= max) return line;
+    var cut = max;
+    while (cut > 0 and line[cut] & 0xC0 == 0x80) cut -= 1;
+    return line[0..cut];
 }
 
 fn commitText(a: *Agent, role: proto.Role, text: []const u8, synthetic: bool) Allocator.Error!void {

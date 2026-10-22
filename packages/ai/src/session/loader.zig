@@ -209,7 +209,7 @@ fn parses(a: Allocator, text: []const u8) bool {
 
 /// Synthesized `is_error` results for the tool calls of the last assistant
 /// message when no tool results follow it.
-fn interruptedResults(a: Allocator, tail: []const records.Line) Allocator.Error!?proto.Message {
+pub fn interruptedResults(a: Allocator, tail: []const records.Line) Allocator.Error!?proto.Message {
     var i = tail.len;
     while (i > 0) {
         i -= 1;
@@ -230,8 +230,9 @@ fn interruptedResults(a: Allocator, tail: []const records.Line) Allocator.Error!
     return null;
 }
 
-/// Reads lines forward from `pos` to `end` in chunks.
-const Forward = struct {
+/// Reads lines forward from `pos` to `end` in chunks (also used by
+/// session search).
+pub const Forward = struct {
     file: Io.File,
     pos: u64,
     end: u64,
@@ -240,12 +241,12 @@ const Forward = struct {
     start: usize = 0,
     read: u64 = 0,
 
-    fn deinit(it: *Forward) void {
+    pub fn deinit(it: *Forward) void {
         it.buf.deinit(it.gpa);
     }
 
     /// The next line (without `\n`); valid until the next call.
-    fn next(it: *Forward, io: Io) !?[]const u8 {
+    pub fn next(it: *Forward, io: Io) !?[]const u8 {
         while (true) {
             if (std.mem.indexOfScalarPos(u8, it.buf.items, it.start, '\n')) |nl| {
                 const line = it.buf.items[it.start..nl];
