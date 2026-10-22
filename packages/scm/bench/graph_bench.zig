@@ -18,6 +18,7 @@ const names = [_][]const u8{
     "graph.merge_bases",
     "graph.rebuild_1M",
     "graph.ancestors_1000",
+    "graph.revset_trunk_range",
 };
 
 fn wanted(b: *bench.Bench, name: []const u8) bool {
@@ -70,6 +71,29 @@ pub fn register(b: *bench.Bench) !void {
     try b.run("graph.merge_bases: merge bases of nearby commits", ctx, mergeBasesNear);
     try b.run("graph.ancestors_1000: stream 1000 ancestors", ctx, ancestors1000);
     if (wanted(b, "graph.is_ancestor_p99")) try isAncestorP99(gpa, io, ix);
+
+    // `trunk()..@` with trunk 2000 commits behind the working copy.
+    var trunk_id: ?scm.ObjectId = ids[ids.len - 2001];
+    var heads = [1]scm.ObjectId{ids[ids.len - 1]};
+    var view: scm.View = .empty;
+    view.heads = &heads;
+    view.wc_commits = &.{.{ .workspace = "default", .commit = ids[ids.len - 1] }};
+    view.remote_bookmarks = &.{.{ .remote = "origin", .name = "main", .target = .normal(&trunk_id), .tracked = true }};
+    const rv = ix.acquire();
+    defer rv.release();
+    const rctx: scm.revset.EvalContext = .{ .graph = rv, .view = &view, .store = store, .io = io };
+    try b.run("graph.revset_trunk_range: evaluate trunk()..@ (2000 commits apart, 1M history)", &rctx, revsetTrunkRange);
+}
+
+fn revsetTrunkRange(c: *const scm.revset.EvalContext, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var diag: scm.revset.ParseError = .{};
+        var it = scm.revset.evaluate(s.allocator(), c, "trunk()..@", &diag) catch unreachable;
+        defer it.deinit();
+        var k: usize = 0;
+        while (it.next() catch unreachable) |_| k += 1;
+        bench.doNotOptimizeAway(k);
+    }
 }
 
 fn now(io: std.Io) u64 {
