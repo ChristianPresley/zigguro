@@ -1177,7 +1177,13 @@ test "engine: symlink into denied dir denied" {
     defer arena.deinit();
     const root = try tmp.dir.realPathFileAlloc(io, ".", arena.allocator());
     const ws = try std.fs.path.join(arena.allocator(), &.{ root, "ws" });
-    const deny = try std.fmt.allocPrint(arena.allocator(), "read_file(/{s}/secrets/**)", .{root});
+    // `//` anchors an absolute path; Windows drives are written `//c/...`.
+    const root_rule = if (builtin.os.tag == .windows) blk: {
+        const r = try arena.allocator().dupe(u8, root);
+        std.mem.replaceScalar(u8, r, '\\', '/');
+        break :blk try std.fmt.allocPrint(arena.allocator(), "//{c}{s}", .{ r[0], r[2..] });
+    } else try std.fmt.allocPrint(arena.allocator(), "/{s}", .{root});
+    const deny = try std.fmt.allocPrint(arena.allocator(), "read_file({s}/secrets/**)", .{root_rule});
 
     var settings: TestSettings = .{};
     defer settings.deinit();
@@ -1185,7 +1191,7 @@ test "engine: symlink into denied dir denied" {
     var port: fakes.FakeApprovalPort = .{ .gpa = std.testing.allocator };
     defer port.deinit();
     var trust: fakes.StaticTrust = .{ .state = .trusted };
-    const e = try Engine.init(std.testing.allocator, io, .{ .approvals = port.port(), .trust = trust.query(), .settings = settings.source(), .workspace_root = ws, .home = "/home/u", .windows = false });
+    const e = try Engine.init(std.testing.allocator, io, .{ .approvals = port.port(), .trust = trust.query(), .settings = settings.source(), .workspace_root = ws, .home = "/home/u", .windows = builtin.os.tag == .windows });
     defer e.deinit();
     var res: [1]contracts.Resource = .{.{ .path = .{ .path = "link/key", .access = .{ .read = true } } }};
     const req: contracts.ToolRequest = .{ .actor = agent("s"), .tool = "read_file", .input_json = "", .effects = .{ .read_only = true }, .resources = &res, .mode = .default, .workspace = ws };
