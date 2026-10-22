@@ -39,6 +39,27 @@ pub const pack_writer = @import("pack/writer.zig");
 pub const indexer = @import("pack/indexer.zig");
 /// commit-graph reader.
 pub const commit_graph = @import("commit_graph.zig");
+/// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
+pub const refs = struct {
+    /// Refname validation.
+    pub const refname = @import("refs/refname.zig");
+    /// Lockfile protocol.
+    pub const lock = @import("refs/lock.zig");
+    /// packed-refs.
+    pub const packed_refs = @import("refs/packed.zig");
+    /// Reflogs.
+    pub const reflog = @import("refs/reflog.zig");
+    /// The ref store.
+    pub const store = @import("refs/refs.zig");
+    /// Ref transactions.
+    pub const transaction = @import("refs/transaction.zig");
+    /// See `store.RefStore`.
+    pub const RefStore = store.RefStore;
+    /// See `store.RefValue`.
+    pub const RefValue = store.RefValue;
+    /// See `refname.checkRefFormat`.
+    pub const checkRefFormat = refname.checkRefFormat;
+};
 /// The object database.
 pub const odb = @import("odb.zig");
 
@@ -58,4 +79,6 @@ pub const hashObject = object.hashObject;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("object_test.zig");
+    _ = @import("refs/refs_test.zig");
+    std.testing.refAllDecls(refs);
 }
