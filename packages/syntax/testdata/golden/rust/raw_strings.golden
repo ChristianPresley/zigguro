@@ -1,0 +1,9 @@
+1| keyword.storage:let variable:a operator:= string:r"raw \n no escapes" punctuation.delimiter:;
+2| keyword.storage:let variable:b operator:= string:r#"with "quotes""# punctuation.delimiter:;
+3| keyword.storage:let variable:c operator:= string:r##"with "# inside"## punctuation.delimiter:;
+4| keyword.storage:let variable:d operator:= string:r###"
+5| string:multi
+6| string:"## still in
+7| string:"### punctuation.delimiter:;
+8| keyword.storage:let variable:after operator:= number:1 punctuation.delimiter:;
+9| keyword.storage:let variable:e operator:= string:r"" punctuation.delimiter:;
