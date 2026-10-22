@@ -7,5 +7,6 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "wayland_scanner",
     },
 }
