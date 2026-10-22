@@ -114,6 +114,7 @@ pub const headless = struct {
     pub const runner = @import("headless/runner.zig");
     pub const print = @import("headless/print.zig");
     pub const repl = @import("headless/repl.zig");
+    pub const slash = @import("headless/slash.zig");
     pub const HeadlessOptions = args.HeadlessOptions;
     pub const ExitCode = exit_codes.ExitCode;
     pub const parseArgs = args.parseArgs;
@@ -122,6 +123,7 @@ pub const headless = struct {
     test {
         _ = @import("headless/args_test.zig");
         _ = @import("headless/print_test.zig");
+        _ = @import("headless/slash_test.zig");
         _ = @import("headless/stream_json_test.zig");
     }
 };
