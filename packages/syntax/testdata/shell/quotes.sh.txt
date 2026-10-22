@@ -1,0 +1,6 @@
+echo "double $var and ${var} and \"escaped\" \n"
+echo 'single $var no expansion'
+echo $'ansi\tescape\n'
+echo "multi
+line string"
+echo "nested `date` and $(whoami)"
