@@ -1,0 +1,5 @@
+1| punctuation.bracket:[ punctuation.bracket:[ attribute:nodiscard punctuation.bracket:] punctuation.bracket:] type.builtin:int function:f punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+2| punctuation.bracket:[ punctuation.bracket:[ attribute:deprecated punctuation.bracket:( string:"use g" punctuation.bracket:) punctuation.bracket:] punctuation.bracket:] type.builtin:void function:old punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+3| punctuation.bracket:[ punctuation.bracket:[ attribute:maybe_unused punctuation.bracket:] punctuation.bracket:] keyword.storage:static type.builtin:int variable:x punctuation.delimiter:;
+4| punctuation.bracket:[ punctuation.bracket:[ attribute:likely punctuation.bracket:] punctuation.bracket:] keyword.control:if punctuation.bracket:( variable:a punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+5| keyword.storage:alignas punctuation.bracket:( number:16 punctuation.bracket:) type.builtin:char variable:buf punctuation.bracket:[ number:64 punctuation.bracket:] punctuation.delimiter:;
