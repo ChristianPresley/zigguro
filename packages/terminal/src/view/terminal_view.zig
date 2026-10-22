@@ -128,7 +128,8 @@ pub const TerminalView = struct {
 
     /// The cell text style (`bold`/`italic` select the face).
     pub fn textStyle(v: *const TerminalView, bold: bool, italic: bool) TextStyle {
-        return .{ .font = .mono, .size = v.opts.font_size, .weight = if (bold) 700 else 400, .italic = italic };
+        // Cells hold one glyph each at the cell advance: no shaping.
+        return .{ .font = .mono, .size = v.opts.font_size, .weight = if (bold) 700 else 400, .italic = italic, .shape = false };
     }
 
     /// Measures the cell from the text system.

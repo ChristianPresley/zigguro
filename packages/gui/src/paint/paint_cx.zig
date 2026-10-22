@@ -128,10 +128,23 @@ pub const PaintCx = struct {
         pc.border(r.outset(off + w), w, pc.color(.focus_ring), radius + off + w);
     }
 
-    /// One line of text with its baseline at `baseline`.
+    /// One line of text with its pen (on the baseline) at `pen`, shaped
+    /// when the text system shapes `st`.
     pub fn textLine(pc: *PaintCx, s: []const u8, st: text.TextStyle, c: Color, pen: Vec2) void {
         if (s.len == 0 or c.a == 0) return;
         const start: u32 = @intCast(pc.ops.quads.items.len);
+        if (pc.text_sys.shape(st, s)) |sh| {
+            for (sh.glyphs) |g| {
+                const q = pc.text_sys.shapedGlyph(st, g.id, .{ .x = pen.x + g.x, .y = pen.y + g.y }) orelse continue;
+                pc.ops.quads.append(pc.gpa, q) catch {
+                    pc.oom = true;
+                    return;
+                };
+            }
+            const n: u32 = @as(u32, @intCast(pc.ops.quads.items.len)) - start;
+            if (n > 0) pc.push(.{ .glyphs = .{ .start = start, .len = n, .color = c, .aa = .grayscale } });
+            return;
+        }
         var x = pen.x;
         var it = text.Codepoints{ .s = s };
         while (it.next()) |cp| {

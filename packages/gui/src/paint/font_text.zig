@@ -8,10 +8,12 @@
 //! (each page becomes one renderer texture; an evicted page comes back
 //! dirty in full).
 //!
-//! Until E03's shaping and font registry land (E03.F06, E03.F07), there is
-//! no shaping, kerning or per-script fallback: each codepoint maps to one
-//! glyph of the `ui` or `mono` face, falling back to the other face, then
-//! to `.notdef`.
+//! Lines are shaped by zg_text's `TextLayout` over a font registry of the
+//! two faces, with a fallback chain per slot (`ui` then `mono`, `mono`
+//! then `ui`): kerning, ligatures, marks, bidi and per-cluster fallback.
+//! Shaped widths come from the layout's width cache. The per-codepoint
+//! path (`advance`, `glyph`) maps each codepoint to one glyph of the
+//! slot's face, falling back to the other face, then to `.notdef`.
 
 const std = @import("std");
 const zg_text = @import("zg_text");
@@ -26,6 +28,9 @@ const AtlasUpdate = zg_text.cache.AtlasUpdate;
 const FaceInstance = ot.variation.FaceInstance;
 const Rasterizer = zg_text.raster.Rasterizer;
 const TextStyle = text.TextStyle;
+const TextLayout = zg_text.layout.TextLayout;
+const FontRegistry = zg_text.fonts.FontRegistry;
+const Fallback = zg_text.fonts.Fallback;
 const Vec2 = geom.Vec2;
 
 /// Font files for the two slots. The bytes must outlive the `FontText`.
@@ -56,6 +61,16 @@ pub const FontText = struct {
     /// Bumped when a page is evicted: retained paint ops may point at
     /// cleared texels, so the Host repaints every window.
     evictions: u32 = 0,
+    /// Shaping: the faces registered, a fallback chain per slot, and the
+    /// layout engine with its caches.
+    reg: FontRegistry,
+    fb: Fallback,
+    layout: TextLayout,
+    ids: [2]zg_text.fonts.InstanceId,
+    chains: [2]zg_text.fonts.ChainId,
+    /// The last shaped line (valid until the next `shape`).
+    scratch: std.heap.ArenaAllocator,
+    shaped: std.ArrayList(text.ShapedGlyph) = .empty,
 
     const Mapped = struct { face: u8, gid: u16, adv: f32 };
 
@@ -83,11 +98,27 @@ pub const FontText = struct {
             .gap = undefined,
             .raster = .init(gpa),
             .atlas = try .init(gpa, .{}),
+            .reg = .init(gpa),
+            .fb = undefined,
+            .layout = undefined,
+            .ids = undefined,
+            .chains = undefined,
+            .scratch = .init(gpa),
         };
         errdefer ft.atlas.deinit();
+        errdefer ft.raster.deinit();
+        errdefer ft.scratch.deinit();
+        errdefer ft.reg.deinit();
         ft.inst[0] = try .init(gpa, &ft.faces[0], &.{});
         errdefer ft.inst[0].deinit(gpa);
         ft.inst[1] = try .init(gpa, &ft.faces[1], &.{});
+        errdefer ft.inst[1].deinit(gpa);
+        ft.fb = .init(gpa, &ft.reg);
+        errdefer ft.fb.deinit();
+        for (0..2) |i| ft.ids[i] = try ft.reg.register(&ft.inst[i]);
+        ft.chains[0] = try ft.fb.chainOf(&.{ ft.ids[0], ft.ids[1] });
+        ft.chains[1] = try ft.fb.chainOf(&.{ ft.ids[1], ft.ids[0] });
+        ft.layout = try .init(gpa, &ft.reg, &ft.fb);
         for (0..2) |i| {
             const m = ft.inst[i].metrics();
             ft.upem[i] = @floatFromInt(@max(m.units_per_em, 1));
@@ -102,6 +133,11 @@ pub const FontText = struct {
     /// Frees everything.
     pub fn destroy(ft: *FontText) void {
         const gpa = ft.gpa;
+        ft.shaped.deinit(gpa);
+        ft.layout.deinit();
+        ft.fb.deinit();
+        ft.reg.deinit();
+        ft.scratch.deinit();
         ft.cmap.deinit(gpa);
         ft.glyphs.deinit(gpa);
         ft.atlas.deinit();
@@ -144,7 +180,14 @@ pub const FontText = struct {
         }
     }
 
-    const vtable: text.TextSystem.VTable = .{ .metrics = metrics, .advance = advance, .glyph = glyph };
+    const vtable: text.TextSystem.VTable = .{
+        .metrics = metrics,
+        .advance = advance,
+        .glyph = glyph,
+        .shape = shape,
+        .shaped_glyph = shapedGlyph,
+        .shaped_width = shapedWidth,
+    };
 
     fn self(p: *anyopaque) *FontText {
         return @ptrCast(@alignCast(p));
@@ -192,6 +235,43 @@ pub const FontText = struct {
         const ft = self(p);
         if (cp == ' ' or cp == '\n' or cp == '\t') return null;
         const m = ft.map(slot(st), cp);
+        return ft.quad(st, m.face, m.gid, pen);
+    }
+
+    /// zg_text's style for `st`.
+    fn zstyle(ft: *const FontText, st: TextStyle) zg_text.layout.TextStyle {
+        return .{ .chain = ft.chains[slot(st)], .size_px = st.size, .weight = st.weight, .slant = if (st.italic) .italic else .normal };
+    }
+
+    fn shape(p: *anyopaque, st: TextStyle, s: []const u8) ?text.Shaped {
+        const ft = self(p);
+        _ = ft.scratch.reset(.retain_capacity);
+        ft.shaped.clearRetainingCapacity();
+        if (s.len == 0) return .{ .glyphs = &.{}, .width = 0 };
+        const line = ft.layout.layoutLine(ft.scratch.allocator(), s, &.{.{ .end = @intCast(s.len), .style = ft.zstyle(st) }}, .{}) catch return null;
+        for (line.runs) |run| {
+            const face: u32 = if (run.instance == ft.ids[1]) 1 else 0;
+            for (run.glyph_start..run.glyph_end) |g| {
+                ft.shaped.append(ft.gpa, .{ .id = face << 16 | line.glyphs[g], .x = line.x[g], .y = -line.y_off[g] }) catch return null;
+            }
+        }
+        return .{ .glyphs = ft.shaped.items, .width = line.width };
+    }
+
+    fn shapedGlyph(p: *anyopaque, st: TextStyle, id: u32, pen: Vec2) ?canvas.GlyphQuad {
+        return self(p).quad(st, @intCast(id >> 16), @truncate(id), pen);
+    }
+
+    fn shapedWidth(p: *anyopaque, st: TextStyle, s: []const u8) f32 {
+        const ft = self(p);
+        if (s.len == 0) return 0;
+        return ft.layout.measure(s, ft.zstyle(st));
+    }
+
+    /// The atlas quad for glyph `gid` of face `face` with its origin at
+    /// `pen`, rasterized on first use.
+    fn quad(ft: *FontText, st: TextStyle, face: u8, gid: u16, pen: Vec2) ?canvas.GlyphQuad {
+        const m: Mapped = .{ .face = face, .gid = gid, .adv = 0 };
         const s = ft.scale;
         const px = st.size * s;
         // Snap the pen to quarter pixels horizontally, whole pixels vertically.

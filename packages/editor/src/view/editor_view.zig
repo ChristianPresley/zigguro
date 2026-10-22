@@ -171,7 +171,10 @@ pub const EditorView = struct {
 
     /// The editor's text style.
     pub fn textStyle(v: *const EditorView) TextStyle {
-        return .{ .font = .mono, .size = v.opts.font_size };
+        // Columns, carets and hit testing use per-codepoint advances, so
+        // the text is drawn unshaped to match (until the view lays lines
+        // out with zg_text's TextLayout).
+        return .{ .font = .mono, .size = v.opts.font_size, .shape = false };
     }
 
     /// Row height in pixels.

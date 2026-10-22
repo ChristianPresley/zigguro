@@ -88,3 +88,50 @@ test "unmapped codepoints fall back to the other face, then notdef" {
     // Neither face has U+10FFFD: notdef, still drawn.
     try testing.expect(ts.advance(.{ .size = 13 }, 0x10FFFD) > 0);
 }
+
+test "shaped lines: kerning, widths and glyph quads" {
+    const gpa = testing.allocator;
+    const fonts = try TestFonts.load(gpa);
+    defer fonts.deinit(gpa);
+    const ft = try FontText.create(gpa, .{ .ui = fonts.ui, .mono = fonts.mono });
+    defer ft.destroy();
+    const ts = ft.system();
+    const st: @import("text.zig").TextStyle = .{ .size = 32 };
+
+    // Inter kerns "AV": the shaped width is less than the advances.
+    const sum = ts.advance(st, 'A') + ts.advance(st, 'V');
+    const w = ts.width(st, "AV");
+    try testing.expect(w < sum - 0.5);
+    const sh = ts.shape(st, "AV").?;
+    try testing.expectEqual(@as(usize, 2), sh.glyphs.len);
+    try testing.expectApproxEqAbs(w, sh.width, 0.01);
+    try testing.expect(sh.glyphs[1].x < ts.advance(st, 'A') - 0.5);
+    try testing.expect(ts.shapedGlyph(st, sh.glyphs[0].id, .{ .x = 10, .y = 40 }) != null);
+
+    // Unshaped styles keep per-codepoint advances.
+    var flat = st;
+    flat.shape = false;
+    try testing.expect(ts.shape(flat, "AV") == null);
+    try testing.expectApproxEqAbs(sum, ts.width(flat, "AV"), 0.01);
+
+    // Mono text keeps its grid width; a codepoint missing from the mono
+    // face falls back to the UI face.
+    const mono: @import("text.zig").TextStyle = .{ .font = .mono, .size = 13 };
+    try testing.expectApproxEqAbs(ts.advance(mono, 'x') * 4, ts.width(mono, "abcd"), 0.05);
+    try testing.expectEqual(@as(f32, 0), ts.width(st, ""));
+}
+
+test "shaped text paints through PaintCx" {
+    const gpa = testing.allocator;
+    const fonts = try TestFonts.load(gpa);
+    defer fonts.deinit(gpa);
+    const ft = try FontText.create(gpa, .{ .ui = fonts.ui, .mono = fonts.mono });
+    defer ft.destroy();
+    const canvas = @import("canvas.zig");
+    var ops: canvas.OpList = .{};
+    defer ops.deinit(gpa);
+    var pc: @import("paint_cx.zig").PaintCx = .{ .gpa = gpa, .ops = &ops, .theme = &@import("../theme/theme.zig").zigguro_dark, .text_sys = ft.system(), .size = .{ .w = 200, .h = 40 } };
+    pc.textLine("AVA", .{ .size = 32 }, @import("../core/geom.zig").Color.hex(0xffffff), .{ .x = 0, .y = 30 });
+    try testing.expectEqual(@as(usize, 1), ops.ops.items.len);
+    try testing.expectEqual(@as(u32, 3), ops.ops.items[0].glyphs.len);
+}
