@@ -21,6 +21,11 @@ pub const ValidateError = error{
     EmptyExtraKey,
     InvalidTreeTerms,
     InvalidChunks,
+    /// A view's lists are unsorted or repeat a key, or a ref target has an
+    /// even number of terms.
+    InvalidView,
+    /// An operation's parents repeat.
+    InvalidOperation,
 };
 
 /// What a tree entry points at.
