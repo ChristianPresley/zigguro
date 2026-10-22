@@ -32,6 +32,10 @@ pub const session = @import("model/session.zig");
 pub const events = @import("scan/events.zig");
 /// An event from the workspace.
 pub const WorkspaceEvent = events.WorkspaceEvent;
+/// The parallel directory scanner.
+pub const scanner = @import("scan/scanner.zig");
+/// See `scanner.Scanner`.
+pub const Scanner = scanner.Scanner;
 /// The workspace file (`.zigguro/workspace.zon`).
 pub const workspace_file = @import("model/workspace_file.zig");
 /// Per-workspace storage and the global state directory.
@@ -47,4 +51,5 @@ test {
     _ = @import("ignore/ignore_stack_test.zig");
     _ = @import("ignore/globset_test.zig");
     _ = @import("paths/path_store_test.zig");
+    _ = @import("scan/scanner_test.zig");
 }
