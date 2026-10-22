@@ -371,18 +371,39 @@ pub fn clearCells(p: *Page, r: *Row, cs: []Cell, with: Cell) void {
         for (cs) |*c| p.clearCell(c, with);
         return;
     }
-    if (r.styled) {
-        // Only style references: release them once per run of equal ids.
-        var i: usize = 0;
-        while (i < cs.len) {
-            const id = cs[i].style;
-            var j = i + 1;
-            while (j < cs.len and cs[j].style == id) j += 1;
-            if (id != 0) p.releaseStyle(id, @intCast(j - i));
-            i = j;
-        }
-    }
+    if (r.styled) p.releaseStyles(cs);
     fill.fill(Cell, cs, with);
+}
+
+/// Releases the style references of `cs`, once per run of equal ids,
+/// leaving the cells as they are. For rows holding no grapheme or link
+/// entries, whose cells the caller overwrites next.
+pub fn releaseStyles(p: *Page, cs: []const Cell) void {
+    const mask: u64 = @as(u64, std.math.maxInt(u16)) << @bitOffsetOf(Cell, "style");
+    const words: []const u64 = @ptrCast(cs);
+    const mv: @Vector(8, u64) = @splat(mask);
+    // Overwriting blank cells is the common case: check the whole slice
+    // with (possibly overlapping) vectors first.
+    if (cs.len >= 8) {
+        var acc: @Vector(8, u64) = words[cs.len - 8 ..][0..8].*;
+        var k: usize = 0;
+        while (k + 8 < cs.len) : (k += 8) acc |= words[k..][0..8].*;
+        if (@reduce(.Or, acc & mv) == 0) return;
+    }
+    var i: usize = 0;
+    while (i < cs.len) {
+        // Skip default-style cells eight at a time.
+        while (i + 8 <= cs.len) : (i += 8) {
+            const v: @Vector(8, u64) = words[i..][0..8].*;
+            if (@reduce(.Or, v & mv) != 0) break;
+        }
+        if (i >= cs.len) break;
+        const id = cs[i].style;
+        var j = i + 1;
+        while (j < cs.len and cs[j].style == id) j += 1;
+        if (id != 0) p.releaseStyle(id, @intCast(j - i));
+        i = j;
+    }
 }
 
 /// Moves cell `src` to `dst` within this page; `dst` must hold no references.
