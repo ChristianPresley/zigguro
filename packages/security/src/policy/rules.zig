@@ -64,6 +64,7 @@ pub const builtin_tool_kinds = [_]ToolKind{
     .{ .name = "run_command", .kind = .command },
     .{ .name = "web_fetch", .kind = .domain },
     .{ .name = "web_search", .kind = .domain },
+    .{ .name = "network", .kind = .domain },
     .{ .name = "scm", .kind = .scm },
     .{ .name = "ui", .kind = .ui },
     .{ .name = "task", .kind = .task },
