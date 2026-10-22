@@ -129,10 +129,7 @@ pub const Transaction = struct {
         defer t.discard();
         const id = try t.writeOp();
         try t.publishHead(id);
-        const r = t.repo;
-        const dir = try r.dupHeadsDir();
-        errdefer dir.close(r.io);
-        return Repo.fromOp(r.gpa, r.io, r.store, dir, r.opts, id, false);
+        return t.repo.reopen(id, false);
     }
 
     /// Drops the transaction. Changes already written by `writeOp` stay in
