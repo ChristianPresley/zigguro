@@ -51,6 +51,15 @@ To create a key:
 
 `<v>` is the version without build metadata. The Linux tarball is a valid AppDir (`AppRun`, `.desktop`, icon, `.DirIcon`).
 
+### Debug symbols
+
+Shipped binaries carry no debug info; their symbols go to `zig-out/symbols/<t>/` (`zig build dist` installs both trees, `package` passes the symbols to `--symbols`):
+
+- Linux: `zg-release split-debug` drops the `.debug*` sections and adds a `.gnu_debuglink` naming `<name>.debug` with its CRC-32; `<name>.debug` is the unstripped binary (`zig objcopy` cannot strip ELF in Zig 0.16). Both carry the same SHA-1 GNU build-id. The symbols tarball adds GDB's `.build-id/<xx>/<rest>.debug` links, so `set debug-file-directory <extracted dir>` finds them; a `.debug` file next to the binary is found through the debuglink.
+- Windows: the PE has no DWARF; `<name>.pdb` is matched through the CodeView record (PDB GUID and age). The setup exe is stripped and has no PDB.
+
+`BUILDINFO.zon` lists every shipped executable's id under `.debug_ids` (`.{ .exe = "zigguro", .id = "<build-id hex>" }`; for PE the id is the symbol-store key, GUID as 32 uppercase hex digits followed by the age in hex). `zg-release debug-id --file <binary>` prints it, and `zig build test-build-symbols` splits a fixture and checks it with `zg-release symcheck`.
+
 Archives are deterministic: entries sorted byte-wise with explicit directories, every timestamp is `SOURCE_DATE_EPOCH`, modes are 0755 for executables, directories and links and 0644 otherwise, owners are 0 with empty names, gzip has MTIME 0 and OS 3 at level 9, and zip entries use version made by Unix 6.3, UTF-8 names and no extra fields. Input file mtimes never reach the archives.
 
 On Windows the dist tree also holds `zigguro-setup.exe` without a payload: the helper that uninstalls and applies updates from inside `app\`.
