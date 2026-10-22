@@ -31,6 +31,7 @@ const view_mod = @import("editor_view.zig");
 const colors = @import("syntax_colors.zig");
 const deco_store = @import("../model/decorations/store.zig");
 const cs_mod = @import("../model/edit/change_set.zig");
+const gutter = @import("gutter.zig");
 
 const EditorView = view_mod.EditorView;
 const Ui = zg_gui.Ui;
@@ -50,6 +51,9 @@ const A11y = zg_gui.core.widget.A11y;
 const text_pad: f32 = 6;
 /// Width of a caret.
 const caret_w: f32 = 2;
+/// Width of the SCM bar, and the room it takes at the gutter's left.
+const scm_bar_w: f32 = 3;
+const scm_lane_w: f32 = 6;
 
 /// The editor widget.
 pub const Editor = struct {
@@ -96,7 +100,8 @@ pub const Editor = struct {
 
     /// Any visible change repaints.
     pub fn paintHash(props: *const Props) u64 {
-        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15);
+        const scm: u64 = if (props.view.scm) |s| s.version() else 0;
+        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f);
     }
 
     /// Takes whatever room the parent offers (80x24 cells otherwise).
@@ -108,12 +113,13 @@ pub const Editor = struct {
 
     /// The gutter width for the view's line count.
     fn gutterWidth(v: *const EditorView) f32 {
-        if (!v.opts.line_numbers) return text_pad;
+        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+        if (!v.opts.line_numbers) return text_pad + lane;
         var digits: f32 = 1;
         var n = v.lineCount();
         while (n >= 10) : (n /= 10) digits += 1;
-        const ts = v.text_sys orelse return 8 * (@max(digits, 3) + 2) + text_pad;
-        return ts.advance(v.textStyle(), '0') * (@max(digits, 3) + 2) + text_pad;
+        const ts = v.text_sys orelse return 8 * (@max(digits, 3) + 2) + text_pad + lane;
+        return ts.advance(v.textStyle(), '0') * (@max(digits, 3) + 2) + text_pad + lane;
     }
 
     /// Where the text origin (line 0, column 0) is, in node coordinates.
@@ -247,7 +253,51 @@ pub const Editor = struct {
                 pc.textLine(label, st, c, .{ .x = v.gutter_w - text_pad - pc.text_sys.advance(st, '0') - w, .y = y + base });
             }
         }
+        if (v.scm) |*src| paintScm(pc, v, src, vis, o.y, lh);
         pc.focusRing(r, 0);
+    }
+
+    /// The SCM bar: added lines solid, modified lines striped, deletions
+    /// a triangle on the boundary where the lines were.
+    fn paintScm(pc: *PaintCx, v: *const EditorView, src: *const gutter.ScmGutterSource, vis: [2]u64, oy: f32, lh: f32) void {
+        if (vis[1] < vis[0]) return;
+        if (!v.opts.line_numbers) pc.rect(.{ .x = 0, .y = 0, .w = v.gutter_w - text_pad / 2, .h = pc.bounds().h }, pc.color(.bg_base), .{});
+        var rows: [256]gutter.ScmRow = undefined;
+        const added = pc.color(.success);
+        const modified = pc.color(.info);
+        const deleted = pc.color(.danger);
+        const x: f32 = 1;
+        var first = vis[0];
+        while (first <= vis[1]) {
+            const n: usize = @intCast(@min(rows.len, vis[1] - first + 1));
+            gutter.scmRows(src.hunks(), first, v.lineCount(), rows[0..n]);
+            for (rows[0..n], 0..) |row, i| {
+                const y = oy + @as(f32, @floatFromInt(first + i)) * lh;
+                switch (row.bar) {
+                    .none => {},
+                    .added => pc.rect(.{ .x = x, .y = y, .w = scm_bar_w, .h = lh }, added, .{}),
+                    .modified => {
+                        // Stripes: 2 px on, 1 px off.
+                        var sy = y;
+                        while (sy < y + lh) : (sy += 3) pc.rect(.{ .x = x, .y = sy, .w = scm_bar_w, .h = @min(2, y + lh - sy) }, modified, .{});
+                    },
+                }
+                if (row.deleted_above) deletionMark(pc, x, y, deleted);
+                if (row.deleted_below) deletionMark(pc, x, y + lh, deleted);
+            }
+            first += n;
+        }
+    }
+
+    /// A small right-pointing triangle centred on boundary `y`, drawn as
+    /// shrinking rows.
+    fn deletionMark(pc: *PaintCx, x: f32, y: f32, c: Color) void {
+        var i: f32 = 0;
+        while (i < 4) : (i += 1) {
+            const w = 2 + i;
+            pc.rect(.{ .x = x, .y = y - 4 + i, .w = w, .h = 1 }, c, .{});
+            pc.rect(.{ .x = x, .y = y + 3 - i, .w = w, .h = 1 }, c, .{});
+        }
     }
 
     /// The part of `d` on row `lr`, as byte columns, or null.

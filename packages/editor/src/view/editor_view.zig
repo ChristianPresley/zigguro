@@ -24,6 +24,7 @@ const undo_mod = @import("../model/edit/undo.zig");
 const syntax_mod = @import("../model/syntax.zig");
 const deco_store = @import("../model/decorations/store.zig");
 const multi = @import("../model/edit/multi_cursor.zig");
+const gutter = @import("gutter.zig");
 
 const Allocator = std.mem.Allocator;
 const Document = document.Document;
@@ -83,6 +84,8 @@ pub const EditorView = struct {
     /// Decorations to draw (fed by its own listener). Not owned.
     decorations: ?*const deco_store.DecorationStore = null,
     styles: ?StyleResolver = null,
+    /// The SCM bar's hunks (a dirty diff); none: no bar. Not owned.
+    scm: ?gutter.ScmGutterSource = null,
     on_change: ?ChangeHook = null,
     /// Called when the primary caret moved or the number of selections
     /// changed (a status bar's position).

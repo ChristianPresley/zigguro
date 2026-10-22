@@ -43,6 +43,10 @@ pub const highlight = struct {
     pub const token_store = @import("highlight/token_store.zig");
     pub const highlighter = @import("highlight/highlighter.zig");
 };
+pub const semantic = struct {
+    pub const legend = @import("semantic/legend.zig");
+    pub const overlay = @import("semantic/overlay.zig");
+};
 
 pub const HighlightId = highlight_names.HighlightId;
 pub const Language = language.Language;
@@ -68,6 +72,10 @@ pub const Symbol = structure.structure.Symbol;
 pub const Scope = structure.structure.Scope;
 pub const BracketTree = brackets.bracket_tree.BracketTree;
 pub const BracketSource = brackets.bracket_tree.BracketSource;
+pub const SemanticOverlay = semantic.overlay.SemanticOverlay;
+pub const SemanticLegend = semantic.legend.Legend;
+pub const CompiledLegend = semantic.legend.CompiledLegend;
+pub const HighlightNames = highlight_names.HighlightNames;
 pub const fallbackStructure = structure.fallback.fallbackStructure;
 
 /// Every built-in language, in registration order.
@@ -123,4 +131,5 @@ test {
     _ = @import("langs/css_test.zig");
     _ = @import("langs/html_test.zig");
     _ = @import("langs/markdown_test.zig");
+    _ = @import("semantic/overlay_test.zig");
 }

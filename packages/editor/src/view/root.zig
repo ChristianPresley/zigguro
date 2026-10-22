@@ -7,6 +7,8 @@ const std = @import("std");
 pub const editor_view = @import("editor_view.zig");
 /// The editor widget.
 pub const widget = @import("widget.zig");
+/// Gutter lanes (the SCM bar).
+pub const gutter = @import("gutter.zig");
 /// Token colours until E15 themes supply them.
 pub const syntax_colors = @import("syntax_colors.zig");
 /// zg_syntax colours for zg_gui.markdown code blocks.
