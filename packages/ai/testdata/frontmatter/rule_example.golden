@@ -1,0 +1,1 @@
+{"meta":{"paths":["src/api/**/*.ts"]},"body_line":5,"body":"\n# API Development Rules\n\n- All API endpoints must include input validation\n"}

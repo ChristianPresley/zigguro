@@ -15,8 +15,6 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.cache_hit",
-    "text.cache_screen",
     "text.cells_row_200",
     "text.fontdb_load_3k",
     "text.hit_test",
@@ -195,6 +193,35 @@ fn register(b: *bench.Bench) !void {
 
     // Prefix-sum integration of a 256×256 accumulator; bytes/s = pixels/s.
     try b.run("text.integrate_gpix", b.gpa, integrate);
+
+    // Glyph cache hits: random lookups over 20k resident keys, and one
+    // 200×60 screen of lookups over the ~100 distinct glyphs it shows.
+    var rt: zg_core.runtime.Runtime = undefined;
+    try rt.initBorrowed(b.gpa, b.io, 64);
+    defer _ = rt.deinit();
+    var cache_atlas = try zg_text.cache.Atlas.init(b.gpa, .{ .page_size = 64 });
+    defer cache_atlas.deinit();
+    var one: [4]u8 = @splat(255);
+    const one_bm: zg_text.raster.Bitmap = .{ .width = 2, .height = 2, .stride = 2, .pixels = &one };
+    const page_entry = try cache_atlas.insert(&one_bm, 1);
+    var cache: zg_text.cache.GlyphCache = undefined;
+    try cache.init(b.gpa, &rt, &cache_atlas, .{ .workers = 0 });
+    defer cache.deinit();
+    const resident = try b.gpa.alloc(zg_text.cache.GlyphKey, 20_000);
+    defer b.gpa.free(resident);
+    var cache_prng = std.Random.DefaultPrng.init(0xcac4e);
+    for (resident, 0..) |*k, i| {
+        k.* = .{ .instance = @intCast(i % 7), .glyph = @intCast(i / 7), .size_q = 56 + @as(u13, @intCast(i % 3)) * 4 };
+        try cache.put(k.*, page_entry);
+    }
+    const order = try b.gpa.alloc(u32, 1 << 16);
+    defer b.gpa.free(order);
+    for (order) |*o| o.* = cache_prng.random().uintLessThan(u32, @intCast(resident.len));
+    var frame: u32 = 2;
+    try b.run("text.cache_hit", CacheCtx{ .cache = &cache, .keys = resident, .order = order, .frame = &frame }, cacheHit);
+    var screen: [200 * 60]u32 = undefined;
+    for (&screen) |*o| o.* = cache_prng.random().uintLessThan(u32, 100);
+    try b.run("text.cache_screen", CacheCtx{ .cache = &cache, .keys = resident, .order = &screen, .frame = &frame }, cacheScreen);
 }
 
 const han_cps = [12]u21{ '語', '漢', '字', '日', '本', 'あ', 'い', 'う', 'え', 'お', 'か', 'き' };
@@ -261,6 +288,29 @@ fn atlasInsert(ctx: AtlasCtx, s: *State) void {
         const bmp: zg_text.raster.Bitmap = .{ .width = sz[0], .height = sz[1], .stride = sz[0], .pixels = ctx.px[0 .. @as(usize, sz[0]) * sz[1]] };
         const e = ctx.atlas.insert(&bmp, frame) catch unreachable;
         bench.doNotOptimizeAway(e.x);
+    }
+}
+
+const CacheCtx = struct { cache: *zg_text.cache.GlyphCache, keys: []const zg_text.cache.GlyphKey, order: []const u32, frame: *u32 };
+
+fn cacheHit(ctx: CacheCtx, s: *State) void {
+    // A new frame every 4096 lookups, so LRU stamping is exercised too.
+    for (0..s.iterations()) |i| {
+        if (i & 4095 == 0) {
+            ctx.frame.* += 1;
+            ctx.cache.beginFrame(ctx.frame.*);
+        }
+        const k = ctx.keys[ctx.order[i & (ctx.order.len - 1)]];
+        bench.doNotOptimizeAway(ctx.cache.lookup(k));
+    }
+}
+
+fn cacheScreen(ctx: CacheCtx, s: *State) void {
+    // One iteration is one frame: every cell of a 200×60 screen.
+    for (0..s.iterations()) |_| {
+        ctx.frame.* += 1;
+        ctx.cache.beginFrame(ctx.frame.*);
+        for (ctx.order) |o| bench.doNotOptimizeAway(ctx.cache.lookup(ctx.keys[o]));
     }
 }
 

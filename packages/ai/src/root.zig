@@ -81,6 +81,39 @@ pub const loop = struct {
         _ = @import("loop/turn_test.zig");
     }
 };
+/// Context engineering: memory files, rules, prompt assembly and
+/// compaction (E10.F07).
+pub const context = struct {
+    pub const frontmatter = @import("context/frontmatter.zig");
+    pub const rules = @import("context/rules.zig");
+    pub const imports = @import("context/imports.zig");
+    pub const memory = @import("context/memory.zig");
+    pub const auto_memory = @import("context/auto_memory.zig");
+    pub const reminders = @import("context/reminders.zig");
+    pub const pins = @import("context/pins.zig");
+    pub const cache_plan = @import("context/cache_plan.zig");
+    pub const env_block = @import("context/env_block.zig");
+    pub const assembler = @import("context/assembler.zig");
+    pub const compactor = @import("context/compactor.zig");
+    test {
+        _ = @import("context/frontmatter_test.zig");
+        _ = @import("context/memory_test.zig");
+        _ = @import("context/auto_memory_test.zig");
+        _ = @import("context/assembler_test.zig");
+        _ = @import("context/compactor_test.zig");
+    }
+};
+/// Sessions: the JSONL log, index, resume, fork and rewind (E10.F08).
+pub const session = struct {
+    pub const key = @import("session/key.zig");
+    pub const records = @import("session/records.zig");
+    pub const writer = @import("session/writer.zig");
+    pub const loader = @import("session/loader.zig");
+    pub const store = @import("session/store.zig");
+    test {
+        _ = @import("session/store_test.zig");
+    }
+};
 pub const schema = struct {
     pub const validate = @import("schema/validate.zig");
     pub const strict = @import("schema/strict.zig");
@@ -120,4 +153,6 @@ test {
     std.testing.refAllDecls(gemini);
     std.testing.refAllDecls(models);
     std.testing.refAllDecls(loop);
+    std.testing.refAllDecls(context);
+    std.testing.refAllDecls(session);
 }

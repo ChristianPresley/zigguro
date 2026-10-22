@@ -1,0 +1,1 @@
+{"meta":{"hooks":[{"matcher":"Edit","command":"fmt"},{"matcher":"Bash","command":"lint"}]},"body_line":8,"body":""}
