@@ -5,6 +5,8 @@
 
 /// Changesets, file changes, hunks, provenance and their state machines.
 pub const model = @import("model/root.zig");
+/// The journal and blob store under `.zigguro/review/`.
+pub const store = @import("store/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

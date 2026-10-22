@@ -52,6 +52,7 @@ pub const Queue = queue.Queue;
 pub const Submitter = queue.Submitter;
 pub const SubmitOptions = queue.SubmitOptions;
 pub const Filter = queue.Filter;
+pub const Journal = queue.Journal;
 
 test {
     @import("std").testing.refAllDecls(@This());

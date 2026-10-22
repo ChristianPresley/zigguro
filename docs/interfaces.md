@@ -994,7 +994,11 @@ Without it, the Xcursor theme from `XCURSOR_THEME`/`XCURSOR_SIZE`/
 thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
-shows the default arrow. Animated cursors show their first frame.
+shows the default arrow. Animated cursors (every frame of the nearest
+size is uploaded once) step on a timerfd in the platform thread's epoll
+while the pointer is over a window showing them, waiting each frame's
+delay (at least 10 ms); `leave` or another cursor stops them. Manual
+checklist: `docs/manual-tests/wayland-cursors.md`.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
 Activation, dialogs and URIs return `error.Unsupported`.
 
@@ -3231,3 +3235,57 @@ changesets until `remove`.
 
 ### Stability
 Unstable until the store and the E10 binding land.
+
+## zg_review.store (ChangesetStore)
+
+### Defined in
+`packages/review/src/store/{store,journal,records,blobs}.zig` (E12.F01.S02.T01).
+
+### Implemented by
+E12.F01.S02.T01.
+
+### Consumed by
+The zigguro app and `zg review` (one store per workspace), the review queue (`Journal` and `Blobs` ports).
+
+### Signature
+```zig
+pub const ChangesetStore = struct {
+    pub fn open(gpa, io, parent: Io.Dir, sub_path: []const u8, o: Options{ segment_bytes = 8 MiB, process_tag = 0 }) !*ChangesetStore;
+    pub fn close(s) void;                                        // flushes
+    pub fn blobs(s) model.Blobs;                                 // DiskBlobs: put hashes and keeps; flush writes
+    pub fn journalPort(s) model.Journal;                         // for Queue.Options.journal
+    pub fn append(s, kind: journal.Kind, record_json: []const u8) !void;   // owner thread, memory only
+    pub fn flush(s) !void;                                       // any thread: blobs, frames, sync, under the lock
+    pub fn load(s, sink: Sink) !LoadReport;                      // { records, truncated_bytes, quarantined }
+    pub fn tail(s, sink: Sink) !u32;                             // other processes' new records
+    pub fn queueSink(s, q: *model.Queue) QueueSink;              // restores into a queue
+};
+pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, _ };
+pub fn records.writeChangeset(w, cs, blobs, scratch) !void;
+pub fn records.readChangeset(gpa, v: std.json.Value, blobs) !*Changeset;
+```
+Deviations from the spec text:
+- The records are changeset snapshots plus `remove`. The spec's
+  per-event records (`decide`, `apply`, ...) will come with the features
+  that write them.
+- `flush` is called by the owner of the store's worker. There is no
+  internal worker or fsync window yet.
+- Not implemented yet:
+  - compaction;
+  - GC and retention;
+  - mapped large blobs;
+  - the read-only workspace fallback directory;
+  - watcher-driven tailing (callers call `tail`).
+- Windows: the code compiles, but the tests were not run (wine stalls).
+
+### Threading
+`append`, `blobs().put` and `flush` are thread-safe (`Io.Mutex`). `load`, `tail` and the queue sink run on the queue's
+owner thread.
+
+### Ownership/lifetime
+The store owns the directory handle, pending blobs and frames. `close`
+flushes them.
+
+### Stability
+Unstable. The frame format is fixed; the record JSON may gain fields
+(unknown fields are ignored).

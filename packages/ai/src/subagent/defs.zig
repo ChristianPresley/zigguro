@@ -186,6 +186,7 @@ pub const compat_aliases = [_]struct { []const u8, []const u8 }{
     .{ "Task", "task" },
     .{ "Agent", "task" },
     .{ "TodoWrite", "todo_write" },
+    .{ "Skill", "skill" },
 };
 
 /// Maps compat names; other names stay as they are.

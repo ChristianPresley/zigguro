@@ -121,6 +121,33 @@ fn register(b: *bench.Bench) !void {
             }
         }.f);
     }
+
+    // Budget: < 5 ms: index 200 skills (frontmatter only) (E10.F09.S04.T01).
+    try skillIndexBench(b);
+}
+
+fn skillIndexBench(b: *bench.Bench) !void {
+    const dir = ".zig-cache/bench-skills";
+    const cwd = std.Io.Dir.cwd();
+    defer cwd.deleteTree(b.io, dir) catch {};
+    var buf: [256]u8 = undefined;
+    for (0..200) |i| {
+        const sub = try std.fmt.bufPrint(&buf, "{s}/skill-{d:0>3}", .{ dir, i });
+        try cwd.createDirPath(b.io, sub);
+        var d = try cwd.openDir(b.io, sub, .{});
+        defer d.close(b.io);
+        var text: [512]u8 = undefined;
+        try d.writeFile(b.io, .{ .sub_path = "SKILL.md", .data = try std.fmt.bufPrint(&text, "---\nname: skill-{d:0>3}\ndescription: Does task {d} the house way.\nallowed-tools: Bash(make:*), Read\n---\n\n# Skill {d}\n\nSteps for task {d}.\n", .{ i, i, i, i }) });
+    }
+    try b.run("ai.skill_index_200: index 200 skills", dir, struct {
+        fn f(path: []const u8, s: *bench.State) void {
+            for (0..s.iterations()) |_| {
+                var ix = ai.ext.SkillIndex.load(s.allocator(), s.io, &.{.{ .dir = path, .source = .project }}) catch unreachable;
+                bench.doNotOptimizeAway(ix.skills.items.len);
+                ix.deinit();
+            }
+        }
+    }.f);
 }
 
 /// A parent agent and a runner whose children get an instant answer.
