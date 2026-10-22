@@ -27,6 +27,7 @@ const keys_mod = @import("../input/keys.zig");
 const actions = @import("../input/actions.zig");
 const box = @import("../widgets/box.zig");
 const overlay = @import("../widgets/overlay.zig");
+const tooltip = @import("../widgets/tooltip.zig");
 const theme_mod = @import("../theme/theme.zig");
 
 const NodeId = ids.NodeId;
@@ -141,6 +142,8 @@ pub const Window = struct {
     building: bool = false,
     /// Open overlays (popovers, dialogs) in paint order.
     overlays: overlay.Stack = .{},
+    /// The pending or shown tooltip.
+    tips: tooltip.Tips = .{},
     /// Close hooks of overlays closed while building, run after the build.
     close_hooks: std.ArrayList(PendingHook) = .empty,
     needs_frame: bool = true,
@@ -244,7 +247,9 @@ pub const Window = struct {
     pub fn destroy(w: *Window) void {
         const gpa = w.gpa;
         // Close hooks may own their views.
+        w.tips.hide(w);
         while (w.overlays.top()) |e| w.closeOverlay(e.id);
+        w.tips.deinit(gpa);
         w.overlays.deinit(gpa);
         w.close_hooks.deinit(gpa);
         w.timers.deinit(gpa);
@@ -1164,11 +1169,13 @@ pub const Window = struct {
         }
         if (!n.isNone()) w.store.markPaint(n);
         w.needs_frame = true;
+        w.tips.onHover(w, n);
     }
 
     /// Moves keyboard focus to `n` (`none` clears it).
     pub fn setFocus(w: *Window, n: NodeId, visible: bool) void {
         w.focus_visible = visible;
+        if (!w.focus.eql(n)) w.tips.onFocus(w, n, visible);
         if (w.focus.eql(n)) {
             if (!n.isNone()) w.store.markPaint(n);
             w.needs_frame = true;
@@ -1325,6 +1332,7 @@ pub const Window = struct {
             },
             .pointer_down => |pd| {
                 w.pointer = pd.pos;
+                w.tips.hide(w);
                 w.press_serial +%= 1;
                 if (w.dismissOutside(pd.pos)) return;
                 const h = w.hitTest(pd.pos);
@@ -1368,10 +1376,14 @@ pub const Window = struct {
                 w.setHot(.none);
             },
             .scroll => |sc| {
+                w.tips.hide(w);
                 const h = w.hitTest(sc.pos);
                 if (!w.deliver(h, ev, true)) w.scrollChain(h, sc);
             },
-            .key => |k| w.dispatchKey(k),
+            .key => |k| {
+                if (k.action != .release) w.tips.hide(w);
+                w.dispatchKey(k);
+            },
             .text => {
                 // The text of a key the key handler consumed (a chord's
                 // second stroke) is not typed.
