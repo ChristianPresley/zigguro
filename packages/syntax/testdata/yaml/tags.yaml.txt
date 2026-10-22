@@ -1,0 +1,6 @@
+a: !!str 123
+b: !!int "42"
+c: !custom value
+d: !<tag:yaml.org,2002:str> verbatim
+e: !!map
+  k: v
