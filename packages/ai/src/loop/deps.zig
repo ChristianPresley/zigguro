@@ -169,6 +169,13 @@ fn basicBuild(_: *anyopaque, _: Io, arena: Allocator, v: *const ContextView) any
     };
 }
 
+/// E12.F04 `Checkpoints.create(origin, turn, label)`: snapshots the
+/// workspace at the start of a user turn. Never fails; under 1 ms.
+pub const Checkpoints = struct {
+    ctx: *anyopaque,
+    create: *const fn (ctx: *anyopaque, io: Io, origin: proto.AgentRef, turn: u32, label: []const u8) u64,
+};
+
 /// Receives committed messages (F08 writes them to the session JSONL).
 pub const SessionLog = struct {
     ctx: *anyopaque,
