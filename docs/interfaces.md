@@ -2168,6 +2168,58 @@ GPU is idle.
 ### Stability
 Internal to E02.
 
+## zg_vulkan.VkRenderer and present.Readback (Vulkan 2D backend)
+
+### Defined in
+`packages/vulkan/src/r2d/vk/VkRenderer.zig`, `r2d/vk/batch.zig`
+(E02.F06.S01.T02); `packages/vulkan/src/present/Readback.zig`
+(E02.F04.S02.T02).
+
+### Implemented by
+E02.
+
+### Consumed by
+E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
+`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+
+### Signature
+```zig
+pub const VkRenderer = struct {
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless targets for now
+    pub fn createWithGpu(gpa, io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer;
+    pub fn destroy(self: *VkRenderer) void;
+    pub fn renderer(self: *VkRenderer) r2d.Renderer;
+    pub fn render(self, dl: *const DrawList) RenderError!FrameStats;              // no submit without damage
+    pub fn renderToImage(self, dl: *const DrawList, out: *CpuImage) RenderError!FrameStats;   // waits for the pixels
+};
+pub const Batch = struct { pipeline: enum(u1) { prim, text_subpixel }, first: u32, count: u32 };
+pub fn buildBatches(gpa, prims: []const Prim, clips: []const ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void;
+pub const Readback = struct {
+    pub const Sink = union(enum) { headless: *HeadlessSink, memory: *CpuImage };
+    pub fn init(gpu, mem, sched, sink, window) Readback;  pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) !Acquired;             // { image: *Texture, age: u32 }
+    pub fn recordCopy(self, fs: *FrameSlot, rects: []const PxRect) !void;   // before submit
+    pub fn present(self, fs: *const FrameSlot) void;          // after submit
+    pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
+};
+```
+Deviations from the spec text:
+- Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
+- The copy is split into `recordCopy` (before submit) and `present` (after submit).
+- The shm presenter sink, async delivery of copies over 1 MiB, layers (E02.F06.S03), the swapchain and dmabuf targets, GPU timing and async device creation are not implemented yet.
+- `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
+
+### Threading
+Render thread only.
+
+### Ownership/lifetime
+The renderer owns its device when made by `create`, not with
+`createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
+retires the slot with the next frame.
+
+### Stability
+Internal to E02 behind `r2d.Renderer`.
+
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in
@@ -2401,54 +2453,56 @@ as the `PendingChange`.
 Unstable until E12 integrates them. A pending hunk whose old text the user
 edits becomes `conflicted` and is skipped by `acceptAll`.
 
-## zg_vulkan.VkRenderer and present.Readback (Vulkan 2D backend)
+## zg_editor.model.api.agent_edit (AgentEditSession)
 
 ### Defined in
-`packages/vulkan/src/r2d/vk/VkRenderer.zig`, `r2d/vk/batch.zig`
-(E02.F06.S01.T02); `packages/vulkan/src/present/Readback.zig`
-(E02.F04.S02.T02).
+`packages/editor/src/model/api/agent_edit.zig`, `text_query.zig` (E05.F08).
 
 ### Implemented by
-E02.
+E05.F08.S01.T02.
 
 ### Consumed by
-E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
-`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+E10 (agent tools: read_file, edit_file, str_replace, write_file), E12 (policy, pending review), E16 (policy, audit log).
 
 ### Signature
 ```zig
-pub const VkRenderer = struct {
-    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless targets for now
-    pub fn createWithGpu(gpa, io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer;
-    pub fn destroy(self: *VkRenderer) void;
-    pub fn renderer(self: *VkRenderer) r2d.Renderer;
-    pub fn render(self, dl: *const DrawList) RenderError!FrameStats;              // no submit without damage
-    pub fn renderToImage(self, dl: *const DrawList, out: *CpuImage) RenderError!FrameStats;   // waits for the pixels
+pub const LineEdit = struct { start_line: u64, end_line: u64, new_text: []const u8 };   // 0-based, end exclusive
+pub const Occurrence = union(enum) { unique, all, nth: u32 };
+pub const Proposal = union(enum) {
+    change_set: struct { cs: *const ChangeSet, base_version: u64 },
+    line_edits: struct { edits: []const LineEdit, base_version: u64 },
+    str_replace: struct { old: []const u8, new: []const u8, occurrence: Occurrence = .unique },
+    whole_file: struct { text: []const u8, base_version: ?u64 = null },
 };
-pub const Batch = struct { pipeline: enum(u1) { prim, text_subpixel }, first: u32, count: u32 };
-pub fn buildBatches(gpa, prims: []const Prim, clips: []const ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void;
-pub const Readback = struct {
-    pub const Sink = union(enum) { headless: *HeadlessSink, memory: *CpuImage };
-    pub fn init(gpu, mem, sched, sink, window) Readback;  pub fn deinit(self) void;
-    pub fn acquire(self, extent: Size) !Acquired;             // { image: *Texture, age: u32 }
-    pub fn recordCopy(self, fs: *FrameSlot, rects: []const PxRect) !void;   // before submit
-    pub fn present(self, fs: *const FrameSlot) void;          // after submit
-    pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
+pub const ApplyPolicy = struct { ctx, decide: fn (ctx, session: u64, doc: DocHandle, summary: ProposalSummary) enum { apply, pending, deny } };
+pub const PendingHost = struct { ctx, place: fn (ctx, DocHandle) ?PendingPlace, created: fn (ctx, DocHandle, *PendingChange) void };
+pub const Rejection = union(enum) { stale_handle, read_only, stale_version_evicted: {base_version, current_version},
+    too_large: {inserted_bytes, limit}, out_of_bounds: {len}, overlapping_edits, conflict: { ranges: []Range },
+    not_found, not_unique: { count }, no_such_occurrence: { count }, denied, no_pending_host };
+pub const Outcome = union(enum) { applied: { version, ranges: []Range, crlf_adjusted }, pending: { change, crlf_adjusted },
+    rejected: Rejection, pub fn deinit(o, gpa) void };
+pub const AgentEditSession = struct {
+    pending_host: ?PendingHost = null, max_inserted: u64 = 10 << 20,
+    pub fn init(gpa, reg: *DocumentRegistry, session: u64, policy: ApplyPolicy) AgentEditSession;
+    pub fn readLines(s, h, range: ?LineRange, o: ReadOptions{ line_numbers, max_bytes }, gpa) !ReadResult;
+    pub fn propose(s, h, p: Proposal, tool: []const u8) !Outcome;
+    pub fn subscribe(s, AppliedListener) !void;   // AgentEditApplied { session, doc, version, ranges, label }
+    pub fn outline(s, h, lang: *const Language, gpa) !?Structure;
 };
+pub fn enclosingScope(gpa, t: PieceTree, structure: *const Structure, line: u64) !?Scope;
+pub fn minimalChange(gpa, t: PieceTree, new_text: []const u8) !ChangeSet;   // line-diff hunks
 ```
-Deviations from the spec text:
-- Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
-- The copy is split into `recordCopy` (before submit) and `present` (after submit).
-- The shm presenter sink, async delivery of copies over 1 MiB, layers (E02.F06.S03), the swapchain and dmabuf targets, GPU timing and async device creation are not implemented yet.
-- `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
 ### Threading
-Render thread only.
+UI thread only (it applies edits to documents).
 
 ### Ownership/lifetime
-The renderer owns its device when made by `create`, not with
-`createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
-retires the slot with the next frame.
+The session keeps the last version it served per document (a snapshot), so
+line edits and whole-file proposals against that version can be rebased;
+older versions are `stale_version_evicted`. A `PendingChange` belongs to the
+host after `created`.
 
 ### Stability
-Internal to E02 behind `r2d.Renderer`.
+Unstable until E10/E12 integrate it. Rebasing is `transform(cs, since, user
+wins ties)`; insertions next to an agent's replaced text do not conflict.
+`str_replace` retries once with the document's line endings.
