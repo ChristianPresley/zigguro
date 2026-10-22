@@ -23,6 +23,8 @@ pub const shaders = @import("shaders/gen/shaders.zig");
 pub const shader_interface = @import("shaders/interface.zig");
 /// Pipelines, the bindless descriptor heap and the pipeline cache.
 pub const pipeline = @import("pipeline/root.zig");
+/// Frames in flight, deferred destruction and damage tracking.
+pub const present = @import("present/root.zig");
 
 /// Creates the renderer for `opts`: Vulkan when chosen (or `auto`) and
 /// available, otherwise the software renderer. The Vulkan backend lands
@@ -56,6 +58,7 @@ test {
     _ = mem;
     _ = @import("shaders/gpu_test.zig");
     _ = pipeline;
+    _ = present;
     _ = shader_interface;
 }
 

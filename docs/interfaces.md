@@ -2253,3 +2253,55 @@ Unstable until E07 implements the sink. Edits whose edges fall between the
 CR and LF of a CRLF are sent as one widened replacement, since LSP positions
 cannot address that point. A rename is sent as close + open (LSP has no
 text-document rename).
+
+## zg_vulkan.present (frames in flight, damage tracking)
+
+### Defined in
+`packages/vulkan/src/present/` (E02.F04.S03): `FrameScheduler.zig`,
+`Deferred.zig`, `Damage.zig`; `PxRect` helpers in
+`packages/vulkan/src/r2d/rect.zig` (`zg_vulkan.r2d.rect`).
+
+### Implemented by
+E02. The render-thread mailbox and the frame pacer (rest of
+E02.F04.S03.T01) are still open.
+
+### Consumed by
+E02's targets (swapchain, dmabuf ring, readback) and the Vulkan 2D
+backend. Nothing outside E02.
+
+### Signature
+```zig
+pub const FrameScheduler = struct {   // slots, frames_in_flight, timeline, submitted, frame
+    pub fn init(gpu: *Gpu, mem: *DeviceMemory, frames_in_flight: u8) !FrameScheduler;   // 1..3
+    pub fn deinit(self: *FrameScheduler) void;           // waits, drains deferred objects
+    pub fn begin(self: *FrameScheduler) !*FrameSlot;     // waits for the slot, resets its pool, begins its cb
+    pub fn submit(self, fs: *FrameSlot, waits: []const vk.SemaphoreSubmitInfo, extra_signals: []const vk.SemaphoreSubmitInfo) !void;
+    pub fn deferDestroy(self, item: Deferred) void;      // after every submitted frame and the one being recorded
+    pub fn collect(self) void; pub fn completed(self) u64; pub fn waitValue(self, value: u64) error{DeviceLost}!void;
+};
+pub const FrameSlot = struct { index: u8, pool: vk.CommandPool, cb: vk.CommandBuffer, timeline_value: u64, frame: u64 };
+pub const Deferred = union(enum) { buffer, image, view, texture, semaphore, pipeline, swapchain };
+pub const DamageHistory = struct {   // max_age = 4
+    pub fn push(self, frame_damage: []const PxRect) void;  pub fn pushFull(self) void;
+    pub fn repaintFor(self, age: u32, current: []const PxRect, extent: Size, out: *RectList) void;   // age 0 or > max_age → full
+    pub fn invalidateAll(self) void;
+};
+pub const RectList = struct { items: [16]PxRect, len: u8, pub fn add, slice, area, isFull };
+pub fn simplify(rects: []const PxRect, extent: Size, out: *RectList) void;   // ≤ 16 rects, covers every input pixel, > 60% → full
+pub fn toPresentRegions(rects: []const PxRect, buf: []vk.RectLayerKHR) []vk.RectLayerKHR;
+```
+Deviations from the spec text: `FrameScheduler.init` takes the
+`DeviceMemory` that deferred buffers and images return to;
+`DamageHistory.pushFull` records full-frame repaints; `Deferred` has no
+`fence_gated` or `allocation` variants yet (no user needs them).
+
+### Threading
+A scheduler belongs to the render thread. `DamageHistory` and
+`simplify` are pure.
+
+### Ownership/lifetime
+`deferDestroy` takes ownership of the object. `deinit` blocks until the
+GPU is idle.
+
+### Stability
+Internal to E02.

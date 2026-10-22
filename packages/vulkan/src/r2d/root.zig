@@ -57,6 +57,8 @@ pub const Renderer = @import("Renderer.zig");
 pub const RendererOptions = Renderer.RendererOptions;
 /// See `Renderer.zig`.
 pub const EnvOverrides = Renderer.EnvOverrides;
+/// `PxRect` helpers.
+pub const rect = @import("rect.zig");
 /// The reference shading math.
 pub const shading = @import("shading.zig");
 /// See `shading.zig`.
@@ -68,6 +70,7 @@ test {
     _ = f16p;
     _ = prim;
     _ = shading;
+    _ = rect;
     _ = DrawList;
     _ = Renderer;
 }
