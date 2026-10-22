@@ -3,6 +3,7 @@
 //! and entity updates use to notify, observe and emit.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_platform = @import("zg_platform");
 const zg_core = @import("zg_core");
 const ids = @import("ids.zig");
@@ -88,6 +89,12 @@ pub const App = struct {
     effect_cycle: bool = false,
     /// The text clipboard (kept in sync with the system's by the Host).
     clipboard: Clipboard = .{},
+    /// The PRIMARY selection (select to copy, middle-click to paste),
+    /// synced like `clipboard`. Only used when `has_primary`.
+    primary: Clipboard = .{},
+    /// The desktop has a PRIMARY selection (X11 and Wayland, not Windows
+    /// or macOS).
+    has_primary: bool = builtin.os.tag != .windows and !builtin.os.tag.isDarwin(),
     /// Every toast and notification (`zg_gui.w.toast`).
     notifications: NotificationCenter,
     /// Each window's toast stack.
@@ -150,6 +157,7 @@ pub const App = struct {
         app.effect_arena.deinit();
         app.entities.deinit();
         app.clipboard.text.deinit(app.gpa);
+        app.primary.text.deinit(app.gpa);
     }
 
     // -- background work ----------------------------------------------------
