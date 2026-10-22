@@ -1,0 +1,37 @@
+.{
+    .name = "qa_read_file",
+    .fixture = "notes",
+    .prompt = "What is the first word in a.txt?",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "The first word is alpha.",
+            .expect = .{
+                "alpha",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .final_text_matches = "\\balpha\\b",
+        },
+        .{
+            .file_unchanged = "a.txt",
+        },
+        .{
+            .max_turns = 2,
+        },
+        .no_permission_denials,
+    },
+}

@@ -1,0 +1,30 @@
+.{
+    .name = "denied_command_without_prompt",
+    .fixture = "notes",
+    .prompt = "Delete a.txt.",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"rm a.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "I could not delete a.txt: the command needs approval.",
+            .expect = .{
+                "Permission denied",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "a.txt",
+        },
+        .{
+            .final_text_matches = "could not delete",
+        },
+    },
+}

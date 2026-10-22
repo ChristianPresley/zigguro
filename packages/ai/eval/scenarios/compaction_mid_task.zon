@@ -1,0 +1,60 @@
+.{
+    .name = "compaction_mid_task",
+    .fixture = "notes",
+    .prompt = "Read long.txt, then change alpha to ALPHA in a.txt.",
+    .compact_after_tokens = 200,
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"long.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "Summary: read long.txt (60 numbered lines); next, change alpha to ALPHA in a.txt.",
+            .expect = .{
+                "line 60",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+            .expect = .{
+                "Conversation compacted",
+                "change alpha to ALPHA",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"alpha\",\"new_string\":\"ALPHA\"}",
+                },
+            },
+            .expect = .{
+                "beta",
+            },
+        },
+        .{
+            .text = "Done.",
+            .expect = .{
+                "a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "ALPHA",
+            },
+        },
+        .no_permission_denials,
+    },
+}

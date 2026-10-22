@@ -1,0 +1,28 @@
+.{
+    .name = "qa_no_tools",
+    .fixture = "notes",
+    .prompt = "What is 2 + 2?",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .text = "2 + 2 = 4.",
+        },
+    },
+    .graders = .{
+        .{
+            .tool_not_used = "read_file",
+        },
+        .{
+            .tool_not_used = "run_command",
+        },
+        .{
+            .max_turns = 1,
+        },
+        .{
+            .final_text_matches = "= 4",
+        },
+        .{
+            .max_cost_usd = 0.01,
+        },
+    },
+}

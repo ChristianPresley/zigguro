@@ -1,0 +1,30 @@
+.{
+    .name = "write_nested_file",
+    .fixture = "notes",
+    .prompt = "Create docs/guide/intro.md with a heading.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"docs/guide/intro.md\",\"content\":\"# Intro\\n\"}",
+                },
+            },
+        },
+        .{
+            .text = "Created docs/guide/intro.md.",
+            .expect = .{
+                "docs/guide/intro.md",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "docs/guide/intro.md",
+                .needle = "# Intro",
+            },
+        },
+        .no_permission_denials,
+    },
+}

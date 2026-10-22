@@ -1,0 +1,40 @@
+.{
+    .name = "parallel_read_and_run",
+    .fixture = "notes",
+    .prompt = "Read a.txt and echo side-by-side at once.",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"echo side-by-side\"}",
+                },
+            },
+        },
+        .{
+            .text = "Both done.",
+            .expect = .{
+                "alpha",
+                "side-by-side",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .tool_used = "run_command",
+        },
+        .{
+            .max_turns = 2,
+        },
+    },
+}

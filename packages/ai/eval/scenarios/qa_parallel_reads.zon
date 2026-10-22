@@ -1,0 +1,39 @@
+.{
+    .name = "qa_parallel_reads",
+    .fixture = "notes",
+    .prompt = "Summarize a.txt and sub/b.txt.",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"sub/b.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "a.txt lists alpha and beta; sub/b.txt says keep me.",
+            .expect = .{
+                "alpha",
+                "keep me",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .max_turns = 2,
+        },
+        .{
+            .final_text_matches = "keep me",
+        },
+        .no_permission_denials,
+    },
+}

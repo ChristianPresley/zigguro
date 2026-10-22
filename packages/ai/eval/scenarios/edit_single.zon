@@ -1,0 +1,50 @@
+.{
+    .name = "edit_single",
+    .fixture = "notes",
+    .prompt = "Change alpha to ALPHA in a.txt.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"alpha\",\"new_string\":\"ALPHA\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+        .{
+            .text = "Changed alpha to ALPHA.",
+            .expect = .{
+                "a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "ALPHA\nbeta",
+            },
+        },
+        .{
+            .file_unchanged = "sub/b.txt",
+        },
+        .{
+            .tool_used = "edit_file",
+        },
+        .{
+            .max_turns = 3,
+        },
+        .no_permission_denials,
+    },
+}

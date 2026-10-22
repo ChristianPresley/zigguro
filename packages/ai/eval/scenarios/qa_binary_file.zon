@@ -1,0 +1,30 @@
+.{
+    .name = "qa_binary_file",
+    .fixture = "notes",
+    .prompt = "What is in data.bin?",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"data.bin\"}",
+                },
+            },
+        },
+        .{
+            .text = "data.bin is a binary file.",
+            .expect = .{
+                "Binary file",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .final_text_matches = "binary",
+        },
+        .{
+            .file_unchanged = "data.bin",
+        },
+    },
+}
