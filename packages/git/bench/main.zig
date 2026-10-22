@@ -1,5 +1,6 @@
 //! zg_git benchmarks (`zig build bench`): the E09.F07 budgets for pack
-//! reads, delta chains, indexing and zlib object encoding.
+//! reads, delta chains, indexing and zlib object encoding, and (E09.F08)
+//! pkt-line framing and sideband demultiplexing.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -115,6 +116,49 @@ fn register(b: *bench.Bench) !void {
         try refs_text.writer.print("{s} refs/tags/release-{d:0>6}\n", .{ id.hex(&hb), i });
     }
     try b.run("git.packed_refs_50k: parse and index 50k packed refs", @as([]const u8, refs_text.written()), packedRefs);
+
+    // 16 MiB of pack data as maximal pkt-lines, plain and on band 1.
+    const wire_payload = try gpa.alloc(u8, 16 << 20);
+    defer gpa.free(wire_payload);
+    r.bytes(wire_payload);
+    var plain: std.Io.Writer.Allocating = .init(gpa);
+    defer plain.deinit();
+    try git.proto.PktWriter.init(&plain.writer).dataChunked(wire_payload);
+    try git.proto.PktWriter.init(&plain.writer).flush();
+    var banded: std.Io.Writer.Allocating = .init(gpa);
+    defer banded.deinit();
+    try git.proto.PktWriter.init(&banded.writer).band(1, wire_payload, git.proto.pktline.max_pkt);
+    try git.proto.PktWriter.init(&banded.writer).flush();
+    try b.run("git.pktline_parse: frame 16 MiB of 64 KiB data packets", WireCtx{ .wire = plain.written(), .payload = wire_payload.len }, pktlineParse);
+    try b.run("git.sideband_stream: demultiplex 16 MiB of band-1 data through the reader", WireCtx{ .wire = banded.written(), .payload = wire_payload.len }, sidebandStream);
+}
+
+const WireCtx = struct { wire: []const u8, payload: usize };
+
+fn pktlineParse(c: WireCtx, s: *State) void {
+    s.setBytes(c.wire.len);
+    for (0..s.iterations()) |_| {
+        var rd: std.Io.Reader = .fixed(c.wire);
+        var pr = git.proto.PktReader.init(&rd);
+        var n: usize = 0;
+        while (pr.next() catch unreachable) |p| switch (p) {
+            .data => |d| n += d.len,
+            else => {},
+        };
+        std.debug.assert(n == c.payload);
+    }
+}
+
+fn sidebandStream(c: WireCtx, s: *State) void {
+    s.setBytes(c.wire.len);
+    var buf: [64 * 1024]u8 = undefined;
+    for (0..s.iterations()) |_| {
+        var rd: std.Io.Reader = .fixed(c.wire);
+        var pr = git.proto.PktReader.init(&rd);
+        var sb = git.proto.Sideband.init(&pr, .band64k);
+        const n = sb.reader(&buf).discardRemaining() catch unreachable;
+        std.debug.assert(n == c.payload);
+    }
 }
 
 fn packedRefs(text: []const u8, s: *State) void {
