@@ -37,6 +37,7 @@ fn register(b: *bench.Bench) !void {
     try b.run("protocol: decode tools/call result", {}, decodeCall);
     try b.run("protocol: encode tools/call request", {}, encodeCall);
     try registerSchema(b);
+    try registerCatalog(b, list);
     try registerClient(b);
     try registerServer(b);
 }
@@ -149,6 +150,57 @@ fn validateArgs(fx: SchemaFixture, s: *State) void {
     for (0..s.iterations()) |_| {
         const ok = schema.validate(fx.tool, s.allocator(), fx.args, null) catch unreachable;
         bench.doNotOptimizeAway(ok);
+    }
+}
+
+/// Budgets (E11.F03.S01.T02): a 500-tool `tools/list` to a published
+/// catalog < 15 ms (decode, hygiene, schema compiles, index); a 500-tool
+/// snapshot decode < 5 ms.
+fn registerCatalog(b: *bench.Bench, list: []const u8) !void {
+    const catalog = zg_mcp.client.catalog;
+    var fetcher: OnePage = .{ .bytes = list };
+    var store: catalog.CatalogStore = .init(b.gpa, b.io, fetcher.fetcher(), .{});
+    defer store.deinit();
+    const c = try store.get(.tools);
+    defer c.release();
+    var aw: std.Io.Writer.Allocating = .init(b.gpa);
+    defer aw.deinit();
+    try zg_mcp.client.snapshot.encodeSnapshot(&aw.writer, c, .{});
+    var fx: CatalogFixture = .{ .fetcher = &fetcher, .snapshot = aw.written(), .io = b.io };
+    try b.run("catalog: tools/list 500 tools to published catalog", &fx, publishCatalog);
+    try b.run("catalog: decode 500-tool snapshot", &fx, decodeSnapshot);
+}
+
+const OnePage = struct {
+    bytes: []const u8,
+
+    fn fetcher(p: *OnePage) zg_mcp.client.catalog.Fetcher {
+        return .{ .ctx = p, .fetch = fetch };
+    }
+
+    fn fetch(ctx: ?*anyopaque, arena: std.mem.Allocator, _: zg_mcp.client.CatalogKind, _: ?[]const u8) zg_mcp.client.catalog.FetchError!zg_mcp.client.catalog.Page {
+        const p: *OnePage = @ptrCast(@alignCast(ctx.?));
+        const r = codec.decodeResult(M.ListToolsResult, arena, .{ .bytes = p.bytes }, .{}) catch return error.Failed;
+        return .{ .items = .{ .tools = r.complete.tools }, .ttl_ms = r.complete.ttl_ms };
+    }
+};
+
+const CatalogFixture = struct { fetcher: *OnePage, snapshot: []const u8, io: std.Io };
+
+fn publishCatalog(fx: *CatalogFixture, s: *State) void {
+    var store: zg_mcp.client.catalog.CatalogStore = .init(s.allocator(), fx.io, fx.fetcher.fetcher(), .{});
+    defer store.deinit();
+    s.setBytes(fx.fetcher.bytes.len);
+    for (0..s.iterations()) |_| store.refresh(.tools) catch unreachable;
+}
+
+fn decodeSnapshot(fx: *CatalogFixture, s: *State) void {
+    s.setBytes(fx.snapshot.len);
+    for (0..s.iterations()) |_| {
+        var r: std.Io.Reader = .fixed(fx.snapshot);
+        const c = zg_mcp.client.snapshot.decodeSnapshot(s.allocator(), fx.io, &r) catch unreachable;
+        bench.doNotOptimizeAway(c.entries.len);
+        c.release();
     }
 }
 
