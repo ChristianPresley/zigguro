@@ -278,6 +278,8 @@ pub const QueueModel = struct {
             .submitted, .updated, .removed => |id| id,
             .state => |s| s.cs,
             .applied => |a| a.cs,
+            // An `updated` comes first.
+            .decided => return,
         };
         m.refresh(id) catch std.log.scoped(.zg_review).warn("queue model: out of memory while updating {f}", .{id});
         // A sibling's conflicts may have changed too; they are counted

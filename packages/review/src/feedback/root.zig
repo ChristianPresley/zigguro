@@ -5,6 +5,8 @@ const comments = @import("comments.zig");
 const labels = @import("labels.zig");
 const feedback = @import("feedback.zig");
 
+pub const outcome = @import("outcome.zig");
+
 pub const message = @import("message.zig");
 
 pub const anchor = @import("anchor.zig");
@@ -35,6 +37,13 @@ pub const EndedChoice = feedback.EndedChoice;
 pub const FeedbackOptions = feedback.Options;
 pub const InterdiffDocs = feedback.InterdiffDocs;
 pub const FeedbackMessage = message.FeedbackMessage;
+pub const OutcomeReporter = outcome.OutcomeReporter;
+pub const Outcome = outcome.Outcome;
+pub const FileOutcome = outcome.FileOutcome;
+pub const OutcomeSink = outcome.OutcomeSink;
+pub const OutcomeOptions = outcome.Options;
+pub const ReviewRef = outcome.ReviewRef;
+pub const ReviewRecords = outcome.ReviewRecords;
 
 pub const Label = labels.Label;
 pub const Prefix = labels.Prefix;
@@ -45,4 +54,5 @@ test {
     _ = anchor;
     _ = @import("comments_test.zig");
     _ = @import("feedback_test.zig");
+    _ = @import("outcome_test.zig");
 }
