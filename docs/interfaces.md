@@ -442,6 +442,7 @@ pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
 // New variants go at the end, so recorded .zgtrace tags keep their values:
 //   pointer_pressure: { win, pressure: f32 }            // pen tip 0..1, before its pointer_move
 //   pointer_relative: { win, dx: f32, dy: f32, time_ns } // raw mouse counts
+//   window_decorations: { win, client: bool, margins_px: [4]u32 } // Wayland CSD margins (l, t, r, b)
 ```
 
 Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
@@ -982,9 +983,8 @@ thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
 shows the default arrow. Animated cursors show their first frame.
-`zg_platform.linux_util.xcursor` parses Xcursor files for X11 too. Move,
-resize, window menu, activation, dialogs and URIs return
-`error.Unsupported`.
+`zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
+Activation, dialogs and URIs return `error.Unsupported`.
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
@@ -1002,6 +1002,29 @@ when a shown preedit is not repeated; -1 offsets hide the cursor). A
 `done` whose serial is not our commit count still applies, and the
 current state is sent again. `leave` clears a shown preedit. Manual
 checklist: `docs/manual-tests/wayland-ime.md`.
+
+Decorations (E01.F04.S01.T02, `wayland/csd.zig`): with
+`zxdg_decoration_manager_v1`, each toplevel gets a decoration object and
+`set_mode(server_side)`, or `client_side` for `Decorations.client`; the
+mode the compositor configures applies with the next surface configure
+and is never sent again. Without the manager windows are
+client-decorated. A client-decorated surface is the window plus 12
+logical px of invisible margin on each edge (none when maximized or
+fullscreen, none on tiled edges): `window_configure.size` covers the
+whole surface, `window_decorations` (staged before it when the mode or
+the physical margins change) tells E04 where the visible window is,
+`set_window_geometry` names it, and the input region adds an 8 px resize
+band around it. At each `wl_pointer.frame` on such a window, a point in
+the margins is a resize edge (16 px corners), elsewhere the app's
+`set_hit_test` answers (`client` without one). A left press on
+`caption` starts `move` with the press serial (a second one within
+500 ms and 4 px toggles maximize), a right press opens
+`show_window_menu`, a left press on a resize region starts `resize`;
+those presses and their releases do not reach the app. Button regions
+reach the app. The margins show resize cursors. `begin_move`,
+`begin_resize` and `show_window_menu` send the same requests with the
+newest button serial on any window. Manual checklist:
+`docs/manual-tests/wayland-csd.md`.
 
 ## zg_platform.x11.X11Backend
 
@@ -3130,3 +3153,69 @@ A `Changeset` owns its arena (paths, labels, hunks) and every text
 ### Stability
 Unstable until the queue and store land; the provenance JSON is stable
 (golden-tested).
+
+## zg_review.model.Queue (batch submission, Submitter, events)
+
+### Defined in
+`packages/review/src/model/{queue,batch,blobs,events}.zig` (E12.F01.S01.T02).
+
+### Implemented by
+E12.F01.S01.T02.
+
+### Consumed by
+E10 edit tools (batch per turn), E07 ReviewSink, E08 replace and notes, E12 review UI, apply and store.
+
+### Signature
+```zig
+pub const Queue = struct {
+    pub fn init(gpa, io, o: Options{ root, blobs: Blobs, first_id: u64 = 1, wake: ?Wake = null, hunk_options }) !*Queue;
+    pub fn deinit(q) void;
+    pub fn beginBatch(q, prov: Provenance) !BatchId;                                   // any thread
+    pub fn addEdit(q, b, path, base: []const u8, base_version: ?u64, edits: *const ChangeSet) !void;
+    pub fn addCreate(q, b, path, bytes) !void;
+    pub fn addDelete(q, b, path, base: []const u8) !void;
+    pub fn addRename(q, b, from, to) !void;
+    pub fn setExecutable(q, b, path, on: bool) !void;
+    pub fn abortBatch(q, b) void;
+    pub fn commitBatch(q, b, o: SubmitOptions) !ChangesetId;                          // owner thread
+    pub fn drain(q) void;                                                              // owner thread
+    pub fn get(q, id) ?*const Changeset;
+    pub fn getMut(q, id) ?*Changeset;
+    pub fn list(q, f: Filter{ open_only, session }, out: *ArrayList(ChangesetId), gpa) !void;
+    pub fn remove(q, id) void;
+    pub fn subscribe(q, Listener{ ctx, on }) !ListenerId;
+    pub fn submitter(q) *Submitter;
+};
+pub const SubmitOptions = struct { auto_apply: bool = false, presentation: Presentation = .queue, supersedes: ?ChangesetId = null, checkpoint: ?u64 = null };
+pub const Submitter = struct { // any thread; E10 shapes: addCreate(b, path, bytes), commitBatch(b)
+    beginBatch, addEdit, addCreate, setExecutable, addDelete, addRename, abortBatch, commitBatch, commitBatchWith };
+pub const Event = union(enum) { submitted: ChangesetId, updated: ChangesetId, state: { cs, from, to }, removed: ChangesetId };
+pub const Blobs = struct { ctx, vtable: { put(ctx, bytes) !BlobHash, get(ctx, arena, hash) !?[]const u8 } };
+pub const MemBlobs = struct { pub fn init(gpa) MemBlobs; pub fn blobs(m) Blobs; ... };
+```
+Deviations from the spec text:
+- `addEdit` and `addDelete` take the base text instead of a `BaseRef`. The
+  queue hashes and stores it, and derives hunks from it. `BaseRef` is
+  computed from the text.
+- `FileChange.base` records what a delete removes.
+- `Submitter.commitBatch` reserves the id at once. The batch becomes a
+  changeset at the owner's next `drain`, which the `wake` hook requests
+  (the app posts it through `Runtime.post`).
+- Not yet implemented:
+  - `addPending` (E05 PendingChange tokens);
+  - the E07 and E08 port adapters;
+  - streaming plans;
+  - background hunk derivation for large files;
+  - auto-apply, which is fail-closed with no policy.
+
+### Threading
+Changesets, listeners and events belong to the owner thread. Batches and
+committed-but-undrained batches are guarded by an `Io.Mutex`; ids come
+from an atomic counter.
+
+### Ownership/lifetime
+A batch copies every text and ChangeSet it gets. The queue owns its
+changesets until `remove`.
+
+### Stability
+Unstable until the store and the E10 binding land.

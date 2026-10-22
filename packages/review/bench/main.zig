@@ -21,9 +21,49 @@ const Hunks = struct {
     gpa: std.mem.Allocator,
 };
 
+fn register(b: *bench.Bench) !void {
+    try registerHunks(b);
+    try registerSubmit(b);
+}
+
+const Submit = struct {
+    q: *model.Queue,
+    base: []const u8,
+    edits: [3]ChangeSet,
+};
+
+/// Owner-thread submit of a 3-file batch (budget < 200 µs), base texts of
+/// 2,000 lines each.
+fn registerSubmit(b: *bench.Bench) !void {
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(b.gpa);
+    for (0..2_000) |i| try text.print(b.gpa, "line {d} of the file, with some code-like text ();\n", .{i});
+    var mem: model.MemBlobs = .init(b.gpa);
+    defer mem.deinit();
+    var s: Submit = .{ .q = try model.Queue.init(b.gpa, b.io, .{ .root = "/w", .blobs = mem.blobs() }), .base = text.items, .edits = undefined };
+    defer s.q.deinit();
+    for (&s.edits, 0..) |*e, i| {
+        const at = 100 + 3_000 * i;
+        e.* = try .fromEdits(b.gpa, text.items.len, &.{ .{ .range = .{ .start = at, .end = at + 4 }, .text = "LINE" }, .{ .range = .{ .start = at + 40_000, .end = at + 40_000 }, .text = "new line\n" } });
+    }
+    defer for (&s.edits) |*e| e.deinit();
+    try b.run("review.submit.3_files", &s, struct {
+        fn f(x: *Submit, st: *bench.State) void {
+            const names = [_][]const u8{ "src/a.zig", "src/b.zig", "src/c.zig" };
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                const id = x.q.beginBatch(.{ .origin = .{ .user_bulk = .{ .command = "bench" } }, .label = "bench", .workspace = "/w", .created_ms = 0 }) catch unreachable;
+                for (names, &x.edits) |n, *e| x.q.addEdit(id, n, x.base, null, e) catch unreachable;
+                const cs = x.q.commitBatch(id, .{}) catch unreachable;
+                x.q.remove(cs);
+            }
+        }
+    }.f);
+}
+
 /// 1,000 one-line replaces scattered over a 10k-line file (the
 /// `deriveHunks` budget: < 2 ms).
-fn register(b: *bench.Bench) !void {
+fn registerHunks(b: *bench.Bench) !void {
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(b.gpa);
     var rng: std.Random.DefaultPrng = .init(0x12e1);

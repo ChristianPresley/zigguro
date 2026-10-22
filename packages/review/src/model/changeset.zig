@@ -57,6 +57,7 @@ pub const Eol = enum {
 
     /// Detects the terminators of `text`.
     pub fn detect(text: []const u8) Eol {
+        if (std.mem.indexOfScalar(u8, text, '\r') == null) return if (std.mem.indexOfScalar(u8, text, '\n') != null) .lf else .none;
         var seen: Eol = .none;
         var i: usize = 0;
         while (std.mem.indexOfAnyPos(u8, text, i, "\r\n")) |p| {
@@ -125,6 +126,9 @@ pub const FileChange = struct {
     /// decision is the only one.
     hunks: []Hunk = &.{},
     state: FileState = .pending,
+    /// The file a delete removes (checked again when applied); text
+    /// changes keep their base in `content`.
+    base: ?BaseRef = null,
     folded_from: []const ChangesetId = &.{},
 
     /// Lines added and removed by the hunks.
@@ -138,11 +142,12 @@ pub const FileChange = struct {
         return .{ .added = a, .removed = r };
     }
 
-    fn deinit(fc: *FileChange) void {
+    pub fn deinitContent(fc: *FileChange) void {
         switch (fc.content) {
             .text => |*t| t.edits.deinit(),
             else => {},
         }
+        fc.content = .none;
     }
 };
 
@@ -174,7 +179,7 @@ pub const Changeset = struct {
 
     /// Frees the arena and every file's ChangeSet.
     pub fn deinit(cs: *Changeset, gpa: Allocator) void {
-        for (cs.files) |*f| f.deinit();
+        for (cs.files) |*f| f.deinitContent();
         cs.arena.promote(gpa).deinit();
         cs.* = undefined;
     }

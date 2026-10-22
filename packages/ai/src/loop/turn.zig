@@ -111,7 +111,7 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
         switch (d) {
             .allow => {},
             .block => |reason| {
-                a.publish(.{ .warning = ar.dupe(u8, reason) catch "" });
+                a.publish(.{ .error_ = .{ .kind = "prompt_blocked", .message = ar.dupe(u8, reason) catch "" } });
                 finishTurn(a, .blocked, null);
                 return .blocked;
             },
