@@ -3,6 +3,8 @@
 
 pub const selection = @import("selection.zig");
 pub const files = @import("files.zig");
+pub const txn = @import("txn.zig");
+pub const revert = @import("revert.zig");
 pub const applier = @import("applier.zig");
 
 pub const SelectionInput = selection.SelectionInput;
@@ -15,6 +17,7 @@ pub const Applier = applier.Applier;
 pub const ApplyItem = applier.ApplyItem;
 pub const ApplyRequest = applier.ApplyRequest;
 pub const ApplyResult = applier.ApplyResult;
+pub const UndoResult = applier.UndoResult;
 
 test {
     @import("std").testing.refAllDecls(@This());

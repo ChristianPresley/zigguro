@@ -9,6 +9,8 @@ pub const model = @import("model/root.zig");
 pub const store = @import("store/root.zig");
 /// Hunk selection and the transactional applier.
 pub const apply = @import("apply/root.zig");
+/// Turn checkpoints and restore.
+pub const checkpoint = @import("checkpoint/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

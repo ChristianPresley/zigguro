@@ -15,6 +15,8 @@ const zg_editor = @import("zg_editor");
 
 const Allocator = std.mem.Allocator;
 const diff = zg_editor.model.diff;
+const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+const Replace = zg_editor.model.edit.change_set.Replace;
 
 pub const Side = enum { ours, theirs };
 
@@ -180,6 +182,43 @@ pub fn merge(gpa: Allocator, base: []const u8, ours: []const u8, theirs: []const
     return .{ .text = try out.toOwnedSlice(gpa), .conflicts = try conflicts.toOwnedSlice(gpa) };
 }
 
+/// The line diff from `a` to `b` as an E05 `ChangeSet` over `a`: one
+/// replace per changed run of whole lines (histogram diff, exact bytes).
+/// Undo accept uses it to turn a pre and post image back into edits.
+pub fn lineChangeSet(gpa: Allocator, a: []const u8, b: []const u8) Allocator.Error!ChangeSet {
+    const al = try splitLines(gpa, a);
+    defer gpa.free(al);
+    const bl = try splitLines(gpa, b);
+    defer gpa.free(bl);
+    var ids: [3][]u32 = undefined;
+    try intern(gpa, .{ al, bl, &.{} }, &ids);
+    defer for (ids) |x| gpa.free(x);
+    const es = try diff.diffTokens(gpa, ids[0], ids[1], .histogram, null);
+    defer gpa.free(es);
+    const rs = try regionsOf(gpa, es);
+    defer gpa.free(rs);
+    const reps = try gpa.alloc(Replace, rs.len);
+    defer gpa.free(reps);
+    // Byte offsets of line starts, walked forward with the regions.
+    var la: usize = 0;
+    var oa: usize = 0;
+    var lb: usize = 0;
+    var ob: usize = 0;
+    for (rs, reps) |r, *o| {
+        while (la < r.b0) : (la += 1) oa += al[la].len;
+        while (lb < r.s0) : (lb += 1) ob += bl[lb].len;
+        const start = oa;
+        const tstart = ob;
+        while (la < r.b1) : (la += 1) oa += al[la].len;
+        while (lb < r.s1) : (lb += 1) ob += bl[lb].len;
+        o.* = .{ .range = .{ .start = start, .end = oa }, .text = b[tstart..ob] };
+    }
+    return ChangeSet.fromEdits(gpa, a.len, reps) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.Overlap, error.OutOfBounds => unreachable,
+    };
+}
+
 /// Whether region `r` (starting at or after `lo`) belongs to the group
 /// `[lo, hi)`: it overlaps it, or an insertion meets it at an edge.
 fn joins(r: Region, lo: u32, hi: u32) bool {
@@ -282,4 +321,25 @@ test "merge3: random non-overlapping edits merge to both" {
         }
         try expectMerge(base.items, ours.items, theirs.items, want.items, 0);
     }
+}
+
+test "merge3: line change set turns a into b" {
+    const cases = [_][2][]const u8{
+        .{ "a\nb\nc\n", "a\nB\nc\nd\n" },
+        .{ "", "x\n" },
+        .{ "x\n", "" },
+        .{ "a\r\nb", "a\nb\n" },
+        .{ "same\n", "same\n" },
+    };
+    for (cases) |c| {
+        var cs = try lineChangeSet(testing.allocator, c[0], c[1]);
+        defer cs.deinit();
+        const got = try cs.applyToSlice(testing.allocator, c[0]);
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings(c[1], got);
+    }
+    var cs = try lineChangeSet(testing.allocator, "a\nb\nc\n", "a\nB\nc\n");
+    defer cs.deinit();
+    try testing.expectEqual(@as(usize, 1), cs.replaces.len);
+    try testing.expectEqual(@as(u64, 2), cs.replaces[0].range.start);
 }

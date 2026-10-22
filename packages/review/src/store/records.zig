@@ -1,6 +1,6 @@
 //! JSON records of the review journal (E12.F01.S02.T01): a changeset
 //! snapshot (everything but blob contents), an apply record
-//! (E12.F02.S03.T02), and their decoders.
+//! (E12.F02.S03.T02), a checkpoint (E12.F04.S01.T01), and their decoders.
 //!
 //! Edits are inlined as `[[start, end, "text"], ...]`; when their texts
 //! exceed `inline_limit` they go to a blob holding the same JSON and the
@@ -61,6 +61,7 @@ pub fn writeApply(w: *std.Io.Writer, a: *const model.Apply) Stringify.Error!void
     for (a.files) |f| {
         try s.beginObject();
         try field(&s, "path", f.path);
+        if (f.from) |x| try field(&s, "from", x);
         if (f.pre) |h| try field(&s, "pre", &hex(h));
         if (f.post) |h| try field(&s, "post", &hex(h));
         if (f.pre_exec) try field(&s, "pre_exec", true);
@@ -80,6 +81,7 @@ pub fn readApply(arena: Allocator, v: Value) Error!model.Apply {
         const fo = try obj(fv);
         f.* = .{
             .path = try dupe(arena, get(fo, "path")),
+            .from = if (get(fo, "from")) |x| try dupe(arena, x) else null,
             .pre = if (get(fo, "pre")) |x| try unhex(x) else null,
             .post = if (get(fo, "post")) |x| try unhex(x) else null,
             .pre_exec = if (get(fo, "pre_exec")) |x| try boolean(x) else false,
@@ -94,6 +96,38 @@ pub fn readApply(arena: Allocator, v: Value) Error!model.Apply {
         .session = if (get(o, "session")) |x| proto.agent_ref.parse(try str(x)) catch return error.InvalidRecord else null,
         .created_ms = try int(i64, get(o, "created_ms")),
         .files = files,
+    };
+}
+
+/// Writes a checkpoint record.
+pub fn writeCheckpoint(w: *std.Io.Writer, c: *const model.Checkpoint) Stringify.Error!void {
+    var s: Stringify = .{ .writer = w };
+    try s.beginObject();
+    try field(&s, "id", c.id);
+    try field(&s, "session", &proto.agent_ref.format(c.session));
+    if (c.agent != 0) try field(&s, "agent", c.agent);
+    try field(&s, "turn", c.turn);
+    if (c.label.len > 0) try field(&s, "label", c.label);
+    try field(&s, "created_ms", c.created_ms);
+    try field(&s, "after_apply", c.after_apply);
+    try field(&s, "next_changeset", c.next_changeset);
+    if (c.pinned) try field(&s, "pinned", true);
+    try s.endObject();
+}
+
+/// Decodes `writeCheckpoint`'s record; the label is allocated in `arena`.
+pub fn readCheckpoint(arena: Allocator, v: Value) Error!model.Checkpoint {
+    const o = try obj(v);
+    return .{
+        .id = try int(u64, get(o, "id")),
+        .session = proto.agent_ref.parse(try str(get(o, "session") orelse return error.InvalidRecord)) catch return error.InvalidRecord,
+        .agent = if (get(o, "agent")) |x| try int(u32, x) else 0,
+        .turn = try int(u32, get(o, "turn")),
+        .label = if (get(o, "label")) |x| try dupe(arena, x) else "",
+        .created_ms = try int(i64, get(o, "created_ms")),
+        .after_apply = try int(u64, get(o, "after_apply")),
+        .next_changeset = try int(u64, get(o, "next_changeset")),
+        .pinned = if (get(o, "pinned")) |x| try boolean(x) else false,
     };
 }
 
@@ -408,7 +442,7 @@ test "records: apply record round trip" {
     defer arena.deinit();
     const a = arena.allocator();
     const files = [_]model.ApplyFile{
-        .{ .path = "a/b.txt", .pre = model.blobHash("x"), .post = model.blobHash("y"), .post_exec = true },
+        .{ .path = "a/b.txt", .from = "old.txt", .pre = model.blobHash("x"), .post = model.blobHash("y"), .post_exec = true },
         .{ .path = "gone.txt", .pre = model.blobHash("z"), .post = null, .pre_exec = true },
     };
     const in: model.Apply = .{ .id = 4, .kind = .undo, .cs = @enumFromInt(9), .undoes = 2, .session = 77, .created_ms = 1234, .files = &files };
@@ -425,9 +459,24 @@ test "records: apply record round trip" {
     try testing.expectEqual(@as(usize, 2), out.files.len);
     for (files, out.files) |x, y| {
         try testing.expectEqualStrings(x.path, y.path);
+        if (x.from) |f| try testing.expectEqualStrings(f, y.from.?) else try testing.expectEqual(@as(?[]const u8, null), y.from);
         try testing.expectEqual(x.pre, y.pre);
         try testing.expectEqual(x.post, y.post);
         try testing.expectEqual(x.pre_exec, y.pre_exec);
         try testing.expectEqual(x.post_exec, y.post_exec);
     }
+}
+
+test "records: checkpoint round trip" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const in: model.Checkpoint = .{ .id = 3, .session = 99, .agent = 2, .turn = 7, .label = "Fix it", .created_ms = 5, .after_apply = 11, .next_changeset = 4, .pinned = true };
+    var aw: std.Io.Writer.Allocating = .init(a);
+    try writeCheckpoint(&aw.writer, &in);
+    const out = try readCheckpoint(a, try std.json.parseFromSliceLeaky(Value, a, aw.written(), .{}));
+    try testing.expectEqualStrings(in.label, out.label);
+    var x = out;
+    x.label = in.label;
+    try testing.expectEqual(in, x);
 }

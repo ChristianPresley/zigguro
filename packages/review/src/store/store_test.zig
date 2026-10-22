@@ -20,7 +20,7 @@ const Proc = struct {
         self.store = try ChangesetStore.open(testing.allocator, io, dir, "review", o);
         self.q = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = self.store.blobs(), .journal = self.store.journalPort() });
         self.history = .init(testing.allocator, self.store.recorder());
-        self.sink = self.store.queueSink(self.q, &self.history);
+        self.sink = self.store.queueSink(self.q, &self.history, null);
         return self.store.load(self.sink.sink());
     }
     fn close(self: *Proc) void {
@@ -219,5 +219,5 @@ test "store: applies and their records reach another process" {
     defer arena.deinit();
     try testing.expectEqualStrings("one\ntwo\n", (try b.store.blobs().get(arena.allocator(), rec.files[0].pre.?)).?);
     // B's next record gets a later id.
-    try testing.expect(b.history.next_id > rec.id);
+    try testing.expect(b.history.lastId() >= rec.id);
 }
