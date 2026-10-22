@@ -75,7 +75,7 @@ const Emitter = struct {
 
         // Names declared in this struct: parameters must not shadow them.
         var taken: std.StringHashMapUnmanaged(void) = .empty;
-        for ([_][]const u8{ "name", "version", "Id", "Request", "Event", "server", "decode", "decodeEvent", "decodeRequest", "request_destructors", "event_destructors", "conn", "self", "fds", "std", "Fixed", "DecodeError", "Reader" }) |n| try putTaken(e.gpa, &taken, n);
+        for ([_][]const u8{ "name", "version", "Id", "Request", "Event", "server", "decode", "decodeEvent", "decodeRequest", "request_destructors", "event_destructors", "request_fds", "event_fds", "event_new_ids", "NewId", "conn", "self", "fds", "std", "Fixed", "DecodeError", "Reader" }) |n| try putTaken(e.gpa, &taken, n);
         for (e.protos) |p| for (p.interfaces) |x| try putTaken(e.gpa, &taken, x.name);
         for (i.enums) |en| try putTakenOwned(e.gpa, &taken, try e.enumTypeName(en.name));
         for (i.requests) |m| try putTakenOwned(e.gpa, &taken, try camel(e.gpa, m.name));
@@ -86,6 +86,9 @@ const Emitter = struct {
         try e.messageUnion(i, "Event", i.events);
         try e.destructors("request_destructors", i.requests);
         try e.destructors("event_destructors", i.events);
+        try e.fdCounts("request_fds", i.requests);
+        try e.fdCounts("event_fds", i.events);
+        try e.newIds(i);
 
         for (i.requests, 0..) |*m, op| try e.encoder(i, m, op, "    ", true, &taken);
         try w.writeAll("    /// Event encoders for the compositor side (test compositors).\n");
@@ -250,6 +253,32 @@ const Emitter = struct {
         var vals: std.ArrayList([]const u8) = .empty;
         for (msgs) |m| try vals.append(e.gpa, if (m.destructor) "true" else "false");
         try e.w.print("    /// Which opcodes destroy the object.\n    pub const {s} = [_]bool{f};\n", .{ name, tuple(vals.items) });
+    }
+
+    fn fdCounts(e: *Emitter, comptime name: []const u8, msgs: []const model.Message) Error!void {
+        var vals: std.ArrayList([]const u8) = .empty;
+        for (msgs) |m| {
+            var n: usize = 0;
+            for (m.args) |a| {
+                if (a.type == .fd) n += 1;
+            }
+            try vals.append(e.gpa, try std.fmt.allocPrint(e.gpa, "{d}", .{n}));
+        }
+        try e.w.print("    /// How many fds each opcode carries.\n    pub const {s} = [_]u8{f};\n", .{ name, tuple(vals.items) });
+    }
+
+    fn newIds(e: *Emitter, i: *const model.Interface) Error!void {
+        var vals: std.ArrayList([]const u8) = .empty;
+        for (i.events) |m| {
+            const v: []const u8 = for (m.args) |a| {
+                if (a.type != .new_id) continue;
+                const iface = a.interface orelse continue;
+                if (e.findInterface(iface) == null) continue;
+                break try std.fmt.allocPrint(e.gpa, ".{{ .interface = {f}, .field = \"{s}\" }}", .{ std.zig.fmtId(iface), a.name });
+            } else "null";
+            try vals.append(e.gpa, v);
+        }
+        try e.w.print("    /// The object each event creates, if any (server-allocated ids).\n    pub const event_new_ids = [_]?NewId{f};\n", .{tuple(vals.items)});
     }
 
     fn paramName(e: *Emitter, taken: *const std.StringHashMapUnmanaged(void), name: []const u8) Error![]const u8 {
@@ -455,6 +484,10 @@ const prelude =
     \\        return @enumFromInt(v *% 256);
     \\    }
     \\};
+    \\
+    \\/// An object created by an event: its interface and the field holding
+    \\/// the new id.
+    \\pub const NewId = struct { interface: type, field: []const u8 };
     \\
     \\/// A message body that does not match its signature.
     \\pub const DecodeError = error{Protocol};
