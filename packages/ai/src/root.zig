@@ -46,6 +46,25 @@ pub const gemini = struct {
     }
 };
 pub const wire = @import("provider/wire.zig");
+pub const timefmt = @import("provider/timefmt.zig");
+pub const retry = @import("provider/retry.zig");
+pub const ratelimit = @import("provider/ratelimit.zig");
+pub const guarded = @import("provider/guarded.zig");
+pub const keyref = @import("provider/keyref.zig");
+pub const hub = @import("provider/hub.zig");
+/// Model registry, pricing, cost ledger and token estimator (E10.F04.S01).
+pub const models = struct {
+    pub const registry = @import("models/registry.zig");
+    pub const pricing = @import("models/pricing.zig");
+    pub const ledger = @import("models/ledger.zig");
+    pub const estimate = @import("models/estimate.zig");
+    test {
+        _ = @import("models/registry_test.zig");
+        _ = @import("models/ledger_test.zig");
+        _ = @import("provider/ratelimit_test.zig");
+        _ = @import("provider/hub_test.zig");
+    }
+};
 pub const schema = struct {
     pub const validate = @import("schema/validate.zig");
     pub const strict = @import("schema/strict.zig");
@@ -68,6 +87,12 @@ pub const EventSink = events.EventSink;
 pub const MessageAssembler = assembler.MessageAssembler;
 /// See `transport.Transport`.
 pub const Transport = transport.Transport;
+/// See `hub.ProviderHub`.
+pub const ProviderHub = hub.ProviderHub;
+/// See `models.registry.ModelRegistry`.
+pub const ModelRegistry = models.registry.ModelRegistry;
+/// See `models.ledger.CostLedger`.
+pub const CostLedger = models.ledger.CostLedger;
 /// See `scripted.ScriptedProvider`.
 pub const ScriptedProvider = scripted.ScriptedProvider;
 
@@ -77,4 +102,5 @@ test {
     std.testing.refAllDecls(anthropic);
     std.testing.refAllDecls(openai);
     std.testing.refAllDecls(gemini);
+    std.testing.refAllDecls(models);
 }
