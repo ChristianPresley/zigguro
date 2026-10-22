@@ -14,6 +14,7 @@ pub const PageList = @import("screen/PageList.zig");
 pub const Pin = PageList.Pin;
 pub const Screen = @import("screen/Screen.zig");
 pub const print = @import("screen/print.zig");
+pub const reflow = @import("screen/reflow.zig");
 pub const unicode = @import("screen/unicode.zig");
 
 test {
