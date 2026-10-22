@@ -49,7 +49,13 @@ pub const Flags = packed struct(u13) {
     loading: bool = false,
     /// Hidden by a `files.exclude` setting.
     excluded_by_setting: bool = false,
-    _: u6 = 0,
+    /// A directory the scanner could not read (access denied).
+    unreadable: bool = false,
+    /// A symlinked directory that leads back to one already scanned.
+    cycle: bool = false,
+    /// Size and mtime are not known yet (the scanner does not stat files).
+    stat_pending: bool = false,
+    _: u3 = 0,
 };
 
 /// Kind, flags, size and modification time of a node, in 16 bytes.
@@ -444,10 +450,13 @@ pub const PathStore = struct {
                             }
                             const n2 = try ps.nodeMut(child);
                             n2.info = u.info;
+                            // Re-listing a directory keeps its loading state; only
+                            // `set_children_complete` (or `reset_root`) changes it.
+                            if (was_dir and u.info.isDir()) n2.info.flags.loading = before.flags.loading;
                             if (was_dir != u.info.isDir()) {
                                 if (u.info.isDir()) ps.file_count -= 1 else ps.file_count += 1;
                             }
-                            if (!before.sameContent(u.info) or @as(u13, @bitCast(before.flags)) != @as(u13, @bitCast(u.info.flags)))
+                            if (!before.sameContent(n2.info) or @as(u13, @bitCast(before.flags)) != @as(u13, @bitCast(n2.info.flags)))
                                 try changes.add(.{ .id = ps.idOf(child), .what = .modified });
                         } else if (!ps.node(child).info.isDir()) {
                             return error.NotADirectory;
