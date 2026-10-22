@@ -1,0 +1,168 @@
+# Parser behaviour seen through the screen: controls inside sequences,
+# aborts, string terminators, UTF-8 recovery and split input.
+@cite https://vt100.net/emu/dec_ansi_parser
+
+@case BS inside CSI executes before the sequence
+@size 10x2
+@send "abc\e[^H2C"
+@expect-cursor 1,5
+
+@case CR inside CSI executes before the sequence
+@size 10x2
+@send "abc\e[\r2Cx"
+@expect-screen
+|abx·······|
+
+@case HT inside CSI executes before the sequence
+@size 20x2
+@send "\e[\t2Cx"
+@expect-screen
+|··········x·········|
+
+@case CAN aborts a CSI and the final byte prints
+@size 10x2
+@send "a\e[3\x18Cb"
+@expect-screen
+|aCb·······|
+
+@case ESC inside a CSI starts a new sequence
+@size 10x2
+@send "\e[5\e[3Cx"
+@expect-screen
+|···x······|
+
+@case Default parameter 0 means 1
+@size 10x2
+@send "\e[0Cx"
+@expect-screen
+|·x········|
+
+@case A huge parameter saturates and clamps
+@size 10x2
+@send "\e[99999999Cx"
+@expect-screen
+|·········x|
+
+@case DEL is ignored in ground
+@size 10x2
+@send "a\x7fb"
+@expect-screen
+|ab········|
+
+@case DEL is ignored inside CSI parameters
+@size 10x2
+@send "\e[2\x7fCx"
+@expect-screen
+|··x·······|
+
+@case Unknown private mode is ignored
+@size 10x2
+@send "\e[?12345hx"
+@expect-screen
+|x·········|
+
+@case Unknown CSI final is ignored
+@size 10x2
+@send "\e[1;2;3yab"
+@expect-screen
+|ab········|
+
+@case Colon sub-parameters select a curly underline
+@size 10x2
+@send "\e[4:3mx"
+@expect-cell 1,1 underline=curly
+
+@case BEL in ground prints nothing
+@size 10x2
+@send "a\ab"
+@expect-screen
+|ab········|
+
+@case CSI split across writes
+@size 10x2
+@send "\e["
+@send "3Cx"
+@expect-screen
+|···x······|
+
+@case UTF-8 split across writes
+@size 10x2
+@send "\xe6\x97"
+@send "\xa5"
+@expect-screen
+|日‹········|
+
+@case Invalid byte becomes U+FFFD
+@size 10x2
+@send "a\xffb"
+@expect-screen
+|a�b·······|
+
+@case Truncated sequence is one replacement then ASCII
+@size 10x2
+@send "\xe6\x97x"
+@expect-screen
+|�x········|
+
+@case Overlong encoding gives one replacement per byte
+@size 10x2
+@send "\xc0\xaf"
+@expect-screen
+|��········|
+
+@case Encoded surrogate gives three replacements
+@size 10x2
+@send "\xed\xa0\x80"
+@expect-screen
+|���·······|
+
+@case OSC terminated by BEL sets the title
+@size 10x2
+@send "\e]2;hello\ax"
+@expect-title "hello"
+@expect-screen
+|x·········|
+
+@case OSC terminated by ESC backslash sets the title
+@size 10x2
+@send "\e]2;hello\e\\x"
+@expect-title "hello"
+@expect-screen
+|x·········|
+
+@case OSC split across writes
+@size 10x2
+@send "\e]2;hel"
+@send "lo\a"
+@expect-title "hello"
+
+@case CAN aborts an OSC
+@size 10x2
+@send "\e]2;hello\x18x"
+@expect-title ""
+@expect-screen
+|x·········|
+
+@case APC is swallowed
+@size 10x2
+@send "\e_hello\e\\x"
+@expect-screen
+|x·········|
+
+@case SOS and PM are swallowed
+@size 10x2
+@send "\eXfoo\e\\\e\^bar\e\\x"
+@expect-screen
+|x·········|
+
+@case Unknown DCS is swallowed
+@size 10x2
+@send "\eP0;1|abc\e\\x"
+@expect-screen
+|x·········|
+
+@case Unknown ESC final is ignored
+@size 10x2
+@send "\e$x"
+@expect-screen
+|··········|
