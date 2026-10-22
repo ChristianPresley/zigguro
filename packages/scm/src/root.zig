@@ -45,6 +45,8 @@ pub const materialize = @import("merge/materialize.zig");
 pub const parse_markers = @import("merge/parse_markers.zig");
 /// Path-level three-way tree merges.
 pub const tree_merge = @import("merge/tree_merge.zig");
+/// Three-way and N-way file content merge.
+pub const content_merge = @import("merge/content_merge.zig");
 /// Operation objects and their metadata.
 pub const operation = @import("oplog/operation.zig");
 /// Views: heads, refs, working copies and lanes at one operation.
@@ -128,6 +130,7 @@ test {
     _ = @import("graph/layout_test.zig");
     _ = @import("graph/revset_test.zig");
     _ = @import("merge/markers_test.zig");
+    _ = @import("merge/content_merge_test.zig");
     _ = @import("oplog/oplog_test.zig");
     _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
