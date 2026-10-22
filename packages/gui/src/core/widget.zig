@@ -65,6 +65,12 @@ pub const A11y = struct {
     checked: ?bool = null,
     disabled: bool = false,
     value: ?f32 = null,
+    /// Tree items and other disclosures: open or closed (null: neither).
+    expanded: ?bool = null,
+    /// Items of selectable lists and trees.
+    selected: ?bool = null,
+    /// Tree items: depth from 1 (0: none).
+    level: u16 = 0,
     /// The text of an editable node (text boxes; empty for passwords).
     text: []const u8 = "",
 };
