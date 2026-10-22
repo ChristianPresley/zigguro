@@ -1,0 +1,15 @@
+# Allocators
+
+Zig has *no* default allocator. Pass one in, as `std.mem.Allocator`.
+
+## Arena
+
+An arena frees everything at once:
+
+```zig
+var arena = std.heap.ArenaAllocator.init(gpa);
+defer arena.deinit();
+const a = arena.allocator();
+```
+
+See [ArenaAllocator](https://example.com/docs/std/heap.html#ArenaAllocator) and [the site](https://ziglang.org/).
