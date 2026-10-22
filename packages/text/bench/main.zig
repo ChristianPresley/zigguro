@@ -15,17 +15,17 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",         "text.cache_hit",
-    "text.cache_screen",         "text.cells_row_200",
-    "text.cff_outline",          "text.fontdb_load_3k",
-    "text.gamma",                "text.hit_test",
-    "text.integrate_gpix",       "text.itemize_200col",
-    "text.layout_200col",        "text.lcd",
-    "text.measure_hit",          "text.raster_14px",
-    "text.raster_64px_cjk",      "text.raster_lcd_14px",
-    "text.registry_get",         "text.sdf_48px",
-    "text.shape_code_line_200",  "text.shape_latin_1k",
-    "text.shape_word_cache_hit", "text.wrap_10kb",
+    "text.atlas_insert",    "text.cache_hit",
+    "text.cache_screen",    "text.cells_row_200",
+    "text.fontdb_load_3k",  "text.gamma",
+    "text.hit_test",        "text.integrate_gpix",
+    "text.itemize_200col",  "text.layout_200col",
+    "text.lcd",             "text.measure_hit",
+    "text.raster_14px",     "text.raster_64px_cjk",
+    "text.raster_lcd_14px", "text.registry_get",
+    "text.sdf_48px",        "text.shape_code_line_200",
+    "text.shape_latin_1k",  "text.shape_word_cache_hit",
+    "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -122,6 +122,14 @@ fn register(b: *bench.Bench) !void {
 
     // One JetBrains Mono ASCII glyph outlined at wght=700 (glyf + gvar).
     try b.run("text.gvar_apply", VarOutlineCtx{ .inst = &bold, .gids = &ascii_gids, .gpa = b.gpa }, gvarOutline);
+
+    // One Source Serif 4 (CFF) ASCII glyph per iteration.
+    const serif = try zg_text.ot.Face.init(fonts.data[3], 0);
+    var serif_inst = try vt.FaceInstance.init(b.gpa, &serif, &.{});
+    defer serif_inst.deinit(b.gpa);
+    var serif_gids: [94]u16 = undefined;
+    for (&serif_gids, 0..) |*g, i| g.* = serif.glyphIndex(@intCast(0x21 + i));
+    try b.run("text.cff_outline", VarOutlineCtx{ .inst = &serif_inst, .gids = &serif_gids, .gpa = b.gpa }, gvarOutline);
 }
 
 const VarOutlineCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator };
