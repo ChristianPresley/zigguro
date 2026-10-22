@@ -25,6 +25,10 @@ pub const Fixed = enum(i32) {
     }
 };
 
+/// An object created by an event: its interface and the field holding
+/// the new id.
+pub const NewId = struct { interface: type, field: []const u8 };
+
 /// A message body that does not match its signature.
 pub const DecodeError = error{Protocol};
 
@@ -163,6 +167,12 @@ pub const mini_registry = struct {
     pub const request_destructors = [_]bool{ false, true };
     /// Which opcodes destroy the object.
     pub const event_destructors = [_]bool{ false, false };
+    /// How many fds each opcode carries.
+    pub const request_fds = [_]u8{ 0, 0 };
+    /// How many fds each opcode carries.
+    pub const event_fds = [_]u8{ 0, 1 };
+    /// The object each event creates, if any (server-allocated ids).
+    pub const event_new_ids = [_]?NewId{ null, null };
     /// bind a global
     pub fn bind(conn: anytype, self: Id, name_: u32, interface: [:0]const u8, interface_version: u32, id: u32) !void {
         try conn.send(@intFromEnum(self), 0, .{ name_, interface, interface_version, id }, &.{});
