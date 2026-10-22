@@ -1,13 +1,35 @@
-//! zlib helpers. Slices inflate with zg_git's own decoder; streams still
-//! go through `std.compress.flate`, whose 0.16 decompressor reads the zlib
-//! trailer but does not check it, so the adler32 is verified here.
+//! zlib helpers. Slices inflate and deflate with zg_git's own codec
+//! (`zlib/inflate.zig`, `zlib/deflate.zig`); streams still go through
+//! `std.compress.flate`, whose 0.16 decompressor reads the zlib trailer but
+//! does not check it, so the adler32 is verified here.
 
 const std = @import("std");
 const flate = std.compress.flate;
 const inflate_mod = @import("zlib/inflate.zig");
+const deflate_mod = @import("zlib/deflate.zig");
+const Allocator = std.mem.Allocator;
 
 /// The one-shot decoder behind `inflateExact` and `inflatePrefix`.
 pub const inflate = inflate_mod;
+/// The one-shot encoder behind `compress`.
+pub const deflate = deflate_mod;
+
+/// Writes `parts`, concatenated, to `w` as one zlib stream at `level`
+/// (zlib's matching parameters, as `std.compress.flate` takes them).
+pub fn compress(gpa: Allocator, w: *std.Io.Writer, parts: []const []const u8, level: flate.Compress.Options) (Allocator.Error || std.Io.Writer.Error)!void {
+    var joined: []const u8 = if (parts.len == 1) parts[0] else "";
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| gpa.free(o);
+    if (parts.len > 1) {
+        owned = try std.mem.concat(gpa, u8, parts);
+        joined = owned.?;
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, joined.len / 2 + 64);
+    try deflate_mod.zlibDeflate(gpa, &out, joined, level);
+    try w.writeAll(out.items);
+}
 
 /// Errors from inflating a zlib stream.
 pub const Error = error{ CorruptObject, ReadFailed };
@@ -75,6 +97,17 @@ test "zlib: inflateExact checks length and trailer" {
     try t.expectEqualStrings(payload[0..got.len], got);
 }
 
+test "zlib: compress joins parts into one stream" {
+    const t = std.testing;
+    var aw: std.Io.Writer.Allocating = .init(t.allocator);
+    defer aw.deinit();
+    try compress(t.allocator, &aw.writer, &.{ "blob 6\x00", "hello\n" }, .default);
+    var out: [13]u8 = undefined;
+    try t.expectEqual(aw.written().len, try inflateExact(aw.written(), &out));
+    try t.expectEqualStrings("blob 6\x00hello\n", &out);
+}
+
 test {
     _ = inflate_mod;
+    _ = deflate_mod;
 }

@@ -7,6 +7,7 @@ const std = @import("std");
 const oid_mod = @import("../oid.zig");
 const object = @import("../object.zig");
 const loose = @import("../loose.zig");
+const zlib = @import("../zlib.zig");
 const deltify = @import("deltify.zig");
 const idx_mod = @import("idx.zig");
 const rev_mod = @import("rev.zig");
@@ -304,15 +305,7 @@ pub fn writeOfs(w: *std.Io.Writer, distance: u64) std.Io.Writer.Error!void {
 }
 
 fn zlibInto(gpa: Allocator, w: *std.Io.Writer, data: []const u8, level: std.compress.flate.Compress.Options) !void {
-    const flate = std.compress.flate;
-    const window = try gpa.alloc(u8, flate.max_window_len);
-    defer gpa.free(window);
-    const comp = try gpa.create(flate.Compress);
-    defer gpa.destroy(comp);
-    _ = try w.writableSliceGreedy(16);
-    comp.* = try .init(w, window, .zlib, level);
-    try comp.writer.writeAll(data);
-    try comp.finish();
+    try zlib.compress(gpa, w, &.{data}, level);
 }
 
 test "writer: roundtrip all objects with valid deltas and bounded depth" {
