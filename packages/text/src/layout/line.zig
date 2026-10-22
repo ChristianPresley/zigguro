@@ -247,6 +247,62 @@ pub const TextLayout = struct {
         return tl.position(arena, text, offset, styles, shaped.items, base, tab_width_px);
     }
 
+    /// The bytes `[start, e)` of left-to-right line `m` (with no bidi
+    /// levels and no tabs in that range) as a line of their own, without
+    /// shaping or positioning again: what `buildLine` gives for that text
+    /// when breaking there leaves shaping unchanged. Null when it might
+    /// not: a break inside a cluster or where the shaper marked it unsafe,
+    /// or a run without glyphs or of the last-resort font.
+    pub fn sliceLine(tl: *const TextLayout, arena: Allocator, m: *const Line, start: u32, e: u32) !?Line {
+        if (m.paragraph_rtl or e <= start or start < m.start or e > m.end) return null;
+        const cl = m.clusters;
+        const n = cl.len;
+        const g0 = std.sort.lowerBound(u32, cl, start, orderU32);
+        const g1 = std.sort.lowerBound(u32, cl, e, orderU32);
+        if (g0 >= g1 or cl[g0] != start) return null;
+        if (g1 == n and e != m.end) return null;
+        if (m.unsafe_to_break.len > 0 and (m.unsafe_to_break[g0] or (g1 < n and m.unsafe_to_break[g1]))) return null;
+        const gs = m.graphemes;
+        const r0 = lowerBoundGrapheme(gs, start);
+        const r1 = lowerBoundGrapheme(gs, e);
+        if (r0 >= r1 or gs[r0].start != start or gs[r1 - 1].end != e) return null;
+        const shift = gs[r0].x0;
+
+        var line: Line = .{ .start = start, .end = e };
+        var runs: std.ArrayList(VisualRun) = .empty;
+        for (m.runs) |r| {
+            if (r.glyph_start == r.glyph_end or r.instance == fonts.registry.last_resort_instance or r.level != 0) return null;
+            if (r.glyph_end <= g0 or r.glyph_start >= g1) continue;
+            const a = @max(r.glyph_start, g0);
+            const b = @min(r.glyph_end, g1);
+            var v = r;
+            v.glyph_start = @intCast(a - g0);
+            v.glyph_end = @intCast(b - g0);
+            v.x = if (r.glyph_start >= g0) r.x - shift else 0;
+            try runs.append(arena, v);
+            const reg = tl.reg.get(r.instance);
+            const scale = r.size_px / reg.upem;
+            const mt = reg.inst.metrics();
+            line.ascent = @max(line.ascent, @ceil(mt.ascender * scale));
+            line.descent = @max(line.descent, @ceil(-mt.descender * scale));
+            line.line_gap = @max(line.line_gap, @round(@max(mt.line_gap, 0) * scale));
+        }
+        const xs = try arena.alloc(f32, g1 - g0);
+        for (xs, m.x[g0..g1]) |*d, x| d.* = x - shift;
+        const graphemes = try arena.alloc(VisGrapheme, r1 - r0);
+        for (graphemes, gs[r0..r1]) |*d, g| d.* = .{ .x0 = g.x0 - shift, .x1 = g.x1 - shift, .start = g.start, .end = g.end, .rtl = false };
+        line.runs = runs.items;
+        line.glyphs = m.glyphs[g0..g1];
+        line.x = xs;
+        line.y_off = m.y_off[g0..g1];
+        line.clusters = cl[g0..g1];
+        if (m.unsafe_to_break.len > 0) line.unsafe_to_break = m.unsafe_to_break[g0..g1];
+        line.graphemes = graphemes;
+        line.width = graphemes[graphemes.len - 1].x1;
+        line.carets = try buildCarets(arena, graphemes, e, false, start);
+        return line;
+    }
+
     /// Glyphs of text nothing maps: one last-resort glyph per grapheme,
     /// 1 em wide in the style's primary instance (whose units the run
     /// uses), in visual order for `dir`.
@@ -349,6 +405,8 @@ pub const TextLayout = struct {
         const xs = try arena.alloc(f32, n_glyphs);
         const ys = try arena.alloc(f32, n_glyphs);
         const clusters = try arena.alloc(u32, n_glyphs);
+        const unsafe = try arena.alloc(bool, n_glyphs);
+        var any_unsafe = false;
         const runs = try arena.alloc(VisualRun, shaped.len);
         var graphemes: std.ArrayList(VisGrapheme) = try .initCapacity(arena, text.len + 1);
 
@@ -399,6 +457,22 @@ pub const TextLayout = struct {
                 // The logically first cluster takes any bytes before it.
                 if ((!rtl and i == 0) or (rtl and j == n)) cs = it.start;
                 const gx0 = pen;
+                // Most clusters: one glyph for one byte, which is one
+                // grapheme (tabs take the general path).
+                if (j == i + 1 and ce - cs == 1 and (last_resort or text[cs] != '\t')) {
+                    glyphs[g_out] = run.gids[i];
+                    xs[g_out] = pen + @as(f32, @floatFromInt(run.x_off[i])) * scale;
+                    ys[g_out] = @as(f32, @floatFromInt(run.y_off[i])) * scale;
+                    clusters[g_out] = cs + offset;
+                    unsafe[g_out] = run.unsafe_to_break[i];
+                    any_unsafe = any_unsafe or unsafe[g_out];
+                    g_out += 1;
+                    pen += @as(f32, @floatFromInt(run.x_adv[i])) * scale;
+                    pen += s.style.letter_spacing;
+                    try graphemes.append(arena, .{ .x0 = gx0, .x1 = pen, .start = cs + offset, .end = ce + offset, .rtl = rtl });
+                    i = j;
+                    continue;
+                }
                 for (i..j) |k| {
                     var gid = run.gids[k];
                     var adv = @as(f32, @floatFromInt(run.x_adv[k])) * scale;
@@ -412,6 +486,8 @@ pub const TextLayout = struct {
                     xs[g_out] = pen + @as(f32, @floatFromInt(run.x_off[k])) * scale;
                     ys[g_out] = @as(f32, @floatFromInt(run.y_off[k])) * scale;
                     clusters[g_out] = cs + offset;
+                    unsafe[g_out] = run.unsafe_to_break[k];
+                    any_unsafe = any_unsafe or unsafe[g_out];
                     g_out += 1;
                     pen += adv;
                 }
@@ -456,6 +532,7 @@ pub const TextLayout = struct {
         line.x = xs;
         line.y_off = ys;
         line.clusters = clusters;
+        if (any_unsafe) line.unsafe_to_break = unsafe;
         line.graphemes = graphemes.items;
         line.carets = try buildCarets(arena, graphemes.items, line.end, base & 1 == 1, offset);
         return line;
@@ -591,6 +668,22 @@ fn buildCarets(arena: Allocator, vis: []const VisGrapheme, end: u32, rtl_para: b
         carets[logical.len] = .{ .offset = end, .x = t, .x_up = t, .rtl = last.rtl };
     }
     return carets;
+}
+
+fn orderU32(a: u32, b: u32) std.math.Order {
+    return std.math.order(a, b);
+}
+
+/// The first grapheme of logically ordered `gs` starting at or after
+/// `offset`.
+fn lowerBoundGrapheme(gs: []const VisGrapheme, offset: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = gs.len;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        if (gs[mid].start < offset) lo = mid + 1 else hi = mid;
+    }
+    return lo;
 }
 
 fn trailing(g: VisGrapheme) f32 {

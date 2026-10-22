@@ -160,6 +160,20 @@ pub fn nextBoundary(bytes: []const u8, offset: usize) usize {
         if (c0 == '\r' and bytes[offset + 1] == '\n') return offset + 2;
         return offset + 1;
     }
+    // Other (XX) followed by Other always breaks (GB999): most letters
+    // of most scripts, without running the state machine.
+    const first = decode.at(bytes, offset);
+    if (first.valid and p.props(first.cp).gcb == .XX) {
+        const n = offset + first.len;
+        if (n >= bytes.len) return bytes.len;
+        const c1 = bytes[n];
+        if (c1 < 0x80) {
+            if (c1 >= 0x20 and c1 != 0x7F) return n;
+        } else {
+            const second = decode.at(bytes, n);
+            if (second.valid and p.props(second.cp).gcb == .XX) return n;
+        }
+    }
     var s: State = .{};
     var i = offset;
     while (i < bytes.len) {

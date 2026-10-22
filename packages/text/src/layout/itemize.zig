@@ -63,10 +63,16 @@ pub fn lineByteLevels(arena: Allocator, para: *const bidi.Paragraph, start: u32,
     const cp_levels = try arena.alloc(u8, ce - cs);
     bidi.lineLevels(para.classes[cs..ce], para.levels[cs..ce], para.base, cp_levels);
     const out = try arena.alloc(u8, end - start);
-    for (cs..ce, cp_levels) |k, l| {
-        const b0 = offs[k] - start;
-        const b1 = if (k + 1 < offs.len) @min(offs[k + 1], end) - start else end - start;
+    // One fill per run of equal levels.
+    var k: usize = 0;
+    while (k < cp_levels.len) {
+        const l = cp_levels[k];
+        var e = k + 1;
+        while (e < cp_levels.len and cp_levels[e] == l) e += 1;
+        const b0 = offs[cs + k] - start;
+        const b1 = if (cs + e < offs.len) @min(offs[cs + e], end) - start else end - start;
         @memset(out[b0..b1], l);
+        k = e;
     }
     return out;
 }
@@ -87,10 +93,43 @@ pub fn itemizeLevels(arena: Allocator, text: []const u8, styles: []const StyleRu
     var next: usize = 0;
     while (next < text.len) {
         const s: u32 = @intCast(next);
-        const e: u32 = @intCast(grapheme.nextBoundary(text, next));
-        next = e;
         while (srun.end <= s) srun = sri.next().?;
         while (si + 1 < styles.len and styles[si].end <= s) si += 1;
+        // A stretch of ASCII the primary covers is one cluster per byte
+        // (CR LF aside, which stays together inside the stretch) in the
+        // primary at one level: take it whole. Its last byte stays
+        // out when non-ASCII follows, which may extend that cluster.
+        if (text[s] < 0x80) ascii: {
+            const level = if (levels) |l| l[s] else base;
+            const chain = styles[si].style.chain;
+            const prim = fb.primary(chain);
+            if (!fb.reg.get(prim).coversAscii()) break :ascii;
+            var limit: usize = @min(srun.end, text.len);
+            if (si + 1 < styles.len) limit = @min(limit, styles[si].end);
+            var j: usize = s;
+            if (levels) |l| {
+                while (j < limit and text[j] < 0x80 and l[j] == level) j += 1;
+            } else {
+                while (j < limit and text[j] < 0x80) j += 1;
+            }
+            if (j < text.len and text[j] >= 0x80) j -= 1;
+            // CR LF split by a run limit: leave it to the general path.
+            if (j > s and j < text.len and text[j - 1] == '\r' and text[j] == '\n') j -= 1;
+            if (j <= s) break :ascii;
+            const span_end: u32 = @intCast(j);
+            next = j;
+            if (cur) |*c| {
+                if (c.level == level and c.script == srun.script and c.style_index == si and c.instance == prim and !c.emoji) {
+                    c.end = span_end;
+                    continue;
+                }
+                try out.append(arena, c.*);
+            }
+            cur = .{ .start = s, .end = span_end, .level = level, .script = srun.script, .instance = prim, .style_index = si, .emoji = false };
+            continue;
+        }
+        const e: u32 = @intCast(grapheme.nextBoundary(text, next));
+        next = e;
         if (std.debug.runtime_safety and styles[si].end > s and styles[si].end < e and si + 1 < styles.len)
             log.debug("style run end {d} splits the grapheme at {d}; moved to {d}", .{ styles[si].end, s, e });
         const cluster = text[s..e];

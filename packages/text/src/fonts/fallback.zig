@@ -108,18 +108,28 @@ const Source = struct {
     cache: std.AutoHashMapUnmanaged(u64, InstanceId) = .empty,
     /// A direct-mapped front of `cache` (key 0 marks an empty slot; real
     /// keys never are 0 since code point 0 is not cached).
-    front: [256]struct { key: u64, id: InstanceId } = @splat(.{ .key = 0, .id = 0 }),
+    front: Front = empty_front,
     stats: Stats = .{},
 
     fn clear(src: *Source) void {
         src.cache.clearRetainingCapacity();
-        src.front = @splat(.{ .key = 0, .id = 0 });
-    }
-
-    fn slot(key: u64) usize {
-        return @intCast((key *% 0x9E3779B97F4A7C15) >> 56);
+        src.front = empty_front;
     }
 };
+
+/// A direct-mapped cache of single-code-point resolutions keyed by
+/// `cacheKey` (key 0 marks an empty slot; real keys never are 0 since
+/// code point 0 is not cached).
+const Front = [256]struct { key: u64, id: InstanceId };
+const empty_front: Front = @splat(.{ .key = 0, .id = 0 });
+
+fn frontSlot(key: u64) usize {
+    return @intCast((key *% 0x9E3779B97F4A7C15) >> 56);
+}
+
+fn cacheKey(chain_id: ChainId, presentation: Presentation, cp: u21) u64 {
+    return @as(u64, @intFromEnum(chain_id)) << 40 | @as(u64, @intFromEnum(presentation)) << 22 | cp;
+}
 
 /// The style a chain asked for (default for `chainOf` chains).
 pub const ChainStyle = struct {
@@ -138,6 +148,13 @@ pub const Presentation = enum { text, emoji, default };
 /// a modifier, ZWJ or tag sequence, a flag, or a base with
 /// Emoji_Presentation; VS15 forces text.
 pub fn emojiPresentation(cluster: []const u8) bool {
+    // Every code point that can make a cluster emoji (Emoji_Presentation
+    // bases from U+231A, VS16, keycaps, modifiers, ZWJ, tags, regional
+    // indicators) is U+2000 or above, so starts with a byte of 0xE2 or
+    // more.
+    for (cluster) |c| {
+        if (c >= 0xE2) break;
+    } else return false;
     var i: usize = 0;
     var first = true;
     var base_pres = false;
@@ -172,6 +189,9 @@ pub const Fallback = struct {
     chains: std.ArrayList([]const InstanceId) = .empty,
     styles: std.ArrayList(ChainStyle) = .empty,
     src: ?*Source = null,
+    /// Without a database: single code points resolved through the
+    /// chains (allocated with the first chain).
+    memo: ?*Front = null,
 
     /// A resolver over the instances of `reg`.
     pub fn init(gpa: Allocator, reg: *const FontRegistry) Fallback {
@@ -187,6 +207,7 @@ pub const Fallback = struct {
             src.cache.deinit(f.gpa);
             f.gpa.destroy(src);
         }
+        if (f.memo) |m| f.gpa.destroy(m);
         f.* = undefined;
     }
 
@@ -201,6 +222,10 @@ pub const Fallback = struct {
             if (std.mem.eql(InstanceId, c, list) and std.meta.eql(st, style)) return @enumFromInt(i);
         }
         if (f.chains.items.len > std.math.maxInt(u16)) return error.OutOfMemory;
+        if (f.memo == null) {
+            f.memo = try f.gpa.create(Front);
+            f.memo.?.* = empty_front;
+        }
         const copy = try f.gpa.dupe(InstanceId, list);
         errdefer f.gpa.free(copy);
         try f.styles.ensureUnusedCapacity(f.gpa, 1);
@@ -274,6 +299,8 @@ pub const Fallback = struct {
 
     /// The instance to draw `cluster` with: one that maps it, or (with a
     /// database) `last_resort_instance`.
+    /// Caches through a const pointer: one resolver per thread (as
+    /// `TextLayout`).
     pub fn resolve(f: *const Fallback, chain_id: ChainId, cluster: []const u8, presentation: Presentation) InstanceId {
         const list = f.instances(chain_id);
         if (cluster.len == 1 and cluster[0] < 0x80 and presentation != .emoji) {
@@ -281,14 +308,21 @@ pub const Fallback = struct {
             for (list) |id| if (f.reg.get(id).ascii & bit != 0) return id;
             if (f.src == null or cluster[0] < 0x20 or cluster[0] == 0x7F) return list[0];
         }
-        const src = f.src orelse return f.resolveChain(list, cluster, emojiOf(cluster, presentation)) orelse list[0];
-        // With a database, single code points are cached per (chain,
-        // presentation, code point) whichever step resolves them.
+        // Single code points are cached per (chain, presentation, code
+        // point) whichever step resolves them.
         const first = decode.at(cluster, 0);
         const single = first.len == cluster.len and first.cp != 0;
-        const key = @as(u64, @intFromEnum(chain_id)) << 40 | @as(u64, @intFromEnum(presentation)) << 22 | first.cp;
+        const key = cacheKey(chain_id, presentation, first.cp);
+        const src = f.src orelse {
+            if (!single) return f.resolveChain(list, cluster, emojiOf(cluster, presentation)) orelse list[0];
+            const fr = &f.memo.?[frontSlot(key)];
+            if (fr.key == key) return fr.id;
+            const id = f.resolveChain(list, cluster, emojiOf(cluster, presentation)) orelse list[0];
+            fr.* = .{ .key = key, .id = id };
+            return id;
+        };
         if (single) {
-            const fr = &src.front[Source.slot(key)];
+            const fr = &src.front[frontSlot(key)];
             if (fr.key == key) {
                 src.stats.cache_hits += 1;
                 return fr.id;
@@ -303,7 +337,7 @@ pub const Fallback = struct {
         const id = f.resolveChain(list, cluster, emoji) orelse f.resolveDb(src, chain_id, cluster, first.cp, emoji);
         if (single) {
             src.cache.put(f.gpa, key, id) catch {};
-            src.front[Source.slot(key)] = .{ .key = key, .id = id };
+            src.front[frontSlot(key)] = .{ .key = key, .id = id };
         }
         return id;
     }

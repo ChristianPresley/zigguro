@@ -472,6 +472,85 @@ test "wrap: lines are reshaped on their own" {
     }
 }
 
+/// `l` (a wrapped line of left-to-right `text`) against the same bytes
+/// laid out on their own; positions may differ by rounding when `l` was
+/// sliced.
+fn expectLineAsOwn(f: *Fixture, text: []const u8, l: Line, styles: []const StyleRun) !void {
+    var e = l.end;
+    while (e > l.start and text[e - 1] == '\n') e -= 1;
+    var own_styles: std.ArrayList(StyleRun) = .empty;
+    for (styles) |r| {
+        if (r.end <= l.start) continue;
+        try own_styles.append(f.a(), .{ .end = @min(r.end, e) - l.start, .style = r.style });
+        if (r.end >= e) break;
+    }
+    const own = try f.tl.layoutLine(f.a(), text[l.start..e], own_styles.items, .{});
+    try testing.expectEqualSlices(ot.GlyphId, own.glyphs, l.glyphs);
+    try testing.expectEqual(own.clusters.len, l.clusters.len);
+    for (own.clusters, l.clusters) |o, c| try testing.expectEqual(o + l.start, c);
+    for (own.x, l.x) |o, x| try testing.expectApproxEqAbs(o, x, 1e-3);
+    try testing.expectEqualSlices(f32, own.y_off, l.y_off);
+    try testing.expectApproxEqAbs(own.width, l.width, 1e-3);
+    try testing.expectEqual(own.ascent, l.ascent);
+    try testing.expectEqual(own.descent, l.descent);
+    try testing.expectEqual(own.line_gap, l.line_gap);
+    try testing.expectEqual(own.runs.len, l.runs.len);
+    for (own.runs, l.runs) |o, r| {
+        try testing.expectEqual(o.instance, r.instance);
+        try testing.expectEqual(o.glyph_start, r.glyph_start);
+        try testing.expectEqual(o.glyph_end, r.glyph_end);
+        try testing.expectApproxEqAbs(o.x, r.x, 1e-3);
+        try testing.expectEqual(o.size_px, r.size_px);
+    }
+    try testing.expectEqual(own.graphemes.len, l.graphemes.len);
+    for (own.graphemes, l.graphemes) |o, g| {
+        try testing.expectEqual(o.start + l.start, g.start);
+        try testing.expectEqual(o.end + l.start, g.end);
+        try testing.expectApproxEqAbs(o.x0, g.x0, 1e-3);
+        try testing.expectApproxEqAbs(o.x1, g.x1, 1e-3);
+    }
+    try testing.expectEqual(own.carets.len, l.carets.len);
+    for (own.carets, l.carets) |o, c| {
+        try testing.expectEqual(o.offset + l.start, c.offset);
+        try testing.expectApproxEqAbs(o.x, c.x, 1e-3);
+        try testing.expectApproxEqAbs(o.x_up, c.x_up, 1e-3);
+    }
+}
+
+test "wrap: sliced lines match lines laid out on their own" {
+    const f = try setup();
+    defer teardown(f);
+    const text = "AVATAR Wave To office caf\u{E9}, na\u{EF}ve r\u{E9}sum\u{E9} 1234; The quick brown fox jumps over the lazy dog.\nYes. " ++
+        "Tr\u{E8}s \u{E9}l\u{E9}gant: fi fl ffi, then AWAY words and \u{65E5}\u{672C} too \u{1F600} end";
+    const ui: TextStyle = .{ .chain = f.ui, .size_px = 16 };
+    const big: TextStyle = .{ .chain = f.ui, .size_px = 22, .letter_spacing = 0.5 };
+    const code: TextStyle = .{ .chain = f.code, .size_px = 14 };
+    const mixed = [_]StyleRun{ .{ .end = 40, .style = ui }, .{ .end = 90, .style = big }, .{ .end = std.math.maxInt(u32), .style = code } };
+    for ([_][]const StyleRun{ f.one(ui), f.one(code), &mixed }) |styles| {
+        for ([_]f32{ 60, 120, 230 }) |w| {
+            const lines = try f.tl.wrap(f.a(), text, styles, w, .{});
+            try expectLinesTile(text, lines);
+            for (lines) |l| try expectLineAsOwn(f, text, l, styles);
+        }
+    }
+}
+
+test "wrap: slicing a measured line" {
+    const f = try setup();
+    defer teardown(f);
+    const text = "The quick brown fox jumps over the lazy dog";
+    const m = try f.line(text, .{ .chain = f.ui, .size_px = 16 });
+    // After a space: safe in Inter.
+    const s = (try f.tl.sliceLine(f.a(), &m, 4, 16)).?;
+    try testing.expectEqual(@as(u32, 4), s.start);
+    try testing.expectEqual(@as(usize, 12), s.glyphs.len);
+    try testing.expectEqual(@as(f32, 0), s.x[0]);
+    try testing.expectEqual(@as(usize, 13), s.carets.len);
+    // Inside a cluster or past the line: no slice.
+    try testing.expect(try f.tl.sliceLine(f.a(), &m, 4, 100) == null);
+    try testing.expect(try f.tl.sliceLine(f.a(), &m, 5, 5) == null);
+}
+
 test "wrap: rtl lines reorder independently" {
     const f = try setup();
     defer teardown(f);
