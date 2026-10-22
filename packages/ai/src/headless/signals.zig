@@ -103,6 +103,12 @@ pub fn fromCtrlEvent(event: u32) ?Kind {
 }
 
 fn ctrlHandler(event: u32) callconv(.winapi) BOOL {
+    return handleCtrl(event);
+}
+
+// The body of `ctrlHandler`, callable from tests on every target: a
+// `.winapi` function can't be compiled for aarch64 Linux.
+fn handleCtrl(event: u32) BOOL {
     const s = installed orelse return 0;
     const k = fromCtrlEvent(event) orelse return 0;
     s.raise(k);
@@ -139,11 +145,11 @@ test "windows ctrl-c maps to sigint" {
     const prev = installed;
     defer installed = prev;
     installed = &s;
-    try t.expectEqual(@as(BOOL, 1), ctrlHandler(CTRL_C_EVENT));
+    try t.expectEqual(@as(BOOL, 1), handleCtrl(CTRL_C_EVENT));
     try t.expectEqual(Kind.interrupt, s.take().?);
-    try t.expectEqual(@as(BOOL, 1), ctrlHandler(CTRL_CLOSE_EVENT));
+    try t.expectEqual(@as(BOOL, 1), handleCtrl(CTRL_CLOSE_EVENT));
     try t.expectEqual(Kind.terminate, s.take().?);
-    try t.expectEqual(@as(BOOL, 0), ctrlHandler(42));
+    try t.expectEqual(@as(BOOL, 0), handleCtrl(42));
 }
 
 test "flags" {
