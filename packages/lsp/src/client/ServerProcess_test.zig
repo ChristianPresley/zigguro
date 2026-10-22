@@ -134,7 +134,12 @@ test "server_process: terminate kills a server that ignores end of input" {
     p.terminate(.fromMilliseconds(50));
     const elapsed = t0.durationTo(std.Io.Timestamp.now(rt.io, .awake));
     try testing.expect(p.exitStatus() != null);
-    try testing.expect(p.exitStatus().? != .exited);
+    if (builtin.os.tag == .windows) {
+        // NtTerminateProcess ends it with exit code 1; there are no signals.
+        try testing.expectEqual(std.process.Child.Term{ .exited = 1 }, p.exitStatus().?);
+    } else {
+        try testing.expect(p.exitStatus().? != .exited);
+    }
     try testing.expect(elapsed.toMilliseconds() < 5000);
 }
 

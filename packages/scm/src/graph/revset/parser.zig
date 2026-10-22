@@ -24,6 +24,23 @@ pub const ParseError = struct {
     span: Span = .{ 0, 0 },
     message: []const u8 = "",
     suggestion: ?[]const u8 = null,
+    /// Holds `message` and `suggestion` after `keep`.
+    storage: [256]u8 = undefined,
+
+    /// Copies `message` and `suggestion` into `storage` (cut to fit) so they
+    /// outlive the arena they were built in. Afterwards they point into this
+    /// value, so read them through this pointer, not a copy.
+    pub fn keep(e: *ParseError) void {
+        const m = e.message[0..@min(e.message.len, e.storage.len)];
+        @memmove(e.storage[0..m.len], m);
+        e.message = e.storage[0..m.len];
+        if (e.suggestion) |sg| {
+            const rest = e.storage[m.len..];
+            const k = @min(sg.len, rest.len);
+            @memmove(rest[0..k], sg[0..k]);
+            e.suggestion = rest[0..k];
+        }
+    }
 
     pub fn format(e: ParseError, w: *std.Io.Writer) std.Io.Writer.Error!void {
         try w.print("{d}..{d}: {s}", .{ e.span[0], e.span[1], e.message });

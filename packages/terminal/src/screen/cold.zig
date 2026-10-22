@@ -617,9 +617,8 @@ fn emitLine(dst: *PageList, d: *const Decoder, l: Line) !void {
         if (li < l.links.len and cell >= l.links[li] and cell < l.links[li] + l.links[li + 1]) {
             const idx = l.links[li + 2];
             if (idx < d.links.len) {
-                for (0..span) |k| {
-                    if (page.internLink(d.links[idx])) |id| page.attachLink(&cs[x + k], id) else |_| {}
-                }
+                // Only the head cell: print never links a spacer tail.
+                if (page.internLink(d.links[idx])) |id| page.attachLink(&cs[x], id) else |_| {}
                 row.row().has_hyperlink = true;
             }
         }

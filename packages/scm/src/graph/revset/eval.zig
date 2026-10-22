@@ -106,6 +106,8 @@ pub const RevIter = struct {
 pub fn evaluate(gpa: Allocator, ctx: *const EvalContext, src: []const u8, diag: *ParseError) !RevIter {
     const ev = try Evaluator.create(gpa, ctx, diag);
     errdefer ev.deinit();
+    // Runs first: the diagnostic's text lives in the arena freed above.
+    errdefer diag.keep();
     const a = ev.arena();
     const tree = try parser.parse(a, src, diag);
     var defaults: ?aliases_mod.Aliases = null;

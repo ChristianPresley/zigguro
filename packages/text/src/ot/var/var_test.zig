@@ -343,7 +343,9 @@ fn fuzzOne(input: []const u8) void {
         var out: [fvar.max_axes]i16 = undefined;
         fvar.normalize(&f, null, &.{.{ .tag = tag("wght"), .value = 700 }}, &out);
         var it = f.namedInstances();
-        while (it.next()) |ni| _ = ni.coord(0);
+        while (it.next()) |ni| for (0..f.axis_count) |i| {
+            _ = ni.coord(i);
+        };
     } else |_| {}
     if (avar.Avar.init(input)) |a| {
         for (0..4) |ax| for (coords) |c| {

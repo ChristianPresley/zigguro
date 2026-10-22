@@ -98,7 +98,7 @@ pub const NamedInstance = struct {
     /// Big-endian Fixed user coordinates, one per axis.
     coords_raw: []const u8,
 
-    /// User coordinate of axis `i`.
+    /// User coordinate of axis `i` (`i` < the face's axis count).
     pub fn coord(n: NamedInstance, i: usize) f32 {
         return fixed(std.mem.readInt(i32, n.coords_raw[i * 4 ..][0..4], .big));
     }

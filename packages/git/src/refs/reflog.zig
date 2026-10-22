@@ -35,8 +35,10 @@ pub fn append(io: std.Io, dir: std.Io.Dir, ref: []const u8, line: []const u8) !v
     var pbuf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try std.fmt.bufPrint(&pbuf, "logs/{s}", .{ref});
     if (std.fs.path.dirname(path)) |parent| try dir.createDirPath(io, parent);
-    const f = dir.openFile(io, path, .{ .mode = .write_only }) catch |e| switch (e) {
-        error.FileNotFound => try dir.createFile(io, path, .{ .truncate = false }),
+    // Opened readable too: on Windows a write-only handle lacks
+    // FILE_READ_ATTRIBUTES, so `length` below would be refused.
+    const f = dir.openFile(io, path, .{ .mode = .read_write }) catch |e| switch (e) {
+        error.FileNotFound => try dir.createFile(io, path, .{ .truncate = false, .read = true }),
         else => |x| return x,
     };
     defer f.close(io);

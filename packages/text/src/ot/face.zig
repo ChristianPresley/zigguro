@@ -3,6 +3,7 @@
 //! table directory and the fixed-size headers; it never allocates.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const reader = @import("reader.zig");
 const sfnt = @import("sfnt.zig");
 const cmap_mod = @import("cmap.zig");
@@ -295,7 +296,9 @@ pub const MappedFont = struct {
             if (file.createMemoryMap(io, .{
                 .len = @intCast(len),
                 .protection = .{ .read = true, .write = false },
-                .populate = false,
+                // Zig 0.16 creates the Windows section with SEC_COMMIT only when
+                // populating; without it NtCreateSection fails.
+                .populate = builtin.os.tag == .windows,
             })) |map| {
                 return .{ .map = map, .file = file, .owned = null, .gpa = null };
             } else |_| {}

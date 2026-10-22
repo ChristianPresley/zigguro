@@ -634,9 +634,11 @@ pub const WaylandBackend = struct {
                 // Answered here, without the mutex, so a stalled UI thread
                 // never makes the app "not responding".
                 .ping => |p| {
+                    // Counted before sending, so whoever sees the pong also
+                    // sees the count.
+                    _ = b.pongs.fetchAdd(1, .monotonic);
                     try wl.xdg_wm_base.pong(c, b.wm_base, p.serial);
                     try c.flush();
-                    _ = b.pongs.fetchAdd(1, .monotonic);
                 },
             },
             .xdg_surface => {
