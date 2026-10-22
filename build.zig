@@ -103,6 +103,23 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run.step);
     }
 
+    // `zg agent` end to end: spawns the built zg (E10.F10.S01.T02).
+    {
+        const fx = b.addOptions();
+        fx.addOptionPath("zg", zg_exe.getEmittedBin());
+        fx.addOptionPath("cassette", b.path("apps/zg/testdata/cassettes/two_turns.jsonl"));
+        const e2e = b.addTest(.{ .name = "zg-agent-e2e", .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/zg/test/agent_e2e_test.zig"),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{.{ .name = "zg_e2e", .module = fx.createModule() }},
+        }), .filters = test_filters });
+        const run = b.addRunArtifact(e2e);
+        run.skip_foreign_checks = true;
+        b.step("test-zg", "Run the zg CLI end-to-end tests").dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
+
     // INV-01: every consumer against a deny-all engine (E16.F02.S01.T04).
     inline for (packages.all, 0..) |p, i| {
         if (comptime std.mem.eql(u8, p.name, "zg_security")) {
