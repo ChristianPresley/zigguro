@@ -36,6 +36,60 @@ fn register(b: *bench.Bench) !void {
     try b.run("protocol: decode tools/list (500 tools)", list, decodeList);
     try b.run("protocol: decode tools/call result", {}, decodeCall);
     try b.run("protocol: encode tools/call request", {}, encodeCall);
+    try registerSchema(b);
+}
+
+const schema = zg_mcp.schema;
+
+/// A 200-subschema object schema (40 properties of 5 nodes each).
+fn bigSchema(gpa: std.mem.Allocator) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    const w = &aw.writer;
+    try w.writeAll("{\"type\":\"object\",\"properties\":{");
+    for (0..40) |i| {
+        if (i != 0) try w.writeByte(',');
+        try w.print(
+            \\"p{d}":{{"anyOf":[{{"type":"string","maxLength":64}},{{"type":"array","items":{{"type":"integer","minimum":0}}}},{{"type":"null"}}]}}
+        , .{i});
+    }
+    try w.writeAll("},\"required\":[\"p0\"],\"additionalProperties\":false}");
+    return aw.toOwnedSlice();
+}
+
+const tool_schema =
+    \\{"type":"object","properties":{"path":{"type":"string","description":"File path"},"line":{"type":"integer","minimum":1},"dryRun":{"type":"boolean"}},"required":["path"]}
+;
+const tool_args =
+    \\{"path":"src/main.zig","line":42,"dryRun":false}
+;
+
+const SchemaFixture = struct { big: std.json.Value, tool: *schema.Schema, args: std.json.Value };
+
+fn registerSchema(b: *bench.Bench) !void {
+    var arena: std.heap.ArenaAllocator = .init(b.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const big = try std.json.parseFromSliceLeaky(std.json.Value, a, try bigSchema(a), .{});
+    const tool = try schema.compile(b.gpa, try std.json.parseFromSliceLeaky(std.json.Value, a, tool_schema, .{}), .{});
+    defer tool.deinit();
+    const fx: SchemaFixture = .{ .big = big, .tool = tool, .args = try std.json.parseFromSliceLeaky(std.json.Value, a, tool_args, .{}) };
+    try b.run("schema: compile 200-node schema", fx, compileBig);
+    try b.run("schema: validate tools/call arguments", fx, validateArgs);
+}
+
+fn compileBig(fx: SchemaFixture, s: *State) void {
+    for (0..s.iterations()) |_| {
+        const c = schema.compile(s.allocator(), fx.big, .{}) catch unreachable;
+        bench.doNotOptimizeAway(c.nodes.len);
+        c.deinit();
+    }
+}
+
+fn validateArgs(fx: SchemaFixture, s: *State) void {
+    for (0..s.iterations()) |_| {
+        const ok = schema.validate(fx.tool, s.allocator(), fx.args, null) catch unreachable;
+        bench.doNotOptimizeAway(ok);
+    }
 }
 
 fn decodeList(list: []const u8, s: *State) void {
