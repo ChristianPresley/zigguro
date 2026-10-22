@@ -2,8 +2,8 @@
 //! unless the caller asks for assertion: `.elicitation_only` asserts the
 //! four formats MCP elicitation supports (`email`, `uri`, `date`,
 //! `date-time`), `.all_supported` adds `uuid`, `ipv4`, `ipv6`, `hostname`,
-//! `json-pointer`, `uri-reference`, `duration` and `time`. Unknown formats
-//! always pass.
+//! `json-pointer`, `uri-reference`, `duration`, `time` and `regex`
+//! (ECMA-262, checked with zg_regex). Unknown formats always pass.
 
 const std = @import("std");
 
@@ -28,6 +28,7 @@ pub fn check(mode: FormatAssertion, format: []const u8, s: []const u8) bool {
         .{ "hostname", isHostname },
         .{ "json-pointer", isJsonPointer },
         .{ "uri-reference", isUriReference },
+        .{ "regex", @import("ecma.zig").isValid },
         .{ "duration", isDuration },
         .{ "time", isTime },
     });
