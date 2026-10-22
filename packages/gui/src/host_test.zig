@@ -1,5 +1,6 @@
 //! `Host` against the headless platform: a window opens, renders through
-//! the software renderer, reacts to input and closes.
+//! the software renderer (on its render thread, or on the UI thread),
+//! reacts to input and closes.
 
 const std = @import("std");
 const zg_platform = @import("zg_platform");
@@ -27,17 +28,28 @@ fn pixel(f: anytype, x: u32, y: u32) [4]u8 {
     return f.pixels[o..][0..4].*;
 }
 
+const flush_ns = 5 * std.time.ns_per_s;
+
 test "host opens, renders, clicks and closes a window" {
+    try openRenderClick(true);
+}
+
+test "host renders on the UI thread when asked to" {
+    try openRenderClick(false);
+}
+
+fn openRenderClick(threaded: bool) !void {
     const gpa = std.testing.allocator;
     const hl = try Headless.init(gpa, std.testing.io, .{});
     defer hl.deinit();
     var app = app_mod.App.init(gpa);
     defer app.deinit();
     var mono: text.MonoText = .{};
-    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{ .render_thread = threaded });
     defer host.deinit();
     var v: Counter = .{};
     const hw = try host.open(.{ .title = "test", .size = .{ .w = 200, .h = 100 }, .root = view_mod.AnyView.of(&v) });
+    if (!threaded) try std.testing.expect(hw.out == .direct);
 
     // Configure, then the first frame on the next vsync.
     _ = try host.pump();
@@ -45,6 +57,7 @@ test "host opens, renders, clicks and closes a window" {
     try hl.tick(hl.opts.refresh_ns);
     _ = try host.pump();
     try std.testing.expectEqual(@as(u64, 1), hw.frames);
+    try std.testing.expect(host.flush(flush_ns));
     const f = hl.lastFrame(hw.id).?;
     try std.testing.expectEqual(@as(u32, 200), f.width);
     const bg = app.theme.color(.bg_base);
@@ -63,11 +76,57 @@ test "host opens, renders, clicks and closes a window" {
     try hl.tick(hl.opts.refresh_ns);
     _ = try host.pump();
     try std.testing.expectEqual(@as(u32, 1), v.clicks);
+    try std.testing.expect(host.flush(flush_ns));
 
     // Close request.
     try hl.inject(.{ .window_close_requested = hw.id });
     _ = try host.pump();
     try std.testing.expectEqual(@as(usize, 0), host.windows.items.len);
+}
+
+/// Paints a block whose colour the test flips between frames.
+const Flip = struct {
+    on: bool = false,
+    pub fn build(self: *Flip, ui: *ui_mod.Ui) void {
+        ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .bg = .{ .token = if (self.on) .accent else .bg_base } } });
+        ui.close();
+    }
+};
+
+test "host: frames reach the screen in order through the render thread" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+    var v: Flip = .{};
+    const hw = try host.open(.{ .title = "flip", .size = .{ .w = 40, .h = 20 }, .root = view_mod.AnyView.of(&v) });
+    // std.testing.io can spawn: the window renders on its thread.
+    try std.testing.expect(hw.out == .thread);
+    const on = app.theme.color(.accent);
+    const off = app.theme.color(.bg_base);
+    for (0..6) |i| {
+        v.on = i % 2 == 1;
+        hw.win.markAllDirty();
+        _ = try host.pump();
+        try hl.tick(hl.opts.refresh_ns);
+        _ = try host.pump();
+        try std.testing.expect(host.flush(flush_ns));
+        const want = if (v.on) on else off;
+        try std.testing.expectEqualSlices(u8, &.{ want.r, want.g, want.b }, pixel(hl.lastFrame(hw.id).?, 20, 10)[0..3]);
+    }
+    try std.testing.expectEqual(@as(u64, 6), hw.frames);
+    // Resizes go to the render thread with the next frame.
+    // (Headless frames are clipped to the window, so shrink it.)
+    try hl.inject(.{ .window_configure = .{ .win = hw.id, .size = .{ .w = 30, .h = 20 }, .scale = .{ .factor = 1 }, .state = .{}, .serial = 1, .screen_origin_px = null } });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    try std.testing.expect(host.flush(flush_ns));
+    try std.testing.expectEqual(@as(u32, 30), hl.lastFrame(hw.id).?.width);
 }
 
 test "host keeps the app clipboard in sync with the platform" {
@@ -121,6 +180,7 @@ test "host draws real glyphs through FontText" {
     _ = try host.pump();
     try std.testing.expectEqual(@as(u64, 1), hw.frames);
     try std.testing.expect(hw.pages.items.len == 1);
+    try std.testing.expect(host.flush(flush_ns));
 
     // The text row has light (foreground) pixels; the area below has none.
     const f = hl.lastFrame(hw.id).?;
