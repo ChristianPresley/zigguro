@@ -32,9 +32,9 @@ pub const pending = [_][]const u8{
 };
 
 const font_names = [_][]const u8{
-    "JetBrainsMono[wght].ttf",        "FiraCode-Regular.ttf",       "Inter[opsz,wght].ttf",
-    "SourceSerif4-Regular.otf",       "SourceHanSansJP-Subset.otf", "NotoSansArabic-Subset.ttf",
-    "NotoColorEmoji-CBDT-Subset.ttf",
+    "JetBrainsMono[wght].ttf",        "FiraCode-Regular.ttf",        "Inter[opsz,wght].ttf",
+    "SourceSerif4-Regular.otf",       "SourceHanSansJP-Subset.otf",  "NotoSansArabic-Subset.ttf",
+    "NotoColorEmoji-CBDT-Subset.ttf", "test_glyphs-glyf_colr_1.ttf",
 };
 
 const Fonts = struct { data: [font_names.len][]u8 };
@@ -168,6 +168,19 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.cbdt_32px_cached", StrikeCtx{ .inst = &emoji_inst, .gids = &emoji_gids, .r = &emoji_r[0], .decode = false }, strikeGlyph);
     try b.run("text.cbdt_32px_decode", StrikeCtx{ .inst = &emoji_inst, .gids = &emoji_gids, .r = &emoji_r[1], .decode = true }, strikeGlyph);
 
+    // COLRv1 at 32 px: every paint format of the googlefonts test glyphs,
+    // rendered through rasterizeGlyph (no cache in between).
+    const colr_face = try zg_text.ot.Face.init(fonts.data[7], 0);
+    var colr_inst = try vt.FaceInstance.init(b.gpa, &colr_face, &.{});
+    defer colr_inst.deinit(b.gpa);
+    const colr = zg_text.ot.colr.Colr.fromFace(&colr_face).?;
+    var colr_gids: std.ArrayList(u16) = .empty;
+    defer colr_gids.deinit(b.gpa);
+    for (0..colr_face.num_glyphs) |g| if (colr.v1Paint(@intCast(g)) != null) try colr_gids.append(b.gpa, @intCast(g));
+    var colr_r: zg_text.raster.Rasterizer = .init(b.gpa);
+    defer colr_r.deinit();
+    try b.run("text.colr_32px", ColrCtx{ .inst = &colr_inst, .gids = colr_gids.items, .r = &colr_r }, colrGlyph);
+
     // Prefix-sum integration of a 256×256 accumulator; bytes/s = pixels/s.
     try b.run("text.integrate_gpix", b.gpa, integrate);
 }
@@ -205,6 +218,18 @@ fn strikeGlyph(ctx: StrikeCtx, s: *State) void {
     var k: usize = 0;
     for (0..s.iterations()) |_| {
         if (ctx.decode) ctx.r.strikes.budget_bytes = 0; // every lookup decodes
+        const bm = ctx.r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = 32, .color = true }) catch unreachable;
+        bench.doNotOptimizeAway(bm.pixels.len);
+        k += 1;
+        if (k == ctx.gids.len) k = 0;
+    }
+}
+
+const ColrCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, r: *zg_text.raster.Rasterizer };
+
+fn colrGlyph(ctx: ColrCtx, s: *State) void {
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
         const bm = ctx.r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = 32, .color = true }) catch unreachable;
         bench.doNotOptimizeAway(bm.pixels.len);
         k += 1;
