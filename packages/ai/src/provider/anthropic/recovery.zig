@@ -147,10 +147,10 @@ test "continuation goldens" {
     const partial: Message = .{ .role = .assistant, .content = &.{.{ .text = .{ .text = "Old pond, frog " } }} };
     const pre = try buildContinuation(a, &hist, partial, .prefill_assistant);
     try testing.expectEqualStrings(
-        \\{"role":"assistant","content":[{"type":"text","text":"Old pond, frog"}],"meta":{"synthetic":true}}
+        \\{"role":"assistant","content":[{"type":"text","text":"Old pond, frog"}],"meta":{"synthetic":true,"interrupted":false}}
     , try proto.json.messageAlloc(a, pre[1]));
     const usr = try buildContinuation(a, &hist, partial, .user_continue_message);
     try testing.expectEqualStrings(
-        \\{"role":"user","content":[{"type":"text","text":"Your previous response was interrupted and ended with [Old pond, frog ]. Continue from where you left off."}],"meta":{"synthetic":true}}
+        \\{"role":"user","content":[{"type":"text","text":"Your previous response was interrupted and ended with [Old pond, frog ]. Continue from where you left off."}],"meta":{"synthetic":true,"interrupted":false}}
     , try proto.json.messageAlloc(a, usr[1]));
 }
