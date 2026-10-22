@@ -9,6 +9,7 @@ pub const url = @import("url.zig");
 pub const http = @import("http.zig");
 pub const ws_frame = @import("ws_frame.zig");
 pub const websocket = @import("websocket.zig");
+pub const oauth = @import("oauth.zig");
 
 test {
     std.testing.refAllDecls(@This());
