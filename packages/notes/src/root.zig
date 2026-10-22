@@ -1,0 +1,8 @@
+//! zg_notes: see the owning epic issue for the package design.
+
+const std = @import("std");
+const zg_core = @import("zg_core");
+
+test {
+    std.testing.refAllDecls(@This());
+}
