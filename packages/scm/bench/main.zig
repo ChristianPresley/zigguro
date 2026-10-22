@@ -45,7 +45,20 @@ fn register(b: *bench.Bench) !void {
     const encoded = try scm.encode.encodeAlloc(arena, scm.Tree, tree);
     try b.run("scm.decode_tree_10k: decode a 10k-entry tree", @as([]const u8, encoded), decodeTree);
 
+    try b.run("scm.chunker_throughput: FastCDC cut points over 16 MiB (one core)", @as([]const u8, big), chunkBlob);
+
     try storeBenches(b, r);
+}
+
+fn chunkBlob(data: []const u8, s: *State) void {
+    s.setBytes(data.len);
+    for (0..s.iterations()) |_| {
+        var c: scm.chunker.Chunker = .init(.{});
+        var rest = data;
+        var n: usize = 0;
+        while (c.next(rest)) |cut| : (n += 1) rest = rest[cut..];
+        bench.doNotOptimizeAway(n);
+    }
 }
 
 const bench_dir = ".zig-cache/scm-store-bench";
