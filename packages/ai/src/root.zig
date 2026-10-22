@@ -89,10 +89,18 @@ pub const context = struct {
     pub const imports = @import("context/imports.zig");
     pub const memory = @import("context/memory.zig");
     pub const auto_memory = @import("context/auto_memory.zig");
+    pub const reminders = @import("context/reminders.zig");
+    pub const pins = @import("context/pins.zig");
+    pub const cache_plan = @import("context/cache_plan.zig");
+    pub const env_block = @import("context/env_block.zig");
+    pub const assembler = @import("context/assembler.zig");
+    pub const compactor = @import("context/compactor.zig");
     test {
         _ = @import("context/frontmatter_test.zig");
         _ = @import("context/memory_test.zig");
         _ = @import("context/auto_memory_test.zig");
+        _ = @import("context/assembler_test.zig");
+        _ = @import("context/compactor_test.zig");
     }
 };
 /// Sessions: the JSONL log, index, resume, fork and rewind (E10.F08).

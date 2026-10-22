@@ -135,6 +135,9 @@ pub const ContextView = struct {
     transcript: []const proto.Message,
     tools: []const proto.ToolSpec,
     max_output_tokens: u32,
+    /// Index of `transcript[0]` in the agent's full transcript (non-zero
+    /// after a compaction moved the head).
+    head: u32 = 0,
 };
 
 /// Builds the request for the next model call.
