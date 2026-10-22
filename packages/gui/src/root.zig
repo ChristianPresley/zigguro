@@ -59,5 +59,6 @@ test {
     _ = @import("widgets/chrome_test.zig");
     _ = @import("dock/model_test.zig");
     _ = @import("dock/view_test.zig");
+    _ = @import("testing/script_test.zig");
     _ = @import("widgets/quick_pick_test.zig");
 }
