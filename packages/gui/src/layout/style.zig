@@ -117,6 +117,11 @@ pub const Style = struct {
         return hash_mod.of(s.*);
     }
 
+    /// Field-wise equality (cheaper than hashing both sides).
+    pub fn eql(a: *const Style, b: *const Style) bool {
+        return std.meta.eql(a.*, b.*);
+    }
+
     /// True when the main axis is horizontal.
     pub fn isRow(s: *const Style) bool {
         return s.dir == .row or s.dir == .row_reverse;
