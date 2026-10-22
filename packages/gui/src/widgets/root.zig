@@ -44,6 +44,8 @@ pub const tooltip_mod = @import("tooltip.zig");
 pub const roving = @import("roving.zig");
 /// The `toolbar.zig` module.
 pub const toolbar_mod = @import("toolbar.zig");
+/// The `tabs.zig` module.
+pub const tabs_mod = @import("tabs.zig");
 /// The `breadcrumbs.zig` module.
 pub const breadcrumbs_mod = @import("breadcrumbs.zig");
 
@@ -109,6 +111,10 @@ pub const StatusItem = status_bar.StatusItem;
 pub const tooltip = tooltip_mod.tooltip;
 /// See `tooltip.tooltipLast`.
 pub const tooltipLast = tooltip_mod.tooltipLast;
+/// See `tabs.tabs`.
+pub const tabs = tabs_mod.tabs;
+/// See `tabs.Tab`.
+pub const Tab = tabs_mod.Tab;
 /// See `toolbar.toolbar`.
 pub const toolbar = toolbar_mod.toolbar;
 /// See `toolbar.ToolItem`.
