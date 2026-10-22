@@ -1,0 +1,7 @@
+1| comment:<!-- a one-line comment -->
+2| punctuation:< tag:p punctuation:> comment:<!-- inline --> punctuation:</ tag:p punctuation:>
+3| comment:<!--
+4| comment:  a comment over
+5| comment:  several lines with <b>tags</b>
+6| comment:-->
+7| punctuation:< tag:p punctuation:> punctuation:</ tag:p punctuation:>
