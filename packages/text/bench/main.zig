@@ -15,14 +15,21 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",   "text.bidi_200col_ltr",     "text.bidi_200col_rtl", "text.cache_hit",
-    "text.cache_screen",   "text.casefold_ascii",      "text.cells_row_200",   "text.cff_outline",
-    "text.fontdb_load_3k", "text.gamma",               "text.glyf_outline",    "text.gvar_apply",
-    "text.hit_test",       "text.integrate_gpix",      "text.itemize_200col",  "text.layout_200col",
-    "text.lcd",            "text.measure_hit",         "text.nfc_quickcheck",  "text.nfc_slow_mixed",
-    "text.raster_14px",    "text.raster_64px_cjk",     "text.raster_lcd_14px", "text.registry_get",
-    "text.sdf_48px",       "text.shape_code_line_200", "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.var_advance",    "text.width_row_200",       "text.wrap_10kb",
+    "text.atlas_insert",    "text.cache_hit",
+    "text.cache_screen",    "text.casefold_ascii",
+    "text.cells_row_200",   "text.cff_outline",
+    "text.fontdb_load_3k",  "text.gamma",
+    "text.glyf_outline",    "text.gvar_apply",
+    "text.hit_test",        "text.integrate_gpix",
+    "text.itemize_200col",  "text.layout_200col",
+    "text.lcd",             "text.measure_hit",
+    "text.nfc_quickcheck",  "text.nfc_slow_mixed",
+    "text.raster_14px",     "text.raster_64px_cjk",
+    "text.raster_lcd_14px", "text.registry_get",
+    "text.sdf_48px",        "text.shape_code_line_200",
+    "text.shape_latin_1k",  "text.shape_word_cache_hit",
+    "text.var_advance",     "text.width_row_200",
+    "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -83,6 +90,14 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.grapheme_mixed", @as([]const u8, mixed), graphemeCount);
     try b.run("text.word_mixed", @as([]const u8, mixed), wordCount);
     try b.run("text.linebreak_mixed", @as([]const u8, mixed), lineBreakCount);
+
+    // Bidi on one 200-column line: the LTR early-out and a full RTL line.
+    var ltr_line: [200]u8 = undefined;
+    fill(&ltr_line, &.{ "const total = items.len * 2; ", "// sum the widths\n" });
+    try b.run("text.bidi_200col_ltr", @as([]const u8, &ltr_line), bidiLtr);
+    var rtl_line: [400]u8 = undefined;
+    fill(&rtl_line, &.{ "\u{05E9}\u{05DC}\u{05D5}\u{05DD} ", "(\u{05D0} 12) ", "abc ", "\u{0627}\u{0644}\u{0639}\u{0627}\u{0644}\u{0645} " });
+    try b.run("text.bidi_200col_rtl", @as([]const u8, &rtl_line), bidiRtl);
 }
 
 fn fill(buf: []u8, pieces: []const []const u8) void {
@@ -121,6 +136,23 @@ fn lineBreakCount(text: []const u8, s: *State) void {
         var n: usize = 0;
         while (it.next()) |_| n += 1;
         bench.doNotOptimizeAway(n);
+    }
+}
+
+fn bidiLtr(line: []const u8, s: *State) void {
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_text.unicode.bidi.hasRtl(line));
+}
+
+fn bidiRtl(line: []const u8, s: *State) void {
+    // A frame-style arena: one fixed buffer reset per line.
+    var mem: [32 * 1024]u8 = undefined;
+    for (0..s.iterations()) |_| {
+        var fba: std.heap.FixedBufferAllocator = .init(&mem);
+        const a = fba.allocator();
+        var para = zg_text.unicode.bidi.resolve(a, line, .rtl) catch unreachable;
+        var runs: std.ArrayList(zg_text.unicode.bidi.VisualRun) = .empty;
+        para.reorderLine(a, 0, @intCast(para.levels.len), &runs) catch unreachable;
+        bench.doNotOptimizeAway(runs.items.len);
     }
 }
 
