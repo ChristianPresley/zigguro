@@ -110,6 +110,18 @@ pub fn install(opts: Options) InstallError!void {
         };
         _ = linux.sigaction(sig, &act, null);
     }
+    // Replace std's fault handler: it uses SA_RESETHAND, so a second
+    // thread faulting before the first one finished its report would kill
+    // the process mid-write. Ours stays installed; later faults wait in
+    // `cp_enter`, and `cp_reraise` restores the default action itself.
+    for ([_]linux.SIG{ .SEGV, .ILL, .BUS, .FPE }) |sig| {
+        const act: linux.Sigaction = .{
+            .handler = .{ .sigaction = onFault },
+            .mask = linux.sigemptyset(),
+            .flags = linux.SA.SIGINFO | linux.SA.ONSTACK,
+        };
+        _ = linux.sigaction(sig, &act, null);
+    }
     zg_core.report.setCrashHook(onPanic);
     installed = true;
 }
@@ -178,6 +190,27 @@ fn onSignal(sig: linux.SIG, info: *const linux.siginfo_t, uctx: ?*anyopaque) cal
     _ = linux.tgkill(linux.getpid(), linux.gettid(), sig);
 }
 
+/// SEGV/ILL/BUS/FPE after `install` (std's handler before it, through
+/// `handleSegfault`).
+fn onFault(sig: linux.SIG, info: *const linux.siginfo_t, uctx: ?*anyopaque) callconv(.c) void {
+    std.Options.debug_io.vtable.crashHandler(std.Options.debug_io.userdata);
+    const kind: format.ReportKind = switch (sig) {
+        .ILL => .illegal_instruction,
+        .BUS => .bus_error,
+        .FPE => .arithmetic,
+        else => .segfault,
+    };
+    // x86_64 reports no address for a general protection fault (SI_KERNEL).
+    const si_kernel = 0x80;
+    const fault: ?usize = if (builtin.cpu.arch == .x86_64 and sig == .SEGV and info.code == si_kernel)
+        null
+    else
+        @intFromPtr(info.fields.sigfault.addr);
+    const ctx: ?Native = std.debug.cpu_context.fromPosixSignalContext(uctx);
+    cp_captureAndWrite(kind, @intFromEnum(sig), info.code, fault, if (ctx) |*c| c else null, null, null);
+    lx.cp_reraise(sig);
+}
+
 /// E00 crash hook: runs in normal context on the first panic.
 fn onPanic(msg: []const u8, ret_addr: ?usize) void {
     cp_captureAndWrite(.panic, 0, 0, null, null, msg, ret_addr orelse @returnAddress());
@@ -201,25 +234,6 @@ fn cp_enter() bool {
         lx.cp_yield();
     }
     return false;
-}
-
-/// std's fault handler uses SA_RESETHAND, so after the first fault a
-/// second thread's fault would kill the process mid-report. Re-arm the
-/// fault signals with a handler that only waits for the writer.
-fn cp_armSecondary() void {
-    const act: linux.Sigaction = .{
-        .handler = .{ .sigaction = onSecondaryFault },
-        .mask = linux.sigemptyset(),
-        .flags = linux.SA.SIGINFO | linux.SA.ONSTACK | linux.SA.RESETHAND,
-    };
-    for ([_]linux.SIG{ .SEGV, .ILL, .BUS, .FPE }) |sig| _ = linux.sigaction(sig, &act, null);
-}
-
-/// Waits for the report (or gives up after 2 s), then returns: the handler
-/// is back to the default, so the faulting instruction terminates the
-/// process. The writer's own re-entrant fault returns at once.
-fn onSecondaryFault(_: linux.SIG, _: *const linux.siginfo_t, _: ?*anyopaque) callconv(.c) void {
-    _ = cp_enter();
 }
 
 const FdSink = struct {
@@ -320,7 +334,6 @@ pub fn cp_captureAndWrite(
     if (!is_linux) return;
     if (!installed or !cp_enter()) return;
     defer state.store(@intFromEnum(State.done), .release);
-    cp_armSecondary();
 
     const now = lx.cp_nowMs();
     const name = timefmt.reportName(name_buf[0..timefmt.max_name_len], now, lx.cp_pid());
