@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:text operator:=
+2| string:\\first line with "quotes"
+3| string:\\second \n not an escape
+4| punctuation.delimiter:;
+5| keyword.storage:const variable:one operator:= string:\\single
+6| punctuation.delimiter:;
