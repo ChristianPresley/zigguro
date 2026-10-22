@@ -63,7 +63,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer _ = rt.deinit();
     // Before GPU and window init: apply a staged update or roll back one
     // that cannot start (may re-execute the process).
-    var boot = early_update.run(&rt, min);
+    var boot = early_update.run(&rt, min, running.first);
     defer boot.deinit(rt.io);
 
     var buf: [256]u8 = undefined;
@@ -228,6 +228,10 @@ fn pathArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator) ?[]u8 {
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--frames") or std.mem.eql(u8, a, "--screenshot")) {
             _ = it.next();
+            continue;
+        }
+        if (early_update.flags.match(a)) |m| {
+            if (m.value) _ = it.next();
             continue;
         }
         if (std.mem.startsWith(u8, a, "-")) continue;
