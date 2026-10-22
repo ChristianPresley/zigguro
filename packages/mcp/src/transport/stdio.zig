@@ -10,8 +10,10 @@
 //!   `process_exited`, flagged `during_startup` before the first response.
 //! - Shutdown (MCP stdio "Shutdown"): close stdin, wait `grace_stdin_close`,
 //!   SIGTERM the process group, wait `grace_term`, SIGKILL it. The child is
-//!   its own process group (`pgid = 0`), so grandchildren go too. On
-//!   Windows the fallback is `Child.kill` until the E01.F06 job helper lands.
+//!   its own process group (`pgid = 0`), so grandchildren go too. Windows
+//!   has no SIGTERM: the server is terminated with NtTerminateProcess after
+//!   `grace_stdin_close`, and its grandchildren survive until a job object
+//!   (E01.F06) owns the tree.
 //!
 //! Windows command resolution: 0.16 `std.process.spawn` already searches
 //! PATH x PATHEXT and quotes `.bat`/`.cmd` arguments for cmd.exe
