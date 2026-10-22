@@ -65,7 +65,9 @@ pub const Rejection = union(enum) {
 
 pub const Outcome = union(enum) {
     applied: struct { version: u64 },
-    pending: struct { changeset: u64 },
+    /// `changeset` is null while the turn's changeset is still open (it
+    /// is committed when the turn ends).
+    pending: struct { changeset: ?u64 = null },
     rejected: Rejection,
 };
 
@@ -73,6 +75,8 @@ pub const Outcome = union(enum) {
 /// changeset).
 pub const Origin = struct {
     agent: proto.AgentRef,
+    /// The agent's turn; `end_turn` closes its changes.
+    turn: u32 = 0,
     tool: []const u8,
     tool_call_id: []const u8,
 };
@@ -87,6 +91,10 @@ pub const Files = struct {
         /// Up to `max_bytes`; `size` is the full size.
         read: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize) anyerror!Read,
         propose: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, p: Proposal, origin: Origin) anyerror!Outcome,
+        /// The turn ended: its pending changes become one E12 changeset,
+        /// whose id is returned (null when there were none). Null when
+        /// every proposal is applied or committed on its own.
+        end_turn: ?*const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, turn: u32) anyerror!?u64 = null,
     };
 
     pub fn resolve(f: Files, io: Io, arena: Allocator, path: []const u8) Allocator.Error!Resolved {
@@ -101,9 +109,21 @@ pub const Files = struct {
     pub fn propose(f: Files, io: Io, arena: Allocator, abs: []const u8, p: Proposal, origin: Origin) anyerror!Outcome {
         return f.vtable.propose(f.ctx, io, arena, abs, p, origin);
     }
+    pub fn endTurn(f: Files, io: Io, agent: proto.AgentRef, turn: u32) anyerror!?u64 {
+        const g = f.vtable.end_turn orelse return null;
+        return g(f.ctx, io, agent, turn);
+    }
 };
 
 pub const Access = enum { read, write };
+
+/// E07 `SettleDetector.afterAgentEdit`: waits for the language servers to
+/// settle on the edited file and summarizes its diagnostics ("2 errors:
+/// ..."), or null when there are none or nothing reports on the file.
+pub const Diagnostics = struct {
+    ctx: *anyopaque,
+    after_edit: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8) anyerror!?[]const u8,
+};
 
 /// E16's path policy (secret files, paths outside the workspace). Null
 /// allows the workspace and denies everything outside it.
@@ -122,6 +142,8 @@ pub const Config = struct {
     image_input: bool = false,
     pdf_input: bool = false,
     diff_lines: usize = 40,
+    /// `ai.tools.diagnosticsAfterEdit`.
+    diagnostics_after_edit: bool = true,
 };
 
 /// The four file tools over one `Files`.
@@ -130,6 +152,7 @@ pub const FileTools = struct {
     tracker: *ReadTracker,
     cfg: Config = .{},
     policy: ?PathPolicy = null,
+    diagnostics: ?Diagnostics = null,
     spec_buf: [4]proto.ToolSpec = undefined,
 
     pub fn specs(ft: *FileTools) []const proto.ToolSpec {
@@ -150,6 +173,33 @@ pub const FileTools = struct {
     fn listSpecs(ctx: *anyopaque, gpa: Allocator, out: *std.ArrayList(proto.ToolSpec)) anyerror!void {
         const ft: *FileTools = @ptrCast(@alignCast(ctx));
         try out.appendSlice(gpa, ft.specs());
+    }
+
+    /// The loop seam that closes each turn's changes (`Files.end_turn`).
+    pub fn turnEnd(ft: *FileTools) deps.TurnEnd {
+        return .{ .ctx = ft, .finished = finished };
+    }
+
+    fn finished(ctx: *anyopaque, io: Io, agent: proto.AgentRef, turn: u32) void {
+        const ft: *FileTools = @ptrCast(@alignCast(ctx));
+        _ = ft.files.endTurn(io, agent, turn) catch |e| std.log.scoped(.zg_ai).warn("could not commit the turn's changes: {s}", .{@errorName(e)});
+    }
+
+    /// Appends the diagnostics of `abs` to an applied edit's result.
+    pub fn withDiagnostics(ft: *FileTools, c: *proto.ToolCall, abs: []const u8, o: Outcome, out: proto.ToolOutput) proto.ToolError!proto.ToolOutput {
+        if (o != .applied or out.is_error or !ft.cfg.diagnostics_after_edit) return out;
+        const d = ft.diagnostics orelse return out;
+        const text = d.after_edit(d.ctx, c.io, c.arena, abs) catch |e| switch (e) {
+            error.Canceled => return error.Canceled,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return out,
+        } orelse return out;
+        const parts = try c.arena.alloc(proto.ResultPart, out.parts.len + 1);
+        @memcpy(parts[0..out.parts.len], out.parts);
+        parts[out.parts.len] = .{ .text = try std.fmt.allocPrint(c.arena, "Diagnostics after edit: {s}", .{text}) };
+        var o2 = out;
+        o2.parts = parts;
+        return o2;
     }
 
     /// Resolves `path` and asks the policy; a denial is the error text.
@@ -315,13 +365,19 @@ pub fn rejectionText(a: Allocator, rel: []const u8, r: Rejection) Allocator.Erro
     };
 }
 
+/// "changeset #N", or the turn's changeset while it is still open.
+pub fn changesetName(a: Allocator, id: ?u64) Allocator.Error![]const u8 {
+    const n = id orelse return "this turn's changeset";
+    return std.fmt.allocPrint(a, "changeset #{d}", .{n});
+}
+
 /// The result of an accepted proposal: what happened, then the diff.
 pub fn outcomeText(a: Allocator, rel: []const u8, verb: []const u8, o: Outcome, before: []const u8, after: []const u8, diff_lines: usize) proto.ToolError!proto.ToolOutput {
     var diff: std.Io.Writer.Allocating = .init(a);
     const st = writeDiff(&diff.writer, a, rel, before, after, diff_lines) catch return error.OutOfMemory;
     const head = switch (o) {
         .applied => try std.fmt.allocPrint(a, "Applied {s} to {s} (+{d} −{d} lines).", .{ verb, rel, st.added, st.removed }),
-        .pending => |p| try std.fmt.allocPrint(a, "Proposed {s} to {s} (+{d} −{d} lines) in changeset #{d} — pending review.", .{ verb, rel, st.added, st.removed, p.changeset }),
+        .pending => |p| try std.fmt.allocPrint(a, "Proposed {s} to {s} (+{d} −{d} lines) in {s} — pending review.", .{ verb, rel, st.added, st.removed, try changesetName(a, p.changeset) }),
         .rejected => |r| return errOut(a, try rejectionText(a, rel, r)),
     };
     var o2 = try textOut(a, if (diff.written().len == 0) head else try std.fmt.allocPrint(a, "{s}\n{s}", .{ head, diff.written() }));
