@@ -5,7 +5,9 @@
 //! agent's status and a prompt field: Enter sends, Shift+Enter breaks the
 //! line, Stop cancels the turn. With plan mode wired (`plans`, `plan_mode`), a "Plan mode"
 //! switch in the header enters and leaves it, and a proposed plan shows
-//! as a card above the prompt (plan_card.zig).
+//! as a card above the prompt (plan_card.zig). With `approvals` set, the
+//! session's pending tool approvals show as cards above the prompt too
+//! (pane_approvals.zig), answerable here or in the review queue's inbox.
 //!
 //! Rewind (E10.F08.S02.T01 in the IDE): while the agent is idle, each
 //! prompt it received has a Rewind button offering to restore the code
@@ -39,6 +41,7 @@ const Agent = zg_ai.loop.Agent;
 const ev = zg_ai.loop.events;
 const bus = zg_ai.loop.bus;
 const PlanCards = @import("plan_card.zig").PlanCards;
+const PaneApprovals = @import("pane_approvals.zig").PaneApprovals;
 const AgentCommands = @import("commands.zig").AgentCommands;
 const rewind_mod = zg_ai.session.rewind;
 
@@ -79,6 +82,8 @@ pub const AgentPanel = struct {
     follow: bool = false,
     /// Plan approvals and the plan mode switch (optional).
     plans: ?*PlanCards = null,
+    /// This session's approval cards (owned; optional).
+    approvals: ?*PaneApprovals = null,
     /// Slash commands and skills (`/help`, `/plan`, ...), when wired.
     commands: ?*AgentCommands = null,
     /// Where subagent events come from, while attached.
@@ -222,6 +227,7 @@ pub const AgentPanel = struct {
         p.items.deinit(p.gpa);
         p.input.deinit();
         if (p.attach_dir) |d| p.gpa.free(d);
+        if (p.approvals) |pa| pa.destroy();
         p.gpa.destroy(p);
     }
 
@@ -537,6 +543,7 @@ pub const AgentPanel = struct {
             ui.win.afterNextFrame(.{ .ctx = p, .f = scrollToEnd });
         }
 
+        if (p.approvals) |pa| pa.build(ui);
         if (p.plans) |pc| pc.build(ui);
 
         ui.open(.{ .style = .{ .dir = .column, .gap = 6, .padding = .all(10), .shrink = 0 } });
