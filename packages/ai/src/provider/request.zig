@@ -44,6 +44,16 @@ pub const ToolDecl = struct {
     raw_json: ?[]const u8 = null,
 };
 
+/// How `t` is declared to a model of `provider`: its native declaration
+/// for its own provider, nothing for other providers, else a function.
+pub fn declFor(t: *const proto.ToolSpec, provider: proto.ProviderId) ?ToolDecl {
+    if (t.native) |n| {
+        if (n.provider != provider) return null;
+        return .{ .name = t.name, .description = t.description, .input_schema_json = t.input_schema_json, .kind = .provider_native, .raw_json = n.json };
+    }
+    return .{ .name = t.name, .description = t.description, .input_schema_json = t.input_schema_json, .defer_loading = t.defer_loading };
+}
+
 /// Cache time-to-live of explicit breakpoints.
 pub const CacheTtl = enum { m5, h1 };
 
