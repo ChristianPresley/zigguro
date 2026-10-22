@@ -1115,7 +1115,7 @@ first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
 E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S03.T01 / E01.F02.S05.T01 /
-E01.F02.S04.T01.
+E01.F02.S04.T01 / E01.F02.S04.T02.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1188,6 +1188,25 @@ consumed (`VK_PROCESSKEY`) are not reported. `set_ime_state` places the
 composition window at the caret and the candidate list below it;
 disabled or `password`/`pin` detaches the context, committing any
 composition. Manual checklist: `packages/platform/docs/manual-tests/win32-ime.md`.
+Drag and drop (E01.F02.S04.T02, `dnd.zig`, `data_object.zig`,
+`enum_formatetc.zig`) is OLE's: the platform thread calls
+`OleInitialize` and registers an `IDropTarget` on every window
+(`RevokeDragDrop` before it is destroyed). `DragEnter` stages
+`drop{enter}` with the known formats the data object offers as HGLOBALs
+(the same format table as the clipboard) and clears the cached answer,
+so the drag starts refused; `DragOver` stages `over` when the position or
+keys change. Both answer from the latest `set_drop_effect`: Ctrl picks
+copy, Shift move, Ctrl+Shift link, when the app and the source allow
+it; otherwise the first of copy, move, link both allow. `Drop` reads and
+decodes the accepted format and stages `drop` with the performed
+action, or `leave` when refused or unreadable. `start_drag` runs
+`DoDragDrop` on the platform thread with an `IDataObject` holding copies
+of the items (a fresh HGLOBAL per `GetData`; no `SetData` or advise
+sinks) and an `IDropSource` that cancels on Esc and drops when every
+button is up; `drop{source_finished}` carries the target's effect,
+empty when cancelled or refused. Frames keep coming during the drag (a
+`WM_TIMER`). When `OleInitialize` fails, both commands are
+`error.Unsupported`. Manual checklist: `docs/manual-tests/win32-dnd.md`.
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1203,8 +1222,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 Experimental. Not yet: a theme or backdrop command (the system theme
 and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`
 batching, TSF and
-`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
-drag and drop, cloaking until the first present, the high-resolution
+`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), drag
+images (`IDragSourceHelper`), cloaking until the first present, the high-resolution
 waitable pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
@@ -1799,6 +1818,8 @@ pub const Renderer = struct { // render, resize, createTexture, updateTexture, d
     pub fn render(r: Renderer, dl: *const DrawList) RenderError!FrameStats;
 };
 pub fn createRenderer(gpa: Allocator, io: std.Io, opts: RendererOptions) !Renderer;
+pub fn setProcessEnv(env: EnvOverrides) void;
+pub fn writeGpuReport(gpa: Allocator, io: std.Io, w: *std.Io.Writer, fmt: gpu.ReportFormat) !void;
 ```
 `RectF`, `Vec2`, `Radii`, `Insets` are logical pixels; `PxRect` and `Size`
 are physical. `Color` is `packed struct(u32) { r, g, b, a }`, straight
@@ -1810,6 +1831,15 @@ size and emits normalised coordinates).
 Deviation from the spec text: `createRenderer` lives in the package root, not
 in `r2d/Renderer.zig`, so `r2d` never imports a backend; `imageFiltered`,
 `damageAll` and `setGlyphPages` are additions.
+
+`createRenderer` merges the process environment set by `setProcessEnv`
+under `opts.env` (`EnvOverrides.over`: fields the caller set win).
+`ZG_RENDERER=vulkan|software|auto` (`EnvOverrides.renderer`) overrides
+`opts.backend`. `writeGpuReport` brings up a `Gpu` from the same
+environment and writes its report (`zigguro --doctor-gpu [--json]`), or
+`Vulkan unavailable: <error>` (JSON `{"error":...}`). The zigguro binary
+links libc on glibc Linux so the Vulkan loader can be loaded
+(ADR-E02-001); other targets stay libc-free.
 
 ### Threading
 A `DrawList` is built by one thread (UI) and read by the render thread after

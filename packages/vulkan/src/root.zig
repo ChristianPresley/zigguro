@@ -39,8 +39,10 @@ pub const GpuTimer = @import("r2d/vk/gpu_timing.zig");
 /// with device-loss recovery (`Recovering`; `error.VulkanUnavailable`
 /// without a usable driver or for unsupported targets); `.auto` and `.software` use the software
 /// renderer until the Vulkan presentation targets land (E02.F04).
-pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !r2d.Renderer {
-    switch (opts.backend) {
+pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts_in: r2d.RendererOptions) !r2d.Renderer {
+    var opts = opts_in;
+    opts.env = opts.env.over(process_env);
+    switch (opts.env.renderer orelse opts.backend) {
         .vulkan => {
             const v = Recovering.create(gpa, io, opts) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -55,6 +57,36 @@ pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOpti
     }
     const s = try sw.SwRenderer.create(gpa, io, opts);
     return s.renderer();
+}
+
+/// Environment overrides for every `createRenderer` call (fields set in
+/// `RendererOptions.env` win). Zig 0.16 has no global getenv, so the app
+/// sets this once at startup from its environment map; the slices must
+/// outlive the renderers.
+var process_env: r2d.EnvOverrides = .{};
+
+/// Sets the overrides `createRenderer` applies (see `process_env`).
+pub fn setProcessEnv(env: r2d.EnvOverrides) void {
+    process_env = env;
+}
+
+/// Writes the `zg doctor gpu` report for the device `createRenderer`
+/// would pick (`fmt` text or JSON), or why Vulkan is unavailable.
+pub fn writeGpuReport(gpa: std.mem.Allocator, io: std.Io, w: *std.Io.Writer, fmt: gpu.ReportFormat) !void {
+    const env = process_env;
+    const g = gpu.Gpu.create(gpa, io, .{
+        .instance = .{ .env_validation = env.vk_validation },
+        .forced = env.gpu,
+        .loader_path = env.vk_loader_path,
+    }) catch |err| {
+        switch (fmt) {
+            .text => try w.print("Vulkan unavailable: {t}\n", .{err}),
+            .json => try w.print("{{\"error\":\"{t}\"}}\n", .{err}),
+        }
+        return;
+    };
+    defer g.destroy();
+    try gpu.writeReport(w, g.report(&.{}), fmt);
 }
 
 /// What a render thread paces a Vulkan renderer with.

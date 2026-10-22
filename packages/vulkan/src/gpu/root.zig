@@ -37,6 +37,7 @@ pub const GpuInfo = info.GpuInfo;
 pub const Caps = info.Caps;
 pub const Report = info.Report;
 pub const writeReport = info.writeReport;
+pub const ReportFormat = info.ReportFormat;
 
 const lost = @import("lost.zig");
 pub const LostPolicy = lost.LostPolicy;
