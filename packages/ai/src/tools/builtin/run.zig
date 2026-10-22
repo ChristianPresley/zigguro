@@ -198,7 +198,7 @@ pub const RunTools = struct {
 
         const session = r.sessionFor(c.agent) catch |e| return errOut(a, try std.fmt.allocPrint(a, "Could not open a terminal: {s}", .{@errorName(e)}));
         if (r.policy) |p| switch (p.check(p.ctx, c.io, .{ .command = command, .cwd = cwd, .session = session, .agent = c.agent }) catch return error.Canceled) {
-            .allow => {},
+            .allow, .allow_edited => {},
             .deny => |why| return errOut(a, try std.fmt.allocPrint(a, "Permission denied: {s}", .{why})),
         };
         const id = r.host.start(c.io, session, command, cwd) catch |e| return errOut(a, try std.fmt.allocPrint(a, "Could not start the command: {s}", .{@errorName(e)}));

@@ -136,7 +136,8 @@ pipes.
 - `permission_request` and `permission_response` replace Claude Code's
   control-request messages for tool approval.
 - `permission_request.input` is the tool's input as sent by the model.
-  `updated_input` in a response is accepted but not applied yet.
+  An `updated_input` in an `allow` response replaces it; the tool's schema
+  checks it again before the tool runs.
 - `result.subtype` adds `error_budget`, `error_permission` and
   `error_interrupted`.
 - `usage` uses zigguro's field names (`input`, `output`, `cache_read`,

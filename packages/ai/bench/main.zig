@@ -41,4 +41,24 @@ fn register(b: *bench.Bench) !void {
             for (0..s.iterations()) |i| _ = ctx[0].record(.{ .session = i % 4 }, ctx[1], .{ .input = 100, .output = 10 }, false) catch unreachable;
         }
     }.f);
+    var schemas: ai.tools.invoke.Schemas = .init(b.gpa, b.io, ai.schema.validate.permissive());
+    defer schemas.deinit();
+    var dummy: u8 = 0;
+    const spec: ai.proto.ToolSpec = .{ .name = "noop", .description = "", .input_schema_json = "{\"type\":\"object\"}", .read_only = true, .handler = .{ .ctx = &dummy, .call = struct {
+        fn f(_: *anyopaque, c: *ai.proto.ToolCall) ai.proto.ToolError!ai.proto.ToolOutput {
+            return ai.proto.ToolOutput.text(c.arena, "ok", false);
+        }
+    }.f } };
+    const pipeline: ai.tools.invoke.Pipeline = .{ .schemas = &schemas };
+    // Budget: < 1 ms with no hooks and an allow decision (E10.F06.S01.T02).
+    try b.run("ai.invoke_overhead: one call through the invoke pipeline", .{ &pipeline, &spec, b.gpa, b.io }, struct {
+        fn f(ctx: struct { *const ai.tools.invoke.Pipeline, *const ai.proto.ToolSpec, std.mem.Allocator, std.Io }, s: *bench.State) void {
+            var arena: std.heap.ArenaAllocator = .init(ctx[2]);
+            defer arena.deinit();
+            for (0..s.iterations()) |_| {
+                _ = arena.reset(.retain_capacity);
+                bench.doNotOptimizeAway(ai.tools.invoke.invoke(ctx[0], ctx[3], arena.allocator(), .{ .id = "toolu_1", .spec = ctx[1], .input_json = "{\"path\":\"src/main.zig\",\"limit\":20}" }));
+            }
+        }
+    }.f);
 }

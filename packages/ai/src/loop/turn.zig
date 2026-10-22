@@ -19,6 +19,7 @@ const ev = @import("events.zig");
 const budget = @import("budget.zig");
 const scheduler = @import("scheduler.zig");
 const deps = @import("deps.zig");
+const invoke = @import("../tools/invoke.zig");
 const iq = @import("input_queue.zig");
 const Provider = @import("../provider/Provider.zig");
 const pevents = @import("../provider/events.zig");
@@ -545,35 +546,50 @@ fn copyEvent(ar: Allocator, e: pevents.StreamEvent) Allocator.Error!pevents.Stre
     };
 }
 
-/// Runs one tool call (on a scheduler task): permission check, then the
-/// handler, with output allocated in `ar`.
+/// Runs one tool call (on a scheduler task) through the invoke pipeline,
+/// with output allocated in `ar`.
 fn invokeOne(a: *Agent, ar: Allocator, io: Io, c: *const scheduler.Call) proto.ToolOutput {
-    const d = a.deps.permission.check(a.deps.permission.ctx, io, a.ref, c.spec, c.input_json) catch
-        return errText(ar, scheduler.canceled_text);
-    switch (d) {
-        .allow => {},
-        .deny => |why| return errText(ar, std.fmt.allocPrint(ar, "Permission denied: {s}", .{why}) catch "Permission denied"),
-    }
-    a.publish(.{ .tool_started = c.id });
     var prog: Progress = .{ .a = a, .id = c.id };
-    var call: proto.ToolCall = .{
+    var obs: Observe = .{ .a = a };
+    const p: invoke.Pipeline = .{
+        .permission = a.deps.permission,
+        .hooks = a.deps.hooks,
+        .audit = a.deps.audit,
+        .schemas = &a.schemas,
+        .bounds = a.cfg.tool_output,
+        .observer = .{ .ctx = &obs, .started = Observe.started, .decision = Observe.decision },
+    };
+    return invoke.invoke(&p, io, ar, .{
         .id = c.id,
-        .name = c.spec.name,
+        .spec = c.spec,
         .input_json = c.input_json,
-        .input = c.input,
-        .arena = ar,
-        .io = io,
         .agent = a.ref,
         .progress = .{ .ctx = &prog, .emit = Progress.emit },
-    };
-    return c.spec.handler.call(c.spec.handler.ctx, &call) catch |e| errText(ar, switch (e) {
-        error.Canceled => scheduler.canceled_text,
-        error.Timeout => "The tool timed out.",
-        error.Unavailable => "The tool is not available right now.",
-        error.OutOfMemory => "The tool ran out of memory.",
-        error.Failed => "The tool failed.",
     });
 }
+
+/// Publishes the pipeline's events; decisions are copied into the agent
+/// arena under `alloc_mutex` (they outlive the call's arena).
+const Observe = struct {
+    a: *Agent,
+
+    fn started(ctx: *anyopaque, id: []const u8) void {
+        const o: *Observe = @ptrCast(@alignCast(ctx));
+        o.a.publish(.{ .tool_started = id });
+    }
+
+    fn decision(ctx: *anyopaque, d: deps.ToolDecision) void {
+        const o: *Observe = @ptrCast(@alignCast(ctx));
+        const reason = blk: {
+            o.a.alloc_mutex.lockUncancelable(o.a.io);
+            defer o.a.alloc_mutex.unlock(o.a.io);
+            break :blk o.a.arena.allocator().dupe(u8, d.reason) catch "";
+        };
+        var copy = d;
+        copy.reason = reason;
+        o.a.publish(.{ .tool_decision = copy });
+    }
+};
 
 /// Tool output chunks. They outlive the call (queued subscribers hold
 /// them), so they are copied into the agent arena under `alloc_mutex`;
