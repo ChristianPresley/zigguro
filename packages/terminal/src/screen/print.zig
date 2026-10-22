@@ -71,6 +71,7 @@ fn prepare(p: Pin, x: u16, n: u16) void {
 }
 
 fn writeRun(s: *Screen, run: []const u8) void {
+    if (run.len == 0) return;
     const p = s.rowPin(s.cursor.y);
     const n: u16 = @intCast(run.len);
     const x = s.cursor.x;
@@ -83,7 +84,14 @@ fn writeRun(s: *Screen, run: []const u8) void {
     // `content` is the low 24 bits of the packed cell: OR the byte in.
     const bits: u64 = @bitCast(proto);
     const words: []u64 = @ptrCast(cs);
-    for (words, run) |*wd, b| wd.* = bits | b;
+    // Explicit 8-wide vectors: the scalar loop does not vectorise reliably.
+    const bv: @Vector(8, u64) = @splat(bits);
+    var i: usize = 0;
+    while (i + 8 <= words.len) : (i += 8) {
+        const bytes: @Vector(8, u8) = run[i..][0..8].*;
+        words[i..][0..8].* = bv | @as(@Vector(8, u64), bytes);
+    }
+    while (i < words.len) : (i += 1) words[i] = bits | run[i];
     if (id != 0) r.styled = true;
     if (s.cursor.link) |l| {
         r.has_hyperlink = true;
@@ -131,8 +139,85 @@ pub fn printAscii(s: *Screen, run_in: []const u8) void {
 
 /// Prints code points at the cursor.
 pub fn print(s: *Screen, cps: []const u21) void {
-    for (cps) |cp| printOne(s, cp);
+    var i: usize = 0;
+    while (i < cps.len) {
+        const n = fastRun(s, cps[i..]);
+        if (n > 0) {
+            i += n;
+        } else {
+            printOne(s, cps[i]);
+            i += 1;
+        }
+    }
     s.pages.dirty_generation +%= 1;
+}
+
+/// Writes the longest prefix of `cps` that needs none of the general
+/// path's work: legacy width mode, no insert mode or single shift, non-ASCII
+/// code points (no charset maps them) of width 1 or 2 that fit before the
+/// right edge. Returns how many code points were written (0 to fall back).
+fn fastRun(s: *Screen, cps: []const u21) usize {
+    if (s.modes.grapheme or s.modes.insert or s.charsets.single != null) return 0;
+    applyPendingWrap(s);
+    const right = rightEdge(s);
+    const wo = s.widthOptions();
+    var x = s.cursor.x;
+    var n: usize = 0;
+    var cells: u16 = 0;
+    while (n < cps.len) : (n += 1) {
+        const cp = cps[n];
+        if (cp < 0x80) break;
+        const w = unicode.wcwidth(cp, wo);
+        if (w != 1 and w != 2) break;
+        const wu: u16 = @intCast(w);
+        if (x + wu > right + 1) break;
+        x += wu;
+        cells += wu;
+    }
+    if (n == 0) return 0;
+    const p = s.rowPin(s.cursor.y);
+    const x0 = s.cursor.x;
+    prepare(p, x0, cells);
+    const r = p.row();
+    const page = &p.node.page;
+    const id = s.styleIn(p.node, cells);
+    const proto: Cell = .{ .style = id, .protected = s.cursor.protected, .semantic = s.cursor.semantic };
+    const cs = p.cells();
+    var cx = x0;
+    for (cps[0..n]) |cp| {
+        const w = unicode.wcwidth(cp, wo);
+        var c = proto;
+        c.content = @intCast(cp);
+        if (w == 2) {
+            c.wide = .wide;
+            cs[cx] = c;
+            var t = proto;
+            t.wide = .spacer_tail;
+            cs[cx + 1] = t;
+            cx += 2;
+        } else {
+            cs[cx] = c;
+            cx += 1;
+        }
+    }
+    if (id != 0) r.styled = true;
+    if (s.cursor.link) |l| {
+        r.has_hyperlink = true;
+        var k = x0;
+        while (k < cx) : (k += 1) {
+            if (cs[k].wide == .spacer_tail) continue;
+            const lid = page.internLink(.{ .uri = l.uri, .id = l.id }) catch break;
+            page.attachLink(&cs[k], lid);
+        }
+    }
+    r.dirty = true;
+    if (cx > right) {
+        s.cursor.x = right;
+        s.cursor.pending_wrap = s.modes.autowrap;
+    } else s.cursor.x = cx;
+    s.last_cluster[0] = cps[n - 1];
+    s.last_len = 1;
+    return n;
 }
 
 /// The cell the next code point may join: the last written cell before the
@@ -176,7 +261,9 @@ fn printOne(s: *Screen, cp_in: u21) void {
     const w = unicode.wcwidth(cp, wo);
     if (w < 0) return;
 
-    if (previousCell(s)) |prev| {
+    // In legacy mode only zero-width code points join the previous cell.
+    if ((s.modes.grapheme or w == 0) and previousCell(s) != null) {
+        const prev = previousCell(s).?;
         const page = &prev.pin.node.page;
         const cell = &prev.pin.cells()[prev.x];
         var buf: [17]u21 = undefined;
