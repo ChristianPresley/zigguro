@@ -75,10 +75,12 @@ fn writeRun(s: *Screen, run: []const u8) void {
     const p = s.rowPin(s.cursor.y);
     const n: u16 = @intCast(run.len);
     const x = s.cursor.x;
+    // Intern before releasing the overwritten cells, so rewriting a run in
+    // its own style keeps the entry alive instead of freeing and re-adding it.
+    const id = s.styleIn(p.node, n);
     prepare(p, x, n);
     const page = &p.node.page;
     const r = p.row();
-    const id = s.styleIn(p.node, n);
     const proto: Cell = .{ .style = id, .protected = s.cursor.protected, .semantic = s.cursor.semantic };
     const cs = p.cells()[x..][0..n];
     // `content` is the low 24 bits of the packed cell: OR the byte in.
@@ -188,10 +190,10 @@ fn fastRun(s: *Screen, cps: []const u21) usize {
     if (n == 0) return 0;
     const p = s.rowPin(s.cursor.y);
     const x0 = s.cursor.x;
+    const id = s.styleIn(p.node, cells); // before `prepare`, as in `writeRun`
     prepare(p, x0, cells);
     const r = p.row();
     const page = &p.node.page;
-    const id = s.styleIn(p.node, cells);
     const proto: Cell = .{ .style = id, .protected = s.cursor.protected, .semantic = s.cursor.semantic };
     const cs = p.cells();
     var cx = x0;
