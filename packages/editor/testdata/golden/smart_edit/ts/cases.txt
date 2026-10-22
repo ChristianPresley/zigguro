@@ -1,0 +1,97 @@
+=== enter between braces
+--- before
+function f() {¦}
+--- keys
+<enter>
+--- after
+function f() {
+    ¦
+}
+
+=== electric closer
+--- before
+class A {
+    m() {}
+    ¦
+--- keys
+}
+--- after
+class A {
+    m() {}
+}¦
+
+=== template literal
+--- before
+const s = ¦;
+--- keys
+`a
+--- after
+const s = `a¦`;
+
+=== autoclose object
+--- before
+const o = ¦;
+--- keys
+{ a: 1
+--- after
+const o = { a: 1¦};
+
+=== surround
+--- before
+const x = «a»;
+--- keys
+[
+--- after
+const x = [«a»];
+
+=== surround quote
+--- before
+const x = «a»;
+--- keys
+"
+--- after
+const x = "«a»";
+
+=== line comment
+--- before
+«let a = 1;
+let b = 2;»
+--- keys
+<lc>
+--- after
+«// let a = 1;
+// let b = 2;»
+
+=== block comment
+--- before
+let «a» = 1;
+--- keys
+<bc>
+--- after
+let «/* a */» = 1;
+
+=== no autoclose in string
+--- before
+const s = 'a¦';
+--- keys
+(
+--- after
+const s = 'a(¦';
+
+=== arrow body
+--- before
+const f = () => {¦}
+--- keys
+<enter>return 1;
+--- after
+const f = () => {
+    return 1;¦
+}
+
+=== generic angle
+--- before
+let a: Array¦
+--- keys
+<lt>number>
+--- after
+let a: Array<number>¦
