@@ -1,0 +1,10 @@
+const config = {
+  name: "app",
+  port: 8080,
+  enabled: true,
+  nested: { deep: [1, 2, { x: null }] },
+  method() { return undefined; },
+  [computed]: NaN,
+  "quoted-key": Infinity,
+};
+const { a, b: renamed, ...rest } = config;
