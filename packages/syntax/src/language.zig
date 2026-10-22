@@ -82,6 +82,14 @@ pub const EditRules = struct {
     line_comment: ?[]const u8 = null,
     block_comment: ?BracketPair = null,
     auto_close: []const BracketPair = &.{},
+    /// Whether to indent with spaces by default; null leaves it to the
+    /// user's settings (Go defaults to tabs).
+    insert_spaces: ?bool = null,
+    /// Line ends (after trailing blanks and comments) that indent the
+    /// next line, e.g. "{".
+    indent_after: []const []const u8 = &.{},
+    /// Line starts (after indentation) that dedent the line, e.g. "}".
+    dedent_on: []const []const u8 = &.{},
 };
 
 /// A language definition.
