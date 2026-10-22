@@ -29,6 +29,13 @@ pub const Tracing = enum { off, zones, full };
 /// `std.heap.DebugAllocator` in Debug/ReleaseSafe and `smp_allocator` otherwise.
 pub const GpaKind = enum { auto, debug, smp };
 
+/// Release channel (`-Dchannel`, E17). Mirrors `zg_release.Channel`.
+pub const Channel = enum { dev, insiders, rc, stable };
+
+/// Update mode baked into the binary (`-Dupdate-mode`, E17). Mirrors
+/// `zg_release.UpdateMode`.
+pub const UpdateMode = enum { managed_or_notify, notify_only, disabled };
+
 /// The resolved shared flag set of one builder.
 pub const Flags = struct {
     target: std.Build.ResolvedTarget,
@@ -50,6 +57,16 @@ pub const Flags = struct {
     network_tests: bool = false,
     /// Enable slow integration tests (e.g. ones that spawn `zig build`).
     slow_tests: bool = false,
+    /// Release channel (E17).
+    channel: Channel = .dev,
+    /// Commit hash the build is made from; CI passes it (the build never runs git).
+    commit: []const u8 = "unknown",
+    /// Reproducible-build timestamp (commit time, seconds since the epoch).
+    source_date_epoch: i64 = 0,
+    /// Update mode baked into the binary; `distro` forces `.disabled`.
+    update_mode: UpdateMode = .managed_or_notify,
+    /// Distro packaging build (FHS layout, updates disabled).
+    distro: bool = false,
 
     /// The single tuple every package passes to `b.dependency()`. It MUST be
     /// passed unchanged; field names equal the `-D` option names.
@@ -67,6 +84,11 @@ pub const Flags = struct {
             .@"update-golden" = f.update_golden,
             .@"network-tests" = f.network_tests,
             .@"slow-tests" = f.slow_tests,
+            .channel = f.channel,
+            .commit = f.commit,
+            .@"source-date-epoch" = f.source_date_epoch,
+            .@"update-mode" = f.update_mode,
+            .distro = f.distro,
         };
     }
 };
@@ -86,6 +108,11 @@ pub const Args = struct {
     @"update-golden": bool,
     @"network-tests": bool,
     @"slow-tests": bool,
+    channel: Channel,
+    commit: []const u8,
+    @"source-date-epoch": i64,
+    @"update-mode": UpdateMode,
+    distro: bool,
 };
 
 /// Default `-Dversion`.
@@ -96,6 +123,9 @@ pub const default_version = "0.0.0-dev";
 /// once per `build.zig`.
 pub fn flags(b: *std.Build) Flags {
     const optimize = b.standardOptimizeOption(.{});
+    const distro = b.option(bool, "distro", "Distro packaging build; forces update-mode=disabled (default: false)") orelse false;
+    // Always declared, so the forwarded tuple stays valid in every builder.
+    const update_mode = b.option(UpdateMode, "update-mode", "Update mode: managed_or_notify (default), notify_only, disabled") orelse .managed_or_notify;
     return .{
         .target = b.standardTargetOptions(.{}),
         .optimize = optimize,
@@ -109,6 +139,11 @@ pub fn flags(b: *std.Build) Flags {
         .update_golden = b.option(bool, "update-golden", "Rewrite golden files instead of comparing") orelse false,
         .network_tests = b.option(bool, "network-tests", "Enable tests that reach the internet") orelse false,
         .slow_tests = b.option(bool, "slow-tests", "Enable slow integration tests") orelse false,
+        .channel = b.option(Channel, "channel", "Release channel: dev (default), insiders, rc, stable") orelse .dev,
+        .commit = b.option([]const u8, "commit", "Commit hash of the build (default: unknown)") orelse "unknown",
+        .source_date_epoch = b.option(i64, "source-date-epoch", "Reproducible-build timestamp (default: 0)") orelse 0,
+        .update_mode = if (distro) .disabled else update_mode,
+        .distro = distro,
     };
 }
 
@@ -130,10 +165,27 @@ pub fn optionsModule(b: *std.Build, f: Flags) *std.Build.Module {
     o.addOption(bool, "update_golden", f.update_golden);
     o.addOption(bool, "network_tests", f.network_tests);
     o.addOption(bool, "slow_tests", f.slow_tests);
+    o.addOption(Channel, "channel", f.channel);
+    o.addOption([]const u8, "commit", f.commit);
+    o.addOption(i64, "source_date_epoch", f.source_date_epoch);
+    o.addOption(UpdateMode, "update_mode", f.update_mode);
+    o.addOption(bool, "distro", f.distro);
+    o.addOption([]const u8, "release_target", releaseTarget(b, f.target.result));
     o.addOption([]const u8, "package_root", absPackageRoot(b));
     const m = o.createModule();
     options_cache.put(b.graph.arena, b, m) catch @panic("OOM");
     return m;
+}
+
+/// `{arch}-{os}-{abi}`, plus `.{major}.{minor}` of the glibc version on
+/// Linux gnu, e.g. `x86_64-linux-gnu.2.28`. Stable across Zig's default OS
+/// version ranges, unlike `Target.zigTriple`.
+pub fn releaseTarget(b: *std.Build, t: std.Target) []const u8 {
+    const base = b.fmt("{s}-{s}-{s}", .{ @tagName(t.cpu.arch), @tagName(t.os.tag), @tagName(t.abi) });
+    if (t.os.tag == .linux and t.abi.isGnu()) {
+        if (t.os.versionRange().gnuLibCVersion()) |g| return b.fmt("{s}.{d}.{d}", .{ base, g.major, g.minor });
+    }
+    return base;
 }
 
 fn absPackageRoot(b: *std.Build) []const u8 {
