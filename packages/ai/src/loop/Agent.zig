@@ -64,6 +64,8 @@ pub const Deps = struct {
     estimator: ?*estimate.TokenEstimator = null,
     /// E12 checkpoints taken at the start of each user turn.
     checkpoints: ?dp.Checkpoints = null,
+    /// Transcript compaction (F07.S03).
+    compaction: ?dp.Compaction = null,
 };
 
 /// A checkpoint and the sequence number of its event.
@@ -268,13 +270,23 @@ pub fn messageSeq(a: *Agent, i: usize) u64 {
 /// after `last_seq`. Only while the agent is idle.
 pub fn setTranscript(a: *Agent, msgs: []const proto.Message, seqs: []const u64, last_seq: u64) (error{Busy} || Allocator.Error)!void {
     std.debug.assert(msgs.len == seqs.len);
+    {
+        a.mutex.lockUncancelable(a.io);
+        defer a.mutex.unlock(a.io);
+        if (a.running) return error.Busy;
+    }
+    try a.swapTranscript(msgs, seqs, last_seq);
+}
+
+/// `setTranscript` for the turn task (compaction during a turn).
+pub fn swapTranscript(a: *Agent, msgs: []const proto.Message, seqs: []const u64, last_seq: u64) Allocator.Error!void {
+    std.debug.assert(msgs.len == seqs.len);
     const ar = a.arena.allocator();
     const copy = try ar.alloc(proto.Message, msgs.len);
     for (msgs, copy) |m, *c| c.* = try proto.json.cloneMessage(ar, m);
     {
         a.mutex.lockUncancelable(a.io);
         defer a.mutex.unlock(a.io);
-        if (a.running) return error.Busy;
         a.transcript.clearRetainingCapacity();
         try a.transcript.appendSlice(ar, copy);
         a.seqs.clearRetainingCapacity();
