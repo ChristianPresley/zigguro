@@ -295,8 +295,12 @@ context" also replaces the history with the plan before the next request,
 recorded as a compaction with trigger `plan_approved`. Keep planning
 returns the feedback to the model and stays in plan mode.
 
-`zg agent --permission-mode plan` and `-p` runs start in plan mode, with
-read-only commands allowed; they do not register `exit_plan_mode` yet.
+`zg agent --permission-mode plan` starts in plan mode, with read-only
+commands allowed. In the REPL, `/plan` enters plan mode from the next
+turn, and `exit_plan_mode` asks on the terminal; approving switches the
+command-line permission rules to the chosen mode too. One-shot runs (`-p`,
+piped or streamed input) have nobody to ask, so they leave
+`exit_plan_mode` out and the model answers with its plan.
 
 ## Todos and questions
 
