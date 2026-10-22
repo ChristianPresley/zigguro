@@ -238,14 +238,14 @@ fn corrupt(err: anyerror) bool {
     return std.mem.startsWith(u8, n, "Zip") or std.mem.eql(u8, n, "EndOfStream") or std.mem.eql(u8, n, "BadCrc") or std.mem.eql(u8, n, "ReadFailed");
 }
 
-/// Removes a staged payload after a cancel.
-fn discardStaged(io: Io, root: Io.Dir) void {
+/// Removes a staged payload (after a cancel or a failed update).
+pub fn discardStaged(io: Io, root: Io.Dir) void {
     root.deleteFile(io, names.staged_zon) catch {};
     root.deleteTree(io, names.staged) catch {};
 }
 
 /// The size of `sub` in KiB (Apps & features "EstimatedSize").
-fn dirSizeKib(io: Io, root: Io.Dir, sub: []const u8) u32 {
+pub fn dirSizeKib(io: Io, root: Io.Dir, sub: []const u8) u32 {
     var dir = root.openDir(io, sub, .{ .iterate = true }) catch return 0;
     defer dir.close(io);
     var buf: [16 * 1024]u8 = undefined;
@@ -263,12 +263,12 @@ fn dirSizeKib(io: Io, root: Io.Dir, sub: []const u8) u32 {
 
 const testing = std.testing;
 
-/// An integration on an in-memory registry.
-const MemoryIntegration = struct {
+/// Tests: an integration on an in-memory registry.
+pub const MemoryIntegration = struct {
     reg: zg_install.win.reg.Memory,
     integrated: usize = 0,
 
-    fn integration(m: *MemoryIntegration) Integration {
+    pub fn integration(m: *MemoryIntegration) Integration {
         return .{ .ctx = m, .integrate = integrate, .update_version = updateVersion };
     }
 
@@ -286,8 +286,8 @@ const MemoryIntegration = struct {
     }
 };
 
-/// A release-shaped zip: `<top>/BUILDINFO.zon` and `<top>/zigguro.exe`.
-fn testZip(gpa: Allocator, version: []const u8, exe: []const u8) ![]u8 {
+/// Tests: a release-shaped zip: `<top>/BUILDINFO.zon` and `<top>/zigguro.exe`.
+pub fn testZip(gpa: Allocator, version: []const u8, exe: []const u8) ![]u8 {
     const top = try std.fmt.allocPrint(gpa, "zigguro-{s}-x86_64-windows", .{version});
     defer gpa.free(top);
     const info = try std.fmt.allocPrint(gpa, ".{{ .version = \"{s}\", .target = \"x86_64-windows\" }}\n", .{version});
@@ -299,7 +299,8 @@ fn testZip(gpa: Allocator, version: []const u8, exe: []const u8) ![]u8 {
     return zipcheck.testZip(gpa, &.{ .{ p1, info }, .{ p2, exe } }, .store);
 }
 
-fn tmpRoot(a: Allocator, tmp: *testing.TmpDir) ![]const u8 {
+/// Tests: a non-ASCII install root inside `tmp`.
+pub fn tmpRoot(a: Allocator, tmp: *testing.TmpDir) ![]const u8 {
     const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", a);
     return std.fs.path.join(a, &.{ dir, "zïggürø" });
 }
