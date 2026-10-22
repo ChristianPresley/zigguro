@@ -1,0 +1,16 @@
+# Criss-cross merges.
+m1: a b
+m2: b a
+a: r
+b: r
+r:
+====
+o  m1
+|\
+| | o  m2
+|_|/
+o |  a
+| |
+| o  b
+|/
+o  r

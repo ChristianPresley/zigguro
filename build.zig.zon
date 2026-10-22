@@ -13,6 +13,8 @@
         .zg_lsp = .{ .path = "packages/lsp" },
         .zg_dap = .{ .path = "packages/dap" },
         .zg_text = .{ .path = "packages/text" },
+        .zg_git = .{ .path = "packages/git" },
+        .zg_scm = .{ .path = "packages/scm" },
         // pkgtool:insert
     },
     .paths = .{

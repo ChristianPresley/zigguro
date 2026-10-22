@@ -1,0 +1,13 @@
+# A first parent already waited for by another column.
+a: c
+b: x c
+x: c
+c:
+====
+o  a
+|
+| o  b
+|/|
+| o  x
+|/
+o  c

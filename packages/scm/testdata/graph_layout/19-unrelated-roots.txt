@@ -1,0 +1,13 @@
+# Two unrelated histories.
+a: b
+c: d
+b:
+d:
+====
+o  a
+|
+| o  c
+| |
+o |  b
+  |
+  o  d

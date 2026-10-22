@@ -1,0 +1,7 @@
+# A parent listed as visible and elided.
+a: b ~b
+b:
+====
+o  a
+|
+o  b

@@ -1,0 +1,9 @@
+head
+mid
+<<<<<<< ours
+TAIL
+||||||| base
+tail
+=======
+Tail
+>>>>>>> theirs

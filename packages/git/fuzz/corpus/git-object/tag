@@ -1,0 +1,6 @@
+object be08fc1a849f8b4bfaaf9c69be9f7d6f387a8730
+type commit
+tag v1
+tagger C O Mitter <committer@example.com> 1700001860 +0100
+
+release v1

@@ -1,0 +1,7 @@
+fn a() {
+<<<<<<< ours
+  return 2;
+=======
+  return 3;
+>>>>>>> theirs
+}

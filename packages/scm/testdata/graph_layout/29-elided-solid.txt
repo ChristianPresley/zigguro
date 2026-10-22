@@ -1,0 +1,11 @@
+# collapse_elided off draws elided edges solid.
+!collapse=0
+a: ~c
+b: c
+c:
+====
+o  a
+|
+| o  b
+|/
+o  c

@@ -1,0 +1,7 @@
+one
+<<<<<<< ours
+two
+||||||| base
+=======
+three
+>>>>>>> theirs

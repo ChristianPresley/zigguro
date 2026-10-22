@@ -1,0 +1,13 @@
+# A stack whose base is elided.
+a@: b
+b: ~d
+d#: e
+e:
+====
+@  a
+|
+o  b
+:
+#  d
+|
+o  e

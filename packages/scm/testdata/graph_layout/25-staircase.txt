@@ -1,0 +1,25 @@
+# Each commit branches off the previous one.
+a: e
+b: f
+c: g
+d: h
+e: f
+f: g
+g: h
+h:
+====
+o  a
+|
+| o  b
+| |
+| | o  c
+| | |
+| | | o  d
+| | | |
+o | | |  e
+|/  | |
+o   | |  f
+|__/  |
+o     |  g
+|____/
+o  h

@@ -1,0 +1,13 @@
+# An elided marker node standing for hidden commits.
+a: h
+h elided: c
+b: c
+c:
+====
+o  a
+|
+~  h
+|
+| o  b
+|/
+o  c

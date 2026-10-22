@@ -1,0 +1,13 @@
+# A merge of two branches.
+m: a b
+a: c
+b: c
+c:
+====
+o  m
+|\
+o |  a
+| |
+| o  b
+|/
+o  c

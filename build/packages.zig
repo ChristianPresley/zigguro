@@ -28,6 +28,8 @@ pub const all = [_]Package{
     .{ .name = "zg_lsp", .dir = "packages/lsp", .has_bench = true },
     .{ .name = "zg_dap", .dir = "packages/dap", .has_bench = true },
     .{ .name = "zg_text", .dir = "packages/text", .has_bench = true },
+    .{ .name = "zg_git", .dir = "packages/git", .has_bench = true },
+    .{ .name = "zg_scm", .dir = "packages/scm", .has_bench = true },
     // pkgtool:insert
 };
 

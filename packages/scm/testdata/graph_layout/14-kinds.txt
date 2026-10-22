@@ -1,0 +1,16 @@
+# Every node kind.
+w@: c
+c conflict: d
+d divergent: e
+e immutable: f
+f:
+====
+@  w
+|
+x  c
+|
+?  d
+|
+#  e
+|
+o  f

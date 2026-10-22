@@ -1,0 +1,10 @@
+# A merge with an elided second parent.
+m: a ~r
+a: r
+r:
+====
+o  m
+|\
+o :  a
+|/
+o  r

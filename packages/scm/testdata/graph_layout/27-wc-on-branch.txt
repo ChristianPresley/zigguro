@@ -1,0 +1,13 @@
+# The working copy on a side branch.
+t: r
+w@: s
+s: r
+r immutable:
+====
+o  t
+|
+| @  w
+| |
+| o  s
+|/
+#  r
