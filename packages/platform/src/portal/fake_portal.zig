@@ -38,6 +38,9 @@ pub const FakePortal = struct {
     last_uri: [256]u8 = undefined,
     last_uri_len: usize = 0,
     last_fd_ok: bool = false,
+    /// The last call's parent window handle.
+    last_parent: [128]u8 = undefined,
+    last_parent_len: usize = 0,
     calls: std.atomic.Value(u32) = .init(0),
 
     /// Connects to `address` and takes the portal's name.
@@ -62,6 +65,13 @@ pub const FakePortal = struct {
         f.lock.lockUncancelable(f.bus.io);
         defer f.lock.unlock(f.bus.io);
         return f.last_method[0..f.last_method_len];
+    }
+
+    /// The last FileChooser or OpenURI call's `parent_window`.
+    pub fn lastParent(f: *FakePortal) []const u8 {
+        f.lock.lockUncancelable(f.bus.io);
+        defer f.lock.unlock(f.bus.io);
+        return f.last_parent[0..f.last_parent_len];
     }
 
     /// Waits until `n` calls have been answered.
@@ -100,6 +110,13 @@ pub const FakePortal = struct {
         if (!is_chooser and !is_uri) return false;
         if (a.len != 3 or a[2] != .dict) return false;
         f.record(member, a[2].dict.entries.len);
+        if (a[0].asString()) |parent| {
+            f.lock.lockUncancelable(bus.io);
+            const n = @min(parent.len, f.last_parent.len);
+            @memcpy(f.last_parent[0..n], parent[0..n]);
+            f.last_parent_len = n;
+            f.lock.unlock(bus.io);
+        }
         if (is_uri) {
             f.lock.lockUncancelable(bus.io);
             if (a[1] == .string) {
