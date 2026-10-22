@@ -6,7 +6,11 @@
 //! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
 //! or when no display can be reached, it renders `--frames N` frames
 //! (default 3) on the headless platform and exits, which smoke-tests the
-//! whole UI stack without a display.
+//! whole UI stack without a display; `--screenshot FILE` then writes the
+//! last frame as a binary PPM.
+//!
+//! Text is drawn with system fonts through `zg_gui.FontText` (see
+//! `fonts.zig`), or with placeholder boxes when no font file is found.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -15,6 +19,7 @@ const zg_crash = @import("zg_crash");
 const zg_platform = @import("zg_platform");
 const zg_gui = @import("zg_gui");
 const Welcome = @import("welcome.zig").Welcome;
+const fonts = @import("fonts.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -47,6 +52,11 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var app = zg_gui.App.init(rt.gpa);
     defer app.deinit();
     var mono: zg_gui.paint.text.MonoText = .{};
+    const font_files = fonts.load(rt.gpa, rt.io, &env);
+    defer if (font_files) |f| f.deinit(rt.gpa);
+    const font_text: ?*zg_gui.paint.FontText = if (font_files) |f| zg_gui.paint.FontText.create(rt.gpa, .{ .ui = f.ui, .mono = f.mono }) catch null else null;
+    defer if (font_text) |ft| ft.destroy();
+    const text_sys = if (font_text) |ft| ft.system() else mono.system();
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
 
     const frames_arg = framesArg(min, rt.gpa);
@@ -57,7 +67,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             break :native;
         };
         defer platform.deinit();
-        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, mono.system(), .{});
+        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{ .fonts = font_text });
         defer host.deinit();
         const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = .of(&welcome) });
         // `--frames N` exits after N presented frames (smoke tests,
@@ -86,7 +96,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const frames = frames_arg orelse 3;
     const hl = try zg_platform.headless.Headless.init(rt.gpa, rt.io, .{});
     defer hl.deinit();
-    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), mono.system(), .{});
+    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), text_sys, .{ .fonts = font_text });
     defer host.deinit();
     const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = .of(&welcome) });
     var drawn: u64 = 0;
@@ -99,8 +109,37 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         hw.win.themeChanged(false); // force a full repaint next frame
     }
     try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
+    if (stringArg(min, rt.gpa, "--screenshot")) |path| {
+        defer rt.gpa.free(path);
+        if (hl.lastFrame(hw.id)) |f| {
+            try writePpm(rt.gpa, rt.io, path, f);
+            try w.print("zigguro: wrote {s} ({d}x{d})\n", .{ path, f.width, f.height });
+        }
+    }
     try w.flush();
     return 0;
+}
+
+/// The value after flag `name`, if given (owned).
+fn stringArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
+    var it = min.args.iterateAllocator(gpa) catch return null;
+    defer it.deinit();
+    while (it.next()) |a| {
+        if (std.mem.eql(u8, a, name)) return gpa.dupe(u8, it.next() orelse return null) catch null;
+    }
+    return null;
+}
+
+/// Writes an RGBA frame as a binary PPM (P6).
+fn writePpm(gpa: std.mem.Allocator, io: std.Io, path: []const u8, f: anytype) !void {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.print(gpa, "P6\n{d} {d}\n255\n", .{ f.width, f.height });
+    for (0..f.height) |y| for (0..f.width) |x| {
+        const o = y * f.stride + x * 4;
+        try out.appendSlice(gpa, f.pixels[o..][0..3]);
+    };
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.items });
 }
 
 /// The value of `--frames N`, if given.
