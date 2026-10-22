@@ -254,3 +254,15 @@ fn fuzzRoundtrip(_: void, smith: *std.testing.Smith) anyerror!void {
 test "fuzz: cold_roundtrip" {
     try std.testing.fuzz({}, fuzzRoundtrip, .{});
 }
+
+test "a linked wide character round-trips without linking its spacer" {
+    // Found by the cold_roundtrip fuzz target.
+    var t = try Terminal.init(testing.allocator, .{ .cols = 6, .rows = 2 });
+    defer t.deinit();
+    t.feed("\x1b]8;;https://h.example/\x07\x1b[44m🙂     ");
+    var cp = try encodeAll(&t, .{ .deflate = false });
+    defer cp.deinit(testing.allocator);
+    var pl = try decodeAt(&cp, 6);
+    defer pl.deinit();
+    try expectSameRows(&t.primary.pages, &pl);
+}
