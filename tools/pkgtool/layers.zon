@@ -5,6 +5,7 @@
 .{
     .layers = .{
         .zg_core = 0,
+        .ucdgen = 0, // build-time UCD generator (tools/ucdgen), imported by zg_text (E03.F05.S01.T01)
         .zg_jsonrpc = 1,
         .zg_net = 1,
         .zg_regex = 1,
