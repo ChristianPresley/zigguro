@@ -1,0 +1,7 @@
+1| punctuation:< tag:script punctuation:>
+2| keyword.storage:const variable:greet operator:= punctuation.bracket:( variable:name punctuation.bracket:) operator:=> string:`hello  punctuation:$ punctuation.bracket:{ variable:name punctuation.bracket:} string:` punctuation.delimiter:;
+3| keyword.control:if punctuation.bracket:( variable:a operator:< variable:b operator:&& variable:c operator:> variable:d punctuation.bracket:) variable:console punctuation.delimiter:. function:log punctuation.bracket:( string:"</p>" punctuation.bracket:) punctuation.delimiter:;
+4| punctuation:</ tag:script punctuation:>
+5| punctuation:< tag:script attribute:type operator:= string:"module" punctuation:> keyword:import punctuation.bracket:{ variable:x punctuation.bracket:} keyword:from string:"./x.js" punctuation.delimiter:; punctuation:</ tag:script punctuation:>
+6| punctuation:< tag:script attribute:type operator:= string:"application/json" punctuation:> punctuation:</ tag:script punctuation:>
+7| punctuation:< tag:script attribute:src operator:= string:"app.js" punctuation:> punctuation:</ tag:script punctuation:>
