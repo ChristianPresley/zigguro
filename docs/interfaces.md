@@ -4177,3 +4177,53 @@ until `prune` drops the item.
 
 ### Stability
 Unstable until E10's agent pane embeds the card.
+
+## zg_review.feedback (CommentStore)
+
+### Defined in
+`packages/review/src/feedback/{comments.zig, anchor.zig, labels.zig}` (E12.F03.S03.T01); see `packages/review/docs/comments.md`.
+
+### Implemented by
+E12.F03.S03.T01.
+
+### Consumed by
+The hunk review view (comments UI), feedback dispatch to agents (E12.F03.S03.T02), F08 code review findings, `zg review`.
+
+### Signature
+```zig
+pub const CommentStore = struct {
+    pub fn init(gpa, o: Options{ id_base = 0, recorder: ?Recorder = null, listener: ?Listener = null }) CommentStore;
+    pub fn deinit(cs) void;
+    pub fn bind(cs, r: ?Recorder, id_base: u64) void;
+    pub fn create(cs, target: ChangesetId, anchor: CommentAnchor, label: ?Label, blocking: bool, body: []const u8, author: Author, now_ms: i64) Error!ThreadId;
+    pub fn reply(cs, t: ThreadId, body, author, now_ms) Error!u64;
+    pub fn edit(cs, t, comment: u64, body, now_ms) Error!void;
+    pub fn resolve(cs, t, resolved: bool) Error!void;
+    pub fn setLabel(cs, t, label: ?Label, blocking: bool) Error!void;
+    pub fn reanchor(cs, target, path, new_text: []const u8, o: ReanchorOptions{ side = .new, map: ?[]const Hunk = null }) !ReanchorReport;
+    pub fn dropTarget(cs, target) void;
+    pub fn threadsOf(cs, target) []const *const Thread;
+    pub fn get(cs, t) ?*const Thread;
+    pub fn unresolvedBlocking(cs, target) u32;
+    pub fn counts(cs, target) Counts;
+    pub fn restoreSink(cs) RestoreSink;                       // QueueSink.comments, load and tail
+};
+pub fn CommentAnchor.at(gpa, path, side: Side, text, lines: LineRange) !CommentAnchor;
+pub fn parseLabelPrefix(body: []const u8) Prefix;            // { label, blocking, decorations, rest } + tags()
+```
+Deviations from the spec text:
+- `parseLabelPrefix` is a free function, and unknown decorations are
+  returned through `Prefix.tags()` instead of in `rest`.
+- `reanchor` takes the new text as bytes and an optional hunk mapping
+  (not an E05 `LineSource`); `create` and `reply` take `now_ms`.
+- Tests live in `src/feedback/comments_test.zig`.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Each thread owns its strings (an arena) until `dropTarget` or `deinit`;
+`threadsOf` slices are valid until the next change.
+
+### Stability
+Unstable until the comments UI binds it.
