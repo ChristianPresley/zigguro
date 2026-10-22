@@ -14,6 +14,8 @@ pub const screen = @import("screen.zig");
 pub const term = @import("term.zig");
 /// Shell-integration marks.
 pub const shell = @import("shell.zig");
+/// Key, mouse, paste and focus encoding.
+pub const input = @import("input.zig");
 /// Conformance runner, screen dumps and invariants for tests.
 pub const testing = @import("testing.zig");
 /// The terminal.
