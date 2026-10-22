@@ -98,6 +98,12 @@ pub const Thread = struct {
     resolved: bool = false,
     /// The anchored lines are gone; `anchor` keeps where they last were.
     outdated: bool = false,
+    /// When it was last sent to the agent in a fix request.
+    sent_ms: ?i64 = null,
+    /// Its lines changed in the agent's revision after it was sent.
+    maybe_addressed: bool = false,
+    /// The thread it was copied from (onto a superseding changeset).
+    copied_from: ?ThreadId = null,
     created_ms: i64,
     comments: std.ArrayList(Comment) = .empty,
     arena: std.heap.ArenaAllocator,
@@ -301,6 +307,60 @@ pub const CommentStore = struct {
         return rep;
     }
 
+    /// Marks threads as sent to the agent at `now_ms`.
+    pub fn markSent(cs: *CommentStore, tids: []const ThreadId, now_ms: i64) Error!void {
+        for (tids) |tid| {
+            const t = cs.threads.get(tid) orelse return error.UnknownThread;
+            t.sent_ms = now_ms;
+            t.maybe_addressed = false;
+            cs.journal(.{ .op = .sent, .thread = @intFromEnum(tid), .ms = now_ms }, t, null);
+            cs.notify(t);
+        }
+    }
+
+    /// Tags a thread whose lines the agent's revision changed (or clears
+    /// the tag).
+    pub fn setAddressed(cs: *CommentStore, tid: ThreadId, on: bool) Error!void {
+        const t = cs.threads.get(tid) orelse return error.UnknownThread;
+        if (t.maybe_addressed == on) return;
+        t.maybe_addressed = on;
+        cs.journal(.{ .op = .addressed, .thread = @intFromEnum(tid), .addressed = on }, t, null);
+        cs.notify(t);
+    }
+
+    /// Copies the unresolved threads of `from` onto `to` (a changeset that
+    /// supersedes it), comments and all, with new ids; `copied_from`
+    /// names the original. Re-anchor them afterwards. Returns how many.
+    pub fn copyOpen(cs: *CommentStore, from: ChangesetId, to: ChangesetId) Allocator.Error!u32 {
+        const src = cs.by_target.get(from) orelse return 0;
+        // `src.items` may move as `to`'s list grows when from == to.
+        std.debug.assert(from != to);
+        var n: u32 = 0;
+        for (src.items) |o| {
+            if (o.resolved) continue;
+            const tid: ThreadId = @enumFromInt(cs.nextId());
+            var first = o.first().*;
+            first.id = cs.nextId();
+            const t = try cs.addThread(tid, to, o.anchor, o.label, o.blocking, o.created_ms, first, o.tags);
+            t.outdated = o.outdated;
+            t.sent_ms = o.sent_ms;
+            t.copied_from = o.id;
+            for (o.comments.items[1..]) |c| {
+                var r = try dupeComment(t.arena.allocator(), c);
+                r.id = cs.nextId();
+                try t.comments.append(t.arena.allocator(), r);
+            }
+            if (cs.opts.recorder) |rec| {
+                var aw: std.Io.Writer.Allocating = .init(cs.gpa);
+                defer aw.deinit();
+                if (writeSnapshot(cs.gpa, &aw.writer, t)) |_| rec.record(rec.ctx, aw.written()) else |e| log.err("comment thread {f} not recorded: {t}", .{ t.id, e });
+            }
+            cs.notify(t);
+            n += 1;
+        }
+        return n;
+    }
+
     /// Forgets the threads of a changeset that left the store (not
     /// journaled: compaction drops their records with the changeset's).
     pub fn dropTarget(cs: *CommentStore, target: ChangesetId) void {
@@ -397,6 +457,9 @@ pub const CommentStore = struct {
                 }, rec.label, rec.blocking orelse false, rec.created_ms orelse first.created_ms, try first.decode(), rec.tags);
                 t.resolved = rec.resolved orelse false;
                 t.outdated = rec.outdated orelse false;
+                t.sent_ms = rec.ms;
+                t.maybe_addressed = rec.addressed orelse false;
+                if (rec.copied_from) |x| t.copied_from = @enumFromInt(x);
                 if (rec.op == .snapshot) for (rec.replies orelse &.{}) |r| {
                     cs.see(r.id);
                     try t.comments.append(t.arena.allocator(), try dupeComment(t.arena.allocator(), try r.decode()));
@@ -442,6 +505,17 @@ pub const CommentStore = struct {
                 t.outdated = true;
                 cs.notify(t);
             },
+            .sent => {
+                const t = existing orelse return;
+                t.sent_ms = rec.ms;
+                t.maybe_addressed = false;
+                cs.notify(t);
+            },
+            .addressed => {
+                const t = existing orelse return;
+                t.maybe_addressed = rec.addressed orelse false;
+                cs.notify(t);
+            },
         }
     }
 };
@@ -464,7 +538,7 @@ fn dupeComment(a: Allocator, c: Comment) Allocator.Error!Comment {
 
 // ---------------------------------------------------------------- records
 
-pub const Op = enum { create, reply, edit, resolve, label, reanchor, outdated, snapshot };
+pub const Op = enum { create, reply, edit, resolve, label, reanchor, outdated, snapshot, sent, addressed };
 
 const Record = struct {
     op: Op,
@@ -473,6 +547,8 @@ const Record = struct {
     label: ?Label = null,
     blocking: ?bool = null,
     lines: ?[2]u32 = null,
+    ms: ?i64 = null,
+    addressed: ?bool = null,
 };
 
 const WireAuthor = struct {
@@ -550,6 +626,10 @@ const Wire = struct {
     outdated: ?bool = null,
     created_ms: ?i64 = null,
     lines: ?[2]u32 = null,
+    /// `sent`, `snapshot`: when it was sent.
+    ms: ?i64 = null,
+    addressed: ?bool = null,
+    copied_from: ?u64 = null,
     comment: ?WireComment = null,
     /// `snapshot`: the comments after the first.
     replies: ?[]const WireComment = null,
@@ -564,6 +644,8 @@ fn writeRecord(w: *std.Io.Writer, rec: Record, t: *const Thread, c: ?*const Comm
         .label = rec.label,
         .blocking = rec.blocking,
         .lines = rec.lines,
+        .ms = rec.ms,
+        .addressed = rec.addressed,
         .comment = if (c) |x| WireComment.of(x, &sb) else null,
     };
     if (rec.op == .create) {
@@ -600,6 +682,9 @@ pub fn writeSnapshot(gpa: Allocator, w: *std.Io.Writer, t: *const Thread) !void 
         .tags = if (t.tags.len > 0) t.tags else null,
         .resolved = t.resolved,
         .outdated = t.outdated,
+        .ms = t.sent_ms,
+        .addressed = if (t.maybe_addressed) true else null,
+        .copied_from = if (t.copied_from) |x| @intFromEnum(x) else null,
         .created_ms = t.created_ms,
         .comment = WireComment.of(t.first(), &bufs[0]),
         .replies = if (replies.len > 0) replies else null,
