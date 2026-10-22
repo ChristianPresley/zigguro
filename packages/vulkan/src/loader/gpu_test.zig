@@ -21,7 +21,6 @@ test "gpu: open the system loader, create an instance and list devices" {
     var raw: u32 = vk.api_version_1_0;
     _ = try vk.check(g.enumerate_instance_version(&raw));
     const version: vk.Version = .fromInt(raw);
-    std.debug.print("vulkan loader {s}: instance version {d}.{d}.{d}\n", .{ l.path, version.major, version.minor, version.patch });
     if (!version.atLeast(1, 1)) return error.SkipZigTest;
 
     const app: vk.ApplicationInfo = .{
@@ -43,9 +42,8 @@ test "gpu: open the system loader, create an instance and list devices" {
         var props: vk.PhysicalDeviceProperties2 = .{};
         it.get_physical_device_properties2(d, &props);
         const p = props.properties;
-        const name = std.mem.sliceTo(&p.device_name, 0);
-        const api: vk.Version = .fromInt(p.api_version);
-        std.debug.print("  device: {s} ({t}), Vulkan {d}.{d}\n", .{ name, p.device_type, api.major, api.minor });
+        try std.testing.expect(std.mem.sliceTo(&p.device_name, 0).len > 0);
+        try std.testing.expect(vk.Version.fromInt(p.api_version).atLeast(1, 0));
         const families = try vk.enumerateAlloc(vk.QueueFamilyProperties, gpa, it.get_physical_device_queue_family_properties, .{d});
         defer gpa.free(families);
         try std.testing.expect(families.len > 0);
