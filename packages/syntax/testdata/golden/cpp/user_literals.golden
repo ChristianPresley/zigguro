@@ -1,0 +1,6 @@
+1| keyword.storage:using keyword.storage:namespace variable:std punctuation.delimiter::: variable:literals punctuation.delimiter:;
+2| keyword.storage:auto variable:s operator:= string:"abc" variable:s punctuation.delimiter:;
+3| keyword.storage:auto variable:t operator:= number:10ms punctuation.delimiter:;
+4| keyword.storage:auto variable:d operator:= number:1.5_km punctuation.delimiter:;
+5| keyword.storage:auto variable:c operator:= character:'x' variable:_ch punctuation.delimiter:;
+6| keyword.storage:auto variable:u operator:= string:u8"x" variable:_tag punctuation.delimiter:;

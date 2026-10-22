@@ -1,0 +1,21 @@
+1| keyword.storage:pub keyword.storage:fn function:main punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{
+2| keyword.storage:let keyword.storage:mut variable:x operator:= number:5 punctuation.delimiter:;
+3| keyword.storage:const constant:MAX punctuation.delimiter:: type.builtin:u32 operator:= number:100 punctuation.delimiter:;
+4| keyword.storage:static constant:NAME punctuation.delimiter:: operator:& type.builtin:str operator:= string:"app" punctuation.delimiter:;
+5| keyword.control:if variable:x operator:> number:3 punctuation.bracket:{ variable:x operator:-= number:1 punctuation.delimiter:; punctuation.bracket:} keyword.control:else punctuation.bracket:{ variable:x operator:+= number:1 punctuation.delimiter:; punctuation.bracket:}
+6| keyword.control:while variable:x operator:< number:10 punctuation.bracket:{ variable:x operator:+= number:1 punctuation.delimiter:; punctuation.bracket:}
+7| keyword.control:for variable:i keyword.control:in number:0 operator:.. number:10 punctuation.bracket:{ keyword.control:if variable:i operator:== number:5 punctuation.bracket:{ keyword.control:break punctuation.delimiter:; punctuation.bracket:} keyword.control:else punctuation.bracket:{ keyword.control:continue punctuation.delimiter:; punctuation.bracket:} punctuation.bracket:}
+8| keyword.control:loop punctuation.bracket:{ keyword.control:break punctuation.delimiter:; punctuation.bracket:}
+9| keyword.control:match variable:x punctuation.bracket:{ number:1 operator:=> punctuation.bracket:{ punctuation.bracket:} punctuation.delimiter:, variable:_ operator:=> punctuation.bracket:{ punctuation.bracket:} punctuation.bracket:}
+10| keyword.storage:let variable:r operator:= operator:& keyword.storage:mut variable:x keyword.operator:as operator:* keyword.storage:mut type.builtin:i32 punctuation.delimiter:;
+11| keyword.storage:unsafe punctuation.bracket:{ operator:* variable:r operator:= number:1 punctuation.delimiter:; punctuation.bracket:}
+12| keyword.control:return punctuation.delimiter:;
+13| punctuation.bracket:}
+14| keyword.storage:pub punctuation.bracket:( keyword:crate punctuation.bracket:) keyword.storage:struct type:S punctuation.delimiter:; keyword.storage:enum type:E punctuation.bracket:{ punctuation.bracket:} keyword.storage:trait type:T punctuation.bracket:{ punctuation.bracket:} keyword.storage:impl type:T keyword.control:for type:S punctuation.bracket:{ punctuation.bracket:}
+15| keyword.storage:type type:Alias operator:= type:Vec operator:< type.builtin:u8 operator:> punctuation.delimiter:;
+16| keyword.storage:mod variable:inner punctuation.bracket:{ keyword.storage:use keyword:super punctuation.delimiter::: operator:* punctuation.delimiter:; keyword.storage:use keyword:crate punctuation.delimiter::: type:S punctuation.delimiter:; punctuation.bracket:}
+17| keyword.storage:extern string:"C" punctuation.bracket:{ keyword.storage:fn function:ext punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}
+18| keyword.storage:async keyword.storage:fn function:run punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ variable:fut punctuation.delimiter:. keyword.control:await punctuation.delimiter:; punctuation.bracket:}
+19| keyword.storage:let variable:f operator:= keyword.storage:move operator:| variable:x punctuation.delimiter:: type.builtin:i32 operator:| variable:x operator:+ number:1 punctuation.delimiter:;
+20| keyword.storage:fn function:dynamic punctuation.bracket:( variable:x punctuation.delimiter:: operator:& keyword.storage:dyn type:Fn punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:, variable:y punctuation.delimiter:: keyword.storage:impl type:Copy punctuation.bracket:) keyword:where type.builtin:Self punctuation.delimiter:: type:Sized punctuation.bracket:{ punctuation.bracket:}
+21| keyword.storage:let variable:t operator:= constant.builtin:true punctuation.delimiter:; keyword.storage:let variable:n operator:= constant.builtin:false punctuation.delimiter:; variable.builtin:self punctuation.delimiter:. variable:x punctuation.delimiter:; type.builtin:Self punctuation.delimiter::: function:new punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;

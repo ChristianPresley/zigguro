@@ -1,0 +1,13 @@
+1| variable:a operator:= variable:b operator:+ variable:c operator:- variable:d operator:* variable:e operator:/ variable:f operator:% variable:g
+2| variable:a operator:+= number:1 punctuation.delimiter:; variable:a operator:-= number:1 punctuation.delimiter:; variable:a operator:*= number:2 punctuation.delimiter:; variable:a operator:/= number:2 punctuation.delimiter:; variable:a operator:%= number:3
+3| variable:a operator:<<= number:1 punctuation.delimiter:; variable:a operator:>>= number:1 punctuation.delimiter:; variable:a operator:&= variable:m punctuation.delimiter:; variable:a operator:|= variable:m punctuation.delimiter:; variable:a operator:^= variable:m punctuation.delimiter:; variable:a operator:&^= variable:m
+4| variable:x operator::= variable:a operator:&^ variable:b
+5| variable:y operator::= variable:a operator:<< number:2 operator:>> number:1
+6| variable:z operator::= operator:! variable:a operator:&& variable:b operator:|| variable:c
+7| variable:ch operator:<- variable:v
+8| variable:v operator::= operator:<- variable:ch
+9| variable:i operator:++
+10| variable:j operator:--
+11| function:f punctuation.bracket:( variable:args operator:... punctuation.bracket:)
+12| variable:p operator::= operator:& variable:x punctuation.delimiter:; variable:q operator::= operator:* variable:p
+13| variable:ok operator::= variable:a operator:== variable:b operator:&& variable:a operator:!= variable:c operator:&& variable:a operator:<= variable:b operator:&& variable:a operator:>= variable:c

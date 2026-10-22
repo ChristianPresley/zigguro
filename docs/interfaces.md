@@ -2346,8 +2346,8 @@ Internal to E02 behind `r2d.Renderer`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
-structure and structure queries).
+structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers),
+E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2428,6 +2428,19 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
     pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
+// Tier-1 languages (langs/*.zig), all in `builtin_languages`.
+pub const zig_language, c_language, cpp_language, rust_language, go_language: Language;
+pub const EditRules = struct { line_comment, block_comment, auto_close,
+    insert_spaces: ?bool = null,                 // Go: false (tabs)
+    indent_after: []const []const u8,            // e.g. "{"
+    dedent_on: []const []const u8 };             // e.g. "}"
+// langs/c.zig: state `mode` = construct | Mode.directive while a directive continues;
+// a C++ raw string's delimiter is in `aux`.
+pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_tokens: bool = false }, st, s, out) void;
+// langs/rust.zig: block-comment depth in `depth`, raw-string `#` count in `aux[0]`.
+pub fn rust.classifyQuote(line: []const u8, pos: usize) struct { enum { char, lifetime, invalid }, usize };
+// langs/go.zig: tier 2 turns on automatic semicolons (a `Kind.virtual_semicolon` token at the line end).
+pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, st, s, out) void;
 ```
 
 ### Threading

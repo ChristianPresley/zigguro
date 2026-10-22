@@ -1,0 +1,6 @@
+using namespace std::literals;
+auto s = "abc"s;
+auto t = 10ms;
+auto d = 1.5_km;
+auto c = 'x'_ch;
+auto u = u8"x"_tag;

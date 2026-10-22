@@ -1,0 +1,16 @@
+#define LONG_MACRO(x) \
+    do {              \
+        foo(x);       \
+    } while (0)
+int after_macro;
+const char *s = "first \
+second";
+int after_string;
+// comment \
+continued comment
+int after_comment;
+char c = '\
+x';
+#define WITH_COMMENT /* starts
+   still comment */ 1
+int z = WITH_COMMENT;

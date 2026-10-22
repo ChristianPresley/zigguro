@@ -1,0 +1,9 @@
+let a = r"raw \n no escapes";
+let b = r#"with "quotes""#;
+let c = r##"with "# inside"##;
+let d = r###"
+multi
+"## still in
+"###;
+let after = 1;
+let e = r"";

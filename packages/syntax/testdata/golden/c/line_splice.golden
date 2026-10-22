@@ -1,0 +1,16 @@
+1| keyword:#define function.macro:LONG_MACRO punctuation.bracket:( variable:x punctuation.bracket:)
+2| keyword.control:do punctuation.bracket:{
+3| function:foo punctuation.bracket:( variable:x punctuation.bracket:) punctuation.delimiter:;
+4| punctuation.bracket:} keyword.control:while punctuation.bracket:( number:0 punctuation.bracket:)
+5| type.builtin:int variable:after_macro punctuation.delimiter:;
+6| keyword.storage:const type.builtin:char operator:* variable:s operator:= string:"first  string.escape:\
+7| string:second" punctuation.delimiter:;
+8| type.builtin:int variable:after_string punctuation.delimiter:;
+9| comment:// comment \
+10| comment:continued comment
+11| type.builtin:int variable:after_comment punctuation.delimiter:;
+12| type.builtin:char variable:c operator:= character:' string.escape:\
+13| character:x' punctuation.delimiter:;
+14| keyword:#define function.macro:WITH_COMMENT comment:/* starts
+15| comment:   still comment */ number:1
+16| type.builtin:int variable:z operator:= constant:WITH_COMMENT punctuation.delimiter:;

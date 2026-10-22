@@ -1,0 +1,9 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include "local.h"
+#  include   <spaced.h>
+#include_next <next.h>
+#embed "data.bin"
+#include MACRO_HEADER
+#include <unterminated.h
+int after;

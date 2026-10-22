@@ -1,0 +1,10 @@
+1| keyword.storage:func function:add punctuation.bracket:( variable:a punctuation.delimiter:, variable:b type.builtin:int punctuation.bracket:) type.builtin:int punctuation.bracket:{ keyword.control:return variable:a operator:+ variable:b punctuation.bracket:}
+2| keyword.storage:func punctuation.bracket:( variable:p operator:* variable:Point punctuation.bracket:) function:Move punctuation.bracket:( variable:dx punctuation.delimiter:, variable:dy type.builtin:int punctuation.bracket:) punctuation.bracket:{
+3| variable:p punctuation.delimiter:. variable:X operator:+= variable:dx
+4| variable:p punctuation.delimiter:. variable:Y operator:+= variable:dy
+5| punctuation.bracket:}
+6| keyword.storage:func function:variadic punctuation.bracket:( variable:xs operator:... type.builtin:int punctuation.bracket:) punctuation.bracket:( variable:sum type.builtin:int punctuation.delimiter:, variable:err type.builtin:error punctuation.bracket:) punctuation.bracket:{
+7| keyword.control:return
+8| punctuation.bracket:}
+9| keyword.storage:var variable:fn operator:= keyword.storage:func punctuation.bracket:( variable:x type.builtin:int punctuation.bracket:) type.builtin:int punctuation.bracket:{ keyword.control:return variable:x operator:* number:2 punctuation.bracket:}
+10| variable:result operator::= variable:fmt punctuation.delimiter:. function:Sprintf punctuation.bracket:( string:"%d" punctuation.delimiter:, function:add punctuation.bracket:( number:1 punctuation.delimiter:, number:2 punctuation.bracket:) punctuation.bracket:)

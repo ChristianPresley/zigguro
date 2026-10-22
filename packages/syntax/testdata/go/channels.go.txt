@@ -1,0 +1,11 @@
+ch := make(chan int, 10)
+var recv <-chan int = ch
+var send chan<- int = ch
+go func() { ch <- 1 }()
+v, ok := <-ch
+close(ch)
+select {
+case x := <-ch:
+	_ = x
+default:
+}

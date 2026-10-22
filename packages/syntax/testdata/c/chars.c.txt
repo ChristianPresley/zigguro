@@ -1,0 +1,12 @@
+char a = 'a';
+char b = '\'';
+char c = '"';
+char d = '\\';
+int e = 'ab';
+wchar_t f = L'x';
+char16_t g = u'y';
+char32_t h = U'z';
+char8_t i = u8'w';
+char j = '\0';
+char k = '
+int after;

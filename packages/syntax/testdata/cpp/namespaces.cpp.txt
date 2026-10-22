@@ -1,0 +1,9 @@
+namespace a::b::c {
+using namespace std;
+using Alias = std::map<int, int>;
+}
+::global_func();
+std::cout << "hi" << std::endl;
+namespace {
+int hidden;
+}

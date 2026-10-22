@@ -1,0 +1,9 @@
+1| keyword.storage:template operator:< keyword.storage:typename type:T punctuation.delimiter:, variable:std punctuation.delimiter::: type.builtin:size_t type:N operator:>
+2| keyword.storage:struct type:Array punctuation.bracket:{
+3| type:T variable:data punctuation.bracket:[ type:N punctuation.bracket:] punctuation.delimiter:;
+4| punctuation.bracket:} punctuation.delimiter:;
+5| keyword.storage:template operator:< keyword.storage:class type:T operator:> keyword.storage:concept type:Number operator:= variable:std punctuation.delimiter::: variable:is_arithmetic_v operator:< type:T operator:> punctuation.delimiter:;
+6| keyword.storage:template operator:< type:Number type:T operator:> keyword.storage:requires punctuation.bracket:( keyword.operator:sizeof punctuation.bracket:( type:T punctuation.bracket:) operator:> number:1 punctuation.bracket:)
+7| type:T function:twice punctuation.bracket:( type:T variable:x punctuation.bracket:) punctuation.bracket:{ keyword.control:return variable:x operator:* number:2 punctuation.delimiter:; punctuation.bracket:}
+8| variable:std punctuation.delimiter::: variable:vector operator:< variable:std punctuation.delimiter::: variable:pair operator:< type.builtin:int punctuation.delimiter:, variable:std punctuation.delimiter::: variable:string operator:>> variable:v punctuation.delimiter:;
+9| keyword.storage:auto variable:x operator:= keyword:static_cast operator:< type.builtin:int operator:> punctuation.bracket:( variable:y punctuation.bracket:) operator:+ keyword:reinterpret_cast operator:< type.builtin:long operator:> punctuation.bracket:( variable:z punctuation.bracket:) punctuation.delimiter:;

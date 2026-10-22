@@ -1,0 +1,12 @@
+1| type.builtin:char variable:a operator:= character:'a' punctuation.delimiter:;
+2| type.builtin:char variable:b operator:= character:' string.escape:\' character:' punctuation.delimiter:;
+3| type.builtin:char variable:c operator:= character:'"' punctuation.delimiter:;
+4| type.builtin:char variable:d operator:= character:' string.escape:\\ character:' punctuation.delimiter:;
+5| type.builtin:int variable:e operator:= character:'ab' punctuation.delimiter:;
+6| type.builtin:wchar_t variable:f operator:= character:L'x' punctuation.delimiter:;
+7| type.builtin:char16_t variable:g operator:= character:u'y' punctuation.delimiter:;
+8| type.builtin:char32_t variable:h operator:= character:U'z' punctuation.delimiter:;
+9| type.builtin:char8_t variable:i operator:= character:u8'w' punctuation.delimiter:;
+10| type.builtin:char variable:j operator:= character:' string.escape:\0 character:' punctuation.delimiter:;
+11| type.builtin:char variable:k operator:= character:'
+12| type.builtin:int variable:after punctuation.delimiter:;
