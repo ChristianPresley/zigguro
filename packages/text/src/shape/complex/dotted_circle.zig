@@ -30,9 +30,10 @@ pub fn syllableEnd(infos: []const GlyphInfo, start: usize) usize {
 /// Inserts a dotted circle at the start of each syllable of type
 /// `broken_type`, after glyphs whose `shaper` category is `repha` (when
 /// given). The circle takes the syllable's cluster, mask and syllable and
-/// gets `category` as its `shaper` value. Does nothing when the font has no
+/// gets `category` as its `shaper` value and `position` as its
+/// `shaper_aux` value. Does nothing when the font has no
 /// dotted circle; returns whether any was inserted.
-pub fn insertDottedCircles(b: *Buffer, face: *const Face, broken_type: u4, category: u8, repha: ?u8) Allocator.Error!bool {
+pub fn insertDottedCircles(b: *Buffer, face: *const Face, broken_type: u4, category: u8, repha: ?u8, position: u8) Allocator.Error!bool {
     const has_broken = for (b.infos.items) |g| {
         if (syllableType(g) == broken_type) break true;
     } else false;
@@ -62,6 +63,7 @@ pub fn insertDottedCircles(b: *Buffer, face: *const Face, broken_type: u4, categ
             .syllable = cur.syllable,
             .gc = .So,
             .shaper = category,
+            .shaper_aux = position,
         });
         inserted = true;
         i += 1;
