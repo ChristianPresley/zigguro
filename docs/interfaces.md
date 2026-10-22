@@ -2506,3 +2506,44 @@ host after `created`.
 Unstable until E10/E12 integrate it. Rebasing is `transform(cs, since, user
 wins ties)`; insertions next to an agent's replaced text do not conflict.
 `str_replace` retries once with the document's line endings.
+
+## zg_vulkan.r2d.layers (scroll layers and the layer budget)
+
+### Defined in
+`packages/vulkan/src/r2d/layers.zig`, `r2d/DrawList.zig` (E02.F06.S03.T01).
+
+### Implemented by
+E02.F06.S03.T01 (software and Vulkan backends).
+
+### Consumed by
+E04 (scroll containers, panel animations, cached views), E15 (`render.layer_budget_mb`).
+
+### Signature
+```zig
+pub const LayerKind = enum(u8) { plain, scroll };
+pub const default_budget_bytes: u64 = 64 << 20;
+pub const Piece = struct { rect: PxRect, offset: [2]i32, pub fn content(Piece) PxRect };
+pub fn wrapRects(r: PxRect, origin: [2]i32, tex_size: Size, out: *[4]Piece) u8;   // pure
+pub fn scrolledOrigin(origin: [2]i32, delta: [2]i32, size: Size) [2]i32;
+pub fn scrollDamage(delta: [2]i32, size: Size, out: *[2]PxRect) u8;              // exposed strips
+pub fn layerBytes(size: Size) u64;
+pub fn LayerTable(comptime Res: type) type;   // find, put, remove, markUsed, bytes, evictOne(budget, frame)
+// DrawList
+pub fn beginScrollLayer(dl, id: LayerId, size: Size, origin: [2]i32, content_damage: []const PxRect) bool;
+pub fn layerCached(dl, id: LayerId, size: Size) bool;
+// LayerUse gains kind: LayerKind, origin: [2]i32; Prim.Flags gains wrap (bit 4).
+// RendererOptions gains layer_budget_bytes: u64 = default_budget_bytes.
+```
+
+### Threading
+DrawList calls on the UI thread; the table belongs to the render thread.
+
+### Ownership/lifetime
+The renderer owns layer textures. Evicted or resized textures are destroyed
+once no frame in flight uses them. A layer used in the current frame is never
+evicted, so memory stays within the budget plus that frame's layers.
+
+### Stability
+Stable. `drawLayer` for a scroll layer must follow its `beginScrollLayer` in the
+same frame, which sets the wrap origin. The composite prim's `uv` holds
+scroll + origin. Window damage for a changed layer is still the caller's job.
