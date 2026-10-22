@@ -58,5 +58,6 @@ test {
     _ = @import("widgets/menu_test.zig");
     _ = @import("widgets/chrome_test.zig");
     _ = @import("dock/model_test.zig");
+    _ = @import("dock/view_test.zig");
     _ = @import("widgets/quick_pick_test.zig");
 }

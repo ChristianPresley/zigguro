@@ -1,4 +1,4 @@
-//! Docking (E04.F07): the layout model and its geometry.
+//! Docking (E04.F07): the layout model, its geometry and its views.
 
 const std = @import("std");
 
@@ -6,9 +6,23 @@ const std = @import("std");
 pub const model = @import("model.zig");
 /// The `geometry.zig` module.
 pub const geometry = @import("geometry.zig");
+/// The `splitter.zig` module.
+pub const splitter = @import("splitter.zig");
+/// The `tab_strip.zig` module.
+pub const tab_strip = @import("tab_strip.zig");
+/// The `drop_zones.zig` module.
+pub const drop_zones = @import("drop_zones.zig");
+/// The `view.zig` module.
+pub const view = @import("view.zig");
 
 /// See `model.DockModel`.
 pub const DockModel = model.DockModel;
+/// See `view.DockView`.
+pub const DockView = view.DockView;
+/// See `view.PanelHost`.
+pub const PanelHost = view.PanelHost;
+/// See `tab_strip.tabStrip`.
+pub const tabStrip = tab_strip.tabStrip;
 
 test {
     std.testing.refAllDecls(@This());
