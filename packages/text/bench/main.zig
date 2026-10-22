@@ -26,7 +26,7 @@ pub const pending = [_][]const u8{
     "text.raster_lcd_14px", "text.registry_get",
     "text.sdf_48px",        "text.shape_code_line_200",
     "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.var_advance",     "text.wrap_10kb",
+    "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -114,6 +114,23 @@ fn register(b: *bench.Bench) !void {
     var ascii_gids: [94]u16 = undefined;
     for (&ascii_gids, 0..) |*g, i| g.* = jb.glyphIndex(@intCast(0x21 + i));
     try b.run("text.glyf_outline", OutlineCtx{ .face = &jb, .gids = &ascii_gids, .gpa = b.gpa }, glyfOutline);
+
+    // HVAR advance at wght=700 with cached region scalars.
+    const vt = zg_text.ot.variation;
+    var bold = try vt.FaceInstance.init(b.gpa, &jb, &.{.{ .tag = zg_text.ot.tag("wght"), .value = 700 }});
+    defer bold.deinit(b.gpa);
+    try b.run("text.var_advance", AdvanceCtx{ .inst = &bold, .gids = &ascii_gids }, varAdvance);
+}
+
+const AdvanceCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16 };
+
+fn varAdvance(ctx: AdvanceCtx, s: *State) void {
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
+        bench.doNotOptimizeAway(ctx.inst.advance(ctx.gids[k]));
+        k += 1;
+        if (k == ctx.gids.len) k = 0;
+    }
 }
 
 const OutlineCtx = struct { face: *const zg_text.ot.Face, gids: []const u16, gpa: std.mem.Allocator };
