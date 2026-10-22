@@ -522,3 +522,121 @@ test "view: a Vim mode gets keys first" {
     f.t.typeText("x");
     try f.expectText("xello ");
 }
+
+/// Records the blocks a `BlockPainter` was asked to paint.
+const BlockLog = struct {
+    seen: [8]view_mod.BlockInfo = undefined,
+    rects: [8]zg_gui.core.Rect = undefined,
+    n: usize = 0,
+
+    fn paint(ctx: ?*anyopaque, _: *zg_gui.paint.PaintCx, rect: zg_gui.core.Rect, b: view_mod.BlockInfo) void {
+        const l: *BlockLog = @ptrCast(@alignCast(ctx.?));
+        if (l.n == l.seen.len) return;
+        l.seen[l.n] = b;
+        l.rects[l.n] = rect;
+        l.n += 1;
+    }
+};
+
+test "view: block decorations take rows, follow edits and give their slot" {
+    var f: Fx = undefined;
+    try f.init("one\ntwo\nthree\nfour\n");
+    defer f.deinit();
+    var store = deco_store.DecorationStore.init(gpa, f.doc);
+    defer store.deinit();
+    const sub = try f.doc.subscribe(store.listener());
+    defer f.doc.unsubscribe(sub);
+    const bar = try store.registerOwner("inline-edit", 0);
+    // A two-row bar above "three" (offset 8).
+    try store.setOwnerDecorations(bar, f.doc.version, &.{.{ .range = .{ .start = 8, .end = 8 }, .owner = bar, .stick = .point_left, .kind = .{ .block_above = .{ .rows = 2, .payload = 7 } } }});
+    var log: BlockLog = .{};
+    f.view.decorations = &store;
+    f.view.block_painter = .{ .ctx = &log, .paint = BlockLog.paint };
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    const lh = f.view.lineHeight();
+    try testing.expectEqual(@as(f32, 1) * lh, f.view.lineTop(1));
+    try testing.expectEqual(@as(f32, 4) * lh, f.view.lineTop(2));
+    try testing.expectEqual(@as(f32, 2) * lh, f.view.blocksTop(2));
+    try testing.expectEqual(@as(f32, 5) * lh, f.view.posOf(14).y);
+    // The slot sits between "two" and "three", across the text area.
+    const slot = f.view.blockRect(bar, 7).?;
+    try testing.expectEqual(2 * lh, slot.y);
+    try testing.expectEqual(2 * lh, slot.h);
+    try testing.expectEqual(f.view.gutter_w, slot.x);
+    try testing.expect(f.view.blockRect(bar, 8) == null);
+    // The painter was asked for it.
+    try testing.expectEqual(@as(usize, 1), log.n);
+    try testing.expectEqual(@as(u64, 7), log.seen[0].payload);
+    try testing.expect(log.seen[0].above);
+    // Clicks below the bar land on "three"; in it, on the line before.
+    try f.clickAt(4, 1, 1, no_mods);
+    try testing.expectEqual(@as(u64, 9), f.head());
+    try testing.expectEqual(@as(u64, 1), f.view.lineAtY(2.5 * lh));
+    // Typing above moves the bar with its line.
+    f.view.setSelection(.caret(0));
+    f.t.typeText("zero\n");
+    try testing.expectEqual(@as(f32, 3) * lh, f.view.blockRect(bar, 7).?.y);
+    // Resizing keeps the slot: same owner and payload.
+    try store.setOwnerDecorations(bar, f.doc.version, &.{.{ .range = .{ .start = 13, .end = 13 }, .owner = bar, .stick = .point_left, .kind = .{ .block_above = .{ .rows = 4, .payload = 7 } } }});
+    try testing.expectEqual(4 * lh, f.view.blockRect(bar, 7).?.h);
+    try testing.expectEqual(@as(f32, 7) * lh, f.view.lineTop(3));
+}
+
+test "view: revealRange keeps a bar above the selection in view" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    for (0..100) |i| try buf.print(gpa, "line {d}\n", .{i});
+    var f: Fx = undefined;
+    try f.init(buf.items);
+    defer f.deinit();
+    var store = deco_store.DecorationStore.init(gpa, f.doc);
+    defer store.deinit();
+    const bar = try store.registerOwner("inline-edit", 0);
+    f.view.decorations = &store;
+    f.view.scrollToLine(40);
+    const at = f.view.lineRange(40).start;
+    try store.setOwnerDecorations(bar, f.doc.version, &.{.{ .range = .{ .start = at, .end = at }, .owner = bar, .stick = .point_left, .kind = .{ .block_above = .{ .rows = 2, .payload = 1 } } }});
+    // The bar pushed line 40 down; the view still starts at the old y,
+    // which is now inside the bar's lines.
+    f.view.revealRange(f.view.lineRange(40));
+    try testing.expectEqual(f.view.blocksTop(40), f.view.scroll.y);
+    try testing.expect(f.view.blockRect(bar, 1).?.y >= 0);
+}
+
+test "view: inline texts shift the text after them" {
+    var f: Fx = undefined;
+    try f.init("abc def\n");
+    defer f.deinit();
+    var store = deco_store.DecorationStore.init(gpa, f.doc);
+    defer store.deinit();
+    const ghost = try store.registerOwner("ghost", 0);
+    _ = try store.add(.{ .range = .{ .start = 3, .end = 3 }, .owner = ghost, .stick = .point_left, .kind = .{ .inline_after = .{ .text = "XY", .style = @enumFromInt(0) } } });
+    f.view.decorations = &store;
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    const cw = f.t.mono.system().advance(f.view.textStyle(), ' ');
+    // The caret at 3 stays before the inlay; 4 is after it.
+    try testing.expectEqual(3 * cw, f.view.posOf(3).x);
+    try testing.expectEqual(6 * cw, f.view.posOf(4).x);
+    // A click on the inlay's right half lands after it, on the text.
+    try testing.expectEqual(@as(u64, 4), f.view.offsetAt(.{ .x = 5.6 * cw, .y = 1 }));
+    try testing.expectEqual(@as(u64, 3), f.view.offsetAt(.{ .x = 3.2 * cw, .y = 1 }));
+    // Drawn in the faded text colour (no style resolver).
+    const c = f.t.app.theme.color(.fg).fade(0.55);
+    var buf: [16]u8 = undefined;
+    const hex = try std.fmt.bufPrint(&buf, "#{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ c.r, c.g, c.b, c.a });
+    try testing.expect(std.mem.indexOf(u8, f.t.paintSnapshot(), hex) != null);
+}
+
+test "view: focusEditor takes focus back from another widget" {
+    var f: Fx = undefined;
+    try f.init("abc\n");
+    defer f.deinit();
+    const ed = f.view.ui_node;
+    try testing.expect(!ed.isNone());
+    f.t.win.setFocus(.none, false);
+    try testing.expect(!f.t.win.focus.eql(ed));
+    f.view.focusEditor();
+    try testing.expect(f.t.win.focus.eql(ed));
+}
