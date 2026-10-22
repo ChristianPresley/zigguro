@@ -121,7 +121,7 @@ pub const InitOptions = struct {
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input, decoration };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input, decoration, activation_token };
 
 /// Keymaps larger than this are refused.
 const max_keymap_bytes = 16 * 1024 * 1024;
@@ -131,6 +131,10 @@ const compose_env_keys = [_][]const u8{ "XCOMPOSEFILE", "HOME", "LC_ALL", "LC_CT
 
 /// A wp_presentation_feedback waiting for its result.
 const PresPending = struct { obj: u32, win: WindowId };
+
+/// An xdg_activation_token_v1 waiting for its token, and the window to
+/// activate with it.
+const TokenPending = struct { obj: u32, win: WindowId };
 
 /// A window and its presenter, allocated together so pointers stay put.
 const Slot = struct {
@@ -144,6 +148,8 @@ const Slot = struct {
     hit: ?Hit = null,
     /// A resize cursor shown over the CSD margins, over `cursor`.
     auto_cursor: ?CursorShape = null,
+    /// The window's app id, for activation tokens (owned).
+    app_id: ?[:0]u8 = null,
 
     const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
 };
@@ -263,6 +269,9 @@ pub const WaylandBackend = struct {
     /// the button whose release is swallowed after a press started a
     /// move, resize or menu. Guarded by the mutex.
     deco_manager: ?wl.zxdg_decoration_manager_v1.Id = null,
+    /// xdg-activation (E01.F01.S03.T01), and tokens being requested.
+    activation: ?wl.xdg_activation_v1.Id = null,
+    tokens: std.ArrayList(TokenPending) = .empty,
     csd_clicks: csd.Clicks = .{},
     csd_swallow: ?u32 = null,
     text_input: ?wl.zwp_text_input_v3.Id = null,
@@ -350,6 +359,7 @@ pub const WaylandBackend = struct {
         if (b.cursor_manager == null) b.cursor_theme = try cursor_mod.Theme.fromEnv(gpa, opts.environ_map);
         b.ti_manager = try registry.bind(wl.zwp_text_input_manager_v3, 1, 1, null);
         b.deco_manager = try registry.bind(wl.zxdg_decoration_manager_v1, 1, 1, null);
+        b.activation = try registry.bind(wl.xdg_activation_v1, 1, 1, null);
         if (b.seat_id) |sid| {
             if (b.ti_manager) |m| {
                 const ti = try conn.newIdVersion(wl.zwp_text_input_v3, 1, b.handler(.text_input));
@@ -446,9 +456,8 @@ pub const WaylandBackend = struct {
         const w = &slot.win;
 
         try b.sendTitle(tl, opts.title);
-        const app_id = try b.gpa.dupeZ(u8, opts.app_id);
-        defer b.gpa.free(app_id);
-        try wl.xdg_toplevel.setAppId(c, tl, app_id);
+        slot.app_id = try b.gpa.dupeZ(u8, opts.app_id);
+        try wl.xdg_toplevel.setAppId(c, tl, slot.app_id.?);
         if (opts.min_size) |m| {
             w.min_logical = m;
             try wl.xdg_toplevel.setMinSize(c, tl, @intCast(m.w), @intCast(m.h));
@@ -508,6 +517,8 @@ pub const WaylandBackend = struct {
         b.seat.forget(w.id);
         if (b.ime.focus == w.id) b.ime.focus = null;
         s.ime.deinit(b.gpa);
+        if (s.app_id) |a| b.gpa.free(a);
+        s.app_id = null;
         if (w.frame_cb) |cb| c.setHandler(@intFromEnum(cb), null);
         var i: usize = 0;
         while (i < b.pres_pending.items.len) {
@@ -692,6 +703,7 @@ pub const WaylandBackend = struct {
         if (b.compose_env) |*e| e.deinit();
         b.compose_env = null;
         b.offers.deinit(gpa);
+        b.tokens.deinit(gpa);
         b.ime.deinit(gpa);
         b.finished.deinit(gpa);
         for (b.cursor_cache.items) |e| gpa.free(e.frames);
@@ -856,8 +868,40 @@ pub const WaylandBackend = struct {
             .clipboard_read => |t| try b.readSelection(t.which, t.mime, t.request),
             .start_drag => |t| try b.startDrag(t.win, t.items, t.allowed),
             .set_drop_effect => |t| try b.setDropEffect(t.win, t.accept, t.effect),
-            .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .activate => |t| {
+                const w = try b.lookup(t.win);
+                const act = b.activation orelse return error.Unsupported;
+                if (t.token) |tok| {
+                    const z = try b.gpa.dupeZ(u8, tok);
+                    defer b.gpa.free(z);
+                    try wl.xdg_activation_v1.activate(c, act, z, w.surface);
+                } else if (!w.state.activated) try b.requestToken(t.win, true);
+            },
+            .request_attention => |win| {
+                _ = try b.lookup(win);
+                if (b.activation == null) return error.Unsupported;
+                // A token without an input serial: compositors mark the
+                // window urgent instead of focusing it.
+                try b.requestToken(win, false);
+            },
+            .open_dialog, .open_uri => return error.Unsupported,
         }
+    }
+
+    /// Asks for an activation token for `win` (with the newest input
+    /// serial when `with_serial`); `done` activates it. Mutex held.
+    fn requestToken(b: *WaylandBackend, win: WindowId, with_serial: bool) !void {
+        const c = b.conn;
+        const slot = b.find(win) orelse return error.InvalidWindow;
+        try b.tokens.ensureUnusedCapacity(b.gpa, 1);
+        const tok = try c.newIdVersion(wl.xdg_activation_token_v1, 1, b.handler(.activation_token));
+        try wl.xdg_activation_v1.getActivationToken(c, b.activation.?, tok);
+        if (with_serial and b.seat.last_serial != 0) if (b.seat_id) |sid| try wl.xdg_activation_token_v1.setSerial(c, tok, b.seat.last_serial, sid);
+        // The focused surface vouches for the request.
+        if (b.seat.kb_focus) |f| if (b.find(f)) |fs| try wl.xdg_activation_token_v1.setSurface(c, tok, fs.win.surface);
+        try wl.xdg_activation_token_v1.setAppId(c, tok, slot.app_id orelse "");
+        try wl.xdg_activation_token_v1.commit(c, tok);
+        b.tokens.appendAssumeCapacity(.{ .obj = @intFromEnum(tok), .win = win });
     }
 
     fn lookup(b: *WaylandBackend, id: WindowId) error{InvalidWindow}!*Window {
@@ -1290,6 +1334,21 @@ pub const WaylandBackend = struct {
                     .cancelled => b.dropSource(.clipboard, obj),
                     .target, .dnd_drop_performed, .dnd_finished, .action => {},
                 }
+            },
+            .activation_token => {
+                const ev = try wl.xdg_activation_token_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const tok: wl.xdg_activation_token_v1.Id = @enumFromInt(obj);
+                for (b.tokens.items, 0..) |p, i| if (p.obj == obj) {
+                    _ = b.tokens.swapRemove(i);
+                    switch (ev) {
+                        .done => |d| if (b.find(p.win)) |s| try wl.xdg_activation_v1.activate(c, b.activation.?, d.token, s.win.surface),
+                    }
+                    break;
+                };
+                try wl.xdg_activation_token_v1.destroy(c, tok);
+                try c.flush();
             },
             .decoration => {
                 const ev = try wl.zxdg_toplevel_decoration_v1.decodeEvent(opcode, body, fds);
@@ -2179,6 +2238,8 @@ const Peer = struct {
     /// The newest request's `mime_type` and `serial` arguments.
     last_mime: [64]u8 = undefined,
     last_mime_len: usize = 0,
+    last_token: [64]u8 = undefined,
+    last_token_len: usize = 0,
     last_serial: ?u32 = null,
     /// The newest `accept` mime (null = refused) and `set_actions`.
     last_accept: ?[64]u8 = null,
@@ -2278,6 +2339,10 @@ const Peer = struct {
             if (comptime std.mem.eql(u8, f.name, "mime_type") and f.type == [:0]const u8) {
                 p.last_mime_len = @min(v.len, p.last_mime.len);
                 @memcpy(p.last_mime[0..p.last_mime_len], v[0..p.last_mime_len]);
+            }
+            if (comptime std.mem.eql(u8, f.name, "token") and f.type == [:0]const u8) {
+                p.last_token_len = @min(v.len, p.last_token.len);
+                @memcpy(p.last_token[0..p.last_token_len], v[0..p.last_token_len]);
             }
             if (comptime std.mem.eql(u8, f.name, "serial")) p.last_serial = v;
             if (comptime std.mem.eql(u8, f.name, "mime_type") and f.type == ?[:0]const u8) {
@@ -3010,6 +3075,30 @@ test "cursor: set_shape uses the last enter serial; hidden clears the cursor" {
     try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
     _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+}
+
+test "xdg-activation: activate with and without a token; request_attention" {
+    const globals = seat_globals ++ [_]fake.Global{.{ .name = 12, .interface = "xdg_activation_v1", .version = 1 }};
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const s = std.time.ns_per_s;
+    // A token from another client is used as is.
+    try p.submit(.{ .activate = .{ .win = win, .token = "abc" } });
+    _ = try rig.peer.waitFor(wl.xdg_activation_v1, .activate, s);
+    try testing.expectEqualStrings("abc", rig.peer.last_token[0..rig.peer.last_token_len]);
+    // Without one, the backend asks for a token and activates with it.
+    inline for (.{ Command{ .activate = .{ .win = win, .token = null } }, Command{ .request_attention = win } }, .{ "tok1", "tok2" }) |cmd, name| {
+        try p.submit(cmd);
+        _ = try rig.peer.waitFor(wl.xdg_activation_token_v1, .commit, s);
+        try wl.xdg_activation_token_v1.server.done(fc, rig.peer.id(wl.xdg_activation_token_v1), name);
+        _ = try rig.peer.waitFor(wl.xdg_activation_v1, .activate, s);
+        try testing.expectEqualStrings(name, rig.peer.last_token[0..rig.peer.last_token_len]);
+        _ = try rig.peer.waitFor(wl.xdg_activation_token_v1, .destroy, s);
+    }
 }
 
 test "cursor: the Xcursor fallback attaches a buffer with the hotspot at scale 2" {

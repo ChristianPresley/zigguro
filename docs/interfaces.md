@@ -1000,7 +1000,15 @@ while the pointer is over a window showing them, waiting each frame's
 delay (at least 10 ms); `leave` or another cursor stops them. Manual
 checklist: `docs/manual-tests/wayland-cursors.md`.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
-Activation, dialogs and URIs return `error.Unsupported`.
+Activation uses xdg-activation-v1. `activate` with a token (from another
+client, such as a launcher) passes it to `xdg_activation_v1.activate`.
+Without one, and for `request_attention`, the backend asks for a token
+carrying the newest input serial (for `activate` only), the focused surface
+and the window's app id, and activates with it when `done` arrives. The
+compositor decides: a token it does not trust usually marks the window
+urgent instead of raising it, which is what `request_attention` wants.
+Without the global both return `error.Unsupported`. Dialogs and URIs
+return `error.Unsupported`.
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
