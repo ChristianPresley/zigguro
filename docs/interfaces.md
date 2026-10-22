@@ -2731,7 +2731,7 @@ Internal to E02 behind `r2d.Renderer`.
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
 structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
 E05.F04.S02.T03 (JSON/JSONC, TOML and shell),
-E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS),
+E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS), E05.F04.S02.T05 (HTML and Markdown with injection),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2746,7 +2746,10 @@ pub const HighlightId = enum(u16) { none, comment, comment_doc, string, ..., inv
 pub fn resolve(comptime T: type, table: []const ?T, id: HighlightId) ?T;
 pub const Token = packed struct(u64) { start: u32, kind: u16, hl: HighlightId };
 pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: u16, aux: [32]u8, aux_len: u8,
-    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool };
+    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool,
+    // Pushes `LanguageId.unresolved` with `name` in `aux`; after the host's lexLine the framework looks the
+    // name up with `Registry.byName` and starts that guest, or pops back so the host lexes raw lines.
+    pub fn pushByName(s, name: []const u8) bool };
 pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
 pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
     lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
@@ -2816,7 +2819,8 @@ pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Struc
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
 pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language,
     json_language, jsonc_language, toml_language, shell_language,
-    javascript_language, typescript_language, jsx_language, tsx_language, css_language: Language;
+    javascript_language, typescript_language, jsx_language, tsx_language, css_language,
+    html_language, markdown_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
@@ -2849,6 +2853,13 @@ pub const js.Dialect = packed struct { typescript: bool = false, jsx: bool = fal
 pub fn js.lexLineWith(comptime d: Dialect, st, s, out) void;
 // langs/css.zig: `depth` = brace depth (selectors at 0, declarations inside; a line whose `{` comes before `;`/`}`
 // is a nested selector); `mode` = block comment | value continues | at-rule prelude.
+// langs/html.zig: `mode` = html.State (data, tag, comment, rcdata, raw script, CDATA, quoted attribute, script,
+// style, declaration) | open element << 4 (script, style, textarea, title) | non-JS type | end tag | type attribute.
+// `<script>` pushes javascript and `<style>` css; injection_end finds `</script` / `</style` (case-insensitive).
+// langs/markdown.zig: `mode` = block (normal, fence, front matter, HTML block) | paragraph | started, and for a
+// fence its character and length << 6. Fences push the info string's first word by name (unknown names stay raw),
+// front matter on line 1 pushes yaml, HTML blocks push html until a blank line.
+pub fn markdown.infoName(info: []const u8) []const u8;
 ```
 
 ### Threading
