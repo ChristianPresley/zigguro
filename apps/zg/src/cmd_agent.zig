@@ -259,7 +259,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .environ = &env,
         .compat = true,
         .workspace_trusted = true,
-        .spill_dir = try std.fs.path.join(arena, &.{ stateDir(min, &env, &state_buf_hooks) orelse cwd, "tool-output" }),
+        .spill_dir = try std.fs.path.join(arena, &.{ stateDir(io, min, &env, &state_buf_hooks) orelse cwd, "tool-output" }),
         .permission_mode = switch (opts.permission_mode) {
             .default => "default",
             .accept_edits => "acceptEdits",
@@ -275,7 +275,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
 
     // Sessions live under the state directory.
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const state = stateDir(min, &env, &state_buf);
+    const state = stateDir(io, min, &env, &state_buf);
     var store: ?zg_ai.session.store.SessionStore = null;
     defer if (store) |*s| s.deinit();
     // The index keeps the directory handle.
@@ -370,8 +370,8 @@ fn bareRules(arena: std.mem.Allocator, rules: []const []const u8) ![]const []con
     return out.items;
 }
 
-fn stateDir(min: std.process.Init.Minimal, env: *const std.process.Environ.Map, buf: []u8) ?[]const u8 {
-    if (zg_crash.paths.stateDir(min.environ, buf)) |d| return d;
+fn stateDir(io: std.Io, min: std.process.Init.Minimal, env: *const std.process.Environ.Map, buf: []u8) ?[]const u8 {
+    if (zg_crash.paths.stateDirAt(io, min.environ, buf)) |d| return d;
     if (builtin.os.tag == .windows) if (env.get("LOCALAPPDATA")) |base| {
         return std.fmt.bufPrint(buf, "{s}\\zigguro", .{base}) catch null;
     };

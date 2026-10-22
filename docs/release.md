@@ -89,6 +89,12 @@ zigguro-setup.exe --apply --root <root> --wait-pid <pid> [--rollback] [--crash-r
 
 The helper waits up to 30 s for that process (exit 2 when it does not end, or when another zigguro window still runs), then swaps `staged\` in as `app\` with the journaled swap, or rolls back (`app` → `app.failed`, `app.prev` → `app`, the version goes on the skip list). A swap that fails part way is repaired and the staged update discarded. When `app\` changed, `receipt.zon` and the Apps & features DisplayVersion follow. It then relaunches `app\zigguro.exe` with the `--relaunch` arguments (one command-line string, C runtime quoting) plus `--updated-from <old>`, `--rolled-back-from <old>`, or `--update-skipped` when nothing changed, so the app never hands over twice in a row. The helper logs to `<state>\update\apply.log`.
 
+### Portable mode
+
+A zigguro binary next to a folder named `zigguro-data` is portable: config, data, state, cache and crash reports live in `zigguro-data\{config,data,state,cache}` (the `ZIGGURO_*_DIR` overrides still win), `zigguro-data\tmp` becomes TMP/TEMP (TMPDIR off Windows) when it exists, nothing is registered, and updates are only announced, never downloaded or applied. Distro builds (`-Ddistro`) and plain extracted archives never apply updates either. `zigguro --self-check` prints the install kind, the update mode and every resolved path, then exits.
+
+To turn an installed copy into a portable one, extract the release zip, create `zigguro-data` next to `zigguro.exe` and copy `%APPDATA%\zigguro` into `zigguro-data\config` and `%LOCALAPPDATA%\zigguro\{data,state}` into `zigguro-data\{data,state}`.
+
 Then:
 
 - `zg-release sums --dir zig-out/release` writes `SHA256SUMS` (`sha256sum -c` compatible).
