@@ -105,6 +105,7 @@ fn register(b: *bench.Bench) !void {
 
     try runPattern(b, "regex.memchr_1byte", "@", hay);
     try runPattern(b, "regex.memmem", "Sherlock", hay);
+    try runPattern(b, "regex.memmem_icase", "(?i)sherlock", hay);
     try runPattern(b, "regex.literal_alt_3", "Holmes|Watson|Moriarty", hay);
     try runPattern(b, "regex.literal_alt_20", "zebra|quokka|axolotl|narwhal|okapi|pangolin|tapir|wombat|dugong|gharial|kakapo|saiga|tarsier|vaquita|binturong|fossa|jerboa|kinkajou|numbat|quoll", hay);
     try runPattern(b, "regex.dfa_word_suffix", "[a-z]+ing\\b", hay);

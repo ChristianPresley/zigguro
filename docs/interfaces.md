@@ -1327,6 +1327,98 @@ Line semantics match `zg_core.LineIndex`.
 ### Stability
 Unstable until E05.F05 views and E12 land.
 
+## zg_editor.model.edit.undo (UndoTree)
+
+### Defined in
+`packages/editor/src/model/edit/undo.zig`, `packages/editor/src/model/edit/selection.zig`
+(E05.F02.S02).
+
+### Implemented by
+E05.F02.S02.T01.
+
+### Consumed by
+E05.F08 (AgentEditSession), E05.F09 (Vim `u`/`g-`/`:earlier`), E04/E12 (undo-history
+panel, "undo agent change"), E12 checkpoints.
+
+### Signature
+```zig
+pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0 };
+pub const CoalesceKey = enum { typing_word, typing_space, delete_left, delete_right };
+pub const GroupMeta = struct { label: []const u8 = "", origin: EditOrigin, timestamp: std.Io.Timestamp, coalesce_key: ?CoalesceKey = null };
+pub const NodeId = enum(u32) { root = 0, none = maxInt(u32), _ };
+pub const Limits = struct { max_nodes: u32 = 10_000, max_bytes: usize = 64 << 20, group_ms: u32 = 1000 };
+pub const Step = struct { changes: *const ChangeSet, selections: []const Selection };
+pub const UndoTree = struct {
+    pub fn init(gpa, limits: Limits) UndoTree; pub fn deinit(u) void;
+    pub fn record(u, forward: ChangeSet, inverse: ChangeSet, sel_before, sel_after, meta: GroupMeta) !void; // takes both ChangeSets
+    pub fn breakGroup(u) void;
+    pub fn undo(u) ?Step; pub fn redo(u) ?Step; pub fn canUndo(u) bool; pub fn canRedo(u) bool;
+    pub fn older(u) !?[]const Step; pub fn newer(u) !?[]const Step;   // g- / g+
+    pub fn travel(u, target: NodeId) ![]const Step;                    // via the LCA
+    pub fn nodeAtTime(u, t: std.Io.Timestamp) NodeId;
+    pub fn changesTo(u, target: NodeId, base_len: u64, gpa) !PathChange; // revert-to-time as one new step
+    pub fn markSaved(u, id: NodeId) void; pub fn isAtSaved(u) bool;
+    pub fn selectiveUndo(u, id: NodeId, current: Snapshot) !union(enum) { ok: ChangeSet, conflict: ConflictInfo };
+    pub fn nodes(u) []const Node; pub fn selectionsAt(u, id) []const Selection;
+};
+```
+
+### Threading
+Owner (UI) thread only, like the Document it belongs to.
+
+### Ownership/lifetime
+`record` takes ownership of both ChangeSets. Steps borrow from the tree and
+are valid until the next `record`. Pruning compacts the tree, so NodeIds are
+invalidated by a `record` that prunes.
+
+### Stability
+Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+
+## zg_editor.model.diff
+
+### Defined in
+`packages/editor/src/model/diff.zig` and `packages/editor/src/model/diff/*.zig` (E05.F07).
+
+### Implemented by
+E05.F07.S01.T01, E05.F07.S01.T02.
+
+### Consumed by
+E05.F07.S02 (DiffModel, diff views), E09 (SCM diffs), E12 (review), the `zg` CLI.
+
+### Signature
+```zig
+pub const Edit = struct { kind: enum { equal, insert, delete }, a_start: u32, b_start: u32, len: u32 };
+pub const Algorithm = enum { myers, minimal, patience, histogram };
+pub const WsMode = enum { none, trailing, all, amount };
+pub const Deadline = struct { io: std.Io, at: std.Io.Timestamp, pub fn after(io, ns: u64) Deadline };
+pub const DiffOptions = struct { algorithm: Algorithm = .histogram, ignore_ws: WsMode = .none, context_lines: u32 = 3,
+    indent_heuristic: bool = true, intraline: enum { none, word, char } = .word, detect_moves: bool = false,
+    timeout_ns: u64 = 200 ms, io: ?std.Io = null };
+pub const LineSource = struct { pub fn fromBytes(gpa, text) !LineSource; pub fn fromTree(gpa, t: PieceTree) !LineSource;
+    pub fn line(s, i) []const u8; pub fn count(s) usize; pub fn deinit(s, gpa) void };
+pub const LineHunk = struct { old: LineSpan, new: LineSpan, intraline: []const DiffRange = &.{}, moved_from: ?u32 = null };
+pub const DiffRange = struct { side: enum { old, new }, range: Range, kind: enum { changed, moved } };
+pub const DiffResult = struct { edits: []Edit, hunks: []LineHunk, ranges: []DiffRange, moves: []Move, pub fn deinit(r, gpa) void };
+pub fn diffLines(gpa, a: *const LineSource, b: *const LineSource, o: DiffOptions) !DiffResult;
+pub fn diffTokens(gpa, a: []const u32, b: []const u32, alg: Algorithm, deadline: ?Deadline) ![]Edit;
+pub fn unified.writeUnified(w: *std.Io.Writer, edits, hunks, a, b, names: [2][]const u8) !void;
+pub fn intraline.intralineEdits(gpa, edits, a, b, mode: enum { word, char }) ![]DiffRange;
+pub fn postprocess.slideHunks(edits: []Edit, ids_a, ids_b, a, b) usize;      // returns the new length
+pub fn moves.detectMoves(gpa, edits, a, b, o: struct { min_lines = 3, min_chars = 60 }) ![]Move;
+```
+
+### Threading
+Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`).
+
+### Ownership/lifetime
+Results are owned by the caller (`DiffResult.deinit`). `LineSource.fromBytes`
+borrows the text; `fromTree` copies it.
+
+### Stability
+Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
+`git diff` hunk headers; histogram ties prefer the run nearest the middle of
+the region (JGit takes the first).
+
 ## zg_vulkan.r2d (DrawList, Renderer, Prim)
 
 ### Defined in
@@ -1386,6 +1478,132 @@ until `destroyTexture`. Slices passed to `setGlyphPages` must outlive the frame.
 
 ### Stability
 Stable for E04/E03 consumers; additive changes only.
+
+## zg_gui.paint.Canvas
+
+### Defined in
+`packages/gui/src/paint/canvas.zig` (E04.F04; decision in ADR 0009).
+
+### Implemented by
+`zg_gui.paint.Recorder` (headless, used by `TestApp` snapshots) and
+`zg_gui.paint.DrawListCanvas` (`packages/gui/src/paint/draw_list.zig`),
+which forwards to E02's `r2d.DrawList`. Glyph runs pass through without
+copying (`GlyphQuad` layouts are asserted equal at compile time); damage
+is rounded outwards to physical pixels.
+
+### Consumed by
+`zg_gui.Window` paint and present. Widgets never call it directly; they
+draw through `PaintCx`, which records ops into a per-node cache that the
+window replays into the canvas.
+
+### Signature
+```zig
+pub const GlyphQuad = zg_text.cache.GlyphQuad;
+pub const TextAa = enum(u2) { grayscale, subpixel_rgb, subpixel_bgr, none };
+pub const TextureId = enum(u32) { none = 0, _ };
+pub const Canvas = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        begin: *const fn (*anyopaque, size: Size, scale: f32) void,
+        rect: *const fn (*anyopaque, r: Rect, fill: Color, radii: Radii) void,
+        border: *const fn (*anyopaque, r: Rect, widths: Insets, color: Color, radii: Radii) void,
+        shadow: *const fn (*anyopaque, r: Rect, radii: Radii, sigma: f32, spread: f32, color: Color) void,
+        linearGradient: *const fn (*anyopaque, r: Rect, p0: Vec2, p1: Vec2, c0: Color, c1: Color, radii: Radii) void,
+        glyphs: *const fn (*anyopaque, run: []const GlyphQuad, color: Color, aa: TextAa) void,
+        image: *const fn (*anyopaque, tex: TextureId, dst: Rect, uv: Rect, tint: Color, radii: Radii) void,
+        pushClip: *const fn (*anyopaque, r: Rect, radii: Radii) void,
+        popClip: *const fn (*anyopaque) void,
+        addDamage: *const fn (*anyopaque, r: Rect) void,
+        end: *const fn (*anyopaque) void,
+    };
+};
+```
+Coordinates are logical pixels; `begin` passes the scale. Method names and
+argument order match `r2d.DrawList` one for one, so the adapter is a
+forwarding table.
+
+### Threading
+UI thread only. A frame is `begin`, draw calls, `addDamage` (zero or more),
+`end`; nothing is retained by the canvas past `end` except what it copied.
+
+### Ownership/lifetime
+Slices passed to `glyphs` are valid only for the call.
+
+### Stability
+Experimental: E02 additions (`imageFiltered`, layers, `damageAll`) are not
+yet exposed through `Canvas`.
+
+## zg_gui.paint.TextSystem
+
+### Defined in
+`packages/gui/src/paint/text.zig` (E04.F05).
+
+### Implemented by
+`zg_gui.paint.MonoText` (deterministic metrics for tests and headless runs).
+E03's shaper and glyph cache implement it once F06–F08 land.
+
+### Consumed by
+zg_gui layout (measuring text leaves) and paint (`PaintCx.textLine`,
+`textBox`).
+
+### Signature
+```zig
+pub const FontId = enum(u16) { ui = 0, mono = 1, _ };
+pub const TextStyle = struct { font: FontId = .ui, size: f32 = 13, weight: u16 = 400, italic: bool = false };
+pub const LineMetrics = struct { ascent: f32, descent: f32, line_h: f32 };
+pub const TextSystem = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        metrics: *const fn (*anyopaque, TextStyle) LineMetrics,
+        advance: *const fn (*anyopaque, TextStyle, cp: u21) f32,
+        glyph: *const fn (*anyopaque, TextStyle, cp: u21, pen: Vec2) ?GlyphQuad, // null: blank glyph
+    };
+};
+```
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+The window borrows the text system for its whole life (`Window.Options.text`).
+
+### Stability
+Experimental: per-codepoint advances are a placeholder; shaped runs replace
+`advance`/`glyph` when E03.F06 merges (additive `shape` entry first).
+
+## zg_gui.input.KeyHandler
+
+### Defined in
+`packages/gui/src/input/keys.zig` (E04.F03).
+
+### Implemented by
+E15's keymap resolver adapter (#1077).
+
+### Consumed by
+`zg_gui.Window.dispatchKey`: keys not consumed by the focused widget's
+bubble path go to `Window.key_handler` before the built-in Tab, Enter,
+Space and Escape handling.
+
+### Signature
+```zig
+pub const KeyHandler = struct {
+    ptr: *anyopaque,
+    handle: *const fn (ptr: *anyopaque, key: event.KeyPress, contexts: []const []const u8) bool, // true: consumed
+};
+```
+`contexts` lists the `BoxDesc.key_context` strings from the focused node up
+to the root, innermost first.
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+`contexts` is valid only for the call.
+
+### Stability
+Experimental until the E15 adapter merges.
 
 ## zg_vulkan.vk and zg_vulkan.loader (Vulkan bindings and loader)
 

@@ -63,6 +63,19 @@ pub const StreamEvent = union(enum) {
     ping,
     warning: []const u8,
     provider_error: ErrorInfo,
+    /// The call failed before any content and will be retried after
+    /// `delay_ms` (sent by `guarded`, never folded into the message).
+    retrying: RetryNotice,
+};
+
+/// A retry scheduled by `guarded`.
+pub const RetryNotice = struct {
+    /// The attempt about to be made (2 for the first retry).
+    attempt: u8,
+    delay_ms: u64,
+    status: ?u16 = null,
+    /// The error name of the failed attempt.
+    err: []const u8,
 };
 
 /// Receives stream events. Must be cheap: copy what you keep.

@@ -12,3 +12,4 @@ Decisions that affect more than one package. Copy `0000-template.md` to the next
 | [0006](0006-jsonrpc-framing.md) | One JSON-RPC library for LSP, DAP and MCP | Accepted | 2026-10-21 |
 | [0007](0007-http-stack.md) | HTTP stack on std.http.Client | Accepted | 2026-10-21 |
 | [0008](0008-toolchain-trust.md) | Toolchain trust: pinned and signature-verified Zig | Accepted | 2026-10-21 |
+| [0009](0009-gui-retained-tree.md) | GUI toolkit: declarative build over a retained, keyed node tree | Accepted | 2026-10-22 |
