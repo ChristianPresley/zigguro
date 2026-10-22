@@ -210,3 +210,90 @@ test "disk round trip" {
     const out = try callTool(&ft, a, "write_file", "{\"path\":\"../escape.txt\",\"content\":\"x\"}");
     try testing.expect(out.is_error);
 }
+
+/// Answers every edit with "1 error: x is unused".
+const FakeDiagnostics = struct {
+    fn diagnostics(d: *FakeDiagnostics) files.Diagnostics {
+        return .{ .ctx = d, .after_edit = afterEdit };
+    }
+
+    fn afterEdit(_: *anyopaque, _: std.Io, _: std.mem.Allocator, abs: []const u8) anyerror!?[]const u8 {
+        return if (std.mem.endsWith(u8, abs, "a.zig")) "1 error: a.zig:1: x is unused" else null;
+    }
+};
+
+test "diagnostics are appended after an applied edit" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var d: FakeDiagnostics = .{};
+    f.ft.diagnostics = d.diagnostics();
+    try f.ff.put("a.zig", "const x = 1;\n", false);
+    try f.ff.put("b.zig", "const y = 1;\n", false);
+    _ = try f.call("read_file", "{\"path\":\"a.zig\"}");
+    _ = try f.call("read_file", "{\"path\":\"b.zig\"}");
+    const a = try f.call("edit_file", "{\"path\":\"a.zig\",\"old_string\":\"1\",\"new_string\":\"2\"}");
+    try testing.expectEqual(@as(usize, 2), a.parts.len);
+    try testing.expectEqualStrings("Diagnostics after edit: 1 error: a.zig:1: x is unused", a.parts[1].text);
+    // Nothing to report: the result is unchanged.
+    const b = try f.call("edit_file", "{\"path\":\"b.zig\",\"old_string\":\"1\",\"new_string\":\"2\"}");
+    try testing.expectEqual(@as(usize, 1), b.parts.len);
+    // Off by setting, and never for pending changes.
+    f.ft.cfg.diagnostics_after_edit = false;
+    try testing.expectEqual(@as(usize, 1), (try f.call("edit_file", "{\"path\":\"a.zig\",\"old_string\":\"2\",\"new_string\":\"3\"}")).parts.len);
+    f.ft.cfg.diagnostics_after_edit = true;
+    f.ff.mode = .pending;
+    try testing.expectEqual(@as(usize, 1), (try f.call("edit_file", "{\"path\":\"a.zig\",\"old_string\":\"3\",\"new_string\":\"4\"}")).parts.len);
+}
+
+test "one changeset per agent turn" {
+    const AgentManager = @import("../../loop/Manager.zig");
+    const deps = @import("../../loop/deps.zig");
+    const reg_mod = @import("../../models/registry.zig");
+    const scripted = @import("../../provider/scripted.zig");
+    const script = scripted.script;
+    const catalog: [:0]const u8 =
+        \\.{ .retrieved = "test", .models = .{ .{ .id = "m", .context_window = 200_000, .max_output = 32_000, .base = .claude } } }
+    ;
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.ff.mode = .batched;
+    try f.ff.put("a.zig", "const a = 1;\n", false);
+    try f.ff.put("b.zig", "const b = 1;\n", false);
+
+    var registry: reg_mod.ModelRegistry = .init(testing.allocator, io, catalog);
+    defer registry.deinit();
+    // Turn 1 reads and edits two files over two tool batches; turn 2
+    // edits one; turn 3 edits nothing.
+    const sp = try scripted.ScriptedProvider.init(testing.allocator, &.{
+        script.tools(&.{ .{ "r1", "read_file", "{\"path\":\"a.zig\"}" }, .{ "r2", "read_file", "{\"path\":\"b.zig\"}" } }),
+        script.tools(&.{.{ "e1", "edit_file", "{\"path\":\"a.zig\",\"old_string\":\"1\",\"new_string\":\"2\"}" }}),
+        script.tools(&.{.{ "e2", "write_file", "{\"path\":\"c.zig\",\"content\":\"new\\n\"}" }}),
+        script.text("Done."),
+        script.tools(&.{.{ "e3", "edit_file", "{\"path\":\"b.zig\",\"old_string\":\"1\",\"new_string\":\"2\"}" }}),
+        script.text("Done."),
+        script.text("Nothing to do."),
+    }, .all);
+    defer sp.destroy();
+    var provider = sp.provider();
+    var tools: deps.StaticTools = .{ .specs = f.ft.specs() };
+    const mgr = try AgentManager.init(testing.allocator, io, .{ .registry = &registry, .providers = .fixed(&provider), .tools = tools.tools(), .turn_end = f.ft.turnEnd() });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+    for ([_][]const u8{ "edit both", "edit b", "nothing" }) |prompt| {
+        _ = try agent.submit(.{ .text = prompt });
+        agent.waitIdle();
+    }
+    // The pending results name the turn's changeset.
+    const results = sp.requests()[2].messages;
+    const last = results[results.len - 1].content[0].tool_result.parts[0].text;
+    try testing.expect(std.mem.startsWith(u8, last, "Proposed edit to a.zig (+1 −1 lines) in this turn's changeset — pending review."));
+    // Every proposal carries its turn; each turn with changes is one changeset.
+    for (f.ff.proposals.items) |p| try testing.expectEqual(@as(u32, if (std.mem.endsWith(u8, p.abs, "b.zig")) 2 else 1), p.origin.turn);
+    try testing.expectEqual(@as(usize, 2), f.ff.committed.items.len);
+    try testing.expectEqual(@as(u32, 1), f.ff.committed.items[0].turn);
+    try testing.expectEqual(@as(u32, 2), f.ff.committed.items[0].changes);
+    try testing.expectEqual(@as(u32, 2), f.ff.committed.items[1].turn);
+    try testing.expectEqual(@as(u32, 1), f.ff.committed.items[1].changes);
+}
