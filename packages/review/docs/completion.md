@@ -106,6 +106,18 @@ the current time. The host arms one timer from `nextDeadline` and calls
 
 Once a document is open, a keystroke allocates nothing.
 
+`CompletionEngine` puts the scheduler, the cache and a provider together.
+Everything runs on the UI thread except the provider call, which runs on
+its own task and sends its text back through `Host.post`. When `tick`
+finds a trigger due, the engine takes a snapshot of the document from the
+host. A snapshot older than the trigger starts nothing. A cache hit is
+delivered at once; otherwise the engine builds the request and starts the
+provider. `Host.deliver` gets the text so far, how many leading bytes the
+user already typed (to hide), and whether it is final. `typed` keeps or
+cancels the request in flight, and `dismiss` drops everything for a
+document. A request that was replaced or cancelled is never delivered.
+The host must stop running posted callbacks once it calls `deinit`.
+
 `Cache` holds up to 512 finished completions in 4 MiB, least recently
 used first out. Its keys are the document, the model, and XxHash3 hashes
 of the last 2 KiB of prefix and the first 256 bytes of suffix. `extend`
