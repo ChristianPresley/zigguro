@@ -92,7 +92,13 @@ pub const Host = struct {
         hw.* = .{ .id = id, .win = undefined, .list = .init(h.gpa), .dlc = undefined, .renderer = undefined };
         errdefer hw.list.deinit();
         hw.dlc = .init(&hw.list);
-        hw.renderer = try h.make_renderer(h.gpa, h.io, .{ .target = try h.platform.surfaceTarget(id), .window = id });
+        hw.renderer = h.make_renderer(h.gpa, h.io, .{ .target = try h.platform.surfaceTarget(id), .window = id }) catch |err| switch (err) {
+            // The software renderer cannot draw to a native target such as
+            // a Win32 HWND (that needs a swapchain): use the platform's CPU
+            // presenter instead.
+            error.Unsupported => try h.make_renderer(h.gpa, h.io, .{ .target = .{ .external = try h.platform.cpuPresenter(id) }, .window = id }),
+            else => return err,
+        };
         errdefer hw.renderer.deinit();
         hw.win = try h.app.openWindow(.{ .size = opts.size, .root = opts.root, .text = h.text_sys, .canvas = hw.dlc.canvas() });
         errdefer h.app.closeWindow(hw.win);
