@@ -19,7 +19,8 @@
 //!
 //! Workspace trust is asked per session until the trust store
 //! (E16.F07.S01.T01) persists it; the status line shows Restricted Mode.
-//! `approvals` is the dialog ApprovalPort for consumers (agents, MCP).
+//! `approvals` is the dialog ApprovalPort for consumers (agents, MCP);
+//! `mcp_input` asks the user when an MCP server needs input mid-call.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -35,6 +36,7 @@ const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
+const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
@@ -111,6 +113,9 @@ pub const Workbench = struct {
     /// This session's trust in the working folder (until the trust store).
     trust: zg_security.contracts.TrustState = .unknown,
     approvals: zg_security_ui.DialogApprovalPort = undefined,
+    /// Asks the user when an MCP server needs input during a call (from
+    /// `attach`).
+    mcp_input: McpInputDialogs = undefined,
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
@@ -569,6 +574,7 @@ pub const Workbench = struct {
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
         wb.approvals.deinit();
+        wb.mcp_input.deinit();
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
@@ -611,6 +617,7 @@ pub const Workbench = struct {
         try wb.palette.registerCommands();
         for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
         wb.approvals = .init(wb.gpa, wb.io, win);
+        wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
             wb.persister = .{ .gpa = wb.gpa, .io = wb.io, .app = win.app, .dir = dir, .source = .{ .ctx = wb, .snapshot = layoutSnapshot }, .win = win };
@@ -781,6 +788,7 @@ pub const Workbench = struct {
             p.commands = c;
         }
         host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        host.mcp.broker = wb.mcp_input.broker();
         if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
         wb.agent = host;
         wb.agent_panel = p;
