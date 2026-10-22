@@ -74,6 +74,10 @@ pub const ai = struct {
     pub const landing = @import("ai/landing.zig");
     /// Tools for agents, through zg_ai's foreign-tool contract.
     pub const agent_tools = @import("ai/agent_tools.zig");
+    /// The files a proposal changes, for review items.
+    pub const proposal_files = @import("ai/proposal_files.zig");
+    /// Approving an edited description.
+    pub const describe = @import("ai/describe.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -132,4 +136,6 @@ test {
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
     _ = @import("ai/agent_tools_test.zig");
+    _ = @import("ai/proposal_files.zig");
+    _ = @import("ai/describe.zig");
 }
