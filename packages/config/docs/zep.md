@@ -209,5 +209,18 @@ fn say(e: *sdk.Extension, args: ?std.json.Value, arena: std.mem.Allocator) anyer
 The SDK answers `initialize`, `initialized`, `shutdown` and `exit`, refuses
 unsupported protocol versions, and runs each `command/execute` handler on its
 own unit of concurrency, so a handler may call blocking host methods.
-Handler errors become `internal` errors whose message names the command and
-the Zig error.
+`onRequest` registers handlers for the other host requests (`view/resolve`,
+`decorations/provide`) the same way, and `onNotification` for the
+notifications (`document/didOpen`, `settings/didChange`). Handler errors
+become `internal` errors whose message names the command or method and the
+Zig error.
+
+## Examples
+
+`packages/config/examples/zep/` holds three extensions, each with a
+`zigguro-extension.zon` manifest:
+
+- `hello_zig`: the SDK in use, with commands, a tree view and `TODO`
+  decorations for open documents (`zig build examples` in `packages/config`).
+- `hello_sh`: the framing in POSIX `sh` with `read`, `dd` and `printf`.
+- `hello_ps1`: the same in PowerShell.
