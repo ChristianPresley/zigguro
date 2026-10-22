@@ -1,8 +1,12 @@
-//! The workbench until the docking shell (E04.F07) lands: one editor on a
-//! file (or an empty buffer) under a header of breadcrumbs and a toolbar,
-//! a terminal panel below it, and a status line, driven by the E15 keymap
-//! (VS Code preset) and command palette. The breadcrumbs' dropdowns open
-//! other files in the same editor (the files opened stay loaded).
+//! The workbench on the docking shell (E04.F07): editors, the terminal
+//! and the agent are dock panels (`zg_gui.dock`), under a header of
+//! breadcrumbs and a toolbar and over a status line, driven by the E15
+//! keymap (VS Code preset) and command palette. Editors open as tabs in
+//! the center (the breadcrumbs' dropdowns open other files there; files
+//! stay loaded once opened), the terminal docks in the bottom area and
+//! the agent in the agent area. Tabs can be dragged to split groups or
+//! to dock into the side areas. The active editor of the focused group
+//! is the one the header, status line and editor commands act on.
 //!
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
 //! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `agent.togglePane`
@@ -39,6 +43,8 @@ const DocumentRegistry = zg_editor.model.api.registry.DocumentRegistry;
 const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
 const registry = zg_config.commands;
 const themes = zg_gui.theme.theme;
+const PanelRef = zg_gui.dock.model.PanelRef;
+const Area = zg_gui.dock.model.Area;
 
 /// See the module doc.
 pub const Workbench = struct {
@@ -54,8 +60,16 @@ pub const Workbench = struct {
     view: *EditorView,
     langs: zg_syntax.Registry,
     syntax: ?*DocumentSyntax = null,
-    /// The other files opened (their views stay loaded).
-    others: std.ArrayList(OpenFile) = .empty,
+    /// Every file opened, the current one included (views stay loaded).
+    files: std.ArrayList(OpenFile) = .empty,
+    /// The docking layout and its view.
+    dock: zg_gui.dock.DockModel,
+    dv: zg_gui.dock.DockView = undefined,
+    /// The dock panels of the terminal and the agent, once created.
+    terminal_ref: ?PanelRef = null,
+    agent_ref: ?PanelRef = null,
+    /// The current file's panel.
+    cur_panel: ?PanelRef = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
     pending_open: ?[]u8 = null,
     /// The working folder (absolute).
@@ -79,7 +93,6 @@ pub const Workbench = struct {
     focused: bool = false,
     /// Created on first show.
     terminal: ?*TerminalPanel = null,
-    show_terminal: bool = false,
     terminal_node: zg_gui.core.NodeId = .none,
     /// Focus the terminal once it is in the tree.
     focus_terminal: bool = false,
@@ -89,12 +102,24 @@ pub const Workbench = struct {
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
-    show_agent: bool = false,
     focus_agent: bool = false,
 
-    /// One open file: the current one lives in the fields above, the
-    /// others in `others`.
-    const OpenFile = struct { path: ?[]u8, doc: *Document, view: *EditorView, syntax: ?*DocumentSyntax };
+    /// One open file and its dock panel; the current one is mirrored in
+    /// the fields above.
+    const OpenFile = struct {
+        path: ?[]u8,
+        doc: *Document,
+        view: *EditorView,
+        syntax: ?*DocumentSyntax,
+        panel: PanelRef = undefined,
+        /// The editor widget (last build).
+        node: zg_gui.core.NodeId = .none,
+    };
+
+    /// Dock panel kinds.
+    const kind_editor: zg_gui.dock.model.PanelKindId = 1;
+    const kind_terminal: zg_gui.dock.model.PanelKindId = 2;
+    const kind_agent: zg_gui.dock.model.PanelKindId = 3;
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -116,10 +141,12 @@ pub const Workbench = struct {
             .diags = .init(gpa),
             .resolver = undefined,
             .crumbs = .init(gpa, io),
+            .dock = try .init(gpa),
         };
+        wb.dv = .init(gpa, &wb.dock, .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose });
         wb.cwd = try std.process.currentPathAlloc(io, gpa);
-        const f = try wb.load(path);
-        wb.setCurrent(f);
+        const f = try wb.addFile(try wb.load(path));
+        wb.setCurrent(f.*);
 
         wb.reg = try registry.CommandRegistry.init(gpa, &wb.keys, .{ .io = io });
         try registry.registerBuiltins(wb.reg);
@@ -172,6 +199,7 @@ pub const Workbench = struct {
 
     /// Makes `f` the edited file and points the breadcrumbs at it.
     fn setCurrent(wb: *Workbench, f: OpenFile) void {
+        wb.cur_panel = f.panel;
         wb.path = f.path;
         wb.doc = f.doc;
         wb.view = f.view;
@@ -181,21 +209,81 @@ pub const Workbench = struct {
         if (abs) |a| wb.crumbs.set(wb.cwd, a) catch {} else wb.crumbs.len = 0;
     }
 
-    /// Switches the editor to `abs`, loading it the first time. UI thread,
-    /// between frames (the old view stays alive).
+    /// Keeps `f` and opens it as a tab in the focused center group.
+    fn addFile(wb: *Workbench, f: OpenFile) !*OpenFile {
+        errdefer wb.closeFile(f);
+        try wb.files.append(wb.gpa, f);
+        const nf = &wb.files.items[wb.files.items.len - 1];
+        nf.panel = try wb.dock.addPanel(kind_editor, null);
+        try wb.showEditor(nf);
+        if (wb.win != null) nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        return nf;
+    }
+
+    /// Opens `f`'s tab (again, if it was closed) and activates it.
+    fn showEditor(wb: *Workbench, f: *OpenFile) !void {
+        if (!wb.dock.panels.contains(f.panel)) f.panel = try wb.dock.addPanel(kind_editor, null);
+        if (wb.dock.groupOf(f.panel)) |g| {
+            try wb.dock.openIn(f.panel, g, null, .{});
+            return;
+        }
+        try wb.dock.openIn(f.panel, wb.editorGroup(), null, .{});
+    }
+
+    /// Where new editors open: the focused group when it is in the
+    /// center, else the center's first group.
+    fn editorGroup(wb: *Workbench) zg_gui.dock.model.GroupId {
+        if (wb.dock.focused) |g| if (wb.dock.ownerOf(.{ .group = g })) |o| if (o == .area and o.area == .center) return g;
+        return wb.dock.firstGroup(wb.dock.areas[@intFromEnum(Area.center)].root).?;
+    }
+
+    /// Switches the editor to `abs` in a tab, loading it the first time.
+    /// UI thread, between frames.
     pub fn openFile(wb: *Workbench, abs: []const u8) !void {
-        if (wb.path) |p| if (samePath(wb, p, abs)) return;
-        const cur: OpenFile = .{ .path = wb.path, .doc = wb.doc, .view = wb.view, .syntax = wb.syntax };
-        const next = for (wb.others.items, 0..) |o, i| {
-            if (o.path) |p| if (samePath(wb, p, abs)) break wb.others.swapRemove(i);
-        } else try wb.load(abs);
-        wb.others.append(wb.gpa, cur) catch |e| {
-            wb.closeFile(next);
-            return e;
+        for (wb.files.items) |*f| if (f.path) |p| if (samePath(wb, p, abs)) {
+            try wb.showEditor(f);
+            wb.setCurrent(f.*);
+            return;
         };
-        wb.view.on_change = null;
-        wb.setCurrent(next);
-        if (wb.win != null) wb.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        const f = try wb.addFile(try wb.load(abs));
+        wb.setCurrent(f.*);
+    }
+
+    fn fileOf(wb: *Workbench, p: PanelRef) ?*OpenFile {
+        for (wb.files.items) |*f| if (f.panel == p) return f;
+        return null;
+    }
+
+    fn kindOf(wb: *Workbench, p: PanelRef) ?zg_gui.dock.model.PanelKindId {
+        return if (wb.dock.panels.get(p)) |v| v.kind else null;
+    }
+
+    /// The side area showing `p`, if any.
+    fn areaOf(wb: *Workbench, p: ?PanelRef) ?Area {
+        const r = p orelse return null;
+        const g = wb.dock.groupOf(r) orelse return null;
+        const o = wb.dock.ownerOf(.{ .group = g }) orelse return null;
+        return if (o == .area) o.area else null;
+    }
+
+    /// Whether `p` is in the layout and its area is shown.
+    fn shown(wb: *Workbench, p: ?PanelRef) bool {
+        const a = wb.areaOf(p) orelse return false;
+        return wb.dock.areas[@intFromEnum(a)].visible;
+    }
+
+    /// Shows `p` in its area (docking it into `home` when it is not in the
+    /// layout) and activates its tab.
+    fn reveal(wb: *Workbench, p: PanelRef, home: Area) !void {
+        if (wb.dock.groupOf(p) == null) try wb.dock.move(p, .{ .area = home });
+        if (wb.areaOf(p)) |a| wb.dock.areaVisible(a, true);
+        if (wb.dock.groupOf(p)) |g| try wb.dock.openIn(p, g, null, .{});
+    }
+
+    /// Hides `p`: its side area hides (an editor-area tab stays).
+    fn conceal(wb: *Workbench, p: PanelRef) void {
+        const a = wb.areaOf(p) orelse return;
+        if (a != .center) wb.dock.areaVisible(a, false);
     }
 
     fn samePath(wb: *Workbench, p: []const u8, abs: []const u8) bool {
@@ -234,7 +322,7 @@ pub const Workbench = struct {
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        wb.view.on_change = null;
+        for (wb.files.items) |f| f.view.on_change = null;
         wb.win = null;
     }
 
@@ -248,9 +336,10 @@ pub const Workbench = struct {
         wb.reg.deinit();
         wb.diags.deinit();
         wb.keys.deinit();
-        wb.closeFile(.{ .path = wb.path, .doc = wb.doc, .view = wb.view, .syntax = wb.syntax });
-        for (wb.others.items) |f| wb.closeFile(f);
-        wb.others.deinit(wb.gpa);
+        for (wb.files.items) |f| wb.closeFile(f);
+        wb.files.deinit(wb.gpa);
+        wb.dv.deinit();
+        wb.dock.deinit();
         if (wb.pending_open) |p| wb.gpa.free(p);
         wb.crumbs.deinit();
         wb.docs.deinit();
@@ -266,7 +355,7 @@ pub const Workbench = struct {
         wb.adapter.on_status = .{ .ctx = wb, .f = onStatus };
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
-        wb.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
         wb.approvals = .init(wb.gpa, wb.io, win);
     }
 
@@ -357,8 +446,8 @@ pub const Workbench = struct {
     /// hides it and focuses the editor.
     pub fn toggleTerminal(wb: *Workbench) !void {
         const w = wb.win orelse return;
-        if (wb.show_terminal) {
-            wb.show_terminal = false;
+        if (wb.shown(wb.terminal_ref) and wb.areaOf(wb.terminal_ref) != .center) {
+            wb.conceal(wb.terminal_ref.?);
             if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
             return;
         }
@@ -368,7 +457,8 @@ pub const Workbench = struct {
             wb.terminal = t;
             t.start();
         }
-        wb.show_terminal = true;
+        if (wb.terminal_ref == null) wb.terminal_ref = try wb.dock.addPanel(kind_terminal, null);
+        try wb.reveal(wb.terminal_ref.?, .bottom);
         wb.focus_terminal = true;
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
@@ -378,8 +468,8 @@ pub const Workbench = struct {
     /// or hides it and focuses the editor.
     pub fn toggleAgent(wb: *Workbench) !void {
         const w = wb.win orelse return;
-        if (wb.show_agent) {
-            wb.show_agent = false;
+        if (wb.shown(wb.agent_ref) and wb.areaOf(wb.agent_ref) != .center) {
+            wb.conceal(wb.agent_ref.?);
             if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
             return;
         }
@@ -392,7 +482,8 @@ pub const Workbench = struct {
             wb.agent = host;
             wb.agent_panel = p;
         }
-        wb.show_agent = true;
+        if (wb.agent_ref == null) wb.agent_ref = try wb.dock.addPanel(kind_agent, null);
+        try wb.reveal(wb.agent_ref.?, .agent);
         wb.focus_agent = true;
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusAgent });
@@ -456,30 +547,114 @@ pub const Workbench = struct {
                 ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
+        wb.followFocus();
+        wb.dv.beginFrame(ui);
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column, .bg = .{ .token = .bg_base } } });
         defer ui.close();
-        ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 } } });
-        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } } });
         wb.header(ui);
-        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
-        _ = zg_editor.view.editor(ui, .{ .view = wb.view, .a11y_label = wb.path orelse "Untitled" });
-        wb.editor_node = ui.lastNode();
-        ui.close();
-        ui.close();
-        if (wb.show_agent) if (wb.agent_panel) |p| {
-            ui.open(.{ .style = .{ .dir = .column, .h = .{ .pct = 100 }, .shrink = 0 }, .key_context = "agentPaneFocus" });
-            p.build(ui);
-            ui.close();
-        };
-        ui.close();
         wb.terminal_node = .none;
-        if (wb.show_terminal) if (wb.terminal) |t| wb.terminalPanel(ui, t);
+        ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
+        wb.sideArea(ui, .left, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.left)].size }, .shrink = 0 });
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
+        wb.sideArea(ui, .center, .{ .grow = 1, .basis = .{ .px = 0 } });
+        wb.sideArea(ui, .bottom, .{ .h = .{ .pct = 38 }, .shrink = 0 });
+        ui.close();
+        wb.sideArea(ui, .right, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.right)].size }, .shrink = 0 });
+        wb.sideArea(ui, .agent, .{ .w = .{ .px = agent_w }, .shrink = 0 });
+        ui.close();
+        if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |f| {
+            wb.editor_node = f.node;
+        };
         // Focus the editor once it exists.
         if (!wb.focused) {
             wb.focused = true;
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
+        wb.dv.dropOverlay(ui);
+    }
+
+    const agent_w: f32 = 380;
+
+    /// `area` in a box styled `st`, when shown.
+    fn sideArea(wb: *Workbench, ui: *Ui, area: Area, st: zg_gui.Style) void {
+        const a = wb.dock.areas[@intFromEnum(area)];
+        if (!a.visible or a.root == null) return;
+        var style = st;
+        style.dir = .column;
+        style.align_items = .stretch;
+        if (area != .center) style.bg = .{ .token = .bg_elevated };
+        ui.id(@intFromEnum(area));
+        ui.open(.{ .style = style, .test_id = @tagName(area) });
+        defer ui.close();
+        wb.dv.dockArea(ui, area);
+    }
+
+    /// The focused group's active editor becomes the current file.
+    fn followFocus(wb: *Workbench) void {
+        const g = wb.dock.focused orelse return;
+        const gr = wb.dock.group(g) orelse return;
+        if (gr.active >= gr.tabs.items.len) return;
+        const f = wb.fileOf(gr.tabs.items[gr.active]) orelse return;
+        if (wb.cur_panel != f.panel) wb.setCurrent(f.*);
+    }
+
+    fn panelTab(ctx: *anyopaque, p: PanelRef) zg_gui.dock.view.TabInfo {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.fileOf(p)) |f| return .{
+            .title = if (f.path) |path| std.fs.path.basename(path) else "Untitled",
+            .dirty = f.doc.isDirty(),
+            .tooltip = f.path,
+        };
+        return switch (wb.kindOf(p) orelse 0) {
+            kind_terminal => .{ .title = "Terminal", .badge = if (wb.terminal) |t| t.noteText() else "" },
+            kind_agent => .{ .title = "Agent" },
+            else => .{ .title = "?" },
+        };
+    }
+
+    fn panelBuild(ctx: *anyopaque, ui: *Ui, p: PanelRef) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.fileOf(p)) |f| {
+            ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
+            defer ui.close();
+            _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
+            f.node = ui.lastNode();
+            return;
+        }
+        switch (wb.kindOf(p) orelse 0) {
+            kind_terminal => if (wb.terminal) |t| wb.terminalPanel(ui, t),
+            kind_agent => if (wb.agent_panel) |a| {
+                ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "agentPaneFocus" });
+                defer ui.close();
+                a.build(ui);
+            },
+            else => {},
+        }
+    }
+
+    fn emptyGroup(_: *anyopaque, ui: *Ui) void {
+        ui.open(.{ .style = .{ .grow = 1, .justify = .center, .align_items = .center } });
+        defer ui.close();
+        ui.text("No open editors", .{ .color = .fg_muted, .wrap = false });
+    }
+
+    /// Unsaved editors stay open; closing the terminal or the agent
+    /// hides its area (they keep running).
+    fn canClose(ctx: *anyopaque, p: PanelRef) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.fileOf(p)) |f| {
+            if (!f.doc.isDirty()) return true;
+            wb.notify(.warning, "{s} has unsaved changes: save it first", .{if (f.path) |path| std.fs.path.basename(path) else "Untitled"});
+            return false;
+        }
+        if (p == wb.terminal_ref or p == wb.agent_ref) {
+            if (wb.areaOf(p)) |a| if (a != .center) {
+                wb.dock.areaVisible(a, false);
+                return false;
+            };
+        }
+        return true;
     }
 
     /// The editor's header: breadcrumbs for the file, the toolbar.
@@ -487,8 +662,7 @@ pub const Workbench = struct {
         const w = ui.window();
         ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .padding = .xy(6, 0), .h = .{ .px = 28 }, .shrink = 0, .bg = .{ .token = .bg_elevated } } });
         defer ui.close();
-        const pane_w: f32 = if (wb.show_agent and wb.agent_panel != null) 380 else 0;
-        const avail = @max(0, w.size.w - pane_w - 12);
+        const avail = @max(0, w.size.w - 12);
         const crumbs = wb.crumbs.items();
         const untitled = [_]zg_gui.w.Crumb{.{ .label = "Untitled" }};
         const cb: zg_gui.w.menu.ActionCb = .{ .ctx = wb, .f = onChromeAction };
@@ -497,8 +671,8 @@ pub const Workbench = struct {
         ui.close();
         const tools = [_]zg_gui.w.ToolItem{
             .{ .id = "save", .label = "Save", .tooltip = "Save (Ctrl+S)", .action = "file.save", .priority = 1000, .enabled = wb.path != null },
-            .{ .id = "terminal", .label = "Terminal", .tooltip = "Toggle Terminal (Ctrl+`)", .action = "terminal.toggle", .toggled = wb.show_terminal, .priority = 10 },
-            .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.show_agent, .priority = 20 },
+            .{ .id = "terminal", .label = "Terminal", .tooltip = "Toggle Terminal (Ctrl+`)", .action = "terminal.toggle", .toggled = wb.shown(wb.terminal_ref), .priority = 10 },
+            .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.shown(wb.agent_ref), .priority = 20 },
             .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });
@@ -515,14 +689,15 @@ pub const Workbench = struct {
     }
 
     fn terminalPanel(wb: *Workbench, ui: *Ui, t: *TerminalPanel) void {
-        ui.open(.{ .style = .{ .dir = .column, .h = .{ .pct = 38 }, .shrink = 0, .bg = .{ .token = .bg_elevated } } });
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .bg = .{ .token = .bg_elevated } } });
         defer ui.close();
-        ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
-        ui.text("TERMINAL", .{ .color = .fg_muted, .wrap = false });
         const title = t.term.title.items;
-        if (title.len > 0) ui.text(title, .{ .color = .fg_muted, .wrap = false });
-        if (t.noteText().len > 0) ui.text(t.noteText(), .{ .color = .warning, .wrap = false });
-        ui.close();
+        if (title.len > 0 or t.noteText().len > 0) {
+            ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
+            if (title.len > 0) ui.text(title, .{ .color = .fg_muted, .wrap = false });
+            if (t.noteText().len > 0) ui.text(t.noteText(), .{ .color = .warning, .wrap = false });
+            ui.close();
+        }
         _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
         wb.terminal_node = t.view.node;
     }

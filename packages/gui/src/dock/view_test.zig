@@ -322,7 +322,7 @@ test "drag to dock: reorder in the strip, split on an edge, dock to a side area,
     try f.page.dock.validate();
 }
 
-test "drag to dock: outside the window floats" {
+test "drag to dock: outside the window floats when enabled" {
     var f: Fx = undefined;
     try f.init(800);
     defer f.deinit();
@@ -330,6 +330,11 @@ test "drag to dock: outside the window floats" {
     const ps = try f.open(g, 2);
     defer gpa.free(ps);
     f.rebuild();
+    // Not without floating windows.
+    try dragTab(&f, "a.zig", &.{ .{ .x = 300, .y = 200 }, .{ .x = 900, .y = 100 } }, true);
+    try testing.expectEqual(@as(usize, 0), f.page.dock.floating.items.len);
+    try testing.expectEqual(g, f.page.dock.groupOf(ps[0]).?);
+    f.page.dv.floating = true;
     try dragTab(&f, "a.zig", &.{ .{ .x = 300, .y = 200 }, .{ .x = 900, .y = 100 } }, true);
     try testing.expectEqual(@as(usize, 1), f.page.dock.floating.items.len);
     try testing.expectEqual(@as(f32, 900), f.page.dock.floating.items[0].rect.x);

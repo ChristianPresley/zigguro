@@ -141,6 +141,10 @@ fn runTurn(a: *Agent, in: iq.Owned) Io.Cancelable!ev.FinishReason {
     while (true) {
         _ = scratch_state.reset(.retain_capacity);
         try a.io.checkCancel();
+        if (a.takeClear()) |history| {
+            defer a.gpa.free(history);
+            clearHistory(a, scratch, history);
+        }
         const model = a.deps.registry.resolve(model_override orelse a.cfg.model) orelse
             return fail(a, "unknown_model", model_override orelse a.cfg.model, null);
         const provider = a.deps.providers.get(model) orelse
@@ -381,6 +385,27 @@ fn compactHistory(a: *Agent, scratch: Allocator, base: *const request.Request, o
     return true;
 }
 
+/// Replaces the history with one user message (plan approval with a
+/// cleared context), recorded like a compaction.
+fn clearHistory(a: *Agent, scratch: Allocator, text: []const u8) void {
+    const prev = a.io.swapCancelProtection(.blocked);
+    defer _ = a.io.swapCancelProtection(prev);
+    const blocks = scratch.alloc(proto.ContentBlock, 1) catch return;
+    blocks[0] = .{ .text = .{ .text = text } };
+    const msgs = scratch.alloc(proto.Message, 1) catch return;
+    msgs[0] = .{ .role = .user, .content = blocks };
+    const seq = a.bus.lastSeq() + 1;
+    const head = seq + 1;
+    const seqs = [_]u64{head};
+    a.swapTranscript(msgs, &seqs, head) catch return;
+    a.publish(.{ .recovery = .{ .action = "context_cleared", .detail = "plan_approved" } });
+    if (a.deps.session) |s| {
+        if (s.vtable.compaction) |f| f(s.ctx, a.io, a.ref, seq, .{ .head_seq = head, .trigger = "plan_approved", .tokens_before = 0, .tokens_after = text.len / 4, .model = "" }) catch |e| a.publish(.{ .warning = @errorName(e) });
+        for (a.messages(), &seqs) |*m, q| s.vtable.message(s.ctx, a.io, a.ref, q, m) catch |e| a.publish(.{ .warning = @errorName(e) });
+        s.vtable.sync(s.ctx, a.io) catch {};
+    }
+}
+
 fn syncSession(a: *Agent) void {
     const s = a.deps.session orelse return;
     s.vtable.sync(s.ctx, a.io) catch |e| a.publish(.{ .warning = @errorName(e) });
@@ -558,6 +583,7 @@ fn invokeOne(a: *Agent, ar: Allocator, io: Io, c: *const scheduler.Call) proto.T
         .schemas = &a.schemas,
         .bounds = a.cfg.tool_output,
         .observer = .{ .ctx = &obs, .started = Observe.started, .decision = Observe.decision },
+        .plan_mode = a.plan_mode.load(.acquire),
     };
     return invoke.invoke(&p, io, ar, .{
         .id = c.id,

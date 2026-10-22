@@ -115,9 +115,60 @@ pub fn erfT(comptime T: type, x: T) T {
     return s - s / (t * t);
 }
 
+/// `@exp` lane-wise. Vectors use a lane-parallel port of compiler_rt's
+/// `expf` (the same operations in the same order, with exact power-of-two
+/// scaling), so results equal `@exp` per lane bit for bit; `@exp` on a
+/// vector would call `expf` once per lane.
+pub fn expT(comptime T: type, x: T) T {
+    if (T == f32) return @exp(x);
+    const n = @typeInfo(T).vector.len;
+    const U = @Vector(n, u32);
+    const I = @Vector(n, i32);
+    const ln2hi = splat(T, 6.9314575195e-1);
+    const ln2lo = splat(T, 1.4286067653e-6);
+    const invln2 = splat(T, 1.4426950216e+0);
+    const P1 = splat(T, 1.6666625440e-1);
+    const P2 = splat(T, -2.7667332906e-3);
+    const bits: U = @bitCast(x);
+    const neg = (bits >> @splat(31)) != @as(U, @splat(0));
+    const hx = bits & @as(U, @splat(0x7FFFFFFF));
+    const nan = hx > @as(U, @splat(0x7F800000));
+    const over = !neg & (hx >= @as(U, @splat(0x42b17218))) & !nan;
+    const under = neg & (hx >= @as(U, @splat(0x42CFF1B5))) & !nan;
+    const tiny = hx <= @as(U, @splat(0x39000000));
+    const special = nan | over | under | tiny;
+    // Special lanes compute on 0 and are replaced at the end.
+    const xs = @select(f32, special, splat(T, 0), x);
+    const big = (hx > @as(U, @splat(0x3F851592))) & !special;
+    const mid = (hx > @as(U, @splat(0x3EB17218))) & !special;
+    const half = @select(f32, neg, splat(T, -0.5), splat(T, 0.5));
+    const k_big: I = @intFromFloat(invln2 * xs + half);
+    const k_mid = @select(i32, neg, @as(I, @splat(-1)), @as(I, @splat(1)));
+    const k: I = @select(i32, big, k_big, @select(i32, mid, k_mid, @as(I, @splat(0))));
+    // With k = 0 these give hi = x, lo = 0, as expf's small branch does.
+    const fk: T = @floatFromInt(k);
+    const hi = xs - fk * ln2hi;
+    const lo = fk * ln2lo;
+    const r = hi - lo;
+    const rr = r * r;
+    const c = r - rr * (P1 + rr * P2);
+    const y = splat(T, 1) + (r * c / (splat(T, 2) - c) - lo + hi);
+    // y * 2^k in at most two exact-or-once-rounded steps (scalbn).
+    const low = k < @as(I, @splat(-126));
+    const high = k > @as(I, @splat(127));
+    const ka = @select(i32, low, k + @as(I, @splat(100)), @select(i32, high, k - @as(I, @splat(1)), k));
+    const kb_scale = @select(f32, low, splat(T, 0x1.0p-100), @select(f32, high, splat(T, 2), splat(T, 1)));
+    const pa: T = @bitCast(@as(U, @bitCast(ka + @as(I, @splat(127)))) << @splat(23));
+    var out = (y * pa) * kb_scale;
+    out = @select(f32, tiny, splat(T, 1) + x, out);
+    out = @select(f32, under, splat(T, 0), out);
+    out = @select(f32, over, x * splat(T, 0x1.0p127), out);
+    return @select(f32, nan, x, out);
+}
+
 fn gaussianT(comptime T: type, x: T, sigma: f32) T {
     const inv = 1.0 / (2.5066282746 * sigma); // 1 / (sqrt(2π) σ)
-    return @exp(-(x * x) / splat(T, 2.0 * sigma * sigma)) * splat(T, inv);
+    return expT(T, -(x * x) / splat(T, 2.0 * sigma * sigma)) * splat(T, inv);
 }
 
 fn shadowXT(comptime T: type, x: T, y: T, sigma: f32, corner: T, hx: f32, hy: f32) T {
@@ -175,7 +226,7 @@ pub fn textCoverageT(comptime T: type, cov: T, l: f32, p: TextParams) T {
     const g = p.gamma + (1.0 / p.gamma - p.gamma) * l;
     const pos = cov > splat(T, 0);
     const safe = sel(T, pos, cov, splat(T, 1));
-    const powed = sel(T, pos, @exp(@log(safe) * splat(T, g)), splat(T, 0));
+    const powed = sel(T, pos, expT(T, @log(safe) * splat(T, g)), splat(T, 0));
     return clampT(T, powed + splat(T, p.contrast) * powed * (splat(T, 1) - powed), 0, 1);
 }
 
@@ -324,6 +375,45 @@ test "shading: scalar and vector agree bit for bit" {
             try testing.expectEqual(boxCoverageT(f32, x, y, b, r), cov[i]);
             try testing.expectEqual(roundedBoxShadowT(f32, x, y, .{ b[0], b[1] }, .{ b[0] + b[2], b[1] + b[3] }, 2.5, r), sh[i]);
             try testing.expectEqual(textCoverageT(f32, std.math.clamp(x * 0.02, 0, 1), 0.3, .{}), tc[i]);
+        }
+    }
+}
+
+test "shading: vector exp equals @exp bit for bit" {
+    const V8 = @Vector(8, f32);
+    var buf: [8]f32 = undefined;
+    var n: usize = 0;
+    var checked: u64 = 0;
+    // Every 1021st bit pattern (both signs, NaNs and infinities included),
+    // plus the range boundaries.
+    var b: u64 = 0;
+    while (b <= 0xFFFF_FFFF) : (b += 1021) {
+        buf[n] = @bitCast(@as(u32, @intCast(b)));
+        n += 1;
+        if (n == 8) {
+            try expectExpLanes(V8, buf);
+            n = 0;
+            checked += 8;
+        }
+    }
+    const edges = [_]u32{ 0x42AEAC50, 0x42AEAC4F, 0x42b17218, 0x42b17217, 0xC2CFF1B5, 0xC2CFF1B4, 0xC2AEAC50, 0x3F851592, 0x3F851593, 0x3EB17218, 0x3EB17219, 0x39000000, 0x39000001, 0xBF851593, 0xBEB17219, 0x80000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0xC2C80000, 0xC2B00000 };
+    var i: usize = 0;
+    while (i < edges.len) : (i += 8) {
+        for (&buf, 0..) |*e, j| e.* = @bitCast(edges[@min(i + j, edges.len - 1)]);
+        try expectExpLanes(V8, buf);
+    }
+    try std.testing.expect(checked > 4_000_000);
+}
+
+fn expectExpLanes(comptime V: type, in: [8]f32) !void {
+    const got: [8]f32 = expT(V, in);
+    for (in, got) |x, g| {
+        const want = @exp(x);
+        if (std.math.isNan(want)) {
+            try std.testing.expect(std.math.isNan(g));
+        } else if (@as(u32, @bitCast(want)) != @as(u32, @bitCast(g))) {
+            std.debug.print("exp({e}) = {e}, vector gave {e}\n", .{ x, want, g });
+            return error.TestExpectedEqual;
         }
     }
 }

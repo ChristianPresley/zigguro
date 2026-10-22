@@ -1,0 +1,11 @@
+# Dock tabs: activate, reorder by dragging, split with the context menu.
+open Dock tabs=3
+expect role=tab count=3
+click role=tab name="a.zig"
+expect role=text name="content a.zig"
+press right
+expect role=text name="content b.zig"
+rclick role=tab name="c.zig"
+click role=menuitem name="Split Right"
+expect testid=dock_group count=2
+expect kind=splitter

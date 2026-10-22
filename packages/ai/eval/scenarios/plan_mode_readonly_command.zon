@@ -1,0 +1,31 @@
+.{
+    .name = "plan_mode_readonly_command",
+    .fixture = "notes",
+    .prompt = "Plan a change to a.txt.",
+    .permission_mode = "plan",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"cat a.txt | head -5\"}",
+                },
+            },
+        },
+        .{
+            .text = "Plan: uppercase alpha.",
+            .expect = .{
+                "alpha",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "run_command",
+        },
+        .no_permission_denials,
+        .{
+            .final_text_matches = "^Plan:",
+        },
+    },
+}

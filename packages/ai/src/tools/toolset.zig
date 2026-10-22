@@ -14,6 +14,7 @@ const deps = @import("../loop/deps.zig");
 const resume_mod = @import("../session/resume.zig");
 const registry = @import("registry.zig");
 const search_tools = @import("search_tools.zig");
+const readonly = @import("../plan/readonly.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -23,7 +24,7 @@ const log = std.log.scoped(.zg_ai_tools);
 pub const PermissionMode = resume_mod.PermissionMode;
 
 /// Tools plan mode keeps besides the read-only ones (F09).
-pub const plan_mode_tools = [_][]const u8{ "exit_plan_mode", "todo_write", "ask_user" };
+pub const plan_mode_tools = readonly.plan_mode_tools;
 
 pub const ToolsetConfig = struct {
     /// Exact names, `*`, or `prefix*` (e.g. `mcp__github__*`).
@@ -31,6 +32,9 @@ pub const ToolsetConfig = struct {
     /// Same patterns; deny wins and removes the tool from requests.
     deny: []const []const u8 = &.{},
     mode: PermissionMode = .default,
+    /// Plan mode keeps `run_command` for read-only commands (checked per
+    /// call by the invoke pipeline).
+    plan_commands: bool = true,
     /// Above this many tools, `defer_loading` tools are left out until
     /// `tool_search` finds them.
     defer_threshold: u16 = 64,
@@ -71,11 +75,7 @@ fn anyMatches(patterns: []const []const u8, name: []const u8) bool {
 pub fn allowed(cfg: *const ToolsetConfig, s: *const ToolSpec) bool {
     if (anyMatches(cfg.deny, s.name)) return false;
     if (!anyMatches(cfg.allow, s.name)) return false;
-    if (cfg.mode == .plan) {
-        if (s.effectiveEffects().read_only) return true;
-        for (plan_mode_tools) |n| if (std.mem.eql(u8, n, s.name)) return true;
-        return false;
-    }
+    if (cfg.mode == .plan) return readonly.planKeeps(s, cfg.plan_commands);
     return true;
 }
 

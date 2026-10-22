@@ -113,6 +113,10 @@ pub const AgentEvent = union(enum) {
     error_: ErrorInfo,
     turn_finished: TurnFinished,
     status: Status,
+    /// `exit_plan_mode` presented a plan for approval.
+    plan_proposed: []const u8,
+    /// The plan was approved; the agent now runs in `mode`.
+    plan_approved: struct { mode: []const u8, path: []const u8 },
 
     /// Structural events are never coalesced or dropped.
     pub fn isDelta(e: AgentEvent) bool {

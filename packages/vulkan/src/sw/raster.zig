@@ -117,12 +117,18 @@ fn load(tile: bin.TileRect, dst: Target, s: *Scratch) void {
             const o = y * tile_size + x;
             const rc: u8 = if (dst.bgra) p[2] else p[0];
             const bc: u8 = if (dst.bgra) p[0] else p[2];
-            s.r[o] = r2d.color.unorm(rc);
-            s.g[o] = r2d.color.unorm(p[1]);
-            s.b[o] = r2d.color.unorm(bc);
-            s.a[o] = r2d.color.unorm(p[3]);
+            s.r[o] = unorm_lut[rc];
+            s.g[o] = unorm_lut[p[1]];
+            s.b[o] = unorm_lut[bc];
+            s.a[o] = unorm_lut[p[3]];
         }
     }
+}
+
+/// `r2d.color.toUnorm8` for 8 values at once (same operations).
+fn toUnorm8x8(v: @Vector(8, f32)) @Vector(8, u8) {
+    const c = @max(@as(@Vector(8, f32), @splat(0)), @min(v, @as(@Vector(8, f32), @splat(1))));
+    return @intFromFloat(@floor(c * @as(@Vector(8, f32), @splat(255.0)) + @as(@Vector(8, f32), @splat(0.5))));
 }
 
 fn store(tile: bin.TileRect, dst: Target, mask: *const TileMask, s: *const Scratch) void {
@@ -132,14 +138,19 @@ fn store(tile: bin.TileRect, dst: Target, mask: *const TileMask, s: *const Scrat
         if (m == 0) continue;
         const row = dst.pixels[@as(usize, tile.y + y) * dst.stride + @as(usize, tile.x) * 4 ..];
         var x: u32 = 0;
-        while (x < tile.w) : (x += 1) {
-            if ((m >> @intCast(x)) & 1 == 0) continue;
+        while (x < tile.w) : (x += 8) {
+            const bits: u8 = @truncate(m >> @intCast(x));
+            if (bits == 0) continue;
             const o = y * tile_size + x;
-            const r = r2d.color.toUnorm8(s.r[o]);
-            const g = r2d.color.toUnorm8(s.g[o]);
-            const b = r2d.color.toUnorm8(s.b[o]);
-            const a = r2d.color.toUnorm8(s.a[o]);
-            row[x * 4 ..][0..4].* = if (dst.bgra) .{ b, g, r, a } else .{ r, g, b, a };
+            const r = toUnorm8x8(s.r[o..][0..8].*);
+            const g = toUnorm8x8(s.g[o..][0..8].*);
+            const b = toUnorm8x8(s.b[o..][0..8].*);
+            const a = toUnorm8x8(s.a[o..][0..8].*);
+            const n = @min(8, tile.w - x);
+            inline for (0..8) |i| {
+                if (i < n and (bits >> i) & 1 != 0)
+                    row[(x + i) * 4 ..][0..4].* = if (dst.bgra) .{ b[i], g[i], r[i], a[i] } else .{ r[i], g[i], b[i], a[i] };
+            }
         }
     }
 }
@@ -174,46 +185,88 @@ fn texel(t: *const CpuTexture, x: i64, y: i64, wrap: bool) [4]f32 {
     }
 }
 
+/// `r2d.color.unorm` for every byte (the table holds its results).
+const unorm_lut: [256]f32 = blk: {
+    var t: [256]f32 = undefined;
+    for (&t, 0..) |*e, v| e.* = r2d.color.unorm(v);
+    break :blk t;
+};
+
+/// Lane texel indices: `f` (floored coordinates) clamped like `toInt`
+/// then to 0..size-1, computed lane-parallel.
+fn clampIdx(comptime T: type, f: T, size: u32) [lanesOf(T)]u32 {
+    const g = @max(sh.splat(T, -1e9), @min(f, sh.splat(T, 1e9)));
+    const h = @max(sh.splat(T, 0), @min(g, sh.splat(T, @floatFromInt(size - 1))));
+    if (T == f32) return .{@intFromFloat(h)};
+    return @as(@Vector(lanesOf(T), u32), @intFromFloat(h));
+}
+
+fn lanesOf(comptime T: type) comptime_int {
+    return if (T == f32) 1 else @typeInfo(T).vector.len;
+}
+
+/// Texels at clamped indices `ix`, `iy`, as premultiplied r, g, b, a.
+fn fetch(comptime T: type, t: *const CpuTexture, ix: [lanesOf(T)]u32, iy: [lanesOf(T)]u32) [4]T {
+    var out: [4]T = undefined;
+    switch (t.format) {
+        .r8 => inline for (0..lanesOf(T)) |i| {
+            const v = unorm_lut[t.pixels[@as(usize, iy[i]) * t.stride + ix[i]]];
+            inline for (0..4) |c| setLane(T, &out[c], i, v);
+        },
+        .rgba8 => inline for (0..lanesOf(T)) |i| {
+            const p = t.pixels[@as(usize, iy[i]) * t.stride + @as(usize, ix[i]) * 4 ..][0..4];
+            inline for (0..4) |c| setLane(T, &out[c], i, unorm_lut[p[c]]);
+        },
+    }
+    return out;
+}
+
+/// `lut` at the r8 texels at floored coordinates `fu`, `fv` (clamped).
+fn lutTexels(comptime T: type, t: *const CpuTexture, fu: T, fv: T, lut: *const [256]f32) T {
+    const ix = clampIdx(T, fu, t.width);
+    const iy = clampIdx(T, fv, t.height);
+    var out: T = undefined;
+    inline for (0..lanesOf(T)) |i| setLane(T, &out, i, lut[t.pixels[@as(usize, iy[i]) * t.stride + ix[i]]]);
+    return out;
+}
+
+test "raster: a unorm texel's LUT index is its byte" {
+    for (0..256) |b| {
+        const c = r2d.color.unorm(@intCast(b));
+        const idx: u32 = @intFromFloat(c * 255.0 + 0.5);
+        try std.testing.expectEqual(@as(u32, @intCast(b)), idx);
+    }
+}
+
+/// Texels at floored coordinates `fu`, `fv` (clamp to edge, or repeat).
+fn texels(comptime T: type, tex: *const CpuTexture, fu: T, fv: T, wrap: bool) [4]T {
+    if (!wrap) return fetch(T, tex, clampIdx(T, fu, tex.width), clampIdx(T, fv, tex.height));
+    var out: [4]T = undefined;
+    inline for (0..lanesOf(T)) |i| {
+        const px = texel(tex, toInt(lane(T, fu, i)), toInt(lane(T, fv, i)), true);
+        inline for (0..4) |c| setLane(T, &out[c], i, px[c]);
+    }
+    return out;
+}
+
 /// Samples `t` at texel-space coordinates (`u`, `v` in texels, pixel
 /// centres at +0.5) with nearest or bilinear (clamp-to-edge) filtering.
 fn sample(comptime T: type, t: ?*const CpuTexture, u: T, v: T, nearest: bool, wrap: bool) [4]T {
-    var out: [4]T = .{ sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0) };
-    const tex = t orelse return out;
-    if (nearest) {
-        const fu = @floor(u);
-        const fv = @floor(v);
-        const n = if (T == f32) 1 else @typeInfo(T).vector.len;
-        inline for (0..n) |i| {
-            const px = texel(tex, toInt(lane(T, fu, i)), toInt(lane(T, fv, i)), wrap);
-            inline for (0..4) |c| setLane(T, &out[c], i, px[c]);
-        }
-        return out;
-    }
+    const tex = t orelse return .{ sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0), sh.splat(T, 0) };
+    if (nearest) return texels(T, tex, @floor(u), @floor(v), wrap);
     const tu = u - sh.splat(T, 0.5);
     const tv = v - sh.splat(T, 0.5);
     const x0 = @floor(tu);
     const y0 = @floor(tv);
     const fx = tu - x0;
     const fy = tv - y0;
-    var t00: [4]T = out;
-    var t10: [4]T = out;
-    var t01: [4]T = out;
-    var t11: [4]T = out;
-    const n = if (T == f32) 1 else @typeInfo(T).vector.len;
-    inline for (0..n) |i| {
-        const ix = toInt(lane(T, x0, i));
-        const iy = toInt(lane(T, y0, i));
-        const a = texel(tex, ix, iy, wrap);
-        const b = texel(tex, ix + 1, iy, wrap);
-        const c = texel(tex, ix, iy + 1, wrap);
-        const d = texel(tex, ix + 1, iy + 1, wrap);
-        inline for (0..4) |ch| {
-            setLane(T, &t00[ch], i, a[ch]);
-            setLane(T, &t10[ch], i, b[ch]);
-            setLane(T, &t01[ch], i, c[ch]);
-            setLane(T, &t11[ch], i, d[ch]);
-        }
-    }
+    const x1 = x0 + sh.splat(T, 1);
+    const y1 = y0 + sh.splat(T, 1);
+    const t00 = texels(T, tex, x0, y0, wrap);
+    const t10 = texels(T, tex, x1, y0, wrap);
+    const t01 = texels(T, tex, x0, y1, wrap);
+    const t11 = texels(T, tex, x1, y1, wrap);
+    var out: [4]T = undefined;
     inline for (0..4) |ch| {
         const top = t00[ch] + (t10[ch] - t00[ch]) * fx;
         const bot = t01[ch] + (t11[ch] - t01[ch]) * fx;
@@ -313,37 +366,44 @@ fn shadeGroup(comptime T: type, p: *const Prim, ctx: *const ShadeCtx, px: T, py:
             const th: f32 = if (tex) |t| @floatFromInt(t.height) else 1;
             const u = (sh.splat(T, p.uv[0]) + (px - sh.splat(T, b[0])) / sh.splat(T, b[2]) * sh.splat(T, p.uv[2] - p.uv[0])) * sh.splat(T, tw);
             const v = (sh.splat(T, p.uv[1]) + (py - sh.splat(T, b[1])) / sh.splat(T, b[3]) * sh.splat(T, p.uv[3] - p.uv[1])) * sh.splat(T, th);
-            const tx = sample(T, tex, u, v, true, false);
-            cov = one;
             const l = textLuma(c0);
-            switch (p.kind) {
-                .glyph_color => {
-                    inline for (0..4) |ch| src[ch] = tx[ch] * sh.splat(T, c0[3]);
-                },
-                .glyph_gray => {
-                    var c = if (p.flags.rgb_avg) (tx[0] + tx[1] + tx[2]) / sh.splat(T, 3) else tx[0];
-                    if (p.flags.aa_none) {
-                        c = sh.sel(T, c >= sh.splat(T, 0.5), one, zero);
-                    } else if (p.flags.rgb_avg) {
-                        c = sh.textCoverageT(T, c, l, ctx.text);
-                    } else {
-                        c = lutLookup(T, s.luts.get(l, ctx.text), c);
-                    }
-                    cov = c;
-                    src = splat4(T, c0);
-                },
-                else => {
-                    var rc = tx[0];
-                    var bc = tx[2];
-                    if (p.flags.bgr) std.mem.swap(T, &rc, &bc);
-                    if (ctx.dual_src) {
-                        const lut = s.luts.get(l, ctx.text);
-                        sub_cov = .{ lutLookup(T, lut, rc), lutLookup(T, lut, tx[1]), lutLookup(T, lut, bc) };
-                    } else {
-                        cov = sh.textCoverageT(T, (rc + tx[1] + bc) / sh.splat(T, 3), l, ctx.text);
-                    }
-                    src = splat4(T, c0);
-                },
+            // Grayscale r8 glyphs: the coverage LUT indexed by the texel
+            // byte directly (equal to `lutLookup` of its unorm value).
+            if (p.kind == .glyph_gray and !p.flags.rgb_avg and !p.flags.aa_none and tex != null and tex.?.format == .r8) {
+                cov = lutTexels(T, tex.?, @floor(u), @floor(v), s.luts.get(l, ctx.text));
+                src = splat4(T, c0);
+            } else {
+                const tx = sample(T, tex, u, v, true, false);
+                cov = one;
+                switch (p.kind) {
+                    .glyph_color => {
+                        inline for (0..4) |ch| src[ch] = tx[ch] * sh.splat(T, c0[3]);
+                    },
+                    .glyph_gray => {
+                        var c = if (p.flags.rgb_avg) (tx[0] + tx[1] + tx[2]) / sh.splat(T, 3) else tx[0];
+                        if (p.flags.aa_none) {
+                            c = sh.sel(T, c >= sh.splat(T, 0.5), one, zero);
+                        } else if (p.flags.rgb_avg) {
+                            c = sh.textCoverageT(T, c, l, ctx.text);
+                        } else {
+                            c = lutLookup(T, s.luts.get(l, ctx.text), c);
+                        }
+                        cov = c;
+                        src = splat4(T, c0);
+                    },
+                    else => {
+                        var rc = tx[0];
+                        var bc = tx[2];
+                        if (p.flags.bgr) std.mem.swap(T, &rc, &bc);
+                        if (ctx.dual_src) {
+                            const lut = s.luts.get(l, ctx.text);
+                            sub_cov = .{ lutLookup(T, lut, rc), lutLookup(T, lut, tx[1]), lutLookup(T, lut, bc) };
+                        } else {
+                            cov = sh.textCoverageT(T, (rc + tx[1] + bc) / sh.splat(T, 3), l, ctx.text);
+                        }
+                        src = splat4(T, c0);
+                    },
+                }
             }
         },
         .image, .layer => {

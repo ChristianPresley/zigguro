@@ -1,0 +1,5 @@
+window
+  text "Count: 4"
+  button "Increment" disabled
+  checkbox "Enabled" checked=false focused
+  button "Reset"

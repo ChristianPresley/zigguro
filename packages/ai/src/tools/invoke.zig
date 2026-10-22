@@ -22,11 +22,13 @@ const deps = @import("../loop/deps.zig");
 const validate = @import("../schema/validate.zig");
 const schema_errors = @import("../schema/errors.zig");
 const scheduler = @import("../loop/scheduler.zig");
+const readonly = @import("../plan/readonly.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 pub const canceled_text = scheduler.canceled_text;
+pub const plan_denied = "plan mode is read-only";
 
 pub const Bounds = struct {
     /// Text beyond this many bytes is cut.
@@ -96,6 +98,9 @@ pub const Pipeline = struct {
     schemas: ?*Schemas = null,
     bounds: Bounds = .{},
     observer: ?Observer = null,
+    /// Plan mode: only what `readonly.planAllows` runs, whatever the
+    /// toolset declared.
+    plan_mode: bool = false,
 };
 
 pub const Call = struct {
@@ -123,6 +128,11 @@ fn run(p: *const Pipeline, io: Io, ar: Allocator, c: Call) Error!proto.ToolOutpu
         .ok => |v| v,
         .invalid => |out| return out,
     };
+
+    if (p.plan_mode and !readonly.planAllows(c.spec, input_json)) {
+        note(p, io, c, .{ .id = c.id, .tool = c.spec.name, .stage = .permission, .outcome = .deny, .reason = plan_denied });
+        return errText(ar, try std.fmt.allocPrint(ar, "Plan mode is read-only: {s} was not run. Present your plan with exit_plan_mode first.", .{c.spec.name}));
+    }
 
     var hint: deps.Hint = .none;
     if (p.hooks) |h| if (h.pre_tool_use) |f| pre: {
