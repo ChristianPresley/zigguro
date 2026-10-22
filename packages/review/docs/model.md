@@ -137,6 +137,11 @@ shared by every process working on it:
 - `tail` replays what other processes appended. A `(process, seq)` pair
   seen twice is ignored, and a frame still being written waits for the
   next call.
+- `decided` records carry one apply's decisions to other processes.
+  Subscribe `store.decidedListener()` on the queue to write them, and
+  set `QueueSink.decided` after the load so that `tail` re-emits them as
+  `decided` events (they are not journaled again). Compaction drops
+  them.
 
 Bind a queue to a store with `.blobs = store.blobs()` and
 `.journal = store.journalPort()`, then call

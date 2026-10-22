@@ -171,6 +171,8 @@ const Ws = struct {
         errdefer ws.approvals.deinit();
         ws.sink.approvals = ws.approvals.mirrorSink();
         _ = try ws.store.load(ws.sink.sink());
+        // A running `zg agent` or IDE learns of these decisions.
+        _ = try ws.q.subscribe(ws.store.decidedListener());
     }
 
     /// Writes what was decided.

@@ -32,6 +32,9 @@ pub const Kind = enum(u8) {
     /// A comment thread change (F03.S03): create, reply, edit, resolve,
     /// label, reanchor, outdated, or a compaction's snapshot.
     comment = 7,
+    /// The decisions of one apply (the queue's `decided` event), for the
+    /// outcome reporters of other processes. Compaction drops them.
+    decided = 8,
     _,
 };
 

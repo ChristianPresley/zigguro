@@ -18,6 +18,9 @@
 //! reference in E09 provenance. When `Options.records` is set, `pump`
 //! checks each one after the apply and writes the missing ones (logged).
 //!
+//! Decisions made in another process (`zg review accept`) arrive the
+//! same way when the store re-emits them (`QueueSink.decided`).
+//!
 //! Owner thread (the queue's). The listener only copies the decisions;
 //! `pump` and `flush` do the rest.
 
@@ -177,6 +180,9 @@ pub const OutcomeReporter = struct {
         }
         const acc = gop.value_ptr;
         acc.last_ms = null;
+        // Another process's decisions arrive after the changeset's new
+        // state.
+        if (closed(cs.state)) acc.final = true;
         const a = acc.arena.allocator();
         for (d.files) |fd| {
             const f = try fileAcc(acc, fd.path);

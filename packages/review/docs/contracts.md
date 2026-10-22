@@ -70,4 +70,8 @@ Rules:
   reference is `{apply, cs, path, hunk, decision, reviewer}`.
 
 The decisions come from the queue's `decided` event, which the
-`Applier` emits for every apply, before `applied` and `state`.
+`Applier` emits for every apply, before `applied` and `state`. Decisions made in another process
+(`zg review accept` while `zg agent` runs) are journaled as `decided`
+records and re-emitted by the store's `tail`. `zg agent` takes them in
+when a turn ends and queues the outcomes of its own changesets for its
+next request.
