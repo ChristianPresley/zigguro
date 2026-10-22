@@ -1,0 +1,133 @@
+# Widths, wide characters at the margins, combining marks, ZWJ
+# sequences, flags and variation selectors, with mode 2027 off and on.
+@cite https://www.unicode.org/reports/tr11/
+
+@case A wide character at the last column wraps
+@size 10x2
+@send "\e[1;10H日"
+@expect-screen
+|··········|
+|日‹········|
+@expect-cursor 2,3
+
+@case A wide character in column 9 fits
+@size 10x2
+@send "\e[1;9H日"
+@expect-screen
+|········日‹|
+@expect-cursor 1,10
+
+@case Wide characters take two cells
+@size 10x2
+@send "日本語"
+@expect-screen
+|日‹本‹語‹····|
+
+@case Emoji are wide
+@size 10x2
+@send "\u{1F600}x"
+@expect-screen
+|😀‹x·······|
+
+@case Overwriting the right half clears the left
+@size 10x2
+@send "日\e[1;2Hx"
+@expect-screen
+|·x········|
+
+@case Overwriting the left half clears the right
+@size 10x2
+@send "日\e[1;1Hx"
+@expect-screen
+|x·········|
+
+@case A combining mark joins the previous cell
+@size 10x2
+@send "e\u{301}x"
+@expect-screen
+|éx········|
+@expect-cursor 1,3
+
+@case A combining mark joins a wide character
+@size 10x2
+@send "日\u{301}"
+@expect-screen
+|日́‹········|
+
+@case A combining mark after a pending wrap joins the last column
+@size 10x2
+@send "\e[1;10Ha\u{301}"
+@expect-screen
+|·········á|
+@expect-cursor 1,10
+
+@case A combining mark at column 1 of an empty row is dropped
+@size 10x2
+@send "\u{301}a"
+@expect-screen
+|a·········|
+
+@case ZWJ without mode 2027 keeps two emoji
+@size 10x2
+@send "\u{1F468}\u{200D}\u{1F469}"
+@expect-screen
+|👨‍‹👩‹······|
+
+@case ZWJ with mode 2027 makes one cluster
+@size 10x2
+@mode-2027 on
+@send "\u{1F468}\u{200D}\u{1F469}"
+@expect-screen
+|👨‍👩‹········|
+@expect-cursor 1,3
+
+@case Flags without mode 2027 are two narrow cells
+@size 10x2
+@send "\u{1F1FA}\u{1F1F8}"
+@expect-screen
+|🇺🇸········|
+
+@case Flags with mode 2027 are one wide cluster
+@size 10x2
+@mode-2027 on
+@send "\u{1F1FA}\u{1F1F8}"
+@expect-screen
+|🇺🇸‹········|
+
+@case VS16 with mode 2027 widens
+@size 10x2
+@mode-2027 on
+@send "\u{2764}\u{FE0F}x"
+@expect-screen
+|❤️‹x·······|
+
+@case VS16 without mode 2027 stays narrow
+@size 10x2
+@send "\u{2764}\u{FE0F}x"
+@expect-screen
+|❤️x········|
+
+@case Hangul jamo cluster with mode 2027
+@size 10x2
+@mode-2027 on
+@send "\u{1112}\u{1161}\u{11AB}x"
+@expect-screen
+|한‹x·······|
+
+@case Devanagari conjunct with mode 2027 is one cell
+@size 10x2
+@mode-2027 on
+@send "\u{915}\u{94D}\u{937}\u{93F}x"
+@expect-screen
+|क्षिx········|
+
+@case Ambiguous characters are narrow by default
+@size 10x2
+@send "\u{B0}x"
+@expect-screen
+|°x········|
+
+@case DECRQM reports mode 2027
+@size 10x2
+@send "\e[?2027$p"
+@expect-reply "\e[?2027;2$y"

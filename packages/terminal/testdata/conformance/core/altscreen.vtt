@@ -1,0 +1,55 @@
+# The alternate screen: modes 47, 1047, 1048 and 1049.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Functions-using-CSI-_-ordered-by-the-final-character_s_
+
+@case 1049 switches to a clear alternate screen
+@size 10x3
+@send "ab\e[?1049h"
+@expect-screen
+@expect-cursor 1,3
+
+@case 1049 restores the primary screen and cursor
+@size 10x3
+@send "ab\e[?1049hxyz\e[?1049l"
+@expect-screen
+|ab········|
+@expect-cursor 1,3
+
+@case 47 keeps the alternate contents
+@size 10x3
+@send "\e[?47hab\e[?47l\e[?47h"
+@expect-screen
+|ab········|
+
+@case 1047 clears the alternate screen on exit
+@size 10x3
+@send "\e[?1047hab\e[?1047l\e[?1047h"
+@expect-screen
+
+@case 1048 saves and restores the cursor
+@size 10x3
+@send "\e[2;3H\e[?1048h\e[H\e[?1048lx"
+@expect-screen
+|··········|
+|··x·······|
+
+@case DECRQM reports 1049
+@size 10x3
+@send "\e[?1049h\e[?1049$p"
+@expect-reply "\e[?1049;1$y"
+
+@case The primary screen is untouched while away
+@size 10x3
+@send "ab\e[?1049hcd"
+@expect-screen
+|··cd······|
+@send "\e[?1049l"
+@expect-screen
+|ab········|
+
+@case The alternate screen has no scrollback
+@size 10x2
+@send "\e[?1049h1\r\n2\r\n3\r\n4"
+@expect-scrollback
+@expect-screen
+|3·········|
+|4·········|

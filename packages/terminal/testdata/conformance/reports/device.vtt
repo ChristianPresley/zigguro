@@ -1,0 +1,67 @@
+# Device attributes, status reports, XTVERSION and window reports.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Ps-c.1CA3
+
+@case DA1 reports a VT220-class terminal
+@size 10x2
+@send "\e[c"
+@expect-reply "\e[?62;22c"
+
+@case DA1 with 0
+@size 10x2
+@send "\e[0c"
+@expect-reply "\e[?62;22c"
+
+@case DA2 reports the secondary attributes
+@size 10x2
+@send "\e[>c"
+@expect-reply "\e[>1;10;0c"
+
+@case DA3 reports the unit id
+@size 10x2
+@send "\e[=c"
+@expect-reply "\eP!|7A475552\e\\"
+
+@case XTVERSION reports the name and version
+@size 10x2
+@send "\e[>q"
+@expect-reply "\eP>|zigguro(0.1.0)\e\\"
+
+@case DSR 5 reports OK
+@size 10x2
+@send "\e[5n"
+@expect-reply "\e[0n"
+
+@case DSR 6 reports the cursor
+@size 10x5
+@send "\e[4;2H\e[6n"
+@expect-reply "\e[4;2R"
+
+@case DECXCPR reports the cursor and page
+@size 10x5
+@send "\e[2;3H\e[?6n"
+@expect-reply "\e[?2;3;1R"
+
+@case DSR ?15 reports no printer
+@size 10x2
+@send "\e[?15n"
+@expect-reply "\e[?13n"
+
+@case DSR ?26 reports the keyboard
+@size 10x2
+@send "\e[?26n"
+@expect-reply "\e[?27;1;0;0n"
+
+@case XTWINOPS 18 reports the size in cells
+@size 12x4
+@send "\e[18t"
+@expect-reply "\e[8;4;12t"
+
+@case CPR after a pending wrap reports the last column
+@size 5x2
+@send "abcde\e[6n"
+@expect-reply "\e[1;5R"
+
+@case Several queries reply in order
+@size 10x2
+@send "\e[5n\e[6n"
+@expect-reply "\e[0n\e[1;1R"

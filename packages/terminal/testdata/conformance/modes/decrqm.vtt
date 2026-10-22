@@ -1,0 +1,113 @@
+# DECRQM reports for ANSI and DEC private modes: defaults, set, reset,
+# permanent and unknown modes.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Ps-$-p.1D28
+
+@case DECRQM ?1 reports the default reset
+@size 10x2
+@send "\e[?1$p"
+@expect-reply "\e[?1;2$y"
+
+@case DECRQM ?6 reports the default reset
+@size 10x2
+@send "\e[?6$p"
+@expect-reply "\e[?6;2$y"
+
+@case DECRQM ?7 reports the default set
+@size 10x2
+@send "\e[?7$p"
+@expect-reply "\e[?7;1$y"
+
+@case DECRQM ?25 reports the default set
+@size 10x2
+@send "\e[?25$p"
+@expect-reply "\e[?25;1$y"
+
+@case DECRQM ?1004 reports the default reset
+@size 10x2
+@send "\e[?1004$p"
+@expect-reply "\e[?1004;2$y"
+
+@case DECRQM ?1006 reports the default reset
+@size 10x2
+@send "\e[?1006$p"
+@expect-reply "\e[?1006;2$y"
+
+@case DECRQM ?2004 reports the default reset
+@size 10x2
+@send "\e[?2004$p"
+@expect-reply "\e[?2004;2$y"
+
+@case DECRQM ?2026 reports the default reset
+@size 10x2
+@send "\e[?2026$p"
+@expect-reply "\e[?2026;2$y"
+
+@case DECRQM ?2027 reports the default reset
+@size 10x2
+@send "\e[?2027$p"
+@expect-reply "\e[?2027;2$y"
+
+@case DECRQM ?1049 reports the default reset
+@size 10x2
+@send "\e[?1049$p"
+@expect-reply "\e[?1049;2$y"
+
+@case DECRQM ?1 reports set after DECSET
+@size 10x2
+@send "\e[?1h\e[?1$p"
+@expect-reply "\e[?1;1$y"
+
+@case DECRQM ?6 reports set after DECSET
+@size 10x2
+@send "\e[?6h\e[?6$p"
+@expect-reply "\e[?6;1$y"
+
+@case DECRQM ?1004 reports set after DECSET
+@size 10x2
+@send "\e[?1004h\e[?1004$p"
+@expect-reply "\e[?1004;1$y"
+
+@case DECRQM ?2004 reports set after DECSET
+@size 10x2
+@send "\e[?2004h\e[?2004$p"
+@expect-reply "\e[?2004;1$y"
+
+@case DECRQM ?2026 reports set after DECSET
+@size 10x2
+@send "\e[?2026h\e[?2026$p"
+@expect-reply "\e[?2026;1$y"
+
+@case DECRQM ?7 reports reset after DECRST
+@size 10x2
+@send "\e[?7l\e[?7$p"
+@expect-reply "\e[?7;2$y"
+
+@case DECRQM ?8 reports permanently set
+@size 10x2
+@send "\e[?8$p"
+@expect-reply "\e[?8;3$y"
+
+@case DECRQM ?8 stays permanently set after DECRST
+@size 10x2
+@send "\e[?8l\e[?8$p"
+@expect-reply "\e[?8;3$y"
+
+@case DECRQM reports an unknown DEC mode as 0
+@size 10x2
+@send "\e[?31337$p"
+@expect-reply "\e[?31337;0$y"
+
+@case DECRQM 4 reports IRM
+@size 10x2
+@send "\e[4h\e[4$p"
+@expect-reply "\e[4;1$y"
+
+@case DECRQM 20 reports LNM reset
+@size 10x2
+@send "\e[20$p"
+@expect-reply "\e[20;2$y"
+
+@case DECRQM reports an unknown ANSI mode as 0
+@size 10x2
+@send "\e[99$p"
+@expect-reply "\e[99;0$y"

@@ -1,0 +1,62 @@
+# DECRQSS and XTGETTCAP replies.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Device-Control-functions
+
+@case DECRQSS m with the default rendition
+@size 10x2
+@send "\eP$qm\e\\"
+@expect-reply "\eP1$r0m\e\\"
+
+@case DECRQSS r reports the scroll region
+@size 10x5
+@send "\e[2;4r\eP$qr\e\\"
+@expect-reply "\eP1$r2;4r\e\\"
+
+@case DECRQSS r reports the full screen by default
+@size 10x5
+@send "\eP$qr\e\\"
+@expect-reply "\eP1$r1;5r\e\\"
+
+@case DECRQSS s reports the left and right margins
+@size 10x5
+@send "\e[?69h\e[3;7s\eP$qs\e\\"
+@expect-reply "\eP1$r3;7s\e\\"
+
+@case DECRQSS space q reports the cursor style
+@size 10x2
+@send "\e[4 q\eP$q q\e\\"
+@expect-reply "\eP1$r4 q\e\\"
+
+@case DECRQSS "q reports DECSCA
+@size 10x2
+@send "\e[1"q\eP$q"q\e\\"
+@expect-reply "\eP1$r1"q\e\\"
+
+@case DECRQSS "p reports the conformance level
+@size 10x2
+@send "\eP$q"p\e\\"
+@expect-reply "\eP1$r62;1"p\e\\"
+
+@case DECRQSS answers an unknown setting as invalid
+@size 10x2
+@send "\eP$qz\e\\"
+@expect-reply "\eP0$r\e\\"
+
+@case XTGETTCAP answers a known capability
+@size 10x2
+@send "\eP+q436f\e\\"
+@expect-reply "\eP1+r436f=323536\e\\"
+
+@case XTGETTCAP answers an unknown capability
+@size 10x2
+@send "\eP+q7878\e\\"
+@expect-reply "\eP0+r7878\e\\"
+
+@case XTGETTCAP never echoes invalid hex
+@size 10x2
+@send "\eP+qzz\e\\"
+@expect-reply "\eP0+r\e\\"
+
+@case XTGETTCAP answers each name in turn
+@size 10x2
+@send "\eP+q436f;7878\e\\"
+@expect-reply "\eP1+r436f=323536\e\\\eP0+r7878\e\\"

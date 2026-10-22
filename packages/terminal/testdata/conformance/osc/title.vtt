@@ -1,0 +1,68 @@
+# Window titles via OSC 0 and 2, both terminators, and what does not
+# change the title.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
+
+@case OSC 2 sets the title with BEL
+@size 10x2
+@send "\e]2;hello^G"
+@expect-title "hello"
+
+@case OSC 2 sets the title with ST
+@size 10x2
+@send "\e]2;hello\e\\"
+@expect-title "hello"
+
+@case OSC 0 sets the title
+@size 10x2
+@send "\e]0;both^G"
+@expect-title "both"
+
+@case OSC 1 sets only the icon name
+@size 10x2
+@send "\e]2;t^G\e]1;icon^G"
+@expect-title "t"
+
+@case A later title replaces an earlier one
+@size 10x2
+@send "\e]2;a^G\e]2;b^G"
+@expect-title "b"
+
+@case An empty title clears it
+@size 10x2
+@send "\e]2;a^G\e]2;^G"
+@expect-title ""
+
+@case Titles keep UTF-8
+@size 10x2
+@send "\e]2;日本^G"
+@expect-title "日本"
+
+@case A title may contain semicolons
+@size 10x2
+@send "\e]2;a;b^G"
+@expect-title "a;b"
+
+@case CAN aborts an OSC
+@size 10x2
+@send "\e]2;bad^Xok"
+@expect-title ""
+@expect-screen
+|ok········|
+
+@case Text after the OSC prints
+@size 10x2
+@send "\e]2;t^Gab"
+@expect-screen
+|ab········|
+
+@case RIS keeps nothing of the title stack
+@size 10x2
+@send "\e]2;t^G\ec"
+@expect-title ""
+
+@case An unknown OSC is ignored
+@size 10x2
+@send "\e]9999;x^Gab"
+@expect-screen
+|ab········|
+@expect-title ""

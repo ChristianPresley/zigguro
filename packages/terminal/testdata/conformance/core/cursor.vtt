@@ -1,0 +1,209 @@
+# Cursor motion: CUP, HVP, relative moves, absolute moves, margins,
+# origin mode, pending wrap and saved cursors.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Functions-using-CSI-_-ordered-by-the-final-character_s_
+
+@case CUP without parameters homes the cursor
+@size 10x5
+@send "abc\e[Hx"
+@expect-screen
+|xbc·······|
+
+@case CUP row and column
+@size 10x5
+@send "\e[3;4Hx"
+@expect-cursor 3,5
+
+@case CUP clamps to the screen
+@size 10x5
+@send "\e[99;99Hx"
+@expect-cursor 5,10
+@expect-screen
+|··········|
+|··········|
+|··········|
+|··········|
+|·········x|
+
+@case HVP is CUP
+@size 10x5
+@send "\e[2;2fx"
+@expect-screen
+|··········|
+|·x········|
+
+@case CUU stops at the top row
+@size 10x5
+@send "\e[3;3H\e[9Ax"
+@expect-screen
+|··x·······|
+
+@case CUD stops at the bottom row
+@size 10x5
+@send "\e[9Bx"
+@expect-screen
+|··········|
+|··········|
+|··········|
+|··········|
+|x·········|
+
+@case CUB stops at the left column
+@size 10x5
+@send "\e[1;5H\e[9Dx"
+@expect-screen
+|x·········|
+
+@case CUF stops at the right column
+@size 10x5
+@send "\e[9Cx"
+@expect-screen
+|·········x|
+
+@case CNL moves down to column 1
+@size 10x5
+@send "\e[1;5H\e[2Ex"
+@expect-screen
+|··········|
+|··········|
+|x·········|
+
+@case CPL moves up to column 1
+@size 10x5
+@send "\e[4;5H\e[2Fx"
+@expect-screen
+|··········|
+|x·········|
+
+@case CHA sets the column
+@size 10x5
+@send "\e[7Gx"
+@expect-screen
+|······x···|
+
+@case HPA sets the column
+@size 10x5
+@send "\e[4`x"
+@expect-screen
+|···x······|
+
+@case VPA sets the row and keeps the column
+@size 10x5
+@send "\e[3;5H\e[2dx"
+@expect-screen
+|··········|
+|····x·····|
+
+@case HPR moves right
+@size 10x5
+@send "\e[1;2H\e[3ax"
+@expect-screen
+|····x·····|
+
+@case VPR moves down
+@size 10x5
+@send "\e[1;2H\e[2ex"
+@expect-screen
+|··········|
+|··········|
+|·x········|
+
+@case CUU stops at the top margin inside the region
+@size 10x5
+@send "\e[2;4r\e[3;1H\e[9Ax"
+@expect-screen
+|··········|
+|x·········|
+
+@case CUU above the region goes to the top row
+@size 10x5
+@send "\e[3;4r\e[2;1H\e[9Ax"
+@expect-screen
+|x·········|
+
+@case CUD stops at the bottom margin inside the region
+@size 10x5
+@send "\e[2;3r\e[2;1H\e[9Bx"
+@expect-screen
+|··········|
+|··········|
+|x·········|
+
+@case DECOM makes CUP relative to the region
+@size 10x5
+@send "\e[2;4r\e[?6h\e[Hx\e[9;9Hy"
+@expect-screen
+|··········|
+|x·········|
+|··········|
+|········y·|
+
+@case DECOM reports a relative CPR
+@size 10x5
+@send "\e[2;4r\e[?6h\e[2;3H\e[6n"
+@expect-reply "\e[2;3R"
+@expect-cursor 3,3
+
+@case CPR reports the cursor
+@size 10x5
+@send "\e[3;7H\e[6n"
+@expect-reply "\e[3;7R"
+
+@case Printing in the last column leaves a pending wrap
+@size 10x5
+@send "\e[1;10Hx"
+@expect-cursor 1,10
+@send "y"
+@expect-screen
+|·········x|
+|y·········|
+
+@case CUB from a pending wrap moves left from the last column
+@size 10x5
+@send "\e[1;9Hab\e[Dc"
+@expect-screen
+|········cb|
+
+@case BS from a pending wrap moves left from the last column
+@size 10x5
+@send "\e[1;9Hab^Hc"
+@expect-screen
+|········cb|
+
+@case LF keeps the column without LNM
+@size 10x5
+@send "ab\ncd"
+@expect-screen
+|ab········|
+|··cd······|
+
+@case LNM makes LF a new line
+@size 10x5
+@send "\e[20hab\ncd"
+@expect-screen
+|ab········|
+|cd········|
+
+@case DECSC and DECRC restore the position
+@size 10x5
+@send "\e[2;3H\e7\e[5;5H\e8x"
+@expect-screen
+|··········|
+|··x·······|
+
+@case SCOSC and SCORC restore the position
+@size 10x5
+@send "\e[2;3H\e[s\e[5;5H\e[ux"
+@expect-screen
+|··········|
+|··x·······|
+
+@case DECRC restores attributes
+@size 10x5
+@send "\e[1m\e7\e[0m\e8x"
+@expect-cell 1,1 bold
+
+@case DECRC without a save homes the cursor
+@size 10x5
+@send "\e[3;3H\e8x"
+@expect-screen
+|x·········|

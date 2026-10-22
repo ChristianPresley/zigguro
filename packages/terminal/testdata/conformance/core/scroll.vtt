@@ -1,0 +1,126 @@
+# Scrolling: LF and IND at the bottom, RI at the top, NEL, top and
+# bottom margins, left and right margins, SU, SD and scrollback.
+@cite https://vt100.net/docs/vt510-rm/DECSTBM.html
+
+@case LF at the bottom scrolls into scrollback
+@size 10x3
+@send "a\r\nb\r\nc\r\nd"
+@expect-screen
+|b·········|
+|c·········|
+|d·········|
+@expect-scrollback
+|a·········|
+
+@case IND at the bottom scrolls and keeps the column
+@size 10x3
+@send "a\r\nb\r\nc\eDd"
+@expect-screen
+|b·········|
+|c·········|
+|·d········|
+
+@case RI at the top scrolls down
+@size 10x3
+@send "a\r\nb\e[H\eMx"
+@expect-screen
+|x·········|
+|a·········|
+|b·········|
+
+@case NEL moves to the next line start
+@size 10x3
+@send "ab\eEc"
+@expect-screen
+|ab········|
+|c·········|
+
+@case LF at the bottom margin scrolls only the region
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[3;1H\nx"
+@expect-screen
+|1·········|
+|3·········|
+|x·········|
+|4·········|
+@expect-scrollback
+
+@case SU scrolls the region up
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[S"
+@expect-screen
+|1·········|
+|3·········|
+|··········|
+|4·········|
+
+@case SD scrolls the region down
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[T"
+@expect-screen
+|1·········|
+|··········|
+|2·········|
+|4·········|
+
+@case RI at the top margin scrolls the region down
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[2;1H\eM"
+@expect-screen
+|1·········|
+|··········|
+|2·········|
+|4·········|
+
+@case IL inside the region pushes rows to the bottom margin
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[2;1H\e[L"
+@expect-screen
+|1·········|
+|··········|
+|2·········|
+|4·········|
+
+@case IL outside the region does nothing
+@size 10x4
+@send "1\r\n2\r\n3\r\n4\e[2;3r\e[4;1H\e[L"
+@expect-screen
+|1·········|
+|2·········|
+|3·········|
+|4·········|
+
+@case DECSTBM homes the cursor
+@size 10x4
+@send "\e[3;3H\e[2;3r"
+@expect-cursor 1,1
+
+@case DECSTBM with top not above bottom is ignored
+@size 10x3
+@send "a\r\nb\r\nc\e[3;3r\r\nd"
+@expect-screen
+|b·········|
+|c·········|
+|d·········|
+
+@case Scrollback keeps rows in order
+@size 10x2
+@send "1\r\n2\r\n3\r\n4"
+@expect-scrollback
+|1·········|
+|2·········|
+@expect-screen
+|3·········|
+|4·········|
+
+@case DECSLRM scrolls only between the margins
+@size 10x2
+@send "abcdef\r\nghijkl\e[?69h\e[2;4s\e[2;2H\n"
+@expect-screen
+|ahijef····|
+|g···kl····|
+
+@case DECSLRM needs DECLRMM
+@size 10x2
+@send "\e[3;3H\e[2;4s"
+@expect-cursor 2,3

@@ -34,8 +34,12 @@ pub fn build(b: *std.Build) void {
     // Package modules for the host configuration.
     var mods: [packages.all.len]*std.Build.Module = undefined;
     var deps: [packages.all.len]*std.Build.Dependency = undefined;
+    const conformance_strict = b.option(bool, "terminal_conformance_strict", "Fail when a terminal conformance category is under its minimum") orelse false;
     inline for (packages.all, 0..) |p, i| {
-        deps[i] = b.dependency(p.name, f.args());
+        deps[i] = if (comptime std.mem.eql(u8, p.name, "zg_terminal"))
+            b.dependency(p.name, argsWith(f, .{ .terminal_conformance_strict = conformance_strict }))
+        else
+            b.dependency(p.name, f.args());
         mods[i] = deps[i].module(p.name);
     }
     const options = zg_build.optionsModule(b, f);
@@ -159,6 +163,19 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Generated terminal reference tables (packages/terminal/docs/).
+    inline for (packages.all, 0..) |p, i| {
+        if (comptime std.mem.eql(u8, p.name, "zg_terminal")) {
+            const gen = b.addRunArtifact(deps[i].artifact("zg_terminal-docs"));
+            gen.addArg(b.pathFromRoot("packages/terminal/docs"));
+            b.step("docs-terminal-modes", "Regenerate packages/terminal/docs/{modes,xtgettcap}.md").dependOn(&gen.step);
+            const conf = b.addTest(.{ .name = "zg_terminal-conformance", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"conformance"} });
+            const run_conf = b.addRunArtifact(conf);
+            run_conf.skip_foreign_checks = true;
+            b.step("test-terminal-conformance", "Run the terminal .vtt conformance corpus").dependOn(&run_conf.step);
+        }
+    }
+
     // Formatting.
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "build", "packages", "apps", "tools" }, .check = true });
     b.step("fmt-check", "Fail if any file is not zig fmt clean").dependOn(&fmt.step);
@@ -243,4 +260,29 @@ fn toolModule(b: *std.Build, comptime root: []const u8, optimize: std.builtin.Op
             .{ .name = "zg_build_api", .module = b.createModule(.{ .root_source_file = b.path("packages/build/build.zig") }) },
         },
     });
+}
+
+/// `f.args()` plus the fields of `extra`, for a package with its own options.
+fn argsWith(f: zg_build.Flags, extra: anytype) ArgsWith(@TypeOf(extra)) {
+    var out: ArgsWith(@TypeOf(extra)) = undefined;
+    const base = f.args();
+    inline for (@typeInfo(@TypeOf(base)).@"struct".fields) |fl| @field(out, fl.name) = @field(base, fl.name);
+    inline for (@typeInfo(@TypeOf(extra)).@"struct".fields) |fl| @field(out, fl.name) = @field(extra, fl.name);
+    return out;
+}
+
+fn ArgsWith(comptime E: type) type {
+    const a = @typeInfo(zg_build.Args).@"struct".fields;
+    const e = @typeInfo(E).@"struct".fields;
+    var names: [a.len + e.len][]const u8 = undefined;
+    var types: [a.len + e.len]type = undefined;
+    for (a, 0..) |fl, i| {
+        names[i] = fl.name;
+        types[i] = fl.type;
+    }
+    for (e, a.len..) |fl, i| {
+        names[i] = fl.name;
+        types[i] = fl.type;
+    }
+    return @Struct(.auto, null, &names, &types, &@splat(.{}));
 }

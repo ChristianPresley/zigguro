@@ -1,0 +1,153 @@
+# SGR colours: the 8 and 16 colour forms, 256-colour and truecolour in
+# semicolon and colon forms, defaults and malformed sequences.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Pm-m.1CA7
+
+@case SGR 30 sets foreground 0
+@size 10x2
+@send "\e[30mx"
+@expect-cell 1,1 fg=0
+
+@case SGR 31 sets foreground 1
+@size 10x2
+@send "\e[31mx"
+@expect-cell 1,1 fg=1
+
+@case SGR 32 sets foreground 2
+@size 10x2
+@send "\e[32mx"
+@expect-cell 1,1 fg=2
+
+@case SGR 33 sets foreground 3
+@size 10x2
+@send "\e[33mx"
+@expect-cell 1,1 fg=3
+
+@case SGR 34 sets foreground 4
+@size 10x2
+@send "\e[34mx"
+@expect-cell 1,1 fg=4
+
+@case SGR 35 sets foreground 5
+@size 10x2
+@send "\e[35mx"
+@expect-cell 1,1 fg=5
+
+@case SGR 36 sets foreground 6
+@size 10x2
+@send "\e[36mx"
+@expect-cell 1,1 fg=6
+
+@case SGR 37 sets foreground 7
+@size 10x2
+@send "\e[37mx"
+@expect-cell 1,1 fg=7
+
+@case SGR 41 sets background 1
+@size 10x2
+@send "\e[41mx"
+@expect-cell 1,1 bg=1
+
+@case SGR 47 sets background 7
+@size 10x2
+@send "\e[47mx"
+@expect-cell 1,1 bg=7
+
+@case SGR 90 sets bright foreground 8
+@size 10x2
+@send "\e[90mx"
+@expect-cell 1,1 fg=8
+
+@case SGR 97 sets bright foreground 15
+@size 10x2
+@send "\e[97mx"
+@expect-cell 1,1 fg=15
+
+@case SGR 100 sets bright background 8
+@size 10x2
+@send "\e[100mx"
+@expect-cell 1,1 bg=8
+
+@case SGR 107 sets bright background 15
+@size 10x2
+@send "\e[107mx"
+@expect-cell 1,1 bg=15
+
+@case SGR 39 resets the foreground
+@size 10x2
+@send "\e[31;42m\e[39mx"
+@expect-cell 1,1 fg=default bg=2
+
+@case SGR 49 resets the background
+@size 10x2
+@send "\e[31;42m\e[49mx"
+@expect-cell 1,1 fg=1 bg=default
+
+@case 38;5 sets a 256-colour foreground
+@size 10x2
+@send "\e[38;5;196mx"
+@expect-cell 1,1 fg=196
+
+@case 48;5 sets a 256-colour background
+@size 10x2
+@send "\e[48;5;21mx"
+@expect-cell 1,1 bg=21
+
+@case 38:5 colon form
+@size 10x2
+@send "\e[38:5:100mx"
+@expect-cell 1,1 fg=100
+
+@case 38;2 sets a truecolour foreground
+@size 10x2
+@send "\e[38;2;255;128;0mx"
+@expect-cell 1,1 fg=rgb:ff8000
+
+@case 48;2 sets a truecolour background
+@size 10x2
+@send "\e[48;2;1;2;3mx"
+@expect-cell 1,1 bg=rgb:010203
+
+@case 38:2:: colon form with an empty colour space
+@size 10x2
+@send "\e[38:2::10:20:30mx"
+@expect-cell 1,1 fg=rgb:0a141e
+
+@case 38:2 colon form without a colour space
+@size 10x2
+@send "\e[38:2:10:20:30mx"
+@expect-cell 1,1 fg=rgb:0a141e
+
+@case Truecolour components saturate at 255
+@size 10x2
+@send "\e[38;2;999;0;0mx"
+@expect-cell 1,1 fg=rgb:ff0000
+
+@case Params after a truecolour colour still apply
+@size 10x2
+@send "\e[38;2;1;2;3;1mx"
+@expect-cell 1,1 fg=rgb:010203 bold
+
+@case Params after a 256 colour still apply
+@size 10x2
+@send "\e[38;5;9;4mx"
+@expect-cell 1,1 fg=9 underline
+
+@case A short truecolour sequence is ignored
+@size 10x2
+@send "\e[31m\e[38;2;1;2mx"
+@expect-cell 1,1 fg=1
+
+@case Colon sub-params after 38 do not leak into the next param
+@size 10x2
+@send "\e[38:5:1;3mx"
+@expect-cell 1,1 fg=1 italic
+
+@case Unknown colour kind is skipped
+@size 10x2
+@send "\e[38;7;1mx"
+@expect-cell 1,1 fg=default bold
+
+@case SGR 0 resets colours
+@size 10x2
+@send "\e[31;42;58;5;3m\e[0mx"
+@expect-cell 1,1 fg=default bg=default ul=default

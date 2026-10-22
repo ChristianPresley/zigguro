@@ -1,0 +1,136 @@
+# Shell integration marks (OSC 133, 633, 7 and 1337) and the rows they
+# land on.
+@cite https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
+
+@case OSC 133 A marks the prompt row
+@size 10x4
+@send "\e]133;A^G$ "
+@expect-mark A at 1
+
+@case OSC 133 B marks the input row
+@size 10x4
+@send "\e]133;A^G$ \e]133;B^G"
+@expect-mark B at 1
+
+@case OSC 133 C marks where output starts
+@size 10x4
+@send "\e]133;A^G$ \e]133;B^Gls\r\n\e]133;C^G"
+@expect-mark C at 2
+
+@case OSC 133 D marks the command end
+@size 10x4
+@send "\e]133;C^Gout\r\n\e]133;D;0^G"
+@expect-mark D at 2
+
+@case OSC 133 D without an exit code
+@size 10x4
+@send "\e]133;D^G"
+@expect-mark D at 1
+
+@case Marks follow the cursor row
+@size 10x4
+@send "\e[3;1H\e]133;A^G"
+@expect-mark A at 3
+
+@case A full prompt cycle in order
+@size 10x4
+@send "\e]133;A^G$ \e]133;B^Gls\r\n\e]133;C^Ga\r\n\e]133;D;0^G\e]133;A^G"
+@expect-mark A at 1
+@expect-mark B at 1
+@expect-mark C at 2
+@expect-mark D at 3
+@expect-mark A at 3
+
+@case OSC 133 accepts ST
+@size 10x4
+@send "\e]133;A\e\\"
+@expect-mark A at 1
+
+@case OSC 133 A with options
+@size 10x4
+@send "\e]133;A;aid=42;k=s^G"
+@expect-mark A at 1
+
+@case Two prompts on different rows
+@size 10x4
+@send "\e]133;A^G$\r\n\e]133;A^G$"
+@expect-mark A at 1
+@expect-mark A at 2
+
+@case Marks keep their row after printing
+@size 10x4
+@send "\e]133;A^G$ echo hi"
+@expect-mark A at 1
+@expect-screen
+|$ echo hi·|
+
+@case An unknown OSC 133 letter emits nothing
+@size 10x4
+@send "\e]133;Z^G\e]133;A^G"
+@expect-mark A at 1
+
+@case OSC 133 marks do not print
+@size 10x4
+@send "\e]133;A^Gx"
+@expect-screen
+|x·········|
+
+@case OSC 633 A marks the prompt
+@size 10x4
+@send "\e]633;A^G"
+@expect-mark A at 1
+
+@case OSC 633 E carries the command line
+@size 10x4
+@send "\e]633;E;ls -l^G"
+@expect-mark E at 1
+
+@case OSC 633 P sets a property
+@size 10x4
+@send "\e]633;P;Cwd=/tmp^G"
+@expect-mark P at 1
+
+@case OSC 133 E is not a VS Code command line
+@size 10x4
+@send "\e]133;E;ls^G\e]133;A^G"
+@expect-mark A at 1
+
+@case OSC 7 reports the working directory
+@size 10x4
+@send "\e]7;file:///home/u^G"
+@expect-mark W at 1
+
+@case OSC 7 with localhost
+@size 10x4
+@send "\e]7;file://localhost/tmp^G"
+@expect-mark W at 1
+
+@case OSC 7 with kitty-shell-cwd
+@size 10x4
+@send "\e]7;kitty-shell-cwd:///tmp^G"
+@expect-mark W at 1
+
+@case OSC 7 without a scheme is ignored
+@size 10x4
+@send "\e]7;/tmp^G\e]133;A^G"
+@expect-mark A at 1
+
+@case OSC 1337 CurrentDir reports the directory
+@size 10x4
+@send "\e]1337;CurrentDir=/srv^G"
+@expect-mark W at 1
+
+@case OSC 1337 SetMark adds a bookmark
+@size 10x4
+@send "\e[2;1H\e]1337;SetMark^G"
+@expect-mark M at 2
+
+@case Marks on the alternate screen use its rows
+@size 10x4
+@send "\e[?1049h\e[4;1H\e]133;A^G"
+@expect-mark A at 4
+
+@case A mark after scrolling is on the bottom row
+@size 10x2
+@send "a\r\nb\r\nc\e]133;A^G"
+@expect-mark A at 2

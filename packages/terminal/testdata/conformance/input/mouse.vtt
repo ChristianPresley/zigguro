@@ -1,0 +1,131 @@
+# Mouse reports through the terminal's tracking modes and encodings,
+# alternate scroll, focus events and bracketed paste.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
+
+@case No report without a tracking mode
+@size 10x5
+@mouse press left 1,1
+@expect-input ""
+
+@case X10 mode reports presses
+@size 10x5
+@send "\e[?9h"
+@mouse press left 2,3
+@expect-input "\e[M #\""
+
+@case X10 mode ignores releases
+@size 10x5
+@send "\e[?9h"
+@mouse release left 2,3
+@expect-input ""
+
+@case Normal mode reports releases as button 3
+@size 10x5
+@send "\e[?1000h"
+@mouse release left 1,1
+@expect-input "\e[M#!!"
+
+@case Normal mode ignores motion
+@size 10x5
+@send "\e[?1000h"
+@mouse motion left 1,2
+@expect-input ""
+
+@case SGR encoding reports press and release
+@size 10x5
+@send "\e[?1000h\e[?1006h"
+@mouse press left 3,4
+@mouse release left 3,4
+@expect-input "\e[<0;4;3M\e[<0;4;3m"
+
+@case SGR encodes modifiers
+@size 10x5
+@send "\e[?1000h\e[?1006h"
+@mouse press right 1,1 shift ctrl
+@expect-input "\e[<22;1;1M"
+
+@case Button mode reports drags
+@size 10x5
+@send "\e[?1002h\e[?1006h"
+@mouse motion left 2,2
+@expect-input "\e[<32;2;2M"
+
+@case Button mode ignores hover
+@size 10x5
+@send "\e[?1002h\e[?1006h"
+@mouse motion none 2,2
+@expect-input ""
+
+@case Any mode reports hover
+@size 10x5
+@send "\e[?1003h\e[?1006h"
+@mouse motion none 2,2
+@expect-input "\e[<35;2;2M"
+
+@case Wheel reports buttons 64 and 65
+@size 10x5
+@send "\e[?1000h\e[?1006h"
+@mouse wheel up 1,1
+@mouse wheel down 1,1
+@expect-input "\e[<64;1;1M\e[<65;1;1M"
+
+@case urxvt encoding
+@size 10x5
+@send "\e[?1000h\e[?1015h"
+@mouse press left 2,3
+@expect-input "\e[32;3;2M"
+
+@case SGR pixel encoding reports pixels
+@size 10x5
+@send "\e[?1000h\e[?1016h"
+@mouse press left 1,1 px=15,40
+@expect-input "\e[<0;16;41M"
+
+@case Alternate scroll sends cursor keys on the alternate screen
+@size 10x5
+@send "\e[?1007h\e[?1049h"
+@mouse wheel up 1,1
+@expect-input "\e[A"
+
+@case Alternate scroll uses SS3 with DECCKM
+@size 10x5
+@send "\e[?1007h\e[?1049h\e[?1h"
+@mouse wheel down 1,1
+@expect-input "\eOB"
+
+@case Alternate scroll does nothing on the main screen
+@size 10x5
+@send "\e[?1007h"
+@mouse wheel up 1,1
+@expect-input ""
+
+@case Focus events need mode 1004
+@size 10x2
+@focus in
+@expect-input ""
+@send "\e[?1004h"
+@focus in
+@focus out
+@expect-input "\e[I\e[O"
+
+@case Bracketed paste wraps the text
+@size 10x2
+@send "\e[?2004h"
+@paste "hi"
+@expect-input "\e[200~hi\e[201~"
+
+@case Paste turns LF into CR
+@size 10x2
+@paste "a\nb"
+@expect-input "a\rb"
+
+@case Bracketed paste strips ESC so the end marker cannot be injected
+@size 10x2
+@send "\e[?2004h"
+@paste "a\e[201~b"
+@expect-input "\e[200~a[201~b\e[201~"
+
+@case Paste strips control characters
+@size 10x2
+@paste "a^Gb\tc"
+@expect-input "ab\tc"
