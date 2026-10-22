@@ -10,6 +10,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Page = @import("Page.zig");
 const PageList = @import("PageList.zig");
+const reflow = @import("reflow.zig");
 const style_mod = @import("style.zig");
 const cell_mod = @import("cell.zig");
 const unicode = @import("unicode.zig");
@@ -567,22 +568,41 @@ pub fn resize(s: *Screen, new_cols: u16, new_rows: u16) !void {
         const trimmed = (s.height() - new_rows) - drop;
         if (trimmed > 0) s.pages.trimBottom(trimmed);
     }
-    const t = try s.pages.track(s.rowPin(s.cursor.y));
+    // The primary screen re-wraps at a new width; the alternate screen (and
+    // a height-only change) keeps rows as they are.
+    const rewrap = new_cols != s.width() and s.pages.opts.scrollback;
+    var cp = s.rowPin(s.cursor.y);
+    // A pending wrap sits just past the last column.
+    cp.x = s.cursor.x + @intFromBool(s.cursor.pending_wrap and rewrap);
+    const t = try s.pages.track(cp);
     defer s.pages.untrack(t);
-    try s.pages.resize(new_cols, new_rows);
-    const abs = s.pages.rowIndex(t.pin);
-    const sb = s.pages.scrollbackRows();
-    s.cursor.y = if (t.garbage or abs < sb) 0 else @intCast(@min(abs - sb, new_rows - 1));
-    s.cursor.x = @min(s.cursor.x, new_cols - 1);
-    s.cursor.pending_wrap = false;
+    const st = if (s.saved) |sv| blk: {
+        var p = s.rowPin(@min(sv.y, s.height() - 1));
+        p.x = sv.x;
+        break :blk try s.pages.track(p);
+    } else null;
+    defer if (st) |x| s.pages.untrack(x);
+    var past_edge = false;
+    if (rewrap) past_edge = try reflow.reflow(&s.pages, new_cols, new_rows, t) else try s.pages.resize(new_cols, new_rows);
+    s.cursor.y, s.cursor.x = s.activePos(t, new_rows, new_cols);
+    // A cursor just past a line that now fills the row waits to wrap.
+    s.cursor.pending_wrap = past_edge and s.modes.autowrap;
     s.cursor.cache_id = 0;
     s.region = s.fullRegion();
-    s.saved = if (s.saved) |sv| blk: {
-        var v = sv;
-        v.x = @min(v.x, new_cols - 1);
-        v.y = @min(v.y, new_rows - 1);
-        break :blk v;
-    } else null;
+    if (s.saved) |*sv| {
+        sv.y, sv.x = s.activePos(st.?, new_rows, new_cols);
+    }
+}
+
+/// The active-area row and column of a tracked pin after a resize (row 0
+/// when it scrolled into scrollback or was dropped).
+fn activePos(s: *const Screen, t: *const PageList.TrackedPin, rows: u16, cols: u16) struct { u16, u16 } {
+    const x = @min(t.pin.x, cols - 1);
+    if (t.garbage) return .{ 0, x };
+    const abs = s.pages.rowIndex(t.pin);
+    const sb = s.pages.scrollbackRows();
+    if (abs < sb) return .{ 0, x };
+    return .{ @intCast(@min(abs - sb, rows - 1)), x };
 }
 
 fn rowBlank(p: Pin) bool {
