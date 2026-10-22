@@ -1,0 +1,2 @@
+zigguro minisign test vector
+second line
