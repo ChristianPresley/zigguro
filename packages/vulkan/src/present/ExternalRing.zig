@@ -114,6 +114,12 @@ pub const Book = struct {
         self.rendered[i] = 0;
     }
 
+    /// Image `i` was acquired but left untouched: free, contents kept.
+    pub fn cancelled(self: *Book, i: u8) void {
+        std.debug.assert(self.state[i] == .rendering);
+        self.state[i] = .free;
+    }
+
     /// The presenter returned `h`.
     pub fn released(self: *Book, h: surface.BufferHandle) void {
         for (&self.state, self.handles) |*s, x| {
@@ -293,6 +299,11 @@ pub fn abandon(self: *ExternalRing, a: Acquired) void {
     self.book.abandoned(a.index);
 }
 
+/// Returns image `a` unused (nothing was recorded into it).
+pub fn cancel(self: *ExternalRing, a: Acquired) void {
+    self.book.cancelled(a.index);
+}
+
 /// The compositor's formats changed: reallocate at the next acquire.
 pub fn onFeedbackChanged(self: *ExternalRing) void {
     var comp: [256]surface.FormatModifier = undefined;
@@ -465,6 +476,10 @@ test "external: release/age bookkeeping" {
     // Releasing a buffer that is not ours changes nothing.
     b.released(@enumFromInt(99));
     try testing.expectEqual(Book.State.held, b.state[0]);
+    // A cancelled acquire keeps the contents (and age).
+    b.begin(1);
+    b.cancelled(1);
+    try testing.expectEqual(Book.Pick{ .reuse = .{ .index = 1, .age = 2 } }, b.pick());
     // An abandoned frame leaves the image free with unknown contents.
     b.begin(1);
     b.abandoned(1);
