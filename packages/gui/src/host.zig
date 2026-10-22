@@ -145,6 +145,8 @@ pub const HostWindow = struct {
 const clipboard_request: u32 = 0x4704_0001;
 /// The request id of the Host's PRIMARY selection reads.
 const primary_request: u32 = 0x4704_0002;
+/// Widget clipboard reads: this tag ORed with the window id's low bits.
+const widget_request_tag: u32 = 0x4710_0000;
 
 /// Drives windows of one `App` on one `Platform`.
 pub const Host = struct {
@@ -311,6 +313,11 @@ pub const Host = struct {
         if (h.app.has_primary) try h.flushClipboard(&h.app.primary, .primary);
         for (h.windows.items) |hw| {
             for (hw.win.window_ops.items) |op| try h.platform.submit(.{ .request_state = .{ .win = hw.id, .op = op } });
+            if (hw.win.clip_read.send) |r| {
+                hw.win.clip_read.send = null;
+                hw.win.clip_read.wait = r;
+                try h.platform.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = r.mime, .request = widget_request_tag | (@intFromEnum(hw.id) & 0xffff) } });
+            }
             if (hw.win.drop.pending) |accept| {
                 hw.win.drop.pending = null;
                 try h.platform.submit(.{ .set_drop_effect = .{ .win = hw.id, .accept = if (accept) .uri_list else null, .effect = if (accept) .{ .copy = true } else .{} } });
@@ -388,6 +395,9 @@ pub const Host = struct {
                     clipboard_request => h.app.clipboard.replace(h.gpa, h.platform.payload(d.data)),
                     primary_request => h.app.primary.replace(h.gpa, h.platform.payload(d.data)),
                     else => {},
+                };
+                if (d.request & 0xffff_0000 == widget_request_tag) for (h.windows.items) |hw| {
+                    if (@intFromEnum(hw.id) & 0xffff == d.request & 0xffff) hw.win.clipboardArrived(d.mime, h.platform.payload(d.data));
                 };
                 if (d.data.large) h.platform.release(d.data);
                 return;
