@@ -257,7 +257,12 @@ pub const TextField = struct {
 
     /// A text box (masked value for passwords is E04.F09's job).
     pub fn a11y(props: *const Props, _: *State) widget.A11y {
-        return .{ .role = .textbox, .name = if (props.a11y_label.len > 0) props.a11y_label else props.placeholder, .disabled = props.disabled };
+        return .{
+            .role = .textbox,
+            .name = if (props.a11y_label.len > 0) props.a11y_label else props.placeholder,
+            .disabled = props.disabled,
+            .text = if (props.password) "" else props.buffer.slice(),
+        };
     }
 
     /// Pointer selection, typing, navigation, clipboard and undo.
