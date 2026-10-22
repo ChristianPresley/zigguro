@@ -37,9 +37,9 @@ pub const This = *anyopaque;
 
 /// The three IUnknown methods, which start every vtable.
 const U = struct {
-    const QueryInterface = *const fn (This, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT;
-    const AddRef = *const fn (This) callconv(.winapi) ULONG;
-    const Release = *const fn (This) callconv(.winapi) ULONG;
+    const QueryInterface = *const fn (This, *const GUID, *?*anyopaque) callconv(t.winapi) HRESULT;
+    const AddRef = *const fn (This) callconv(t.winapi) ULONG;
+    const Release = *const fn (This) callconv(t.winapi) ULONG;
 };
 
 /// `IUnknown`.
@@ -67,10 +67,10 @@ pub const IDropTarget = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        DragEnter: *const fn (This, *IDataObject, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(.winapi) HRESULT,
-        DragOver: *const fn (This, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(.winapi) HRESULT,
-        DragLeave: *const fn (This) callconv(.winapi) HRESULT,
-        Drop: *const fn (This, *IDataObject, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(.winapi) HRESULT,
+        DragEnter: *const fn (This, *IDataObject, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(t.winapi) HRESULT,
+        DragOver: *const fn (This, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(t.winapi) HRESULT,
+        DragLeave: *const fn (This) callconv(t.winapi) HRESULT,
+        Drop: *const fn (This, *IDataObject, key_state: DWORD, pt: t.POINTL, effect: *DWORD) callconv(t.winapi) HRESULT,
         /// `IID_IDropTarget`.
         pub const iid = guid("00000122-0000-0000-c000-000000000046");
     };
@@ -84,8 +84,8 @@ pub const IDropSource = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        QueryContinueDrag: *const fn (This, escape: BOOL, key_state: DWORD) callconv(.winapi) HRESULT,
-        GiveFeedback: *const fn (This, effect: DWORD) callconv(.winapi) HRESULT,
+        QueryContinueDrag: *const fn (This, escape: BOOL, key_state: DWORD) callconv(t.winapi) HRESULT,
+        GiveFeedback: *const fn (This, effect: DWORD) callconv(t.winapi) HRESULT,
         /// `IID_IDropSource`.
         pub const iid = guid("00000121-0000-0000-c000-000000000046");
     };
@@ -99,15 +99,15 @@ pub const IDataObject = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        GetData: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM) callconv(.winapi) HRESULT,
-        GetDataHere: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM) callconv(.winapi) HRESULT,
-        QueryGetData: *const fn (This, *const t.FORMATETC) callconv(.winapi) HRESULT,
-        GetCanonicalFormatEtc: *const fn (This, *const t.FORMATETC, *t.FORMATETC) callconv(.winapi) HRESULT,
-        SetData: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM, release: BOOL) callconv(.winapi) HRESULT,
-        EnumFormatEtc: *const fn (This, direction: DWORD, *?*IEnumFORMATETC) callconv(.winapi) HRESULT,
-        DAdvise: *const fn (This, *const t.FORMATETC, advf: DWORD, sink: ?*anyopaque, connection: *DWORD) callconv(.winapi) HRESULT,
-        DUnadvise: *const fn (This, connection: DWORD) callconv(.winapi) HRESULT,
-        EnumDAdvise: *const fn (This, *?*anyopaque) callconv(.winapi) HRESULT,
+        GetData: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM) callconv(t.winapi) HRESULT,
+        GetDataHere: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM) callconv(t.winapi) HRESULT,
+        QueryGetData: *const fn (This, *const t.FORMATETC) callconv(t.winapi) HRESULT,
+        GetCanonicalFormatEtc: *const fn (This, *const t.FORMATETC, *t.FORMATETC) callconv(t.winapi) HRESULT,
+        SetData: *const fn (This, *const t.FORMATETC, *t.STGMEDIUM, release: BOOL) callconv(t.winapi) HRESULT,
+        EnumFormatEtc: *const fn (This, direction: DWORD, *?*IEnumFORMATETC) callconv(t.winapi) HRESULT,
+        DAdvise: *const fn (This, *const t.FORMATETC, advf: DWORD, sink: ?*anyopaque, connection: *DWORD) callconv(t.winapi) HRESULT,
+        DUnadvise: *const fn (This, connection: DWORD) callconv(t.winapi) HRESULT,
+        EnumDAdvise: *const fn (This, *?*anyopaque) callconv(t.winapi) HRESULT,
         /// `IID_IDataObject`.
         pub const iid = guid("0000010e-0000-0000-c000-000000000046");
     };
@@ -121,10 +121,10 @@ pub const IEnumFORMATETC = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        Next: *const fn (This, n: ULONG, out: [*]t.FORMATETC, fetched: ?*ULONG) callconv(.winapi) HRESULT,
-        Skip: *const fn (This, n: ULONG) callconv(.winapi) HRESULT,
-        Reset: *const fn (This) callconv(.winapi) HRESULT,
-        Clone: *const fn (This, *?*IEnumFORMATETC) callconv(.winapi) HRESULT,
+        Next: *const fn (This, n: ULONG, out: [*]t.FORMATETC, fetched: ?*ULONG) callconv(t.winapi) HRESULT,
+        Skip: *const fn (This, n: ULONG) callconv(t.winapi) HRESULT,
+        Reset: *const fn (This) callconv(t.winapi) HRESULT,
+        Clone: *const fn (This, *?*IEnumFORMATETC) callconv(t.winapi) HRESULT,
         /// `IID_IEnumFORMATETC`.
         pub const iid = guid("00000103-0000-0000-c000-000000000046");
     };
@@ -138,11 +138,11 @@ pub const IShellItem = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        BindToHandler: *const fn (This, bc: ?*anyopaque, bhid: *const GUID, riid: *const GUID, out: *?*anyopaque) callconv(.winapi) HRESULT,
-        GetParent: *const fn (This, *?*IShellItem) callconv(.winapi) HRESULT,
-        GetDisplayName: *const fn (This, sigdn: u32, name: *?t.LPWSTR) callconv(.winapi) HRESULT,
-        GetAttributes: *const fn (This, mask: u32, attrs: *u32) callconv(.winapi) HRESULT,
-        Compare: *const fn (This, other: *IShellItem, hint: u32, order: *i32) callconv(.winapi) HRESULT,
+        BindToHandler: *const fn (This, bc: ?*anyopaque, bhid: *const GUID, riid: *const GUID, out: *?*anyopaque) callconv(t.winapi) HRESULT,
+        GetParent: *const fn (This, *?*IShellItem) callconv(t.winapi) HRESULT,
+        GetDisplayName: *const fn (This, sigdn: u32, name: *?t.LPWSTR) callconv(t.winapi) HRESULT,
+        GetAttributes: *const fn (This, mask: u32, attrs: *u32) callconv(t.winapi) HRESULT,
+        Compare: *const fn (This, other: *IShellItem, hint: u32, order: *i32) callconv(t.winapi) HRESULT,
         /// `IID_IShellItem`.
         pub const iid = guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
     };
@@ -158,13 +158,13 @@ pub const IShellItemArray = extern struct {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        BindToHandler: *const fn (This, bc: ?*anyopaque, bhid: *const GUID, riid: *const GUID, out: *?*anyopaque) callconv(.winapi) HRESULT,
-        GetPropertyStore: *const fn (This, flags: u32, riid: *const GUID, out: *?*anyopaque) callconv(.winapi) HRESULT,
-        GetPropertyDescriptionList: *const fn (This, key: *const anyopaque, riid: *const GUID, out: *?*anyopaque) callconv(.winapi) HRESULT,
-        GetAttributes: *const fn (This, flags: u32, mask: u32, attrs: *u32) callconv(.winapi) HRESULT,
-        GetCount: *const fn (This, *DWORD) callconv(.winapi) HRESULT,
-        GetItemAt: *const fn (This, index: DWORD, *?*IShellItem) callconv(.winapi) HRESULT,
-        EnumItems: *const fn (This, *?*anyopaque) callconv(.winapi) HRESULT,
+        BindToHandler: *const fn (This, bc: ?*anyopaque, bhid: *const GUID, riid: *const GUID, out: *?*anyopaque) callconv(t.winapi) HRESULT,
+        GetPropertyStore: *const fn (This, flags: u32, riid: *const GUID, out: *?*anyopaque) callconv(t.winapi) HRESULT,
+        GetPropertyDescriptionList: *const fn (This, key: *const anyopaque, riid: *const GUID, out: *?*anyopaque) callconv(t.winapi) HRESULT,
+        GetAttributes: *const fn (This, flags: u32, mask: u32, attrs: *u32) callconv(t.winapi) HRESULT,
+        GetCount: *const fn (This, *DWORD) callconv(t.winapi) HRESULT,
+        GetItemAt: *const fn (This, index: DWORD, *?*IShellItem) callconv(t.winapi) HRESULT,
+        EnumItems: *const fn (This, *?*anyopaque) callconv(t.winapi) HRESULT,
         /// `IID_IShellItemArray`.
         pub const iid = guid("b63ea76d-1f85-456f-a19c-48159efa858b");
     };
@@ -192,8 +192,8 @@ pub const IFileOpenDialog = extern struct {
     vtbl: *const Vtbl,
     /// Its vtable.
     pub const Vtbl = FileDialogVtbl(struct {
-        GetResults: *const fn (This, *?*IShellItemArray) callconv(.winapi) HRESULT,
-        GetSelectedItems: *const fn (This, *?*IShellItemArray) callconv(.winapi) HRESULT,
+        GetResults: *const fn (This, *?*IShellItemArray) callconv(t.winapi) HRESULT,
+        GetSelectedItems: *const fn (This, *?*IShellItemArray) callconv(t.winapi) HRESULT,
     });
 };
 
@@ -203,30 +203,30 @@ fn FileDialogVtbl(comptime Extra: type) type {
         QueryInterface: U.QueryInterface,
         AddRef: U.AddRef,
         Release: U.Release,
-        Show: *const fn (This, owner: ?t.HWND) callconv(.winapi) HRESULT,
-        SetFileTypes: *const fn (This, n: t.UINT, specs: [*]const t.COMDLG_FILTERSPEC) callconv(.winapi) HRESULT,
-        SetFileTypeIndex: *const fn (This, t.UINT) callconv(.winapi) HRESULT,
-        GetFileTypeIndex: *const fn (This, *t.UINT) callconv(.winapi) HRESULT,
-        Advise: *const fn (This, events: *anyopaque, cookie: *DWORD) callconv(.winapi) HRESULT,
-        Unadvise: *const fn (This, cookie: DWORD) callconv(.winapi) HRESULT,
-        SetOptions: *const fn (This, u32) callconv(.winapi) HRESULT,
-        GetOptions: *const fn (This, *u32) callconv(.winapi) HRESULT,
-        SetDefaultFolder: *const fn (This, *IShellItem) callconv(.winapi) HRESULT,
-        SetFolder: *const fn (This, *IShellItem) callconv(.winapi) HRESULT,
-        GetFolder: *const fn (This, *?*IShellItem) callconv(.winapi) HRESULT,
-        GetCurrentSelection: *const fn (This, *?*IShellItem) callconv(.winapi) HRESULT,
-        SetFileName: *const fn (This, t.LPCWSTR) callconv(.winapi) HRESULT,
-        GetFileName: *const fn (This, *?t.LPWSTR) callconv(.winapi) HRESULT,
-        SetTitle: *const fn (This, t.LPCWSTR) callconv(.winapi) HRESULT,
-        SetOkButtonLabel: *const fn (This, t.LPCWSTR) callconv(.winapi) HRESULT,
-        SetFileNameLabel: *const fn (This, t.LPCWSTR) callconv(.winapi) HRESULT,
-        GetResult: *const fn (This, *?*IShellItem) callconv(.winapi) HRESULT,
-        AddPlace: *const fn (This, *IShellItem, place: u32) callconv(.winapi) HRESULT,
-        SetDefaultExtension: *const fn (This, t.LPCWSTR) callconv(.winapi) HRESULT,
-        Close: *const fn (This, HRESULT) callconv(.winapi) HRESULT,
-        SetClientGuid: *const fn (This, *const GUID) callconv(.winapi) HRESULT,
-        ClearClientData: *const fn (This) callconv(.winapi) HRESULT,
-        SetFilter: *const fn (This, filter: ?*anyopaque) callconv(.winapi) HRESULT,
+        Show: *const fn (This, owner: ?t.HWND) callconv(t.winapi) HRESULT,
+        SetFileTypes: *const fn (This, n: t.UINT, specs: [*]const t.COMDLG_FILTERSPEC) callconv(t.winapi) HRESULT,
+        SetFileTypeIndex: *const fn (This, t.UINT) callconv(t.winapi) HRESULT,
+        GetFileTypeIndex: *const fn (This, *t.UINT) callconv(t.winapi) HRESULT,
+        Advise: *const fn (This, events: *anyopaque, cookie: *DWORD) callconv(t.winapi) HRESULT,
+        Unadvise: *const fn (This, cookie: DWORD) callconv(t.winapi) HRESULT,
+        SetOptions: *const fn (This, u32) callconv(t.winapi) HRESULT,
+        GetOptions: *const fn (This, *u32) callconv(t.winapi) HRESULT,
+        SetDefaultFolder: *const fn (This, *IShellItem) callconv(t.winapi) HRESULT,
+        SetFolder: *const fn (This, *IShellItem) callconv(t.winapi) HRESULT,
+        GetFolder: *const fn (This, *?*IShellItem) callconv(t.winapi) HRESULT,
+        GetCurrentSelection: *const fn (This, *?*IShellItem) callconv(t.winapi) HRESULT,
+        SetFileName: *const fn (This, t.LPCWSTR) callconv(t.winapi) HRESULT,
+        GetFileName: *const fn (This, *?t.LPWSTR) callconv(t.winapi) HRESULT,
+        SetTitle: *const fn (This, t.LPCWSTR) callconv(t.winapi) HRESULT,
+        SetOkButtonLabel: *const fn (This, t.LPCWSTR) callconv(t.winapi) HRESULT,
+        SetFileNameLabel: *const fn (This, t.LPCWSTR) callconv(t.winapi) HRESULT,
+        GetResult: *const fn (This, *?*IShellItem) callconv(t.winapi) HRESULT,
+        AddPlace: *const fn (This, *IShellItem, place: u32) callconv(t.winapi) HRESULT,
+        SetDefaultExtension: *const fn (This, t.LPCWSTR) callconv(t.winapi) HRESULT,
+        Close: *const fn (This, HRESULT) callconv(t.winapi) HRESULT,
+        SetClientGuid: *const fn (This, *const GUID) callconv(t.winapi) HRESULT,
+        ClearClientData: *const fn (This) callconv(t.winapi) HRESULT,
+        SetFilter: *const fn (This, filter: ?*anyopaque) callconv(t.winapi) HRESULT,
     };
     const extra = @typeInfo(Extra).@"struct".fields;
     if (extra.len == 0) return extern struct {
@@ -304,7 +304,7 @@ pub fn ComObject(comptime Vtbl: type, comptime Impl: type) type {
                 thunk(name, F);
         }
 
-        fn queryInterface(this: This, riid: *const GUID, out: *?*anyopaque) callconv(.winapi) HRESULT {
+        fn queryInterface(this: This, riid: *const GUID, out: *?*anyopaque) callconv(t.winapi) HRESULT {
             const s = fromIface(this);
             if (answers(riid)) {
                 _ = s.refs.fetchAdd(1, .monotonic);
@@ -321,11 +321,11 @@ pub fn ComObject(comptime Vtbl: type, comptime Impl: type) type {
             return false;
         }
 
-        fn addRef(this: This) callconv(.winapi) ULONG {
+        fn addRef(this: This) callconv(t.winapi) ULONG {
             return fromIface(this).refs.fetchAdd(1, .monotonic) + 1;
         }
 
-        fn release(this: This) callconv(.winapi) ULONG {
+        fn release(this: This) callconv(t.winapi) ULONG {
             const s = fromIface(this);
             const left = s.refs.fetchSub(1, .acq_rel) - 1;
             if (left == 0) {
@@ -343,32 +343,32 @@ pub fn ComObject(comptime Vtbl: type, comptime Impl: type) type {
             const m = @field(Impl, name);
             return switch (p.len) {
                 1 => &struct {
-                    fn f(this: This) callconv(.winapi) R {
+                    fn f(this: This) callconv(t.winapi) R {
                         return m(&fromIface(this).impl);
                     }
                 }.f,
                 2 => &struct {
-                    fn f(this: This, a: p[1].type.?) callconv(.winapi) R {
+                    fn f(this: This, a: p[1].type.?) callconv(t.winapi) R {
                         return m(&fromIface(this).impl, a);
                     }
                 }.f,
                 3 => &struct {
-                    fn f(this: This, a: p[1].type.?, b: p[2].type.?) callconv(.winapi) R {
+                    fn f(this: This, a: p[1].type.?, b: p[2].type.?) callconv(t.winapi) R {
                         return m(&fromIface(this).impl, a, b);
                     }
                 }.f,
                 4 => &struct {
-                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?) callconv(.winapi) R {
+                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?) callconv(t.winapi) R {
                         return m(&fromIface(this).impl, a, b, c);
                     }
                 }.f,
                 5 => &struct {
-                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?, d: p[4].type.?) callconv(.winapi) R {
+                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?, d: p[4].type.?) callconv(t.winapi) R {
                         return m(&fromIface(this).impl, a, b, c, d);
                     }
                 }.f,
                 6 => &struct {
-                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?, d: p[4].type.?, e: p[5].type.?) callconv(.winapi) R {
+                    fn f(this: This, a: p[1].type.?, b: p[2].type.?, c: p[3].type.?, d: p[4].type.?, e: p[5].type.?) callconv(t.winapi) R {
                         return m(&fromIface(this).impl, a, b, c, d, e);
                     }
                 }.f,
