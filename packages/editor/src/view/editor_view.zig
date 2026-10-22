@@ -158,6 +158,9 @@ pub const EditorView = struct {
     capture: ?*Capture = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
+    /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and
+    /// workbench commands (null: they report an error). Not owned.
+    mode_actions: ?modes.mode.Actions = null,
     /// The SCM bar's hunks (a dirty diff); none: no bar. Not owned.
     scm: ?gutter.ScmGutterSource = null,
     on_change: ?ChangeHook = null,
@@ -864,6 +867,7 @@ pub const EditorView = struct {
             .edit = v.smartCtx(&tokens),
             .move = .{ .display = v.displayMap(), .page_rows = @intFromFloat(@max(1, @floor(v.viewport.h / v.lineHeight()) - 1)), .lang = if (v.syntax) |ds| ds.lang else null, .tab_size = v.opts.tab_size },
             .brackets = if (v.syntax) |ds| &ds.brackets else null,
+            .actions = v.mode_actions,
         };
         // The mode moves the selections and records undo itself.
         const r = blk: {
