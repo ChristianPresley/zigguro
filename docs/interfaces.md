@@ -3031,3 +3031,66 @@ Owned by the VkRenderer; the query pool is destroyed with it.
 Stable. GPU zones are emitted as trace counters. Complete GPU-track events wait for a
 `zg_core.trace` API that records events with explicit timestamps.
 
+
+## zg_review.model (Changeset, FileChange, Hunk, Provenance)
+
+### Defined in
+`packages/review/src/model/{ids,provenance,changeset,hunks,state}.zig` (E12.F01.S01.T01); see `packages/review/docs/model.md`.
+
+### Implemented by
+E12.F01.S01.T01.
+
+### Consumed by
+E12 (queue, store, overlay, apply, checkpoints, UI), E07 ReviewSink, E08 replace and notes, E09 ReviewPort, E10 edit tools (through the queue).
+
+### Signature
+```zig
+pub const ChangesetId = enum(u64) { _ };   // "#<n>"; ChangeSetId is an alias
+pub const BatchId = enum(u64) { _ };
+pub const HunkRef = struct { cs: ChangesetId, file: u32, hunk: u32 };
+pub const BlobHash = [32]u8;               // BLAKE3; blobHash(bytes)
+pub const Origin = union(enum) { agent: { ref: AgentRef, turn: u32, model }, inline_edit: { ref, instruction },
+    lsp: { server, agent: ?AgentRef }, search_replace: { query, agent: ?AgentRef }, notes: { tx: u64, agent: ?AgentRef },
+    scm_proposal: { kind: enum { describe, split, resolve, land }, review: u64 }, code_review: { finding: u64 }, user_bulk: { command } };
+pub const Provenance = struct { origin: Origin, label, rationale: ?[]const u8 = null, tool_calls: []const []const u8 = &.{},
+    workspace, lane: ?[]const u8 = null, created_ms: i64 };
+pub const BaseRef = struct { hash: BlobHash, size: u64, doc_version: ?u64 = null, eol: Eol = .lf };
+pub const FileOp = union(enum) { create: { executable: bool = false }, modify, delete, rename: { from }, set_executable: bool };
+pub const Content = union(enum) { none, text: { base: ?BaseRef, edits: ChangeSet }, binary: { base: ?BlobHash, new: BlobHash, new_size: u64 } };
+pub const Hunk = struct { id: u32, base_lines: LineRange, new_lines: LineRange, replace_span: [2]u32,
+    decision: Decision = .undecided, conflict: ?ConflictInfo = null, key: u64 = 0 };
+pub const FileChange = struct { path, op: FileOp, content: Content, hunks: []Hunk = &.{}, state: FileState = .pending,
+    folded_from: []const ChangesetId = &.{}, pub fn countLines(fc) struct { added: u32, removed: u32 } };
+pub const Changeset = struct { id, prov, files: []FileChange, state: State, revision: u16 = 1, supersedes: ?ChangesetId = null,
+    checkpoint: ?u64 = null, auto_applied: bool = false, presentation: Presentation = .queue, created_ms: i64,
+    decided_ms: ?i64 = null, arena, pub fn deinit(cs, gpa) void, pub fn fileIndex(cs, path) ?u32 };
+pub fn deriveHunks(gpa, base: []const u8, lines: *const zg_core.LineIndex, edits: *const ChangeSet, o: HunkOptions) ![]Hunk;
+pub const HunkOptions = struct { merge_gap_lines: u32 = 0, max_hunk_lines: u32 = 400, previous: []const Hunk = &.{} };
+pub fn transition(cs: *Changeset, to: State) error{InvalidTransition}!void;
+pub fn fileTransition(fc: *FileChange, to: FileState) error{InvalidTransition}!void;
+pub fn recomputeState(cs: *Changeset) void;
+pub fn writeProvenanceJson(w: *std.Io.Writer, p: Provenance) !void;
+pub fn parseProvenanceJson(arena: Allocator, v: std.json.Value) !Provenance;
+```
+Deviations from the spec text:
+- `deriveHunks` takes the base bytes and their `zg_core.LineIndex`, because
+  E05 has no `LineSource`.
+- `BaseRef` has no `encoding`: files are UTF-8 until the E05 encoders land.
+- `Hunk.key` is new. It carries decisions across re-derivations.
+- `countLines` is a method of `FileChange`.
+- `zg_review` is one module for now. `zg_review_assist` and `zg_review_ui`
+  come with the features that need them.
+- `zg_review` imports `zg_editor` (only `zg_editor.model`) and the
+  `zg_ai_proto` leaf module of `zg_ai`. Both are same-layer edges, listed in
+  `tools/pkgtool/layers.zon`.
+
+### Threading
+Plain data, owned by the queue's owner thread.
+
+### Ownership/lifetime
+A `Changeset` owns its arena (paths, labels, hunks) and every text
+`FileChange`'s E05 `ChangeSet`; `deinit` frees both.
+
+### Stability
+Unstable until the queue and store land; the provenance JSON is stable
+(golden-tested).
