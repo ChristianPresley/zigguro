@@ -21,6 +21,9 @@ pub const langs = struct {
     pub const go = @import("langs/go.zig");
     pub const python = @import("langs/python.zig");
     pub const yaml = @import("langs/yaml.zig");
+    pub const json = @import("langs/json.zig");
+    pub const toml = @import("langs/toml.zig");
+    pub const shell = @import("langs/shell.zig");
 };
 pub const structure = struct {
     pub const structure = @import("structure/structure.zig");
@@ -72,6 +75,10 @@ pub const builtin_languages = [_]*const Language{
     &langs.go.go_language,
     &langs.python.python_language,
     &langs.yaml.yaml_language,
+    &langs.json.json_language,
+    &langs.json.jsonc_language,
+    &langs.toml.toml_language,
+    &langs.shell.shell_language,
 };
 
 /// A registry with plain text and every built-in language.
@@ -98,4 +105,7 @@ test {
     _ = @import("langs/go_test.zig");
     _ = @import("langs/python_test.zig");
     _ = @import("langs/yaml_test.zig");
+    _ = @import("langs/json_test.zig");
+    _ = @import("langs/toml_test.zig");
+    _ = @import("langs/shell_test.zig");
 }
