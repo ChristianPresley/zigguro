@@ -47,6 +47,9 @@ pub const EditCtx = struct {
     tokens: ?TokenQuery = null,
     /// Closers auto-inserted in this typing session.
     auto_pairs: ?*AutoPairs = null,
+    /// Re-base pasted lines on the target line's indentation
+    /// (`editor.reindentOnPaste`).
+    reindent_on_paste: bool = false,
     origin: EditOrigin = .{ .user = 0 },
 
     fn rules(c: EditCtx) EditRules {
