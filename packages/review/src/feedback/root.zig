@@ -3,6 +3,9 @@
 
 const comments = @import("comments.zig");
 const labels = @import("labels.zig");
+const feedback = @import("feedback.zig");
+
+pub const message = @import("message.zig");
 
 pub const anchor = @import("anchor.zig");
 
@@ -23,6 +26,16 @@ pub const Op = comments.Op;
 pub const writeSnapshot = comments.writeSnapshot;
 pub const Side = anchor.Side;
 
+pub const Feedback = feedback.Feedback;
+pub const AgentPort = feedback.AgentPort;
+pub const AgentStatus = feedback.AgentStatus;
+pub const SubmitMode = feedback.SubmitMode;
+pub const Delivery = feedback.Delivery;
+pub const EndedChoice = feedback.EndedChoice;
+pub const FeedbackOptions = feedback.Options;
+pub const InterdiffDocs = feedback.InterdiffDocs;
+pub const FeedbackMessage = message.FeedbackMessage;
+
 pub const Label = labels.Label;
 pub const Prefix = labels.Prefix;
 pub const parseLabelPrefix = labels.parseLabelPrefix;
@@ -31,4 +44,5 @@ test {
     _ = labels;
     _ = anchor;
     _ = @import("comments_test.zig");
+    _ = @import("feedback_test.zig");
 }
