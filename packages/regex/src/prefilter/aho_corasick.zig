@@ -12,9 +12,13 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
+/// Set on transition entries whose target state has an output.
+const tag_out: u32 = 1 << 31;
+
 /// A built automaton.
 pub const AhoCorasick = struct {
-    /// `stride` entries per state.
+    /// `stride` entries per state; entries are premultiplied target offsets
+    /// (`id * stride`), with `tag_out` set when the target has an output.
     delta: []u32,
     /// Length of the longest literal that is a suffix of each state, or 0.
     out_len: []u32,
@@ -104,6 +108,12 @@ pub const AhoCorasick = struct {
                 }
             }
         }
+        // Premultiply and tag.
+        for (delta) |*e| {
+            const id = e.*;
+            e.* = id * @as(u32, @intCast(stride));
+            if (out_len[id] != 0) e.* |= tag_out;
+        }
         return .{ .delta = delta, .out_len = out_len, .classes = classes, .stride = stride, .max_len = max_len, .min_len = min_len, .count = lits.len };
     }
 
@@ -123,18 +133,32 @@ pub const AhoCorasick = struct {
         /// result is final.
         pub fn feed(st: *Stream, bytes: []const u8, base: u64) bool {
             const ac = st.ac;
+            const stride: u32 = @intCast(ac.stride);
             var s = st.state;
-            for (bytes, 0..) |b, i| {
+            var i: usize = 0;
+            if (st.best == null) {
+                // Fast path until the first output.
+                while (i < bytes.len) {
+                    s = ac.delta[s + ac.classes[bytes[i]]];
+                    i += 1;
+                    if (s & tag_out != 0) {
+                        s &= ~tag_out;
+                        st.best = base + i - ac.out_len[s / stride];
+                        break;
+                    }
+                }
+            }
+            while (i < bytes.len) : (i += 1) {
                 const pos = base + i;
-                if (st.best) |best| if (pos + 1 > best + ac.max_len - 1) {
+                if (pos + 1 > st.best.? + ac.max_len - 1) {
                     st.state = s;
                     return true;
-                };
-                s = ac.delta[s * ac.stride + ac.classes[b]];
-                const l = ac.out_len[s];
-                if (l != 0) {
-                    const start = pos + 1 - l;
-                    if (st.best == null or start < st.best.?) st.best = start;
+                }
+                s = ac.delta[s + ac.classes[bytes[i]]];
+                if (s & tag_out != 0) {
+                    s &= ~tag_out;
+                    const start = pos + 1 - ac.out_len[s / stride];
+                    if (start < st.best.?) st.best = start;
                 }
             }
             st.state = s;
