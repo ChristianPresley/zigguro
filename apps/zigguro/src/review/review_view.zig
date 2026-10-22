@@ -283,7 +283,7 @@ test "review view: accept, reject and undo hunks of a held turn" {
     const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
     defer gpa.free(root);
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\n.\n.\n.\ntwo\n" });
-    const g = try ReviewGlue.create(gpa, testing.io, root);
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
     defer g.destroy();
     g.mode = .review;
 

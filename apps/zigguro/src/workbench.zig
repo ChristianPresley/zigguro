@@ -53,6 +53,9 @@ const Area = zg_gui.dock.model.Area;
 const persist = zg_gui.dock.persist;
 const log = std.log.scoped(.workbench);
 
+/// How often the review panel looks for other processes' decisions.
+const review_poll_ms = 1000;
+
 /// See the module doc.
 pub const Workbench = struct {
     rt: *zg_core.Runtime,
@@ -126,6 +129,9 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
+    /// Polls the review store for other processes' records (`zg review`)
+    /// while the review panel exists.
+    review_timer: Window.TimerId = .none,
     /// This working folder's saved layout (`loadLayout`), and its saver
     /// (from `attach`).
     layout_dir: ?std.Io.Dir = null,
@@ -561,6 +567,8 @@ pub const Workbench = struct {
         wb.md_highlight = null;
         if (wb.review_view) |v| v.destroy();
         wb.review_view = null;
+        if (wb.review_timer != .none) w.cancelTimer(wb.review_timer);
+        wb.review_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
@@ -811,6 +819,17 @@ pub const Workbench = struct {
         p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
         p.open_review = .{ .ctx = wb, .f = openReview };
         wb.review_panel = p;
+        wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
+    }
+
+    /// Takes in what `zg review` or another window decided, then polls
+    /// again.
+    fn pollReview(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.review_timer = .none;
+        const host = wb.agent orelse return;
+        if (host.review.refresh()) w.markAllDirty();
+        wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
     }
 
     /// A palette "AI: /name" command: opens the agent pane and runs

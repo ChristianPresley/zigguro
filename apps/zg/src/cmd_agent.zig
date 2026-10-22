@@ -12,6 +12,7 @@
 //!   ZIGGURO_STATE_DIR    where sessions are kept (see zg_crash.paths)
 //!
 //! `--mcp-config <file>` connects MCP servers (`mcp_servers.zig`).
+//! `--review` decides what happens to the agent's edits (`review_hooks.zig`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -22,6 +23,7 @@ const zg_crash = @import("zg_crash");
 const zg_config = @import("zg_config");
 const zg_mcp = @import("zg_mcp");
 const mcp_servers = @import("mcp_servers.zig");
+const review_hooks = @import("review_hooks.zig");
 
 const headless = zg_ai.headless;
 const Cassette = zg_ai.testing.cassette.Cassette;
@@ -43,8 +45,16 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     const out = &out_w.interface;
     defer out.flush() catch {};
 
+    const review_flag = review_hooks.parseFlag(arena, argv) catch |e| switch (e) {
+        error.Usage => {
+            try err.print("zg agent: --review is defer, interactive or apply\nRun 'zg agent --help' for usage.\n", .{});
+            try err.flush();
+            return headless.ExitCode.usage.code();
+        },
+        else => return e,
+    };
     var diag: []const u8 = "invalid arguments";
-    var opts = headless.args.parseArgsDiag(arena, argv, &diag) catch |e| switch (e) {
+    var opts = headless.args.parseArgsDiag(arena, review_flag.rest, &diag) catch |e| switch (e) {
         error.Usage => {
             try err.print("zg agent: {s}\nRun 'zg agent --help' for usage.\n", .{diag});
             try err.flush();
@@ -54,6 +64,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     };
     if (opts.help) {
         try out.writeAll(headless.args.usage_text);
+        try out.writeAll(review_hooks.help);
         return 0;
     }
 
@@ -104,8 +115,9 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     const cwd = try std.process.currentPathAlloc(io, arena);
     var state_buf_hooks: [std.fs.max_path_bytes]u8 = undefined;
 
-    // Tools: the file tools straight on disk, the command tools over
-    // child processes and the web tools (the IDE uses E05 documents and E06
+    // Tools: the file tools on disk through E12's review glue (each turn's
+    // edits held for review or recorded), the command tools over child
+    // processes and the web tools (the IDE uses E05 documents and E06
     // terminals).
     var tool_registry: zg_ai.tools.ToolRegistry = .init(gpa, io);
     defer tool_registry.deinit();
@@ -117,8 +129,9 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     try tool_registry.addSource(run_tools.source());
     var read_tracker: zg_ai.tools.read_tracker.ReadTracker = .init(gpa, io);
     defer read_tracker.deinit();
-    var disk: zg_ai.tools.builtin.disk_files.DiskFiles = .{ .root = cwd };
-    var file_tools: zg_ai.tools.builtin.files.FileTools = .{ .files = disk.asFiles(), .tracker = &read_tracker };
+    var review: review_hooks.Review = try .init(gpa, io, cwd, review_flag.mode);
+    defer review.deinit();
+    var file_tools: zg_ai.tools.builtin.files.FileTools = .{ .files = review.glue.files(), .tracker = &read_tracker };
     try tool_registry.addSource(file_tools.source());
     // Web tools: fetch over the same transport (so cassettes record it) and
     // the provider's own search for models that have one.
@@ -143,7 +156,14 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     // Tool inputs and `--json-schema` are checked by E11's JSON Schema
     // validator, the one MCP `tools/call` arguments go through.
     const validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate);
-    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub), .tools = agent_tools.tools(), .validator = validator });
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{
+        .registry = &registry,
+        .providers = .fromHub(hub),
+        .tools = agent_tools.tools(),
+        .validator = validator,
+        .checkpoints = review.glue.checkpoints(),
+        .turn_end = file_tools.turnEnd(),
+    });
     defer mgr.deinit();
 
     // Subagents: `.zigguro/agents/*.md` in the workspace, then the
@@ -296,6 +316,9 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     else
         try headless.runRepl(io, gpa, mgr, opts, out, in);
     out.flush() catch {};
+    const err_tty = Io.File.stderr().isTty(io) catch false;
+    review.finish(io, &env, err, if (!stdin_piped and err_tty) in else null, .{ .color = err_tty and env.get("NO_COLOR") == null }) catch |e|
+        err.print("zg agent: review: {t}\n", .{e}) catch {};
     err.flush() catch {};
     return code.code();
 }
