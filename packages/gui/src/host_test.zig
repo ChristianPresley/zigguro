@@ -68,3 +68,27 @@ test "host opens, renders, clicks and closes a window" {
     _ = try host.pump();
     try std.testing.expectEqual(@as(usize, 0), host.windows.items.len);
 }
+
+test "host keeps the app clipboard in sync with the platform" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+
+    // A widget's Copy goes out on the next pump.
+    app.clipboard.set(gpa, "from app");
+    _ = try host.pump();
+    try std.testing.expect(!app.clipboard.pending_write);
+    try std.testing.expectEqualStrings("from app", hl.clip[@intFromEnum(zg_platform.clipboard.Selection.clipboard)][0].data);
+
+    // Another app's copy is read back into the app clipboard.
+    try hl.setClipboard(.clipboard, .text_utf8, "from elsewhere");
+    _ = try host.pump();
+    _ = try host.pump();
+    try std.testing.expectEqualStrings("from elsewhere", app.clipboard.get());
+    try std.testing.expect(app.now_ms > 0);
+}
