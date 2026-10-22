@@ -31,6 +31,7 @@ const client_capabilities = @import("client_capabilities.zig");
 const position = @import("../proto/position.zig");
 const trace_mod = @import("trace.zig");
 const DocMatch = @import("doc_selector.zig").DocMatch;
+const server_requests = @import("server_requests.zig");
 
 const log = std.log.scoped(.lsp);
 
@@ -57,8 +58,11 @@ pub const InitContext = struct {
     trace_capacity: usize = 2000,
     /// Keep message bodies in the trace ring (`lsp.trace = verbose`).
     trace_bodies: bool = false,
-    /// Extra handlers for server-to-client requests and notifications
-    /// (E07.F01.S02.T03 services). They replace the built-in ones.
+    /// The host, progress tracker and listeners behind server-to-client
+    /// requests (server_requests.zig).
+    services: server_requests.Options = .{},
+    /// Extra handlers for server-to-client requests and notifications.
+    /// They replace the built-in ones.
     request_handlers: []const NamedHandler = &.{},
     notification_handlers: []const NamedNotificationHandler = &.{},
 };
@@ -183,6 +187,7 @@ init_done: Io.Event = .unset,
 init_error: ?anyerror = null,
 /// The endpoint closed.
 closed: std.atomic.Value(bool) = .init(false),
+services: server_requests.Services,
 
 /// Wires a client to `proc`'s transport. Call `subscribe` as needed, then
 /// `start`. Worker only.
@@ -206,9 +211,12 @@ pub fn create(rt: *zg_core.Runtime, proc: *ServerProcess, ctx: InitContext) !*Cl
         .ep = ep,
         .ctx = ctx,
         .trace = try .init(gpa, rt.io, ctx.trace_capacity, ctx.trace_bodies),
+        .services = undefined,
     };
     errdefer c.trace.deinit();
-    try c.registerBuiltins();
+    c.services = try .init(gpa, ctx.services, ctx.workspace_folders);
+    errdefer c.services.deinit();
+    try server_requests.register(c);
     for (ctx.request_handlers) |h| try ep.onRequest(h.method, h.handler);
     for (ctx.notification_handlers) |h| try ep.onNotification(h.method, h.handler);
     ep.onClose(.{ .ctx = c, .func = onEndpointClosed });
@@ -226,6 +234,8 @@ pub fn deinit(c: *Client) void {
     c.queued.deinit(c.gpa);
     c.inflight.deinit(c.gpa);
     c.listeners.deinit(c.gpa);
+    server_requests.onStopped(c);
+    c.services.deinit();
     c.trace.deinit();
     c.gpa.destroy(c);
 }
@@ -265,6 +275,7 @@ pub fn traceRing(c: *Client) *trace_mod.Trace {
 fn setState(c: *Client, s: ClientState) void {
     const prev = c.state_.swap(s, .acq_rel);
     if (prev == s) return;
+    if (s == .stopped or s == .crashed) server_requests.onStopped(c);
     for (c.listeners.items) |l| l.on_state(l.ctx, c, s);
 }
 
@@ -313,12 +324,13 @@ pub fn waitInitialized(c: *Client, timeout: Io.Duration) !void {
 fn onInitialized(ctx: ?*anyopaque, r: Endpoint.Result) void {
     const c: *Client = @ptrCast(@alignCast(ctx.?));
     c.finishInitialize(r) catch |err| {
-        log.warn("initialize failed: {t}", .{err});
+        if (err == error.ServerGone) log.info("initialize: server gone", .{}) else log.warn("initialize failed: {t}", .{err});
         c.init_error = err;
         c.init_done.set(c.io);
         c.failAll(.server_gone);
-        // The connection is useless without a handshake.
-        c.ep.close();
+        // The connection is useless without a handshake, but this runs on
+        // an endpoint loop, which must not close its own endpoint: the
+        // owner's `shutdown` or `deinit` closes it.
         return;
     };
     c.init_done.set(c.io);
@@ -702,59 +714,17 @@ pub fn notify(c: *Client, comptime N: protocol.NotificationMethod, params: proto
 
 // ------------------------------------------------------------- server requests
 
-fn registerBuiltins(c: *Client) !void {
-    try c.ep.onRequest("client/registerCapability", .{ .ctx = c, .func = onRegister });
-    try c.ep.onRequest("client/unregisterCapability", .{ .ctx = c, .func = onUnregister });
-    try c.ep.onRequest("window/workDoneProgress/create", .{ .ctx = c, .func = onNullResult });
-    try c.ep.onRequest("workspace/configuration", .{ .ctx = c, .func = onConfiguration });
+pub const FolderChange = server_requests.FolderChange;
+
+/// Replaces the workspace folders: sends `didChangeWorkspaceFolders` when
+/// the server takes changes, else asks for a restart. Worker only.
+pub fn setWorkspaceFolders(c: *Client, folders: []const protocol.WorkspaceFolder) !FolderChange {
+    return server_requests.setWorkspaceFolders(c, folders);
 }
 
-fn onRegister(ctx: ?*anyopaque, _: *Endpoint, req: message.Request, arena: Allocator) Endpoint.HandlerResult {
-    const c: *Client = @ptrCast(@alignCast(ctx.?));
-    const p = req.params orelse return invalidParams();
-    const params = p.parseLeaky(protocol.RegistrationParams, arena, .{}) catch return invalidParams();
-    c.mutex.lockUncancelable(c.io);
-    defer c.mutex.unlock(c.io);
-    const cp = if (c.caps_) |*x| x else return .{ .err = .{ .code = message.ErrorCode.server_not_initialized.int(), .message = "not initialized" } };
-    for (params.registrations) |reg| cp.addRegistration(reg) catch |err| {
-        log.warn("registerCapability {s}: {t}", .{ reg.method, err });
-    };
-    return nullResult(arena);
-}
-
-fn onUnregister(ctx: ?*anyopaque, _: *Endpoint, req: message.Request, arena: Allocator) Endpoint.HandlerResult {
-    const c: *Client = @ptrCast(@alignCast(ctx.?));
-    const p = req.params orelse return invalidParams();
-    const params = p.parseLeaky(protocol.UnregistrationParams, arena, .{}) catch return invalidParams();
-    c.mutex.lockUncancelable(c.io);
-    defer c.mutex.unlock(c.io);
-    if (c.caps_) |*cp| for (params.unregisterations) |u| cp.removeRegistration(u.id);
-    return nullResult(arena);
-}
-
-fn onNullResult(_: ?*anyopaque, _: *Endpoint, _: message.Request, arena: Allocator) Endpoint.HandlerResult {
-    return nullResult(arena);
-}
-
-/// Answers every item with null until the settings service (T03) exists.
-fn onConfiguration(_: ?*anyopaque, _: *Endpoint, req: message.Request, arena: Allocator) Endpoint.HandlerResult {
-    const p = req.params orelse return invalidParams();
-    const params = p.parseLeaky(protocol.ConfigurationParams, arena, .{}) catch return invalidParams();
-    const out = arena.alloc(?u8, params.items.len) catch return internal();
-    @memset(out, null);
-    const raw = Endpoint.raw(arena, out) catch return internal();
-    return .{ .result = raw };
-}
-
-fn nullResult(arena: Allocator) Endpoint.HandlerResult {
-    const raw = Endpoint.raw(arena, null) catch return internal();
-    return .{ .result = raw };
-}
-
-fn invalidParams() Endpoint.HandlerResult {
-    return .{ .err = .{ .code = message.ErrorCode.invalid_params.int(), .message = "invalid params" } };
-}
-
-fn internal() Endpoint.HandlerResult {
-    return .{ .err = .{ .code = message.ErrorCode.internal_error.int(), .message = "out of memory" } };
+/// Settings changed (E15): a server that registered for
+/// `didChangeConfiguration` is told to pull them again. Returns whether
+/// it was told.
+pub fn settingsChanged(c: *Client) !bool {
+    return server_requests.settingsChanged(c);
 }
