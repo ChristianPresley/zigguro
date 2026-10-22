@@ -433,3 +433,54 @@ test "view: the IME follows the primary caret" {
     _ = f.t.settle();
     try testing.expect(!im.enabled);
 }
+
+test "view: smart typing closes pairs, types over closers and indents" {
+    var f: Fx = undefined;
+    try f.init("");
+    defer f.deinit();
+    var reg = try zg_syntax.defaultRegistry(gpa);
+    defer reg.deinit(gpa);
+    var ds = try syntax_mod.DocumentSyntax.init(gpa, reg.get(.zig).?, &reg, &f.doc.tree, f.doc.version);
+    defer ds.deinit();
+    f.view.syntax = &ds;
+    defer f.view.syntax = null;
+
+    for ("fn m(") |c| f.t.typeText(&.{c});
+    try f.expectText("fn m()");
+    try testing.expectEqual(@as(u64, 5), f.head());
+    // Backspace takes the auto-inserted pair as one.
+    f.press(.{ .key = .backspace });
+    try f.expectText("fn m");
+    f.t.typeText("(");
+    f.t.typeText(")");
+    try f.expectText("fn m()");
+    try testing.expectEqual(@as(u64, 6), f.head());
+    for (" {") |c| f.t.typeText(&.{c});
+    try f.expectText("fn m() {}");
+    // Enter between the braces opens an indented line.
+    f.press(.{ .key = .enter });
+    try f.expectText("fn m() {\n    \n}");
+    try testing.expectEqual(@as(u64, 13), f.head());
+    // Each smart edit is one undo step.
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try f.expectText("fn m() {}");
+    // Inside a string, quotes and brackets type as themselves.
+    f.view.setSelection(.caret(f.doc.len()));
+    for ("\"(") |c| f.t.typeText(&.{c});
+    try f.expectText("fn m() {}\"(\"");
+}
+
+test "view: smart typing indents with the unit the file uses" {
+    var f: Fx = undefined;
+    try f.init("a {\n\tb\n}\n");
+    defer f.deinit();
+    try testing.expect(f.view.indent_unit.?.tabs);
+    f.view.setSelection(.caret(3));
+    f.press(.{ .key = .enter });
+    try f.expectText("a {\n\t\n\tb\n}\n");
+    // Off: Enter keeps the line's indentation only.
+    f.view.opts.smart_typing = false;
+    f.view.setSelection(.caret(0));
+    f.t.typeText("(");
+    try f.expectText("(a {\n\t\n\tb\n}\n");
+}
