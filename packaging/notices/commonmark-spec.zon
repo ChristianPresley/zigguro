@@ -1,0 +1,16 @@
+// CommonMark 0.31.2 and GFM 0.29 spec texts whose examples the Markdown
+// parser's conformance tests run (E04). Test-only; see
+// packages/gui/testdata/markdown/SOURCES.md.
+.{
+    .name = "CommonMark and GFM specifications",
+    .version = "CommonMark 0.31.2, GFM 0.29",
+    .license_spdx = "CC-BY-SA-4.0",
+    .source_url = "https://github.com/commonmark/commonmark-spec",
+    .shipped = false,
+    .paths = .{
+        "packages/gui/testdata/markdown/spec-0.31.2.txt",
+        "packages/gui/testdata/markdown/spec-gfm.txt",
+        "packages/gui/testdata/markdown/SOURCES.md",
+    },
+    .license_text_files = .{},
+}

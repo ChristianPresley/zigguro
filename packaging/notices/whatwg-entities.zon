@@ -1,0 +1,15 @@
+// HTML named character references from the WHATWG HTML Living Standard.
+// tools/mdspec/gen_entities.zig turns them into the table the Markdown
+// parser ships (E04); see packages/gui/testdata/markdown/SOURCES.md.
+.{
+    .name = "WHATWG HTML named character references",
+    .version = "HTML Living Standard 2026",
+    .license_spdx = "CC-BY-4.0",
+    .source_url = "https://html.spec.whatwg.org/entities.json",
+    .shipped = true,
+    .paths = .{
+        "packages/gui/testdata/markdown/entities.json",
+        "packages/gui/src/markdown/entities_table.zig",
+    },
+    .license_text_files = .{},
+}
