@@ -126,6 +126,7 @@ pub fn build(b: *std.Build) void {
         const fx = b.addOptions();
         fx.addOptionPath("zg", zg_exe.getEmittedBin());
         fx.addOptionPath("cassette", b.path("apps/zg/testdata/cassettes/two_turns.jsonl"));
+        fx.addOptionPath("approval_cassette", b.path("apps/zg/testdata/cassettes/approval.jsonl"));
         const e2e = b.addTest(.{ .name = "zg-agent-e2e", .root_module = b.createModule(.{
             .root_source_file = b.path("apps/zg/test/agent_e2e_test.zig"),
             .target = f.target,

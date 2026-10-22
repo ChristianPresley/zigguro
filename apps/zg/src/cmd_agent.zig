@@ -96,7 +96,23 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer hub.deinit();
     try hub.onSettingsChanged(io, &.{});
 
-    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub) });
+    // Tools: the command tools over child processes (E06 terminals are
+    // the IDE's).
+    var tool_registry: zg_ai.tools.ToolRegistry = .init(gpa, io);
+    defer tool_registry.deinit();
+    var processes: zg_ai.tools.builtin.process_host.ProcessHost = .init(gpa, io);
+    processes.environ = &env;
+    defer processes.deinit();
+    var run_tools: zg_ai.tools.builtin.run.RunTools = .init(gpa, io, processes.host(), .{ .visible = false });
+    defer run_tools.deinit();
+    try tool_registry.addSource(run_tools.source());
+    var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &tool_registry, .{
+        .deny = try bareRules(arena, opts.disallowed_tools),
+        .mode = opts.permission_mode,
+    });
+    defer agent_tools.deinit();
+
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub), .tools = agent_tools.tools() });
     defer mgr.deinit();
 
     // Sessions live under the state directory.
@@ -142,6 +158,14 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     out.flush() catch {};
     err.flush() catch {};
     return code.code();
+}
+
+/// `--disallowed-tools` rules without a pattern remove the tool from
+/// requests; patterned rules are checked per call.
+fn bareRules(arena: std.mem.Allocator, rules: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (rules) |r| if (std.mem.indexOfScalar(u8, r, '(') == null) try out.append(arena, r);
+    return out.items;
 }
 
 fn stateDir(min: std.process.Init.Minimal, env: *const std.process.Environ.Map, buf: []u8) ?[]const u8 {

@@ -125,6 +125,28 @@ pub const headless = struct {
         _ = @import("headless/stream_json_test.zig");
     }
 };
+/// The tool system: registry, toolsets and built-in tools (E10.F06).
+pub const tools = struct {
+    pub const registry = @import("tools/registry.zig");
+    pub const toolset = @import("tools/toolset.zig");
+    pub const search_tools = @import("tools/search_tools.zig");
+    /// Built-in tools.
+    pub const builtin = struct {
+        pub const terminal_host = @import("tools/builtin/terminal_host.zig");
+        pub const fake_host = @import("tools/builtin/fake_host.zig");
+        pub const run = @import("tools/builtin/run.zig");
+        pub const process_host = @import("tools/builtin/process_host.zig");
+    };
+    pub const ToolRegistry = registry.ToolRegistry;
+    pub const ToolSource = registry.ToolSource;
+    pub const AgentTools = toolset.AgentTools;
+    pub const ToolsetConfig = toolset.ToolsetConfig;
+    test {
+        _ = @import("tools/registry_test.zig");
+        _ = @import("tools/builtin/run_test.zig");
+        _ = @import("tools/builtin/process_host_test.zig");
+    }
+};
 /// Cassettes and the eval runner (E10.F10.S02).
 pub const testing = struct {
     pub const cassette = @import("testing/cassette.zig");
@@ -197,4 +219,6 @@ test {
     std.testing.refAllDecls(session);
     std.testing.refAllDecls(testing);
     std.testing.refAllDecls(headless);
+    std.testing.refAllDecls(tools);
+    std.testing.refAllDecls(tools.builtin);
 }
