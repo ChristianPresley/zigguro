@@ -60,7 +60,7 @@ pub const Limits = struct {
 };
 
 /// A regular expression engine for `pattern`, `patternProperties` and the
-/// `regex` format (zg_regex in ECMA-compat mode, once E05.F03 lands).
+/// `regex` format (`ecma.engine`: zg_regex in ECMA-compat mode).
 pub const RegexEngine = struct {
     ctx: ?*anyopaque,
     /// Compiles `source` into `arena`; null when the engine does not

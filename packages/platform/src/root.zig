@@ -313,6 +313,12 @@ pub const x11 = if (is_linux) struct {
     pub const xdnd = @import("x11/xdnd.zig");
     /// See `x11/ewmh.zig`.
     pub const ewmh = @import("x11/ewmh.zig");
+    /// See `x11/cursor.zig`.
+    pub const cursor = @import("x11/cursor.zig");
+    /// See `x11/randr.zig`.
+    pub const randr = @import("x11/randr.zig");
+    /// See `x11/xsync.zig`.
+    pub const xsync = @import("x11/xsync.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -500,6 +506,9 @@ test {
         _ = @import("x11/xinput2.zig");
         _ = @import("x11/xdnd.zig");
         _ = @import("x11/ewmh.zig");
+        _ = @import("x11/cursor.zig");
+        _ = @import("x11/randr.zig");
+        _ = @import("x11/xsync.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
     _ = @import("fswatch/windows_rdcw.zig");
@@ -599,6 +608,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/keymap_from_server.zig", .src = @embedFile("x11/keymap_from_server.zig") },
     .{ .path = "x11/xinput2.zig", .src = @embedFile("x11/xinput2.zig") },
     .{ .path = "x11/ewmh.zig", .src = @embedFile("x11/ewmh.zig") },
+    .{ .path = "x11/cursor.zig", .src = @embedFile("x11/cursor.zig") },
+    .{ .path = "x11/randr.zig", .src = @embedFile("x11/randr.zig") },
+    .{ .path = "x11/xsync.zig", .src = @embedFile("x11/xsync.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
     .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
     .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },

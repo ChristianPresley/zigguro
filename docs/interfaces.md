@@ -1106,6 +1106,28 @@ any window. `activate` sends `_NET_ACTIVE_WINDOW` (source 2 with a
 token, else 1, with the newest server time), mapping a minimized window
 first; `request_attention` adds `_NET_WM_STATE_DEMANDS_ATTENTION`.
 
+Cursors (E01.F05.S02.T01, `x11/cursor.zig`): `set_cursor` sets the
+window's cursor with `ChangeWindowAttributes`. With RENDER 0.5+ and an
+ARGB32 format, Xcursor theme images (`XCURSOR_THEME`, `XCURSOR_SIZE` ×
+scale, `XCURSOR_PATH`, the same lookup as Wayland) become `CreateCursor`
+cursors, animated ones `CreateAnimCursor` (RENDER 0.8+), and `hidden` a
+transparent 1×1 cursor. Otherwise, or for a shape the theme lacks, a
+core glyph from the "cursor" font. Cursors are created on the calling
+thread the first time a shape and size is used, then cached until
+`deinit`. On `Decorations.client` windows, pointer motion over the
+app's resize regions shows the matching resize cursor.
+
+Monitors and resizing (E01.F05.S02.T01, `x11/randr.zig`,
+`x11/xsync.zig`): with RandR 1.5, `monitors` lists `RRGetMonitors`
+(id = the monitor's name atom, name = that atom's name, work area = the
+monitor, Xft scale, refresh from `InitOptions.refresh_ns`), re-read on
+`RRScreenChangeNotify` and on CRTC, output and resource `RRNotify`s,
+each staging `monitors_changed`. Without RandR 1.5, one monitor covers
+the screen. With SYNC 3.1, each window lists `_NET_WM_SYNC_REQUEST` and
+has a `_NET_WM_SYNC_REQUEST_COUNTER`; the value the WM asks for is set
+after the first present of a buffer at the size of the following
+ConfigureNotify (at once when the size did not change).
+
 Keyboard (E01.F05.S02.T02): with XKB, `XkbGetMap` and `XkbGetNames`
 become the shared `xkb.Keymap`
 (`keymapFromXkbGetMap(gpa, map_reply, names_reply, vmod_names)`), so keys
@@ -1171,8 +1193,7 @@ A window's presenter and its buffers die with `destroyWindow`; `deinit`
 destroys every window and closes the connection.
 
 ### Stability
-Experimental. Not yet: RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
-cursors, explicit sync (`PresentPixmapSynced`), XFIXES update regions
+Experimental. Not yet: explicit sync (`PresentPixmapSynced`), XFIXES update regions
 (presents update the whole window) and MSC-based pacing. Dialogs and
 URIs return `error.Unsupported`.
 

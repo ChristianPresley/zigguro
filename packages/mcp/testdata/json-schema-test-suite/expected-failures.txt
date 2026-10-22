@@ -1,44 +1,5 @@
 # Documented exceptions: <draft dir>/<file>: <group> / <test>
 #
-# pattern, patternProperties and the cases that depend on them need a regex
-# engine. zg_mcp plugs in zg_regex (E05.F03, #61) through
-# CompileOptions.regex once it exists; until then patterns are annotations.
-tests/draft2020-12/additionalProperties.json: additionalProperties being false does not allow other properties / patternProperties are not additional properties
-tests/draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties / matching the pattern is valid
-tests/draft2020-12/pattern.json: pattern validation / a non-matching pattern is invalid
-tests/draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode / Digits do not match
-tests/draft2020-12/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to both is invalid
-tests/draft2020-12/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to one is invalid
-tests/draft2020-12/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to the other is invalid
-tests/draft2020-12/patternProperties.json: patternProperties validates properties matching a regex / a single invalid match is invalid
-tests/draft2020-12/patternProperties.json: patternProperties validates properties matching a regex / multiple invalid matches is invalid
-tests/draft2020-12/patternProperties.json: patternProperties with Unicode property escape / Unicode letter property name matches but value type is incorrect
-tests/draft2020-12/patternProperties.json: patternProperties with boolean schemas / object with a property matching both true and false is invalid
-tests/draft2020-12/patternProperties.json: patternProperties with boolean schemas / object with both properties is invalid
-tests/draft2020-12/patternProperties.json: patternProperties with boolean schemas / object with property matching schema false is invalid
-tests/draft2020-12/patternProperties.json: regexes are not anchored by default and are case sensitive / recognized members are accounted for
-tests/draft2020-12/patternProperties.json: regexes are not anchored by default and are case sensitive / regexes are case sensitive, 2
-tests/draft2020-12/properties.json: properties, patternProperties, additionalProperties interaction / patternProperty invalidates property
-tests/draft2020-12/properties.json: properties, patternProperties, additionalProperties interaction / patternProperty validates nonproperty
-tests/draft2020-12/propertyNames.json: propertyNames validation with pattern / non-matching property name is invalid
-tests/draft2020-12/unevaluatedProperties.json: dynamic evaluation inside nested refs / xx + foox is valid
-tests/draft2020-12/unevaluatedProperties.json: dynamic evaluation inside nested refs / xx is valid
-tests/draft2020-12/unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else / valid in case if is evaluated
-tests/draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties / with no unevaluated properties
-tests/draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested patternProperties / with no additional properties
-tests/draft7/additionalProperties.json: additionalProperties being false does not allow other properties / patternProperties are not additional properties
-tests/draft7/additionalProperties.json: non-ASCII pattern with additionalProperties / matching the pattern is valid
-tests/draft7/pattern.json: pattern validation / a non-matching pattern is invalid
-tests/draft7/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to both is invalid
-tests/draft7/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to one is invalid
-tests/draft7/patternProperties.json: multiple simultaneous patternProperties are validated / an invalid due to the other is invalid
-tests/draft7/patternProperties.json: patternProperties validates properties matching a regex / a single invalid match is invalid
-tests/draft7/patternProperties.json: patternProperties validates properties matching a regex / multiple invalid matches is invalid
-tests/draft7/patternProperties.json: patternProperties with boolean schemas / object with a property matching both true and false is invalid
-tests/draft7/patternProperties.json: patternProperties with boolean schemas / object with both properties is invalid
-tests/draft7/patternProperties.json: patternProperties with boolean schemas / object with property matching schema false is invalid
-tests/draft7/patternProperties.json: regexes are not anchored by default and are case sensitive / recognized members are accounted for
-tests/draft7/patternProperties.json: regexes are not anchored by default and are case sensitive / regexes are case sensitive, 2
-tests/draft7/properties.json: properties, patternProperties, additionalProperties interaction / patternProperty invalidates property
-tests/draft7/properties.json: properties, patternProperties, additionalProperties interaction / patternProperty validates nonproperty
-tests/draft7/propertyNames.json: propertyNames validation with pattern / non-matching property name is invalid
+# None: every required draft2020-12 and draft7 case and the optional
+# email, uri, date and date-time format cases pass. Patterns run on
+# zg_regex with ECMA-262 compatibility (src/schema/ecma.zig).
