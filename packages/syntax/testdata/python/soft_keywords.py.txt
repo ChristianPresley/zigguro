@@ -1,0 +1,10 @@
+match command:
+    case ["go", direction]:
+        move(direction)
+    case _:
+        pass
+match = 1
+case(x)
+type Point = tuple[float, float]
+type = "plain name"
+print(match, type)
