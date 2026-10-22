@@ -1,0 +1,8 @@
+let a: string = "s";
+let b: number[] = [1, 2];
+let c: Array<boolean> = [];
+let d: unknown;
+let e: never;
+let f: Record<string, any> = {};
+let g: bigint | symbol | object | null;
+type Fn = (x: number) => void;
