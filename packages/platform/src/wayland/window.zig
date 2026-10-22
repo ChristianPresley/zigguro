@@ -12,6 +12,7 @@ const wl = @import("wl_gen");
 const types = @import("../api/types.zig");
 const window_api = @import("../api/window.zig");
 const scale = @import("scale.zig");
+const csd = @import("csd.zig");
 
 const PxSize = types.PxSize;
 const WindowId = types.WindowId;
@@ -108,6 +109,20 @@ pub const Window = struct {
     /// A buffer has been attached: the surface is mapped and frame
     /// callbacks fire. Before that, frames are answered at once.
     presented: bool = false,
+    /// The window draws its own decorations (no server-side mode
+    /// negotiated); takes effect at the next configure.
+    csd: bool = false,
+    /// The CSD margins around the visible window, in logical pixels
+    /// (zero for server-side decorations).
+    margins: csd.Margins = .{},
+    /// The `zxdg_toplevel_decoration_v1`, when the manager exists.
+    decoration: ?wl.zxdg_toplevel_decoration_v1.Id = null,
+    /// The window geometry and input rectangle last sent (CSD only).
+    applied_geometry: ?[4]i32 = null,
+    applied_input: ?[4]i32 = null,
+    /// The decorations last reported with `window_decorations`.
+    reported_client: ?bool = null,
+    reported_margins: [4]u32 = .{ 0, 0, 0, 0 },
 
     /// `xdg_toplevel.configure` fields waiting for the surface configure.
     pub const Pending = struct {
@@ -145,6 +160,7 @@ pub const Window = struct {
             w.state = p.state;
             w.pending.have = false;
         }
+        w.margins = if (w.csd) csd.margins(w.state, csd.default_margin) else .{};
         w.serial = serial;
         w.pending_ack = serial;
         w.ack_deadline_ns = now_ns + ack_timeout_ns;
@@ -166,7 +182,13 @@ pub const Window = struct {
     /// The buffer size for the current logical size and scale. Without a
     /// viewport the scale is rounded to an integer buffer scale.
     pub fn bufferSize(w: *const Window) PxSize {
-        return scale.bufferSize(w.logical, w.effectiveScale120());
+        return scale.bufferSize(w.surfaceLogical(), w.effectiveScale120());
+    }
+
+    /// The surface's logical size: the window plus its CSD margins.
+    pub fn surfaceLogical(w: *const Window) PxSize {
+        const m = w.margins;
+        return .{ .w = w.logical.w + m.left + m.right, .h = w.logical.h + m.top + m.bottom };
     }
 
     /// The scale the buffer is rendered at: exact with a viewport,
@@ -356,4 +378,14 @@ test "titles truncate on a codepoint boundary" {
     buf[max_title + 1] = 'b';
     try testing.expectEqual(@as(usize, max_title - 1), truncateTitle(&buf).len);
     try testing.expectEqualStrings("short", truncateTitle("short"));
+}
+
+test "client-side decorations grow the surface by the margins, except maximized" {
+    var w = testWindow();
+    w.csd = true;
+    w.onToplevelConfigure(400, 300, &.{});
+    const c = w.onConfigure(1, 0, 100);
+    try testing.expectEqual(PxSize{ .w = 424, .h = 324 }, c.size);
+    w.onToplevelConfigure(800, 600, &statesBytes(&.{.maximized}));
+    try testing.expectEqual(PxSize{ .w = 800, .h = 600 }, w.onConfigure(2, 0, 100).size);
 }
