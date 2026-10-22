@@ -1001,7 +1001,7 @@ for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
 
 ### Signature
 ```zig
-pub const InitOptions = struct { refresh_ns: u32 = 16_666_667 };
+pub const InitOptions = struct { refresh_ns: ?u32 = null }; // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
 pub fn platform(b: *Win32Backend) Platform;
 // cpu_present.zig
@@ -1012,7 +1012,12 @@ pub fn platform(b: *Win32Backend) Platform;
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
 chords carry none. Wheel notches are `scroll` lines with forward
-negative.
+negative. A window created on a non-96 DPI monitor is resized for that
+DPI before it is shown. Each CPU present stages `Event.present_feedback`
+(stamped when the blit returns, `flags = 0`). `monitors` reports each
+monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
+rate; `WM_DISPLAYCHANGE` and `WM_DPICHANGED` stage `monitors_changed`.
+Frames keep coming inside the modal size/move loop (a `WM_TIMER`).
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1027,9 +1032,9 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 ### Stability
 Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
 raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
-answers only from our own `clipboard_write`), OLE drag and drop, the
-modal size-move timer, cursors, DWM refresh timing (the frame timer
-assumes 60 Hz) and monitor DPI (monitors report scale 1).
+answers only from our own `clipboard_write`), OLE drag and drop,
+cursors, cloaking until the first present, the high-resolution waitable
+pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
 
