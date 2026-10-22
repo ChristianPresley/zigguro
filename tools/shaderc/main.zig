@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     };
     var diag: std.Io.Writer.Allocating = .init(arena);
-    const files = compile(arena, &programs.all, &diag.writer) catch |err| switch (err) {
+    const files = compile(arena, &programs.all, programs.interface.hash(), &diag.writer) catch |err| switch (err) {
         error.ShaderInvalid => {
             std.log.err("shader validation failed:\n{s}", .{diag.written()});
             return 1;
@@ -64,7 +64,7 @@ pub const File = struct { name: []const u8, data: []const u8 };
 /// Builds every program; on a validation issue writes
 /// `<program>: <issue>` lines to `diag` and fails with `ShaderInvalid`
 /// after checking every program. Allocates from `arena`.
-pub fn compile(arena: std.mem.Allocator, list: []const Program, diag: *std.Io.Writer) ![]File {
+pub fn compile(arena: std.mem.Allocator, list: []const Program, interface_hash: u64, diag: *std.Io.Writer) ![]File {
     var files: std.ArrayList(File) = .empty;
     var index: std.Io.Writer.Allocating = .init(arena);
     const w = &index.writer;
@@ -75,6 +75,12 @@ pub fn compile(arena: std.mem.Allocator, list: []const Program, diag: *std.Io.Wr
         \\
         \\
     );
+    try w.print(
+        \\/// `shaders/interface.zig` `hash()` when these were built.
+        \\pub const interface_hash: u64 = 0x{x:0>16};
+        \\
+        \\
+    , .{interface_hash});
     var invalid = false;
     for (list) |p| {
         const s = try spirv.dsl.Shader.init(arena, p.stage);
@@ -110,7 +116,7 @@ test "shaderc: every program builds and validates" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var diag: std.Io.Writer.Allocating = .init(arena.allocator());
-    const files = compile(arena.allocator(), &programs.all, &diag.writer) catch |err| {
+    const files = compile(arena.allocator(), &programs.all, 0, &diag.writer) catch |err| {
         std.debug.print("{s}", .{diag.written()});
         return err;
     };
@@ -134,7 +140,7 @@ test "shaderc: an injected error names the program and instruction" {
         }.build,
     };
     var diag: std.Io.Writer.Allocating = .init(arena.allocator());
-    try std.testing.expectError(error.ShaderInvalid, compile(arena.allocator(), &.{bad}, &diag.writer));
+    try std.testing.expectError(error.ShaderInvalid, compile(arena.allocator(), &.{bad}, 0, &diag.writer));
     try std.testing.expect(std.mem.indexOf(u8, diag.written(), "broken_frag: OpBranchConditional at word") != null);
     try std.testing.expect(std.mem.indexOf(u8, diag.written(), "missing OpSelectionMerge") != null);
 }
