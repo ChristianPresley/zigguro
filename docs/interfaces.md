@@ -2400,3 +2400,57 @@ as the `PendingChange`.
 ### Stability
 Unstable until E12 integrates them. A pending hunk whose old text the user
 edits becomes `conflicted` and is skipped by `acceptAll`.
+
+## zg_editor.model.api.agent_edit (AgentEditSession)
+
+### Defined in
+`packages/editor/src/model/api/agent_edit.zig`, `text_query.zig` (E05.F08).
+
+### Implemented by
+E05.F08.S01.T02.
+
+### Consumed by
+E10 (agent tools: read_file, edit_file, str_replace, write_file), E12 (policy, pending review), E16 (policy, audit log).
+
+### Signature
+```zig
+pub const LineEdit = struct { start_line: u64, end_line: u64, new_text: []const u8 };   // 0-based, end exclusive
+pub const Occurrence = union(enum) { unique, all, nth: u32 };
+pub const Proposal = union(enum) {
+    change_set: struct { cs: *const ChangeSet, base_version: u64 },
+    line_edits: struct { edits: []const LineEdit, base_version: u64 },
+    str_replace: struct { old: []const u8, new: []const u8, occurrence: Occurrence = .unique },
+    whole_file: struct { text: []const u8, base_version: ?u64 = null },
+};
+pub const ApplyPolicy = struct { ctx, decide: fn (ctx, session: u64, doc: DocHandle, summary: ProposalSummary) enum { apply, pending, deny } };
+pub const PendingHost = struct { ctx, place: fn (ctx, DocHandle) ?PendingPlace, created: fn (ctx, DocHandle, *PendingChange) void };
+pub const Rejection = union(enum) { stale_handle, read_only, stale_version_evicted: {base_version, current_version},
+    too_large: {inserted_bytes, limit}, out_of_bounds: {len}, overlapping_edits, conflict: { ranges: []Range },
+    not_found, not_unique: { count }, no_such_occurrence: { count }, denied, no_pending_host };
+pub const Outcome = union(enum) { applied: { version, ranges: []Range, crlf_adjusted }, pending: { change, crlf_adjusted },
+    rejected: Rejection, pub fn deinit(o, gpa) void };
+pub const AgentEditSession = struct {
+    pending_host: ?PendingHost = null, max_inserted: u64 = 10 << 20,
+    pub fn init(gpa, reg: *DocumentRegistry, session: u64, policy: ApplyPolicy) AgentEditSession;
+    pub fn readLines(s, h, range: ?LineRange, o: ReadOptions{ line_numbers, max_bytes }, gpa) !ReadResult;
+    pub fn propose(s, h, p: Proposal, tool: []const u8) !Outcome;
+    pub fn subscribe(s, AppliedListener) !void;   // AgentEditApplied { session, doc, version, ranges, label }
+    pub fn outline(s, h, lang: *const Language, gpa) !?Structure;
+};
+pub fn enclosingScope(gpa, t: PieceTree, structure: *const Structure, line: u64) !?Scope;
+pub fn minimalChange(gpa, t: PieceTree, new_text: []const u8) !ChangeSet;   // line-diff hunks
+```
+
+### Threading
+UI thread only (it applies edits to documents).
+
+### Ownership/lifetime
+The session keeps the last version it served per document (a snapshot), so
+line edits and whole-file proposals against that version can be rebased;
+older versions are `stale_version_evicted`. A `PendingChange` belongs to the
+host after `created`.
+
+### Stability
+Unstable until E10/E12 integrate it. Rebasing is `transform(cs, since, user
+wins ties)`; insertions next to an agent's replaced text do not conflict.
+`str_replace` retries once with the document's line endings.
