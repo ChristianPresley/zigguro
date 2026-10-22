@@ -112,7 +112,9 @@ fn newNode(gpa: Allocator, pool: *Page.PagePool, cols: u16, page_bytes: u32) !*N
 fn appendRow(pl: *PageList) !Pin {
     var t = pl.tail;
     if (t.page.rowCount() == t.page.layout.rows_cap) {
-        const node = try newNode(pl.gpa, &pl.pool, pl.cols, pl.page_bytes);
+        // At the byte cap, the head page is evicted anyway: reuse its node
+        // and buffer so steady-state scrolling never allocates.
+        const node = if (pl.canRecycleHead()) pl.recycleHead() else try newNode(pl.gpa, &pl.pool, pl.cols, pl.page_bytes);
         node.prev = t;
         t.next = node;
         pl.tail = node;
@@ -202,6 +204,13 @@ pub fn grow(pl: *PageList) !Pin {
 }
 
 fn evictHead(pl: *PageList) void {
+    const h = pl.detachHead();
+    pl.pool.free(h.page.buf);
+    pl.gpa.destroy(h);
+}
+
+/// Unlinks the head page, marking its pins garbage.
+fn detachHead(pl: *PageList) *Node {
     const h = pl.head;
     const n = h.page.rowCount();
     for (pl.pins.items) |t| {
@@ -212,12 +221,28 @@ fn evictHead(pl: *PageList) void {
     pl.total -= n;
     pl.evicted += n;
     pl.nodes -= 1;
-    pl.pool.free(h.page.buf);
-    pl.gpa.destroy(h);
     if (pl.viewport) |v| if (v.garbage) {
         v.garbage = false;
         v.pin = .{ .node = pl.head, .y = 0 };
     };
+    return h;
+}
+
+/// Whether adding a page would exceed the byte cap and the head page can
+/// be evicted to make room (it is a standard page entirely in scrollback).
+fn canRecycleHead(pl: *const PageList) bool {
+    const h = pl.head;
+    return pl.opts.scrollback and h != pl.tail and h.page.buf.len == pl.page_bytes and
+        (pl.nodes + 1) * pl.page_bytes > pl.opts.max_bytes and
+        pl.total - h.page.rowCount() >= pl.rows;
+}
+
+/// Evicts the head page and returns its node, reformatted, for reuse.
+fn recycleHead(pl: *PageList) *Node {
+    const h = pl.detachHead();
+    const buf = h.page.buf;
+    h.* = .{ .page = .init(buf, pl.cols) };
+    return h;
 }
 
 /// Tracks `p`; the returned pin is updated as rows move.
