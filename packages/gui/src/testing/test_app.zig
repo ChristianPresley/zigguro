@@ -131,6 +131,28 @@ pub const TestApp = struct {
         return .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 };
     }
 
+    /// Advances the app clock by `ms`, runs due timers and settles.
+    pub fn advance(t: *TestApp, ms: u64) void {
+        t.app.now_ms += ms;
+        t.win.tick(t.app.now_ms);
+        _ = t.settle();
+    }
+
+    /// Moves the pointer to `p` and settles.
+    pub fn moveTo(t: *TestApp, p: geom.Vec2) void {
+        t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        _ = t.settle();
+    }
+
+    /// Right-clicks the centre of the node matching `q` and settles.
+    pub fn rightClick(t: *TestApp, q: Query) !void {
+        const p = center(try t.rectOf(q));
+        t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        t.win.dispatch(.{ .pointer_down = .{ .pos = p, .button = .right } });
+        t.win.dispatch(.{ .pointer_up = .{ .pos = p, .button = .right } });
+        _ = t.settle();
+    }
+
     /// Moves the pointer over the node matching `q`.
     pub fn hover(t: *TestApp, q: Query) !void {
         const p = center(try t.rectOf(q));
