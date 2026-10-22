@@ -2350,7 +2350,8 @@ E02.
 
 ### Consumed by
 E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
-`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+`backend = .vulkan` wraps it in `Recovering`). Tests use `createWithGpu`
+and `renderToImage`.
 
 ### Signature
 ```zig
@@ -2418,6 +2419,77 @@ Render thread only.
 The renderer owns its device when made by `create`, not with
 `createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
 retires the slot with the next frame.
+
+## zg_vulkan.Recovering (device-loss recovery)
+
+### Defined in
+`packages/vulkan/src/r2d/vk/Recovering.zig` and
+`packages/vulkan/src/r2d/texture_registry.zig` (E02.F02.S02.T01).
+
+### Implemented by
+E02.
+
+### Consumed by
+E04 through `r2d.Renderer`: `zg_vulkan.createRenderer` with
+`backend = .vulkan` returns a `Recovering`. E04's `Host.pacingFor` reads
+its pacing through `zg_vulkan.vulkanPacing`.
+
+### Signature
+```zig
+pub const Recovering = struct {
+    inner: union(enum) { vulkan: *VkRenderer, software: *SwRenderer, none },
+    shadows: TextureRegistry, recovery: gpu.Recovery,
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*Recovering;   // VkRenderer.create underneath
+    pub fn destroy(self) void;  pub fn renderer(self) r2d.Renderer;
+    pub fn is(r: r2d.Renderer) bool;  pub fn of(r: r2d.Renderer) *Recovering;
+    pub fn presentWaiter(self) ?FramePacer.PresentWaiter;   // follows recreated swapchains
+    pub fn pacerCaps(self) FramePacer.Caps;
+    pub const retry_ns: u64;                                 // 5 s (Win32 retry)
+};
+pub const VkPacing = struct { caps: FramePacer.Caps, waiter: ?FramePacer.PresentWaiter };
+pub fn vulkanPacing(r: r2d.Renderer) ?VkPacing;              // null unless rendering with Vulkan
+pub const TextureRegistry = struct {                         // r2d.TextureRegistry, pure
+    pub fn put(self, gpa, id, desc) !void;  pub fn update(self, id, rect, data, row_pitch) !void;
+    pub fn remove(self, gpa, id) void;  pub fn get(self, id) ?Shadow;  pub fn freeId(self) TextureId;  pub fn bytes(self) u64;
+};
+// Also: VkRenderer.createTextureAt / SwRenderer.createTextureAt(desc, id), VkRenderer.isLost / is / of,
+// DescriptorHeap.allocSlotAt(slot, view, kind), Gpu.drainInjected().
+```
+Behaviour:
+- `DeviceLost` from a frame or texture call, with the device's `lost`
+  latch set, runs `Recovery.onLost`. Teardown destroys the `VkRenderer`;
+  a lost device is not waited on and the pipeline cache file is not
+  rewritten. Recreate builds a new device and renderer and recreates every
+  texture under its old id from the CPU copy.
+- The frame that hit the loss returns `error.DeviceLost`. `RenderThread`
+  then sets `takeRedraw`, and the UI repaints everything, including the
+  layers the new renderer does not have.
+- The third loss within 60 s (`LostPolicy`) switches to `SwRenderer` on
+  the same target with the same texture ids, and the copies are freed.
+  `backend()` then reports `.software`.
+- Win32 has no CPU present path, so the window skips frames
+  (`FrameStats.skipped`) and retries Vulkan every 5 s instead.
+- Present ids continue across recreated swapchains, offset by the
+  presents of the destroyed ones.
+- An injected loss (`ZG_VK_FAULT`) waits for the device before destroying
+  anything, because that device still runs.
+
+Deviations from the spec text:
+- Textures are restored from CPU copies the renderer keeps, not through
+  owner `TextureSource.reupload` callbacks. E03 and E04 need no code for
+  this, at the cost of one CPU copy of each texture while on Vulkan.
+- Teardown is `VkRenderer.destroy` (its own reverse order); the instance
+  is not kept across recreations.
+- The `zg doctor gpu` CLI and the 200 ms recovered-frame measurement are
+  still open.
+
+### Threading
+Render thread only, like any `Renderer`; the present waiter runs on the
+render thread (the pacer).
+
+### Ownership/lifetime
+Owns the current backend and the texture copies. Ids handed out stay
+valid across recreations and the software switch.
 
 ### Stability
 Internal to E02 behind `r2d.Renderer`.
