@@ -1,0 +1,6 @@
+1| property:base punctuation.delimiter:: label:&base
+2| property:a punctuation.delimiter:: number:1
+3| property:derived punctuation.delimiter::
+4| property:<< punctuation.delimiter:: label:*base
+5| property:b punctuation.delimiter:: number:2
+6| property:list punctuation.delimiter:: punctuation.bracket:[ label:*base punctuation.delimiter:, label:&x number:3 punctuation.bracket:]

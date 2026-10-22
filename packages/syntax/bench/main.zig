@@ -96,6 +96,95 @@ const go_template =
     \\
 ;
 
+const python_template =
+    \\def widget_{d}(self, index: int) -> "Widget | None":
+    \\    """Returns the {d}th widget, clamped to the table."""
+    \\    i = min(index, len(self.items) - 1)
+    \\    if not self.items:
+    \\        return None
+    \\    total = 0x{x}
+    \\    for k, w in enumerate(self.items[:i]):
+    \\        total += w.weight * k  # weighted
+    \\        if w.flags.hidden:
+    \\            continue
+    \\    label = f"widget {{i}} \x41 {d}: {{total:>8}}"
+    \\    log.debug("%s", label)
+    \\    return self.items[i]
+    \\
+;
+
+const yaml_template =
+    \\widget_{d}:
+    \\  name: "widget {d}"
+    \\  weight: 0x{x}
+    \\  enabled: true
+    \\  tags: [alpha, beta, &t{d} gamma]
+    \\  # weighted entries
+    \\  items:
+    \\    - id: 1
+    \\      label: plain text value
+    \\    - id: 2
+    \\      note: |
+    \\        literal block
+    \\        with two lines
+    \\  ref: *t1
+    \\
+;
+
+const json_template =
+    \\  {{
+    \\    "id": {d},
+    \\    "name": "widget {d}",
+    \\    "weight": "0x{x}",
+    \\    "enabled": true,
+    \\    "ratio": 0.75,
+    \\    "tags": ["alpha", "beta", "gamma"],
+    \\    "owner": null,
+    \\    "note": "line \"quoted\"\n",
+    \\    "dims": {{"w": 640, "h": -480.5e2}},
+    \\    "items": [1, 2, 3, 4, 5],
+    \\    "seq": {d},
+    \\    "path": "/usr/local/share/zigguro"
+    \\  }},
+    \\
+;
+
+const toml_template =
+    \\[widget_{d}]
+    \\name = "widget {d}"
+    \\weight = 0x{x}
+    \\enabled = true
+    \\ratio = 0.75
+    \\tags = ["alpha", "beta", 'gamma']
+    \\created = 1979-05-27T07:32:00Z
+    \\# weighted entries
+    \\dims = {{ w = 640, h = 480 }}
+    \\note = """
+    \\multi-line \"text\"
+    \\"""
+    \\seq = {d}
+    \\
+    \\
+;
+
+const shell_template =
+    \\widget_{d}() {{
+    \\    local name="widget {d}" weight=0x{x}
+    \\    if [ -n "${{name}}" ]; then
+    \\        echo "building $name with $(nproc) jobs"  # status
+    \\    fi
+    \\    for f in src/*.c; do
+    \\        cc -O2 -c "$f" -o "${{f%.c}}.o" || exit 1
+    \\    done
+    \\    cat <<EOF > "out_$1.txt"
+    \\seq {d} for $name
+    \\EOF
+    \\    total=$(( total + ${{#name}} ))
+    \\}}
+    \\
+    \\
+;
+
 /// A corpus of about `lines` lines from a 14-line template.
 fn genFrom(gpa: std.mem.Allocator, comptime tmpl: []const u8, lines: usize) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -370,6 +459,11 @@ fn register(b: *bench.Bench) !void {
         .{ "c", c_template, &syntax.langs.c.c_language, true },
         .{ "rust", rust_template, &syntax.langs.rust.rust_language, true },
         .{ "go", go_template, &syntax.langs.go.go_language, false },
+        .{ "python", python_template, &syntax.langs.python.python_language, true },
+        .{ "yaml", yaml_template, &syntax.langs.yaml.yaml_language, false },
+        .{ "json", json_template, &syntax.langs.json.json_language, true },
+        .{ "toml", toml_template, &syntax.langs.toml.toml_language, false },
+        .{ "shell", shell_template, &syntax.langs.shell.shell_language, false },
     }) |l| {
         const spaced = try genFrom(gpa, l[1], n_lines);
         defer gpa.free(spaced);

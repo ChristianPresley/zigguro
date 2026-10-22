@@ -206,11 +206,27 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/seat.zig`.
+    pub const seat = @import("wayland/seat.zig");
+    /// See `wayland/data_device.zig`.
+    pub const data_device = @import("wayland/data_device.zig");
+    /// See `wayland/cursor.zig`.
+    pub const cursor = @import("wayland/cursor.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
+
+/// Linux helpers shared by the Wayland and X11 backends.
+pub const linux_util = struct {
+    /// See `linux/pipe_transfer.zig`.
+    pub const pipe_transfer = if (is_linux) @import("linux/pipe_transfer.zig") else struct {};
+    /// See `linux/uri_list.zig`.
+    pub const uri_list = @import("linux/uri_list.zig");
+    /// See `linux/xcursor.zig`.
+    pub const xcursor = @import("linux/xcursor.zig");
+};
 const is_windows = @import("builtin").os.tag == .windows;
 
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
@@ -277,6 +293,8 @@ pub const x11 = if (is_linux) struct {
     pub const dpi = @import("x11/dpi.zig");
     /// See `x11/keymap.zig`.
     pub const keymap = @import("x11/keymap.zig");
+    /// See `x11/selection.zig`.
+    pub const selection = @import("x11/selection.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -325,6 +343,12 @@ pub const win32 = struct {
     pub const ime = @import("win32/ime.zig");
     /// See `win32/pointer.zig`.
     pub const pointer = @import("win32/pointer.zig");
+    /// See `win32/theme.zig`.
+    pub const theme = @import("win32/theme.zig");
+    /// See `win32/dialogs.zig`.
+    pub const dialogs = @import("win32/dialogs.zig");
+    /// See `win32/shell.zig`.
+    pub const shell = @import("win32/shell.zig");
     /// See `win32/backend.zig`.
     pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
     /// See `win32/backend.zig`.
@@ -421,6 +445,11 @@ test {
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
+    _ = wayland.seat;
+    _ = wayland.data_device;
+    _ = linux_util.uri_list;
+    _ = linux_util.xcursor;
+    _ = wayland.cursor;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -428,13 +457,16 @@ test {
         _ = @import("wayland/backend.zig");
         _ = @import("wayland/shm.zig");
         _ = @import("wayland/dmabuf.zig");
+        _ = linux_util.pipe_transfer;
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
         _ = @import("x11/backend.zig");
         _ = @import("x11/dri3.zig");
+        _ = @import("x11/selection.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
+    _ = @import("fswatch/windows_rdcw.zig");
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -462,6 +494,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "fswatch/ignore.zig", .src = @embedFile("fswatch/ignore.zig") },
     .{ .path = "fswatch/coalesce.zig", .src = @embedFile("fswatch/coalesce.zig") },
     .{ .path = "fswatch/linux_inotify.zig", .src = @embedFile("fswatch/linux_inotify.zig") },
+    .{ .path = "fswatch/windows_rdcw.zig", .src = @embedFile("fswatch/windows_rdcw.zig") },
+    .{ .path = "fswatch/test_util.zig", .src = @embedFile("fswatch/test_util.zig") },
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
@@ -496,6 +530,12 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
     .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
+    .{ .path = "wayland/seat.zig", .src = @embedFile("wayland/seat.zig") },
+    .{ .path = "wayland/data_device.zig", .src = @embedFile("wayland/data_device.zig") },
+    .{ .path = "linux/pipe_transfer.zig", .src = @embedFile("linux/pipe_transfer.zig") },
+    .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
+    .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
+    .{ .path = "wayland/cursor.zig", .src = @embedFile("wayland/cursor.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
@@ -514,6 +554,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/dri3.zig", .src = @embedFile("x11/dri3.zig") },
     .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
     .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
+    .{ .path = "x11/selection.zig", .src = @embedFile("x11/selection.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
     .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
     .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },
@@ -536,6 +577,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
     .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
     .{ .path = "win32/pointer.zig", .src = @embedFile("win32/pointer.zig") },
+    .{ .path = "win32/theme.zig", .src = @embedFile("win32/theme.zig") },
+    .{ .path = "win32/dialogs.zig", .src = @embedFile("win32/dialogs.zig") },
+    .{ .path = "win32/shell.zig", .src = @embedFile("win32/shell.zig") },
     .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 

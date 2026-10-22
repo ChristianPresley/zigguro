@@ -1,0 +1,8 @@
+integers = [ 1, 2, 3 ]
+colors = [ "red", 'yellow', """green""" ]
+nested = [ [ 1, 2 ], ["a", 'b'] ]
+multi = [
+  1,
+  [2, 3],
+  "four", # comment
+]

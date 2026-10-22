@@ -1,0 +1,9 @@
+1| property:bare_key operator:= number:1
+2| property:bare-key operator:= number:2
+3| property:1234 operator:= number:3
+4| property:"quoted key" operator:= number:4
+5| property:'literal key' operator:= number:5
+6| property:a punctuation.delimiter:. property:b punctuation.delimiter:. property:c operator:= number:6
+7| property:site punctuation.delimiter:. property:"google.com" operator:= constant.builtin:true
+8| property:a punctuation.delimiter:. property:b operator:= number:7
+9| operator:= invalid:invalid

@@ -1,0 +1,5 @@
+list: [1, two, "three", {a: b}]
+map: {key: value, other: [x, y]}
+empty: []
+nested: {a: {b: [c, d]}}
+urls: [http://a.com, b]

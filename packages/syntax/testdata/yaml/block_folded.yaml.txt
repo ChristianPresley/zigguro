@@ -1,0 +1,12 @@
+description: >
+  Folded text
+  continues here.
+nested:
+  inner: >-
+    more folded
+    text
+  sibling: x
+seq:
+  - >
+    item text
+  - plain

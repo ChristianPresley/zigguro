@@ -1,0 +1,7 @@
+1| punctuation.bracket:{
+2| property:"plain" punctuation.delimiter:: string:"hello world" punctuation.delimiter:,
+3| property:"empty" punctuation.delimiter:: string:"" punctuation.delimiter:,
+4| property:"spaces" punctuation.delimiter:: string:"  padded  " punctuation.delimiter:,
+5| property:"colon inside" punctuation.delimiter:: string:"a: b" punctuation.delimiter:,
+6| property:"unterminated" punctuation.delimiter:: string:"no end
+7| punctuation.bracket:}

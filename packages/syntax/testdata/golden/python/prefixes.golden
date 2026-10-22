@@ -1,0 +1,10 @@
+1| variable:a operator:= string:r" string:raw \d+"
+2| variable:b operator:= string:b" string:bytes string.escape:\x00 string:"
+3| variable:c operator:= string:rb' string:raw bytes \d'
+4| variable:d operator:= string:BR" string:upper"
+5| variable:e operator:= string:u" string:unicode"
+6| variable:f operator:= string:f" string:format  punctuation.bracket:{ variable:x punctuation.bracket:} string:"
+7| variable:g operator:= string:Rf" punctuation.bracket:{ variable:x punctuation.bracket:} string:\d"
+8| variable:h operator:= string:t" string:template  punctuation.bracket:{ variable:x punctuation.bracket:} string:"
+9| variable:i operator:= string:br" string:ok" operator:+ variable:bf string:" string:not a prefix"
+10| variable:j operator:= variable:ur string:" string:not valid"

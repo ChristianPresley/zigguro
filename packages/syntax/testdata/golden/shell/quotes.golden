@@ -1,0 +1,6 @@
+1| function.builtin:echo string:"double  variable:$var string: and  variable:$ punctuation.bracket:{ variable:var punctuation.bracket:} string: and  string.escape:\" string:escaped string.escape:\" string: \n"
+2| function.builtin:echo string:'single $var no expansion'
+3| function.builtin:echo string:$'ansi string.escape:\t string:escape string.escape:\n string:'
+4| function.builtin:echo string:"multi
+5| string:line string"
+6| function.builtin:echo string:"nested  punctuation:` function:date punctuation:` string: and  punctuation:$ punctuation.bracket:( function:whoami punctuation.bracket:) string:"

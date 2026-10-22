@@ -1,0 +1,8 @@
+1| property:integers operator:= punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.delimiter:, number:3 punctuation.bracket:]
+2| property:colors operator:= punctuation.bracket:[ string:"red" punctuation.delimiter:, string:'yellow' punctuation.delimiter:, string:"""green""" punctuation.bracket:]
+3| property:nested operator:= punctuation.bracket:[ punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.bracket:] punctuation.delimiter:, punctuation.bracket:[ string:"a" punctuation.delimiter:, string:'b' punctuation.bracket:] punctuation.bracket:]
+4| property:multi operator:= punctuation.bracket:[
+5| number:1 punctuation.delimiter:,
+6| punctuation.bracket:[ number:2 punctuation.delimiter:, number:3 punctuation.bracket:] punctuation.delimiter:,
+7| string:"four" punctuation.delimiter:, comment:# comment
+8| punctuation.bracket:]

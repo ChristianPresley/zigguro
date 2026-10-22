@@ -496,6 +496,22 @@ pub const STARTUPINFOEXW = extern struct {
     lpAttributeList: ?*anyopaque = null,
 };
 
+/// `OVERLAPPED`.
+pub const OVERLAPPED = extern struct {
+    Internal: usize = 0,
+    InternalHigh: usize = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+
+/// `FILE_NOTIFY_INFORMATION`'s fixed part; the UTF-16 name follows.
+pub const FILE_NOTIFY_INFORMATION = extern struct {
+    NextEntryOffset: DWORD,
+    Action: DWORD,
+    FileNameLength: DWORD,
+};
+
 /// `PROCESS_INFORMATION`.
 pub const PROCESS_INFORMATION = extern struct {
     hProcess: ?HANDLE = null,

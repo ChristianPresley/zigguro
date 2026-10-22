@@ -1,0 +1,2 @@
+1| punctuation.bracket:[ number:0 punctuation.delimiter:, number:-0 punctuation.delimiter:, number:1 punctuation.delimiter:, number:-17 punctuation.delimiter:, number:3.14 punctuation.delimiter:, number:-2.5e10 punctuation.delimiter:, number:1E-3 punctuation.delimiter:, number:6.02e+23 punctuation.bracket:]
+2| punctuation.bracket:[ number:01 punctuation.delimiter:, number:1. punctuation.delimiter:, invalid:.5 punctuation.delimiter:, invalid:+1 punctuation.delimiter:, number:0 invalid:x10 punctuation.bracket:]

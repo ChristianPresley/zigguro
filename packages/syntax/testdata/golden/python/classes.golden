@@ -1,0 +1,13 @@
+1| keyword.storage:class type:Shape punctuation.bracket:( constant:ABC punctuation.bracket:) punctuation.delimiter::
+2| string:""" string:A shape."""
+3|
+4| keyword.storage:def function:__init__ punctuation.bracket:( variable.builtin:self punctuation.delimiter:, variable:name punctuation.delimiter:: type.builtin:str punctuation.bracket:) operator:-> constant.builtin:None punctuation.delimiter::
+5| variable.builtin:self punctuation.delimiter:. variable:name operator:= variable:name
+6|
+7| attribute:@property
+8| keyword.storage:def function:area punctuation.bracket:( variable.builtin:self punctuation.bracket:) operator:-> type.builtin:float punctuation.delimiter::
+9| keyword.control:raise type:NotImplementedError
+10|
+11| attribute:@classmethod
+12| keyword.storage:def function:create punctuation.bracket:( variable.builtin:cls punctuation.delimiter:, operator:** variable:kwargs punctuation.bracket:) punctuation.delimiter::
+13| keyword.control:return variable.builtin:cls punctuation.bracket:( operator:** variable:kwargs punctuation.bracket:)

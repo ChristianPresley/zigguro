@@ -1,0 +1,5 @@
+1| punctuation.bracket:{
+2| comment:// a line comment
+3| property:"a" punctuation.delimiter:: number:1 punctuation.delimiter:, comment:// trailing
+4| property:"b" punctuation.delimiter:: string:"// not a comment"
+5| punctuation.bracket:}

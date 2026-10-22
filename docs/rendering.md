@@ -200,7 +200,14 @@ format modifiers and shares a format/modifier with the compositor; the
 frame renders straight into a ring image released to the foreign queue
 family, with an exported sync_file (or a CPU wait) as the acquire point.
 When the compositor holds all three images the frame is skipped
-(`FrameStats.skipped`) and its damage carries over. Otherwise frames go
+(`FrameStats.skipped`) and its damage carries over. On Windows the
+frame renders into a `VK_KHR_win32_surface` swapchain image
+(`present/Swapchain.zig`): FIFO_LATEST_READY when available (else FIFO),
+per-image present semaphores, lazy recreate with `oldSwapchain`, present
+fences (swapchain maintenance1) to retire old swapchains, present regions
+from the damage, and `vkWaitForPresent2KHR` behind the FramePacer's
+present-wait mode (`VkRenderer.presentWaiter` into
+`RenderThread.Options.waiter`). Otherwise frames go
 through readback: to a headless sink, to memory, or to the presenter's shm
 buffers (`present/ShmRing.zig`: up to three `allocCpuBuffer` buffers,
 buffer-age repaint from a CPU backbuffer, latest frame wins when the

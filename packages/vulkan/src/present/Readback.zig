@@ -38,6 +38,9 @@ pub const Sink = union(enum) {
     /// An external presenter without dmabuf (wl_shm, MIT-SHM).
     shm: *platform.surface.Presenter,
     memory: *CpuImage,
+    /// No sink: the window target presents by itself (Win32 swapchain)
+    /// and readback serves `renderToImage` only.
+    none,
 };
 
 /// One region of a slot's copy: where `rect` lands in the buffer.
@@ -87,7 +90,7 @@ copied_bytes: u64 = 0,
 /// memory sink gets its image's channel order.
 pub fn init(gpu: *Gpu, mem: *DeviceMemory, sched: *FrameScheduler, sink: Sink, window: platform.types.WindowId) Readback {
     const format: Texture.Format = switch (sink) {
-        .headless, .shm => .bgra8_unorm,
+        .headless, .shm, .none => .bgra8_unorm,
         .memory => |img| if (img.order == .bgra) .bgra8_unorm else .rgba8_unorm,
     };
     return .{
@@ -211,6 +214,7 @@ fn deliver(self: *Readback, p: *Pending) void {
     self.mem.invalidate(b.alloc, 0, b.size) catch {};
     const src = b.mappedSlice() orelse return;
     const dst: *CpuImage = switch (self.sink) {
+        .none => return,
         .memory => |img| img,
         .headless, .shm => blk: {
             if (self.back == null or self.back.?.width != p.extent.w or self.back.?.height != p.extent.h) {
@@ -242,7 +246,7 @@ fn deliver(self: *Readback, p: *Pending) void {
             const full = n == 1 and std.meta.eql(rects[0], rect.full(.{ .w = dst.width, .h = dst.height }));
             self.shm.?.submit(dst, rects[0..n], full);
         },
-        .memory => {},
+        .memory, .none => {},
     }
 }
 

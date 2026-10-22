@@ -1,0 +1,7 @@
+a = b + c - d * e / f // g % h ** i
+a += 1; a -= 1; a *= 2; a /= 2; a //= 2; a %= 3; a **= 2
+a <<= 1; a >>= 1; a &= m; a |= m; a ^= m; a @= m
+x = a << 2 >> 1 & b | c ^ ~d
+y = a < b <= c > d >= e == f != g
+if (n := len(items)) > 3: pass
+def f() -> int: ...

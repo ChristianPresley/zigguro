@@ -1,0 +1,8 @@
+1| variable:a operator:= string:" string:double"
+2| variable:b operator:= string:' string:single'
+3| variable:c operator:= string:" string:"
+4| variable:d operator:= string:" string:with 'other' quotes"
+5| variable:e operator:= string:' string:unterminated
+6| variable:f operator:= number:1
+7| variable:g operator:= string:" string:a" string:" string:b" string:' string:c'
+8| variable:h operator:= string:" string:# not a comment"

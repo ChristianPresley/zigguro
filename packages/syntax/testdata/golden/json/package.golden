@@ -1,0 +1,9 @@
+1| punctuation.bracket:{
+2| property:"name" punctuation.delimiter:: string:"example" punctuation.delimiter:,
+3| property:"scripts" punctuation.delimiter:: punctuation.bracket:{
+4| property:"build" punctuation.delimiter:: string:"zig build" punctuation.delimiter:,
+5| property:"test" punctuation.delimiter:: string:"zig build test --summary all"
+6| punctuation.bracket:} punctuation.delimiter:,
+7| property:"dependencies" punctuation.delimiter:: punctuation.bracket:{ punctuation.bracket:} punctuation.delimiter:,
+8| property:"files" punctuation.delimiter:: punctuation.bracket:[ string:"dist/" punctuation.delimiter:, string:"README.md" punctuation.bracket:]
+9| punctuation.bracket:}
