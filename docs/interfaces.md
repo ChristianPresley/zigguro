@@ -866,3 +866,288 @@ Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
 `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
+
+## zg_config.store.SettingsStore and Snapshot
+
+### Defined in
+`packages/config/src/store.zig`, `packages/config/src/schema.zig`,
+`packages/config/src/layer.zig` (E15.F01.S01, E15.F01.S02). Semantics in
+`packages/config/docs/settings-model.md`.
+
+### Implemented by
+E15.F01.S01.T01 (schema), E15.F01.S02.T01 (layers and store).
+
+### Consumed by
+Every package that has settings (each declares a `settings_schema.zon`):
+E04 (theme, fonts), E05 (editor), E06 (terminal), E07 (LSP/DAP server
+configuration), E10 (`ai.*`), E11 (`mcp.*`), E16 (trust), the keymap
+resolver (`keyboard.*`).
+
+### Signature
+```zig
+// Each package: packages/<pkg>/src/settings_schema.zon, aggregated at comptime.
+pub const SchemaRegistry = struct {
+    pub fn comptimeInit(comptime schemas: anytype) SchemaRegistry;
+    pub fn lookup(r: *const SchemaRegistry, key: []const u8) ?SettingId;
+    pub fn def(r: *const SchemaRegistry, id: SettingId) *const SettingDef;
+    pub fn default(r: *const SchemaRegistry, id: SettingId) Value;
+};
+pub const SettingsStore = struct {
+    pub fn init(gpa: Allocator, io: std.Io, reg: *const SchemaRegistry, opts: InitOptions) !*SettingsStore;
+    pub fn deinit(s: *SettingsStore) void;
+    pub fn current(s: *const SettingsStore) *const Snapshot;          // UI thread
+    pub fn acquire(s: *SettingsStore) *const Snapshot;                // other threads
+    pub fn release(s: *SettingsStore, snap: *const Snapshot) void;
+    pub fn setLayerSource(s: *SettingsStore, src: LayerSource) !usize; // returns error-diag count
+    pub fn removeLayer(s: *SettingsStore, kind: LayerKind, folder: ?FolderId) !void;
+    pub fn setTrust(s: *SettingsStore, t: TrustPort) !void;
+    pub fn publish(s: *SettingsStore) !?Change;                       // UI thread, frame start
+    pub fn subscribe(s: *SettingsStore, prefix: []const u8, cb: ChangeCallback, ctx: ?*anyopaque) !SubscriptionId;
+    pub fn unsubscribe(s: *SettingsStore, id: SubscriptionId) void;
+};
+pub const Snapshot = struct {
+    pub fn resolve(s: *const Snapshot, id: SettingId, rs: ResourceScope) Value;
+    pub fn getByKey(s: *const Snapshot, key: []const u8, rs: ResourceScope) ?Value;
+    pub fn inspect(s: *const Snapshot, id: SettingId, rs: ResourceScope) Inspection;
+    pub fn section(s: *const Snapshot, arena: Allocator, prefix: []const u8, rs: ResourceScope) !Value;
+};
+pub const ResourceScope = struct { folder: ?FolderId = null, path: ?[]const u8 = null, lang: ?[]const u8 = null };
+// Typed, comptime-checked access:
+const S = zg_config.store.Settings(@import("settings_schema.zon"));
+var tab_size = S.handle(i64, "editor.tabSize"); // then tab_size.bind(&reg); tab_size.get(snap)
+pub const ui_msg_kind: u32 = 0x1500_0001;   // posted when a snapshot is pending
+```
+
+### Threading
+Layer updates run on any thread (the config worker) and park a pending
+snapshot, then post `ui_msg_kind`. `publish` and subscriber callbacks run on
+the UI thread. Snapshots are immutable: the UI thread reads `current()`
+directly; other threads pin with `acquire`/`release`.
+
+### Ownership/lifetime
+The store owns snapshots and layers. `LayerSource.doc` is borrowed only
+during `setLayerSource` (values are copied). Values returned by a snapshot
+live as long as the snapshot (until the next `publish` on the UI thread, or
+until `release` elsewhere). `Change.ids` is valid during the callback.
+
+### Stability
+Experimental until the E15 PR (#1208) merges.
+
+## zg_config.commands.CommandRegistry
+
+### Defined in
+`packages/config/src/commands/registry.zig` (E15.F03.S01.T01). Guide in
+`packages/config/docs/commands.md`.
+
+### Implemented by
+E15.F03.S01.T01.
+
+### Consumed by
+E04 (keybinding dispatch: `CommandId` == `ActionId`; menus, palette), E05,
+E06, E09, E12, E13 register commands; E10 exposes commands as agent tools
+(filtered by `agent` and `effects`); E15.F06 registers extension commands
+lazily; the `zg` CLI runs commands headless.
+
+### Signature
+```zig
+pub const CommandId = enum(u32) { none = 0, _ };
+pub const Command = struct {
+    id: []const u8, title: []const u8, category: ?[]const u8 = null, description: []const u8 = "",
+    keywords: []const []const u8 = &.{}, icon: ?[]const u8 = null,
+    args: ?*const SettingDef = null,          // args schema; null = no args
+    enablement: ?[]const u8 = null,           // when-clause
+    palette: enum { visible, hidden } = .visible, palette_when: ?[]const u8 = null,
+    agent: enum { never, ask, allow } = .ask, effects: Effects = .{},
+    repeat: bool = true,                      // key auto-repeat re-runs it
+    source: Source = .{ .builtin = "" }, handler: ?Handler = null,
+};
+pub const Handler = struct { ctx: ?*anyopaque, run: *const fn (ctx: ?*anyopaque, inv: *Invocation) anyerror!void };
+pub const CommandRegistry = struct {
+    pub fn init(gpa: Allocator, keys: *ContextKeyService, opts: InitOptions) !*CommandRegistry;
+    pub fn register(r: *CommandRegistry, c: Command) RegisterError!CommandId;
+    pub fn registerLazy(r: *CommandRegistry, c: Command, activate: Activator) RegisterError!CommandId;
+    pub fn setHandler(r: *CommandRegistry, id: CommandId, h: Handler) void;
+    pub fn unregisterSource(r: *CommandRegistry, s: Source) void;
+    pub fn lookup(r: *const CommandRegistry, id: []const u8) ?CommandId;
+    pub fn get(r: *const CommandRegistry, id: CommandId) *const Command;
+    pub fn isEnabled(r: *const CommandRegistry, id: CommandId, e: *const EvalEnv) bool;
+    pub fn execute(r: *CommandRegistry, id: CommandId, args: ?Value, origin: Origin) ExecuteError!void;
+    pub fn executeForResult(r: *CommandRegistry, arena: Allocator, id: CommandId, args: ?Value, origin: Origin) ExecuteError!Result;
+    pub fn executeJson(r: *CommandRegistry, arena: Allocator, id: CommandId, json: ?[]const u8, origin: Origin) ExecuteError!Result; // E10 tool calls
+    pub fn executeArgText(r: *CommandRegistry, id: CommandId, arg_text: ?[]const u8, origin: Origin) ExecuteError!void; // E04 dispatchAction
+    pub fn post(r: *CommandRegistry, id: CommandId, args: ?Value, origin: Origin, done: ?Completion) void; // any thread
+    pub fn drainPosted(r: *CommandRegistry) void;                      // UI thread, on ui_msg_kind
+};
+pub const ui_msg_kind: u32 = 0x1500_0002;
+```
+
+### Threading
+`execute*` and `drainPosted` run on the UI thread. `post` is safe from any
+thread. Registration is allowed from any thread until `freeze`, then only on
+the UI thread.
+
+### Ownership/lifetime
+The registry copies command metadata. Handler `ctx` is borrowed and must
+outlive the registration (`unregisterSource` removes it). `Result` strings
+live in the caller's arena. Interned keymap args stay valid until the
+keymap that interned them is freed.
+
+### Stability
+Experimental until the E15 PR (#1208) merges.
+
+## zg_config.context and when-clauses
+
+### Defined in
+`packages/config/src/when/context.zig`, `packages/config/src/when/when.zig`,
+`packages/config/src/when/dnf.zig` (E15.F03.S01.T02). Key list in
+`packages/config/docs/context-keys.md`.
+
+### Implemented by
+E15.F03.S01.T02.
+
+### Consumed by
+E04 (focus contexts form the `KeyContext` stack), every package that owns
+a context key (E05 `editorTextFocus`, E06 `terminalFocus`, E10
+`agentFocus`, E13 `reviewFocus`, ...), the keymap resolver, menus and the
+palette.
+
+### Signature
+```zig
+pub const CtxValue = union(enum) { undef, bool: bool, num: f64, str: []const u8, list: []const []const u8 };
+pub const KeyContext = struct { name: []const u8, attrs: []const Attr = &.{} }; // mirrors E04 KeyContext
+pub const EvalEnv = struct { global: *const ContextKeyService, stack: []const KeyContext = &.{}, settings: ?*const Snapshot = null };
+pub const ContextKeyService = struct {
+    pub fn init(gpa: Allocator) ContextKeyService;
+    pub fn key(s: *ContextKeyService, name: []const u8) !KeyId;
+    pub fn set(s: *ContextKeyService, k: KeyId, v: CtxValue) !void;
+    pub fn get(s: *const ContextKeyService, k: KeyId) CtxValue;
+    pub fn generation(s: *const ContextKeyService) u64;
+};
+pub const When = struct {
+    pub fn compile(gpa: Allocator, src: []const u8, keys: ?*ContextKeyService, diags: *Diags) error{ OutOfMemory, InvalidWhen }!When;
+    pub fn eval(w: *const When, env: *const EvalEnv) bool;   // no allocation
+    pub fn deinit(w: *When) void;
+};
+```
+
+### Threading
+UI thread only. `ContextKeyService.set` bumps `generation` on every
+effective change so label caches can invalidate.
+
+### Ownership/lifetime
+`set` copies string values. A compiled `When` owns its bytecode; `EvalEnv`
+borrows everything it points to for the duration of `eval`.
+
+### Stability
+Experimental until the E15 PR (#1208) merges. The when-clause grammar is
+VS Code compatible and stable.
+
+## zg_config.keymap Resolver
+
+### Defined in
+`packages/config/src/keymap/{keys.zig, keyspec.zig, keymap.zig, resolver.zig}`
+(E15.F04.S01). Format and semantics in `packages/config/docs/keybindings.md`.
+
+### Implemented by
+E15.F04.S01.T01 (keys and specs), E15.F04.S01.T02 (keymap and resolver).
+The E04 `KeymapResolver` adapter lands with E04.
+
+### Consumed by
+E04 (key routing: `resolve`, `onTimer` from the frame deadline), menus,
+the palette and E10/E12 hint text (`labelFor`), the which-key popup
+(`continuations`), E05 Vim/Emacs mode layers.
+
+### Signature
+```zig
+pub const LayerKind = enum(u8) { builtin_default, preset, mode_layer, extension, user };
+pub const LayerInput = struct { layer: LayerKind, source_path: ?[]const u8 = null, doc: *const zon_load.Doc, owner: ?[]const u8 = null };
+pub const Keymap = struct {
+    pub fn build(gpa: Allocator, layers: []const LayerInput, reg: *CommandRegistry, ctx: *ContextKeyService, plat: Platform, diags: *Diags) !*Keymap;
+    pub fn deinit(km: *Keymap) void;
+};
+pub const Resolution = union(enum) {
+    none,                                              // pass the key to the focused widget
+    pending: []const u8,                               // chord label so far
+    action: struct { id: CommandId, arg: ?[]const u8 },// arg: canonical ZON, interned
+    swallow: []const u8,                               // consume; status message (E04 adapter: noop)
+};
+pub const Resolver = struct {
+    pub fn init(gpa: Allocator, ctx: *ContextKeyService, layout: *const LayoutInfo, opts: Options) !*Resolver;
+    pub fn reload(r: *Resolver, km: *Keymap) void;
+    pub fn setOptions(r: *Resolver, opts: Options) void;   // Options.fromSettings(snapshot, platform)
+    pub fn setSettings(r: *Resolver, snap: ?*const Snapshot) void;
+    pub fn resolve(r: *Resolver, stack: []const KeyContext, ev: KeyInput) Resolution;
+    pub fn takeDeferred(r: *Resolver) ?Resolution;          // key re-processed after an early chord fire
+    pub fn deadline(r: *const Resolver) ?u64;               // when to call onTimer (monotonic ns)
+    pub fn onTimer(r: *Resolver, now_ns: u64) ?Resolution;
+    pub fn pendingLabel(r: *const Resolver) ?[]const u8;
+    pub fn continuations(r: *const Resolver, arena: Allocator, stack: []const KeyContext, out: *std.ArrayList(Continuation)) !void;
+    pub fn labelFor(r: *Resolver, id: CommandId, stack: ?[]const KeyContext) ?[]const u8;
+};
+// keys.KeyInput mirrors E01 KeyEvent (HID usage, mods, press/repeat/release, codepoint, t_ns)
+```
+
+### Threading
+UI thread only. `resolve` does not allocate on the key path.
+
+### Ownership/lifetime
+The caller owns both the old and new `Keymap` across `reload` and frees the
+old one afterwards. `pending` and `swallow` payloads are valid until the
+next resolver call; `labelFor` with `stack == null` returns a cached label
+valid until the keymap, layout or context generation changes.
+
+### Stability
+Experimental until the E15 PR (#1208) merges. `KeyInput` and `KeyContext`
+are local mirrors of E01/E04 types and become aliases once those merge.
+
+## ZEP and zg_ext_sdk
+
+### Defined in
+`packages/config/src/zep/{protocol.zig, client.zig}` (E15.F06.S02.T01),
+published alone as the `zg_ext_sdk` module of `packages/config/build.zig`
+and inside zg_config as `zg_config.zep`. Normative spec in
+`packages/config/docs/zep.md`.
+
+### Implemented by
+E15.F06.S02.T01 (types and SDK). The host side (process supervision,
+routing) is E15.F06.S02.T02.
+
+### Consumed by
+Extension authors (Zig SDK; any language via the wire protocol), the
+extension host in zg_config, E10/E11 for `ai/sample` and the MCP split.
+
+### Signature
+```zig
+pub const protocol_version = "2026-10";
+pub const ErrorCode = enum(i32) { parse_error = -32700, invalid_request = -32600, method_not_found = -32601,
+    invalid_params = -32602, internal = -32603, permission_denied = -32001, request_timeout = -32002,
+    not_activated = -32003, content_modified = -32801, request_cancelled = -32800, _ };
+pub const InitializeParams = struct { protocolVersion, host, extension, workspaceFolders, locale,
+    positionEncoding, capabilities: HostCapabilities, grantedPermissions: Permissions };
+pub const Extension = struct {
+    pub fn init(rt: *zg_core.Runtime, reader: *Io.Reader, writer: *Io.Writer, opts: Options) !*Extension;
+    pub fn initStdio(rt: *zg_core.Runtime, opts: Options) !*Extension;
+    pub fn onCommand(e: *Extension, id: []const u8, h: CommandFn) !void;
+    pub fn onNotification(e: *Extension, method: []const u8, h: NotificationFn) !void;
+    pub fn run(e: *Extension) !void;   // until `exit` or the host closes stdin
+    pub fn showMessage(e: *Extension, arena: Allocator, sev: Severity, msg: []const u8, actions: []const []const u8) !?[]const u8;
+    pub fn applyEdit(e: *Extension, arena: Allocator, label: []const u8, edits: []const FileEdit) !ApplyEditResult;
+    pub fn executeCommand(e: *Extension, arena: Allocator, id: []const u8, args: ?std.json.Value) !std.json.Value;
+    pub fn deinit(e: *Extension) void;
+};
+pub const CommandFn = *const fn (e: *Extension, args: ?std.json.Value, arena: Allocator) anyerror!?std.json.Value;
+```
+
+### Threading
+The endpoint runs reader, writer and timer loops. Each `command/execute`
+runs its handler on its own unit of concurrency, so handlers may call the
+blocking host methods. Notification handlers run on the reader loop and
+must be quick.
+
+### Ownership/lifetime
+Handler args and results live in the request arena until the reply is sent.
+Host method results are allocated in the caller's arena.
+
+### Stability
+Experimental until the E15 PR (#1208) merges; the wire protocol is
+versioned by `protocolVersion` and the host keeps the previous version.
