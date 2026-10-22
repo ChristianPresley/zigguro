@@ -1,43 +1,88 @@
-//! End-to-end crash capture tests (Linux): spawn `test/crasher.zig` in
-//! ReleaseFast and ReleaseSafe for every crash kind and check the report.
+//! End-to-end crash capture tests (Linux and Windows): spawn
+//! `test/crasher.zig` in ReleaseFast and ReleaseSafe for every crash kind
+//! and check the report.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const format = @import("format.zig");
 const annotations = @import("annotations.zig");
 const lx = @import("linux.zig");
+const pe = @import("pe.zig");
 const test_exes = @import("zg_test_exes");
 
 const testing = std.testing;
 const SIG = std.posix.SIG;
+const Term = std.process.Child.Term;
+const is_windows = builtin.os.tag == .windows;
+
+/// Expected report kind and how the crasher ends.
+const Want = struct { format.ReportKind, Term };
 
 const Expect = struct {
     kind: []const u8,
-    /// Expected report kind and terminating signal; null skips the case.
-    fast: ?struct { format.ReportKind, SIG },
-    safe: ?struct { format.ReportKind, SIG },
+    /// Null skips the case.
+    fast: ?Want,
+    safe: ?Want,
     /// The trace must contain an address inside the crasher image.
     trace_in_image: bool = true,
 };
 
 const is_x86 = builtin.cpu.arch == .x86_64;
-const trap_case: struct { format.ReportKind, SIG } = if (is_x86) .{ .illegal_instruction, .ILL } else .{ .trap, .TRAP };
 
-const cases = [_]Expect{
-    .{ .kind = "null_deref", .fast = .{ .segfault, .SEGV }, .safe = .{ .segfault, .SEGV } },
-    .{ .kind = "stack_overflow", .fast = .{ .stack_overflow, .SEGV }, .safe = .{ .stack_overflow, .SEGV }, .trace_in_image = false },
-    .{ .kind = "panic", .fast = .{ .panic, .ABRT }, .safe = .{ .panic, .ABRT } },
-    .{ .kind = "unreachable", .fast = trap_case, .safe = .{ .panic, .ABRT } },
-    .{ .kind = "ill", .fast = trap_case, .safe = trap_case },
-    .{ .kind = "breakpoint", .fast = .{ .trap, .TRAP }, .safe = .{ .trap, .TRAP } },
-    .{ .kind = "abort", .fast = .{ .abort, .ABRT }, .safe = .{ .abort, .ABRT } },
-    // aarch64 integer division does not trap.
-    .{ .kind = "div_by_zero", .fast = if (is_x86) .{ .arithmetic, .FPE } else null, .safe = .{ .panic, .ABRT } },
-    .{ .kind = "sigsys", .fast = .{ .bad_syscall, .SYS }, .safe = .{ .bad_syscall, .SYS }, .trace_in_image = false },
-    .{ .kind = "two_threads", .fast = .{ .segfault, .SEGV }, .safe = .{ .segfault, .SEGV } },
+fn sig(s: SIG) Term {
+    return .{ .signal = s };
+}
+
+/// Windows exit status of an unhandled exception: std reports the low
+/// byte of the NTSTATUS.
+fn ntExit(code: u32) Term {
+    return .{ .exited = @truncate(code) };
+}
+
+const linux_cases = blk: {
+    const trap_case: Want = if (is_x86) .{ .illegal_instruction, sig(.ILL) } else .{ .trap, sig(.TRAP) };
+    const panic_case: Want = .{ .panic, sig(.ABRT) };
+    break :blk [_]Expect{
+        .{ .kind = "null_deref", .fast = .{ .segfault, sig(.SEGV) }, .safe = .{ .segfault, sig(.SEGV) } },
+        .{ .kind = "stack_overflow", .fast = .{ .stack_overflow, sig(.SEGV) }, .safe = .{ .stack_overflow, sig(.SEGV) }, .trace_in_image = false },
+        .{ .kind = "panic", .fast = panic_case, .safe = panic_case },
+        .{ .kind = "unreachable", .fast = trap_case, .safe = panic_case },
+        .{ .kind = "ill", .fast = trap_case, .safe = trap_case },
+        .{ .kind = "breakpoint", .fast = .{ .trap, sig(.TRAP) }, .safe = .{ .trap, sig(.TRAP) } },
+        .{ .kind = "abort", .fast = .{ .abort, sig(.ABRT) }, .safe = .{ .abort, sig(.ABRT) } },
+        // aarch64 integer division does not trap.
+        .{ .kind = "div_by_zero", .fast = if (is_x86) .{ .arithmetic, sig(.FPE) } else null, .safe = panic_case },
+        .{ .kind = "sigsys", .fast = .{ .bad_syscall, sig(.SYS) }, .safe = .{ .bad_syscall, sig(.SYS) }, .trace_in_image = false },
+        .{ .kind = "two_threads", .fast = .{ .segfault, sig(.SEGV) }, .safe = .{ .segfault, sig(.SEGV) } },
+        .{ .kind = "stack_overflow_thread", .fast = .{ .stack_overflow, sig(.SEGV) }, .safe = .{ .stack_overflow, sig(.SEGV) }, .trace_in_image = false },
+    };
 };
 
-fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct { format.ReportKind, SIG }) !i64 {
+const windows_cases = blk: {
+    const av: Want = .{ .segfault, ntExit(0xC0000005) };
+    const trap_case: Want = if (is_x86) .{ .illegal_instruction, ntExit(0xC000001D) } else .{ .trap, ntExit(0x80000003) };
+    // `std.process.abort` exits with 3 after the panic hook ran.
+    const panic_case: Want = .{ .panic, .{ .exited = 3 } };
+    break :blk [_]Expect{
+        .{ .kind = "null_deref", .fast = av, .safe = av },
+        .{ .kind = "stack_overflow", .fast = .{ .stack_overflow, ntExit(0xC00000FD) }, .safe = .{ .stack_overflow, ntExit(0xC00000FD) } },
+        .{ .kind = "panic", .fast = panic_case, .safe = panic_case },
+        .{ .kind = "unreachable", .fast = trap_case, .safe = panic_case },
+        .{ .kind = "ill", .fast = trap_case, .safe = trap_case },
+        .{ .kind = "breakpoint", .fast = .{ .trap, ntExit(0x80000003) }, .safe = .{ .trap, ntExit(0x80000003) } },
+        // `std.process.abort` exits without an exception; no SIGSYS.
+        .{ .kind = "abort", .fast = null, .safe = null },
+        .{ .kind = "div_by_zero", .fast = if (is_x86) .{ .arithmetic, ntExit(0xC0000094) } else null, .safe = panic_case },
+        .{ .kind = "sigsys", .fast = null, .safe = null },
+        .{ .kind = "two_threads", .fast = av, .safe = av },
+        .{ .kind = "stack_overflow_thread", .fast = .{ .stack_overflow, ntExit(0xC00000FD) }, .safe = .{ .stack_overflow, ntExit(0xC00000FD) } },
+        .{ .kind = "foreign_thread", .fast = av, .safe = av },
+    };
+};
+
+const cases = if (is_windows) windows_cases else linux_cases;
+
+fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: Want) !i64 {
     const io = testing.io;
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -57,7 +102,7 @@ fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct {
     const term = try child.wait(io);
     const elapsed_ms = t0.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
     errdefer std.debug.print("crasher {s} --crash={s}: term {any}\n", .{ std.fs.path.basename(exe), case.kind, term });
-    try testing.expectEqual(std.process.Child.Term{ .signal = want[1] }, term);
+    try testing.expectEqual(want[1], term);
 
     var crashes = try tmp.dir.openDir(io, "crashes", .{ .iterate = true });
     defer crashes.close(io);
@@ -79,6 +124,7 @@ fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct {
     var exc: ?format.Exception = null;
     var trace: ?format.Trace = null;
     var crasher_mod: ?format.Module = null;
+    var have_ntdll = !is_windows;
     var have_threads = false;
     var have_annotations = false;
     while (r.next()) |s| switch (s.kind) {
@@ -87,7 +133,9 @@ fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct {
         .modules => {
             var mit = format.ModuleIterator.init(s.data);
             while (mit.next()) |m| {
-                if (std.mem.eql(u8, m.path, exe_abs)) crasher_mod = m;
+                const same = if (is_windows) std.ascii.eqlIgnoreCase(m.path, exe_abs) else std.mem.eql(u8, m.path, exe_abs);
+                if (same) crasher_mod = m;
+                if (is_windows and std.ascii.endsWithIgnoreCase(m.path, "\\ntdll.dll")) have_ntdll = true;
             }
         },
         .threads => have_threads = true,
@@ -102,13 +150,18 @@ fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct {
     };
     try testing.expect(!r.truncated);
     try testing.expectEqual(@intFromEnum(want[0]), exc.?.kind);
-    try testing.expect(have_threads and have_annotations);
+    try testing.expect(have_threads and have_annotations and have_ntdll);
 
     const m = crasher_mod orelse return error.CrasherModuleMissing;
     const file = try std.Io.Dir.cwd().readFileAlloc(io, exe, gpa, .limited(256 << 20));
     defer gpa.free(file);
-    try testing.expectEqual(format.ModuleIdKind.gnu_build_id, m.id_kind);
-    try testing.expectEqualSlices(u8, lx.buildIdFromFile(file).?, m.id);
+    if (is_windows) {
+        try testing.expectEqual(format.ModuleIdKind.pdb70, m.id_kind);
+        try testing.expectEqualSlices(u8, pe.cp_codeViewId(file, .file).?, m.id);
+    } else {
+        try testing.expectEqual(format.ModuleIdKind.gnu_build_id, m.id_kind);
+        try testing.expectEqualSlices(u8, lx.buildIdFromFile(file).?, m.id);
+    }
 
     const t = trace.?;
     try testing.expect(t.count > 0);
@@ -129,7 +182,7 @@ fn runCase(gpa: std.mem.Allocator, exe: []const u8, case: Expect, want: struct {
 }
 
 test "crash: every kind writes one complete report (ReleaseFast and ReleaseSafe)" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux and !is_windows) return error.SkipZigTest;
     const gpa = testing.allocator;
     var times: [cases.len * 2]i64 = undefined;
     var nt: usize = 0;
@@ -147,4 +200,26 @@ test "crash: every kind writes one complete report (ReleaseFast and ReleaseSafe)
     std.mem.sort(i64, times[0..nt], {}, std.sort.asc(i64));
     const p95 = times[@min(nt - 1, (nt * 95) / 100)];
     try testing.expect(p95 < 1000);
+}
+
+test "crash: a handled first-chance exception leaves no report (Windows)" {
+    if (!is_windows) return error.SkipZigTest;
+    const io = testing.io;
+    for ([_][]const u8{ test_exes.crasher_fast, test_exes.crasher_safe }) |exe| {
+        var tmp = testing.tmpDir(.{ .iterate = true });
+        defer tmp.cleanup();
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const state = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ exe, "--state-dir", state, "--crash=handled_first_chance" },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        try testing.expectEqual(Term{ .exited = 0 }, try child.wait(io));
+        var crashes = try tmp.dir.openDir(io, "crashes", .{ .iterate = true });
+        defer crashes.close(io);
+        var dit = crashes.iterate();
+        try testing.expect(try dit.next(io) == null);
+    }
 }
