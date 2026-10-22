@@ -1,0 +1,6 @@
+1| property:a punctuation.delimiter:: string:"simple"
+2| property:b punctuation.delimiter:: string:"escapes  string.escape:\n string:  string.escape:\t string:  string.escape:\" string:  string.escape:\\ string:  string.escape:\x41 string:  string.escape:\u00e9 string:"
+3| property:c punctuation.delimiter:: string:"spans
+4| string:  several
+5| string:  lines"
+6| property:d punctuation.delimiter:: string:after

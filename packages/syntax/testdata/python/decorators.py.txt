@@ -1,0 +1,11 @@
+@dataclass
+class Point:
+    x: int
+    y: int
+
+@functools.lru_cache(maxsize=None)
+def cached(n):
+    return n
+
+result = a @ b
+m @= n

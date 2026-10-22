@@ -1,0 +1,6 @@
+base: &base
+  a: 1
+derived:
+  <<: *base
+  b: 2
+list: [*base, &x 3]

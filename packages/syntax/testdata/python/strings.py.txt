@@ -1,0 +1,8 @@
+a = "double"
+b = 'single'
+c = ""
+d = "with 'other' quotes"
+e = 'unterminated
+f = 1
+g = "a" "b" 'c'
+h = "# not a comment"

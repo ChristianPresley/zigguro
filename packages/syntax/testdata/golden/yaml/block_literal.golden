@@ -1,0 +1,14 @@
+1| property:script punctuation.delimiter:: operator:|
+2| string:  echo "hello"
+3| string:  # not a comment
+4|
+5| string:  exit 0
+6| property:keep punctuation.delimiter:: operator:|+
+7| string:  trailing
+8|
+9| property:strip punctuation.delimiter:: operator:|-
+10| string:  text
+11| property:indented punctuation.delimiter:: operator:|2
+12| string:    four spaces
+13| string:  two
+14| property:after punctuation.delimiter:: string:done

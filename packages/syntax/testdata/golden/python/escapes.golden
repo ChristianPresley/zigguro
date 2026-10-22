@@ -1,0 +1,6 @@
+1| variable:a operator:= string:" string.escape:\n\t\\\"\' string:"
+2| variable:b operator:= string:" string.escape:\x41 string:  string.escape:\101 string:  string.escape:\u00e9 string:  string.escape:\U0001F600 string:"
+3| variable:c operator:= string:" string.escape:\N{LATIN SMALL LETTER E WITH ACUTE} string:"
+4| variable:d operator:= string:r" string:\n stays raw"
+5| variable:e operator:= string:b" string.escape:\xff\x00 string:"
+6| variable:f operator:= string:" string.escape:\q string: unknown"

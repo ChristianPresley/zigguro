@@ -1,0 +1,13 @@
+null1: null
+null2: ~
+bool1: true
+bool2: False
+int: 42
+neg: -17
+float: 3.14
+exp: 1e10
+hex: 0x1F
+inf: .inf
+nan: .nan
+str: hello world
+version: 1.2.3

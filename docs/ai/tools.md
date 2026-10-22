@@ -161,3 +161,34 @@ Every decision goes to the audit sink (`deps.Audit`). All of them except
 plain permission allows are also published as `tool_decision` events. The
 pipeline adds under 1 µs to a call that has no hooks and is allowed
 (bench `ai.invoke_overhead`).
+
+## Subsystem tools
+
+Code intelligence, debugging, tasks, workspace search, notes, SCM and MCP
+tools come from packages on zg_ai's layer, which zg_ai cannot import.
+Each one exports its tools through `tools/adapters/foreign.zig`
+`Exporter`, which uses only std types:
+
+- `list` returns `ForeignTool`s: name, description, input schema, whether
+  the tool is read-only or mutates, and MCP annotations.
+- `call` returns an MCP `CallToolResult` as JSON text. `content` becomes
+  the result parts, `structuredContent` becomes `structured_json`, and
+  `isError` becomes `is_error`. A mutating tool also returns the id of the
+  E12 changeset holding its change.
+
+The app passes the exporters it has to `Adapters.registerAll`. A missing
+subsystem registers nothing. Debug tools stay off unless the workspace
+turns them on. Each adapter:
+
+- keeps the exported names; MCP tools become `mcp__<server>__<tool>`;
+- takes effects from the exporter. MCP annotations count only for servers
+  the user trusts, and every tool of an untrusted server is treated as
+  mutating;
+- gives each call a deadline: 30 s for LSP and debug, 10 s for workspace
+  and notes, 60 s for SCM, and 120 s for tasks and MCP;
+- fails closed when a mutating tool succeeds without a changeset. The
+  model gets an error and the result is dropped, so no exporter can write
+  around review.
+
+Calls lock the paths named in `path`, `file_path`, `file`, `uri` or
+`paths`. Mutating SCM tools take the `.scm` lock.

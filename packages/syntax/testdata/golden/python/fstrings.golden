@@ -1,0 +1,11 @@
+1| variable:name operator:= string:" string:world"
+2| variable:a operator:= string:f" string:hello  punctuation.bracket:{ variable:name punctuation.bracket:} string:!"
+3| variable:b operator:= string:f" string.escape:{{ string:literal braces string.escape:}} string: and  punctuation.bracket:{ variable:name operator:! variable:r punctuation.bracket:} string:"
+4| variable:c operator:= string:f" punctuation.bracket:{ variable:value punctuation.delimiter:: string:>10 punctuation.bracket:} string:"
+5| variable:d operator:= string:f" punctuation.bracket:{ variable:value punctuation.delimiter:: punctuation.bracket:{ variable:width punctuation.bracket:} string:. punctuation.bracket:{ variable:precision punctuation.bracket:} string:f punctuation.bracket:} string:"
+6| variable:e operator:= string:f" punctuation.bracket:{ variable:x operator:= punctuation.bracket:} string:"
+7| variable:f operator:= string:f" punctuation.bracket:{ variable:items punctuation.bracket:[ number:0 punctuation.bracket:] punctuation.bracket:[ string:' string:key' punctuation.bracket:] punctuation.bracket:} string:"
+8| variable:g operator:= string:f' punctuation.bracket:{ variable:a keyword.control:if variable:b keyword.control:else variable:c punctuation.bracket:} string:'
+9| variable:h operator:= string:f""" string:multi
+10| punctuation.bracket:{ variable:line punctuation.bracket:}
+11| string:text"""
