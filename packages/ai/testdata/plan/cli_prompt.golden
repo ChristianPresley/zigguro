@@ -1,0 +1,9 @@
+
+── Proposed plan ──────────────────────────
+│ # Rename parse to decode
+│
+│ 1. Rename in src/parse.zig.
+│ 2. Update callers.
+│ 3. Run zig build test.
+───────────────────────────────────────────
+Approve this plan? [a] approve and auto-accept edits  [y] approve  [n] keep planning: Approve this plan? [a] approve and auto-accept edits  [y] approve  [n] keep planning: What should change? (Enter to skip):

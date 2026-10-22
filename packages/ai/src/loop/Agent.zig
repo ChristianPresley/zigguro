@@ -118,6 +118,11 @@ used: budget.Used = .{},
 estimated: bool = false,
 last_finish: ?ev.FinishReason = null,
 children: std.ArrayList(*Agent) = .empty,
+/// Plan mode: the invoke pipeline runs only what plan mode allows.
+plan_mode: std.atomic.Value(bool) = .init(false),
+/// History to replace the transcript with before the next request
+/// (plan approval with a cleared context); owned by `gpa`.
+pending_clear: ?[]u8 = null,
 
 /// Guards `arena` while tool tasks run (progress chunks).
 alloc_mutex: Io.Mutex = .init,
@@ -156,6 +161,7 @@ pub fn destroy(a: *Agent) void {
     a.queue.deinit(a.gpa);
     a.steer.deinit(a.gpa);
     a.children.deinit(a.gpa);
+    if (a.pending_clear) |t| a.gpa.free(t);
     a.schemas.deinit();
     a.arena.deinit();
     a.gpa.destroy(a);
@@ -344,6 +350,31 @@ pub fn truncate(a: *Agent, len: usize) error{Busy}!void {
     if (a.running) return error.Busy;
     a.transcript.items.len = @min(a.transcript.items.len, len);
     a.seqs.items.len = @min(a.seqs.items.len, len);
+}
+
+/// Turns plan mode on or off for this agent's tool calls. The toolset
+/// and prompt follow the mode through their own setters (`plan_mode.zig`).
+pub fn setPlanMode(a: *Agent, on: bool) void {
+    a.plan_mode.store(on, .release);
+}
+
+/// Replaces the history with one user message holding `text` before the
+/// next model request (the tool batch in flight finishes first).
+pub fn clearContextTo(a: *Agent, text: []const u8) Allocator.Error!void {
+    const copy = try a.gpa.dupe(u8, text);
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    if (a.pending_clear) |old| a.gpa.free(old);
+    a.pending_clear = copy;
+}
+
+/// Takes the pending history replacement, if any (the caller frees it).
+pub fn takeClear(a: *Agent) ?[]u8 {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    const t = a.pending_clear;
+    a.pending_clear = null;
+    return t;
 }
 
 /// Registers a subagent for `cancel(.everything)`.

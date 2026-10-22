@@ -303,6 +303,8 @@ pub const x11 = if (is_linux) struct {
     pub const keymap_from_server = @import("x11/keymap_from_server.zig");
     /// See `x11/xinput2.zig`.
     pub const xinput2 = @import("x11/xinput2.zig");
+    /// See `x11/xdnd.zig`.
+    pub const xdnd = @import("x11/xdnd.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -476,6 +478,7 @@ test {
         _ = @import("x11/xkb.zig");
         _ = @import("x11/keymap_from_server.zig");
         _ = @import("x11/xinput2.zig");
+        _ = @import("x11/xdnd.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
     _ = @import("fswatch/windows_rdcw.zig");
