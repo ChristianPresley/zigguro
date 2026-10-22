@@ -108,6 +108,9 @@ pub const EnvOverrides = struct {
     vk_fault: ?[]const u8 = null,
     /// `ZG_RENDER_DEBUG`: debug overlays such as "damage".
     render_debug: ?[]const u8 = null,
+    /// `ZG_RENDERER`: `auto`, `vulkan` or `software`; overrides
+    /// `RendererOptions.backend`.
+    renderer: ?BackendPref = null,
 
     /// Reads the `ZG_*` variables from `map`. Slices point into the map.
     pub fn fromMap(map: *const std.process.Environ.Map) EnvOverrides {
@@ -117,7 +120,17 @@ pub const EnvOverrides = struct {
             .vk_validation = if (map.get("ZG_VK_VALIDATION")) |v| parseBool(v) else null,
             .vk_fault = nonEmpty(map.get("ZG_VK_FAULT")),
             .render_debug = nonEmpty(map.get("ZG_RENDER_DEBUG")),
+            .renderer = if (nonEmpty(map.get("ZG_RENDERER"))) |v| std.meta.stringToEnum(BackendPref, v) else null,
         };
+    }
+
+    /// `self`, with each unset field taken from `base`.
+    pub fn over(self: EnvOverrides, base: EnvOverrides) EnvOverrides {
+        var out = self;
+        inline for (std.meta.fields(EnvOverrides)) |f| {
+            if (@field(out, f.name) == null) @field(out, f.name) = @field(base, f.name);
+        }
+        return out;
     }
 
     fn nonEmpty(v: ?[]const u8) ?[]const u8 {
@@ -176,7 +189,9 @@ test "options: env overrides parsed" {
     try map.put("ZG_VK_VALIDATION", "0");
     try map.put("ZG_RENDER_DEBUG", "");
     try map.put("PATH", "/bin");
+    try map.put("ZG_RENDERER", "vulkan");
     const e = EnvOverrides.fromMap(&map);
+    try std.testing.expectEqual(@as(?BackendPref, .vulkan), e.renderer);
     try std.testing.expectEqualStrings("llvmpipe", e.gpu.?);
     try std.testing.expectEqual(@as(?bool, false), e.vk_validation);
     try std.testing.expectEqual(@as(?[]const u8, null), e.render_debug);
