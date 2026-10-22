@@ -1,7 +1,8 @@
 //! zg_scm: the AI-first source control core (epic E09). This module holds the
 //! content-addressed object store: object IDs, the object model and its
 //! canonical encoding, the segmented store, chunked blobs, compaction,
-//! GC and fsck; and the commit graph: the commit index and ancestry.
+//! GC and fsck; the commit graph (commit index, ancestry); and conflicts
+//! (the `Merge` algebra and conflict markers).
 
 const std = @import("std");
 
@@ -31,6 +32,12 @@ pub const index_segment = @import("graph/index_segment.zig");
 pub const index = @import("graph/index.zig");
 /// Ancestry queries over the commit index.
 pub const ancestry = @import("graph/ancestry.zig");
+/// `Merge(T)`: first-class conflicts and their algebra.
+pub const merge = @import("merge/merge.zig");
+/// Writing conflicts as marker text.
+pub const materialize = @import("merge/materialize.zig");
+/// Reading marker text back.
+pub const parse_markers = @import("merge/parse_markers.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -46,6 +53,7 @@ pub const WriteBatch = store.WriteBatch;
 pub const ObjectRef = store.ObjectRef;
 pub const CommitIndex = index.CommitIndex;
 pub const Pos = index.Pos;
+pub const Merge = merge.Merge;
 
 test {
     std.testing.refAllDecls(@This());
@@ -54,4 +62,5 @@ test {
     _ = @import("store/gc_test.zig");
     _ = @import("graph/index_test.zig");
     _ = @import("graph/ancestry_test.zig");
+    _ = @import("merge/markers_test.zig");
 }
