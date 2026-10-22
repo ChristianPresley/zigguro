@@ -1,0 +1,28 @@
+// Emacs mode layer (E15 keymap format), loaded on top of the preset when
+// `keyboard.emacs.enabled` is set. The editing keys themselves (C-f, C-k,
+// C-y, C-s, M-%, C-u, ...) are handled by zg_editor.modes.EmacsState while
+// an editor has focus; this layer gives the C-x chords and M-x their
+// workbench commands, and frees keys the preset uses that Emacs owns.
+// EmacsState runs the same commands when it sees these chords itself
+// (emacs.zig `commands`; checked by emacs_test.zig).
+.{
+    .{ .key = "ctrl+x ctrl+s", .command = "file.save", .when = "editorTextFocus" },
+    .{ .key = "ctrl+x ctrl+f", .command = "file.open", .when = "editorTextFocus" },
+    .{ .key = "ctrl+x b", .command = "quickOpen.editors", .when = "editorTextFocus" },
+    .{ .key = "ctrl+x k", .command = "workbench.closeEditor", .when = "editorTextFocus" },
+    .{ .key = "ctrl+x 3", .command = "workbench.splitEditor", .when = "editorTextFocus" },
+    .{ .key = "alt+x", .command = "workbench.showCommands", .when = "editorTextFocus" },
+    // Keys the VS Code preset binds that Emacs uses for editing.
+    .{ .key = "ctrl+g", .command = "-editor.goToLine", .when = "editorTextFocus" },
+    .{ .key = "ctrl+y", .command = "-editor.redo", .when = "editorTextFocus" },
+    .{ .key = "ctrl+f", .command = "-editor.find", .when = "editorTextFocus" },
+    .{ .key = "ctrl+h", .command = "-editor.replace", .when = "editorTextFocus" },
+    .{ .key = "ctrl+d", .command = "-editor.addSelectionToNextMatch", .when = "editorTextFocus" },
+    .{ .key = "ctrl+p", .command = "-quickOpen.files", .when = "editorTextFocus" },
+    .{ .key = "ctrl+b", .command = "-workbench.toggleSidebar", .when = "editorTextFocus" },
+    .{ .key = "ctrl+w", .command = "-workbench.closeEditor", .when = "editorTextFocus" },
+    .{ .key = "ctrl+s", .command = "-file.save", .when = "editorTextFocus" },
+    .{ .key = "ctrl+n", .command = "-file.newUntitled", .when = "editorTextFocus" },
+    .{ .key = "ctrl+l", .command = "-agent.togglePane", .when = "editorTextFocus" },
+    .{ .key = "ctrl+k ctrl+i", .command = "-agent.inlineEdit", .when = "editorTextFocus" },
+}
