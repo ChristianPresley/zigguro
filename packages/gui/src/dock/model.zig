@@ -210,6 +210,8 @@ pub const DockModel = struct {
     /// Record snapshots for `undo` (off for benchmarks).
     history: bool = true,
     next_id: u32 = 1,
+    /// Bumped by every change to the layout (savers compare it).
+    revision: u64 = 0,
 
     /// An empty layout: the center holds one empty group.
     pub fn init(gpa: Allocator) Allocator.Error!DockModel {
@@ -595,6 +597,7 @@ pub const DockModel = struct {
         if (ratios.len != sp.ratios.items.len) return;
         @memcpy(sp.ratios.items, ratios);
         renormalize(sp.ratios.items);
+        m.revision +%= 1;
     }
 
     /// Sets an area's size without an undo step (live resize drags; call
@@ -602,6 +605,7 @@ pub const DockModel = struct {
     pub fn setAreaSizeLive(m: *DockModel, a: Area, px: f32) void {
         if (!std.math.isFinite(px)) return;
         m.areas[@intFromEnum(a)].size = @max(0, px);
+        m.revision +%= 1;
     }
 
     /// Records an undo step for a gesture made of live changes.
@@ -611,6 +615,7 @@ pub const DockModel = struct {
 
     /// Shows only `g` in the center, or everything again.
     pub fn toggleMaximize(m: *DockModel, g: GroupId) void {
+        m.revision +%= 1;
         if (m.maximized) |cur| {
             m.maximized = null;
             if (cur == g) return;
@@ -623,6 +628,7 @@ pub const DockModel = struct {
     /// Shows or hides an area (its panels stay open).
     pub fn areaVisible(m: *DockModel, a: Area, visible: bool) void {
         m.areas[@intFromEnum(a)].visible = visible;
+        m.revision +%= 1;
     }
 
     /// Activates tab `i` of `g` and focuses `g`.
@@ -630,6 +636,7 @@ pub const DockModel = struct {
         const gr = m.groups.getPtr(g) orelse return;
         if (i < gr.tabs.items.len) gr.active = i;
         m.focused = g;
+        m.revision +%= 1;
     }
 
     /// The group next to `g` in `dir`, from the last laid-out rects (see
@@ -642,16 +649,21 @@ pub const DockModel = struct {
     pub fn setFloatRect(m: *DockModel, f: FloatId, r: Rect) void {
         const i = m.floatIndex(f) orelse return;
         m.floating.items[i].rect = r;
+        m.revision +%= 1;
     }
 
     // -- normalization -------------------------------------------------
 
     const min_ratio: f32 = 1e-3;
 
+    /// Scales `r` to sum 1. Only non-positive or non-finite entries are
+    /// raised to `min_ratio`, so a normalized split stays as it is (a
+    /// share that fell below `min_ratio` by the division survives a
+    /// save and reload).
     fn renormalize(r: []f32) void {
         var sum: f32 = 0;
         for (r) |*x| {
-            if (!(x.* > min_ratio) or !std.math.isFinite(x.*)) x.* = min_ratio;
+            if (!(x.* > 0) or !std.math.isFinite(x.*)) x.* = min_ratio;
             sum += x.*;
         }
         for (r) |*x| x.* /= sum;
@@ -840,6 +852,7 @@ pub const DockModel = struct {
     /// Replaces the layout with `s` (see the module doc for panels).
     pub fn restore(m: *DockModel, s: *const Snapshot) Allocator.Error!void {
         const gpa = m.gpa;
+        m.revision +%= 1;
         // Build the new maps first so a failure leaves the model as it was.
         var groups: std.AutoArrayHashMapUnmanaged(GroupId, Group) = .empty;
         errdefer {
@@ -917,6 +930,7 @@ pub const DockModel = struct {
 
     /// Saves the layout for `undo` (the ring drops the oldest).
     fn record(m: *DockModel) Allocator.Error!void {
+        m.revision +%= 1;
         if (!m.history) return;
         const snap = try m.snapshot(m.gpa);
         const slot = &m.undo_ring[m.undo_head];

@@ -1,6 +1,7 @@
 //! `text-fontscan-report`: prints what font discovery finds on this
 //! machine (directories, generic-family preferences, font files) so a
-//! maintainer can compare it by hand with `fc-list --format '%{file}\n'`.
+//! maintainer can compare it by hand with `fc-list --format '%{file}\n'`,
+//! and how long a font database scan of those files takes.
 //! This is a manual check, never a CI step.
 //!
 //!   zig build text-fontscan-report [-- --no-files]
@@ -43,5 +44,14 @@ pub fn main(init: std.process.Init) !u8 {
     const t2 = std.Io.Clock.awake.now(io);
     try out.print("\n# font files ({d}, {d} µs)\n", .{ list.items.len, @divTrunc(t1.durationTo(t2).nanoseconds, 1000) });
     if (files) for (list.items) |e| try out.print("{s}\n", .{e.path});
+
+    var stats: fonts.ScanStats = .{};
+    var db = try fonts.FontDb.empty.rescan(gpa, io, list.items, &stats);
+    try out.print("\n# database: {d} faces from {d} files in {d} ms ({d} unreadable)\n", .{ db.faces().len, stats.added, stats.ms, stats.failed });
+    var again: fonts.ScanStats = .{};
+    var db2 = try db.rescan(gpa, io, list.items, &again);
+    try out.print("# rescan with nothing changed: {d} ms\n", .{again.ms});
+    db2.deinit(gpa);
+    db.deinit(gpa);
     return 0;
 }

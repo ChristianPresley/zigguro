@@ -128,6 +128,7 @@ const atom_names = [_][]const u8{
     "_NET_WM_STATE_MAXIMIZED_VERT",
     "_NET_WM_STATE_MAXIMIZED_HORZ",
     "_NET_WM_STATE_FULLSCREEN",
+    "_NET_WM_STATE_ABOVE",
     "_NET_WM_WINDOW_TYPE",
     "_NET_WM_WINDOW_TYPE_NORMAL",
     "_NET_ACTIVE_WINDOW",
@@ -166,6 +167,9 @@ const Window = struct {
     xid: u32,
     gc: u32,
     size: PxSize,
+    /// For WM_NORMAL_HINTS.
+    min_size: ?PxSize = null,
+    position: ?types.PxPoint = null,
     serial: u32 = 0,
     presenter: Presenter,
     frame_requested: bool = false,
@@ -531,8 +535,8 @@ pub const X11Backend = struct {
             .data = s.root_depth,
             .wid = w.xid,
             .parent = s.root,
-            .x = 0,
-            .y = 0,
+            .x = if (opts.position) |p| @intCast(std.math.clamp(p.x, -32768, 32767)) else 0,
+            .y = if (opts.position) |p| @intCast(std.math.clamp(p.y, -32768, 32767)) else 0,
             .width = @intCast(w.size.w),
             .height = @intCast(w.size.h),
             .visual = s.root_visual,
@@ -571,7 +575,11 @@ pub const X11Backend = struct {
         var pid: [4]u8 = undefined;
         std.mem.writeInt(u32, &pid, @intCast(linux.getpid()), .little);
         try b.setProp(w.xid, a.get("_NET_WM_PID"), proto.Atom.cardinal, 32, &pid);
-        if (opts.min_size) |m| try b.setMinSize(w.xid, m);
+        w.min_size = opts.min_size;
+        w.position = opts.position;
+        if (opts.min_size != null or opts.position != null) try b.setNormalHints(w);
+        // The initial state goes on the window before it is mapped (EWMH).
+        if (opts.always_on_top) try b.setAtoms(w.xid, a.get("_NET_WM_STATE"), &.{a.get("_NET_WM_STATE_ABOVE")});
         _ = try c.request(proto.MapWindow, .{ .window = w.xid }, &.{});
         try c.flush();
     }
@@ -591,13 +599,10 @@ pub const X11Backend = struct {
         try b.setProp(xid, proto.Atom.wm_name, proto.Atom.string, 8, title);
     }
 
-    fn setMinSize(b: *X11Backend, xid: u32, m: PxSize) !void {
-        // WM_SIZE_HINTS: 18 longs; PMinSize (16) with min at longs 5 and 6.
-        var hints: [18 * 4]u8 = @splat(0);
-        std.mem.writeInt(u32, hints[0..4], 16, .little);
-        std.mem.writeInt(u32, hints[20..24], m.w, .little);
-        std.mem.writeInt(u32, hints[24..28], m.h, .little);
-        try b.setProp(xid, proto.Atom.wm_normal_hints, proto.Atom.wm_size_hints, 32, &hints);
+    /// WM_NORMAL_HINTS from the window's minimum size and requested
+    /// position.
+    fn setNormalHints(b: *X11Backend, w: *const Window) !void {
+        try b.setProp(w.xid, proto.Atom.wm_normal_hints, proto.Atom.wm_size_hints, 32, &ewmh.normalHints(w.min_size, w.position));
     }
 
     /// See `Platform.VTable.destroyWindow`.
@@ -648,7 +653,23 @@ pub const X11Backend = struct {
             },
             .set_ime_state => |t| _ = try b.lookup(t.win),
             .set_hit_test => |t| (try b.lookup(t.win)).hit = .{ .f = t.f, .ctx = t.ctx },
-            .set_min_size => |t| try b.setMinSize((try b.lookup(t.win)).xid, t.size),
+            .set_min_size => |t| {
+                const w = try b.lookup(t.win);
+                w.min_size = t.size;
+                try b.setNormalHints(w);
+            },
+            .set_position => |t| {
+                const w = try b.lookup(t.win);
+                w.position = t.pos;
+                try b.setNormalHints(w);
+                // ConfigureWindow values are INT16 coordinates as CARD32.
+                _ = try b.conn.request(proto.ConfigureWindow, .{ .window = w.xid, .mask = 0b11, .values = &.{ @bitCast(t.pos.x), @bitCast(t.pos.y) } }, &.{});
+            },
+            .set_always_on_top => |t| {
+                const w = try b.lookup(t.win);
+                const a = &b.atoms;
+                try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ if (t.on) ewmh.StateAction.add else ewmh.StateAction.remove, a.get("_NET_WM_STATE_ABOVE"), 0, ewmh.Source.application, 0 });
+            },
             .request_state => |t| {
                 const w = try b.lookup(t.win);
                 const a = &b.atoms;
@@ -2430,6 +2451,54 @@ test "Xvfb: _NET_WM_PING answered; _NET_WM_STATE reported; move, resize, menu an
     const att = try wm.message(p, a.get("_NET_WM_STATE"));
     try testing.expectEqual(ewmh.StateAction.add, att[0]);
     try testing.expectEqual(a.get("_NET_WM_STATE_DEMANDS_ATTENTION"), att[1]);
+}
+
+test "Xvfb: initial and later position; always-on-top through _NET_WM_STATE" {
+    var x = XvfbForTest.start(9) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg float", .size = .{ .w = 64, .h = 48 }, .position = .{ .x = 30, .y = 40 }, .always_on_top = true });
+    _ = try waitFor(p, .window_configure, win);
+    // No window manager yet: ConfigureWindow is not redirected.
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    const r = try Conn.connect(testing.allocator, testing.io, &env, .{ .display = x.display() });
+    defer r.deinit();
+    const a = &b.atoms;
+    const xid = b.xidOf(win).?;
+    const root = r.screen().root;
+    const at = struct {
+        fn get(c: anytype, w: u32, rt: u32) ![2]i16 {
+            const t = try c.reply(try c.request(proto.TranslateCoordinates, .{ .src_window = w, .dst_window = rt, .src_x = 0, .src_y = 0 }, &.{}));
+            return .{ t.x, t.y };
+        }
+    };
+
+    try testing.expectEqual([2]i16{ 30, 40 }, try at.get(r, xid, root));
+    const st = try r.reply(try r.request(proto.GetProperty, .{ .window = xid, .property = a.get("_NET_WM_STATE"), .type = proto.Atom.atom }, &.{}));
+    try testing.expect(ewmh.lists(st.value, a.get("_NET_WM_STATE_ABOVE")));
+    const hints = try r.reply(try r.request(proto.GetProperty, .{ .window = xid, .property = proto.Atom.wm_normal_hints, .type = proto.Atom.wm_size_hints }, &.{}));
+    try testing.expect(std.mem.readInt(u32, hints.value[0..4], .little) & 1 != 0);
+
+    try p.submit(.{ .set_position = .{ .win = win, .pos = .{ .x = 100, .y = 50 } } });
+    var tries: usize = 0;
+    while (!std.meta.eql(try at.get(r, xid, root), [2]i16{ 100, 50 })) : (tries += 1) {
+        if (tries == 200) return error.Timeout;
+        try testing.io.sleep(.fromMilliseconds(5), .awake);
+    }
+
+    var wm = try FakeWm.start(x.display());
+    defer wm.stop();
+
+    try p.submit(.{ .set_always_on_top = .{ .win = win, .on = false } });
+    const off = try wm.message(p, a.get("_NET_WM_STATE"));
+    try testing.expectEqual(ewmh.StateAction.remove, off[0]);
+    try testing.expectEqual(a.get("_NET_WM_STATE_ABOVE"), off[1]);
+    try p.submit(.{ .set_always_on_top = .{ .win = win, .on = true } });
+    const on = try wm.message(p, a.get("_NET_WM_STATE"));
+    try testing.expectEqual(ewmh.StateAction.add, on[0]);
 }
 
 test "Xvfb: client decorations route caption presses to the window manager" {

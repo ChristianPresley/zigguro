@@ -428,9 +428,11 @@ fn spawn(conn: *Conn, arena: *std.heap.ArenaAllocator, id: RequestId, m: message
                     _ = c.inflight.swapRemove(i);
                     break;
                 };
+                const free_conn = c.release and c.inflight.items.len == 0;
                 c.mutex.unlock(sv.io);
                 j.arena.deinit();
                 sv.gpa.destroy(j);
+                if (free_conn) sv.destroyConn(c);
             }
             const ctx2: Ctx = .{ .era = j.cc.era, .revision = j.cc.revision, .meta = .{}, .log_level = j.cc.log_level };
             switch (j.method) {

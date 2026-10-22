@@ -14,10 +14,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 }
 
 /// Budgeted bench names that have no body yet.
-pub const pending = [_][]const u8{
-    "text.fontdb_load_3k",
-    "text.registry_get",
-};
+pub const pending = [_][]const u8{};
 
 const font_names = [_][]const u8{
     "JetBrainsMono[wght].ttf",        "FiraCode-Regular.ttf",        "Inter[opsz,wght].ttf",
@@ -46,6 +43,7 @@ fn register(b: *bench.Bench) !void {
     defer for (fonts.data) |d| b.gpa.free(d);
 
     try b.run("text.face_open", &fonts, faceOpen);
+    try fontBenches(b, &fonts);
 
     // 4096 code points: 3/4 BMP (Latin, CJK), 1/4 astral; mapped or not.
     const jb = try zg_text.ot.Face.init(fonts.data[0], 0);
@@ -714,5 +712,69 @@ const CmapCtx = struct { face: *const zg_text.ot.Face, cps: *const [4096]u21 };
 fn cmapLookup(ctx: CmapCtx, s: *State) void {
     var acc: u32 = 0;
     for (0..s.iterations()) |i| acc +%= ctx.face.glyphIndex(ctx.cps[i & 4095]);
+    bench.doNotOptimizeAway(acc);
+}
+
+/// The font database cache of 3 000 faces (the test fonts' descriptions
+/// under distinct names and paths) and registry lookups.
+fn fontBenches(b: *bench.Bench, fonts: *const Fonts) !void {
+    const F = zg_text.fonts;
+    var arena: std.heap.ArenaAllocator = .init(b.gpa);
+    defer arena.deinit();
+    var descs: [font_names.len]F.db.FaceDesc = undefined;
+    for (fonts.data, &descs) |data, *d| {
+        const face = try zg_text.ot.Face.init(data, 0);
+        d.* = try F.db.describe(arena.allocator(), &face, 0);
+    }
+    var builder: F.db.Builder = .init(b.gpa);
+    defer builder.deinit();
+    for (0..3000) |i| {
+        var buf: [64]u8 = undefined;
+        const file = try builder.addFile(try std.fmt.bufPrint(&buf, "/usr/share/fonts/f{d}.ttf", .{i}), 1000 + i, @intCast(i));
+        var d = descs[i % descs.len];
+        d.family = try std.fmt.allocPrint(arena.allocator(), "{s} {d}", .{ d.family, i / 4 });
+        d.typographic_family = d.family;
+        try builder.addFace(file, d);
+    }
+    var db = try builder.finish();
+    defer db.deinit(b.gpa);
+    const path = try std.fs.path.join(b.gpa, &.{ zg_text.dev.package_root, ".zig-cache", "bench-fontdb-v1.bin" });
+    defer b.gpa.free(path);
+    try db.save(b.gpa, b.io, path);
+    var load_ctx: LoadCtx = .{ .gpa = b.gpa, .io = b.io, .path = path };
+    try b.run("text.fontdb_load_3k", &load_ctx, fontdbLoad);
+    std.Io.Dir.cwd().deleteFile(b.io, path) catch {};
+
+    var reg: F.FontRegistry = .init(b.gpa);
+    defer reg.deinit();
+    const face = try zg_text.ot.Face.init(fonts.data[0], 0);
+    const insts = try b.gpa.alloc(zg_text.ot.variation.FaceInstance, 1000);
+    defer b.gpa.free(insts);
+    for (insts) |*fi| {
+        fi.* = .{ .face = &face };
+        _ = try reg.register(fi);
+    }
+    var ids: [1024]F.InstanceId = undefined;
+    var rng: std.Random.DefaultPrng = .init(7);
+    for (&ids) |*id| id.* = @intCast(F.registry.first_id + rng.random().uintLessThan(u32, 1000));
+    var get_ctx: GetCtx = .{ .reg = &reg, .ids = &ids };
+    try b.run("text.registry_get", &get_ctx, registryGet);
+}
+
+const LoadCtx = struct { gpa: std.mem.Allocator, io: std.Io, path: []const u8 };
+
+fn fontdbLoad(ctx: *LoadCtx, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var db = zg_text.fonts.FontDb.load(ctx.gpa, ctx.io, ctx.path) catch unreachable;
+        bench.doNotOptimizeAway(db.faces().len);
+        db.deinit(ctx.gpa);
+    }
+}
+
+const GetCtx = struct { reg: *const zg_text.fonts.FontRegistry, ids: *const [1024]zg_text.fonts.InstanceId };
+
+fn registryGet(ctx: *GetCtx, s: *State) void {
+    var acc: f32 = 0;
+    for (0..s.iterations()) |i| acc += ctx.reg.get(ctx.ids[i % 1024]).upem;
     bench.doNotOptimizeAway(acc);
 }
