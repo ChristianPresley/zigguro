@@ -2,7 +2,8 @@
 //! cross-thread wake round trips (E01.F01 budgets: ring < 30 ns per push+pop,
 //! wake < 100 µs p99), PTY spawn (E01.F06: < 5 ms on Linux), watch setup (>= 50k dirs/s)
 //! XKB keymap parsing (E01.F04: < 2 ms for us.xkb in ReleaseFast) and
-//! Wayland event dispatch (E01.F03: >= 2M msgs/s, so < 500 µs per 1000).
+//! Wayland event dispatch (E01.F03: >= 2M msgs/s, so < 500 µs per 1000)
+//! and Compose parsing (E01.F04: < 5 ms for the system en_US.UTF-8 file).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -31,6 +32,24 @@ fn register(b: *bench.Bench) !void {
         try waylandDispatch(b);
     }
     try xkbParse(b);
+    try composeParse(b);
+}
+
+/// Parses the system en_US.UTF-8 Compose file (not vendored; skipped when
+/// absent).
+fn composeParse(b: *bench.Bench) !void {
+    const path = "/usr/share/X11/locale/en_US.UTF-8/Compose";
+    const text = std.Io.Dir.cwd().readFileAlloc(b.io, path, b.gpa, .limited(8 << 20)) catch return;
+    defer b.gpa.free(text);
+    try b.run("compose: parse en_US.UTF-8", text, composeParseOnce);
+}
+
+fn composeParseOnce(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| {
+        var t = zg_platform.xkb.ComposeTable.parse(s.allocator(), s.ioHandle(), text, .{}) catch unreachable;
+        t.deinit(s.allocator());
+    }
 }
 
 /// Parses the `us` fixture (about 60 KB, like Mutter's). Skipped when not
