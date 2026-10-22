@@ -1,5 +1,8 @@
-//! The CPU presenter for X11 windows (E01.F05.S03.T02, the MIT-SHM and
-//! PutImage paths). Buffers are memfds attached to the server with
+//! The presenter for X11 windows (E01.F05.S03.T02). E02's dmabufs are
+//! imported as DRI3 pixmaps and shown with Present when the server has
+//! DRI3 1.2 and Present 1.2 (see `dri3.zig`); such a buffer is busy from
+//! its present until the server's `IdleNotify`. CPU buffers are memfds
+//! attached to the server with
 //! MIT-SHM `AttachFd` when the server has MIT-SHM 1.2 on a local socket,
 //! else plain memory sent with core `PutImage` in row chunks. The pixel
 //! layout is DRM `ARGB8888` (B, G, R, A in memory), which is what a
@@ -7,8 +10,8 @@
 //!
 //! A buffer stays busy while the server may still read it: until its
 //! `ShmCompletion` arrives (SHM) and until a newer buffer is presented,
-//! because the newest one repaints `Expose` damage. The DRI3/Present path
-//! for GPU images comes with E02's exportable ring.
+//! because the newest one repaints `Expose` damage (a pixmap's Expose
+//! asks for a new frame instead).
 //!
 //! Threads: `present` and `allocCpuBuffer` run on the thread that renders
 //! (the UI thread in `zg_gui.Host`); `pollReleased` on any thread. One
@@ -22,6 +25,8 @@ const types = @import("../api/types.zig");
 const surface = @import("../api/surface.zig");
 const proto = @import("proto.zig");
 const Conn = @import("conn.zig").Conn;
+const dri3 = @import("dri3.zig");
+const dmabuf = @import("../wayland/dmabuf.zig");
 
 /// DRM fourcc `AR24`.
 pub const fourcc_argb8888: u32 = 0x34325241;
@@ -55,6 +60,11 @@ const Buffer = struct {
     inflight: u32 = 0,
     /// Released to E02 and not handed out since.
     idle: bool = true,
+    /// The DRI3 pixmap of an imported dmabuf, or 0.
+    pixmap: u32 = 0,
+    /// The imported dmabuf's plane fds (borrowed), for implicit sync.
+    dmabuf_fds: [4]i32 = .{ -1, -1, -1, -1 },
+    planes: u8 = 0,
 };
 
 /// A window's presenter.
@@ -81,6 +91,12 @@ pub const Presenter = struct {
     scratch: std.ArrayList(u8) = .empty,
     /// Presents so far.
     seq: u64 = 0,
+    /// DRI3/Present support found at startup, or null (CPU only).
+    gpu: ?*const dri3.Dri3 = null,
+    /// The last PresentPixmap serial.
+    serial: u32 = 0,
+    /// Whether the CPU-wait sync fallback has been logged.
+    warned_cpu_wait: bool = false,
 
     /// A presenter for `window`, drawing through `gc`.
     pub fn init(gpa: std.mem.Allocator, io: Io, conn: *Conn, path: Path, window: u32, gc: u32, depth: u8, win: types.WindowId) Presenter {
@@ -113,7 +129,9 @@ pub const Presenter = struct {
     }
 
     fn freeBuffer(p: *Presenter, b: Buffer) void {
-        if (b.shmseg != 0) {
+        if (b.pixmap != 0) {
+            _ = p.conn.request(proto.FreePixmap, .{ .pixmap = b.pixmap }, &.{}) catch {};
+        } else if (b.shmseg != 0) {
             _ = p.conn.request(proto.ShmDetach, .{ .shmseg = b.shmseg }, &.{}) catch {};
             _ = linux.munmap(b.pixels.ptr, b.pixels.len);
         } else p.gpa.free(b.pixels);
@@ -122,7 +140,7 @@ pub const Presenter = struct {
     /// Marks `b` released when nothing holds it any more. Mutex held.
     fn maybeRelease(p: *Presenter, b: *Buffer) void {
         if (b.idle or b.inflight != 0) return;
-        if (p.last == b.handle) return;
+        if (b.pixmap == 0 and p.last == b.handle) return;
         b.idle = true;
         p.released.append(p.gpa, @enumFromInt(b.handle)) catch {};
     }
@@ -139,13 +157,28 @@ pub const Presenter = struct {
         return false;
     }
 
-    /// Repaints `r` (window coordinates) from the newest presented buffer,
-    /// for `Expose`. Returns false when nothing was presented yet.
+    /// The server is done with the pixmap `pixmap` (IdleNotify).
+    pub fn onIdle(p: *Presenter, pixmap: u32) bool {
+        p.lock();
+        defer p.unlock();
+        for (p.buffers.items) |*b| if (b.pixmap == pixmap and pixmap != 0) {
+            b.inflight = 0;
+            p.maybeRelease(b);
+            return true;
+        };
+        return false;
+    }
+
+    /// Repaints `r` (window coordinates) from the newest presented CPU
+    /// buffer, for `Expose`. Returns false when there is none (nothing
+    /// presented yet, or the newest frame was a pixmap): the caller then
+    /// asks for a frame.
     pub fn repaint(p: *Presenter, r: types.PxRect) bool {
         p.lock();
         defer p.unlock();
         const h = p.last orelse return false;
         const b = p.find(h) orelse return false;
+        if (b.pixmap != 0) return false;
         p.put(b, r, false) catch |err| log.debug("expose repaint failed: {t}", .{err});
         return true;
     }
@@ -244,23 +277,68 @@ fn of(ctx: *anyopaque) *Presenter {
     return @ptrCast(@alignCast(ctx));
 }
 
-fn drmDevice(_: *anyopaque) ?surface.DrmDevice {
-    return null;
+fn drmDevice(ctx: *anyopaque) ?surface.DrmDevice {
+    const g = of(ctx).gpu orelse return null;
+    return g.device;
 }
 
-fn formats(_: *anyopaque, out: []surface.FormatModifier) usize {
+fn formats(ctx: *anyopaque, out: []surface.FormatModifier) usize {
+    if (of(ctx).gpu) |g| return g.formats(out);
     const all = [_]surface.FormatModifier{ .{ .fourcc = fourcc_argb8888, .modifier = 0 }, .{ .fourcc = fourcc_xrgb8888, .modifier = 0 } };
     const n = @min(out.len, all.len);
     @memcpy(out[0..n], all[0..n]);
     return all.len;
 }
 
-fn syncMode(_: *anyopaque) surface.SyncMode {
-    return .cpu_only;
+fn syncMode(ctx: *anyopaque) surface.SyncMode {
+    return if (of(ctx).gpu != null) .implicit_sync_file else .cpu_only;
 }
 
-fn importBuffer(_: *anyopaque, _: *const surface.BufferDesc) anyerror!surface.BufferHandle {
-    return error.Unsupported;
+fn importBuffer(ctx: *anyopaque, desc: *const surface.BufferDesc) anyerror!surface.BufferHandle {
+    const p = of(ctx);
+    // Shm images go through `allocCpuBuffer` on X11.
+    if (desc.kind != .dmabuf or p.gpu == null) return error.Unsupported;
+    if (desc.width == 0 or desc.height == 0 or desc.width > 16384 or desc.height > 16384) return error.InvalidArgument;
+    if (desc.planes.len == 0 or desc.planes.len > 4) return error.InvalidArgument;
+    var stride: [4]u32 = @splat(0);
+    var offset: [4]u32 = @splat(0);
+    var fds: [4]i32 = .{ -1, -1, -1, -1 };
+    for (desc.planes, 0..) |pl, i| {
+        stride[i] = pl.stride;
+        offset[i] = pl.offset;
+        fds[i] = pl.fd;
+    }
+    const pixmap = try p.conn.newXid();
+    // The connection dups the fds and closes its copies once sent.
+    _ = try p.conn.request(dri3.Dri3PixmapFromBuffers, .{
+        .pixmap = pixmap,
+        .window = p.window,
+        .num_buffers = @intCast(desc.planes.len),
+        .width = @intCast(desc.width),
+        .height = @intCast(desc.height),
+        .stride0 = stride[0],
+        .offset0 = offset[0],
+        .stride1 = stride[1],
+        .offset1 = offset[1],
+        .stride2 = stride[2],
+        .offset2 = offset[2],
+        .stride3 = stride[3],
+        .offset3 = offset[3],
+        .depth = p.depth,
+        .bpp = 32,
+        .modifier = desc.modifier,
+    }, fds[0..desc.planes.len]);
+    try p.conn.flush();
+    p.lock();
+    defer p.unlock();
+    const buf: Buffer = .{ .handle = p.next, .pixels = &.{}, .w = desc.width, .h = desc.height, .stride = stride[0], .idle = false, .pixmap = pixmap, .dmabuf_fds = fds, .planes = @intCast(desc.planes.len) };
+    p.next +%= 1;
+    if (p.next == 0) p.next = 1;
+    p.buffers.append(p.gpa, buf) catch |err| {
+        p.freeBuffer(buf);
+        return err;
+    };
+    return @enumFromInt(buf.handle);
 }
 
 fn allocCpuBuffer(ctx: *anyopaque, w: u32, h: u32, fourcc: u32) anyerror!surface.CpuBuffer {
@@ -302,11 +380,42 @@ fn allocCpuBuffer(ctx: *anyopaque, w: u32, h: u32, fourcc: u32) anyerror!surface
 
 fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.PxRect, acquire: surface.SyncPoint, _: ?surface.ConfigureAck) anyerror!void {
     const p = of(ctx);
-    if (acquire != .none) return error.Unsupported;
+    switch (acquire) {
+        .none => {},
+        // The presenter owns the sync_file and closes it here.
+        .sync_file => |sf| {
+            defer _ = linux.close(sf);
+            p.lock();
+            const found = p.find(@intFromEnum(handle));
+            const copy = if (found) |b| b.* else null;
+            p.unlock();
+            const b = copy orelse return error.InvalidArgument;
+            // Outside the mutex: the fallback blocks.
+            if (b.planes > 0) {
+                if (dmabuf.importSyncFile(b.dmabuf_fds[0..b.planes], sf) == .waited and !p.warned_cpu_wait) {
+                    p.warned_cpu_wait = true;
+                    log.warn("DMA_BUF_IOCTL_IMPORT_SYNC_FILE unavailable; waiting on the CPU (degraded)", .{});
+                }
+            } else dmabuf.waitSyncFile(sf);
+        },
+        .syncobj => return error.Unsupported,
+    }
     p.lock();
     defer p.unlock();
     const b = p.find(@intFromEnum(handle)) orelse return error.InvalidArgument;
     b.idle = false;
+    if (b.pixmap != 0) {
+        p.serial +%= 1;
+        _ = try p.conn.request(dri3.PresentPixmap, .{ .window = p.window, .pixmap = b.pixmap, .serial = p.serial }, &.{});
+        b.inflight = 1;
+        p.seq += 1;
+        // A CPU buffer shown before stops repainting Expose damage.
+        const prev = p.last;
+        p.last = b.handle;
+        if (prev) |h| if (h != b.handle) if (p.find(h)) |old| p.maybeRelease(old);
+        try p.conn.flush();
+        return;
+    }
     const full: types.PxRect = .{ .x = 0, .y = 0, .w = b.w, .h = b.h };
     // Many small rects cost more requests than one bounding box.
     if (damage.len == 0) {
@@ -331,6 +440,7 @@ fn releaseBuffer(ctx: *anyopaque, handle: surface.BufferHandle) void {
         p.freeBuffer(b);
         _ = p.buffers.swapRemove(i);
         if (p.last == b.handle) p.last = null;
+        p.conn.flush() catch {};
         break;
     };
     var i: usize = 0;
