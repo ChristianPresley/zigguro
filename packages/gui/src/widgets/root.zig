@@ -38,6 +38,8 @@ pub const notification_center = @import("notification_center.zig");
 pub const toast_mod = @import("toast.zig");
 /// The `status_bar.zig` module.
 pub const status_bar = @import("status_bar.zig");
+/// The `tooltip.zig` module.
+pub const tooltip_mod = @import("tooltip.zig");
 /// The `roving.zig` module.
 pub const roving = @import("roving.zig");
 /// The `toolbar.zig` module.
@@ -103,6 +105,10 @@ pub const NotificationCenter = notification_center.NotificationCenter;
 pub const statusBar = status_bar.statusBar;
 /// See `status_bar.StatusItem`.
 pub const StatusItem = status_bar.StatusItem;
+/// See `tooltip.tooltip`.
+pub const tooltip = tooltip_mod.tooltip;
+/// See `tooltip.tooltipLast`.
+pub const tooltipLast = tooltip_mod.tooltipLast;
 /// See `toolbar.toolbar`.
 pub const toolbar = toolbar_mod.toolbar;
 /// See `toolbar.ToolItem`.
