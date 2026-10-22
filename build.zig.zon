@@ -10,6 +10,8 @@
         .zg_net = .{ .path = "packages/net" },
         .zg_terminal = .{ .path = "packages/terminal" },
         .zg_mcp = .{ .path = "packages/mcp" },
+        .zg_lsp = .{ .path = "packages/lsp" },
+        .zg_dap = .{ .path = "packages/dap" },
         // pkgtool:insert
     },
     .paths = .{
