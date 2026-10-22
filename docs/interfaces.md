@@ -446,7 +446,12 @@ non-empty `WAYLAND_DISPLAY` → wayland, a non-empty `DISPLAY` → x11, else
 headless. A detected Wayland backend that cannot connect falls back to
 X11 when `DISPLAY` is set. `init` never falls back to headless: the app
 does that (apps/zigguro renders `--frames N` headless frames and exits).
-Win32 and Cocoa return `error.BackendUnavailable` until they land.
+Cocoa returns `error.BackendUnavailable` until it lands.
+
+Win32's `surfaceTarget` is `.win32 = .{ hinstance, hwnd }` for a Vulkan
+swapchain. Until then `zg_gui.Host` retries the renderer with
+`.external = cpuPresenter(win)` when the renderer answers
+`error.Unsupported` for a target (the software renderer does for `.win32`).
 
 Frame pacing: request a frame with `Command.request_frame` and render on
 `Event.frame`. Until a window's first present, every backend answers the
@@ -457,7 +462,9 @@ surface), so frame 0 is what maps the window.
 `pollEvents` and `waitEvents` are UI-thread only. `submit` and `wake` may
 be called from any thread. Wayland and headless own a platform thread
 that produces events; X11 dispatches on the UI thread inside
-`pollEvents`/`waitEvents` (its connection has one reader).
+`pollEvents`/`waitEvents` (its connection has one reader). Win32 owns a
+platform thread with the message pump; `createWindow`/`destroyWindow`
+run there through `SendMessageW`.
 
 ### Ownership/lifetime
 A `PayloadSlice` in an event stays valid until the next `pollEvents`; one
@@ -945,6 +952,54 @@ RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
 our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
 menu, drag, activation, dialogs and URIs return `error.Unsupported`.
+
+## zg_platform.win32.Win32Backend
+
+### Defined in
+`packages/platform/src/win32/backend.zig`, with `cpu_present.zig` (the
+DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
+→ keysym, modifiers), `dpi.zig` (PMv2 arithmetic) and `msgs.zig`
+(message and style constants) (E01.F02.S01.T02 and E01.F02.S05.T01,
+first parts; input basics of E01.F02.S02.T01).
+
+### Implemented by
+E01.F02.S01.T02 / E01.F02.S05.T01.
+
+### Consumed by
+`zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
+for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
+
+### Signature
+```zig
+pub const InitOptions = struct { refresh_ns: u32 = 16_666_667 };
+pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
+pub fn platform(b: *Win32Backend) Platform;
+// cpu_present.zig
+// PresenterVTable: allocCpuBuffer → top-down 32 bpp DIB (ARGB8888); present → BitBlt of the damage (> 16 rects: their union)
+```
+`WindowOptions.size` is the client size in physical pixels. The first
+`window_configure` comes from `createWindow`; later ones from `WM_SIZE`
+and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
+key's `WM_CHAR` text (taken from the queue with the key-down); Control
+chords carry none. Wheel notches are `scroll` lines with forward
+negative.
+
+### Threading
+Windows belong to the platform thread. The window procedure stages
+events under the backend mutex and signals the UI `Wake`. `present`
+blits on the calling thread; `WM_PAINT` replays the newest buffer on the
+platform thread (one presenter mutex covers both).
+
+### Ownership/lifetime
+A window's presenter and its DIB sections die with `destroyWindow`;
+`deinit` stops the thread after it destroys every window.
+
+### Stability
+Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
+raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
+answers only from our own `clipboard_write`), OLE drag and drop, the
+modal size-move timer, cursors, DWM refresh timing (the frame timer
+assumes 60 Hz) and monitor DPI (monitors report scale 1).
 
 ## zg_config.store.SettingsStore and Snapshot
 

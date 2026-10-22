@@ -24,3 +24,7 @@ pub extern "gdi32" fn DeleteObject(t.HGDIOBJ) callconv(.winapi) t.BOOL;
 pub extern "gdi32" fn DeleteDC(t.HDC) callconv(.winapi) t.BOOL;
 /// Creates a device-dependent bitmap (monochrome cursor masks).
 pub extern "gdi32" fn CreateBitmap(w: i32, h: i32, planes: t.UINT, bpp: t.UINT, bits: ?*const anyopaque) callconv(.winapi) ?t.HBITMAP;
+/// Reads one pixel of a context as `0x00BBGGRR` (tests).
+pub extern "gdi32" fn GetPixel(t.HDC, x: i32, y: i32) callconv(.winapi) t.DWORD;
+/// Flushes this thread's batched GDI calls.
+pub extern "gdi32" fn GdiFlush() callconv(.winapi) t.BOOL;
