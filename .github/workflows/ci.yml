@@ -111,7 +111,7 @@ jobs:
         with:
           path: ~/.cache/zig
           key: zig-cache-cross-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
-      - run: zig build cross -Doptimize=ReleaseFast -Dversion="$(git describe --always --dirty)" --summary line
+      - run: zig build cross -Doptimize=ReleaseFast -Dcommit="$(git rev-parse --short=12 HEAD)" --summary line
 
   bench-smoke:
     runs-on: ubuntu-24.04
