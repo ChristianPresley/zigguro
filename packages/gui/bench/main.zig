@@ -161,6 +161,31 @@ fn heightIndex(h: *zg_gui.w.HeightIndex, s: *bench.State) void {
     }
 }
 
+/// A 10k-character multi-line field (about 125 wrapped rows, 12 shown).
+const Prompt = struct {
+    buf: *zg_gui.w.TextBuffer,
+
+    pub fn build(self: *Prompt, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .padding = .all(8) } });
+        defer ui.close();
+        _ = zg_gui.w.textField(ui, .{ .buffer = self.buf, .multiline = true, .min_rows = 3, .max_rows = 12, .placeholder = "Prompt" });
+    }
+};
+
+/// One frame per keystroke in the middle of the text: a typed character,
+/// then a Backspace, so the text length stays put.
+fn keystroke(t: *TestApp, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        if (i % 2 == 0) {
+            t.win.dispatch(.{ .text = "a" });
+        } else {
+            t.win.dispatch(.{ .key = .{ .key = .backspace } });
+        }
+        bench.doNotOptimizeAway(t.frame().nodes_painted);
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -197,6 +222,21 @@ fn register(b: *bench.Bench) !void {
         defer t.deinit();
         var c: ScrollCtx = .{ .t = t, .node = v.node, .step = 20 };
         try b.run("gui.virtual.scroll_frame_1m", &c, scrollFrame);
+    }
+    {
+        const text = try b.gpa.alloc(u8, 10_000);
+        defer b.gpa.free(text);
+        for (text, 0..) |*c, i| c.* = if (i % 9 == 8) ' ' else 'a' + @as(u8, @intCast(i % 26));
+        var buf: zg_gui.w.TextBuffer = try .init(b.gpa, text);
+        defer buf.deinit();
+        var v: Prompt = .{ .buf = &buf };
+        const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
+        defer t.deinit();
+        const r = t.win.store.absRect(t.find(.{ .name = "Prompt" }).?);
+        t.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 } } });
+        t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 } } });
+        _ = t.settle();
+        try b.run("gui.text_field.keystroke_10k", t, keystroke);
     }
     {
         var h: zg_gui.w.HeightIndex = .init(b.gpa);
