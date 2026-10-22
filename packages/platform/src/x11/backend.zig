@@ -38,8 +38,13 @@
 //! resize regions start `_NET_WM_MOVERESIZE`, a right press on the caption
 //! opens `_GTK_SHOW_WINDOW_MENU` and a double click toggles maximize.
 //!
+//! Cursors (E01.F05.S02.T01, `cursor.zig`): Xcursor theme images through
+//! RENDER, else core glyph cursors, set per window with
+//! ChangeWindowAttributes. Client-decorated windows show resize cursors
+//! over the app's resize regions.
+//!
 //! Not yet here (later E01.F05 tasks): RandR monitors,
-//! _NET_WM_SYNC_REQUEST, cursors.
+//! _NET_WM_SYNC_REQUEST.
 
 const std = @import("std");
 const Io = std.Io;
@@ -71,6 +76,8 @@ const xkb_ext = @import("xkb.zig");
 const xinput2 = @import("xinput2.zig");
 const xdnd = @import("xdnd.zig");
 const ewmh = @import("ewmh.zig");
+const cursor_mod = @import("cursor.zig");
+const CursorShape = @import("../api/cursor.zig").CursorShape;
 const csd = @import("../wayland/csd.zig");
 const seat_mod = @import("../wayland/seat.zig");
 const compose = @import("../xkb/compose.zig");
@@ -166,6 +173,12 @@ const Window = struct {
     hidden: bool = false,
     /// The last known root position of the window's origin.
     origin: ?types.PxPoint = null,
+    /// The app's cursor, and the resize cursor over a client-decorated
+    /// window's resize region.
+    cursor: CursorShape = .default,
+    auto_cursor: ?CursorShape = null,
+    /// The cursor set on the window (0 before the first).
+    shown_cursor: u32 = 0,
 
     const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
 };
@@ -237,6 +250,8 @@ pub const X11Backend = struct {
     last_time: u32 = 0,
     /// The newest button press, for WM move/resize requests.
     last_press: Press = .{},
+    /// Created cursors. Guarded by the mutex.
+    cursors: cursor_mod.Cursors,
     /// Payloads over the arena's limit, by id. Guarded by the mutex.
     large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
     next_large: u32 = 0,
@@ -273,6 +288,7 @@ pub const X11Backend = struct {
             .path = .put_image,
             .arena = arena,
             .ui_wake = ui_wake,
+            .cursors = .init(gpa, opts.environ_map),
             .hooks = .{
                 .ptr = b,
                 .win32SetMessageHook = noHook,
@@ -452,6 +468,7 @@ pub const X11Backend = struct {
         w.presenter.bind();
         if (b.gpu) |*g| w.presenter.gpu = g;
         b.createX(w, opts) catch return error.SystemResources;
+        b.applyCursor(w);
         b.windows.append(b.gpa, w) catch {
             _ = c.request(proto.DestroyWindow, .{ .window = xid }, &.{}) catch {};
             return error.OutOfMemory;
@@ -566,9 +583,13 @@ pub const X11Backend = struct {
     fn run(b: *X11Backend, cmd: Command) !void {
         switch (cmd) {
             .set_title => |t| try b.setTitle((try b.lookup(t.win)).xid, t.title),
-            // Cursors and the IME come with later E01.F05 tasks; the
-            // window must exist.
-            .set_cursor => |t| _ = try b.lookup(t.win),
+            // The IME comes with a later E01.F05 task; the window must
+            // exist.
+            .set_cursor => |t| {
+                const w = try b.lookup(t.win);
+                w.cursor = t.shape;
+                b.applyCursor(w);
+            },
             .set_ime_state => |t| _ = try b.lookup(t.win),
             .set_hit_test => |t| (try b.lookup(t.win)).hit = .{ .f = t.f, .ctx = t.ctx },
             .set_min_size => |t| try b.setMinSize((try b.lookup(t.win)).xid, t.size),
@@ -672,6 +693,32 @@ pub const X11Backend = struct {
         w.fullscreen = st.fullscreen;
         w.serial +%= 1;
         b.stageConfigure(w);
+    }
+
+    /// Shows `w`'s cursor (the resize cursor over a resize region, else
+    /// the app's) at the current scale.
+    fn applyCursor(b: *X11Backend, w: *Window) void {
+        const shape = w.auto_cursor orelse w.cursor;
+        const size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(b.cursors.baseSize())) * b.scale));
+        const xid = b.cursors.get(b.gpa, b.io, b.conn, shape, @max(size, 1)) catch |err| {
+            log.warn("creating the {t} cursor: {t}", .{ shape, err });
+            return;
+        };
+        if (xid == w.shown_cursor) return;
+        w.shown_cursor = xid;
+        _ = b.conn.request(proto.ChangeWindowAttributes, .{ .window = w.xid, .values = .{ .values = .{ .cursor = xid } } }, &.{}) catch |err| log.warn("setting the cursor: {t}", .{err});
+    }
+
+    /// Over a client-decorated window, shows resize cursors on the app's
+    /// resize regions.
+    fn csdHover(b: *X11Backend, w: *Window, pos: [2]f32) void {
+        if (!w.csd) return;
+        const h = w.hit orelse return;
+        const region = h.f(h.ctx, .{ .x = @intFromFloat(@floor(pos[0])), .y = @intFromFloat(@floor(pos[1])) });
+        const shape: ?CursorShape = if (csd.regionEdge(region)) |e| csd.cursorFor(e) else null;
+        if (std.meta.eql(shape, w.auto_cursor)) return;
+        w.auto_cursor = shape;
+        b.applyCursor(w);
     }
 
     fn stageConfigure(b: *X11Backend, w: *Window) void {
@@ -918,6 +965,8 @@ pub const X11Backend = struct {
         b.scrolling.deinit(b.gpa);
         if (b.compose_table) |*t| t.deinit(b.gpa);
         if (b.gpu) |*g| g.deinit(b.gpa);
+        b.cursors.deinit(b.gpa, b.conn);
+        b.conn.flush() catch {};
         b.conn.deinit();
         b.arena.deinit(b.gpa);
         b.ui_wake.deinit();
@@ -991,6 +1040,7 @@ pub const X11Backend = struct {
             proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
             proto.EventCode.motion_notify => {
                 const w = b.byXid(u32At(ev, 12)) orelse return;
+                b.csdHover(w, eventPos(ev));
                 b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = eventPos(ev), .mods = modsFromState(u16At(ev, 28)), .time_ns = b.nowNs() } });
             },
             proto.EventCode.enter_notify, proto.EventCode.leave_notify => {
@@ -1174,6 +1224,7 @@ pub const X11Backend = struct {
                         }
                         if (e.pos[0] == b.ptr_pos[0] and e.pos[1] == b.ptr_pos[1]) return;
                         b.ptr_pos = e.pos;
+                        b.csdHover(w, e.pos);
                         b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = e.pos, .mods = mods, .time_ns = b.nowNs() } });
                     },
                     xinput2.EventType.button_press, xinput2.EventType.button_release => {
@@ -2274,4 +2325,148 @@ test "Xvfb: client decorations route caption presses to the window manager" {
     try b.conn.sync();
     const n = p.pollEvents(&evs);
     for (evs[0..n]) |e| try testing.expect(e != .pointer_button);
+}
+
+/// XFIXES GetCursorImage: the cursor on screen.
+const XFixesGetCursorImage = struct {
+    /// The extension that owns this request.
+    pub const extension = "XFIXES";
+    /// The minor opcode.
+    pub const minor = 4;
+
+    /// The cursor's size, hotspot and first pixel.
+    pub const Reply = struct {
+        width: u16,
+        height: u16,
+        hot: [2]u16,
+        first: u32,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(bytes: []const u8, _: *@import("../wayland/wire/fdqueue.zig").FdQueue) proto.DecodeError!Reply {
+            if (bytes.len < 36) return error.Malformed;
+            return .{ .width = u16At(bytes, 12), .height = u16At(bytes, 14), .hot = .{ u16At(bytes, 16), u16At(bytes, 18) }, .first = u32At(bytes, 32) };
+        }
+    };
+};
+
+/// Writes an Xcursor file of square `size` px frames, one per color.
+fn writeTestCursor(dir: Io.Dir, name: []const u8, size: u32, hot: [2]u32, colors: []const u32) !void {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const n: u32 = @intCast(colors.len);
+    const px = size * size * 4;
+    var words: std.ArrayList(u32) = .empty;
+    defer words.deinit(testing.allocator);
+    try words.appendSlice(testing.allocator, &.{ 0x72756358, 16, 0x10000, n });
+    for (0..n) |i| try words.appendSlice(testing.allocator, &.{ 0xfffd0002, size, 16 + n * 12 + @as(u32, @intCast(i)) * (36 + px) });
+    for (words.items) |v| {
+        var bb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bb, v, .little);
+        try file.appendSlice(testing.allocator, &bb);
+    }
+    for (colors) |c| {
+        for ([_]u32{ 36, 0xfffd0002, size, 1, size, size, hot[0], hot[1], 30 }) |v| {
+            var bb: [4]u8 = undefined;
+            std.mem.writeInt(u32, &bb, v, .little);
+            try file.appendSlice(testing.allocator, &bb);
+        }
+        var bb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bb, c, .little);
+        for (0..size * size) |_| try file.appendSlice(testing.allocator, &bb);
+    }
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "icons/test/cursors/{s}", .{name});
+    try dir.writeFile(testing.io, .{ .sub_path = path, .data = file.items });
+}
+
+test "Xvfb: theme, animated, hidden, glyph and resize cursors" {
+    var x = XvfbForTest.start(11) catch return error.SkipZigTest;
+    defer x.stop();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "icons/test/cursors");
+    try writeTestCursor(tmp.dir, "left_ptr", 24, .{ 1, 1 }, &.{ 0xff0000aa, 0xff0000bb });
+    try writeTestCursor(tmp.dir, "xterm", 24, .{ 3, 4 }, &.{0xff102030});
+    try writeTestCursor(tmp.dir, "nwse-resize", 24, .{ 12, 12 }, &.{0xff445566});
+    var root_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &root_buf);
+    const icons = try std.fmt.allocPrint(testing.allocator, "{s}/icons", .{root_buf[0..n]});
+    defer testing.allocator.free(icons);
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("XCURSOR_PATH", icons);
+    try env.put("XCURSOR_THEME", "test");
+    try env.put("ZG_SCALE", "1");
+
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display(), .environ_map = &env });
+    defer b.deinit();
+    if (b.conn.extension("XTEST") == null or b.conn.extension("RENDER") == null or b.sel.xfixes_event == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg cursors", .size = .{ .w = 64, .h = 48 }, .decorations = .client });
+    _ = try waitFor(p, .window_configure, win);
+    const Corner = struct {
+        fn hit(_: *anyopaque, pt: types.PxPoint) types.HitRegion {
+            return if (pt.x >= 54 and pt.y >= 38) .resize_bottom_right else .client;
+        }
+    };
+    var dummy: u8 = 0;
+    try p.submit(.{ .set_hit_test = .{ .win = win, .f = Corner.hit, .ctx = &dummy } });
+    const root = b.conn.screen().root;
+    const c = b.conn;
+    const image = struct {
+        fn get(conn: *Conn) !XFixesGetCursorImage.Reply {
+            try conn.sync();
+            return conn.reply(try conn.request(XFixesGetCursorImage, .{}, &.{}));
+        }
+    }.get;
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 10, .root_y = 10 }, &.{});
+
+    // The default arrow animates: both frames show up (an animated
+    // cursor itself reads back as an empty 1x1 image between frames).
+    var seen: [2]bool = .{ false, false };
+    var tries: usize = 0;
+    while (!(seen[0] and seen[1])) : (tries += 1) {
+        if (tries > 500) return error.Timeout;
+        const img = try image(c);
+        if (img.width == 24) {
+            try testing.expectEqual([2]u16{ 1, 1 }, img.hot);
+            if (img.first == 0xff0000aa) seen[0] = true;
+            if (img.first == 0xff0000bb) seen[1] = true;
+        }
+        try testing.io.sleep(.fromMilliseconds(5), .awake);
+    }
+
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .text } });
+    const text = try image(c);
+    try testing.expectEqual([2]u16{ 3, 4 }, text.hot);
+    try testing.expectEqual(0xff102030, text.first);
+
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    const hidden = try image(c);
+    try testing.expectEqual(1, hidden.width);
+    try testing.expectEqual(0, hidden.first);
+
+    // Not in the theme: a cursor-font glyph.
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .help } });
+    const glyph = try image(c);
+    try testing.expect(glyph.width > 1 and glyph.first != 0xff102030);
+
+    // The app's resize region shows the resize cursor, and leaving it
+    // restores the app's cursor.
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .text } });
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 60, .root_y = 44 }, &.{});
+    var spins: usize = 0;
+    while ((try image(c)).first != 0xff445566) : (spins += 1) {
+        if (spins > 500) return error.Timeout;
+        var evs: [16]Event = undefined;
+        _ = p.pollEvents(&evs);
+        try testing.io.sleep(.fromMilliseconds(2), .awake);
+    }
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 20, .root_y = 20 }, &.{});
+    spins = 0;
+    while ((try image(c)).first != 0xff102030) : (spins += 1) {
+        if (spins > 500) return error.Timeout;
+        var evs: [16]Event = undefined;
+        _ = p.pollEvents(&evs);
+        try testing.io.sleep(.fromMilliseconds(2), .awake);
+    }
 }
