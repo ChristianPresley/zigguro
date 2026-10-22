@@ -192,3 +192,95 @@ test "zig: every line ends in the initial state" {
     defer sink.deinit(gpa);
     for ([_][]const u8{ "\\\\ multi", "\"open string", "/// doc", "'x", "@\"q", "fn f() void {" }) |l| try lexOne(&r, l, &sink);
 }
+
+fn loadSample(root: std.Io.Dir, name: []const u8) ![]u8 {
+    const path = try std.fmt.allocPrint(gpa, "testdata/zig/{s}.zig.txt", .{name});
+    defer gpa.free(path);
+    return root.readFileAlloc(io, path, gpa, .limited(1 << 20));
+}
+
+fn lineCol(text: []const u8, off: u32) struct { u32, u32 } {
+    const before = text[0..off];
+    const line: u32 = @intCast(std.mem.count(u8, before, "\n"));
+    const ls = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |p| p + 1 else 0;
+    return .{ line + 1, @intCast(off - ls + 1) };
+}
+
+test "zig_structure: outline, folds and scopes golden" {
+    var root = try std.Io.Dir.openDirAbsolute(io, options.package_root, .{});
+    defer root.close(io);
+    const text = try loadSample(root, "structure_sample");
+    defer gpa.free(text);
+    var s = try zig.zig_language.structure.?(gpa, text, 42);
+    defer s.deinit();
+    try std.testing.expectEqual(@as(u64, 42), s.version);
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const w = &out.writer;
+    try w.writeAll("outline:\n");
+    for (s.outline()) |sym| {
+        var depth: usize = 0;
+        var p = sym.parent;
+        while (p) |x| : (p = s.symbols[x].parent) depth += 1;
+        const lc = lineCol(text, sym.selection.start);
+        try w.splatByteAll(' ', 2 * depth + 2);
+        try w.print("{t} {s}{s} @{d}:{d}\n", .{ sym.kind, sym.name, if (sym.is_pub) " (pub)" else "", lc[0], lc[1] });
+    }
+    try w.writeAll("folds:\n");
+    for (s.folds) |f| try w.print("  {d}-{d} {t}\n", .{ f.start_line + 1, f.end_line + 1, f.kind });
+    try w.writeAll("scopes:\n");
+    for (s.scopes) |sc| {
+        const lc = lineCol(text, sc.range.start);
+        try w.print("  {t} {s} @{d}:{d} header \"{s}\"\n", .{ sc.kind, sc.name, lc[0], lc[1], text[sc.header.start..sc.header.end] });
+    }
+    try golden.expectGoldenOpts(io, @src(), "structure_sample", out.written(), .{ .root = options.package_root, .dir = "testdata/golden/zig_structure" });
+}
+
+test "zig_structure: selection ranges from inner expr to file" {
+    var root = try std.Io.Dir.openDirAbsolute(io, options.package_root, .{});
+    defer root.close(io);
+    const text = try loadSample(root, "structure_sample");
+    defer gpa.free(text);
+    var s = try zig.zig_language.structure.?(gpa, text, 1);
+    defer s.deinit();
+    // Inside `p.y` in `p.y * p.y`.
+    const pos: u32 = @intCast(std.mem.indexOf(u8, text, "p.y * p.y").? + 2);
+    var sel: std.ArrayList(syntax.ByteRange) = .empty;
+    defer sel.deinit(gpa);
+    try s.selectionRanges(gpa, pos, &sel);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    for (sel.items) |r| {
+        const t = text[r.start..r.end];
+        const nl = std.mem.indexOfScalar(u8, t, '\n');
+        try out.writer.print("{s}{s}\n", .{ t[0 .. nl orelse t.len], if (nl != null) " ..." else "" });
+    }
+    try golden.expectGoldenOpts(io, @src(), "selection", out.written(), .{ .root = options.package_root, .dir = "testdata/golden/zig_structure" });
+    // Each step grows; the last is the whole file.
+    for (sel.items[1..], sel.items[0 .. sel.items.len - 1]) |outer, inner| {
+        try std.testing.expect(outer.start <= inner.start and inner.end <= outer.end);
+        try std.testing.expect(!std.meta.eql(outer, inner));
+    }
+    try std.testing.expectEqual(@as(u32, @intCast(text.len)), sel.items[sel.items.len - 1].end);
+
+    // Scopes and indent depth inside the `if` in `helper`.
+    const in_if: u32 = @intCast(std.mem.indexOf(u8, text, "sum += it").?);
+    var scopes: std.ArrayList(syntax.Scope) = .empty;
+    defer scopes.deinit(gpa);
+    try s.enclosingScopes(gpa, in_if, &scopes);
+    try std.testing.expectEqual(@as(usize, 3), scopes.items.len);
+    try std.testing.expectEqual(syntax.structure.structure.ScopeKind.@"if", scopes.items[0].kind);
+    try std.testing.expectEqual(syntax.structure.structure.ScopeKind.@"for", scopes.items[1].kind);
+    try std.testing.expectEqualStrings("helper", scopes.items[2].name);
+    try std.testing.expectEqual(@as(?u32, 3), s.indentDepth(in_if));
+}
+
+test "zig_structure: broken code still gives structure" {
+    const text = "pub fn ok() void {\n    return;\n}\n\nfn broken( {\n    const x = ;\n}\n\nconst S = struct {\n    a: u8,\n};\n";
+    var s = try zig.zig_language.structure.?(gpa, text, 1);
+    defer s.deinit();
+    var found_ok = false;
+    for (s.outline()) |sym| found_ok = found_ok or std.mem.eql(u8, sym.name, "ok");
+    try std.testing.expect(found_ok);
+}

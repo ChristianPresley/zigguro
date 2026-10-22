@@ -25,6 +25,7 @@ const event = @import("../input/event.zig");
 const hit_test = @import("../input/hit_test.zig");
 const keys_mod = @import("../input/keys.zig");
 const box = @import("../widgets/box.zig");
+const overlay = @import("../widgets/overlay.zig");
 const theme_mod = @import("../theme/theme.zig");
 
 const NodeId = ids.NodeId;
@@ -67,6 +68,8 @@ pub const ViewEntry = struct {
 /// embedded as the first field of another has the same address.
 const ViewKey = struct { ptr: usize, vt: usize };
 
+const PendingHook = struct { hook: overlay.CloseHook, id: overlay.OverlayId };
+
 fn viewKey(v: view_mod.AnyView) ViewKey {
     return .{ .ptr = @intFromPtr(v.ptr), .vt = @intFromPtr(v.vtable) };
 }
@@ -94,6 +97,10 @@ pub const Window = struct {
     frame_arena: std.heap.ArenaAllocator,
     frame_no: u64 = 0,
     building: bool = false,
+    /// Open overlays (popovers, dialogs) in paint order.
+    overlays: overlay.Stack = .{},
+    /// Close hooks of overlays closed while building, run after the build.
+    close_hooks: std.ArrayList(PendingHook) = .empty,
     needs_frame: bool = true,
     stats: FrameStats = .{},
 
@@ -170,6 +177,10 @@ pub const Window = struct {
     /// Frees the window (use `App.closeWindow`).
     pub fn destroy(w: *Window) void {
         const gpa = w.gpa;
+        // Close hooks may own their views.
+        while (w.overlays.top()) |e| w.closeOverlay(e.id);
+        w.overlays.deinit(gpa);
+        w.close_hooks.deinit(gpa);
         w.store.on_free = null;
         w.ui.deinit();
         w.engine.deinit();
@@ -341,11 +352,20 @@ pub const Window = struct {
         // dirty children inline.
         w.building = true;
         w.ui.emitted = 0;
-        if (w.store.hot.items(.first_child)[w.root.index].isNone()) {
-            w.ui.buildRoot(w.root);
+        // The root is rebuilt when overlays open or close, which a view's
+        // build may do; a few rounds settle it.
+        var round: u8 = 0;
+        while (round < 4) : (round += 1) {
+            if (w.store.hot.items(.first_child)[w.root.index].isNone() or w.overlays.dirty) {
+                w.overlays.dirty = false;
+                w.ui.buildRoot(w.root);
+            }
+            while (w.nextDirtyView()) |vid| w.ui.buildInto(vid, w.views.items[vid].node);
+            if (!w.overlays.dirty) break;
         }
-        while (w.nextDirtyView()) |vid| w.ui.buildInto(vid, w.views.items[vid].node);
         w.building = false;
+        for (w.close_hooks.items) |c| c.hook.f(c.hook.ctx, c.id);
+        w.close_hooks.clearRetainingCapacity();
         for (w.views.items) |*e| {
             if (e.dirty_next) {
                 e.dirty_next = false;
@@ -365,6 +385,8 @@ pub const Window = struct {
             for (w.store.resized_views.items) |vid| w.markViewDirty(vid);
             w.store.resized_views.clearRetainingCapacity();
         }
+
+        if (w.overlays.items.items.len > 0) w.placeOverlays();
 
         // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
         if (w.store.paint_pending or w.full_repaint) {
@@ -668,6 +690,148 @@ pub const Window = struct {
         c.end();
     }
 
+    // -- overlays -------------------------------------------------------------
+
+    /// Opens `view` as an overlay (see `zg_gui.w.overlay`). Opened during a
+    /// build, the building view is rebuilt when the overlay closes.
+    pub fn openOverlay(w: *Window, view: view_mod.AnyView, opts: overlay.Options) !overlay.OverlayId {
+        const id = try w.overlays.push(w.gpa, .{
+            .id = .none,
+            .view = view,
+            .opts = opts,
+            .owner_view = if (w.building) w.ui.currentView() else 0,
+            .prev_focus = w.focus,
+            .wants_focus = opts.modal or opts.take_focus,
+        });
+        w.needs_frame = true;
+        return id;
+    }
+
+    /// Closes overlay `id` (no-op when it is not open): restores focus,
+    /// rebuilds the view that opened it and runs its close hook.
+    pub fn closeOverlay(w: *Window, id: overlay.OverlayId) void {
+        const e = w.overlays.remove(id) orelse return;
+        w.needs_frame = true;
+        if (e.opts.restore_focus) {
+            const inside = !e.panel.isNone() and w.store.valid(e.panel) and !w.focus.isNone() and w.store.isAncestor(e.panel, w.focus);
+            if (inside or w.focus.isNone()) {
+                const back = if (!e.prev_focus.isNone() and w.store.valid(e.prev_focus)) e.prev_focus else NodeId.none;
+                w.setFocus(back, w.focus_visible);
+            }
+        }
+        if (e.owner_view != 0 and e.owner_view < w.views.items.len and w.views.items[e.owner_view].alive) w.markViewDirty(e.owner_view);
+        if (e.opts.on_close) |h| {
+            // A hook may free the overlay's view, which may be building.
+            if (w.building) {
+                w.close_hooks.append(w.gpa, .{ .hook = h, .id = id }) catch h.f(h.ctx, id);
+            } else h.f(h.ctx, id);
+        }
+    }
+
+    /// True while overlay `id` is open.
+    pub fn isOverlayOpen(w: *const Window, id: overlay.OverlayId) bool {
+        return w.overlays.indexOf(id) != null;
+    }
+
+    /// The rectangle of `id` from the last layout, in window coordinates
+    /// (parents' scroll offsets applied).
+    pub fn layoutRect(w: *const Window, id: NodeId) Rect {
+        var r = w.store.relRect(id);
+        var p = w.store.parent(id);
+        while (!p.isNone()) : (p = w.store.parent(p)) {
+            const pr = w.store.relRect(p);
+            const sc = w.store.cold.items[p.index].scroll;
+            r.x += pr.x - sc.x;
+            r.y += pr.y - sc.y;
+        }
+        return r;
+    }
+
+    /// Positions overlay panels after layout, closes overlays whose anchor
+    /// unmounted, and moves focus into newly opened ones.
+    fn placeOverlays(w: *Window) void {
+        const vp: Rect = .{ .w = w.size.w, .h = w.size.h };
+        var i: usize = 0;
+        while (i < w.overlays.items.items.len) {
+            const e = &w.overlays.items.items[i];
+            i += 1;
+            if (e.panel.isNone() or !w.store.valid(e.panel)) continue;
+            const cur = w.store.relRect(e.panel);
+            const size: Size = .{ .w = cur.w, .h = cur.h };
+            const target = if (e.opts.anchor) |a| switch (a) {
+                .rect => |r| overlay.place(r, size, vp, e.opts.placement),
+                .node => |n| blk: {
+                    if (!w.store.valid(n) or w.store.flags(n).hidden) {
+                        w.closeOverlay(e.id);
+                        i -= 1;
+                        continue;
+                    }
+                    break :blk overlay.place(w.layoutRect(n), size, vp, e.opts.placement);
+                },
+            } else overlay.center(size, vp);
+            if (target.x != cur.x or target.y != cur.y) {
+                w.store.hot.items(.rect)[e.panel.index] = target.toArray();
+                w.store.markPaint(e.panel);
+                w.full_repaint = true;
+            }
+            if (e.wants_focus) {
+                e.wants_focus = false;
+                const f = w.firstFocusable(e.panel);
+                const to = if (!f.isNone()) f else if (e.opts.modal) e.panel else NodeId.none;
+                if (!to.isNone()) w.setFocus(to, w.focus_visible);
+            }
+        }
+    }
+
+    /// The first enabled focusable node under `n` in tree order (not `n`).
+    fn firstFocusable(w: *Window, n: NodeId) NodeId {
+        var it = w.store.children(n);
+        while (it.next()) |c| {
+            const fl = w.store.flags(c);
+            if (fl.hidden) continue;
+            if (fl.focusable and !fl.disabled) return c;
+            const d = w.firstFocusable(c);
+            if (!d.isNone()) return d;
+        }
+        return .none;
+    }
+
+    /// The overlay Escape closes: the topmost that is modal or holds focus.
+    fn escapeTarget(w: *const Window) ?overlay.OverlayId {
+        var i = w.overlays.items.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = w.overlays.items.items[i];
+            if (e.opts.modal) return e.id;
+            if (!w.focus.isNone() and !e.panel.isNone() and w.store.valid(e.panel) and w.store.isAncestor(e.panel, w.focus)) return e.id;
+        }
+        return null;
+    }
+
+    /// Light dismiss for a press at `p`; true when the press is consumed.
+    fn dismissOutside(w: *Window, p: Vec2) bool {
+        const top = w.overlays.top() orelse return false;
+        const h = w.hitTest(p);
+        if (!top.panel.isNone() and w.store.valid(top.panel) and !h.isNone() and w.store.isAncestor(top.panel, h)) return false;
+        if (top.opts.light_dismiss) {
+            const consume = top.opts.consume_outside_click;
+            w.closeOverlay(top.id);
+            return consume;
+        }
+        // The scrim under a modal overlay swallows the press.
+        return top.opts.modal;
+    }
+
+    /// Closes the light-dismissable popovers and tooltips (window blur).
+    pub fn dismissPopovers(w: *Window) void {
+        var i = w.overlays.items.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = w.overlays.items.items[i];
+            if (e.opts.light_dismiss and (e.opts.layer == .popover or e.opts.layer == .tooltip)) w.closeOverlay(e.id);
+        }
+    }
+
     // -- input --------------------------------------------------------------
 
     /// The topmost hit-testable node at `p` (window logical coordinates).
@@ -847,6 +1011,7 @@ pub const Window = struct {
             },
             .pointer_down => |pd| {
                 w.pointer = pd.pos;
+                if (w.dismissOutside(pd.pos)) return;
                 const h = w.hitTest(pd.pos);
                 w.setHot(h);
                 if (h.isNone()) return;
@@ -912,8 +1077,12 @@ pub const Window = struct {
             .enter, .numpad_enter, .space => if (!w.focus.isNone()) {
                 if (!w.deliver(w.focus, .activate, false)) w.respond(w.focus, .{ .clicked = true });
             },
-            .escape => if (!w.focus.isNone()) {
-                w.respond(w.focus, .{ .cancelled = true });
+            .escape => {
+                if (w.escapeTarget()) |id| {
+                    w.closeOverlay(id);
+                } else if (!w.focus.isNone()) {
+                    w.respond(w.focus, .{ .cancelled = true });
+                }
             },
             else => {},
         }
@@ -944,7 +1113,8 @@ pub const Window = struct {
         var passed = false;
         var stack: [512]NodeId = undefined;
         var sp: usize = 0;
-        stack[0] = w.root;
+        // A modal overlay traps focus.
+        stack[0] = if (w.overlays.topModal()) |m| (if (m.panel.isNone() or !w.store.valid(m.panel)) w.root else m.panel) else w.root;
         sp = 1;
         // Pre-order DFS without recursion.
         while (sp > 0) {
@@ -1001,6 +1171,7 @@ pub const Window = struct {
             .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
             .window_focus => |f| if (!f.focused) {
                 w.setHot(.none);
+                w.dismissPopovers();
             },
             .frame => {
                 w.needs_frame = true;

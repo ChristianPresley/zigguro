@@ -132,7 +132,7 @@ pub const zigguro_dark = build("zigguro-dark", .dark, &.{
     .{ .control_bg, 0x232428ff },        .{ .control_border, 0x80858eff }, .{ .control_checked, 0x5a9cffff },
     .{ .control_thumb, 0xe6e7e9ff },     .{ .track, 0x3c3f45ff },          .{ .selection_bg, 0x264f78ff },
     .{ .hover_bg, 0xffffff12 },          .{ .badge_bg, 0x2f6ad9ff },       .{ .badge_fg, 0xffffffff },
-    .{ .scrollbar_thumb, 0xffffff40 },   .{ .shadow, 0x00000080 },
+    .{ .scrollbar_thumb, 0xffffff40 },   .{ .shadow, 0x00000080 },         .{ .overlay_scrim, 0x00000080 },
 }, default_dims);
 
 /// The default light theme.
@@ -148,7 +148,7 @@ pub const zigguro_light = build("zigguro-light", .light, &.{
     .{ .control_bg, 0xffffffff },        .{ .control_border, 0x6e7781ff }, .{ .control_checked, 0x0969daff },
     .{ .control_thumb, 0xffffffff },     .{ .track, 0xd0d7deff },          .{ .selection_bg, 0xb6d6faff },
     .{ .hover_bg, 0x0000000d },          .{ .badge_bg, 0x0969daff },       .{ .badge_fg, 0xffffffff },
-    .{ .scrollbar_thumb, 0x00000040 },   .{ .shadow, 0x00000033 },
+    .{ .scrollbar_thumb, 0x00000040 },   .{ .shadow, 0x00000033 },         .{ .overlay_scrim, 0x00000059 },
 }, default_dims);
 
 /// High-contrast dark (AAA text contrast, outlined controls).
@@ -164,7 +164,7 @@ pub const zigguro_hc_dark = build("zigguro-hc-dark", .hc_dark, &.{
     .{ .control_bg, 0x000000ff },        .{ .control_border, 0xffffffff }, .{ .control_checked, 0x8cc8ffff },
     .{ .control_thumb, 0xffffffff },     .{ .track, 0x808080ff },          .{ .selection_bg, 0x0a3a6aff },
     .{ .hover_bg, 0xffffff26 },          .{ .badge_bg, 0x8cc8ffff },       .{ .badge_fg, 0x000000ff },
-    .{ .scrollbar_thumb, 0xffffffa0 },   .{ .shadow, 0x00000000 },
+    .{ .scrollbar_thumb, 0xffffffa0 },   .{ .shadow, 0x00000000 },         .{ .overlay_scrim, 0x000000c0 },
 }, default_dims);
 
 /// High-contrast light.
@@ -180,7 +180,7 @@ pub const zigguro_hc_light = build("zigguro-hc-light", .hc_light, &.{
     .{ .control_bg, 0xffffffff },        .{ .control_border, 0x000000ff }, .{ .control_checked, 0x003d99ff },
     .{ .control_thumb, 0xffffffff },     .{ .track, 0x6a6a6aff },          .{ .selection_bg, 0xc8e1ffff },
     .{ .hover_bg, 0x0000001a },          .{ .badge_bg, 0x003d99ff },       .{ .badge_fg, 0xffffffff },
-    .{ .scrollbar_thumb, 0x00000080 },   .{ .shadow, 0x00000000 },
+    .{ .scrollbar_thumb, 0x00000080 },   .{ .shadow, 0x00000000 },         .{ .overlay_scrim, 0x00000099 },
 }, default_dims);
 
 /// Every built-in theme.

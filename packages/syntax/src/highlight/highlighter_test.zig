@@ -262,9 +262,22 @@ pub fn checkIncremental(lang: *const Language, reg: *const Registry, pieces: []c
             try new_lines.append(gpa, texts.items[prev..e]);
             prev = e;
         }
-        try lines.splice(first, removed, new_lines.items);
+        // Sometimes a second edit after the first (multi-cursor), applied
+        // to the model back to front and to the highlighter at once.
+        const e1: syntax.LineEdit = .{ .first = first, .removed = removed, .inserted = inserted };
+        const after = first + removed;
+        if (after < len and pick.next(3) == 0) {
+            const first2 = after + pick.next(len - after);
+            const removed2 = @min(len - first2, pick.next(2) + 1);
+            try lines.splice(first2, removed2, &.{ "/*", "x" });
+            try lines.splice(first, removed, new_lines.items);
+            const src = try lines.source();
+            try h.onEdits(&.{ e1, .{ .first = first2, .removed = removed2, .inserted = 2 } }, src, null);
+        } else {
+            try lines.splice(first, removed, new_lines.items);
+            try h.onEdit(e1, try lines.source(), null);
+        }
         const src = try lines.source();
-        try h.onEdit(.{ .first = first, .removed = removed, .inserted = inserted }, src, null);
         switch (pick.next(3)) {
             0 => {
                 const a = pick.next(src.lines);
