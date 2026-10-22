@@ -1,0 +1,7 @@
+1| keyword.storage:const variable:std operator:= function.builtin:@import punctuation.bracket:( string:"std" punctuation.bracket:) punctuation.delimiter:;
+2| keyword.storage:const type:T operator:= function.builtin:@This punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+3| keyword.storage:const variable:n operator:= function.builtin:@intCast punctuation.bracket:( function.builtin:@as punctuation.bracket:( type.builtin:u64 punctuation.delimiter:, number:3 punctuation.bracket:) punctuation.bracket:) punctuation.delimiter:;
+4| keyword.storage:const variable:s operator:= function.builtin:@sizeOf punctuation.bracket:( type:T punctuation.bracket:) operator:+ function.builtin:@alignOf punctuation.bracket:( type.builtin:u8 punctuation.bracket:) punctuation.delimiter:;
+5| keyword.storage:comptime punctuation.bracket:{
+6| function.builtin:@compileLog punctuation.bracket:( variable:n punctuation.delimiter:, variable:s punctuation.bracket:) punctuation.delimiter:;
+7| punctuation.bracket:}

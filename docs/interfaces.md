@@ -1806,3 +1806,60 @@ destroys and recreates the whole `Gpu`.
 ### Stability
 Internal to E02 except `writeReport`'s JSON schema (golden-tested) and
 `CreateOptions`, which the app fills from `EnvOverrides` and E15 settings.
+
+## zg_syntax (Language, Registry, Highlighter)
+
+### Defined in
+`packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
+`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig` (E05.F04).
+
+### Implemented by
+E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer).
+
+### Consumed by
+zg_editor (document highlighting and smart editing), E04 (rendering tokens),
+E15 (themes resolve `HighlightId` by longest dotted prefix), the language
+lexers of E05.F04.S02.
+
+### Signature
+```zig
+pub const HighlightId = enum(u16) { none, comment, comment_doc, string, ..., invalid, _,
+    pub fn name(id) []const u8; pub fn fromName(s) ?HighlightId; pub fn parent(id) ?HighlightId };
+pub fn resolve(comptime T: type, table: []const ?T, id: HighlightId) ?T;
+pub const Token = packed struct(u64) { start: u32, kind: u16, hl: HighlightId };
+pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: u16, aux: [32]u8, aux_len: u8,
+    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool };
+pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
+pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
+    lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
+    context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
+pub const Registry = struct { pub fn init(gpa) !Registry; pub fn register(r, gpa, l: *const Language) !void;
+    pub fn detect(r, path: ?[]const u8, head: []const u8) ?LanguageId; pub fn byName(r, name) ?LanguageId };
+pub fn defaultRegistry(gpa) !Registry;
+pub const LineSource = struct { ctx: *const anyopaque, lines: u64, getFn: ..., pub fn fromSlice(*const []const []const u8) LineSource };
+pub const LineEdit = struct { first: u64, removed: u64, inserted: u64 };
+pub const Highlighter = struct {
+    pub fn init(gpa, lang: *const Language, reg: *const Registry) !Highlighter;
+    pub fn reset(h, src: LineSource) !void;
+    pub fn onEdit(h, e: LineEdit, src: LineSource, deadline: ?Deadline) !void; // to convergence, 4096-line cap
+    pub fn ensure(h, src: LineSource, first: u64, last: u64) !void;          // viewport exact (or approximate after resync)
+    pub fn idle(h, src: LineSource, deadline: ?Deadline) !bool;              // true when done
+    pub fn tokens(h, line: u64) []const Token;
+    pub fn isExact(h, line: u64) bool; pub fn isApprox(h, line: u64) bool;
+    pub fn kindAt(h, line: u64, col: u32, line_len: u32) ContextKind;
+};
+```
+
+### Threading
+One `Highlighter` per document, used from one thread (the UI thread). A
+`Registry` is read-only after setup and can be shared.
+
+### Ownership/lifetime
+`Language` definitions and the `Registry` are borrowed and must outlive every
+`Highlighter` using them. `tokens(line)` slices are valid until the next
+call that mutates the highlighter. `LineSource` text is borrowed per call.
+
+### Stability
+Unstable while E05.F04 is in progress. The highlighter speaks lines, not
+documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
+text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
