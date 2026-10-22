@@ -17,6 +17,12 @@
 //! the agent revised the changeset (or a new one supersedes it), the
 //! Interdiff toggle shows what changed between the two proposals.
 //!
+//! Keys (with the view focused, the composer closed): `j`/`k` (or the
+//! arrows) next and previous hunk, `J`/`K` next and previous file, `n`
+//! next undecided, `c` next conflict, `a`/`x` accept or reject the hunk,
+//! `A`/`X` the file, `m` comment on the hunk, `r` reply to and `R`
+//! resolve (or reopen) its first thread, `f` request fix, `u` undo.
+//!
 //! A plain line diff for now: E05's diff view (side by side, intraline
 //! highlights, edit-before-accept) replaces the body when it exists. The
 //! session lives on the glue's queue, so the view reads and acts under
@@ -34,6 +40,43 @@ const ReviewSession = zg_review.session.ReviewSession;
 const feedback = zg_review.feedback;
 const TextBuffer = zg_gui.w.TextBuffer;
 const diff = @import("zg_editor").model.diff;
+const ev_mod = zg_gui.input.event;
+const widget = zg_gui.core.widget;
+
+/// The keys `KeyScope` takes (see the module doc).
+const view_keys = "jkJKncaxAXmrRfu";
+
+/// A key the view took, for the next build.
+const KeySink = struct { key: ?u21 = null };
+
+/// A focusable container that takes the view's single-letter keys.
+const KeyScope = struct {
+    pub const name = "review_keys";
+    pub const focusable = true;
+    pub const Props = struct { sink: *KeySink, label: []const u8 = "Review" };
+
+    pub fn event(ec: *ev_mod.EventCx, props: *const Props, _: *widget.NoState, ev: *const ev_mod.InputEvent) bool {
+        const k = switch (ev.*) {
+            .key => |k| k,
+            else => return false,
+        };
+        if (k.action == .release or k.mods.ctrl or k.mods.alt or k.mods.super) return false;
+        const c: u21 = switch (k.key) {
+            .arrow_down => 'j',
+            .arrow_up => 'k',
+            else => k.codepoint,
+        };
+        if (c > 0x7f or std.mem.indexOfScalar(u8, view_keys, @intCast(c)) == null) return false;
+        props.sink.key = c;
+        // Rebuilds the view, which acts on the key.
+        ec.respond(.{ .changed = true });
+        return true;
+    }
+
+    pub fn a11y(props: *const Props, _: *widget.NoState) widget.A11y {
+        return .{ .role = .group, .name = props.label };
+    }
+};
 
 /// See the module doc.
 pub const ReviewView = struct {
@@ -65,6 +108,7 @@ pub const ReviewView = struct {
     notice: []const u8 = "",
     /// A fix request waits for the user: the agent's session ended.
     ask_ended: bool = false,
+    keys: KeySink = .{},
 
     const Composer = union(enum) {
         /// A new thread on this hunk of the focused file.
@@ -148,6 +192,13 @@ pub const ReviewView = struct {
         defer v.glue.mutex.unlock(v.io);
         _ = v.arena.reset(.retain_capacity);
         const s = v.session;
+        if (v.keys.key) |k| {
+            v.keys.key = null;
+            // The composer is open: keys are its text.
+            if (v.composer == null) if (v.keyAction(k)) |a| v.run(a);
+        }
+        _ = ui.begin(KeyScope, .{ .sink = &v.keys });
+        defer ui.end(KeyScope);
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .role = .group, .label = "Review" });
         defer ui.close();
         v.header(ui);
@@ -384,6 +435,46 @@ pub const ReviewView = struct {
             error.NothingHere, error.NothingToUndo => {},
             else => s.last_error = @errorName(e),
         };
+    }
+
+    /// What key `k` does at the cursor (locked); navigation happens here.
+    fn keyAction(v: *ReviewView, k: u21) ?Action {
+        const s = v.session;
+        const h = s.cursor.hunk;
+        switch (k) {
+            'j' => s.next(),
+            'k' => s.prev(),
+            'J' => s.nextFile(),
+            'K' => s.prevFile(),
+            'n' => _ = s.nextUndecided(),
+            'c' => _ = s.nextConflict(),
+            'a' => return if (h) |x| .{ .accept_hunk = x } else null,
+            'x' => return if (h) |x| .{ .reject_hunk = x } else null,
+            'A' => return .accept_file,
+            'X' => return .reject_file,
+            'm' => return if (h) |x| .{ .comment_hunk = x } else null,
+            'r' => return if (v.cursorThread(true)) |t| .{ .reply = t } else null,
+            'R' => return if (v.cursorThread(false)) |t| .{ .toggle_resolved = t } else null,
+            'f' => return if (v.glue.feedback != null and v.openThreads() > 0) .request_fix else null,
+            'u' => return .undo,
+            else => {},
+        }
+        return null;
+    }
+
+    /// The first thread on the hunk under the cursor, unresolved ones
+    /// first (only those when `open_only`).
+    fn cursorThread(v: *ReviewView, open_only: bool) ?feedback.ThreadId {
+        const s = v.session;
+        const fc = s.fileChange(s.cursor.file) orelse return null;
+        const at = s.cursor.hunk orelse return null;
+        var resolved: ?feedback.ThreadId = null;
+        for (v.glue.comments.threadsOf(s.files()[s.cursor.file].cs)) |t| {
+            if (!std.mem.eql(u8, t.anchor.path, fc.path) or hunkOf(fc.hunks, t) != at) continue;
+            if (!t.resolved) return t.id;
+            if (resolved == null) resolved = t.id;
+        }
+        return if (open_only) null else resolved;
     }
 
     fn startComposer(v: *ReviewView, c: Composer) void {
@@ -855,4 +946,91 @@ test "review view: request fix, the agent's revision and the interdiff" {
     try testing.expect(t.find(.{ .name_contains = "has ended" }) != null);
     try t.click(.{ .role = .button, .name = "Send to the current agent" });
     try testing.expect(t.find(.{ .name = "Sent to the current agent." }) != null);
+}
+
+test "review view: keys move, decide, comment, reply and resolve" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\n.\n.\n.\ntwo\n" });
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x51 };
+    const origin: @import("zg_ai").tools.builtin.files.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    const abs = (try fs.resolve(testing.io, ar, "a.txt")).abs;
+    _ = try fs.propose(testing.io, ar, abs, .{ .whole_file = .{ .text = "ONE\n.\n.\n.\n.\nTWO\n", .base_version = null } }, origin);
+    const id: zg_review.model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+
+    const Root = struct {
+        v: ?*ReviewView = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.v) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 500 }, .root = .of(&view) });
+    defer t.deinit();
+    const v = try ReviewView.create(gpa, testing.io, &t.app, g, .{ .changeset = id });
+    defer v.destroy();
+    view.v = v;
+    t.win.markAllDirty();
+    _ = t.settle();
+    const press = struct {
+        fn f(app: *zg_gui.testing.TestApp, k: @FieldType(ev_mod.KeyPress, "key"), cp: u21, shift: bool) void {
+            app.win.dispatch(.{ .key = .{ .key = k, .codepoint = cp, .mods = .{ .shift = shift } } });
+            app.win.dispatch(.{ .key = .{ .key = k, .codepoint = cp, .mods = .{ .shift = shift }, .action = .release } });
+            _ = app.settle();
+        }
+    }.f;
+    t.win.setFocus(t.find(.{ .role = .group, .name = "Review" }).?, false);
+
+    // `j` moves to hunk 2, `x` rejects it; `u` undoes that.
+    press(t, .key_j, 'j', false);
+    try testing.expectEqual(@as(?u32, 1), v.session.cursor.hunk);
+    press(t, .key_x, 'x', false);
+    try testing.expect(t.find(.{ .name_contains = "1 of 2 decided" }) != null);
+    press(t, .key_u, 'u', false);
+    try testing.expect(t.find(.{ .name_contains = "0 of 2 decided" }) != null);
+
+    // `m` opens the composer on the hunk under the cursor.
+    press(t, .key_k, 'k', false);
+    press(t, .key_m, 'm', false);
+    try testing.expect(v.composer != null and v.composer.? == .hunk and v.composer.?.hunk == 0);
+    try v.field.?.setText("nit: shout less");
+    v.glue.mutex.lockUncancelable(testing.io);
+    _ = try v.post();
+    v.glue.mutex.unlock(testing.io);
+    t.win.markAllDirty();
+    _ = t.settle();
+    t.win.setFocus(t.find(.{ .role = .group, .name = "Review" }).?, false);
+    const th = g.comments.threadsOf(id)[0].id;
+
+    // `r` replies to that thread, `R` resolves it, and `R` again reopens it.
+    press(t, .key_r, 'r', false);
+    try testing.expect(v.composer.? == .reply and v.composer.?.reply == th);
+    v.composer = null;
+    press(t, .key_r, 'R', true);
+    try testing.expect(g.comments.get(th).?.resolved);
+    press(t, .key_r, 'R', true);
+    try testing.expect(!g.comments.get(th).?.resolved);
+
+    // While the composer is open, keys are its text.
+    press(t, .key_m, 'm', false);
+    press(t, .key_a, 'a', false);
+    try testing.expect(t.find(.{ .name_contains = "0 of 2 decided" }) != null);
+    v.composer = null;
+
+    // `a` accepts the hunk under the cursor; `A` the rest of the file.
+    press(t, .key_a, 'a', false);
+    try testing.expect(t.find(.{ .name_contains = "1 of 2 decided" }) != null);
+    press(t, .key_a, 'A', true);
+    try testing.expectEqual(zg_review.model.State.applied, g.q.get(id).?.state);
 }
