@@ -3,6 +3,7 @@
 //! reacts to input and closes.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_platform = @import("zg_platform");
 const app_mod = @import("core/app.zig");
 const ui_mod = @import("core/ui.zig");
@@ -310,4 +311,74 @@ test "host installs the chrome hit test once the platform asks for client decora
     hw.win.requestWindowOp(.minimize);
     _ = try host.pump();
     try std.testing.expectEqual(@as(usize, 0), hw.win.window_ops.items.len);
+}
+
+const DropPage = struct {
+    buf: *@import("widgets/text_field/model.zig").TextBuffer,
+    hooks: *const @import("widgets/text_field/prompt_hooks.zig").PromptHooks,
+    pub fn build(self: *DropPage, ui: *ui_mod.Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .bg = .{ .token = .bg_base } } });
+        defer ui.close();
+        ui.with(.{ .w = .{ .pct = 100 } });
+        _ = @import("widgets/text_field/view.zig").textField(ui, .{ .buffer = self.buf, .placeholder = "Prompt", .prompt = self.hooks });
+    }
+};
+
+test "host: files dragged from another app reach a prompt field" {
+    // Windows turns these URIs into drive paths.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+
+    const Rec = struct {
+        got: std.ArrayList(u8) = .empty,
+        fn on(ctx: *anyopaque, paths: []const []const u8) void {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            for (paths) |p| {
+                r.got.appendSlice(std.testing.allocator, p) catch {};
+                r.got.append(std.testing.allocator, '|') catch {};
+            }
+        }
+    };
+    var rec: Rec = .{};
+    defer rec.got.deinit(gpa);
+    var buf = try @import("widgets/text_field/model.zig").TextBuffer.init(gpa, "");
+    defer buf.deinit();
+    const hooks: @import("widgets/text_field/prompt_hooks.zig").PromptHooks = .{ .ctx = &rec, .on_drop_files = Rec.on };
+    var v: DropPage = .{ .buf = &buf, .hooks = &hooks };
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 300, .h = 200 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+
+    var mimes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &mimes, @intFromEnum(zg_platform.clipboard.MimeId.uri_list), .little);
+    const ev = struct {
+        fn drop(win: zg_platform.types.WindowId, phase: zg_platform.clipboard.DropPhase, y: f32, mlen: u32, dlen: u32) zg_platform.event.Event {
+            return .{ .drop = .{ .win = win, .phase = phase, .allowed = .{ .copy = true }, .pos_px = .{ 20, y }, .mimes = .{ .off = 0, .len = mlen }, .data = .{ .off = 0, .len = dlen } } };
+        }
+    }.drop;
+    // Over the field: accepted. Over empty space: refused.
+    try hl.injectPayload(ev(hw.id, .enter, 10, 2, 0), &mimes);
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(?bool, true), hw.win.drop.sent);
+    try std.testing.expectEqual(@as(?bool, null), hw.win.drop.pending);
+    try hl.inject(ev(hw.id, .over, 150, 0, 0));
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(?bool, false), hw.win.drop.sent);
+    try hl.inject(ev(hw.id, .over, 10, 0, 0));
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(?bool, true), hw.win.drop.sent);
+
+    const uris = "file:///tmp/a%20b.txt\r\nfile:///tmp/c\r\n";
+    try hl.injectPayload(ev(hw.id, .drop, 10, 0, uris.len), uris);
+    _ = try host.pump();
+    try std.testing.expectEqualStrings("/tmp/a b.txt|/tmp/c|", rec.got.items);
+    try std.testing.expectEqual(@as(?bool, null), hw.win.drop.sent);
 }
