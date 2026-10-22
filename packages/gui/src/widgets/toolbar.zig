@@ -9,7 +9,8 @@
 //! window's `ActionHandler`.
 //!
 //! Icons are text glyphs until the icon set lands (E04.F08); an item shows
-//! its `icon` when set, else its label, and is always named by its label.
+//! its `icon` when set, else its label, and is always named by its label;
+//! icon buttons get their label as a tooltip.
 
 const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
@@ -25,6 +26,7 @@ const theme_mod = @import("../theme/theme.zig");
 const tokens = @import("../theme/tokens.zig");
 const menu = @import("menu.zig");
 const roving = @import("roving.zig");
+const tooltip = @import("tooltip.zig");
 
 const Ui = ui_mod.Ui;
 const Size = geom.Size;
@@ -41,6 +43,8 @@ pub const ToolItem = struct {
     label: []const u8,
     action: actions.ActionId,
     arg: ?[]const u8 = null,
+    /// Shown on hover; defaults to the label for icon buttons.
+    tooltip: ?[]const u8 = null,
     /// Non-null makes a toggle button.
     toggled: ?bool = null,
     /// Higher stays longer; ≥ `pinned_priority` never overflows.
@@ -183,6 +187,7 @@ pub fn toolbar(ui: *Ui, items: []const ToolItem, p: ToolbarProps) void {
         ui.id(it.id);
         const r = ui.leaf(ToolButton, .{ .group = group, .text = shownText(it), .label = it.label, .toggled = it.toggled, .disabled = !it.enabled });
         group.add(ui.lastNode());
+        if (it.tooltip orelse (if (it.icon.len > 0) it.label else null)) |t| tooltip.tooltipLast(ui, t, .{});
         if (r.clicked and it.enabled) run(w, p, it.action, it.arg);
     }
     if (nh == 0) return;

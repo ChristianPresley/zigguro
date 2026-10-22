@@ -496,10 +496,10 @@ pub const Workbench = struct {
         ui.open(.{ .style = .{ .grow = 1 } });
         ui.close();
         const tools = [_]zg_gui.w.ToolItem{
-            .{ .id = "save", .label = "Save", .action = "file.save", .priority = 1000, .enabled = wb.path != null },
-            .{ .id = "terminal", .label = "Terminal", .action = "terminal.toggle", .toggled = wb.show_terminal, .priority = 10 },
-            .{ .id = "agent", .label = "Agent", .action = "agent.togglePane", .toggled = wb.show_agent, .priority = 20 },
-            .{ .id = "theme", .label = "Theme", .action = "workbench.toggleTheme", .priority = 1 },
+            .{ .id = "save", .label = "Save", .tooltip = "Save (Ctrl+S)", .action = "file.save", .priority = 1000, .enabled = wb.path != null },
+            .{ .id = "terminal", .label = "Terminal", .tooltip = "Toggle Terminal (Ctrl+`)", .action = "terminal.toggle", .toggled = wb.show_terminal, .priority = 10 },
+            .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.show_agent, .priority = 20 },
+            .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });
     }
@@ -543,7 +543,7 @@ pub const Workbench = struct {
         items[n] = .{ .id = "position", .text = pos, .priority = 100 };
         n += 1;
         if (wb.trust != .trusted) {
-            items[n] = .{ .id = "trust", .text = "Restricted Mode", .side = .right, .priority = 900, .tone = .warning, .action = "workspace.manageTrust" };
+            items[n] = .{ .id = "trust", .text = "Restricted Mode", .side = .right, .priority = 900, .tone = .warning, .tooltip = "This folder is not trusted: click to manage workspace trust", .action = "workspace.manageTrust" };
             n += 1;
         }
         if (wb.syntax) |sx| {

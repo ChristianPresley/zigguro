@@ -7,6 +7,7 @@
 //! menu at the end of its side. Priority ≥ 1000 is pinned. Items with an
 //! action are buttons that run it through the window's `ActionHandler`.
 //! The bell shows the unread count and opens the notification center.
+//! An item's `tooltip` shows on hover.
 
 const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
@@ -21,6 +22,7 @@ const theme_mod = @import("../theme/theme.zig");
 const tokens = @import("../theme/tokens.zig");
 const menu = @import("menu.zig");
 const toast = @import("toast.zig");
+const tooltip = @import("tooltip.zig");
 const Response = @import("../core/response.zig").Response;
 
 const Ui = ui_mod.Ui;
@@ -210,6 +212,7 @@ fn side(ui: *Ui, items: []const StatusItem, shown: []const bool, s: Side) void {
             continue;
         }
         const r: Response = ui.leaf(Item, .{ .text = it.text, .tone = it.tone, .progress = it.progress });
+        if (it.tooltip) |t| tooltip.tooltipLast(ui, t, .{});
         if (r.clicked) if (it.action) |a| {
             _ = w.dispatchAction(a, it.arg);
         };
