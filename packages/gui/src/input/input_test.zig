@@ -247,3 +247,29 @@ test "platform events are translated with the window scale" {
     try std.testing.expectEqual([3]u32{ 1, 0, 0 }, f.clicks);
     _ = keys_mod;
 }
+
+test "a platform key event types its text" {
+    var f: ChordForm = .{ .buf = try .init(std.testing.allocator, "") };
+    defer f.buf.deinit();
+    const t = try TestApp.init(std.testing.allocator, .{ .root = view_mod.AnyView.of(&f) });
+    defer t.deinit();
+    _ = t.settle();
+    try t.click(.{ .role = .textbox });
+    const Payload = struct {
+        pub fn payload(_: @This(), s: zg_platform.types.PayloadSlice) []const u8 {
+            return if (s.len > 0) "q" else "";
+        }
+    };
+    const win: zg_platform.types.WindowId = @enumFromInt(1);
+    const q: zg_platform.types.PayloadSlice = .{ .len = 1 };
+    t.win.handlePlatformEvent(.{ .key = .{ .win = win, .ev = .{ .key = .key_q, .keysym = 'q', .codepoint = 'q', .mods = .{}, .action = .press, .text = q, .native_scancode = 16, .time_ns = 0 } } }, Payload{});
+    t.win.handlePlatformEvent(.{ .key = .{ .win = win, .ev = .{ .key = .key_q, .keysym = 'q', .codepoint = 'q', .mods = .{}, .action = .release, .text = .empty, .native_scancode = 16, .time_ns = 0 } } }, Payload{});
+    _ = t.settle();
+    try std.testing.expectEqualStrings("q", f.buf.slice());
+    // A key the key handler consumes types nothing.
+    var c: Chord = .{ .pending = true };
+    t.win.key_handler = .{ .ptr = &c, .handle = Chord.handle, .pending = Chord.isPending };
+    t.win.handlePlatformEvent(.{ .key = .{ .win = win, .ev = .{ .key = .key_q, .keysym = 'q', .codepoint = 'q', .mods = .{}, .action = .press, .text = q, .native_scancode = 16, .time_ns = 0 } } }, Payload{});
+    _ = t.settle();
+    try std.testing.expectEqualStrings("q", f.buf.slice());
+}

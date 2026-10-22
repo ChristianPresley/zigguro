@@ -364,6 +364,7 @@ fn register(b: *bench.Bench) !void {
     try registerLineOps(b, text);
     try registerEncoding(b, text);
     try registerSave(b, text);
+    try registerUndoFile(b, text);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -600,6 +601,41 @@ fn saveBench(job: *buffer.save.SaveJob, s: *bench.State) void {
     s.setBytes(job.snap.len());
     var i: u64 = 0;
     while (i < s.iterations()) : (i += 1) _ = job.run(s.io) catch unreachable;
+}
+
+const UndoFileBench = struct { bytes: []const u8, hash: [32]u8, len: u64, gpa: std.mem.Allocator };
+
+/// Restoring a 10 MB undo history (2,500 groups of 4 KB inserts with
+/// their inverses) from bytes already read.
+fn registerUndoFile(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.undo_file.restore_10mb", f) == null) return;
+    const edit = zg_editor.model.edit;
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), "");
+    defer doc.deinit();
+    var tree: edit.undo.UndoTree = .init(b.gpa, .{ .max_bytes = 1 << 30 });
+    defer tree.deinit();
+    for (0..2500) |k| {
+        const piece = text[(k * 4096) % (text.len - 4096) ..][0..4096];
+        var cs = try edit.change_set.ChangeSet.fromEdits(b.gpa, doc.len(), &.{.{ .range = .{ .start = doc.len(), .end = doc.len() }, .text = piece }});
+        const inv = try cs.invert(doc.tree, b.gpa);
+        try doc.applyChangeSet(&cs, .{ .user = 0 });
+        try tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .{ .nanoseconds = @intCast(k) } });
+        tree.breakGroup();
+    }
+    const hash = edit.undo_file.contentHash("bench");
+    const bytes = try edit.undo_file.encode(b.gpa, &tree, hash, 5, 64 << 20);
+    defer b.gpa.free(bytes);
+    var ub: UndoFileBench = .{ .bytes = bytes, .hash = hash, .len = 5, .gpa = b.gpa };
+    try b.run("editor.undo_file.restore_10mb", &ub, undoRestore);
+}
+
+fn undoRestore(c: *UndoFileBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var t = (zg_editor.model.edit.undo_file.decode(c.gpa, c.bytes, c.hash, c.len, .{ .max_bytes = 1 << 30 }) catch unreachable).?;
+        t.deinit();
+    }
 }
 
 const AgentBench = struct {

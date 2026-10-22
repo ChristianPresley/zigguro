@@ -91,6 +91,8 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("store/encode_test.zig");
     _ = @import("store/store_test.zig");
+    _ = @import("store/store_crash_test.zig");
+    _ = @import("store/store_mp_test.zig");
     _ = @import("store/gc_test.zig");
     _ = @import("graph/index_test.zig");
     _ = @import("graph/ancestry_test.zig");
