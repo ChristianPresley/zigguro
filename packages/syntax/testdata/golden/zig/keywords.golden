@@ -1,0 +1,11 @@
+1| keyword.storage:pub keyword.storage:fn function:main punctuation.bracket:( punctuation.bracket:) operator:! type.builtin:void punctuation.bracket:{
+2| keyword.storage:var variable:x punctuation.delimiter:: type.builtin:u8 operator:= number:0 punctuation.delimiter:;
+3| keyword.control:defer variable:x operator:+= number:1 punctuation.delimiter:;
+4| keyword.control:errdefer keyword.control:unreachable punctuation.delimiter:;
+5| keyword.storage:const variable:y operator:= keyword.control:if punctuation.bracket:( variable:x operator:> number:0 punctuation.bracket:) variable:x keyword.control:else number:1 punctuation.delimiter:;
+6| variable:_ operator:= variable:y keyword.control:orelse number:0 punctuation.delimiter:;
+7| keyword.storage:const variable:z operator:= keyword.control:try function:g punctuation.bracket:( punctuation.bracket:) keyword.control:catch operator:| variable:err operator:| keyword.control:switch punctuation.bracket:( variable:err punctuation.bracket:) punctuation.bracket:{
+8| keyword.control:else operator:=> keyword.control:return punctuation.delimiter:,
+9| punctuation.bracket:} punctuation.delimiter:;
+10| variable:_ operator:= variable:z keyword.operator:and constant.builtin:true keyword.operator:or constant.builtin:false punctuation.delimiter:;
+11| punctuation.bracket:}
