@@ -56,6 +56,26 @@ pub const State = struct {
         return false;
     }
 
+    /// A copy with `version_text` in the skip list (no duplicates).
+    pub fn withSkipped(s: State, arena: Allocator, version_text: []const u8) Allocator.Error!State {
+        if (s.isSkipped(version_text)) return s;
+        var list: std.ArrayList([]const u8) = .empty;
+        try list.appendSlice(arena, s.skipped);
+        try list.append(arena, try arena.dupe(u8, version_text));
+        var out = s;
+        out.skipped = list.items;
+        return out;
+    }
+
+    /// A copy without `version_text` in the skip list (`update.installAnyway`).
+    pub fn withoutSkipped(s: State, arena: Allocator, version_text: []const u8) Allocator.Error!State {
+        var list: std.ArrayList([]const u8) = .empty;
+        for (s.skipped) |v| if (!std.mem.eql(u8, v, version_text)) try list.append(arena, v);
+        var out = s;
+        out.skipped = list.items;
+        return out;
+    }
+
     /// Writes the state as ZON.
     pub fn writeZon(s: *const State, w: *std.Io.Writer) std.Io.Writer.Error!void {
         try std.zon.stringify.serialize(s.*, .{}, w);
