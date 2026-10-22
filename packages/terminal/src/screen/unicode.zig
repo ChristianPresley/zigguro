@@ -96,14 +96,90 @@ const spacing_mark = [_]Range{
     .{ 0x094E, 0x094F }, .{ 0x0E33, 0x0E33 },
 };
 
+// Per-code-point properties for planes 0 and 1, as a two-stage table built
+// at comptime from the ranges above: `stage1[cp >> 8]` picks a 256-entry
+// block in `stage2`. Uniform blocks are shared, so the table is small.
+const P = struct {
+    const width_mask: u8 = 0b11; // 0: control, 1: zero, 2: one, 3: two
+    const amb: u8 = 1 << 2;
+    const zero: u8 = 1 << 3; // in `zero_width`
+    const pict: u8 = 1 << 4; // in `ext_pict`
+    const spacing: u8 = 1 << 5; // in `spacing_mark`
+};
+
+const table_end = 0x20000;
+
+fn propsSlow(cp: u21) u8 {
+    var v: u8 = 0;
+    if (cp < 0x20 or (cp >= 0x7F and cp < 0xA0)) {
+        v = 0;
+    } else if (inRanges(cp, &zero_width)) {
+        v = 1;
+    } else if (inRanges(cp, &wide)) {
+        v = 3;
+    } else v = 2;
+    if (v == 2 and inRanges(cp, &ambiguous)) v |= P.amb;
+    if (inRanges(cp, &zero_width)) v |= P.zero;
+    if (inRanges(cp, &ext_pict)) v |= P.pict;
+    if (inRanges(cp, &spacing_mark)) v |= P.spacing;
+    return v;
+}
+
+const Tables = struct { stage1: [table_end >> 8]u8, stage2: []const [256]u8 };
+
+fn markSplit(split: []bool, comptime rs: []const Range) void {
+    for (rs) |r| {
+        for ([2]u32{ r[0], @as(u32, r[1]) + 1 }) |edge| {
+            if (edge % 256 != 0 and edge < table_end) split[edge >> 8] = true;
+        }
+    }
+}
+
+const tables: Tables = blk: {
+    @setEvalBranchQuota(10_000_000);
+    // A block is uniform unless a range edge falls inside it; uniform blocks
+    // take one sample and are shared, split blocks are computed in full.
+    var split: [table_end >> 8]bool = @splat(false);
+    split[0] = true; // controls
+    markSplit(&split, &zero_width);
+    markSplit(&split, &wide);
+    markSplit(&split, &ambiguous);
+    markSplit(&split, &ext_pict);
+    markSplit(&split, &spacing_mark);
+    var stage1: [table_end >> 8]u8 = undefined;
+    var blocks: [table_end >> 8][256]u8 = undefined;
+    var uniform: [256]?u8 = @splat(null);
+    var n: usize = 0;
+    for (0..table_end >> 8) |bi| {
+        const base: u21 = bi << 8;
+        if (!split[bi]) {
+            const v = propsSlow(base);
+            if (uniform[v]) |i| {
+                stage1[bi] = i;
+                continue;
+            }
+            uniform[v] = n;
+            blocks[n] = @splat(v);
+        } else {
+            for (&blocks[n], 0..) |*e, i| e.* = propsSlow(base + i);
+        }
+        stage1[bi] = n;
+        n += 1;
+    }
+    const final = blocks[0..n].*;
+    break :blk .{ .stage1 = stage1, .stage2 = &final };
+};
+
+inline fn props(cp: u21) u8 {
+    if (cp < table_end) return tables.stage2[tables.stage1[cp >> 8]][cp & 0xFF];
+    return propsSlow(cp);
+}
+
 /// Per-code-point cell width: -1 for controls, 0, 1 or 2.
 pub fn wcwidth(cp: u21, o: WidthOptions) i8 {
-    if (cp < 0x20 or (cp >= 0x7F and cp < 0xA0)) return -1;
-    if (cp < 0x300) return if (o.ambiguous_wide and inRanges(cp, &ambiguous)) 2 else 1;
-    if (inRanges(cp, &zero_width)) return 0;
-    if (inRanges(cp, &wide)) return 2;
-    if (o.ambiguous_wide and inRanges(cp, &ambiguous)) return 2;
-    return 1;
+    const v = props(cp);
+    if (o.ambiguous_wide and v & P.amb != 0) return 2;
+    return @as(i8, @intCast(v & P.width_mask)) - 1;
 }
 
 fn isRegional(cp: u21) bool {
@@ -133,7 +209,7 @@ fn hangul(cp: u21) Hangul {
 }
 
 fn isExtend(cp: u21) bool {
-    return cp != 0x200D and cp >= 0x300 and (inRanges(cp, &zero_width) or (cp >= 0x1F3FB and cp <= 0x1F3FF));
+    return cp != 0x200D and cp >= 0x300 and props(cp) & P.zero != 0;
 }
 
 fn isDevaConsonant(cp: u21) bool {
@@ -158,7 +234,7 @@ pub fn isBreak(st: *BreakState, prev: u21, next: u21) bool {
     if (isRegional(next)) {
         st.ri_odd = if (isRegional(prev) and !brk) false else true;
     } else st.ri_odd = false;
-    if (inRanges(next, &ext_pict)) {
+    if (props(next) & P.pict != 0) {
         st.emoji = .pict;
     } else if (st.emoji != .none and !brk and next == 0x200D) {
         st.emoji = .zwj;
@@ -182,9 +258,9 @@ fn decide(st: *const BreakState, prev: u21, next: u21) bool {
     if ((hp == .lv or hp == .v) and (hn == .v or hn == .t)) return false; // GB7
     if ((hp == .lvt or hp == .t) and hn == .t) return false; // GB8
     if (isExtend(next) or next == 0x200D) return false; // GB9
-    if (inRanges(next, &spacing_mark)) return false; // GB9a
+    if (props(next) & P.spacing != 0) return false; // GB9a
     if (st.incb == .linked and isDevaConsonant(next)) return false; // GB9c
-    if (prev == 0x200D and st.emoji == .zwj and inRanges(next, &ext_pict)) return false; // GB11
+    if (prev == 0x200D and st.emoji == .zwj and props(next) & P.pict != 0) return false; // GB11
     if (isRegional(prev) and isRegional(next) and st.ri_odd) return false; // GB12/13
     return true;
 }
@@ -229,4 +305,12 @@ test "widths" {
     try std.testing.expectEqual(@as(u2, 1), graphemeWidth(&.{ 0x2764, 0xFE0E }, .{}));
     try std.testing.expectEqual(@as(u2, 2), graphemeWidth(&.{ 0x1F1EF, 0x1F1F5 }, .{}));
     try std.testing.expectEqual(@as(i8, 2), wcwidth(0x00B0, .{ .ambiguous_wide = true }));
+}
+
+test "the lookup table matches the ranges" {
+    var cp: u21 = 0;
+    while (cp < 0x110000) : (cp += 1) {
+        if (cp >= table_end and cp % 61 != 0) continue;
+        try std.testing.expectEqual(propsSlow(cp), props(cp));
+    }
 }
