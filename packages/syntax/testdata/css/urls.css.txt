@@ -1,0 +1,4 @@
+.logo { background: url(images/logo.png) no-repeat; }
+.icon { background-image: url("icons/a.svg"), url('b.svg'); }
+@font-face { font-family: X; src: url(x.woff2) format("woff2"); }
+.data { background: url(data:image/gif;base64,R0lGOD==); }
