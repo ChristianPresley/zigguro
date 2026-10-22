@@ -1947,3 +1947,61 @@ call that mutates the highlighter. `LineSource` text is borrowed per call.
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
+
+## zg_editor.model.api (DocumentRegistry, LspSync)
+
+### Defined in
+`packages/editor/src/model/api/registry.zig`, `packages/editor/src/model/api/lsp_sync.zig` (E05.F08).
+
+### Implemented by
+E05.F08.S01.T01.
+
+### Consumed by
+E07 (implements `LspSink`, serializes JSON-RPC), E08 (opens files, reports renames), E10/E12 (agent documents),
+E05.F08.S01.T02 (AgentEditSession).
+
+### Signature
+```zig
+pub const DocHandle = struct { id: DocId, gen: u32 };
+pub const PathStyle = enum { posix, windows, pub const native: PathStyle };
+pub const RegistryEvent = union(enum) { opened: DocHandle, closed: DocHandle, renamed: struct { handle, old_uri, new_uri } };
+pub const DocumentRegistry = struct {
+    pub fn init(gpa, style: PathStyle) DocumentRegistry;
+    pub fn openFile(r, abs_path, bytes) !DocHandle;          // existing doc for the same normalized path: +1 ref
+    pub fn findFile(r, path) !?DocHandle;
+    pub fn openUntitled(r, bytes) !DocHandle;                // untitled:Untitled-N
+    pub fn openAgent(r, session: u64, name, bytes) !DocHandle; // zigguro-agent://<session>/<name>
+    pub fn get(r, h) ?*Document; pub fn uri(r, h) ?[]const u8; pub fn name(r, h) ?[]const u8;
+    pub fn retain(r, h) !void; pub fn release(r, h) void;     // last release: `closed` event, then free
+    pub fn rename(r, h, new_abs_path) !void;                 // `renamed` event
+    pub fn subscribe(r, RegistryListener) !u32; pub fn unsubscribe(r, id) void;
+};
+pub fn normalizePath(gpa, path, style) ![]u8; pub fn pathKey(gpa, normalized, style) ![]u8;
+pub fn fileUri(gpa, abs_path) ![]u8;   // file:///home/a%20b, file:///c%3A/Users/x, file://server/share/x
+pub const SyncKind = enum(u2) { none, full, incremental };
+pub const LspSink = struct { ctx, didOpen, didChange, didSave, didClose };   // text as ChunkIterator
+pub const LspSync = struct {
+    include_text_on_save: bool = false, max_bytes: u64 = 64 << 20,
+    pub fn init(gpa, reg: *DocumentRegistry, enc: zg_core.utf8.Encoding, kind: SyncKind, sink: LspSink) LspSync;
+    pub fn track(s, h, language_id) !void;   // didOpen v1; error.TooLarge past max_bytes
+    pub fn untrack(s, h) void;               // didClose
+    pub fn flush(s) void;                    // once per frame: one coalesced didChange per document
+    pub fn saved(s, h) void;                 // flush + didSave
+};
+```
+
+### Threading
+UI thread only, like `Document`. Other threads read documents through
+snapshots.
+
+### Ownership/lifetime
+The registry owns documents; a handle is valid until its last `release`
+(stale handles return null or `error.StaleHandle`). URIs and names are
+valid until the document is renamed or closed. Sink arguments are valid
+during the call only. `LspSync` must not move after the first `track`.
+
+### Stability
+Unstable until E07 implements the sink. Edits whose edges fall between the
+CR and LF of a CRLF are sent as one widened replacement, since LSP positions
+cannot address that point. A rename is sent as close + open (LSP has no
+text-document rename).
