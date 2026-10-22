@@ -18,6 +18,10 @@
 //!   saved text's hash) on a worker, and opening the same unchanged text
 //!   later restores it.
 //!
+//! - With `diff` set, the DiffModel's base follows the file: the saved
+//!   text after a save, the file's text after a reload (the dirty-diff
+//!   gutter).
+//!
 //! One operation runs per file at a time; another asked meanwhile is
 //! refused with `error.Busy`. Every outcome reaches `on_done` on the UI
 //! thread.
@@ -33,6 +37,8 @@ const UndoTree = zg_editor.model.edit.undo.UndoTree;
 const save_mod = zg_editor.model.buffer.save;
 const external = zg_editor.model.buffer.external;
 const undo_file = zg_editor.model.edit.undo_file;
+const DiffModel = zg_editor.model.diff.diff_model.DiffModel;
+const Snapshot = zg_editor.model.snapshot.Snapshot;
 const log = std.log.scoped(.file_sync);
 
 pub const FileState = save_mod.FileState;
@@ -80,6 +86,8 @@ pub const FileSync = struct {
     /// An undo file is being written; `undo_next` waits for it.
     undo_writing: bool = false,
     undo_next: ?[]u8 = null,
+    /// Diffs the document against the file's text (not owned).
+    diff: ?*DiffModel = null,
 
     pub const UndoStore = struct { dir: Io.Dir, key: [32]u8 };
 
@@ -179,6 +187,16 @@ pub const FileSync = struct {
         fs.app.?.spawn(runUndoWrite, .{ fs, bytes });
     }
 
+    /// Makes `snap` (a reference this takes over) the diff's base.
+    fn rebase(fs: *FileSync, snap: Snapshot) void {
+        var s = snap;
+        const m = fs.diff orelse return s.release();
+        m.setBase(s) catch |e| {
+            s.release();
+            log.warn("diff of {s}: {t}", .{ fs.path, e });
+        };
+    }
+
     fn done(fs: *FileSync, o: Outcome) void {
         fs.busy = false;
         if (fs.on_done) |h| h.f(h.ctx, fs, o);
@@ -273,6 +291,7 @@ fn finish(ctx: *anyopaque, _: *zg_gui.App) void {
             defer s.job.deinit();
             const disk = s.result catch |e| break :blk .{ .save_failed = e };
             save_mod.commit(fs.doc, &fs.file, &s.job, disk, fs.undo);
+            if (fs.diff != null) fs.rebase(s.job.snap.retain());
             if (fs.undo_store != null) if (fs.undo) |u| {
                 const len = s.job.snap.len();
                 if (undo_file.encode(fs.gpa, u, s.hash, len, undo_file.default_max_bytes)) |bytes|
@@ -289,7 +308,10 @@ fn finish(ctx: *anyopaque, _: *zg_gui.App) void {
             var change = external.applyProbe(fs.doc, &fs.file, fs.undo, pr, Io.Timestamp.now(fs.io, .real)) catch |e| break :blk .{ .check_failed = e };
             break :blk switch (change) {
                 .none => .unchanged,
-                .reloaded_clean => .reloaded,
+                .reloaded_clean => r: {
+                    if (fs.diff != null) fs.rebase(fs.doc.snapshot());
+                    break :r .reloaded;
+                },
                 .deleted => .deleted,
                 .conflict => |*c| c: {
                     c.deinit(fs.gpa);
@@ -472,4 +494,29 @@ test "file sync: the undo history is written on save and restored on open" {
     // Secret files are never written.
     try testing.expect(!fs3.enableUndoFile(undo_dir, "/work/.env", "changed\n"));
     try testing.expect(fs3.undo_store == null or !std.mem.eql(u8, &fs3.undo_store.?.key, &undo_file.pathKey("/work/.env")));
+}
+
+test "file sync: the diff base follows saves and reloads" {
+    var f: Fx = undefined;
+    try f.init("a\nb\n");
+    defer f.deinit();
+    const m = try DiffModel.init(testing.allocator, null, f.doc.snapshot(), f.doc, .{});
+    defer m.deinit();
+    try m.completeFull();
+    f.fs.diff = m;
+    try testing.expectEqual(@as(usize, 0), m.hunks().len);
+
+    try f.edit(0, "new\n");
+    try testing.expectEqual(@as(usize, 1), m.hunks().len);
+    try f.fs.save(.{});
+    _ = f.settle();
+    try m.completeFull();
+    try testing.expectEqual(@as(usize, 0), m.hunks().len);
+
+    // Reloaded from disk: no difference from the new base either.
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "x\ny\nz\n" });
+    try f.fs.check();
+    try testing.expectEqual(Outcome.reloaded, f.settle());
+    try m.completeFull();
+    try testing.expectEqual(@as(usize, 0), m.hunks().len);
 }
