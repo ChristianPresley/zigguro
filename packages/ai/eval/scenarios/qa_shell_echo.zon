@@ -1,0 +1,34 @@
+.{
+    .name = "qa_shell_echo",
+    .fixture = "notes",
+    .prompt = "Run echo hello-from-shell and tell me what it printed.",
+    .permission_mode = "default",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"echo hello-from-shell\"}",
+                },
+            },
+        },
+        .{
+            .text = "It printed hello-from-shell.",
+            .expect = .{
+                "hello-from-shell",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "run_command",
+        },
+        .{
+            .final_text_matches = "hello-from-shell",
+        },
+        .no_permission_denials,
+    },
+}

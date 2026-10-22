@@ -172,8 +172,11 @@ pub const tools = struct {
 /// Cassettes and the eval runner (E10.F10.S02).
 pub const testing = struct {
     pub const cassette = @import("testing/cassette.zig");
+    pub const eval = @import("testing/eval.zig");
+    pub const graders = @import("testing/graders.zig");
     test {
         _ = @import("testing/cassette_test.zig");
+        _ = @import("testing/eval_test.zig");
     }
 };
 pub const session = struct {

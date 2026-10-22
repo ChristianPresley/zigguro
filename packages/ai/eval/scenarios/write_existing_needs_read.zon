@@ -1,0 +1,54 @@
+.{
+    .name = "write_existing_needs_read",
+    .fixture = "notes",
+    .prompt = "Overwrite a.txt with omega.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"a.txt\",\"content\":\"omega\\n\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+            .expect = .{
+                "read it with read_file before overwriting it",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"a.txt\",\"content\":\"omega\\n\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+        .{
+            .text = "a.txt now says omega.",
+            .expect = .{
+                "a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "omega",
+            },
+        },
+        .{
+            .max_turns = 4,
+        },
+    },
+}

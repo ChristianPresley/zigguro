@@ -1,0 +1,44 @@
+.{
+    .name = "hook_blocks_protected_file",
+    .fixture = "notes",
+    .prompt = "Edit sub/b.txt.",
+    .hooks = .{
+        .{
+            .tool = "edit_file",
+            .input_contains = "sub/b.txt",
+            .reason = "sub/b.txt is protected",
+        },
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"sub/b.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"sub/b.txt\",\"old_string\":\"keep\",\"new_string\":\"drop\"}",
+                },
+            },
+            .expect = .{
+                "keep me",
+            },
+        },
+        .{
+            .text = "sub/b.txt is protected.",
+            .expect = .{
+                "sub/b.txt is protected",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "sub/b.txt",
+        },
+    },
+}

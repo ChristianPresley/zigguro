@@ -1,0 +1,44 @@
+.{
+    .name = "edit_replace_all",
+    .fixture = "notes",
+    .prompt = "Replace every foo with qux in repeat.txt.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"repeat.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"repeat.txt\",\"old_string\":\"foo\",\"new_string\":\"qux\",\"replace_all\":true}",
+                },
+            },
+            .expect = .{
+                "foo bar foo",
+            },
+        },
+        .{
+            .text = "Replaced all three.",
+            .expect = .{
+                "repeat.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "repeat.txt",
+                .needle = "qux bar qux baz qux",
+            },
+        },
+        .{
+            .max_turns = 3,
+        },
+        .no_permission_denials,
+    },
+}

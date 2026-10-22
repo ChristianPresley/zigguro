@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     const run_proto = b.addRunArtifact(proto_tests);
     run_proto.skip_foreign_checks = true;
 
-    _ = zg_build.addPackage(b, f, .{
+    const ai = zg_build.addPackage(b, f, .{
         .name = "zg_ai",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
@@ -30,6 +30,19 @@ pub fn build(b: *std.Build) void {
         .bench = "bench/main.zig",
     });
     b.getInstallStep().dependOn(&proto_tests.step);
+
+    // The evaluation runner; the root's `eval` step runs it.
+    const eval_mod = b.createModule(.{
+        .root_source_file = b.path("eval/main.zig"),
+        .target = f.target,
+        .optimize = f.optimize,
+        .imports = &.{
+            .{ .name = "zg_core", .module = core },
+            .{ .name = "zg_net", .module = net },
+            .{ .name = "zg_ai", .module = ai },
+        },
+    });
+    b.installArtifact(b.addExecutable(.{ .name = "zg_ai-eval", .root_module = eval_mod }));
     b.step("test-proto", "Run the zg_ai_proto tests").dependOn(&run_proto.step);
     b.top_level_steps.get("test").?.step.dependOn(&run_proto.step);
 }

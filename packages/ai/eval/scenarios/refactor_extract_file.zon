@@ -1,0 +1,55 @@
+.{
+    .name = "refactor_extract_file",
+    .fixture = "project",
+    .prompt = "Move summary into its own file summary.zig and keep report.zig re-exporting it.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"src/report.zig\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"src/summary.zig\",\"content\":\"const util = @import(\\\"util.zig\\\");\\n\\npub fn summary(text: []const u8) usize {\\n    return util.countWords(text) * 2;\\n}\\n\"}",
+                },
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"src/report.zig\",\"content\":\"pub const summary = @import(\\\"summary.zig\\\").summary;\\n\"}",
+                },
+            },
+            .expect = .{
+                "countWords(text) * 2",
+            },
+        },
+        .{
+            .text = "Moved summary to src/summary.zig.",
+            .expect = .{
+                "Created src/summary.zig",
+                "src/report.zig",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "src/summary.zig",
+                .needle = "pub fn summary",
+            },
+        },
+        .{
+            .file_contains = .{
+                .path = "src/report.zig",
+                .needle = "@import(\"summary.zig\")",
+            },
+        },
+        .{
+            .file_unchanged = "src/util.zig",
+        },
+        .no_permission_denials,
+    },
+}

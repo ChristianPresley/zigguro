@@ -1,0 +1,44 @@
+.{
+    .name = "plan_mode_edit_denied",
+    .fixture = "notes",
+    .prompt = "Plan how to rename alpha.",
+    .permission_mode = "plan",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"alpha\",\"new_string\":\"ALPHA\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+        .{
+            .text = "Plan: replace alpha with ALPHA in a.txt once approved.",
+            .expect = .{
+                "Unknown tool: edit_file",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "a.txt",
+        },
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .final_text_matches = "^Plan:",
+        },
+    },
+}

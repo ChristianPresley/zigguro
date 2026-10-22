@@ -1,0 +1,40 @@
+.{
+    .name = "edit_stale_old_string",
+    .fixture = "notes",
+    .prompt = "Change delta to epsilon in a.txt.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"delta\",\"new_string\":\"epsilon\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+        .{
+            .text = "a.txt has no delta, so nothing changed.",
+            .expect = .{
+                "old_string was not found in a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "a.txt",
+        },
+        .{
+            .final_text_matches = "nothing changed",
+        },
+    },
+}

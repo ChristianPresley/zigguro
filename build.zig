@@ -23,6 +23,10 @@ pub fn build(b: *std.Build) void {
     // Root-only options: never forwarded to b.dependency().
     const bench_quick = b.option(bool, "bench-quick", "Run benchmarks in quick mode") orelse false;
     const bench_filter = b.option([]const u8, "bench-filter", "Only run benchmarks whose name contains this");
+    const eval_filter = b.option([]const u8, "eval-filter", "Only run eval scenarios whose name contains this");
+    const eval_update = b.option(bool, "eval-update-baseline", "Rewrite packages/ai/eval/baseline.json") orelse false;
+    const eval_live = b.option(bool, "eval-live", "Run evals against the real provider, recording cassettes") orelse false;
+    const eval_model = b.option([]const u8, "eval-model", "The model for -Deval-live");
     const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this");
     const new_name = b.option([]const u8, "name", "new-package: package name, e.g. zg_demo");
     const new_dir = b.option([]const u8, "dir", "new-package: directory under packages/, e.g. demo");
@@ -392,6 +396,23 @@ pub fn build(b: *std.Build) void {
             const out = run.addOutputFileArg(p.name ++ ".json");
             const install = b.addInstallFileWithDir(out, .prefix, "bench-results/" ++ p.name ++ ".json");
             bench_step.dependOn(&install.step);
+        }
+    }
+
+    // Agent evaluations (packages/ai/eval): scenarios against fixture
+    // workspaces, offline from scripts and cassettes.
+    const eval_step = b.step("eval", "Run the agent evaluation suite (-Deval-filter, -Deval-update-baseline, -Deval-live -Deval-model)");
+    inline for (packages.all, 0..) |p, i| {
+        if (comptime std.mem.eql(u8, p.name, "zg_ai")) {
+            const run = b.addRunArtifact(deps[i].artifact("zg_ai-eval"));
+            run.has_side_effects = true;
+            run.setCwd(b.path("."));
+            run.addArgs(&.{ "--suite", "packages/ai/eval", "--work", ".zig-cache/eval", "--out", b.getInstallPath(.prefix, "eval/report.json"), "--zig", b.graph.zig_exe });
+            if (eval_filter) |flt| run.addArgs(&.{ "--filter", flt });
+            if (eval_update) run.addArg("--update-baseline");
+            if (eval_live) run.addArg("--live");
+            if (eval_model) |m| run.addArgs(&.{ "--model", m });
+            eval_step.dependOn(&run.step);
         }
     }
 

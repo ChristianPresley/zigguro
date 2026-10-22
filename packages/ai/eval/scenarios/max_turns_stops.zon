@@ -1,0 +1,35 @@
+.{
+    .name = "max_turns_stops",
+    .fixture = "notes",
+    .prompt = "Keep reading.",
+    .max_turns = 2,
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .max_turns = 2,
+        },
+        .{
+            .file_unchanged = "a.txt",
+        },
+    },
+}

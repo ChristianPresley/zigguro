@@ -1,0 +1,54 @@
+.{
+    .name = "edit_requires_read",
+    .fixture = "notes",
+    .prompt = "Change beta to gamma in a.txt.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"beta\",\"new_string\":\"gamma\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+            .expect = .{
+                "Read a.txt with read_file before editing it",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"beta\",\"new_string\":\"gamma\"}",
+                },
+            },
+            .expect = .{
+                "alpha",
+            },
+        },
+        .{
+            .text = "Done.",
+            .expect = .{
+                "a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "alpha\ngamma",
+            },
+        },
+        .{
+            .max_turns = 4,
+        },
+    },
+}

@@ -1,0 +1,47 @@
+.{
+    .name = "edit_multi",
+    .fixture = "notes",
+    .prompt = "Uppercase both words in a.txt in one change.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "multi_edit",
+                    .input = "{\"path\":\"a.txt\",\"edits\":[{\"old_string\":\"alpha\",\"new_string\":\"ALPHA\"},{\"old_string\":\"beta\",\"new_string\":\"BETA\"}]}",
+                },
+            },
+            .expect = .{
+                "beta",
+            },
+        },
+        .{
+            .text = "Both words are uppercase.",
+            .expect = .{
+                "a.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "ALPHA\nBETA",
+            },
+        },
+        .{
+            .tool_used = "multi_edit",
+        },
+        .{
+            .tool_not_used = "edit_file",
+        },
+        .no_permission_denials,
+    },
+}

@@ -1,0 +1,33 @@
+.{
+    .name = "plan_mode_command_denied",
+    .fixture = "notes",
+    .prompt = "Plan cleanup.",
+    .permission_mode = "plan",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"echo should-not-run > ran.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "Plan: clean up after approval.",
+            .expect = .{
+                "Unknown tool: run_command",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "ran.txt",
+        },
+        .{
+            .final_text_matches = "^Plan:",
+        },
+    },
+}

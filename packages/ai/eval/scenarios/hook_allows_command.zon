@@ -1,0 +1,35 @@
+.{
+    .name = "hook_allows_command",
+    .fixture = "notes",
+    .prompt = "Echo hook-ok.",
+    .permission_mode = "default",
+    .hooks = .{
+        .{
+            .tool = "run_command",
+            .input_contains = "echo",
+            .decision = .allow,
+        },
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"echo hook-ok\"}",
+                },
+            },
+        },
+        .{
+            .text = "It printed hook-ok.",
+            .expect = .{
+                "hook-ok",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .final_text_matches = "hook-ok",
+        },
+        .no_permission_denials,
+    },
+}

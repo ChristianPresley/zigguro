@@ -1,0 +1,78 @@
+.{
+    .name = "fix_failing_zig_test",
+    .fixture = "zigtest",
+    .prompt = "zig test math.zig fails. Fix it.",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"zig test math.zig\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"math.zig\"}",
+                },
+            },
+            .expect = .{
+                "expected 5, found -1",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"math.zig\",\"old_string\":\"return a - b;\",\"new_string\":\"return a + b;\"}",
+                },
+            },
+            .expect = .{
+                "return a - b;",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"zig test math.zig\"}",
+                },
+            },
+            .expect = .{
+                "math.zig",
+            },
+        },
+        .{
+            .text = "add subtracted; it adds now and the test passes.",
+            .expect = .{
+                "All 1 tests passed",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .command_succeeds = .{
+                .argv = .{
+                    "zig",
+                    "test",
+                    "math.zig",
+                },
+            },
+        },
+        .{
+            .file_contains = .{
+                .path = "math.zig",
+                .needle = "return a + b;",
+            },
+        },
+        .{
+            .tool_used = "run_command",
+        },
+        .no_permission_denials,
+    },
+}
