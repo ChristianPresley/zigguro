@@ -302,7 +302,29 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
-/// zg_build has nothing to build by itself.
+/// Builds the host tools other packages run at build time. Declares the
+/// shared options so that `b.dependency("zg_build", f.args())` works.
 pub fn build(b: *std.Build) void {
-    _ = b;
+    _ = flags(b);
+    const scanner = b.addExecutable(.{
+        .name = "wayland_scanner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("wayland_scanner/main.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    b.installArtifact(scanner);
+}
+
+/// Runs `wayland_scanner` over `xml` (paths relative to the calling
+/// package) and returns the generated module, to be imported as `wl_gen`.
+/// Regenerates whenever an XML file changes (the run step hashes inputs).
+pub fn waylandModule(b: *std.Build, f: Flags, xml: []const []const u8) *std.Build.Module {
+    const dep = b.dependency("zg_build", f.args());
+    const run = b.addRunArtifact(dep.artifact("wayland_scanner"));
+    run.addArg("--out");
+    const out = run.addOutputFileArg("wayland.zig");
+    for (xml) |x| run.addFileArg(b.path(x));
+    return b.createModule(.{ .root_source_file = out });
 }

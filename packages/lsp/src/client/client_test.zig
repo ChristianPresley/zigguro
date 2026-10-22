@@ -241,6 +241,9 @@ test "client: dynamic registration and configuration" {
     const c_doc: @import("doc_selector.zig").DocMatch = .{ .language_id = "c", .scheme = "file", .path = "/w/a.c" };
     const M = .@"textDocument/formatting";
     try testing.expect((try h.client.requestBlocking(M, fmt, .{ .doc = zig_doc })) == .unsupported);
+    // The script holds the registration until this arrives, so the check
+    // above cannot race it.
+    try h.client.notify(.@"$/setTrace", .{ .value = .Off });
 
     try ready.waitStep(1);
     try testing.expect((try h.client.requestBlocking(M, fmt, .{ .doc = c_doc })) == .unsupported);
