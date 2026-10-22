@@ -13,6 +13,8 @@
 //! `needcap` fails with `-32021`, `ask` returns `input_required` until
 //! called with `inputResponses`. `tools/list` with `ping_first` set sends a
 //! `ping` to the client and answers once the client replied (legacy).
+//! A test's `script` sees requests (after era detection) and responses
+//! first, and may answer them itself.
 
 const std = @import("std");
 const Io = std.Io;
@@ -33,6 +35,19 @@ pub const Received = struct {
     /// Request id (null for notifications and responses).
     id: ?i64,
     body: []const u8,
+};
+
+/// What a `Script` sees.
+pub const Event = union(enum) {
+    request: struct { id: i64, method: []const u8, params: Value },
+    /// A response from the client to a server request.
+    response: struct { body: []const u8 },
+};
+
+/// Test-specific behaviour; `func` returns true when it handled `ev`.
+pub const Script = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, srv: *MockServer, pair: *InProcPair, ev: Event) bool,
 };
 
 /// The server. Initialise in place (`init`); the pair points into it.
@@ -57,6 +72,7 @@ pub const MockServer = struct {
     /// One-shot: the next request with this method fails with `err`.
     fail_next: ?struct { method: []const u8, err: Transport.TransportError } = null,
     tasks: Io.Group = .init,
+    script: ?Script = null,
 
     /// Starts a server in `mode`.
     pub fn init(self: *MockServer, gpa: Allocator, io: Io, mode: Mode) void {
@@ -121,6 +137,7 @@ pub const MockServer = struct {
         switch (msg) {
             .response => {
                 self.record("(response)", null, body);
+                if (self.script) |sc| if (sc.func(sc.ctx, self, pair, .{ .response = .{ .body = body } })) return;
                 const list_id = blk: {
                     self.mutex.lockUncancelable(self.io);
                     defer self.mutex.unlock(self.io);
@@ -193,6 +210,7 @@ pub const MockServer = struct {
             , .{self.legacy_version}));
         }
         if (std.mem.eql(u8, method, "ping")) return self.result(pair, id, "{}");
+        if (self.script) |sc| if (sc.func(sc.ctx, self, pair, .{ .request = .{ .id = id, .method = method, .params = params } })) return;
         if (std.mem.eql(u8, method, "tools/list")) {
             if (self.ping_first) {
                 {
@@ -241,15 +259,17 @@ pub const MockServer = struct {
         }
     }
 
-    fn result(_: *MockServer, pair: *InProcPair, id: i64, json: []const u8) void {
-        var buf: [1024]u8 = undefined;
+    /// Sends the result `json` for request `id`.
+    pub fn result(_: *MockServer, pair: *InProcPair, id: i64, json: []const u8) void {
+        var buf: [4096]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         message.writeResult(&w, .{ .int = id }, message.RawJson{ .bytes = json }) catch unreachable;
         pair.serverSend(w.buffered());
     }
 
-    fn rpcError(_: *MockServer, pair: *InProcPair, id: i64, code: i32, msg: []const u8, data: ?[]const u8) void {
-        var buf: [1024]u8 = undefined;
+    /// Sends an error response for request `id`.
+    pub fn rpcError(_: *MockServer, pair: *InProcPair, id: i64, code: i32, msg: []const u8, data: ?[]const u8) void {
+        var buf: [4096]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         if (data) |d|
             message.writeError(&w, .{ .int = id }, code, msg, message.RawJson{ .bytes = d }) catch unreachable
