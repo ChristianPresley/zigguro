@@ -986,6 +986,23 @@ shows the default arrow. Animated cursors show their first frame.
 resize, window menu, activation, dialogs and URIs return
 `error.Unsupported`.
 
+IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
+on the seat. `set_ime_state` is stored per window and sent while the
+text input is on that window's surface, and again after each `enter`:
+`enable` (the first state after `enter`), `set_content_type` (purpose
+as given; `password`/`pin` add `hidden_text` and `sensitive_data`),
+`set_text_change_cause` (`input_method` right after an IME edit, else
+`other`) with `set_surrounding_text` (at most 4000 bytes around caret
+and anchor, cut at UTF-8 boundaries, offsets rebased),
+`set_cursor_rectangle` (physical / scale), then `commit`. Disabling
+sends `disable` and `commit`. `preedit_string`, `commit_string` and
+`delete_surrounding_text` are buffered until `done`, which stages
+`ime_delete_surrounding`, `text_input`, then `ime_preedit` (an empty one
+when a shown preedit is not repeated; -1 offsets hide the cursor). A
+`done` whose serial is not our commit count still applies, and the
+current state is sent again. `leave` clears a shown preedit. Manual
+checklist: `docs/manual-tests/wayland-ime.md`.
+
 ## zg_platform.x11.X11Backend
 
 ### Defined in
@@ -1115,7 +1132,7 @@ first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
 E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S03.T01 / E01.F02.S05.T01 /
-E01.F02.S04.T01.
+E01.F02.S04.T01 / E01.F02.S04.T02.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1188,6 +1205,25 @@ consumed (`VK_PROCESSKEY`) are not reported. `set_ime_state` places the
 composition window at the caret and the candidate list below it;
 disabled or `password`/`pin` detaches the context, committing any
 composition. Manual checklist: `packages/platform/docs/manual-tests/win32-ime.md`.
+Drag and drop (E01.F02.S04.T02, `dnd.zig`, `data_object.zig`,
+`enum_formatetc.zig`) is OLE's: the platform thread calls
+`OleInitialize` and registers an `IDropTarget` on every window
+(`RevokeDragDrop` before it is destroyed). `DragEnter` stages
+`drop{enter}` with the known formats the data object offers as HGLOBALs
+(the same format table as the clipboard) and clears the cached answer,
+so the drag starts refused; `DragOver` stages `over` when the position or
+keys change. Both answer from the latest `set_drop_effect`: Ctrl picks
+copy, Shift move, Ctrl+Shift link, when the app and the source allow
+it; otherwise the first of copy, move, link both allow. `Drop` reads and
+decodes the accepted format and stages `drop` with the performed
+action, or `leave` when refused or unreadable. `start_drag` runs
+`DoDragDrop` on the platform thread with an `IDataObject` holding copies
+of the items (a fresh HGLOBAL per `GetData`; no `SetData` or advise
+sinks) and an `IDropSource` that cancels on Esc and drops when every
+button is up; `drop{source_finished}` carries the target's effect,
+empty when cancelled or refused. Frames keep coming during the drag (a
+`WM_TIMER`). When `OleInitialize` fails, both commands are
+`error.Unsupported`. Manual checklist: `docs/manual-tests/win32-dnd.md`.
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1203,8 +1239,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 Experimental. Not yet: a theme or backdrop command (the system theme
 and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`
 batching, TSF and
-`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
-drag and drop, cloaking until the first present, the high-resolution
+`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), drag
+images (`IDragSourceHelper`), cloaking until the first present, the high-resolution
 waitable pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot

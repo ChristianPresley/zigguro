@@ -214,6 +214,8 @@ pub const wayland = struct {
     pub const dnd = @import("wayland/dnd.zig");
     /// See `wayland/cursor.zig`.
     pub const cursor = @import("wayland/cursor.zig");
+    /// See `wayland/text_input.zig`.
+    pub const text_input = @import("wayland/text_input.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
@@ -345,6 +347,12 @@ pub const win32 = struct {
     pub const cf_html = @import("win32/cf_html.zig");
     /// See `win32/hdrop.zig`.
     pub const hdrop = @import("win32/hdrop.zig");
+    /// See `win32/enum_formatetc.zig`.
+    pub const enum_formatetc = @import("win32/enum_formatetc.zig");
+    /// See `win32/data_object.zig`.
+    pub const data_object = @import("win32/data_object.zig");
+    /// See `win32/dnd.zig`.
+    pub const dnd = @import("win32/dnd.zig");
     /// See `win32/frame.zig`.
     pub const frame = @import("win32/frame.zig");
     /// See `win32/cursor.zig`.
@@ -452,6 +460,9 @@ test {
     _ = win32.cpu_present;
     _ = win32.cf_html;
     _ = win32.hdrop;
+    _ = win32.enum_formatetc;
+    _ = win32.data_object;
+    _ = win32.dnd;
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
@@ -461,6 +472,7 @@ test {
     _ = linux_util.uri_list;
     _ = linux_util.xcursor;
     _ = wayland.cursor;
+    _ = wayland.text_input;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -552,6 +564,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
     .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
     .{ .path = "wayland/cursor.zig", .src = @embedFile("wayland/cursor.zig") },
+    .{ .path = "wayland/text_input.zig", .src = @embedFile("wayland/text_input.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
