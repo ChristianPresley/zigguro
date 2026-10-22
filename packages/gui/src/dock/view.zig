@@ -15,7 +15,8 @@
 //! Drag-to-dock: dragging a tab 8 px starts a drag. Over a tab strip it
 //! reorders (or moves into that group at that place); elsewhere the drop
 //! zones decide: a group's edge splits it, its center moves into it, a
-//! window edge docks into that side area, outside the window floats. The
+//! window edge docks into that side area, outside the window floats (when
+//! the app shows floating windows: `floating`). The
 //! zone's preview is drawn by `dropOverlay`; Escape cancels. The drop is
 //! one `DockModel.move`, so one undo step.
 
@@ -79,6 +80,9 @@ pub const DockView = struct {
     host: PanelHost,
     /// The least a split child gets.
     min_px: f32 = 120,
+    /// Dropping outside the window floats the panel (the app shows
+    /// `DockModel.floating`); otherwise nothing happens there.
+    floating: bool = false,
     win: ?*Window = null,
     /// Group boxes from the last build.
     group_nodes: std.ArrayList(struct { g: GroupId, node: NodeId }) = .empty,
@@ -189,7 +193,8 @@ pub const DockView = struct {
         defer zones.deinit(dv.gpa);
         const win: model.Rect = .{ .w = w.size.w, .h = w.size.h };
         drop_zones.computeDropZones(win, groups.items, areas[0..na], dv.gpa, &zones) catch return null;
-        return drop_zones.hit(zones.items, win, .{ pos.x, pos.y });
+        const z = drop_zones.hit(zones.items, win, .{ pos.x, pos.y }) orelse return null;
+        return if (z.target == .float and !dv.floating) null else z;
     }
 
     fn onDrag(ctx: *anyopaque, id: u64, phase: tabs_w.DragPhase, pos: geom.Vec2) void {
