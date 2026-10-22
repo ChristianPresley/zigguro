@@ -8,6 +8,14 @@ pub const anchor = @import("edit/anchor.zig");
 pub const selection = @import("edit/selection.zig");
 /// Multi-cursor commands and box selection.
 pub const multi_cursor = @import("edit/multi_cursor.zig");
+/// Cursor movement by unit.
+pub const movement = @import("edit/movement.zig");
+/// Word classes and subword boundaries for movement.
+pub const word = @import("edit/word.zig");
+/// The ASCII and script tailoring of word classes.
+pub const word_tailoring = @import("edit/word_tailoring.zig");
+/// Movement and delete commands with their ids.
+pub const commands_move = @import("edit/commands_move.zig");
 /// The per-selection command runner.
 pub const runner = @import("edit/runner.zig");
 /// The undo tree.
@@ -18,4 +26,5 @@ test {
     _ = @import("edit/change_set_test.zig");
     _ = @import("edit/undo_test.zig");
     _ = @import("edit/selection_test.zig");
+    _ = @import("edit/movement_test.zig");
 }
