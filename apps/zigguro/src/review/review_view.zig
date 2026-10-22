@@ -23,10 +23,18 @@
 //! `A`/`X` the file, `m` comment on the hunk, `r` reply to and `R`
 //! resolve (or reopen) its first thread, `f` request fix, `u` undo.
 //!
-//! A plain line diff for now: E05's diff view (side by side, intraline
-//! highlights, edit-before-accept) replaces the body when it exists. The
-//! session lives on the glue's queue, so the view reads and acts under
-//! the glue's mutex, like the queue panel.
+//! Layout: side by side (removed lines on the left, added on the right,
+//! paired in order) or inline, toggled in the header. Changed words in a
+//! hunk's paired lines are highlighted (E05's intraline diff over the
+//! hunk's texts; E12's hunks stay authoritative). Decided hunks show ✓,
+//! ✗ or ✎ and dimmed lines; accepted hunks and hunks over
+//! `collapse_lines` lines are collapsed behind "Show N lines". The hunk
+//! header and the view's key scope carry the focused hunk's description
+//! ("Hunk 3 of 12, 4 lines added, 2 removed, pending") for screen readers.
+//!
+//! Still open (E05's DiffView): edit-before-accept, the 3-way conflict
+//! view, binary previews. The session lives on the glue's queue, so the
+//! view reads and acts under the glue's mutex, like the queue panel.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -45,6 +53,9 @@ const widget = zg_gui.core.widget;
 
 /// The keys `KeyScope` takes (see the module doc).
 const view_keys = "jkJKncaxAXmrRfu";
+
+/// Hunks with more lines than this start collapsed.
+pub const collapse_lines = 400;
 
 /// A key the view took, for the next build.
 const KeySink = struct { key: ?u21 = null };
@@ -109,6 +120,13 @@ pub const ReviewView = struct {
     /// A fix request waits for the user: the agent's session ended.
     ask_ended: bool = false,
     keys: KeySink = .{},
+    layout: Layout = .side_by_side,
+    /// Accepted hunks start collapsed.
+    collapse_accepted: bool = true,
+    /// Hunks (by `Hunk.key`) whose collapsed state the user flipped.
+    flipped: std.AutoHashMapUnmanaged(u64, void) = .empty,
+
+    pub const Layout = enum { side_by_side, inline_ };
 
     const Composer = union(enum) {
         /// A new thread on this hunk of the focused file.
@@ -132,14 +150,22 @@ pub const ReviewView = struct {
         cancel_comment,
         request_fix,
         toggle_interdiff,
+        toggle_layout,
+        toggle_lines: u32,
         send_current,
         cancel_send,
     };
 
     const Row = struct {
-        kind: enum { hunk, del, add, thread, comment, note },
+        kind: enum { hunk, del, add, pair, thread, comment, note },
         hunk: u32 = 0,
+        /// `del`, `add`: the line; `pair`: the removed line (null: none).
         text: []const u8 = "",
+        spans: []const Span = &.{},
+        /// `pair`: whether there is a removed line, and the added one.
+        old: bool = false,
+        new: ?[]const u8 = null,
+        new_spans: []const Span = &.{},
         thread: ?*const feedback.Thread = null,
         /// `comment`: its index in the thread.
         comment: u32 = 0,
@@ -163,6 +189,7 @@ pub const ReviewView = struct {
         v.session.deinit();
         v.glue.mutex.unlock(v.io);
         if (v.field) |*f| f.deinit();
+        v.flipped.deinit(v.gpa);
         v.arena.deinit();
         v.gpa.destroy(v);
     }
@@ -197,7 +224,7 @@ pub const ReviewView = struct {
             // The composer is open: keys are its text.
             if (v.composer == null) if (v.keyAction(k)) |a| v.run(a);
         }
-        _ = ui.begin(KeyScope, .{ .sink = &v.keys });
+        _ = ui.begin(KeyScope, .{ .sink = &v.keys, .label = v.scopeLabel() });
         defer ui.end(KeyScope);
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .role = .group, .label = "Review" });
         defer ui.close();
@@ -259,6 +286,7 @@ pub const ReviewView = struct {
         v.button(ui, "Undo", .undo);
         if (v.glue.feedback != null and v.openThreads() > 0) v.button(ui, "Request fix", .request_fix);
         if (v.interdiff or v.interdiffSource() != null) v.button(ui, if (v.interdiff) "Full diff" else "Interdiff", .toggle_interdiff);
+        v.button(ui, if (v.layout == .side_by_side) "Inline" else "Side by side", .toggle_layout);
         ui.close();
         if (v.ask_ended) {
             ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .gap = 6, .padding = .xy(8, 2), .shrink = 0 } });
@@ -306,8 +334,11 @@ pub const ReviewView = struct {
         for (fc.hunks, 0..) |h, i| {
             const hi: u32 = @intCast(i);
             try out.append(a, .{ .kind = .hunk, .hunk = hi });
-            for (old[@min(h.base_lines.start, old.len)..@min(h.base_lines.start + h.base_lines.count, old.len)]) |l| try out.append(a, .{ .kind = .del, .hunk = hi, .text = l });
-            for (new[@min(h.new_lines.start, new.len)..@min(h.new_lines.start + h.new_lines.count, new.len)]) |l| try out.append(a, .{ .kind = .add, .hunk = hi, .text = l });
+            if (!v.collapsed(h)) {
+                const ol = old[@min(h.base_lines.start, old.len)..@min(h.base_lines.start + h.base_lines.count, old.len)];
+                const nl = new[@min(h.new_lines.start, new.len)..@min(h.new_lines.start + h.new_lines.count, new.len)];
+                try v.lineRows(&out, hi, ol, nl);
+            }
             for (threads) |t| if (std.mem.eql(u8, t.anchor.path, fc.path) and hunkOf(fc.hunks, t) == hi) try threadRows(a, &out, t, hi);
         }
         return out.items;
@@ -320,11 +351,21 @@ pub const ReviewView = struct {
             .hunk => {
                 const fc = s.fileChange(s.cursor.file).?;
                 const h = fc.hunks[r.hunk];
-                ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .gap = 4, .padding = .xy(8, 0), .grow = 1, .bg = .{ .token = if (focused) .selection_bg else .bg_sunken } } });
+                ui.open(.{
+                    .style = .{ .dir = .row, .align_items = .center, .gap = 4, .padding = .xy(8, 0), .grow = 1, .bg = .{ .token = if (focused) .selection_bg else .bg_sunken } },
+                    .role = .group,
+                    .label = hunkLabel(v.arena.allocator(), fc, r.hunk) catch "",
+                });
                 defer ui.close();
-                var buf: [96]u8 = undefined;
+                var buf: [128]u8 = undefined;
                 ui.open(.{ .style = .{ .grow = 1, .basis = .{ .px = 0 } } });
-                ui.text(std.fmt.bufPrint(&buf, "Hunk {d} of {d}  ·  −{d} +{d}{s}", .{
+                ui.text(std.fmt.bufPrint(&buf, "{s}Hunk {d} of {d}  ·  −{d} +{d}{s}", .{
+                    switch (h.decision) {
+                        .undecided => "",
+                        .accepted => "✓ ",
+                        .rejected => "✗ ",
+                        .edited => "✎ ",
+                    },
                     r.hunk + 1,
                     fc.hunks.len,
                     h.base_lines.count,
@@ -332,11 +373,17 @@ pub const ReviewView = struct {
                     if (h.conflict != null) "  ·  ⚠ conflict" else "",
                 }) catch "", .{ .color = if (h.conflict != null) .danger else .fg_muted, .wrap = false });
                 ui.close();
-                ui.id(r.hunk * 3);
+                ui.id(r.hunk * 4 + 3);
+                if (v.collapsed(h)) {
+                    v.button(ui, showLabel(&buf, h.base_lines.count + h.new_lines.count), .{ .toggle_lines = r.hunk });
+                } else if (h.decision == .accepted or h.base_lines.count + h.new_lines.count > collapse_lines) {
+                    v.button(ui, "Hide lines", .{ .toggle_lines = r.hunk });
+                }
+                ui.id(r.hunk * 4);
                 v.button(ui, "Accept", .{ .accept_hunk = r.hunk });
-                ui.id(r.hunk * 3 + 1);
+                ui.id(r.hunk * 4 + 1);
                 v.button(ui, "Reject", .{ .reject_hunk = r.hunk });
-                ui.id(r.hunk * 3 + 2);
+                ui.id(r.hunk * 4 + 2);
                 v.button(ui, "Comment", .{ .comment_hunk = r.hunk });
             },
             .thread => {
@@ -368,9 +415,17 @@ pub const ReviewView = struct {
             .del, .add => {
                 ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .grow = 1 } });
                 defer ui.close();
-                var buf: [512]u8 = undefined;
-                const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ if (r.kind == .del) "-" else "+", r.text }) catch r.text;
-                ui.text(line, .{ .style = .{ .font = .mono }, .color = if (r.kind == .del) .danger else .success, .wrap = false });
+                v.lineText(ui, r.kind == .add, r.hunk, r.text, r.spans);
+            },
+            .pair => {
+                ui.open(.{ .style = .{ .dir = .row, .grow = 1 } });
+                defer ui.close();
+                ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .grow = 1, .basis = .{ .px = 0 }, .clip = true } });
+                if (r.old) v.lineText(ui, false, r.hunk, r.text, r.spans);
+                ui.close();
+                ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .grow = 1, .basis = .{ .px = 0 }, .clip = true } });
+                if (r.new) |n| v.lineText(ui, true, r.hunk, n, r.new_spans);
+                ui.close();
             },
         }
     }
@@ -420,6 +475,18 @@ pub const ReviewView = struct {
             .request_fix => v.requestFix(),
             .toggle_interdiff => blk: {
                 v.interdiff = !v.interdiff;
+                break :blk null;
+            },
+            .toggle_layout => blk: {
+                v.layout = if (v.layout == .side_by_side) .inline_ else .side_by_side;
+                break :blk null;
+            },
+            .toggle_lines => |h| blk: {
+                const fc = s.fileChange(s.cursor.file) orelse break :blk null;
+                if (h >= fc.hunks.len) break :blk null;
+                const key = fc.hunks[h].key;
+                if (v.flipped.remove(key)) break :blk null;
+                v.flipped.put(v.gpa, key, {}) catch |e| break :blk e;
                 break :blk null;
             },
             .send_current, .cancel_send => blk: {
@@ -601,11 +668,76 @@ pub const ReviewView = struct {
             const oc: usize = @intCast(h.old.count);
             const ns: usize = @intCast(h.new.start);
             const nc: usize = @intCast(h.new.count);
-            for (old[@min(os, old.len)..@min(os + oc, old.len)]) |l| try out.append(a, .{ .kind = .del, .text = l });
-            for (new[@min(ns, new.len)..@min(ns + nc, new.len)]) |l| try out.append(a, .{ .kind = .add, .text = l });
+            try v.lineRows(&out, 0, old[@min(os, old.len)..@min(os + oc, old.len)], new[@min(ns, new.len)..@min(ns + nc, new.len)]);
         }
         if (n == 0) try out.append(a, .{ .kind = .note, .text = "No changes between the two proposals." });
         return out.items;
+    }
+
+    /// Whether a hunk's lines are hidden: accepted ones (when
+    /// `collapse_accepted`) and large ones are, unless flipped.
+    fn collapsed(v: *const ReviewView, h: zg_review.model.changeset.Hunk) bool {
+        const by_default = (v.collapse_accepted and h.decision == .accepted) or h.base_lines.count + h.new_lines.count > collapse_lines;
+        return by_default != v.flipped.contains(h.key);
+    }
+
+    /// A hunk's removed lines `ol` and added lines `nl` as rows, in the
+    /// layout, with intraline highlights.
+    fn lineRows(v: *ReviewView, out: *std.ArrayList(Row), hunk: u32, ol: []const []const u8, nl: []const []const u8) !void {
+        const a = v.arena.allocator();
+        const hl = try intralineSpans(a, v.gpa, ol, nl);
+        switch (v.layout) {
+            .inline_ => {
+                for (ol, hl.old) |l, sp| try out.append(a, .{ .kind = .del, .hunk = hunk, .text = l, .spans = sp });
+                for (nl, hl.new) |l, sp| try out.append(a, .{ .kind = .add, .hunk = hunk, .text = l, .spans = sp });
+            },
+            .side_by_side => for (0..@max(ol.len, nl.len)) |k| try out.append(a, .{
+                .kind = .pair,
+                .hunk = hunk,
+                .old = k < ol.len,
+                .text = if (k < ol.len) ol[k] else "",
+                .spans = if (k < ol.len) hl.old[k] else &.{},
+                .new = if (k < nl.len) nl[k] else null,
+                .new_spans = if (k < nl.len) hl.new[k] else &.{},
+            }),
+        }
+    }
+
+    /// One removed (`added` false) or added line: "- text" in the mono
+    /// font, its changed spans on the status colour; decided hunks' lines
+    /// are dimmed.
+    fn lineText(v: *ReviewView, ui: *Ui, added: bool, hunk: u32, text: []const u8, spans: []const Span) void {
+        const s = v.session;
+        const decided = if (v.interdiff) false else if (s.fileChange(s.cursor.file)) |fc| hunk < fc.hunks.len and fc.hunks[hunk].decision != .undecided else false;
+        const color: zg_gui.theme.Token = if (decided) .fg_muted else if (added) .success else .danger;
+        const mono: zg_gui.paint.text.TextStyle = .{ .font = .mono };
+        const prefix = if (added) "+ " else "- ";
+        const line = std.mem.concat(v.arena.allocator(), u8, &.{ prefix, text }) catch text;
+        if (spans.len == 0 or decided) {
+            ui.text(line, .{ .style = mono, .color = color, .wrap = false });
+            return;
+        }
+        ui.open(.{ .style = .{ .dir = .row }, .role = .group, .label = line });
+        defer ui.close();
+        ui.text(prefix, .{ .style = mono, .color = color, .wrap = false });
+        var at: usize = 0;
+        for (spans) |sp| {
+            if (sp.start > at) ui.text(text[at..sp.start], .{ .style = mono, .color = color, .wrap = false });
+            ui.open(.{ .style = .{ .bg = .{ .token = color } } });
+            ui.text(text[sp.start..sp.end], .{ .style = mono, .color = .fg_on_accent, .wrap = false });
+            ui.close();
+            at = sp.end;
+        }
+        if (at < text.len) ui.text(text[at..], .{ .style = mono, .color = color, .wrap = false });
+    }
+
+    /// The key scope's name: the view plus the focused hunk.
+    fn scopeLabel(v: *ReviewView) []const u8 {
+        const s = v.session;
+        const fc = s.fileChange(s.cursor.file) orelse return "Review";
+        const h = s.cursor.hunk orelse return "Review";
+        const l = hunkLabel(v.arena.allocator(), fc, h) catch return "Review";
+        return std.fmt.allocPrint(v.arena.allocator(), "Review, {s}", .{l}) catch "Review";
     }
 
     /// Unresolved blocking threads on the changesets under review.
@@ -677,6 +809,97 @@ fn authorName(w: *std.Io.Writer, a: feedback.Author) void {
 fn firstLine(s: []const u8) []const u8 {
     const t = std.mem.trim(u8, s, " \t\r\n");
     return t[0 .. std.mem.indexOfAny(u8, t, "\r\n") orelse t.len];
+}
+
+/// Changed bytes `[start, end)` within one line.
+const Span = struct { start: u32, end: u32 };
+
+const Highlights = struct { old: []const []const Span, new: []const []const Span };
+
+/// The changed spans of each removed line `ol` and added line `nl`,
+/// from E05's intraline diff of the two texts (in `a`; `gpa` for the
+/// diff's scratch). Blocks E05 skips, and lines changed as a whole, get
+/// none.
+fn intralineSpans(a: Allocator, gpa: Allocator, ol: []const []const u8, nl: []const []const u8) !Highlights {
+    const old = try a.alloc([]const Span, ol.len);
+    @memset(old, &.{});
+    const new = try a.alloc([]const Span, nl.len);
+    @memset(new, &.{});
+    const out: Highlights = .{ .old = old, .new = new };
+    const max = diff.intraline.max_block_lines;
+    if (ol.len == 0 or nl.len == 0 or ol.len > max or nl.len > max) return out;
+    const ot = try joinLines(a, ol);
+    const nt = try joinLines(a, nl);
+    var la = try diff.LineSource.fromBytes(gpa, ot);
+    defer la.deinit(gpa);
+    var lb = try diff.LineSource.fromBytes(gpa, nt);
+    defer lb.deinit(gpa);
+    var r = try diff.diffLines(gpa, &la, &lb, .{ .context_lines = 0 });
+    defer r.deinit(gpa);
+    const lists_old = try a.alloc(std.ArrayList(Span), ol.len);
+    @memset(lists_old, .empty);
+    const lists_new = try a.alloc(std.ArrayList(Span), nl.len);
+    @memset(lists_new, .empty);
+    for (r.ranges) |x| {
+        if (x.kind != .changed) continue;
+        const lines, const lists = if (x.side == .old) .{ ol, lists_old } else .{ nl, lists_new };
+        var off: u64 = 0;
+        for (lines, lists) |l, *list| {
+            const lo = @max(x.range.start, off);
+            const hi = @min(x.range.end, off + l.len);
+            if (lo < hi) try list.append(a, .{ .start = @intCast(lo - off), .end = @intCast(hi - off) });
+            off += l.len + 1;
+        }
+    }
+    inline for (.{ .{ ol, lists_old, old }, .{ nl, lists_new, new } }) |side| {
+        for (side[0], side[1], side[2]) |l, list, *dst| {
+            const whole = list.items.len == 1 and list.items[0].start == 0 and list.items[0].end >= l.len;
+            if (!whole) dst.* = list.items;
+        }
+    }
+    return out;
+}
+
+fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(a);
+    for (lines) |l| {
+        try w.writer.writeAll(l);
+        try w.writer.writeByte('\n');
+    }
+    return w.written();
+}
+
+/// "Hunk 3 of 12, 4 lines added, 2 removed, pending"
+fn hunkLabel(a: Allocator, fc: *const zg_review.model.FileChange, hunk: u32) ![]const u8 {
+    if (hunk >= fc.hunks.len) return "";
+    const h = fc.hunks[hunk];
+    return std.fmt.allocPrint(a, "Hunk {d} of {d}, {d} line{s} added, {d} removed, {s}", .{
+        hunk + 1,
+        fc.hunks.len,
+        h.new_lines.count,
+        if (h.new_lines.count == 1) "" else "s",
+        h.base_lines.count,
+        if (h.conflict != null) "conflict" else switch (h.decision) {
+            .undecided => "pending",
+            .accepted => "accepted",
+            .rejected => "rejected",
+            .edited => "edited",
+        },
+    });
+}
+
+/// "Show 1,234 lines"
+fn showLabel(buf: []u8, n: u32) []const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeAll("Show ") catch {};
+    var digits: [16]u8 = undefined;
+    const d = std.fmt.bufPrint(&digits, "{d}", .{n}) catch "";
+    for (d, 0..) |c, i| {
+        if (i > 0 and (d.len - i) % 3 == 0) w.writeByte(',') catch {};
+        w.writeByte(c) catch {};
+    }
+    w.writeAll(if (n == 1) " line" else " lines") catch {};
+    return w.buffered();
 }
 
 fn nowMs(io: Io) i64 {
@@ -1033,4 +1256,104 @@ test "review view: keys move, decide, comment, reply and resolve" {
     try testing.expect(t.find(.{ .name_contains = "1 of 2 decided" }) != null);
     press(t, .key_a, 'A', true);
     try testing.expectEqual(zg_review.model.State.applied, g.q.get(id).?.state);
+}
+
+test "review view: intraline spans, hunk labels and the show label" {
+    const testing = std.testing;
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const hl = try intralineSpans(a, testing.allocator, &.{"const answer = compute(41, base);"}, &.{"const answer = compute(42, base);"});
+    try testing.expectEqual(@as(usize, 1), hl.old[0].len);
+    const sp = hl.old[0][0];
+    try testing.expectEqualStrings("41", "const answer = compute(41, base);"[sp.start..sp.end]);
+    try testing.expectEqualStrings("42", "const answer = compute(42, base);"[hl.new[0][0].start..hl.new[0][0].end]);
+    // A line changed as a whole, and a pure insertion, get none.
+    const whole = try intralineSpans(a, testing.allocator, &.{"one"}, &.{"ONE"});
+    try testing.expectEqual(@as(usize, 0), whole.old[0].len);
+    const ins = try intralineSpans(a, testing.allocator, &.{}, &.{"x"});
+    try testing.expectEqual(@as(usize, 0), ins.new[0].len);
+
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("Show 1,234 lines", showLabel(&buf, 1234));
+    try testing.expectEqualStrings("Show 401 lines", showLabel(&buf, 401));
+    try testing.expectEqualStrings("Show 1 line", showLabel(&buf, 1));
+
+    var hunks = [_]zg_review.model.changeset.Hunk{
+        .{ .id = 0, .base_lines = .{ .start = 0, .count = 2 }, .new_lines = .{ .start = 0, .count = 4 }, .replace_span = .{ 0, 1 } },
+        .{ .id = 1, .base_lines = .{ .start = 5, .count = 1 }, .new_lines = .{ .start = 7, .count = 1 }, .replace_span = .{ 1, 2 }, .decision = .accepted },
+    };
+    const fc: zg_review.model.FileChange = .{ .path = "a", .op = .modify, .content = undefined, .hunks = &hunks };
+    try testing.expectEqualStrings("Hunk 1 of 2, 4 lines added, 2 removed, pending", try hunkLabel(a, &fc, 0));
+    try testing.expectEqualStrings("Hunk 2 of 2, 1 line added, 1 removed, accepted", try hunkLabel(a, &fc, 1));
+}
+
+test "review view: side by side and inline layouts, highlights, collapsed hunks" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    // a.txt: one word changes in a long line, and 401 lines are added
+    // after the gap.
+    var big: std.Io.Writer.Allocating = .init(ar);
+    try big.writer.writeAll("const answer = compute(41, base);\n.\n.\n.\n.\nend\n");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = big.written() });
+    var next: std.Io.Writer.Allocating = .init(ar);
+    try next.writer.writeAll("const answer = compute(42, base);\n.\n.\n.\n.\nend\n");
+    for (0..401) |i| try next.writer.print("line {d}\n", .{i});
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x51 };
+    const origin: @import("zg_ai").tools.builtin.files.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    const abs = (try fs.resolve(testing.io, ar, "a.txt")).abs;
+    _ = try fs.propose(testing.io, ar, abs, .{ .whole_file = .{ .text = next.written(), .base_version = null } }, origin);
+    const id: zg_review.model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+
+    const Root = struct {
+        v: ?*ReviewView = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.v) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 500 }, .root = .of(&view) });
+    defer t.deinit();
+    const v = try ReviewView.create(gpa, testing.io, &t.app, g, .{ .changeset = id });
+    defer v.destroy();
+    view.v = v;
+    t.win.markAllDirty();
+    _ = t.settle();
+
+    // Side by side by default: the changed line is one row whose halves
+    // carry their whole text; "41" and "42" are their own highlighted runs.
+    try testing.expectEqual(ReviewView.Layout.side_by_side, v.layout);
+    try testing.expect(t.find(.{ .role = .group, .name = "- const answer = compute(41, base);" }) != null);
+    try testing.expect(t.find(.{ .role = .group, .name = "+ const answer = compute(42, base);" }) != null);
+    try testing.expect(t.find(.{ .name = "41" }) != null);
+    try testing.expect(t.find(.{ .name = "42" }) != null);
+    try testing.expect(t.find(.{ .role = .group, .name = "Hunk 1 of 2, 1 line added, 1 removed, pending" }) != null);
+
+    // The 401-line hunk is collapsed; Show expands it, Hide lines folds it.
+    try testing.expect(t.find(.{ .name = "+ line 0" }) == null);
+    try t.click(.{ .role = .button, .name = "Show 401 lines" });
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name = "+ line 0" }) != null);
+    try t.click(.{ .role = .button, .name = "Hide lines" });
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name = "+ line 0" }) == null);
+
+    // Inline: the removed line, then the added one, as rows of their own.
+    try t.click(.{ .role = .button, .name = "Inline" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewView.Layout.inline_, v.layout);
+    try testing.expect(t.find(.{ .role = .button, .name = "Side by side" }) != null);
+    try testing.expect(t.find(.{ .role = .group, .name = "- const answer = compute(41, base);" }) != null);
+    try testing.expect(t.find(.{ .name = "41" }) != null);
 }
