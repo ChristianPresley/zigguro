@@ -1861,8 +1861,29 @@ pub const UndoTree = struct {
     pub fn markSaved(u, id: NodeId) void; pub fn isAtSaved(u) bool;
     pub fn selectiveUndo(u, id: NodeId, current: Snapshot) !union(enum) { ok: ChangeSet, conflict: ConflictInfo };
     pub fn nodes(u) []const Node; pub fn selectionsAt(u, id) []const Selection;
+    pub fn fromNodes(gpa, limits, owned: []Node, current: NodeId, saved: NodeId) UndoTree; // restore
 };
+pub fn planPrune(gpa, items: []const Node, current: NodeId, sizes: []const usize,
+    target_count: usize, target_bytes: usize) !PrunePlan; // { dead, new_root, truncated }
+
+// undo_file.zig: persistent history
+pub const UndoFileHeader = extern struct { magic: [8]u8 = "ZGUNDO\x00\x01".*, version: u32 = 1, flags: u32,
+    content_len: u64, content_hash: [32]u8, node_count: u32, current: u32, saved: u32, _pad: u32 };
+pub fn pathKey(abs_path) [32]u8;                  // BLAKE3; file <state>/zigguro/undo/<hex[0..16]>.zgundo
+pub fn fileName(key) [39]u8; pub fn contentHash(bytes) [32]u8;
+pub fn shouldPersist(path, content_len, o: PersistOptions) bool; // persistUndo, secret globs, 256 MiB
+pub fn encode(gpa, tree: *const UndoTree, content_hash, content_len, max_bytes) ![]u8;
+pub fn decode(gpa, bytes, expect_hash, expect_len, limits) error{ Corrupt, OutOfMemory }!?UndoTree;
+pub fn write(io, dir, path_key, tree, content_hash, content_len, gpa) !void; // atomic, 16 MiB cap
+pub fn read(io, dir, path_key, expect_hash, expect_len, gpa) !?UndoTree;   // null: none/mismatch/corrupt
 ```
+Undo file layout (little-endian): 72-byte header, 48-byte node records (parent, redo child, seq,
+timestamp, origin, coalesce key, blob offset and length), a blob area (label, forward and inverse
+ChangeSets as LEB128 ranges plus text, selections) and an XxHash3 trailer. Over the size cap the
+writer drops stale branches, then the oldest states (`planPrune`, as in-memory pruning does).
+`read` checks the trailer, the content hash and length, parent order and that the ChangeSets
+chain; a corrupt file is moved aside as `<name>.corrupt`. `read` takes the content length as
+well as the hash.
 
 ### Threading
 Owner (UI) thread only, like the Document it belongs to.
@@ -1873,7 +1894,7 @@ are valid until the next `record`. Pruning compacts the tree, so NodeIds are
 invalidated by a `record` that prunes.
 
 ### Stability
-Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+The undo file format is versioned (`format_version`); readers ignore other versions.
 
 ## zg_editor.model.edit selections (SelectionSet, multi_cursor, runner)
 

@@ -32,11 +32,14 @@ pub const clipboard = @import("edit/clipboard.zig");
 pub const runner = @import("edit/runner.zig");
 /// The undo tree.
 pub const undo = @import("edit/undo.zig");
+/// Persistent undo history files.
+pub const undo_file = @import("edit/undo_file.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("edit/change_set_test.zig");
     _ = @import("edit/undo_test.zig");
+    _ = @import("edit/undo_file_test.zig");
     _ = @import("edit/selection_test.zig");
     _ = @import("edit/movement_test.zig");
     _ = @import("edit/smart_edit_test.zig");
