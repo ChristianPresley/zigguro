@@ -498,4 +498,3 @@ fn propagate(pos: []GlyphPos, i: usize, dir: Direction, nesting: u8) void {
         }
     }
 }
-
