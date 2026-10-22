@@ -97,6 +97,16 @@ pub const ApprovalBroker = struct {
         b.gpa.destroy(it);
     }
 
+    /// Starts journaling through `r` (once the store is open), with ids
+    /// from `id_base` on. Call before a load restores into the broker.
+    pub fn bind(b: *ApprovalBroker, r: ?Recorder, id_base: u64) void {
+        b.mutex.lockUncancelable(b.io);
+        defer b.mutex.unlock(b.io);
+        b.opts.recorder = r;
+        b.opts.id_base = id_base;
+        b.next_id = @max(b.next_id, id_base + 1);
+    }
+
     // ------------------------------------------------- E16 port
 
     /// `zg_security.contracts.ApprovalPort` over this broker; ids are
@@ -135,7 +145,9 @@ pub const ApprovalBroker = struct {
         const it = try b.gpa.create(Item);
         it.* = .{ .arena = .init(b.gpa), .view = undefined };
         errdefer b.freeItem(it);
-        const copy = try copyRequest(it.arena.allocator(), req);
+        var copy = try copyRequest(it.arena.allocator(), req);
+        // Callers that leave the time out get the broker's clock.
+        if (copy.created_ms == 0) copy.created_ms = Io.Clock.real.now(b.io).toMilliseconds();
         const id = blk: {
             b.mutex.lockUncancelable(b.io);
             defer b.mutex.unlock(b.io);

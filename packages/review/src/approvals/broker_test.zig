@@ -240,8 +240,13 @@ test "approvals: per-agent filter and ordering" {
     try testing.expectEqual(@as(usize, 1), b.pendingCount(.{ .session = "b" }));
     try testing.expectEqual(@as(usize, 3), b.pendingCount(.{}));
 
+    // A request without a time gets the broker's clock.
+    const stamped = try b.present(command("c", "five", 0));
+    try testing.expect(b.get(stamped).?.req.created_ms > 0);
+    b.cancel(stamped);
+
     // Pruning frees answered items only.
-    try testing.expectEqual(@as(u32, 1), b.prune(std.math.maxInt(i64)));
+    try testing.expectEqual(@as(u32, 2), b.prune(std.math.maxInt(i64)));
     try testing.expectEqual(@as(?inbox.InboxItem, null), b.get(old_done));
     try testing.expectEqual(@as(usize, 3), b.pendingCount(.{}));
 }
@@ -249,11 +254,11 @@ test "approvals: per-agent filter and ordering" {
 test "approvals: timeout setting expires" {
     var b: ApprovalBroker = .init(testing.allocator, io, .{ .timeout_ms = 1000 });
     defer b.deinit();
-    const id = try b.present(command("s1", "npm test", 0));
+    const id = try b.present(command("s1", "npm test", 1));
     const later = try b.present(command("s1", "npm run lint", 800));
     var fut = try io.concurrent(ApprovalBroker.await, .{ &b, id, io });
-    try testing.expectEqual(@as(u32, 0), b.expireDue(999));
-    try testing.expectEqual(@as(u32, 1), b.expireDue(1000));
+    try testing.expectEqual(@as(u32, 0), b.expireDue(1000));
+    try testing.expectEqual(@as(u32, 1), b.expireDue(1001));
     const a = try fut.await(io);
     try testing.expectEqualStrings("the approval request timed out", a.deny);
     try testing.expectEqual(ApprovalState.expired, b.get(id).?.state);
@@ -261,7 +266,7 @@ test "approvals: timeout setting expires" {
 
     var never: ApprovalBroker = .init(testing.allocator, io, .{});
     defer never.deinit();
-    _ = try never.present(command("s1", "npm test", 0));
+    _ = try never.present(command("s1", "npm test", 1));
     try testing.expectEqual(@as(u32, 0), never.expireDue(std.math.maxInt(i64)));
 }
 

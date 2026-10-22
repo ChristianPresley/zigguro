@@ -3970,3 +3970,55 @@ rebuilt.
 
 ### Stability
 Unstable until the panel binds it.
+
+## zg_review.approvals (ApprovalBroker)
+
+### Defined in
+`packages/review/src/approvals/{broker.zig, inbox.zig}` (E12.F05.S02.T01); see `packages/review/docs/approvals.md`.
+
+### Implemented by
+E12.F05.S02.T01. Views: `apps/zigguro/src/review/{approval_card.zig, approvals_view.zig}` (E12.F05.S02.T02).
+
+### Consumed by
+E16 (`ApprovalPort`), E10's `ToolApprovals` in the IDE, the review queue panel's inbox, the status bar, `zg review approvals` (not yet).
+
+### Signature
+```zig
+pub const ApprovalBroker = struct {
+    pub fn init(gpa, io, o: Options{ timeout_ms = 0, id_base = 0, recorder: ?Recorder = null }) ApprovalBroker;
+    pub fn deinit(b) void;
+    pub fn bind(b, r: ?Recorder, id_base: u64) void;                // once the review store is open
+    pub fn approvalPort(b) zg_security.contracts.ApprovalPort;      // exactly E16's type
+    pub fn present(b, req: ApprovalRequest) !ApprovalId;            // created_ms 0 → now
+    pub fn presentChained(b, req, previous: ?ApprovalId) !ApprovalId;
+    pub fn await(b, id, io) Io.Cancelable!Answer;                   // Io cancellation cancels the request
+    pub fn answer(b, id, a: Answer, by: []const u8) error{ UnknownApproval, AlreadyAnswered, NotEditable, OutOfMemory }!void;
+    pub fn cancel(b, id) void;
+    pub fn expireDue(b, now_ms: i64) u32;
+    pub fn get(b, id) ?InboxItem;
+    pub fn list(b, arena, f: Filter{ session: ?[]const u8, answered = true }) ![]InboxItem;   // pending first, then oldest
+    pub fn pendingCount(b, f: Filter) usize;
+    pub fn addListener(b, l: InboxListener) !void;
+    pub fn removeListener(b, ctx: *anyopaque) void;
+    pub fn prune(b, before_ms: i64) u32;
+    pub fn restoreSink(b) RestoreSink;                              // QueueSink.approvals, load only
+};
+pub fn commandView(req: *const ApprovalRequest, arena) !?CommandView;   // line + cwd/terminal/shell from detail_json
+```
+Deviations from the spec text:
+- Tests live in `src/approvals/broker_test.zig` (a module cannot import
+  outside its folder).
+- No owner-thread posting: every call is mutex-guarded and listeners run
+  after the lock is released, on the calling thread.
+- The views live in apps/zigguro (no `zg_review_ui` module): the card,
+  not a `zg_gui.Widget`, is a build function plus a `CardState`.
+
+### Threading
+Any thread.
+
+### Ownership/lifetime
+Requests and answers are copied into each item's arena and stay valid
+until `prune` drops the item.
+
+### Stability
+Unstable until E10's agent pane embeds the card.

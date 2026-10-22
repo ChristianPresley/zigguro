@@ -7,6 +7,9 @@
 //! undone, which reverts its files and puts its changes back for review;
 //! an open one can be accepted or rejected.
 //!
+//! Above the queue, the approvals inbox (`approvals_view.zig`) lists
+//! requests waiting for an answer.
+//!
 //! The rows come from `zg_review.queue_view.QueueModel`, which the
 //! glue's queue updates on the agents' tasks under the glue's mutex; the
 //! panel reads it, and acts, under the same mutex. Files open in an
@@ -17,6 +20,7 @@ const std = @import("std");
 const zg_gui = @import("zg_gui");
 const zg_review = @import("zg_review");
 const ReviewGlue = @import("../agent/review_glue.zig").ReviewGlue;
+const ApprovalsInbox = @import("approvals_view.zig").ApprovalsInbox;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -47,6 +51,8 @@ pub const QueuePanel = struct {
     open_req: ?zg_review.model.ChangesetId = null,
     /// Whether a workspace-relative path is open in an editor.
     is_open: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, rel: []const u8) bool } = null,
+    /// The approvals section pinned at the top.
+    inbox: ?*ApprovalsInbox = null,
     /// The workbench repaints.
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     /// A repaint is queued on the UI thread.
@@ -79,8 +85,12 @@ pub const QueuePanel = struct {
         if (p.on_change) |h| h.f(h.ctx);
     }
 
-    /// The tab badge: open changesets, if any.
+    /// The tab badge: waiting approvals, else open changesets, if any.
     pub fn badge(p: *QueuePanel, buf: []u8) []const u8 {
+        if (p.inbox) |i| {
+            const a = i.pendingCount();
+            if (a > 0) return std.fmt.bufPrint(buf, "\u{2691}{d}", .{a}) catch "";
+        }
         p.glue.mutex.lockUncancelable(p.io);
         const n = p.glue.model.counts().pending_changesets;
         p.glue.mutex.unlock(p.io);
@@ -89,6 +99,10 @@ pub const QueuePanel = struct {
     }
 
     pub fn build(p: *QueuePanel, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } } });
+        defer ui.close();
+        // Outside the glue's lock: answers go to the broker.
+        if (p.inbox) |i| i.build(ui);
         p.glue.mutex.lockUncancelable(p.io);
         p.buildLocked(ui);
         p.glue.mutex.unlock(p.io);
