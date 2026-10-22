@@ -197,6 +197,14 @@ pub const Window = struct {
     path_scratch: std.ArrayList(NodeId) = .empty,
     ctx_scratch: std.ArrayList([]const u8) = .empty,
 
+    /// Window chrome: who draws the decorations, the window state the
+    /// chrome shows, and the title-bar nodes the hit map is built from
+    /// (`dock/chrome.zig`).
+    chrome: Chrome = .{},
+    /// Window state changes the UI asked for (caption buttons); the Host
+    /// sends them to the platform.
+    window_ops: std.ArrayList(zg_platform.window.WindowOp) = .empty,
+
     /// What the focused text input asked of the platform IME
     /// (`EventCx.setIme`); the Host sends it when `serial` changes.
     ime: Ime = .{},
@@ -204,6 +212,40 @@ pub const Window = struct {
     /// The platform window this window presents to, if any.
     platform_win: ?zg_platform.types.WindowId = null,
     close_requested: bool = false,
+
+    /// See `chrome`.
+    pub const Chrome = struct {
+        /// The app draws the title bar and borders (Wayland CSD).
+        client: bool = false,
+        /// Invisible resize margins around the frame (left, top, right,
+        /// bottom), physical pixels; part of the window size.
+        margins_px: [4]u32 = .{ 0, 0, 0, 0 },
+        maximized: bool = false,
+        /// Drawn as the active window.
+        focused: bool = true,
+        /// Tiled against left, top, right, bottom.
+        tiled: [4]bool = .{ false, false, false, false },
+        /// Set by the chrome builder each build: the title bar, and the
+        /// nodes in it that take clicks (caption buttons first:
+        /// minimize, maximize, close).
+        title_bar: NodeId = .none,
+        buttons: [3]NodeId = .{ .none, .none, .none },
+        interactive: std.ArrayList(NodeId) = .empty,
+        /// Bumped when the decoration mode or window state changes.
+        serial: u32 = 0,
+
+        /// The margins in logical pixels at `scale`.
+        pub fn margins(c: *const Chrome, scale: f32) geom.Insets {
+            const m = c.margins_px;
+            return .{ .l = @as(f32, @floatFromInt(m[0])) / scale, .t = @as(f32, @floatFromInt(m[1])) / scale, .r = @as(f32, @floatFromInt(m[2])) / scale, .b = @as(f32, @floatFromInt(m[3])) / scale };
+        }
+    };
+
+    /// Asks the platform for a window state change (sent by the Host).
+    pub fn requestWindowOp(w: *Window, op: zg_platform.window.WindowOp) void {
+        w.window_ops.append(w.gpa, op) catch {};
+        w.needs_frame = true;
+    }
 
     /// The IME state to report to the platform.
     pub const Ime = struct {
@@ -316,6 +358,8 @@ pub const Window = struct {
         w.close_hooks.deinit(gpa);
         w.timers.deinit(gpa);
         w.ime.text.deinit(gpa);
+        w.chrome.interactive.deinit(gpa);
+        w.window_ops.deinit(gpa);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         for (w.after_frame.items) |t| t.f(t.ctx, w);
         w.after_frame_due.deinit(gpa);
@@ -1599,7 +1643,21 @@ pub const Window = struct {
     pub fn handlePlatformEvent(w: *Window, ev: zg_platform.event.Event, payload: anytype) void {
         const inv = 1 / w.scale;
         switch (ev) {
-            .window_configure => |c| w.resize(.{ .w = @as(f32, @floatFromInt(c.size.w)) / c.scale.factor, .h = @as(f32, @floatFromInt(c.size.h)) / c.scale.factor }, c.scale.factor),
+            .window_configure => |c| {
+                w.resize(.{ .w = @as(f32, @floatFromInt(c.size.w)) / c.scale.factor, .h = @as(f32, @floatFromInt(c.size.h)) / c.scale.factor }, c.scale.factor);
+                const st = c.state;
+                const tiled = [4]bool{ st.tiled_left, st.tiled_top, st.tiled_right, st.tiled_bottom };
+                if (st.maximized != w.chrome.maximized or !std.mem.eql(bool, &tiled, &w.chrome.tiled)) {
+                    w.chrome.maximized = st.maximized;
+                    w.chrome.tiled = tiled;
+                    w.chromeChanged();
+                }
+            },
+            .window_decorations => |d| if (d.client != w.chrome.client or !std.mem.eql(u32, &d.margins_px, &w.chrome.margins_px)) {
+                w.chrome.client = d.client;
+                w.chrome.margins_px = d.margins_px;
+                w.chromeChanged();
+            },
             .window_close_requested => w.close_requested = true,
             .pointer_move => |p| w.dispatch(.{ .pointer_move = .{ .pos = .{ .x = p.pos_px[0] * inv, .y = p.pos_px[1] * inv }, .mods = p.mods } }),
             .pointer_button => |p| {
@@ -1612,15 +1670,26 @@ pub const Window = struct {
             .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
             .ime_preedit => |t| w.dispatch(.{ .ime_preedit = .{ .text = payload.payload(t.text), .cursor_begin = t.cursor_begin, .cursor_end = t.cursor_end } }),
             .ime_delete_surrounding => |d| w.dispatch(.{ .ime_delete_surrounding = .{ .before = d.before_bytes, .after = d.after_bytes } }),
-            .window_focus => |f| if (!f.focused) {
-                w.setHot(.none);
-                w.dismissPopovers();
+            .window_focus => |f| {
+                if (!f.focused) {
+                    w.setHot(.none);
+                    w.dismissPopovers();
+                }
+                if (f.focused != w.chrome.focused) {
+                    w.chrome.focused = f.focused;
+                    w.chromeChanged();
+                }
             },
             .frame => {
                 w.needs_frame = true;
             },
             else => {},
         }
+    }
+
+    fn chromeChanged(w: *Window) void {
+        w.chrome.serial +%= 1;
+        w.markAllDirty();
     }
 
     fn mapButton(b: zg_platform.types.Button) event.Button {

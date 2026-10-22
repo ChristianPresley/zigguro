@@ -246,3 +246,45 @@ test "host sends the window's IME state when it changes" {
     _ = try host.pump();
     try std.testing.expect(!pw.ime_enabled);
 }
+
+const Chromed = struct {
+    pub fn build(_: *Chromed, ui: *ui_mod.Ui) void {
+        @import("dock/chrome.zig").begin(ui, .{ .title = "test" });
+        defer @import("dock/chrome.zig").end(ui);
+        ui.text("content", .{});
+    }
+};
+
+test "host installs the chrome hit test once the platform asks for client decorations" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+    var v: Chromed = .{};
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 400, .h = 300 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    // Server decorations: nothing installed.
+    try std.testing.expect(!hw.chrome.installed);
+
+    try hl.inject(.{ .window_decorations = .{ .win = hw.id, .client = true, .margins_px = .{ 10, 10, 10, 10 } } });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    _ = try host.pump();
+    try std.testing.expect(hw.chrome.installed);
+    const m = hw.chrome.current().?;
+    try std.testing.expectEqual(@as(u16, 10), m.resize_border_px);
+    try std.testing.expectEqual(zg_platform.types.HitRegion.resize_left, m.lookup(.{ .x = 2, .y = 150 }));
+    try std.testing.expectEqual(zg_platform.types.HitRegion.caption, m.lookup(.{ .x = 100, .y = 25 }));
+
+    // A caption button's request goes out on the next pump.
+    hw.win.requestWindowOp(.minimize);
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(usize, 0), hw.win.window_ops.items.len);
+}

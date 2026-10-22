@@ -41,6 +41,8 @@ const view_mod = @import("core/view.zig");
 const text = @import("paint/text.zig");
 const DrawListCanvas = @import("paint/draw_list.zig").DrawListCanvas;
 const FontText = @import("paint/font_text.zig").FontText;
+const chrome = @import("dock/chrome.zig");
+const hit_map = @import("dock/hit_map.zig");
 const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
@@ -80,6 +82,9 @@ pub const HostWindow = struct {
     frames: u64 = 0,
     /// The `Window.ime.serial` last sent to the platform.
     ime_sent: u32 = 0,
+    /// The chrome hit map the platform's hit test reads.
+    chrome: hit_map.ChromeState,
+    hit_rects: std.ArrayList(hit_map.HitMap.Entry) = .empty,
     /// The renderer texture of each glyph atlas page.
     pages: std.ArrayList(r2d.TextureId) = .empty,
 
@@ -208,7 +213,7 @@ pub const Host = struct {
         errdefer h.platform.destroyWindow(id);
         const hw = try h.gpa.create(HostWindow);
         errdefer h.gpa.destroy(hw);
-        hw.* = .{ .id = id, .win = undefined, .list = undefined, .own_list = .init(h.gpa), .dlc = undefined, .out = undefined };
+        hw.* = .{ .id = id, .win = undefined, .list = undefined, .own_list = .init(h.gpa), .dlc = undefined, .out = undefined, .chrome = .init(h.gpa) };
         errdefer hw.own_list.deinit();
         const renderer = h.make_renderer(h.gpa, h.io, .{ .target = try h.platform.surfaceTarget(id), .window = id }) catch |err| switch (err) {
             // The software renderer cannot draw to a native target such as
@@ -256,7 +261,22 @@ pub const Host = struct {
         hw.pages.deinit(h.gpa);
         hw.own_list.deinit();
         h.platform.destroyWindow(hw.id);
+        // The platform no longer asks the destroyed window's hit test.
+        hw.chrome.deinit();
+        hw.hit_rects.deinit(h.gpa);
         h.gpa.destroy(hw);
+    }
+
+    /// Publishes `hw`'s chrome hit map when it changed, installing the hit
+    /// test the first time the window is client-decorated.
+    fn updateHitMap(h: *Host, hw: *HostWindow) !void {
+        if (!hw.win.chrome.client and !hw.chrome.installed) return;
+        const m = try chrome.buildHitMap(hw.win, h.gpa, &hw.hit_rects);
+        _ = try hw.chrome.publish(m);
+        if (!hw.chrome.installed) {
+            try h.platform.submit(.{ .set_hit_test = .{ .win = hw.id, .f = hit_map.ChromeState.hitTestFn(), .ctx = &hw.chrome } });
+            hw.chrome.installed = true;
+        }
     }
 
     /// The host window for platform window `id`.
@@ -288,6 +308,11 @@ pub const Host = struct {
             h.app.clipboard.pending_write = false;
             const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .text_utf8, .data = h.app.clipboard.get() }};
             try h.platform.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &items } });
+        }
+        for (h.windows.items) |hw| {
+            for (hw.win.window_ops.items) |op| try h.platform.submit(.{ .request_state = .{ .win = hw.id, .op = op } });
+            hw.win.window_ops.clearRetainingCapacity();
+            try h.updateHitMap(hw);
         }
         for (h.windows.items) |hw| if (hw.win.ime.serial != hw.ime_sent) {
             hw.ime_sent = hw.win.ime.serial;
