@@ -129,7 +129,7 @@ fn deleteOne(ctx_ptr: *anyopaque, snap: *const Snapshot, sel: Selection, out: *r
 
 /// Where Backspace at `pos` stops when only spaces precede it on its
 /// line: the previous tab stop (at least one space back). Null otherwise.
-fn tabStopBack(snap: *const Snapshot, pos: u64, tab_size: u8) ?u64 {
+pub fn tabStopBack(snap: *const Snapshot, pos: u64, tab_size: u8) ?u64 {
     const t = &snap.tree;
     const ls = t.lineStart(t.lineOf(pos));
     const col = pos - ls;
