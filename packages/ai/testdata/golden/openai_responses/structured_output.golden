@@ -1,0 +1,1 @@
+{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}],"max_output_tokens":8192,"text":{"format":{"type":"json_schema","name":"output","schema":{"type":"object"},"strict":true}},"temperature":0.20000000298023224,"include":["reasoning.encrypted_content"],"store":false,"stream":true}

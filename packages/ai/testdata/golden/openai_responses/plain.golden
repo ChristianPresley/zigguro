@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","instructions":"Be brief.\n\nLine two","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}],"max_output_tokens":8192,"include":["reasoning.encrypted_content"],"store":false,"stream":true}
