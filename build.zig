@@ -93,6 +93,13 @@ pub fn build(b: *std.Build) void {
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
+    // zg-transcript shares its core with zg_lsp (a std-only file).
+    const transcript = addToolImports(b, "zg-transcript", "tools/transcript/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "zg_transcript", .module = b.createModule(.{ .root_source_file = b.path("packages/lsp/src/client/transcript.zig") }) },
+    });
+    const transcript_run = b.addRunArtifact(transcript);
+    if (b.args) |args| transcript_run.addArgs(args);
+    b.step("zg-transcript", "Run zg-transcript (pass arguments after --)").dependOn(&transcript_run.step);
 
     // Generated protocol bindings: `zig build lspgen` / `dapgen` regenerate
     // the checked-in files; `zig build test` fails when one is stale.
@@ -279,16 +286,29 @@ fn addTool(
     test_optimize: std.builtin.OptimizeMode,
     tests_step: *std.Build.Step,
 ) *std.Build.Step.Compile {
+    return addToolImports(b, name, root, filters, test_optimize, tests_step, &.{});
+}
+
+/// `addTool` with extra module imports for the tool and its tests.
+fn addToolImports(
+    b: *std.Build,
+    comptime name: []const u8,
+    comptime root: []const u8,
+    filters: []const []const u8,
+    test_optimize: std.builtin.OptimizeMode,
+    tests_step: *std.Build.Step,
+    extra: []const std.Build.Module.Import,
+) *std.Build.Step.Compile {
     // Tests follow -Doptimize (the 0.16.0 test runner does not compile
     // under Debug --fuzz); the tool binaries stay Debug.
-    const t = b.addTest(.{ .name = name, .root_module = toolModule(b, root, test_optimize), .filters = filters });
+    const t = b.addTest(.{ .name = name, .root_module = toolModule(b, root, test_optimize, extra), .filters = filters });
     tests_step.dependOn(&b.addRunArtifact(t).step);
-    return b.addExecutable(.{ .name = name, .root_module = toolModule(b, root, .Debug) });
+    return b.addExecutable(.{ .name = name, .root_module = toolModule(b, root, .Debug, extra) });
 }
 
 /// Tools see the package table and the zg_build API (for comptime checks).
-fn toolModule(b: *std.Build, comptime root: []const u8, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    return b.createModule(.{
+fn toolModule(b: *std.Build, comptime root: []const u8, optimize: std.builtin.OptimizeMode, extra: []const std.Build.Module.Import) *std.Build.Module {
+    const mod = b.createModule(.{
         .root_source_file = b.path(root),
         .target = b.graph.host,
         .optimize = optimize,
@@ -297,6 +317,8 @@ fn toolModule(b: *std.Build, comptime root: []const u8, optimize: std.builtin.Op
             .{ .name = "zg_build_api", .module = b.createModule(.{ .root_source_file = b.path("packages/build/build.zig") }) },
         },
     });
+    for (extra) |i| mod.addImport(i.name, i.module);
+    return mod;
 }
 
 /// `f.args()` plus the fields of `extra`, for a package with its own options.
