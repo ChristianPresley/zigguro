@@ -1,0 +1,6 @@
+# Two documents under one root share one server.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"text": "const a = 1;\n"}}
+> textDocument/didOpen {"textDocument": {"text": ""}}

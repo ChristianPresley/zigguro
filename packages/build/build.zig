@@ -224,7 +224,10 @@ pub const TestExe = struct {
     /// Executable name and `zg_test_exes` field name.
     name: []const u8,
     /// Root source file, relative to the package.
-    root: []const u8,
+    root: []const u8 = "",
+    /// Root source file from elsewhere (e.g. another package's helper
+    /// through its dependency); overrides `root`.
+    root_file: ?std.Build.LazyPath = null,
     /// Extra imports; the package module itself is always importable
     /// under the package name.
     imports: []const std.Build.Module.Import = &.{},
@@ -270,7 +273,7 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
             const exe = b.addExecutable(.{
                 .name = te.name,
                 .root_module = b.createModule(.{
-                    .root_source_file = b.path(te.root),
+                    .root_source_file = te.root_file orelse b.path(te.root),
                     .target = f.target,
                     .optimize = te.optimize orelse f.optimize,
                     .imports = te.imports,
