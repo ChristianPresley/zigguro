@@ -11,6 +11,8 @@ const ot = @import("../ot/root.zig");
 const variation = ot.variation;
 const coverage = @import("coverage.zig");
 const flatten = @import("flatten.zig");
+const embolden = @import("embolden.zig");
+const lcd = @import("lcd.zig");
 
 /// Largest bitmap side in pixels. Bigger requests fail with `TooLarge`;
 /// callers use SDF or tiles instead.
@@ -175,6 +177,10 @@ pub const Rasterizer = struct {
     path: Path = .{},
     scratch: variation.OutlineScratch = .{},
     out: std.ArrayList(u8) = .empty,
+    /// Emboldened copy of a caller's path.
+    work: Path = .{},
+    /// 3× coverage before the LCD filter.
+    sub: std.ArrayList(u8) = .empty,
 
     /// A rasterizer with empty buffers.
     pub fn init(gpa: Allocator) Rasterizer {
@@ -187,6 +193,8 @@ pub const Rasterizer = struct {
         r.path.deinit(r.gpa);
         r.scratch.deinit(r.gpa);
         r.out.deinit(r.gpa);
+        r.work.deinit(r.gpa);
+        r.sub.deinit(r.gpa);
     }
 
     /// Rasterizes `path` (font units, y up) at `p`. An empty or non-finite
@@ -212,25 +220,85 @@ pub const Rasterizer = struct {
         return r.rasterizeMapped(&r.path, m, p);
     }
 
-    fn rasterizeMapped(r: *Rasterizer, path: *const Path, m: Affine, p: RasterParams) Error!Bitmap {
-        if (p.mode != .gray) return error.Unsupported;
-        const pl = place(transformedBounds(path, m)) orelse return .{};
+    fn rasterizeMapped(r: *Rasterizer, path_in: *const Path, m: Affine, p: RasterParams) Error!Bitmap {
+        if (p.mode == .sdf) return error.Unsupported;
+        const path = try r.emboldened(path_in, m, p);
+        if (p.mode == .gray) {
+            const pl = place(transformedBounds(path, m)) orelse return .{};
+            if (pl.width > max_side or pl.height > max_side) return error.TooLarge;
+            try r.acc.reset(r.gpa, pl.width, pl.height);
+            walk(path, m, .{ @floatFromInt(pl.left), @floatFromInt(pl.top) }, flatten.tol_gray, &r.acc);
+            const px = try r.output(pl.width * pl.height);
+            r.acc.integrate(px, pl.width);
+            return bitmap(pl, pl.width, .gray8, px);
+        }
+        // LCD: x at 3×, padded by the filter's reach, with the left edge on
+        // a whole pixel so every 3 subpixels make one pixel.
+        var m3 = m;
+        m3.xx *= 3;
+        m3.xy *= 3;
+        m3.dx *= 3;
+        const b3 = transformedBounds(path, m3);
+        const pad: f32 = lcd.pad_subpixels;
+        var b = b3;
+        b.x0 = (b3.x0 - pad) / 3;
+        b.x1 = (b3.x1 + pad) / 3;
+        const pl = place(b) orelse return .{};
         if (pl.width > max_side or pl.height > max_side) return error.TooLarge;
-        try r.acc.reset(r.gpa, pl.width, pl.height);
-        walk(path, m, .{ @floatFromInt(pl.left), @floatFromInt(pl.top) }, flatten.tol_gray, &r.acc);
-        const n = pl.width * pl.height;
+        const w3 = pl.width * 3;
+        try r.acc.reset(r.gpa, w3, pl.height);
+        walk(path, m3, .{ @floatFromInt(pl.left * 3), @floatFromInt(pl.top) }, flatten.tol_gray, &r.acc);
+        r.sub.clearRetainingCapacity();
+        try r.sub.ensureTotalCapacity(r.gpa, w3 * pl.height);
+        r.sub.items.len = w3 * pl.height;
+        r.acc.integrate(r.sub.items, w3);
+        const px = try r.output(w3 * pl.height);
+        lcd.filter(r.sub.items, w3, pl.height, w3, if (p.mode == .lcd_bgr) .bgr else .rgb, px, w3);
+        return bitmap(pl, w3, .lcd_rgb8x3, px);
+    }
+
+    /// `path`, or a copy in `work` grown by synthetic bold and stem
+    /// darkening (amounts in pixels, converted through the vertical scale
+    /// of `m`, which the oblique shear leaves alone).
+    fn emboldened(r: *Rasterizer, path: *const Path, m: Affine, p: RasterParams) Error!*const Path {
+        const s = @abs(m.yy);
+        if (!(s > 0)) return path;
+        var dx: f32 = 0;
+        var dy: f32 = 0;
+        if (p.synth_bold) dx += p.px_per_em / 48 / s;
+        if (p.stem_darkening) {
+            const a = embolden.stem_darkening_max_px * std.math.clamp((24 - p.px_per_em) / 15, 0, 1) / s;
+            dx += a;
+            dy += a;
+        }
+        if (dx == 0 and dy == 0) return path;
+        if (path != &r.work) {
+            r.work.reset();
+            try r.work.ensureUnused(r.gpa, path.verbs.items.len, path.points.items.len);
+            r.work.verbs.appendSliceAssumeCapacity(path.verbs.items);
+            r.work.points.appendSliceAssumeCapacity(path.points.items);
+            r.work.bounds = path.bounds;
+        }
+        embolden.embolden(&r.work, dx, dy);
+        return &r.work;
+    }
+
+    fn output(r: *Rasterizer, n: usize) Allocator.Error![]u8 {
         r.out.clearRetainingCapacity();
         try r.out.ensureTotalCapacity(r.gpa, n);
         r.out.items.len = n;
-        r.acc.integrate(r.out.items, pl.width);
+        return r.out.items;
+    }
+
+    fn bitmap(pl: Placement, stride: u32, format: Bitmap.Format, px: []u8) Error!Bitmap {
         return .{
             .width = @intCast(pl.width),
             .height = @intCast(pl.height),
-            .stride = pl.width,
+            .stride = stride,
             .left = std.math.cast(i16, pl.left) orelse return error.TooLarge,
             .top = std.math.cast(i16, pl.top) orelse return error.TooLarge,
-            .format = .gray8,
-            .pixels = r.out.items,
+            .format = format,
+            .pixels = px,
         };
     }
 };
