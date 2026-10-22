@@ -1,0 +1,10 @@
+1| keyword.control:match variable:command punctuation.delimiter::
+2| keyword.control:case punctuation.bracket:[ string:" string:go" punctuation.delimiter:, variable:direction punctuation.bracket:] punctuation.delimiter::
+3| function:move punctuation.bracket:( variable:direction punctuation.bracket:)
+4| keyword.control:case variable:_ punctuation.delimiter::
+5| keyword.control:pass
+6| variable:match operator:= number:1
+7| function:case punctuation.bracket:( variable:x punctuation.bracket:)
+8| keyword.storage:type type:Point operator:= type.builtin:tuple punctuation.bracket:[ type.builtin:float punctuation.delimiter:, type.builtin:float punctuation.bracket:]
+9| variable:type operator:= string:" string:plain name"
+10| function.builtin:print punctuation.bracket:( variable:match punctuation.delimiter:, variable:type punctuation.bracket:)
