@@ -13,6 +13,7 @@ const enc = @import("../store/encode.zig");
 const store_mod = @import("../store/store.zig");
 const op_mod = @import("operation.zig");
 const view_mod = @import("view.zig");
+const view_delta = @import("view_delta.zig");
 const op_heads = @import("op_heads.zig");
 const repo_mod = @import("repo.zig");
 const mutable_mod = @import("mutable_repo.zig");
@@ -104,12 +105,11 @@ pub const Transaction = struct {
         defer g.deinit();
         for (t.parents.items) |p| end = @max(end, (try g.get(p)).end_ms);
         t.meta.end_ms = end;
+        const base_view: ?ObjectId = if (t.parents.items.len > 0) (try g.get(t.parents.items[0])).view else null;
 
         var b = r.store.batch();
         defer b.abort();
-        const view_bytes = try enc.encodeAlloc(gpa, View, v);
-        defer gpa.free(view_bytes);
-        const view_id = try b.put(.view, view_bytes);
+        const view_id = try view_delta.write(gpa, r.store, &b, v, base_view);
         const op_bytes = try enc.encodeAlloc(gpa, Operation, .{ .parents = t.parents.items, .view = view_id, .meta = t.meta });
         defer gpa.free(op_bytes);
         const op_id = try b.put(.operation, op_bytes);
