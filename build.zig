@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
     const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, f.optimize, tools_test_step);
     const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, f.optimize, tools_test_step);
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
+    const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
     // zg-transcript shares its core with zg_lsp (a std-only file).
@@ -173,6 +174,13 @@ pub fn build(b: *std.Build) void {
     fuzz_list_run.addDirectoryArg(b.path("."));
     fuzz_list_run.has_side_effects = true;
     b.step("fuzz-list", "Print every `fuzz:` test target as JSON").dependOn(&fuzz_list_run.step);
+
+    const keysym_gen_run = b.addRunArtifact(keysym_gen);
+    keysym_gen_run.addArgs(&.{"--root"});
+    keysym_gen_run.addDirectoryArg(b.path("."));
+    if (b.args) |a| keysym_gen_run.addArgs(a);
+    keysym_gen_run.has_side_effects = true;
+    b.step("keysym-gen", "Regenerate the XKB keysym tables (-- --check to verify)").dependOn(&keysym_gen_run.step);
 
     // Build-graph self test: spawns `zig build` (guarded by -Dslow-tests).
     const test_build_opts = b.addOptions();
