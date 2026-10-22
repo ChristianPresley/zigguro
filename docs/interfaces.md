@@ -993,7 +993,8 @@ DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
 first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
-E01.F02.S01.T02 / E01.F02.S05.T01.
+E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S03.T01 / E01.F02.S05.T01 /
+E01.F02.S04.T01.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1011,13 +1012,48 @@ pub fn platform(b: *Win32Backend) Platform;
 `window_configure` comes from `createWindow`; later ones from `WM_SIZE`
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
-chords carry none. Wheel notches are `scroll` lines with forward
-negative. A window created on a non-96 DPI monitor is resized for that
+chords carry none; their `keysym` is the layout's unshifted character
+(`ToUnicodeEx`, cached per scancode until `WM_INPUTLANGCHANGE`), so
+Ctrl+A reports `a`. AltGr's synthetic Left Ctrl is dropped. Coalesced
+auto-repeat becomes one `repeat` per count (at most 32).
+`native_ctrl_state` carries the console control-key bits. Focus loss
+releases every held key. Alt, Alt+Space and Alt+F4 keep their system
+meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
+with forward negative; sub-notch deltas (precision touchpads) report
+`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
 rate; `WM_DISPLAYCHANGE` and `WM_DPICHANGED` stage `monitors_changed`.
 Frames keep coming inside the modal size/move loop (a `WM_TIMER`).
+The clipboard (`clipboard.zig`) maps `text/plain;charset=utf-8` to
+`CF_UNICODETEXT` (LF ↔ CRLF), `text/html` to "HTML Format" (`cf_html.zig`),
+`text/uri-list` to `CF_HDROP` (`hdrop.zig`), `image/png` to "PNG" and the
+internal MIME to a private format. Payloads over 4 MiB are offered with
+delayed rendering and rendered on `WM_RENDERFORMAT`. `WM_CLIPBOARDUPDATE`
+from another writer stages `clipboard_changed`; our own writes do not.
+Reads over 64 KiB come back as large payloads freed with `release`.
+Windows has no primary selection: writes to it are ignored and reads
+return empty.
+`Decorations.client` windows get the custom frame (`frame.zig`): the
+client area is the whole window (a maximized one is inset by the resize
+border), `WM_NCHITTEST` answers the DPI-scaled resize band, then the
+`set_hit_test` map. `button_min/max/close` are non-client, so Windows 11
+shows snap layouts on the maximize button; presses on them reach the app
+as pointer events and run minimize, maximize/restore or close on
+release. `begin_move`, `begin_resize` and `show_window_menu` work on
+every window. `set_cursor` covers every `CursorShape`: system `IDC_*`
+cursors, and for the shapes Windows lacks, cursors built from embedded
+masks at 32, 48 or 64 px by DPI (`cursor.zig`). Windows get DWM dark
+mode from the system theme and, when client-decorated, round corners
+(Windows 11).
+IME (`ime.zig`, IMM32): the default composition window is suppressed;
+`WM_IME_COMPOSITION` stages `ime_preedit` (cursor = the selected clause,
+or the caret, in UTF-8 bytes) and commits as `text_input`; keys the IME
+consumed (`VK_PROCESSKEY`) are not reported. `set_ime_state` places the
+composition window at the caret and the candidate list below it;
+disabled or `password`/`pin` detaches the context, committing any
+composition. Manual checklist: `packages/platform/docs/manual-tests/win32-ime.md`.
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1030,11 +1066,11 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 `deinit` stops the thread after it destroys every window.
 
 ### Stability
-Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
-raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
-answers only from our own `clipboard_write`), OLE drag and drop,
-cursors, cloaking until the first present, the high-resolution waitable
-pacing timer and per-monitor refresh rates.
+Experimental. Not yet: a theme or backdrop command (the system theme
+and no backdrop are used), raw input, pen and touch, TSF and
+`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
+drag and drop, cloaking until the first present, the high-resolution
+waitable pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
 
@@ -1632,7 +1668,10 @@ pub fn createRenderer(gpa: Allocator, io: std.Io, opts: RendererOptions) !Render
 `RectF`, `Vec2`, `Radii`, `Insets` are logical pixels; `PxRect` and `Size`
 are physical. `Color` is `packed struct(u32) { r, g, b, a }`, straight
 alpha (premultiplied by the list). `GlyphQuad` is
-`extern struct { dst: [4]f32, uv: [4]f32, page: u16, format: AtlasFormat }`.
+`extern struct { dst: [4]f32, uv: [4]f32, page: u16, format: AtlasFormat }`:
+`dst` is x, y, w, h and `uv` is u0, v0, u1, v1 normalised to the atlas page
+size, in both zg_vulkan and zg_text (`zg_text.cache.quadFor` takes the page
+size and emits normalised coordinates).
 Deviation from the spec text: `createRenderer` lives in the package root, not
 in `r2d/Renderer.zig`, so `r2d` never imports a backend; `imageFiltered`,
 `damageAll` and `setGlyphPages` are additions.
@@ -1702,6 +1741,52 @@ Slices passed to `glyphs` are valid only for the call.
 ### Stability
 Experimental: E02 additions (`imageFiltered`, layers, `damageAll`) are not
 yet exposed through `Canvas`.
+
+## zg_text.shape.Shaper and GlyphRun
+
+### Defined in
+`packages/text/src/shape/shaper.zig`, `shape_cache.zig`, `features.zig`
+(E03.F06).
+
+### Implemented by
+zg_text alone: GSUB/GPOS application, the legacy `kern` table, font-aware
+normalization and the default shaper. Output matches HarfBuzz (the goldens
+under `packages/text/testdata/golden/shape` come from it).
+
+### Consumed by
+E03.F08 layout (runs, line breaking, hit testing), E04's `TextSystem`
+adapter (shaped runs replace per-codepoint advances), E06 cell rendering for
+ligatures, E15 settings (`editor.fontLigatures` through `parseFeatures`).
+
+### Signature
+```zig
+pub const Feature = struct { tag: Tag, value: u16 = 1, start: u32 = 0, end: u32 = maxInt(u32) }; // byte range
+pub const GlyphRun = struct { // font units, visual order
+    gids: []GlyphId, clusters: []u32, x_adv: []i32, x_off: []i32, y_off: []i32, unsafe_to_break: []bool,
+};
+pub const Shaper = struct { // one per thread
+    pub fn init(gpa: Allocator) Shaper;
+    pub fn shape(s: *Shaper, inst: *const FaceInstance, text: []const u8, script: Script, dir: Direction, lang: Tag, features: []const Feature, out: *GlyphRun, arena: Allocator) !void;
+    pub fn plan(s: *Shaper, inst: *const FaceInstance, script: Script, lang: Tag, dir: Direction, features: []const Feature) !*const ShapePlan;
+    pub fn forget(s: *Shaper, inst: *const FaceInstance) void; // before freeing an instance
+};
+pub fn shapeCached(s: *Shaper, cache: *ShapeCache, inst: *const FaceInstance, inst_id: u18, feature_set: u16, text: []const u8, script: Script, dir: Direction, lang: Tag, features: []const Feature, out: *GlyphRun, arena: Allocator) !void;
+pub fn parseFeatures(spec: []const u8, out: *std.ArrayList(Feature), gpa: Allocator) error{ InvalidFeature, OutOfMemory }!void;
+```
+Clusters are byte offsets into `text`; RTL output is in visual order, so its
+clusters decrease. `unsafe_to_break` marks glyphs where splitting the run
+needs reshaping.
+
+### Threading
+A `Shaper` and a `ShapeCache` are each owned by one thread.
+
+### Ownership/lifetime
+`GlyphRun` arrays live in the caller's arena. Plans borrow the
+`FaceInstance`; call `forget` before freeing it.
+
+### Stability
+Experimental until the Arabic, USE and Indic shapers (F06.S02) land; the
+signatures above are not expected to change.
 
 ## zg_gui.paint.TextSystem
 
@@ -2538,3 +2623,94 @@ host after `created`.
 Unstable until E10/E12 integrate it. Rebasing is `transform(cs, since, user
 wins ties)`; insertions next to an agent's replaced text do not conflict.
 `str_replace` retries once with the document's line endings.
+
+## zg_vulkan.r2d.layers (scroll layers and the layer budget)
+
+### Defined in
+`packages/vulkan/src/r2d/layers.zig`, `r2d/DrawList.zig` (E02.F06.S03.T01).
+
+### Implemented by
+E02.F06.S03.T01 (software and Vulkan backends).
+
+### Consumed by
+E04 (scroll containers, panel animations, cached views), E15 (`render.layer_budget_mb`).
+
+### Signature
+```zig
+pub const LayerKind = enum(u8) { plain, scroll };
+pub const default_budget_bytes: u64 = 64 << 20;
+pub const Piece = struct { rect: PxRect, offset: [2]i32, pub fn content(Piece) PxRect };
+pub fn wrapRects(r: PxRect, origin: [2]i32, tex_size: Size, out: *[4]Piece) u8;   // pure
+pub fn scrolledOrigin(origin: [2]i32, delta: [2]i32, size: Size) [2]i32;
+pub fn scrollDamage(delta: [2]i32, size: Size, out: *[2]PxRect) u8;              // exposed strips
+pub fn layerBytes(size: Size) u64;
+pub fn LayerTable(comptime Res: type) type;   // find, put, remove, markUsed, bytes, evictOne(budget, frame)
+// DrawList
+pub fn beginScrollLayer(dl, id: LayerId, size: Size, origin: [2]i32, content_damage: []const PxRect) bool;
+pub fn layerCached(dl, id: LayerId, size: Size) bool;
+// LayerUse gains kind: LayerKind, origin: [2]i32; Prim.Flags gains wrap (bit 4).
+// RendererOptions gains layer_budget_bytes: u64 = default_budget_bytes.
+```
+
+### Threading
+DrawList calls on the UI thread; the table belongs to the render thread.
+
+### Ownership/lifetime
+The renderer owns layer textures. Evicted or resized textures are destroyed
+once no frame in flight uses them. A layer used in the current frame is never
+evicted, so memory stays within the budget plus that frame's layers.
+
+### Stability
+Stable. `drawLayer` for a scroll layer must follow its `beginScrollLayer` in the
+same frame, which sets the wrap origin. The composite prim's `uv` holds
+scroll + origin. Window damage for a changed layer is still the caller's job.
+
+## zg_vulkan.present.RenderThread and FramePacer
+
+### Defined in
+`packages/vulkan/src/present/RenderThread.zig`, `present/FramePacer.zig` (E02.F04.S03.T01).
+
+### Implemented by
+E02.F04.S03.T01.
+
+### Consumed by
+E04 (window host: posts draw lists, forwards Event.frame and configure), E14 (frame stats).
+
+### Signature
+```zig
+pub const RenderThread = struct {
+    pub const Notify = struct { ctx: *anyopaque, wake_ui: *const fn (*anyopaque) void };
+    pub const FrameSignal = union(enum) { frame, configure: struct { size: Size, scale: f32 }, present_feedback: struct { present_id: u64, presented_ns: u64 } };
+    pub const Options = struct { pacing: FramePacer.Mode = .immediate, refresh_ns: u64 = 16_666_667, notify: ?Notify = null };
+    pub fn spawn(gpa, io, renderer: Renderer, opts: Options) !*RenderThread;
+    pub fn firstList(self) *DrawList;
+    pub fn post(self, dl: *DrawList) *DrawList;          // never blocks; returns the next list to fill
+    pub fn onPlatformFrame(self, ev: FrameSignal) void;
+    pub fn stats(self) FrameStats;                       // last completed frame
+    pub fn shutdown(self) void;                          // joins, destroys the renderer
+};
+pub const FramePacer = struct {
+    pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
+    pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };
+    pub const PresentWaiter = struct { ctx, wait: fn (ctx, present_id: u64, timeout_ns: u64) WaitResult };
+    pub fn selectMode(Caps) Mode;
+    pub fn init(mode: Mode, refresh_ns: u64) FramePacer;
+    pub fn nextPresentId(self) u64;
+    pub fn waitIdFor(self, id: u64) ?u64;               // id - max_queued
+    pub fn readiness(self, now_ns: u64) Readiness;       // now | at(ns) | signal
+    pub fn waitReady(self, timeout_ns: ?u64) WaitResult; // render thread only
+};
+```
+
+### Threading
+`post`, `onPlatformFrame`, `stats` and `shutdown` are called on the UI thread. Rendering, pacing and all
+renderer calls run on the render thread.
+
+### Ownership/lifetime
+The thread owns the renderer and three draw lists. A list returned by `post` belongs to
+the UI until it is posted again. Only lists from `firstList`/`post` may be posted.
+
+### Stability
+Unstable until E04 adopts it. `post` returns a non-null list, unlike the `?*DrawList` in the draft
+signature. The present-wait modes need a swapchain to install a `PresentWaiter`; until then they start
+frames at once.

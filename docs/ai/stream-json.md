@@ -95,6 +95,11 @@ handled like this:
 Without that flag, a call that needs approval is denied. The run then
 exits with 4, and the denial is listed under `permission_denials`.
 
+`zg agent` offers the command tools `run_command`, `command_output` and
+`kill_command` (see [tools.md](tools.md)). They run commands as child
+processes of `zg`. A bare `--disallowed-tools` rule, such as
+`run_command`, removes the tool from the requests.
+
 `--allowed-tools` and `--disallowed-tools` take rules of the form `Tool` or
 `Tool(pattern)`. The pattern is matched against the call's main argument:
 `command`, `path`, `file_path`, `url` or `pattern`. A `*` in the pattern

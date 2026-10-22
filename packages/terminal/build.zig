@@ -12,6 +12,24 @@ pub fn build(b: *std.Build) void {
     const strict = b.option(bool, "terminal_conformance_strict", "Fail when a conformance category is under its minimum") orelse false;
     mod.addImport("zg_conformance", conformanceModule(b, strict));
 
+    // zg_terminal_view: the GUI widget (E06.F04/F05) over zg_gui, a module
+    // of its own so the headless core above never imports a GUI package.
+    const view = b.addModule("zg_terminal_view", .{
+        .root_source_file = b.path("src/view/root.zig"),
+        .target = f.target,
+        .imports = &.{
+            .{ .name = "zg_core", .module = core },
+            .{ .name = "zg_terminal", .module = mod },
+            .{ .name = "zg_gui", .module = b.dependency("zg_gui", f.args()).module("zg_gui") },
+            .{ .name = "zg_platform", .module = b.dependency("zg_platform", f.args()).module("zg_platform") },
+        },
+    });
+    view.addImport("zg_options", zg_build.optionsModule(b, f));
+    const view_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_terminal_view", .root_module = zg_build.testModule(b, f, view) }));
+    view_tests.skip_foreign_checks = true;
+    b.step("test-view", "Run the zg_terminal_view tests").dependOn(&view_tests.step);
+    b.top_level_steps.get("test").?.step.dependOn(&view_tests.step);
+
     // Reference-table generator (the root `docs-terminal-modes` step runs it).
     const docs_mod = b.createModule(.{
         .root_source_file = b.path("tools/gen_docs.zig"),

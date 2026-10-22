@@ -3,6 +3,10 @@
 //! window through `zg_gui.Host` on the detected platform backend (Wayland,
 //! then X11, on Linux; `ZG_PLATFORM` forces one).
 //!
+//! `zigguro FILE` opens FILE in the editor workbench instead (a missing
+//! file starts empty and is created on save); `--terminal` opens the
+//! workbench with its terminal panel showing (Ctrl+` toggles it).
+//!
 //! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
 //! or when no display can be reached, it renders `--frames N` frames
 //! (default 3) on the headless platform and exits, which smoke-tests the
@@ -19,6 +23,7 @@ const zg_crash = @import("zg_crash");
 const zg_platform = @import("zg_platform");
 const zg_gui = @import("zg_gui");
 const Welcome = @import("welcome.zig").Welcome;
+const Workbench = @import("workbench.zig").Workbench;
 const fonts = @import("fonts.zig");
 
 pub const std_options: std.Options = .{
@@ -59,6 +64,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (font_text) |ft| ft.destroy();
     const text_sys = if (font_text) |ft| ft.system() else mono.system();
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
+    const file_arg = pathArg(min, rt.gpa);
+    defer if (file_arg) |p| rt.gpa.free(p);
+    const want_terminal = hasFlag(min, rt.gpa, "--terminal");
+    const use_wb = file_arg != null or want_terminal;
+    var wb: Workbench = undefined;
+    if (use_wb) try wb.init(rt.gpa, rt.io, &env, file_arg);
+    defer if (use_wb) wb.deinit();
+    const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
 
     const frames_arg = framesArg(min, rt.gpa);
     if (backend != .headless) native: {
@@ -70,7 +83,10 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         defer platform.deinit();
         var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{ .fonts = font_text });
         defer host.deinit();
-        const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = .of(&welcome) });
+        const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = root });
+        if (use_wb) try wb.attach(hw.win);
+        if (want_terminal) try wb.toggleTerminal();
+        defer if (use_wb) wb.detach();
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
         const frames = frames_arg orelse {
@@ -99,7 +115,10 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer hl.deinit();
     var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), text_sys, .{ .fonts = font_text });
     defer host.deinit();
-    const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = .of(&welcome) });
+    const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = root });
+    if (use_wb) try wb.attach(hw.win);
+    if (want_terminal) try wb.toggleTerminal();
+    defer if (use_wb) wb.detach();
     var drawn: u64 = 0;
     var i: u32 = 0;
     while (i < frames) : (i += 1) {
@@ -127,6 +146,30 @@ fn stringArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator, name: []cons
     defer it.deinit();
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, name)) return gpa.dupe(u8, it.next() orelse return null) catch null;
+    }
+    return null;
+}
+
+/// Whether flag `name` was given.
+fn hasFlag(min: std.process.Init.Minimal, gpa: std.mem.Allocator, name: []const u8) bool {
+    var it = min.args.iterateAllocator(gpa) catch return false;
+    defer it.deinit();
+    while (it.next()) |a| if (std.mem.eql(u8, a, name)) return true;
+    return false;
+}
+
+/// The first argument that is not an option or an option's value.
+fn pathArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator) ?[]u8 {
+    var it = min.args.iterateAllocator(gpa) catch return null;
+    defer it.deinit();
+    _ = it.next(); // the program
+    while (it.next()) |a| {
+        if (std.mem.eql(u8, a, "--frames") or std.mem.eql(u8, a, "--screenshot")) {
+            _ = it.next();
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "-")) continue;
+        return gpa.dupe(u8, a) catch null;
     }
     return null;
 }

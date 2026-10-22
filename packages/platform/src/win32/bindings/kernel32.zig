@@ -48,6 +48,8 @@ pub extern "kernel32" fn WaitForSingleObject(HANDLE, ms: DWORD) callconv(.winapi
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
 /// The calling thread's last error code.
 pub extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
+/// Suspends the calling thread.
+pub extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
 /// The calling thread's id.
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) DWORD;
 /// Allocates global memory.

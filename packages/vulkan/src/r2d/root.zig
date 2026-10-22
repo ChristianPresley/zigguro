@@ -59,6 +59,10 @@ pub const RendererOptions = Renderer.RendererOptions;
 pub const EnvOverrides = Renderer.EnvOverrides;
 /// `PxRect` helpers.
 pub const rect = @import("rect.zig");
+/// Layer wrap math and the layer table.
+pub const layers = @import("layers.zig");
+/// See `layers.zig`.
+pub const LayerKind = layers.LayerKind;
 /// The reference shading math.
 pub const shading = @import("shading.zig");
 /// See `shading.zig`.
@@ -71,6 +75,7 @@ test {
     _ = prim;
     _ = shading;
     _ = rect;
+    _ = layers;
     _ = DrawList;
     _ = Renderer;
 }

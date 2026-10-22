@@ -223,12 +223,13 @@ test "quadFor matches E02 GlyphQuad layout" {
     try testing.expectEqual(@as(usize, 32), @offsetOf(atlas.GlyphQuad, "page"));
     try testing.expectEqual(@as(usize, 34), @offsetOf(atlas.GlyphQuad, "format"));
     const e: AtlasEntry = .{ .page = 3, .x = 10, .y = 20, .w = 6, .h = 8, .left = -1, .top = -7, .format = .lcd_rgb8x3 };
-    const q = atlas.quadFor(e, 100.5, 50, 1);
+    const q = atlas.quadFor(e, 64, 100.5, 50, 1);
     try testing.expectEqual([4]f32{ 99.5, 43, 6, 8 }, q.dst);
-    try testing.expectEqual([4]f32{ 10, 20, 6, 8 }, q.uv);
+    // u0, v0, u1, v1 normalised to the page, as zg_vulkan samples them.
+    try testing.expectEqual([4]f32{ 10.0 / 64.0, 20.0 / 64.0, 16.0 / 64.0, 28.0 / 64.0 }, q.uv);
     try testing.expectEqual(@as(u16, 3), q.page);
     try testing.expectEqual(atlas.AtlasFormat.rgb_subpixel, q.format);
-    const half = atlas.quadFor(e, 0, 0, 0.5);
+    const half = atlas.quadFor(e, 64, 0, 0, 0.5);
     try testing.expectEqual([4]f32{ -0.5, -3.5, 3, 4 }, half.dst);
 }
 

@@ -164,6 +164,9 @@ pub const RendererOptions = struct {
     env: EnvOverrides = .{},
     /// Software renderer worker threads (0 = min(cores, 8)).
     sw_threads: u8 = 0,
+    /// Layer memory budget (E15 `render.layer_budget_mb`); least recently
+    /// composited layers beyond it are evicted.
+    layer_budget_bytes: u64 = @import("layers.zig").default_budget_bytes,
 };
 
 test "options: env overrides parsed" {
