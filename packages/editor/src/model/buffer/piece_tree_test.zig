@@ -276,6 +276,41 @@ test "piece_tree: replace with many sorted edits equals sequential application" 
     }));
 }
 
+test "piece_tree: multi-cursor typing merges short add pieces" {
+    var env = try Env.init("line\n" ** 100);
+    defer env.deinit();
+    var t = try PieceTree.fromOriginal(&env.pool, env.bt);
+    defer t.deinit(&env.pool);
+    var model: std.ArrayList(u8) = .empty;
+    defer model.deinit(gpa);
+    try model.appendSlice(gpa, "line\n" ** 100);
+    // 100 carets after "li", each typing 40 characters one at a time.
+    var edits: [100]pt.Edit = undefined;
+    for (0..40) |k| {
+        const ch: []const u8 = &.{@as(u8, 'a') + @as(u8, @intCast(k % 26))};
+        for (&edits, 0..) |*e, i| {
+            const at = i * (5 + k) + 2 + k;
+            e.* = .{ .range = .{ .start = at, .end = at }, .text = ch };
+        }
+        const next = try t.replace(&env.pool, &edits);
+        t.deinit(&env.pool);
+        t = next;
+        var i: usize = edits.len;
+        while (i > 0) {
+            i -= 1;
+            try model.insertSlice(gpa, edits[i].range.start, ch);
+        }
+    }
+    try expectText(t, model.items);
+    try t.check();
+    // Without merging every keystroke would leave a piece per caret (over
+    // 4,000); merged, each caret's 40 bytes take about three pieces.
+    var it = t.chunks(0);
+    var n: usize = 0;
+    while (it.next()) |_| n += 1;
+    try std.testing.expect(n <= 100 * 5);
+}
+
 test "piece_tree: chunk iterators forward/backward reproduce text" {
     var prng: std.Random.DefaultPrng = .init(22);
     const r = prng.random();
