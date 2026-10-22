@@ -2,7 +2,8 @@
 //! open file inside a git working tree diffs against its committed text
 //! instead of the text on disk. The blob is decoded like the document
 //! (encoding, and CRLF when the file on disk uses it while the repository
-//! stores LF, as `core.autocrlf` does).
+//! stores LF, as `core.autocrlf` does). `headCommit` tells the workbench
+//! when HEAD moved (a commit, checkout or reset), so it can diff again.
 
 const std = @import("std");
 const zg_git = @import("zg_git");
@@ -12,6 +13,15 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Encoding = zg_editor.model.encoding.Encoding;
 const Eol = zg_editor.model.buffer.eol.Eol;
+
+/// The digest of the commit HEAD points at in the working tree holding
+/// `abs`; null outside a git working tree or on an unborn branch.
+pub fn headCommit(gpa: Allocator, io: Io, abs: []const u8) !?[32]u8 {
+    var d = (try zg_git.worktree.discover(gpa, io, abs)) orelse return null;
+    defer d.deinit(gpa);
+    const id = (try zg_git.worktree.headId(gpa, io, &d)) orelse return null;
+    return id.bytes;
+}
 
 /// `abs`'s text at `HEAD`, decoded; null outside a git working tree or
 /// when HEAD has no such file. Blocking (a few file reads).
