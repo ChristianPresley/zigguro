@@ -1,0 +1,9 @@
+1| variable:a operator:= string:f" punctuation.bracket:{ variable:x punctuation.bracket:[ string:" string:k" punctuation.bracket:] punctuation.bracket:} string:"
+2| variable:b operator:= string:f" punctuation.bracket:{ string:f" punctuation.bracket:{ string:f" punctuation.bracket:{ variable:deep punctuation.bracket:} string:" punctuation.bracket:} string:" punctuation.bracket:} string:"
+3| variable:c operator:= string:f" punctuation.bracket:{ string:" string:, " punctuation.delimiter:. function:join punctuation.bracket:( variable:parts punctuation.bracket:) punctuation.bracket:} string:"
+4| variable:d operator:= string:f" punctuation.bracket:{ string:' string:}' punctuation.bracket:} string:"
+5| variable:e operator:= string:f" punctuation.bracket:{ variable:d punctuation.delimiter:: punctuation.bracket:{ variable:w punctuation.bracket:} punctuation.bracket:} string:" operator:+ variable:tail
+6| variable:f operator:= string:f" punctuation.bracket:{ punctuation.bracket:( keyword.storage:lambda punctuation.delimiter:: number:1 punctuation.bracket:) punctuation.bracket:( punctuation.bracket:) punctuation.bracket:} string:"
+7| variable:g operator:= string:f" punctuation.bracket:{
+8| variable:multi_line_field
+9| punctuation.bracket:} string:"
