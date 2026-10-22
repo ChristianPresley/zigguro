@@ -1,0 +1,1 @@
+{"role":"assistant","content":[{"type":"provider_opaque","origin":"openai_responses","kind":"reasoning","raw":{"type":"reasoning","id":"rs_1","encrypted_content":"gAAA","summary":[]}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_02","content":[]}]}
