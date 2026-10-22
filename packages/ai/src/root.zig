@@ -16,6 +16,18 @@ pub const translate = @import("provider/translate.zig");
 pub const scripted = @import("provider/scripted.zig");
 pub const fake_server = @import("provider/fake_server.zig");
 pub const conformance = @import("provider/conformance.zig");
+pub const sse_stream = @import("provider/sse_stream.zig");
+/// The Anthropic Messages API provider (E10.F02).
+pub const anthropic = struct {
+    pub const Anthropic = @import("provider/anthropic/Anthropic.zig");
+    pub const encode = @import("provider/anthropic/encode.zig");
+    pub const decode = @import("provider/anthropic/decode.zig");
+    pub const cache = @import("provider/anthropic/cache.zig");
+    pub const recovery = @import("provider/anthropic/recovery.zig");
+    test {
+        _ = @import("provider/anthropic/anthropic_test.zig");
+    }
+};
 pub const schema = struct {
     pub const validate = @import("schema/validate.zig");
     pub const strict = @import("schema/strict.zig");
@@ -44,4 +56,5 @@ pub const ScriptedProvider = scripted.ScriptedProvider;
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(schema);
+    std.testing.refAllDecls(anthropic);
 }
