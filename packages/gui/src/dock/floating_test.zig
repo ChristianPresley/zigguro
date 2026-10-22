@@ -337,3 +337,26 @@ test "a restored floating window opens at its place, above others" {
     try f.frames();
     try testing.expect(!f.hl.placement(hw.id).?.always_on_top);
 }
+
+test "a tear-off opens where it was dropped; dock back finds the area" {
+    var f: Fx = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    // The main window sits at (200, 100) on screen.
+    try f.hl.inject(.{ .window_configure = .{ .win = f.main.id, .size = .{ .w = 800, .h = 400 }, .scale = f.hl.opts.scale, .state = .{}, .serial = 7, .screen_origin_px = .{ .x = 200, .y = 100 } } });
+    try f.frames();
+    const out = f.ps[2];
+    try f.page.dock.move(out, .{ .area = .bottom });
+    try f.frames();
+    const w = f.main.win;
+    const scale = w.scale;
+    f.fl.tearOffFrom(&f.page.dv, out, .{ .x = 300, .y = 150 }, .{ .x = 20, .y = 10 });
+    try f.frames();
+    const at = f.hl.placement(f.floatWin().id).?.position.?;
+    try testing.expectEqual(@as(i32, 200 + @as(i32, @intFromFloat(@round(280 * scale)))), at.x);
+    try testing.expectEqual(@as(i32, 100 + @as(i32, @intFromFloat(@round(140 * scale)))), at.y);
+    // Its one-tab group closed when it left; dock back goes to the area.
+    f.fl.dockBackAll(f.page.dock.floatOf(out).?);
+    try f.frames();
+    try testing.expectEqual(@as(?model.Owner, .{ .area = .bottom }), f.page.dock.ownerOf(.{ .group = f.page.dock.groupOf(out).? }));
+}
