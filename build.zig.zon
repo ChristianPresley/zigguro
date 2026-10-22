@@ -12,6 +12,7 @@
         .zg_mcp = .{ .path = "packages/mcp" },
         .zg_lsp = .{ .path = "packages/lsp" },
         .zg_dap = .{ .path = "packages/dap" },
+        .zg_text = .{ .path = "packages/text" },
         // pkgtool:insert
     },
     .paths = .{
