@@ -15,14 +15,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",         "text.bidi_200col_ltr", "text.bidi_200col_rtl",     "text.cache_hit",
-    "text.cache_screen",         "text.casefold_ascii",  "text.cells_row_200",       "text.cff_outline",
-    "text.fontdb_load_3k",       "text.gamma",           "text.glyf_outline",        "text.gvar_apply",
-    "text.hit_test",             "text.integrate_gpix",  "text.itemize_200col",      "text.layout_200col",
-    "text.lcd",                  "text.linebreak_mixed", "text.measure_hit",         "text.nfc_quickcheck",
-    "text.nfc_slow_mixed",       "text.raster_14px",     "text.raster_64px_cjk",     "text.raster_lcd_14px",
-    "text.registry_get",         "text.sdf_48px",        "text.shape_code_line_200", "text.shape_latin_1k",
-    "text.shape_word_cache_hit", "text.var_advance",     "text.width_row_200",       "text.wrap_10kb",
+    "text.atlas_insert",   "text.bidi_200col_ltr",     "text.bidi_200col_rtl", "text.cache_hit",
+    "text.cache_screen",   "text.casefold_ascii",      "text.cells_row_200",   "text.cff_outline",
+    "text.fontdb_load_3k", "text.gamma",               "text.glyf_outline",    "text.gvar_apply",
+    "text.hit_test",       "text.integrate_gpix",      "text.itemize_200col",  "text.layout_200col",
+    "text.lcd",            "text.measure_hit",         "text.nfc_quickcheck",  "text.nfc_slow_mixed",
+    "text.raster_14px",    "text.raster_64px_cjk",     "text.raster_lcd_14px", "text.registry_get",
+    "text.sdf_48px",       "text.shape_code_line_200", "text.shape_latin_1k",  "text.shape_word_cache_hit",
+    "text.var_advance",    "text.width_row_200",       "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -82,6 +82,7 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.grapheme_ascii", @as([]const u8, ascii), graphemeCount);
     try b.run("text.grapheme_mixed", @as([]const u8, mixed), graphemeCount);
     try b.run("text.word_mixed", @as([]const u8, mixed), wordCount);
+    try b.run("text.linebreak_mixed", @as([]const u8, mixed), lineBreakCount);
 }
 
 fn fill(buf: []u8, pieces: []const []const u8) void {
@@ -107,6 +108,16 @@ fn wordCount(text: []const u8, s: *State) void {
     s.setBytes(text.len);
     for (0..s.iterations()) |_| {
         var it = zg_text.unicode.word.WordIterator.init(text);
+        var n: usize = 0;
+        while (it.next()) |_| n += 1;
+        bench.doNotOptimizeAway(n);
+    }
+}
+
+fn lineBreakCount(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| {
+        var it = zg_text.unicode.line_break.Iterator.init(text, .{});
         var n: usize = 0;
         while (it.next()) |_| n += 1;
         bench.doNotOptimizeAway(n);
