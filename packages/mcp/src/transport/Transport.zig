@@ -66,6 +66,10 @@ pub const OutgoingNotification = struct {
     method_str: []const u8,
     body: []const u8,
     revision: protocol.Revision,
+    /// Return only once the peer accepted it (HTTP: the 202), so that later
+    /// messages cannot overtake it (`notifications/initialized`). Pipe
+    /// transports are always ordered.
+    ordered: bool = false,
 };
 
 /// Receives what belongs to one request.
