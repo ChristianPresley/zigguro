@@ -1,0 +1,5 @@
+1| punctuation.bracket:{
+2| property:"url" punctuation.delimiter:: string:"https://example.com/a//b" punctuation.delimiter:,
+3| property:"glob" punctuation.delimiter:: string:"/*.ts" punctuation.delimiter:,
+4| property:"esc" punctuation.delimiter:: string:"line string.escape:\n string:next  string.escape:\" string:q string.escape:\" string:"
+5| punctuation.bracket:}
