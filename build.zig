@@ -77,6 +77,11 @@ pub fn build(b: *std.Build) void {
             const wl_fuzz = b.addTest(.{ .name = "fuzz-wl", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"fuzz: wayland"} });
             b.step("fuzz-wl", "Run the Wayland decoder fuzz test (use with --fuzz)").dependOn(&b.addRunArtifact(wl_fuzz).step);
         }
+        if (comptime std.mem.eql(u8, p.name, "zg_vulkan")) {
+            // The golden scene corpus alone (E02.F07.S02.T02).
+            const golden = b.addTest(.{ .name = "test-golden", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"scene:"} });
+            b.step("test-golden", "Render the zg_vulkan scene corpus against its golden images").dependOn(&b.addRunArtifact(golden).step);
+        }
         // zg_ai also exports the zg_ai_proto leaf module, tested with it.
         if (comptime std.mem.eql(u8, p.name, "zg_ai")) {
             const pt = b.addTest(.{ .name = "zg_ai_proto", .root_module = zg_build.testModule(b, f, deps[i].module("zg_ai_proto")), .filters = test_filters });

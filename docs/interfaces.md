@@ -1418,3 +1418,63 @@ borrows the text; `fromTree` copies it.
 Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
+
+## zg_vulkan.r2d (DrawList, Renderer, Prim)
+
+### Defined in
+`packages/vulkan/src/r2d/` (E02.F06.S01.T01). Full contract: [rendering.md](rendering.md).
+
+### Implemented by
+`zg_vulkan.sw.SwRenderer` (E02.F07.S01.T01); the Vulkan backend
+(E02.F06.S01.T02) and Metal (E02.F08) later. `zg_vulkan.createRenderer`
+picks one.
+
+### Consumed by
+E04 (builds a `DrawList` per frame and holds a `Renderer`), E03 (atlas
+pages through `createTexture`/`updateTexture`, `GlyphQuad`), E06 (cell
+backgrounds as `rect`).
+
+### Signature
+```zig
+pub const DrawList = struct {
+    pub fn init(gpa: Allocator) DrawList;
+    pub fn reset(self: *DrawList, extent: Size, scale: f32) void;
+    pub fn rect(self: *DrawList, r: RectF, fill: Color, radii: Radii) void;
+    pub fn border(self: *DrawList, r: RectF, widths: Insets, color: Color, radii: Radii) void;
+    pub fn shadow(self: *DrawList, r: RectF, radii: Radii, sigma: f32, spread: f32, color: Color) void;
+    pub fn linearGradient(self: *DrawList, r: RectF, p0: Vec2, p1: Vec2, c0: Color, c1: Color, radii: Radii) void;
+    pub fn glyphs(self: *DrawList, run: []const GlyphQuad, color: Color, aa: TextAa) void;
+    pub fn image(self: *DrawList, tex: TextureId, dst: RectF, uv: RectF, tint: Color, radii: Radii) void;
+    pub fn imageFiltered(self: *DrawList, tex: TextureId, dst: RectF, uv: RectF, tint: Color, radii: Radii, filter: Filter) void;
+    pub fn pushClip(self: *DrawList, r: RectF, radii: Radii) void;
+    pub fn popClip(self: *DrawList) void;
+    pub fn beginLayer(self: *DrawList, id: LayerId, size: Size, content_damage: []const PxRect) bool;
+    pub fn endLayer(self: *DrawList) void;
+    pub fn drawLayer(self: *DrawList, id: LayerId, dst: RectF, scroll_px: Vec2, opacity: f32) void;
+    pub fn addDamage(self: *DrawList, r: PxRect) void;
+    pub fn damageAll(self: *DrawList) void;
+    pub fn setGlyphPages(self: *DrawList, pages: []const TextureId) void;
+};
+pub const Renderer = struct { // render, resize, createTexture, updateTexture, destroyTexture, destroyLayer, backend, deinit, layerQuery
+    pub fn render(r: Renderer, dl: *const DrawList) RenderError!FrameStats;
+};
+pub fn createRenderer(gpa: Allocator, io: std.Io, opts: RendererOptions) !Renderer;
+```
+`RectF`, `Vec2`, `Radii`, `Insets` are logical pixels; `PxRect` and `Size`
+are physical. `Color` is `packed struct(u32) { r, g, b, a }`, straight
+alpha (premultiplied by the list). `GlyphQuad` is
+`extern struct { dst: [4]f32, uv: [4]f32, page: u16, format: AtlasFormat }`.
+Deviation from the spec text: `createRenderer` lives in the package root, not
+in `r2d/Renderer.zig`, so `r2d` never imports a backend; `imageFiltered`,
+`damageAll` and `setGlyphPages` are additions.
+
+### Threading
+A `DrawList` is built by one thread (UI) and read by the render thread after
+hand-off; a `Renderer` is owned by one thread at a time.
+
+### Ownership/lifetime
+The list owns its arrays; `reset` keeps capacity. Texture ids are valid
+until `destroyTexture`. Slices passed to `setGlyphPages` must outlive the frame.
+
+### Stability
+Stable for E04/E03 consumers; additive changes only.
