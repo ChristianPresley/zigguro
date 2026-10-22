@@ -74,8 +74,37 @@ dl.drawLayer(id, dst, scroll_px, opacity);
 `dl.layer_query = renderer.layerQuery()` so the list can ask. Layers do not
 nest. A layer's repaint is cleared to transparent before its content is
 drawn. Changing a layer's content does not damage the window by itself:
-add window damage where the layer is shown. Wraparound scroll layers and the
-memory budget arrive with E02.F06.S03.T01.
+add window damage where the layer is shown. If the renderer no longer holds
+a layer (`dl.layerCached` is false) it repaints all of it, so draw the whole
+content then.
+
+Scroll layers (E02.F06.S03.T01) are wraparound textures: content pixel
+(x, y) lives at texel `((x + origin.x) mod w, (y + origin.y) mod h)`.
+Content coordinates are local to the region the layer holds (the viewport
+plus overscan). To scroll the content by d without redrawing it:
+
+```zig
+origin = zg_vulkan.r2d.layers.scrolledOrigin(origin, d, size);
+const n = zg_vulkan.r2d.layers.scrollDamage(d, size, &strips); // exposed strips
+if (dl.beginScrollLayer(id, size, origin, strips[0..n])) {
+    // draw the content (at least the strips) in local coordinates
+    dl.endLayer();
+}
+dl.drawLayer(id, dst, .{ .y = scroll_within_region }, 1);
+```
+
+Backends repaint each damaged rect as up to four wrapped pieces
+(`layers.wrapRects`); pieces at an offset draw translated copies of the
+layer's prims. The composite samples with wraparound (a repeat sampler on
+the GPU), so integer and fractional offsets show no seam; the
+`scroll_layer_seam` scene checks this against unlayered rendering (1 LSB
+integer, 2 LSB fractional) on both backends.
+
+Layers count `w × h × 4` bytes against `RendererOptions.layer_budget_bytes`
+(default 64 MiB, E15 `render.layer_budget_mb`). After each frame's layer
+passes, the least recently composited layers not used in that frame are
+evicted; their next `beginLayer` returns true and repaints everything.
+Layers are always transparent (repaints clear to 0).
 
 ## Text and the atlas contract (E03)
 
@@ -141,7 +170,7 @@ The pipeline cache persists at `<cache dir>/pipelines-<vendor>-<device>.bin`
 behind a checked header (magic, version, payload hash, shader identity)
 and the Vulkan header; any mismatch gives an empty cache.
 
-`zig build test-vulkan-gpu` renders every single-frame, layer-free scene
+`zig build test-vulkan-gpu` renders every scene
 of the corpus through these pipelines on lavapipe and compares it with
 the software goldens (`Tolerance.gpu`; observed max channel difference
 2).
@@ -152,13 +181,14 @@ the software goldens (`Tolerance.gpu`; observed max channel difference
 1. Wait for the frame slot.
 2. Compute the repaint region (image age plus damage, at most 16 rects).
 3. Copy prims and clips into the upload ring, and record pending texture uploads.
-4. Run one dynamic-rendering pass. Each repaint rect is cleared to transparent, scissored, and drawn with the batches culled to it.
-5. Copy the repainted rects out through the target.
+4. Run one dynamic-rendering pass per layer redrawn this frame, one scissored piece per wrapped damage rect, then a sync2 barrier makes the layer shader-readable.
+5. Run one dynamic-rendering pass on the target. Each repaint rect is cleared to transparent, scissored, and drawn with the batches culled to it. Layer composites sample the layer's descriptor slot.
+6. Copy the repainted rects out through the target.
 
-With no damage, nothing is submitted. Targets today are headless and
-in-memory readback. Layers are not drawn yet. The whole scene corpus apart
-from layers, multi-frame damage scenes included, matches the software
-goldens on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
+With no window damage and no layer redrawn, nothing is submitted. Targets
+today are headless and in-memory readback. The whole scene corpus,
+multi-frame damage and layer scenes included, matches the software goldens
+on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
 
 ## Golden images
 
