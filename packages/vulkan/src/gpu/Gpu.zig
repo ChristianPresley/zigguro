@@ -44,6 +44,8 @@ chosen: usize,
 select_opts: select.SelectOptions,
 /// Latched by `checkLost`.
 lost: std.atomic.Value(bool) = .init(false),
+/// The loss was injected (`ZG_VK_FAULT`): the device still works.
+injected: bool = false,
 fault: ?lost_mod.Fault,
 
 pub const CreateOptions = struct {
@@ -87,6 +89,7 @@ pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: CreateOptions) CreateErr
     self.select_opts = opts.selectOptions();
     self.fault = if (opts.fault) |f| lost_mod.Fault.parse(f) else null;
     self.lost = .init(false);
+    self.injected = false;
 
     self.loader = try vkl.Loader.open(.{ .path_override = opts.loader_path });
     errdefer self.loader.close();
@@ -136,7 +139,7 @@ fn queue(self: *Gpu, family: u32, p: *const select.Probe) device.Queue {
 
 /// Destroys everything. Waits for the device unless it was lost.
 pub fn destroy(self: *Gpu) void {
-    if (!self.lost.load(.acquire)) _ = self.ddisp.device_wait_idle(self.dev);
+    if (!self.lost.load(.acquire) or self.injected) _ = self.ddisp.device_wait_idle(self.dev);
     self.ddisp.destroy_device(self.dev, null);
     if (self.debug) |*d| d.deinit(self.instance.inst, &self.instance.disp);
     self.instance.destroy();
@@ -154,6 +157,12 @@ pub fn name(self: *const Gpu, handle: anytype, label: [:0]const u8) void {
     _ = self.ddisp.set_debug_utils_object_name_ext(self.dev, &.{ .object_type = debug_mod.objectType(H), .object_handle = raw, .p_object_name = label });
 }
 
+/// After an injected loss, waits for the work still running (a real
+/// loss is never waited on). Call before destroying resources.
+pub fn drainInjected(self: *Gpu) void {
+    if (self.lost.load(.acquire) and self.injected) _ = self.ddisp.device_wait_idle(self.dev);
+}
+
 /// Turns `VK_ERROR_DEVICE_LOST` into `error.DeviceLost` and latches `lost`.
 pub fn checkLost(self: *Gpu, r: vk.Result) error{DeviceLost}!void {
     return self.checkLostAt(r, null);
@@ -165,6 +174,7 @@ pub fn checkLostAt(self: *Gpu, r: vk.Result, at: ?lost_mod.Fault.At) error{Devic
     const injected = if (at) |a| (if (self.fault) |*f| f.tick(a) else false) else false;
     if (r != .error_device_lost and !injected and !self.lost.load(.acquire)) return;
     if (!self.lost.swap(true, .acq_rel)) {
+        self.injected = injected;
         if (injected) log.info("device lost (injected by ZG_VK_FAULT)", .{}) else log.err("device lost", .{});
     }
     return error.DeviceLost;
