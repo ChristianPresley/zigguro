@@ -1,0 +1,8 @@
+1| variable:total operator:= variable:first operator:+
+2| variable:second
+3| variable:s operator:= string:" string:a string  string.escape:\
+4| string:continued"
+5| variable:items operator:= punctuation.bracket:[
+6| number:1 punctuation.delimiter:,
+7| number:2 punctuation.delimiter:,
+8| punctuation.bracket:]
