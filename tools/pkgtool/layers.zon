@@ -39,6 +39,7 @@
         .{ "zg_review", "zg_scm" }, // seeded by E00.F03.S01.T03 (E12 review applies changesets through zg_scm)
         .{ "zg_review", "zg_editor" }, // E12.F01.S03.T01 (changesets carry E05 ChangeSets and PendingChanges; zg_review uses zg_editor.model only)
         .{ "zg_review", "zg_ai" }, // E12.F01.S03.T01 (zg_review imports only the zg_ai_proto leaf module, for AgentRef)
+        .{ "zg_review", "zg_workspace" }, // E12.F05.S01.T01 (the edit policy uses only the std-only zg_ignore leaf module, for GlobSet)
         .{ "zg_agents", "zg_ai" }, // seeded by E00.F03.S01.T03 (E13 agents drive the zg_ai loop)
         .{ "zg_dap", "zg_lsp" }, // E07.F06.S01.T01 (DapConnection reuses the zg_lsp transports, server processes and script engine)
         .{ "zg_vulkan", "zg_platform" }, // E02 epic (#3): the renderer targets zg_platform SurfaceTarget/Presenter types (E02.F06.S01.T01)

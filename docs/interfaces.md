@@ -3528,3 +3528,60 @@ the caller's arena.
 
 ### Stability
 Unstable until the E10 binding and the timeline UI use it.
+
+## zg_review.policy (ReviewPolicy)
+
+### Defined in
+`packages/review/src/policy/{rules,policy,protected}.zig` (E12.F05.S01.T01); see `packages/review/docs/policy.md`.
+
+### Implemented by
+E12.F05.S01.T01.
+
+### Consumed by
+The zigguro app (auto-apply after submit, E05 `ApplyPolicy` for open documents), `zg review policy explain`, the review queue UI (recently auto-applied).
+
+### Signature
+```zig
+pub fn rules.parse(arena, zon_src: [:0]const u8, diags: *ArrayList(Diagnostic)) !Settings;   // the `review` section
+pub const rules.Settings = struct { rules: []const RuleConfig = &.{}, protected: []const []const u8 = &.{}, saveOnAccept: bool = true };
+pub const rules.RuleConfig = struct { paths = &.{"**"}, tools = &.{}, agents = &.{}, origins: []const OriginKind = &.{},
+    ops: []const Op{ create, modify, delete, rename, mode } = &.{}, max_changed_lines: ?u32 = null, action: RuleAction{ auto_accept, review, review_required } };
+pub const ReviewPolicy = struct {
+    pub fn init(gpa, settings: Settings) !*ReviewPolicy;          // invalid rules → diagnostics, left out
+    pub fn deinit(p) void;
+    pub fn decide(p, ctx: PolicyCtx, s: rules.Subject) Verdict;  // Verdict{ action: auto_apply|review|deny, step, rule: ?u32, reason }
+    pub fn decideChangeset(p, ctx, cs: *const Changeset, out: []Verdict) void;
+    pub fn isProtected(p, path) bool;
+    pub fn editorPolicy(p, e: *EditorPolicy) zg_editor.model.api.agent_edit.ApplyPolicy;
+};
+pub const PolicyCtx = struct { origin: OriginKind, session: ?u128, agent_name: ?[]const u8, tool: ?[]const u8,
+    security: SecurityProbe = .fail_closed, lines: ?LineCounter = null };
+pub const SecurityProbe = struct { ctx, probe: fn (ctx, session: ?u128, path, op: Op) ProbeResult, mode: fn (ctx, session: ?u128) Mode };
+pub fn policy.autoApply(p, ctx, ap: *Applier, cs: ChangesetId, arena) !AutoApplyResult;   // { auto_applied, denied, apply: ?u64, failed: ?anyerror }
+pub fn policy.recentlyAutoApplied(q, now_ms, window_ms, gpa, out: *ArrayList(ChangesetId)) !void;
+```
+Deviations from the spec text:
+- `SecurityProbe` uses E12's own `Mode` and `ProbeLayer` enums, because
+  zg_review does not import zg_security (a file cannot sit in two
+  modules, and zg_security has no std-only contracts module). The app's
+  probe maps `PermissionMode` and `policy.Step` onto them with an
+  exhaustive switch. The E16 defaults inside the workspace are repeated in
+  `protected.zig`.
+- `ReviewPolicy.init` takes parsed `Settings` (`rules.parse`), not
+  `zg_config.Settings`. Diagnostics name the rule index, not ZON
+  positions, except for ZON syntax errors.
+- The auto-applied log is the queue itself: `auto_applied` changesets
+  decided within a window. E05's `AgentEditApplied` is not yet turned
+  into synthetic changesets.
+- `explain` and the E15 schema export are not done.
+
+### Threading
+`decide` is read-only and can be called from any thread. `autoApply`
+runs on the queue's owner thread.
+
+### Ownership/lifetime
+`init` copies the settings. Verdict reasons are static strings or the
+probe's message, borrowed from the probe.
+
+### Stability
+Unstable until the app binds it.

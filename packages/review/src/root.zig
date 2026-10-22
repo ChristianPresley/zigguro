@@ -11,6 +11,7 @@ pub const store = @import("store/root.zig");
 pub const apply = @import("apply/root.zig");
 /// Turn checkpoints and restore.
 pub const checkpoint = @import("checkpoint/root.zig");
+pub const policy = @import("policy/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
