@@ -12,6 +12,7 @@ const ratelimit = @import("../provider/ratelimit.zig");
 const exit_codes = @import("exit_codes.zig");
 const signals = @import("signals.zig");
 const sj = @import("stream_json.zig");
+const todos_mod = @import("../plan/todos.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -88,6 +89,8 @@ pub const Env = struct {
     permission_clock: ?ratelimit.Clock = null,
     /// The E16 engine, consulted before the flag rules.
     base_permission: ?deps.Permission = null,
+    /// `todo_write` lists; a resumed session's list is restored into it.
+    todos: ?*todos_mod.TodoStore = null,
 };
 
 pub const usage_text =

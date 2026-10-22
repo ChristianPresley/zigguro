@@ -1,0 +1,12 @@
+
+(explore) [Storage] Which database?
+  1. SQLite - One file
+  2. Postgres
+  3. Other (type your answer)
+Choose: Choose: Your answer:
+(explore) Which features?
+  1. Search
+  2. Sync
+  3. Export
+  4. Other (type your answer)
+Choose one or more (e.g. 1,3):

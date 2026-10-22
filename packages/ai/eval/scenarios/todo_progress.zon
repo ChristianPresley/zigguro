@@ -1,0 +1,41 @@
+.{
+    .name = "todo_progress",
+    .fixture = "notes",
+    .prompt = "Uppercase alpha in a.txt and track your steps.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "todo_write",
+                    .input = "{\"todos\":[{\"content\":\"Read a.txt\",\"status\":\"in_progress\",\"active_form\":\"Reading a.txt\"},{\"content\":\"Uppercase alpha\",\"status\":\"pending\"}]}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "todo_write",
+                    .input = "{\"todos\":[{\"content\":\"Read a.txt\",\"status\":\"in_progress\"},{\"content\":\"Uppercase alpha\",\"status\":\"in_progress\"}]}",
+                },
+            },
+            .expect = .{
+                "Todos updated: 0 of 2 done; now: Reading a.txt.",
+            },
+        },
+        .{
+            .text = "Only one step can be in progress; done reading.",
+            .expect = .{
+                "Only one todo may be in_progress",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "todo_write",
+        },
+        .no_permission_denials,
+        .{
+            .file_unchanged = "a.txt",
+        },
+    },
+}

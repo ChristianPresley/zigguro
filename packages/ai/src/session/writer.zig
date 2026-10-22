@@ -215,6 +215,7 @@ pub const SessionWriter = struct {
                 .recovery => |r| .{ .event = .{ .kind = "recovery", .data_json = jsonOf(a, r) } },
                 .plan_proposed => |p| .{ .event = .{ .kind = "plan_proposed", .data_json = jsonOf(a, .{ .plan = p }) } },
                 .plan_approved => |p| .{ .event = .{ .kind = "plan_approved", .data_json = jsonOf(a, p) } },
+                .todo_changed => |t| .{ .event = .{ .kind = "todo_changed", .data_json = jsonOf(a, .{ .todos = t }) } },
                 else => null,
             };
             if (rec) |r| w.append(e.seq, r) catch {};
