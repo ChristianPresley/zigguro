@@ -986,6 +986,23 @@ shows the default arrow. Animated cursors show their first frame.
 resize, window menu, activation, dialogs and URIs return
 `error.Unsupported`.
 
+IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
+on the seat. `set_ime_state` is stored per window and sent while the
+text input is on that window's surface, and again after each `enter`:
+`enable` (the first state after `enter`), `set_content_type` (purpose
+as given; `password`/`pin` add `hidden_text` and `sensitive_data`),
+`set_text_change_cause` (`input_method` right after an IME edit, else
+`other`) with `set_surrounding_text` (at most 4000 bytes around caret
+and anchor, cut at UTF-8 boundaries, offsets rebased),
+`set_cursor_rectangle` (physical / scale), then `commit`. Disabling
+sends `disable` and `commit`. `preedit_string`, `commit_string` and
+`delete_surrounding_text` are buffered until `done`, which stages
+`ime_delete_surrounding`, `text_input`, then `ime_preedit` (an empty one
+when a shown preedit is not repeated; -1 offsets hide the cursor). A
+`done` whose serial is not our commit count still applies, and the
+current state is sent again. `leave` clears a shown preedit. Manual
+checklist: `docs/manual-tests/wayland-ime.md`.
+
 ## zg_platform.x11.X11Backend
 
 ### Defined in
