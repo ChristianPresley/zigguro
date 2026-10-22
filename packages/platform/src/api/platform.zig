@@ -56,6 +56,9 @@ pub const InitOptions = struct {
     app_id: []const u8 = "dev.zigguro.zigguro",
     /// Event ring capacity; rounded up to a power of two.
     event_capacity: u32 = 4096,
+    /// Also report unaccelerated mouse motion as `Event.pointer_relative`
+    /// (for panning and similar features). Win32 only; off by default.
+    raw_mouse: bool = false,
 };
 
 /// A running platform backend, as a type-erased interface.
