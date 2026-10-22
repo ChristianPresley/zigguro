@@ -1,7 +1,8 @@
 //! `AgentHost`: what a workbench agent runs on, set up like `zg agent`
 //! (apps/zg/src/cmd_agent.zig) but with the IDE's seams: file tools
 //! through `EditorFiles` (open documents are read and edited in the
-//! editor), approvals through `ToolApprovals` over the workbench's dialog
+//! editor, other writes recorded by E12's `ReviewGlue`, which also takes
+//! a checkpoint per user turn), approvals through `ToolApprovals` over the workbench's dialog
 //! `ApprovalPort`, and command tools over child processes until E06's
 //! terminals take them. The other subsystems' tools (LSP, tasks, SCM,
 //! MCP, ...) come through zg_ai's adapters as each package exports them;
@@ -19,6 +20,7 @@ const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 const zg_security = @import("zg_security");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
+const ReviewGlue = @import("review_glue.zig").ReviewGlue;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
 const PlanCards = @import("plan_card.zig").PlanCards;
 const ChildRelay = @import("panel.zig").ChildRelay;
@@ -45,6 +47,9 @@ pub const AgentHost = struct {
     run_tools: builtin_tools.run.RunTools,
     tracker: zg_ai.tools.read_tracker.ReadTracker,
     files: EditorFiles,
+    /// E12: agent writes recorded, a checkpoint per user turn, and the
+    /// restore behind rewind.
+    review: *ReviewGlue,
     file_tools: builtin_tools.files.FileTools,
     adapters: zg_ai.tools.adapters.all.Adapters,
     agent_tools: zg_ai.tools.AgentTools,
@@ -104,6 +109,9 @@ pub const AgentHost = struct {
         errdefer h.tracker.deinit();
         h.files = .init(gpa, app, h.cwd, docs, 0);
         errdefer h.files.deinit();
+        h.review = try ReviewGlue.create(gpa, io, h.cwd);
+        errdefer h.review.destroy();
+        h.files.outside = h.review.files();
         h.file_tools = .{ .files = h.files.files(), .tracker = &h.tracker };
         try h.tools.addSource(h.file_tools.source());
         h.adapters = .init(gpa, io);
@@ -119,6 +127,7 @@ pub const AgentHost = struct {
             .providers = .fromHub(h.hub),
             .tools = h.agent_tools.tools(),
             .permission = h.approvals.permission(),
+            .checkpoints = h.review.checkpoints(),
         });
         errdefer h.mgr.deinit();
         h.agent = try h.mgr.create(.{ .model = env.get("ZG_MODEL") orelse "sonnet", .cwd = h.cwd });
@@ -161,6 +170,7 @@ pub const AgentHost = struct {
         h.approvals.deinit();
         h.agent_tools.deinit();
         h.files.deinit();
+        h.review.destroy();
         h.tracker.deinit();
         h.run_tools.deinit();
         h.processes.deinit();
