@@ -1,0 +1,1 @@
+{"signatures":[{"label":"fn add(a: i32, b: i32) -> i32","documentation":{"kind":"markdown","value":"Adds."},"parameters":[{"label":[7,13]},{"label":"b: i32","documentation":"second"}],"activeParameter":1}],"activeSignature":0,"activeParameter":1}
