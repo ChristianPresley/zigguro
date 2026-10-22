@@ -21,9 +21,9 @@ pub fn readUcd(gpa: std.mem.Allocator, rel: []const u8) ![]u8 {
 /// One conformance case: UTF-8 text and the expected boundary offsets
 /// (excluding 0 and the end).
 pub const Case = struct {
-    text: [256]u8 = undefined,
+    text: [1024]u8 = undefined,
     len: usize = 0,
-    breaks: [64]usize = undefined,
+    breaks: [256]usize = undefined,
     nbreaks: usize = 0,
     line: usize = 0,
 
