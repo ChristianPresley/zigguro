@@ -754,3 +754,53 @@ allocates nothing per request, reply or event.
 ### Stability
 Experimental until the E01 PR merges. Remote (TCP) displays and the
 XC-MISC id range fallback are not implemented (P2).
+
+## zg_platform.win32 (bindings, com, wide)
+
+### Defined in
+`packages/platform/src/win32/bindings/{types,user32,kernel32,gdi32,imm32,ole32,shell32,dwmapi,advapi32}.zig`,
+`packages/platform/src/win32/com.zig` and `packages/platform/src/win32/wide.zig`
+(E01.F02.S01.T01).
+
+### Implemented by
+E01.F02.S01.T01.
+
+### Consumed by
+The Win32 backend (E01.F02.S01.T02 onward), file dialogs and theme
+(E01.F07.S01.T03), and E06's foreground-process lookup (Toolhelp).
+
+### Signature
+```zig
+// bindings: `pub extern "user32" fn CreateWindowExW(...) callconv(.winapi) ?HWND;` etc.
+// types: extern structs with sizes asserted for 64-bit Windows (MSG 48, WNDCLASSEXW 80, POINTER_INFO 96, ...)
+pub fn guid(comptime s: []const u8) GUID;                          // "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+pub fn parseGuid(s: []const u8) error{InvalidGuid}!GUID;
+pub fn ComObject(comptime Vtbl: type, comptime Impl: type) type;   // create(gpa, impl), iface(), fromIface(p)
+// interfaces: IUnknown, IDropTarget, IDropSource, IDataObject, IEnumFORMATETC,
+//             IShellItem, IShellItemArray, IFileDialog, IFileOpenDialog (each with Vtbl and Vtbl.iid)
+pub const L = std.unicode.utf8ToUtf16LeStringLiteral;
+pub fn toWide(buf: []u16, s: []const u8) ![:0]u16;
+pub fn toWideAlloc(gpa: Allocator, s: []const u8) ![:0]u16;
+pub fn fromWide(buf: []u8, w: []const u16) ![]u8;
+pub fn fromWideAlloc(gpa: Allocator, w: []const u16) ![]u8;
+```
+`Impl` provides each vtable method after IUnknown's by name with `*Impl`
+in place of `this`, plus optional `deinit(*Impl)` and
+`extra_iids: [_]GUID`. Interface pointers from the OS are `*IFoo`; call
+`p.vtbl.Method(p, ...)`.
+
+### Threading
+COM objects follow the apartment of the thread that made them (the
+platform thread's STA after `OleInitialize`). Refcounts are atomic.
+
+### Ownership/lifetime
+A `ComObject` starts with one reference owned by its creator. The last
+`Release` calls `Impl.deinit` and frees it with the allocator given to
+`create`.
+
+### Stability
+Experimental until the E01 PR merges. The DLL bindings exist only on
+Windows targets (`zg_platform.win32.user32` is an empty struct
+elsewhere); `types`, `com` and `wide` build everywhere. Zig links the
+import libraries from `extern "dll"` itself, so `build.zig` needs no
+`linkSystemLibrary` calls.
