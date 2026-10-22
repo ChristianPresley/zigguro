@@ -39,6 +39,10 @@ case "$(uname -m)" in
 esac
 triple="${arch}-linux"
 
+if [ ! -f "$pin" ]; then
+  echo "setup-zig: pin file $pin not found" >&2
+  exit 12
+fi
 version="$(awk '$1 == "version" { print $2 }' "$pin")"
 file="$(awk -v t="$triple" '$1 == t { print $2 }' "$pin")"
 sha="$(awk -v t="$triple" '$1 == t { print $3 }' "$pin")"
