@@ -1,0 +1,2 @@
+{"v":1,"seq":1,"t":0,"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
+{"v":1,"seq":2,"t":0,"type":"title","title":"x"}

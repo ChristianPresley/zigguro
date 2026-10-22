@@ -197,6 +197,13 @@ pub const PieceTree = struct {
         return t.buffers.bytes(f.piece)[@intCast(off - f.start)];
     }
 
+    /// The piece containing `off` (`off < len()`): its bytes and their
+    /// start offset. Chunked regex input reads through this.
+    pub fn pieceAt(t: PieceTree, off: u64) struct { base: u64, bytes: []const u8 } {
+        const f = findPiece(t.root.?, off);
+        return .{ .base = f.start, .bytes = t.buffers.bytes(f.piece) };
+    }
+
     /// Summary of `text[0..off]`.
     pub fn prefixSummary(t: PieceTree, off: u64) Summary {
         if (off == 0) return .empty;

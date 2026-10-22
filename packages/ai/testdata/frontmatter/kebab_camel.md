@@ -1,0 +1,5 @@
+---
+allowed-tools: Read, Grep
+disableModelInvocation: true
+user_invocable: false
+---

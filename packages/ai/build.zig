@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
     const f = zg_build.flags(b);
     const core = b.dependency("zg_core", f.args()).module("zg_core");
     const net = b.dependency("zg_net", f.args()).module("zg_net");
+    const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
 
     // zg_ai_proto: the leaf module of canonical types (std + zg_core only),
     // importable by layer-4 packages without importing zg_ai.
@@ -24,6 +25,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_net", .module = net },
             .{ .name = "zg_ai_proto", .module = proto },
+            .{ .name = "zg_regex", .module = regex },
         },
         .bench = "bench/main.zig",
     });

@@ -135,6 +135,9 @@ pub const ContextView = struct {
     transcript: []const proto.Message,
     tools: []const proto.ToolSpec,
     max_output_tokens: u32,
+    /// Index of `transcript[0]` in the agent's full transcript (non-zero
+    /// after a compaction moved the head).
+    head: u32 = 0,
 };
 
 /// Builds the request for the next model call.
@@ -165,6 +168,13 @@ fn basicBuild(_: *anyopaque, _: Io, arena: Allocator, v: *const ContextView) any
         .temperature = v.profile.temperature,
     };
 }
+
+/// E12.F04 `Checkpoints.create(origin, turn, label)`: snapshots the
+/// workspace at the start of a user turn. Never fails; under 1 ms.
+pub const Checkpoints = struct {
+    ctx: *anyopaque,
+    create: *const fn (ctx: *anyopaque, io: Io, origin: proto.AgentRef, turn: u32, label: []const u8) u64,
+};
 
 /// Receives committed messages (F08 writes them to the session JSONL).
 pub const SessionLog = struct {

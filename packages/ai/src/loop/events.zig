@@ -74,6 +74,13 @@ pub const ErrorInfo = struct {
     request_id: ?[]const u8 = null,
 };
 
+/// An E12 checkpoint taken at the start of a user turn.
+pub const CheckpointInfo = struct {
+    id: u64,
+    turn: TurnId,
+    label: []const u8,
+};
+
 pub const FinishReason = enum { end_turn, budget, blocked, canceled, failed, max_turns, refusal, max_tokens };
 
 pub const TurnFinished = struct {
@@ -85,6 +92,7 @@ pub const TurnFinished = struct {
 /// One agent event.
 pub const AgentEvent = union(enum) {
     turn_started: TurnId,
+    checkpoint: CheckpointInfo,
     request_sent: RequestInfo,
     /// A provider stream event of the in-progress assistant message.
     stream: pevents.StreamEvent,

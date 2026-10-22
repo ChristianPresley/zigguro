@@ -19,6 +19,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 pub const pending = [_][]const u8{
     "editor.open.1gb_first_screen",
     "editor.open.10mb_full",
+    "editor.find.viewport_1gb",
 };
 
 /// A source-like file of `lines` lines (20-120 columns).
@@ -120,6 +121,217 @@ fn retainRelease(d: *Doc, s: *bench.State) void {
     }
 }
 
+/// Undo then redo of one 10k-replacement group (the applies dominate).
+fn undo10k(d: *Doc, s: *bench.State) void {
+    const edit = zg_editor.model.edit;
+    const gpa = std.heap.smp_allocator;
+    var edits: [10_000]buffer.piece_tree.Edit = undefined;
+    const step = d.tree.len() / edits.len;
+    for (&edits, 0..) |*e, k| e.* = .{ .range = .{ .start = k * step, .end = k * step + 1 }, .text = "zz" };
+    const cs = edit.change_set.ChangeSet.fromEdits(gpa, d.tree.len(), &edits) catch unreachable;
+    const inv = cs.invert(d.tree, gpa) catch unreachable;
+    const next = cs.apply(d.tree, &d.pool) catch unreachable;
+    d.tree.deinit(&d.pool);
+    d.tree = next;
+    var tree: edit.undo.UndoTree = .init(gpa, .{});
+    defer tree.deinit();
+    tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .zero }) catch unreachable;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        inline for (.{ edit.undo.UndoTree.undo, edit.undo.UndoTree.redo }) |f| {
+            const st = f(&tree).?;
+            const t = st.changes.apply(d.tree, &d.pool) catch unreachable;
+            d.tree.deinit(&d.pool);
+            d.tree = t;
+        }
+    }
+}
+
+/// A modified copy of `text` with `hunks` scattered single-line changes.
+fn mutateLines(gpa: std.mem.Allocator, text: []const u8, hunks: usize) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    const lines = std.mem.count(u8, text, "\n");
+    const every = lines / hunks;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var i: usize = 0;
+    while (it.next()) |line| : (i += 1) {
+        if (line.len == 0 and it.peek() == null) break;
+        if (every > 0 and i % every == every / 2) try out.appendSlice(gpa, "changed line\n");
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const DiffPair = struct {
+    a: zg_editor.model.diff.LineSource,
+    b: zg_editor.model.diff.LineSource,
+};
+
+fn diffPair(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var r = diff.diffLines(std.heap.smp_allocator, &p.a, &p.b, .{}) catch unreachable;
+        bench.doNotOptimizeAway(r.hunks.len);
+        r.deinit(std.heap.smp_allocator);
+    }
+}
+
+fn diffMoves(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var r = diff.diffLines(std.heap.smp_allocator, &p.a, &p.b, .{ .detect_moves = true, .intraline = .none }) catch unreachable;
+        bench.doNotOptimizeAway(r.moves.len);
+        r.deinit(std.heap.smp_allocator);
+    }
+}
+
+/// Word highlights for one changed line pair (a typical small hunk).
+fn intralineHunk(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    const edits = [_]diff.Edit{ .{ .kind = .delete, .a_start = 0, .b_start = 0, .len = 2 }, .{ .kind = .insert, .a_start = 2, .b_start = 0, .len = 2 } };
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const r = diff.intraline.intralineEdits(std.heap.smp_allocator, &edits, &p.a, &p.b, .word) catch unreachable;
+        bench.doNotOptimizeAway(r.len);
+        std.heap.smp_allocator.free(r);
+    }
+}
+
+const FindDoc = struct { doc: *zg_editor.model.document.Document };
+
+/// Literal find-all over the whole document (bytes/s = len / time).
+fn findAll(f: *FindDoc, s: *bench.State) void {
+    findAllCase(f, s, .sensitive);
+}
+
+/// Case-insensitive literal find-all (the smart-case default for "needle").
+fn findAllIcase(f: *FindDoc, s: *bench.State) void {
+    findAllCase(f, s, .insensitive);
+}
+
+fn findAllCase(f: *FindDoc, s: *bench.State, case: @FieldType(zg_editor.model.search.find.FindOptions, "case")) void {
+    const find = zg_editor.model.search.find;
+    s.setBytes(f.doc.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var fs = find.FindSession.start(std.heap.smp_allocator, f.doc, .{ .pattern = "needle", .case = case }, .{ .start = 0, .end = 0 }, null) catch unreachable;
+        fs.finish() catch unreachable;
+        bench.doNotOptimizeAway(fs.matchCount().known);
+        fs.stop();
+    }
+}
+
+/// Viewport search (100 lines) in the middle of the document.
+fn findViewport(f: *FindDoc, s: *bench.State) void {
+    const find = zg_editor.model.search.find;
+    const mid = f.doc.tree.lineStart(f.doc.tree.lineCount() / 2);
+    const end = f.doc.tree.lineStart(f.doc.tree.lineCount() / 2 + 100);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var fs = find.FindSession.start(std.heap.smp_allocator, f.doc, .{ .pattern = "needle" }, .{ .start = mid, .end = end }, null) catch unreachable;
+        bench.doNotOptimizeAway(fs.matchCount().known);
+        fs.stop();
+    }
+}
+
+/// Replace all ~100k matches in a 10 MB document (alternating directions
+/// so every iteration replaces the same number).
+fn replaceAll(f: *FindDoc, s: *bench.State) void {
+    const find = zg_editor.model.search.find;
+    const gpa = std.heap.smp_allocator;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const from, const to = if (i % 2 == 0) .{ "needle", "NEEDLE" } else .{ "NEEDLE", "needle" };
+        var fs = find.FindSession.start(gpa, f.doc, .{ .pattern = from, .case = .sensitive }, .{ .start = 0, .end = 0 }, null) catch unreachable;
+        bench.doNotOptimizeAway(fs.replaceAll(to, .{ .user = 0 }) catch unreachable);
+        fs.stop();
+        f.doc.endFrame();
+    }
+}
+
+fn registerFind(b: *bench.Bench) !void {
+    const Document = zg_editor.model.document.Document;
+    inline for (.{
+        .{ "editor.find.all_literal_100mb", 100 << 20, findAll, 10 },
+        .{ "editor.find.all_literal_icase_100mb", 100 << 20, findAllIcase, 10 },
+        .{ "editor.find.viewport_100mb", 100 << 20, findViewport, 10 },
+        .{ "editor.replace.all_100k", 10 << 20, replaceAll, 1 },
+    }) |c| {
+        // Lines of 100 bytes; one in c[3] holds "needle" (100k in 10 MB).
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(b.gpa);
+        try text.ensureTotalCapacity(b.gpa, c[1]);
+        var k: usize = 0;
+        while (text.items.len < c[1]) : (k += 1) {
+            try text.appendSlice(b.gpa, "the quick brown fox jumps over the lazy dog; and then some more words, ");
+            try text.appendSlice(b.gpa, if (k % c[3] == 0) "a needle in the hay\n" else "nothing in the hay\n");
+        }
+        const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text.items);
+        defer doc.deinit();
+        var f: FindDoc = .{ .doc = doc };
+        try b.run(c[0], &f, c[2]);
+    }
+}
+
+fn registerDiff(b: *bench.Bench) !void {
+    {
+        var p: DiffPair = .{
+            .a = try .fromBytes(b.gpa, "    const total = computeTotal(items, options.include_tax, rate);\n    return total * scale;\n"),
+            .b = try .fromBytes(b.gpa, "    const subtotal = computeTotal(items, options.include_shipping, rate);\n    return subtotal * scale;\n"),
+        };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        try b.run("editor.diff.intraline_hunk", &p, intralineHunk);
+    }
+    {
+        // 10k lines with 100 eight-line blocks moved 50 lines down.
+        const a_text = try genLines(b.gpa, 10_000);
+        defer b.gpa.free(a_text);
+        var lines: std.ArrayList([]const u8) = .empty;
+        defer lines.deinit(b.gpa);
+        var it = std.mem.splitScalar(u8, a_text, '\n');
+        while (it.next()) |l| if (l.len > 0) try lines.append(b.gpa, l);
+        var k: usize = 0;
+        while (k + 58 < lines.items.len) : (k += 100) {
+            std.mem.rotate([]const u8, lines.items[k .. k + 58], 8);
+        }
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(b.gpa);
+        for (lines.items) |l| {
+            try out.appendSlice(b.gpa, l);
+            try out.append(b.gpa, '\n');
+        }
+        var p: DiffPair = .{ .a = try .fromBytes(b.gpa, a_text), .b = try .fromBytes(b.gpa, out.items) };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        try b.run("editor.diff.moves_10k", &p, diffMoves);
+    }
+    const diff = zg_editor.model.diff;
+    inline for (.{
+        .{ "editor.diff.10k_100hunks", 10_000, 100, false },
+        .{ "editor.diff.100k_1khunks", 100_000, 1000, false },
+        .{ "editor.diff.unrelated_100k", 100_000, 0, true },
+    }) |c| {
+        const a_text = try genLines(b.gpa, c[1]);
+        defer b.gpa.free(a_text);
+        const b_text = if (c[3]) blk: {
+            const t = try b.gpa.dupe(u8, a_text);
+            std.mem.reverse(u8, t);
+            break :blk t;
+        } else try mutateLines(b.gpa, a_text, c[2]);
+        defer b.gpa.free(b_text);
+        var p: DiffPair = .{ .a = try .fromBytes(b.gpa, a_text), .b = try .fromBytes(b.gpa, b_text) };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        _ = diff;
+        try b.run(c[0], &p, diffPair);
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -133,9 +345,12 @@ fn register(b: *bench.Bench) !void {
         .{ "editor.buffer.offset_to_utf16", offsetToUtf16 },
         .{ "editor.buffer.replace_1k_cursors", replace1k },
         .{ "editor.snapshot.retain_release", retainRelease },
+        .{ "editor.undo.10k_group", undo10k },
     }) |entry| {
         const d = try Doc.init(b.gpa, text);
         defer d.deinit(b.gpa);
         try b.run(entry[0], d, entry[1]);
     }
+    try registerDiff(b);
+    try registerFind(b);
 }

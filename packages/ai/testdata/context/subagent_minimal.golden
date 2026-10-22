@@ -1,0 +1,30 @@
+model test-model ttl m5 breaks { 0 }
+tool read_file
+tool edit_file [break]
+--- system
+You are a subagent.
+--- system
+<memory path="/work/repo/ZIGGURO.md" scope="project">
+Build with `zig build`.
+</memory>
+--- system
+<memory path="/work/repo/.zigguro/rules/style.md" scope="rule">
+Use 4 spaces.
+</memory>
+--- system [break]
+# Rules available on request
+
+Read one with read_file when its description fits the task.
+- /work/repo/.cursor/rules/db.mdc: Database migrations
+
+--- system
+<env>
+Working directory: /work/repo
+Platform: linux
+Shell: bash
+Today: 2026-10-22
+Workspace root: /work/repo
+Git branch: main
+</env>
+--- message 0
+{"role":"user","content":[{"type":"text","text":"Find the definition of foo."}]}
