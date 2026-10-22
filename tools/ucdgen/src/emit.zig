@@ -110,6 +110,16 @@ pub fn buildBlob(a: std.mem.Allocator, u: *const tables.Ucd) !Blob {
     var ascii: [128]u64 = undefined;
     for (&ascii, 0..) |*x, i| x.* = @bitCast(u.props[i]);
     try b.add("props_ascii", "u64", u64, &ascii);
+    // NFC quick-check skip: bit k of word k/64 is set when every code
+    // point in BMP block k (64 code points) has ccc 0 and NFC_QC=Y.
+    var nfc_safe: [16]u64 = @splat(0);
+    for (0..1024) |k| {
+        const safe = for (u.props[k * 64 ..][0..64]) |x| {
+            if (x.ccc != 0 or x.nfc_qc != .Y) break false;
+        } else true;
+        if (safe) nfc_safe[k / 64] |= @as(u64, 1) << @intCast(k % 64);
+    }
+    try b.add("nfc_safe_bmp", "u64", u64, &nfc_safe);
 
     const xs = try multiStage(e.Aux, a, u.aux);
     try b.add("aux_stage1", "u16", u16, xs.stage1);
