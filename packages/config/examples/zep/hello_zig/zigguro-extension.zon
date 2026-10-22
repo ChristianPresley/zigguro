@@ -1,0 +1,16 @@
+.{
+    .id = "examples.hello",
+    .name = "hello",
+    .version = "0.1.0",
+    .description = "ZEP example in Zig: commands, a tree view and TODO decorations.",
+    .engines = .{ .zigguro = ">=0.1.0" },
+    .main = "zig-out/bin/hello-zig",
+    .activation_events = .{ "onCommand:hello.say", "onView:hello.tree", "onStartupFinished" },
+    .contributes = .{
+        .commands = .{
+            .{ .id = "hello.say", .title = "Hello: Say Hello" },
+            .{ .id = "hello.count", .title = "Hello: Count" },
+        },
+        .views = .{.{ .id = "hello.tree", .name = "Hello", .container = "explorer" }},
+    },
+}
