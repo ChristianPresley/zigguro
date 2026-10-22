@@ -1,11 +1,12 @@
 //! Install layout as the updater sees it (E17.F04, E17.F02.S02.T01): one
 //! root directory on a single volume holding the running `app/`, the
-//! previous version in `prev/`, the next one in `staged/` and the swap
+//! previous version in `app.prev/`, the next one in `staged/` and the swap
 //! journal, so every step of an update is a directory rename.
 //!
 //! ```
 //! <root>/app/                  the installed version
-//! <root>/prev/                 the version before the last swap
+//! <root>/app.prev/             the version before the last swap
+//! <root>/app.failed/           a version that was rolled back
 //! <root>/staged/               a verified, extracted update
 //! <root>/staged.zon            what `staged/` holds
 //! <root>/staged.tmp/           extraction in progress
@@ -43,7 +44,8 @@ pub const InstallKind = enum {
 /// Names under the root.
 pub const names = struct {
     pub const app = "app";
-    pub const prev = "prev";
+    pub const prev = "app.prev";
+    pub const failed = "app.failed";
     pub const staged = "staged";
     pub const staged_zon = "staged.zon";
     pub const staged_tmp = "staged.tmp";

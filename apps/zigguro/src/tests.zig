@@ -1,5 +1,6 @@
 //! The zigguro app's own tests: the adapters that wire the agents into
-//! the workbench and the editor breadcrumbs (`zig build test-apps`).
+//! the workbench, the editor breadcrumbs and the early update step
+//! (`zig build test-apps`).
 
 test {
     _ = @import("agent/approvals.zig");
@@ -9,4 +10,5 @@ test {
     _ = @import("agent/plan_card.zig");
     _ = @import("agent/commands.zig");
     _ = @import("path_crumbs.zig");
+    _ = @import("startup/early_update_check.zig");
 }
