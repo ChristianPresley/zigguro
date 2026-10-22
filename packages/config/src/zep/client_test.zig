@@ -112,3 +112,29 @@ test "sdk: host closing the connection ends run" {
     f.pipe.closeB();
     try f.ext.done.waitTimeout(testing.io, .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } });
 }
+
+fn tree(_: *Extension, params: ?std.json.Value, arena: std.mem.Allocator) anyerror!?std.json.Value {
+    var root: std.json.ObjectMap = .empty;
+    try root.put(arena, "id", params.?.object.get("viewId").?);
+    return .{ .object = root };
+}
+
+test "sdk: onRequest handles other host requests" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.ext.onRequest(protocol.methods.view_resolve, tree);
+    try f.ext.start();
+    var host = f.host();
+    defer host.deinit();
+    try expectScript(&host,
+        \\> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-10","host":{"name":"h","version":"0"},"extension":{"id":"a.b","root":"/","storageDir":"/","globalStorageDir":"/"}}}
+        \\< {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-10","capabilities":{"documentSync":false,"decorations":false,"views":["hello.tree"],"configurationSections":[]}}}
+        \\> {"jsonrpc":"2.0","method":"initialized","params":{}}
+    );
+    try f.ext.waitInitialized(.{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } });
+    try expectScript(&host,
+        \\> {"jsonrpc":"2.0","id":2,"method":"view/resolve","params":{"viewId":"hello.tree"}}
+        \\< {"jsonrpc":"2.0","id":2,"result":{"id":"hello.tree"}}
+    );
+}
