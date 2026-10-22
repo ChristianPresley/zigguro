@@ -1,7 +1,7 @@
 //! zg_scm: the AI-first source control core (epic E09). This module holds the
 //! content-addressed object store: object IDs, the object model and its
 //! canonical encoding, the segmented store, chunked blobs, compaction,
-//! GC and fsck.
+//! GC and fsck; and the commit graph: the commit index and ancestry.
 
 const std = @import("std");
 
@@ -25,6 +25,12 @@ pub const compaction = @import("store/compaction.zig");
 pub const gc = @import("store/gc.zig");
 /// Store integrity checks.
 pub const fsck = @import("store/fsck.zig");
+/// The commit index segment file format.
+pub const index_segment = @import("graph/index_segment.zig");
+/// The commit index: positions, parents, generations, change IDs.
+pub const index = @import("graph/index.zig");
+/// Ancestry queries over the commit index.
+pub const ancestry = @import("graph/ancestry.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -38,10 +44,14 @@ pub const ChunkedBlob = object.ChunkedBlob;
 pub const Store = store.Store;
 pub const WriteBatch = store.WriteBatch;
 pub const ObjectRef = store.ObjectRef;
+pub const CommitIndex = index.CommitIndex;
+pub const Pos = index.Pos;
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("store/encode_test.zig");
     _ = @import("store/store_test.zig");
     _ = @import("store/gc_test.zig");
+    _ = @import("graph/index_test.zig");
+    _ = @import("graph/ancestry_test.zig");
 }
