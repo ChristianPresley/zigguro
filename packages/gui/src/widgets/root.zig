@@ -24,6 +24,14 @@ pub const menu = @import("menu.zig");
 pub const menu_aim = @import("menu_aim.zig");
 /// The `menubar.zig` module.
 pub const menubar_mod = @import("menubar.zig");
+/// The `quick_pick.zig` module.
+pub const quick_pick = @import("quick_pick.zig");
+/// The `quick_pick/matcher.zig` module.
+pub const quick_pick_matcher = @import("quick_pick/matcher.zig");
+/// The `quick_pick/provider.zig` module.
+pub const quick_pick_provider = @import("quick_pick/provider.zig");
+/// The `quick_pick/mru.zig` module.
+pub const quick_pick_mru = @import("quick_pick/mru.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -67,6 +75,10 @@ pub const contextMenu = menu.contextMenu;
 pub const menuButton = menu.menuButton;
 /// See `menubar.menubar`.
 pub const menubar = menubar_mod.menubar;
+/// See `quick_pick.openQuickPick`.
+pub const openQuickPick = quick_pick.openQuickPick;
+/// See `quick_pick.QpItem`.
+pub const QpItem = quick_pick.QpItem;
 /// See `text.TextProps`.
 pub const TextProps = text.TextProps;
 

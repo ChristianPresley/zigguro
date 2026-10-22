@@ -45,6 +45,9 @@ test "place: preferred side, flip, shift" {
     try expectRect(.{ .x = 20, .y = 12, .w = 100, .h = 280 }, overlay.place(.{ .x = 20, .y = 100, .w = 60, .h = 30 }, tall, vp, .{}));
     // Centred.
     try expectRect(.{ .x = 150, .y = 89.6, .w = 100, .h = 80 }, overlay.center(size, vp));
+    // Top-centred at 12 % (QuickPick), clamped to the bottom margin.
+    try expectRect(.{ .x = 150, .y = 36, .w = 100, .h = 80 }, overlay.atTop(size, vp, 0.12));
+    try expectRect(.{ .x = 150, .y = 212, .w = 100, .h = 80 }, overlay.atTop(size, vp, 0.9));
 }
 
 const Menu = struct {
