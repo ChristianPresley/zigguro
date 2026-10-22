@@ -9,6 +9,8 @@ const ids = @import("ids.zig");
 const view = @import("view.zig");
 const window_mod = @import("window.zig");
 const theme_mod = @import("../theme/theme.zig");
+const toast_mod = @import("../widgets/toast.zig");
+const NotificationCenter = @import("../widgets/notification_center.zig").NotificationCenter;
 
 const EntityId = view.EntityId;
 const Window = window_mod.Window;
@@ -86,6 +88,10 @@ pub const App = struct {
     effect_cycle: bool = false,
     /// The text clipboard (kept in sync with the system's by the Host).
     clipboard: Clipboard = .{},
+    /// Every toast and notification (`zg_gui.w.toast`).
+    notifications: NotificationCenter,
+    /// Each window's toast stack.
+    toast_hosts: std.ArrayList(*toast_mod.Host) = .empty,
     /// Milliseconds on a monotonic clock: set by the Host on every pump,
     /// by tests directly. Drives undo coalescing and other timing.
     now_ms: u64 = 0,
@@ -121,6 +127,7 @@ pub const App = struct {
             .gpa = gpa,
             .entities = .{ .gpa = gpa },
             .effect_arena = .init(gpa),
+            .notifications = .init(gpa),
         };
     }
 
@@ -133,6 +140,8 @@ pub const App = struct {
         app.local_calls.deinit(app.gpa);
         for (app.windows.items) |w| w.destroy();
         app.windows.deinit(app.gpa);
+        app.toast_hosts.deinit(app.gpa);
+        app.notifications.deinit();
         var it = app.observers.valueIterator();
         while (it.next()) |l| l.deinit(app.gpa);
         app.observers.deinit(app.gpa);

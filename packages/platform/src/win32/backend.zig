@@ -28,8 +28,12 @@
 //! Cursors come from `cursor.zig`. Every window gets the DWM dark mode
 //! that matches the system theme.
 //!
-//! Not yet here: raw input, pen and touch (#222), IME (#226), drag and
-//! drop (#232) and cloaking until the first present.
+//! IME composition (`ime.zig`) runs in the window procedure: preedit and
+//! commits become `ime_preedit` and `text_input`, and `set_ime_state`
+//! is posted to the window's thread, where IMM32 contexts live.
+//!
+//! Not yet here: raw input, pen and touch (#222), drag and drop (#232) and
+//! cloaking until the first present.
 
 const std = @import("std");
 const Io = std.Io;
@@ -58,6 +62,8 @@ const wide = @import("wide.zig");
 const CpuPresenter = @import("cpu_present.zig").CpuPresenter;
 const clip_mod = @import("clipboard.zig");
 const frame = @import("frame.zig");
+const ime_mod = @import("ime.zig");
+const ImePurpose = @import("../api/ime.zig").ImePurpose;
 const cursor_mod = @import("cursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
@@ -97,6 +103,8 @@ const WM_APP_SYSDRAG = WM.APP + 8;
 /// To a window: show the window menu at client point lParam (x low, y
 /// high, signed 16-bit).
 const WM_APP_SYSMENU = WM.APP + 9;
+/// To a window: apply `Window.ime_req`.
+const WM_APP_IME = WM.APP + 10;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
@@ -134,7 +142,20 @@ const Window = struct {
     /// button being pressed.
     nc_tracking: bool = false,
     nc_pressed: u32 = 0,
+    /// Window thread only.
+    ime: ime_mod.Ime = .{},
+    /// The latest `set_ime_state`, waiting for the window thread. Guarded
+    /// by the mutex.
+    ime_req: ?ImeRequest = null,
+    /// Window thread only: keys held (released on focus loss) and the
+    /// AltGr fake Left Ctrl being held.
+    down: wkeys.DownKeys = .{},
+    fake_ctrl: bool = false,
 };
+
+const no_cp: u32 = 0xFFFF_FFFF;
+
+const ImeRequest = struct { enabled: bool, purpose: ImePurpose, caret: types.PxRect };
 
 /// A `createWindow` request carried by `WM_APP_CREATE`.
 const CreateRequest = struct {
@@ -184,6 +205,9 @@ pub const Win32Backend = struct {
     dark: bool = false,
     /// Platform thread only.
     cursors: cursor_mod.Cache = .{},
+    /// Platform thread only: each scancode's unshifted codepoint under the
+    /// current layout (`no_cp` = not looked up yet), for shortcut keysyms.
+    unshifted: [512]u32 = @splat(no_cp),
 
     /// Starts the platform thread and waits until its message window exists.
     pub fn init(gpa: Allocator, io: Io, opts: InitOptions) !*Win32Backend {
@@ -300,7 +324,17 @@ pub const Win32Backend = struct {
                 // SetCursor only works on the window's own thread.
                 _ = user32.PostMessageW(hwnd, WM_APP_CURSOR, 0, 0);
             },
-            .set_ime_state => |c| _ = try b.hwndOf(c.win),
+            .set_ime_state => |c| {
+                const hwnd = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const w = b.find(c.win) orelse return error.InvalidWindow;
+                    w.ime_req = .{ .enabled = c.enabled, .purpose = c.purpose, .caret = c.caret_rect_px };
+                    break :blk w.hwnd orelse return error.InvalidWindow;
+                };
+                // IMM32 contexts belong to the window's thread.
+                _ = user32.PostMessageW(hwnd, WM_APP_IME, 0, 0);
+            },
             .set_hit_test => |c| {
                 b.lock();
                 defer b.unlock();
@@ -891,6 +925,23 @@ pub const Win32Backend = struct {
                 if (w.tracking_leave) b.applyCursor(w);
                 return 0;
             },
+            WM_APP_IME => {
+                const req = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const r = w.ime_req;
+                    w.ime_req = null;
+                    break :blk r;
+                };
+                if (req) |r| w.ime.apply(hwnd, r.enabled, r.purpose, r.caret);
+                return 0;
+            },
+            ime_mod.WM_IME.SETCONTEXT, ime_mod.WM_IME.STARTCOMPOSITION, ime_mod.WM_IME.ENDCOMPOSITION, ime_mod.WM_IME.COMPOSITION, ime_mod.WM_IME.CHAR => {
+                var lp2: t.LPARAM = lp;
+                const sink: ime_mod.Sink = .{ .ctx = w, .preedit = imePreedit, .commit = imeCommit };
+                if (w.ime.onMessage(hwnd, msg, wp, lp, sink, &lp2)) |r| return r;
+                return user32.DefWindowProcW(hwnd, msg, wp, lp2);
+            },
             WM_APP_SYSDRAG => {
                 // The press that started the drag holds the capture.
                 _ = user32.ReleaseCapture();
@@ -987,6 +1038,18 @@ pub const Win32Backend = struct {
                 b.lock();
                 defer b.unlock();
                 const focused = msg == WM.SETFOCUS;
+                // Keys held when focus leaves never send their release here.
+                if (!focused) for (w.down.drain()) |k| b.stage(.{ .key = .{ .win = w.id, .ev = .{
+                    .key = wkeys.keyOf(k.scancode, k.vk),
+                    .keysym = wkeys.keysymOf(k.vk, 0),
+                    .codepoint = 0,
+                    .mods = .{},
+                    .action = .release,
+                    .text = .empty,
+                    .native_scancode = k.scancode,
+                    .native_vk = k.vk,
+                    .time_ns = b.nowNs(),
+                } } });
                 if (w.focused != focused) {
                     w.focused = focused;
                     b.stage(.{ .window_focus = .{ .win = w.id, .focused = focused } });
@@ -994,10 +1057,17 @@ pub const Win32Backend = struct {
                 return 0;
             },
             WM.KEYDOWN, WM.SYSKEYDOWN, WM.KEYUP, WM.SYSKEYUP => {
-                b.onKey(w, hwnd, msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN, @intCast(wp & 0xffff), lp);
-                // Let DefWindowProc see Alt+F4 and the system menu keys.
-                if (msg == WM.SYSKEYDOWN or msg == WM.SYSKEYUP) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                const vk: u16 = @intCast(wp & 0xffff);
+                b.onKey(w, hwnd, msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN, vk, lp);
+                // Alt, Alt+Space and Alt+F4 keep their system meaning; F10
+                // and Alt+letter (no menu bar) do not.
+                const alt = (@as(usize, @bitCast(lp)) >> 29) & 1 != 0;
+                if ((msg == WM.SYSKEYDOWN or msg == WM.SYSKEYUP) and wkeys.systemKey(vk, alt)) return user32.DefWindowProcW(hwnd, msg, wp, lp);
                 return 0;
+            },
+            WM.INPUTLANGCHANGE => {
+                b.unshifted = @splat(no_cp);
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
             },
             WM.CHAR, WM.SYSCHAR => return 0, // consumed with their WM_KEYDOWN
             WM.MOUSEMOVE => {
@@ -1037,7 +1107,9 @@ pub const Win32Backend = struct {
                 b.lock();
                 defer b.unlock();
                 // Wheel forward (positive) scrolls towards the start: negative dy.
-                b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else notches, .dy = if (vertical) -notches else 0, .unit = .lines, .source = .wheel, .phase = .none } });
+                // Precision touchpads send deltas below a whole notch.
+                const source: types.ScrollSource = if (@rem(delta, msgs.WHEEL_DELTA) != 0) .continuous else .wheel;
+                b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else notches, .dy = if (vertical) -notches else 0, .unit = .lines, .source = source, .phase = .none } });
                 return 0;
             },
             else => return user32.DefWindowProcW(hwnd, msg, wp, lp),
@@ -1055,8 +1127,49 @@ pub const Win32Backend = struct {
         _ = user32.SetCursor(b.cursors.get(shape, w.dpi));
     }
 
+    fn imePreedit(ctx: *anyopaque, text: []const u8, begin: i32, end: i32) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch types.PayloadSlice.empty;
+        b.stage(.{ .ime_preedit = .{ .win = w.id, .text = p, .cursor_begin = begin, .cursor_end = end } });
+    }
+
+    fn imeCommit(ctx: *anyopaque, text: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch return;
+        b.stage(.{ .text_input = .{ .win = w.id, .text = p } });
+    }
+
     fn onKey(b: *Win32Backend, w: *Window, hwnd: t.HWND, pressed: bool, vk: u16, lp: t.LPARAM) void {
-        const sc = wkeys.scancodeOf(lp);
+        // The IME consumed this key; its result arrives as composition.
+        if (vk == ime_mod.VK_PROCESSKEY) return;
+        var sc = wkeys.scancodeOf(lp);
+        if (sc & 0xff == 0) {
+            // Synthetic input without a scancode.
+            const m = user32.MapVirtualKeyExW(vk, msgs.MAPVK_VK_TO_VSC_EX, null);
+            sc = @intCast((m & 0xff) | (if (m & 0xff00 == 0xe000) @as(u32, 0x100) else 0));
+        }
+        if (sc == 0x1d) {
+            // AltGr arrives as a fake Left Ctrl plus Right Alt with the
+            // same message time; report only the Right Alt.
+            if (pressed) {
+                var m: t.MSG = undefined;
+                const next: ?wkeys.KeyMsg = if (user32.PeekMessageW(&m, hwnd, WM.KEYDOWN, WM.SYSKEYDOWN, msgs.PM_NOREMOVE) != 0) .{ .scancode = wkeys.scancodeOf(m.lParam), .time = m.time } else null;
+                if (wkeys.isFakeAltGrCtrl(.{ .scancode = sc, .time = @bitCast(user32.GetMessageTime()) }, next)) {
+                    w.fake_ctrl = true;
+                    return;
+                }
+            } else if (w.fake_ctrl) {
+                w.fake_ctrl = false;
+                return;
+            }
+        }
+        if (pressed) w.down.press(.{ .scancode = sc, .vk = vk }) else w.down.release(sc);
         // TranslateMessage has queued the key's WM_CHAR(s); take them now so
         // the text travels with the key event.
         var text_buf: [16]u8 = undefined;
@@ -1086,20 +1199,44 @@ pub const Win32Backend = struct {
             }
         }
         const mods = modsNow();
+        const ctrl_chord = mods.ctrl and !mods.alt_gr;
+        // Shortcuts need a keysym even when Ctrl suppresses the text: use
+        // the layout's unshifted character then.
+        const keysym = wkeys.keysymOf(vk, if (ctrl_chord or cp == 0) b.unshiftedCp(vk, sc) else cp);
+        const ctrl_state = wkeys.ctrlStateFrom({}, keyDown, keyToggled, sc & 0x100 != 0);
+        const action: @import("../api/keys.zig").KeyAction = if (!pressed) .release else if (wkeys.isRepeat(lp)) .repeat else .press;
+        // Coalesced auto-repeat: one event per repeat (capped).
+        const count: u8 = if (action == .repeat) wkeys.repeatCount(lp) else 1;
         b.lock();
         defer b.unlock();
         const text = b.arena.put(text_buf[0..text_len]) catch types.PayloadSlice.empty;
-        b.stage(.{ .key = .{ .win = w.id, .ev = .{
+        const now = b.nowNs();
+        for (0..count) |i| b.stage(.{ .key = .{ .win = w.id, .ev = .{
             .key = wkeys.keyOf(sc, vk),
-            .keysym = wkeys.keysymOf(vk, if (mods.ctrl and !mods.alt_gr) 0 else cp),
-            .codepoint = if (mods.ctrl and !mods.alt_gr) 0 else cp,
+            .keysym = keysym,
+            .codepoint = if (ctrl_chord) 0 else cp,
             .mods = mods,
-            .action = if (!pressed) .release else if (wkeys.isRepeat(lp)) .repeat else .press,
-            .text = if (mods.ctrl and !mods.alt_gr) .empty else text,
+            .action = action,
+            .text = if (ctrl_chord or i > 0) .empty else text,
             .native_scancode = sc,
             .native_vk = vk,
-            .time_ns = b.nowNs(),
+            .native_ctrl_state = ctrl_state,
+            .time_ns = now,
         } } });
+    }
+
+    /// The character key `sc` produces with no modifiers under the current
+    /// layout, or 0; cached per scancode until the layout changes.
+    fn unshiftedCp(b: *Win32Backend, vk: u16, sc: u16) u21 {
+        const slot = &b.unshifted[sc & 0x1ff];
+        if (slot.* == no_cp) {
+            const state: [256]u8 = @splat(0);
+            var buf: [4]u16 = undefined;
+            const scan: u32 = (sc & 0xff) | (if (sc & 0x100 != 0) @as(u32, 0xe000) else 0);
+            const n = user32.ToUnicodeEx(vk, scan, &state, &buf, buf.len, msgs.TOUNICODE_NO_STATE_CHANGE, user32.GetKeyboardLayout(0));
+            slot.* = if (n == 1 and buf[0] >= 0x20 and buf[0] != 0x7f and (buf[0] < 0xd800 or buf[0] >= 0xe000)) buf[0] else 0;
+        }
+        return @intCast(slot.*);
     }
 
     fn onButton(b: *Win32Backend, w: *Window, hwnd: t.HWND, button: types.Button, pressed: bool, lp: t.LPARAM) void {
@@ -1482,5 +1619,73 @@ test "win32 cursors: every shape builds at 100, 150 and 200%" {
     const win = try p.createWindow(.{ .title = "zg cursor", .size = .{ .w = 320, .h = 200 } });
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .grab } });
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    p.destroyWindow(win);
+}
+
+test "win32 ime: state commands, composition start/end and cancel" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg ime", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .password, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 50, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    // Handled without the default composition window.
+    try testing.expectEqual(@as(t.LRESULT, 0), user32.SendMessageW(hwnd, ime_mod.WM_IME.STARTCOMPOSITION, 0, 0));
+    // No GCS flags: the composition was cancelled.
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.COMPOSITION, 0, 0);
+    const pe = (try waitFor(p, .ime_preedit, win)).ime_preedit;
+    try testing.expectEqual(@as(usize, 0), p.payload(pe.text).len);
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.ENDCOMPOSITION, 0, 0);
+    _ = try waitFor(p, .ime_preedit, win);
+    // A key the IME consumed is not reported.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, ime_mod.VK_PROCESSKEY, 1);
+    var evs: [64]Event = undefined;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .key);
+    p.destroyWindow(win);
+}
+
+test "win32 keys: coalesced repeats, focus-loss releases, ctrl state" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg keys", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    // 'A' down, then a repeat message carrying a count of 3.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, 'A', 0x001E0001);
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, 'A', 0x401E0003);
+    // Numpad Enter (E0 1C): enhanced.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, msgs.VK.RETURN, 0x011C0001);
+    var presses: usize = 0;
+    var repeats: usize = 0;
+    var enhanced = false;
+    var evs: [64]Event = undefined;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    while (presses + repeats < 5) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .key) switch (e.key.ev.action) {
+            .press => {
+                presses += 1;
+                if (e.key.ev.native_vk == msgs.VK.RETURN) enhanced = e.key.ev.native_ctrl_state & wkeys.CtrlState.ENHANCED != 0;
+            },
+            .repeat => repeats += 1,
+            .release => {},
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        if (presses + repeats < 5) p.waitEvents(deadline);
+    }
+    try testing.expectEqual(@as(usize, 2), presses);
+    try testing.expectEqual(@as(usize, 3), repeats);
+    try testing.expect(enhanced);
+    // Focus loss releases both held keys.
+    _ = user32.SendMessageW(hwnd, WM.KILLFOCUS, 0, 0);
+    var releases: usize = 0;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| if (e == .key and e.key.ev.action == .release) {
+        releases += 1;
+    };
+    try testing.expectEqual(@as(usize, 2), releases);
     p.destroyWindow(win);
 }

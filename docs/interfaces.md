@@ -993,7 +993,8 @@ DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
 first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
-E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S05.T01 / E01.F02.S04.T01.
+E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S03.T01 / E01.F02.S05.T01 /
+E01.F02.S04.T01.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1011,8 +1012,15 @@ pub fn platform(b: *Win32Backend) Platform;
 `window_configure` comes from `createWindow`; later ones from `WM_SIZE`
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
-chords carry none. Wheel notches are `scroll` lines with forward
-negative. A window created on a non-96 DPI monitor is resized for that
+chords carry none; their `keysym` is the layout's unshifted character
+(`ToUnicodeEx`, cached per scancode until `WM_INPUTLANGCHANGE`), so
+Ctrl+A reports `a`. AltGr's synthetic Left Ctrl is dropped. Coalesced
+auto-repeat becomes one `repeat` per count (at most 32).
+`native_ctrl_state` carries the console control-key bits. Focus loss
+releases every held key. Alt, Alt+Space and Alt+F4 keep their system
+meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
+with forward negative; sub-notch deltas (precision touchpads) report
+`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
@@ -1039,6 +1047,13 @@ cursors, and for the shapes Windows lacks, cursors built from embedded
 masks at 32, 48 or 64 px by DPI (`cursor.zig`). Windows get DWM dark
 mode from the system theme and, when client-decorated, round corners
 (Windows 11).
+IME (`ime.zig`, IMM32): the default composition window is suppressed;
+`WM_IME_COMPOSITION` stages `ime_preedit` (cursor = the selected clause,
+or the caret, in UTF-8 bytes) and commits as `text_input`; keys the IME
+consumed (`VK_PROCESSKEY`) are not reported. `set_ime_state` places the
+composition window at the caret and the candidate list below it;
+disabled or `password`/`pin` detaches the context, committing any
+composition. Manual checklist: `packages/platform/docs/manual-tests/win32-ime.md`.
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1052,10 +1067,10 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 
 ### Stability
 Experimental. Not yet: a theme or backdrop command (the system theme
-and no backdrop are used), raw input, pen and touch, IME, bitmap
-clipboard formats (`CF_DIB`), OLE drag and drop, cloaking until the
-first present, the high-resolution waitable pacing timer and
-per-monitor refresh rates.
+and no backdrop are used), raw input, pen and touch, TSF and
+`set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
+drag and drop, cloaking until the first present, the high-resolution
+waitable pacing timer and per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
 
@@ -2295,12 +2310,13 @@ Internal to E02 behind `r2d.Renderer`.
 ### Defined in
 `packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
 `highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig`,
-`structure/*.zig` (E05.F04); the document adapter is
+`structure/*.zig`, `brackets/*.zig` (E05.F04); the document adapter is
 `packages/editor/src/model/syntax.zig`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`).
+structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
+structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2344,13 +2360,42 @@ pub const Structure = struct { version: u64, folds: []const FoldRange, symbols: 
     pub fn selectionRanges(s, gpa, pos: u32, out: *ArrayList(ByteRange)) !void; // innermost first
     pub fn indentDepth(s, pos: u32) ?u32;
 };
+pub const FoldKind = enum { block, comment, imports, string, region, pub fn lspKind(k) ?[]const u8 };
+pub const SymbolKind = enum { function, test_decl, @"struct", ..., class, interface, module, namespace, method,
+    type_alias, heading, pub fn lspKind(k) u8 };                          // LSP SymbolKind numbers
+// structure/query.zig
+pub fn foldsStartingIn(s, first: u32, last: u32) []const FoldRange; pub fn foldAt(s, line: u32) ?FoldRange;
+pub fn symbolAt(s, pos: u32) ?u32; pub fn children(s, parent: ?u32) ChildIterator;
+// Bracket pairs (brackets/bracket_tree.zig): a (2,3)-tree with relative lengths, updated by node reuse.
+pub const BracketToken = struct { offset: u64, len: u8, pair: u6, open: bool };   // pair indexes Language.brackets
+pub const BracketSource = struct { ctx, len: u64, nextFn: fn (ctx, from: u64) !?BracketToken };
+pub const TextEdit = struct { start: u64, end: u64, new_len: u64 };               // old offsets
+pub const BracketPairInfo = struct { open: u64, open_len: u8, close: ?u64, close_len: u8, depth: u32, pair: u6 };
+pub const BracketTree = struct {
+    pub fn build(gpa, src: BracketSource) !BracketTree; pub fn rebuild(bt, src) !void;
+    pub fn applyEdits(bt, edits: []const TextEdit, retokenized: []const Range /* new offsets */, src) !void;
+    pub fn matching(bt, pos: u64) ?BracketPairInfo;        // pos on either bracket
+    pub fn enclosing(bt, pos: u64) ?BracketPairInfo;       // innermost pair around pos
+    pub fn pairsInRange(bt, gpa, r: Range, out) !void;    // rainbow depth + guides, document order
+    pub fn unmatched(bt, gpa, r: Range, out: *ArrayList(u64)) !void;
+};
+pub const HighlightBrackets = struct { pub fn init(gpa, h: *const Highlighter, lines: LineSource, index: LineIndex) HighlightBrackets;
+    pub fn source(s) BracketSource };                     // bracket-highlighted tokens matching Language.brackets
+pub fn Highlighter.takeRelexed(h) ?Range;                  // lines relexed since the last call
+pub fn Highlighter.isCommentLine(h, line: u64, text: []const u8) bool;
+// Fallback structure (structure/fallback.zig): any language without tier 2.
+pub fn fallbackStructure(gpa, text: []const u8, version: u64, bt: ?*const BracketTree, lang: *const Language,
+    o: struct { tab_size: u8 = 4, hints: ?LineHints = null }) !Structure;
+// Language gains `fold_by_indent: bool` and `decl_keywords: []const DeclKeyword` (scopes/outline headers).
 // zg_editor.model.syntax: the document adapter.
 pub fn lineSource(tree: *const PieceTree) LineSource;
 pub fn lineEdits(gpa, ev: *const ChangeEvent, after: PieceTree, out: *ArrayList(LineEdit)) !?[]const LineEdit;
-pub const DocumentSyntax = struct { hl: Highlighter, version: u64,
+pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, version: u64,
     pub fn init(gpa, lang, reg, tree: *const PieceTree, version: u64) !DocumentSyntax;
     pub fn onChange(ds, ev: *const ChangeEvent, after: *const PieceTree, deadline: ?Deadline) !void; // from a Listener
-    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool };
+    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool;
+    pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
+pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 ```
 
@@ -2364,6 +2409,8 @@ immutable and tagged with the snapshot's version, so a stale one is dropped.
 `Language` definitions and the `Registry` are borrowed and must outlive every
 `Highlighter` using them. `tokens(line)` slices are valid until the next
 call that mutates the highlighter. `LineSource` text is borrowed per call.
+`BracketTree` owns its nodes; `pairsInRange`/`unmatched` fill caller lists.
+A `BracketSource` must describe the text the tree is updated to.
 
 ### Stability
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not
@@ -2617,3 +2664,86 @@ evicted, so memory stays within the budget plus that frame's layers.
 Stable. `drawLayer` for a scroll layer must follow its `beginScrollLayer` in the
 same frame, which sets the wrap origin. The composite prim's `uv` holds
 scroll + origin. Window damage for a changed layer is still the caller's job.
+
+## zg_vulkan.present.RenderThread and FramePacer
+
+### Defined in
+`packages/vulkan/src/present/RenderThread.zig`, `present/FramePacer.zig` (E02.F04.S03.T01).
+
+### Implemented by
+E02.F04.S03.T01.
+
+### Consumed by
+E04 (window host: posts draw lists, forwards Event.frame and configure), E14 (frame stats).
+
+### Signature
+```zig
+pub const RenderThread = struct {
+    pub const Notify = struct { ctx: *anyopaque, wake_ui: *const fn (*anyopaque) void };
+    pub const FrameSignal = union(enum) { frame, configure: struct { size: Size, scale: f32 }, present_feedback: struct { present_id: u64, presented_ns: u64 } };
+    pub const Options = struct { pacing: FramePacer.Mode = .immediate, refresh_ns: u64 = 16_666_667, notify: ?Notify = null };
+    pub fn spawn(gpa, io, renderer: Renderer, opts: Options) !*RenderThread;
+    pub fn firstList(self) *DrawList;
+    pub fn post(self, dl: *DrawList) *DrawList;          // never blocks; returns the next list to fill
+    pub fn onPlatformFrame(self, ev: FrameSignal) void;
+    pub fn stats(self) FrameStats;                       // last completed frame
+    pub fn shutdown(self) void;                          // joins, destroys the renderer
+};
+pub const FramePacer = struct {
+    pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
+    pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };
+    pub const PresentWaiter = struct { ctx, wait: fn (ctx, present_id: u64, timeout_ns: u64) WaitResult };
+    pub fn selectMode(Caps) Mode;
+    pub fn init(mode: Mode, refresh_ns: u64) FramePacer;
+    pub fn nextPresentId(self) u64;
+    pub fn waitIdFor(self, id: u64) ?u64;               // id - max_queued
+    pub fn readiness(self, now_ns: u64) Readiness;       // now | at(ns) | signal
+    pub fn waitReady(self, timeout_ns: ?u64) WaitResult; // render thread only
+};
+```
+
+### Threading
+`post`, `onPlatformFrame`, `stats` and `shutdown` are called on the UI thread. Rendering, pacing and all
+renderer calls run on the render thread.
+
+### Ownership/lifetime
+The thread owns the renderer and three draw lists. A list returned by `post` belongs to
+the UI until it is posted again. Only lists from `firstList`/`post` may be posted.
+
+### Stability
+Unstable until E04 adopts it. `post` returns a non-null list, unlike the `?*DrawList` in the draft
+signature. The present-wait modes need a swapchain to install a `PresentWaiter`; until then they start
+frames at once.
+
+## zg_vulkan.GpuTimer
+
+### Defined in
+`packages/vulkan/src/r2d/vk/gpu_timing.zig` (E02.F06.S04.T01).
+
+### Implemented by
+E02.F06.S04.T01.
+
+### Consumed by
+VkRenderer (`FrameStats.gpu_ns`), E14 (budgets via trace counters).
+
+### Signature
+```zig
+pub const Zone = enum(u3) { frame, uploads, layers, main };
+pub const Durations = struct { frame_ns: u64, uploads_ns: u64, layers_ns: u64, main_ns: u64, gpu_start_ns: ?u64 = null };
+pub fn init(gpu: *Gpu, frames_in_flight: u32) !?GpuTimer;   // null without timestamp support
+pub fn begin(self, cb, slot: u32) void;                      // host or command reset
+pub fn mark(self, cb, slot: u32, z: Zone, edge: Edge) void;  // vkCmdWriteTimestamp2
+pub fn collect(self, slot: u32, io) ?Durations;              // after the slot retired; never waits
+pub fn ticksToNs(start: u64, end: u64, valid_bits: u32, period_ns: f32) u64;
+```
+
+### Threading
+Render thread (the one recording the frame).
+
+### Ownership/lifetime
+Owned by the VkRenderer; the query pool is destroyed with it.
+
+### Stability
+Stable. GPU zones are emitted as trace counters. Complete GPU-track events wait for a
+`zg_core.trace` API that records events with explicit timestamps.
+

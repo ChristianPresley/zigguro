@@ -100,6 +100,15 @@ pub fn build(b: *std.Build) void {
             }
             test_step.dependOn(check_vk);
         }
+        // zg_terminal and zg_security also export GUI modules, tested with them.
+        inline for (.{ .{ "zg_terminal", "zg_terminal_view" }, .{ "zg_security", "zg_security_ui" } }) |extra| if (comptime std.mem.eql(u8, p.name, extra[0])) {
+            const vt = b.addTest(.{ .name = extra[1], .root_module = zg_build.testModule(b, f, deps[i].module(extra[1])), .filters = test_filters });
+            const vrun = b.addRunArtifact(vt);
+            vrun.skip_foreign_checks = true;
+            one.dependOn(&vrun.step);
+            test_step.dependOn(&vrun.step);
+            fuzz_step.dependOn(&vrun.step);
+        };
         // zg_ai also exports the zg_ai_proto leaf module, tested with it.
         if (comptime std.mem.eql(u8, p.name, "zg_ai")) {
             const pt = b.addTest(.{ .name = "zg_ai_proto", .root_module = zg_build.testModule(b, f, deps[i].module("zg_ai_proto")), .filters = test_filters });
@@ -439,6 +448,9 @@ fn addApp(
     var imports: std.ArrayList(std.Build.Module.Import) = .empty;
     imports.append(b.allocator, .{ .name = "zg_options", .module = options }) catch @panic("OOM");
     inline for (packages.all, 0..) |p, i| imports.append(b.allocator, .{ .name = p.name, .module = mods[i] }) catch @panic("OOM");
+    // Extra modules packages export next to their root module.
+    imports.append(b.allocator, .{ .name = "zg_terminal_view", .module = mods[comptime packages.indexOf("zg_terminal")].owner.modules.get("zg_terminal_view").? }) catch @panic("OOM");
+    imports.append(b.allocator, .{ .name = "zg_security_ui", .module = mods[comptime packages.indexOf("zg_security")].owner.modules.get("zg_security_ui").? }) catch @panic("OOM");
     // Crash reports (E17.F05) need frame pointers and a GNU build id, and
     // the self-hosted aarch64 backend traps before the segfault hook runs.
     const exe = b.addExecutable(.{

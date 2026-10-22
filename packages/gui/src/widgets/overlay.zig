@@ -51,6 +51,8 @@ pub const Anchor = union(enum) {
     /// Centred horizontally, this fraction of the window height from the
     /// top (QuickPick).
     top: f32,
+    /// The bottom-right corner, this many pixels in (toasts).
+    corner: f32,
 };
 
 /// Placement next to the anchor.
@@ -248,6 +250,14 @@ pub fn atTop(size: Size, viewport: Rect, frac: f32) Rect {
     const vp = viewport.inset(.all(viewport_margin));
     const x = vp.x + @max(0, (vp.w - size.w) / 2);
     const y = @max(vp.y, @min(viewport.y + viewport.h * frac, vp.bottom() - size.h));
+    return .{ .x = x, .y = y, .w = size.w, .h = size.h };
+}
+
+/// A panel of `size` in the bottom-right corner of `viewport`, `margin`
+/// pixels in (clamped to stay visible).
+pub fn atCorner(size: Size, viewport: Rect, margin: f32) Rect {
+    const x = @max(viewport.x, viewport.right() - margin - size.w);
+    const y = @max(viewport.y, viewport.bottom() - margin - size.h);
     return .{ .x = x, .y = y, .w = size.w, .h = size.h };
 }
 

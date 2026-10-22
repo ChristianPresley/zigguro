@@ -55,6 +55,28 @@ pub const ContextKind = enum { code, string, comment, regex, char };
 /// A bracket pair the language uses.
 pub const BracketPair = struct { open: []const u8, close: []const u8 };
 
+/// A declaration keyword and the outline kind it starts.
+pub const DeclKeyword = struct { word: []const u8, kind: structure.SymbolKind };
+
+/// Declaration keywords common to C-like and scripting languages.
+pub const default_decl_keywords = [_]DeclKeyword{
+    .{ .word = "fn", .kind = .function },
+    .{ .word = "func", .kind = .function },
+    .{ .word = "function", .kind = .function },
+    .{ .word = "def", .kind = .function },
+    .{ .word = "class", .kind = .class },
+    .{ .word = "struct", .kind = .@"struct" },
+    .{ .word = "union", .kind = .@"union" },
+    .{ .word = "enum", .kind = .@"enum" },
+    .{ .word = "impl", .kind = .class },
+    .{ .word = "trait", .kind = .interface },
+    .{ .word = "interface", .kind = .interface },
+    .{ .word = "mod", .kind = .module },
+    .{ .word = "module", .kind = .module },
+    .{ .word = "namespace", .kind = .namespace },
+    .{ .word = "test", .kind = .test_decl },
+};
+
 /// Editing rules used by the editor's smart editing.
 pub const EditRules = struct {
     line_comment: ?[]const u8 = null,
@@ -90,7 +112,14 @@ pub const Language = struct {
     /// Context of a token kind, overriding the highlight-based default.
     context_of: ?*const fn (kind: u16) ?ContextKind = null,
     edit_rules: EditRules = .{},
+    /// Bracket pairs, for matching and the bracket tree (at most 64).
+    /// Leave out `<`/`>` unless they always pair.
     brackets: []const BracketPair = &.{},
+    /// Fold by indentation (Python, YAML) instead of by brackets.
+    fold_by_indent: bool = false,
+    /// Words that start a declaration line, for the fallback outline and
+    /// scopes.
+    decl_keywords: []const DeclKeyword = &default_decl_keywords,
     /// Extra word characters beyond letters, digits and `_`.
     word_chars: []const u21 = &.{},
     /// Files larger than this get no tier-1 highlighting.
