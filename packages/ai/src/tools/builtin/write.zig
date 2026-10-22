@@ -38,7 +38,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
         .denied => |why| return files.errOut(a, try std.fmt.allocPrint(a, "Permission denied: {s}", .{why})),
     };
     const origin: files.Origin = .{ .agent = c.agent, .turn = c.turn, .tool = c.name, .tool_call_id = c.id };
-    switch (ft.files.kind(c.io, r.abs)) {
+    switch (ft.files.kindAs(c.io, r.abs, c.agent)) {
         .directory => return files.errOut(a, try std.fmt.allocPrint(a, "{s} is a directory.", .{r.rel})),
         .missing => {
             const o = ft.files.propose(c.io, a, r.abs, .{ .create = .{ .text = content } }, origin) catch |e| return failed(a, r.rel, e);
@@ -56,10 +56,10 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
     }
     const base = ft.tracker.version(c.agent, r.abs) orelse
         return files.errOut(a, try std.fmt.allocPrint(a, "{s} already exists; read it with read_file before overwriting it.", .{r.rel}));
-    const before = ft.files.read(c.io, a, r.abs, std.math.maxInt(usize)) catch |e| return failed(a, r.rel, e);
+    const before = ft.files.readAs(c.io, a, r.abs, std.math.maxInt(usize), c.agent) catch |e| return failed(a, r.rel, e);
     const o = ft.files.propose(c.io, a, r.abs, .{ .whole_file = .{ .text = content, .base_version = base } }, origin) catch |e| return failed(a, r.rel, e);
     if (o == .applied) try ft.tracker.wrote(c.agent, r.abs, o.applied.version, lineCount(content));
-    return ft.withDiagnostics(c, r.abs, o, try files.outcomeText(a, r.rel, "write", o, before.bytes, content, ft.cfg.diff_lines));
+    return files.FileTools.withNotes(c, before.notes, try ft.withDiagnostics(c, r.abs, o, try files.outcomeText(a, r.rel, "write", o, before.bytes, content, ft.cfg.diff_lines)));
 }
 
 fn failed(a: std.mem.Allocator, rel: []const u8, e: anyerror) proto.ToolError!proto.ToolOutput {
