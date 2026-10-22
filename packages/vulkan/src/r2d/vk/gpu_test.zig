@@ -51,7 +51,6 @@ test "gpu: vk renderer: scene corpus matches the software goldens" {
     var failed: u32 = 0;
     var ran: u32 = 0;
     for (scenes.all) |scene| {
-        if (scene.needs.layers) continue;
         if (scene.needs.dual_src and vr.pipes.text_subpixel == null) continue;
         var img = try CpuImage.initOrder(gpa, scene.size.w, scene.size.h, .bgra);
         defer img.deinit(gpa);
@@ -73,7 +72,7 @@ test "gpu: vk renderer: scene corpus matches the software goldens" {
             else => return err,
         };
     }
-    try testing.expect(ran >= 28);
+    try testing.expect(ran >= 31);
     try testing.expectEqual(@as(u32, 0), failed);
     try validation.expectNoValidationErrors(gpu);
 }
@@ -160,5 +159,97 @@ test "gpu: vk renderer: 500 random-damage frames stay validation clean" {
     }
     vr.readback.waitIdle();
     try testing.expect(counter.frames > 0);
+    try validation.expectNoValidationErrors(gpu);
+}
+
+test "gpu: vk renderer: scroll layer seam matches unlayered rendering" {
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const vr = try newRenderer(gpu, &sink);
+    defer vr.destroy();
+    try testing.expectEqual(@as(u32, 0), try parity.seamMismatches(gpa, vr, vr.renderer(), .bgra));
+    try validation.expectNoValidationErrors(gpu);
+}
+
+test "gpu: vk renderer: scrolling a layer repaints only the strip" {
+    // 3 px per frame: each frame redraws a 3-row strip of the layer and
+    // composites it; nothing else of the layer is re-rendered.
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const vr = try newRenderer(gpu, &sink);
+    defer vr.destroy();
+    const r = vr.renderer();
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+    dl.layer_query = r.layerQuery();
+    const size: r2d.Size = .{ .w = 200, .h = 300 };
+    const id: r2d.LayerId = @enumFromInt(1);
+    var top: i32 = 0;
+    var frame: u32 = 0;
+    while (frame < 40) : (frame += 1) {
+        dl.reset(.{ .w = 200, .h = 200 }, 1);
+        const step: i32 = if (frame == 0) 0 else 3;
+        top += step;
+        var strips: [2]r2d.PxRect = undefined;
+        const n = r2d.layers.scrollDamage(.{ 0, step }, size, &strips);
+        const full = [_]r2d.PxRect{.{ .x = 0, .y = 0, .w = size.w, .h = size.h }};
+        const dmg: []const r2d.PxRect = if (frame == 0) &full else strips[0..n];
+        if (frame == 0) dl.damageAll() else dl.addDamage(.{ .x = 0, .y = 0, .w = 200, .h = 200 });
+        if (dl.beginScrollLayer(id, size, .{ 0, @mod(top, 300) }, dmg)) {
+            var i: i32 = @divFloor(top, 10);
+            while (i * 10 < top + 300) : (i += 1) {
+                dl.rect(.{ .x = 0, .y = @floatFromInt(i * 10 - top), .w = 200, .h = 10 }, if (@mod(i, 2) == 0) r2d.Color.white else r2d.Color.black, .{});
+            }
+            dl.endLayer();
+        }
+        dl.drawLayer(id, .{ .x = 0, .y = 0, .w = 200, .h = 200 }, .{ .y = 50 }, 1);
+        const stats = try r.render(&dl);
+        if (frame > 0) {
+            // The strip (3 × 200) plus the window (200 × 200).
+            try testing.expectEqual(@as(u64, 3 * 200 + 200 * 200), stats.repainted_px);
+        }
+    }
+    vr.readback.waitIdle();
+    try validation.expectNoValidationErrors(gpu);
+}
+
+test "gpu: vk renderer: layer memory stays within the budget" {
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const layer: r2d.Size = .{ .w = 64, .h = 64 }; // 16 KiB
+    const budget = 2 * r2d.layers.layerBytes(layer);
+    const vr = try VkRenderer.createWithGpu(gpa, testing.io, gpu, .{ .target = .{ .headless = &sink }, .layer_budget_bytes = budget });
+    defer vr.destroy();
+    const r = vr.renderer();
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+    dl.layer_query = r.layerQuery();
+    var frame: u32 = 0;
+    while (frame < 12) : (frame += 1) {
+        dl.reset(.{ .w = 64, .h = 64 }, 1);
+        dl.damageAll();
+        // A different layer each frame: older ones are evicted.
+        const id: r2d.LayerId = @enumFromInt(frame % 5);
+        if (dl.beginLayer(id, layer, &.{})) {
+            dl.rect(.{ .x = 0, .y = 0, .w = 64, .h = 64 }, r2d.Color.white, .{});
+            dl.endLayer();
+        }
+        dl.drawLayer(id, .{ .x = 0, .y = 0, .w = 64, .h = 64 }, .{}, 1);
+        _ = try r.render(&dl);
+        try testing.expect(vr.layers.bytes() <= budget);
+    }
+    // The current layer is kept; an evicted one is no longer cached.
+    try testing.expect(r.vtable.layerValid(r.ptr, @enumFromInt(11 % 5), layer));
+    try testing.expect(!r.vtable.layerValid(r.ptr, @enumFromInt(8 % 5), layer));
+    vr.readback.waitIdle();
     try validation.expectNoValidationErrors(gpu);
 }
