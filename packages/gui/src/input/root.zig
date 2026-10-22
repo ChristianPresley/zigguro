@@ -8,6 +8,8 @@ pub const event = @import("event.zig");
 pub const hit_test = @import("hit_test.zig");
 /// The `keys.zig` module.
 pub const keys = @import("keys.zig");
+/// The `drop.zig` module.
+pub const drop = @import("drop.zig");
 /// The `actions.zig` module.
 pub const actions = @import("actions.zig");
 

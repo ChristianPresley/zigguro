@@ -14,7 +14,8 @@
 //! middle click pastes PRIMARY at the click point as one undo step.
 //!
 //! Agent prompts install `Props.prompt` (prompt_hooks.zig): typing `@` or
-//! `/` at a word start reports the offset and caret rectangle.
+//! `/` at a word start reports the offset and caret rectangle, and files
+//! dropped from other apps are handed over as paths.
 //!
 //! Not yet: bidi visual caret movement (waits on E03 `moveVisual`), caret
 //! blink (the caret is steady, so idle frames stay at zero).
@@ -411,6 +412,14 @@ pub const TextField = struct {
             // Enter/Space are handled as keys; never treat them as clicks.
             .activate => return true,
             .pointer_leave => return false,
+            .drag_files_over => return dropHook(props) != null and !props.read_only,
+            .drop_files => |d| {
+                const f = dropHook(props) orelse return false;
+                if (props.read_only) return false;
+                ec.focus();
+                f(props.prompt.?.ctx, d.paths);
+                return true;
+            },
         }
     }
 
@@ -480,6 +489,11 @@ pub const TextField = struct {
         }
         after(ec, props, state, changed);
         return true;
+    }
+
+    fn dropHook(props: *const Props) ?*const fn (*anyopaque, []const []const u8) void {
+        const p = props.prompt orelse return null;
+        return p.on_drop_files;
     }
 
     /// Middle click: the caret goes to `pos` and PRIMARY is inserted there.

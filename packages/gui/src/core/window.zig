@@ -25,6 +25,7 @@ const event = @import("../input/event.zig");
 const hit_test = @import("../input/hit_test.zig");
 const keys_mod = @import("../input/keys.zig");
 const actions = @import("../input/actions.zig");
+const drop_mod = @import("../input/drop.zig");
 const box = @import("../widgets/box.zig");
 const overlay = @import("../widgets/overlay.zig");
 const tooltip = @import("../widgets/tooltip.zig");
@@ -204,6 +205,9 @@ pub const Window = struct {
     /// Window state changes the UI asked for (caption buttons); the Host
     /// sends them to the platform.
     window_ops: std.ArrayList(zg_platform.window.WindowOp) = .empty,
+    /// The external drag over this window; the Host sends
+    /// `drop.pending` as `set_drop_effect`.
+    drop: drop_mod.DropState = .{},
 
     /// What the focused text input asked of the platform IME
     /// (`EventCx.setIme`); the Host sends it when `serial` changes.
@@ -1526,6 +1530,31 @@ pub const Window = struct {
             .ime_preedit, .ime_delete_surrounding => {
                 if (!w.focus.isNone()) _ = w.deliver(w.focus, ev, true);
             },
+            .drag_files_over => |p| w.drop.answer(w.deliver(w.hitTest(p), ev, true)),
+            .drop_files => |d| _ = w.deliver(w.hitTest(d.pos), ev, true),
+        }
+    }
+
+    /// An external drag over the window (see input/drop.zig).
+    fn handleDrop(w: *Window, d: zg_platform.clipboard.DropEvent, payload: anytype) void {
+        const pos: Vec2 = .{ .x = d.pos_px[0] / w.scale, .y = d.pos_px[1] / w.scale };
+        switch (d.phase) {
+            .enter => {
+                w.drop.reset();
+                w.drop.files = drop_mod.offersFiles(payload.payload(d.mimes));
+                if (w.drop.files) w.dispatch(.{ .drag_files_over = pos }) else w.drop.answer(false);
+            },
+            .over => if (w.drop.files) w.dispatch(.{ .drag_files_over = pos }),
+            .leave => w.drop.reset(),
+            .drop => {
+                defer w.drop.reset();
+                if (!w.drop.files or w.drop.sent != true) return;
+                var arena: std.heap.ArenaAllocator = .init(w.gpa);
+                defer arena.deinit();
+                const paths = drop_mod.filePaths(arena.allocator(), payload.payload(d.data)) catch return;
+                if (paths.len > 0) w.dispatch(.{ .drop_files = .{ .pos = pos, .paths = paths } });
+            },
+            .source_finished => {},
         }
     }
 
@@ -1693,6 +1722,7 @@ pub const Window = struct {
             .frame => {
                 w.needs_frame = true;
             },
+            .drop => |d| w.handleDrop(d, payload),
             else => {},
         }
     }

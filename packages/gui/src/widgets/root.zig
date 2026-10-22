@@ -73,6 +73,8 @@ pub const HeightIndex = height_index.HeightIndex;
 pub const textField = text_field.textField;
 /// See `text_field.TextField`.
 pub const TextField = text_field.TextField;
+/// See `text_field.PromptHooks`.
+pub const PromptHooks = text_field.PromptHooks;
 /// See `text_field.TextBuffer`.
 pub const TextBuffer = text_field.TextBuffer;
 /// See `overlay.popover`.
