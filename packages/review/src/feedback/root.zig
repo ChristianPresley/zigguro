@@ -6,6 +6,7 @@ const labels = @import("labels.zig");
 const feedback = @import("feedback.zig");
 
 pub const outcome = @import("outcome.zig");
+pub const follow = @import("follow.zig");
 
 pub const message = @import("message.zig");
 
@@ -38,6 +39,7 @@ pub const FeedbackOptions = feedback.Options;
 pub const InterdiffDocs = feedback.InterdiffDocs;
 pub const FeedbackMessage = message.FeedbackMessage;
 pub const OutcomeReporter = outcome.OutcomeReporter;
+pub const Follow = follow.Follow;
 pub const Outcome = outcome.Outcome;
 pub const FileOutcome = outcome.FileOutcome;
 pub const OutcomeSink = outcome.OutcomeSink;
@@ -55,4 +57,5 @@ test {
     _ = @import("comments_test.zig");
     _ = @import("feedback_test.zig");
     _ = @import("outcome_test.zig");
+    _ = @import("follow_test.zig");
 }
