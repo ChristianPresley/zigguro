@@ -8,6 +8,7 @@
         .zg_core = .{ .path = "../core" },
         .zg_text = .{ .path = "../text" },
         .zg_regex = .{ .path = "../regex" },
+        .zg_syntax = .{ .path = "../syntax" },
     },
     .paths = .{
         "build.zig",
