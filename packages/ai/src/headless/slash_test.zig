@@ -6,6 +6,10 @@ const fake_host = @import("../tools/builtin/fake_host.zig");
 const repl = @import("repl.zig");
 const ts = @import("test_support.zig");
 const stack = @import("../context/stack.zig");
+const store_mod = @import("../session/store.zig");
+const index_mod = @import("../session/index.zig");
+const hooks_mod = @import("../ext/hooks.zig");
+const agent_defs = @import("../subagent/defs.zig");
 
 const testing = std.testing;
 const io = ts.io;
@@ -136,7 +140,7 @@ test "repl built-in commands" {
     try testing.expect(std.mem.indexOf(u8, err, "permission mode: acceptEdits") != null);
     try testing.expect(std.mem.indexOf(u8, err, "/mode takes default") != null);
     try testing.expect(std.mem.indexOf(u8, out, "/build [target]  Builds\n/status  Status\n") != null);
-    try testing.expect(std.mem.indexOf(u8, err, "/agents is not available in zg agent yet") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "No subagents.") != null);
     try testing.expect(std.mem.indexOf(u8, err, "conversation cleared") != null);
     try testing.expect(std.mem.indexOf(u8, out, "  /build [target]  Builds\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "  /exit  Leave the REPL\n") != null);
@@ -198,4 +202,84 @@ test "/compact without a compactor" {
     try testing.expect(std.mem.indexOf(u8, h.stderr(), "this run cannot compact the conversation") != null);
     try testing.expect(std.mem.indexOf(u8, h.stdout(), "No memory files are loaded.") != null);
     try testing.expect(std.mem.indexOf(u8, h.stdout(), "Context: about ") != null);
+}
+
+test "repl session commands: /rename, /branch, /resume, /export, /rewind" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    var store: store_mod.SessionStore = try .init(testing.allocator, path_buf[0..n], "/work");
+    defer store.deinit();
+    try std.Io.Dir.cwd().createDirPath(io, store.dir);
+    var dir = try std.Io.Dir.cwd().openDir(io, store.dir, .{ .iterate = true });
+    defer dir.close(io);
+    var ix: index_mod.SessionIndex = try .load(testing.allocator, io, dir);
+    defer ix.deinit();
+
+    var h: Harness = undefined;
+    try h.init(&.{ script.text("A."), script.text("B.") });
+    defer h.deinit();
+    var o = try h.options(&.{});
+    o.env.store = &store;
+    o.env.index = &ix;
+    var in: std.Io.Reader = .fixed("one\n/rename first\n/branch side\ntwo\n/resume\n/resume first\n/export\n/rewind\n/rewind 1\n/rewind\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    const out = h.stdout();
+    const err = h.stderr();
+    try testing.expect(std.mem.indexOf(u8, err, "session renamed to first") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "branched into ") != null);
+    // The branch carried "one" over; "two" went to the branch only.
+    const second = h.sp.requests()[1].messages;
+    try testing.expectEqual(@as(usize, 3), second.len);
+    // Both sessions are listed, the branch marked current.
+    try testing.expect(std.mem.indexOf(u8, out, "messages  first\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "messages  side\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "* ") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "resumed ") != null);
+    // The original session has only the first exchange.
+    try testing.expect(std.mem.indexOf(u8, out, "# first\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "A.") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "1. one\n") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "rewound to before prompt 1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Nothing to rewind.") != null);
+}
+
+test "session commands without a session store" {
+    var h: Harness = undefined;
+    try h.init(&.{});
+    defer h.deinit();
+    const o = try h.options(&.{});
+    var in: std.Io.Reader = .fixed("/resume\n/branch\n/rename x\n/export\n/rewind 3\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    const err = h.stderr();
+    try testing.expect(std.mem.indexOf(u8, err, "nothing to resume") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "nothing to branch") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "cannot be named") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "nothing to export") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "/rewind takes a prompt number from 1 to 0") != null);
+}
+
+test "repl /init, /agents and /hooks" {
+    var h: Harness = undefined;
+    try h.init(&.{script.text("Written.")});
+    defer h.deinit();
+    var hooks: hooks_mod.HookEngine = try .init(testing.allocator, io, .{});
+    defer hooks.deinit();
+    const parsed = try hooks_mod.parseSettings(h.arena.allocator(), "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"run\",\"hooks\":[{\"type\":\"command\",\"command\":\"./check.sh\"}]}]}}", .project);
+    try hooks.add(parsed.sources);
+    var defs: std.ArrayList(agent_defs.AgentDef) = .empty;
+    try agent_defs.loadDefs(io, h.arena.allocator(), &.{}, &defs, null);
+
+    var o = try h.options(&.{});
+    o.env.agents = defs.items;
+    o.env.hooks = &hooks;
+    var in: std.Io.Reader = .fixed("/agents\n/hooks\n/init mention the fuzz targets\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    const out = h.stdout();
+    try testing.expect(std.mem.indexOf(u8, out, "explore  (builtin)  ") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "PreToolUse  [project]  run  ./check.sh\n") != null);
+    const sent = h.lastUserText(0);
+    try testing.expect(std.mem.startsWith(u8, sent, "Look through this project and write an AGENTS.md"));
+    try testing.expect(std.mem.endsWith(u8, sent, "Also: mention the fuzz targets"));
 }

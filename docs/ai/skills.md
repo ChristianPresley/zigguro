@@ -134,10 +134,17 @@ built-ins work in the REPL:
 - `/model [id]`
 - `/clear`
 - `/cost`
-- `/skills`
+- `/skills`, `/agents` and `/hooks`: what is configured
+- `/init [extra]`: asks the model to write an `AGENTS.md` for the project
+- `/resume [id|name]`: lists the saved sessions, or continues one
+- `/branch [name]`: continues in a fork of this session; the original
+  stays as it was
+- `/rename <name>`: names the session in the session index
+- `/export [file]`: the conversation as Markdown, to the file or stdout
+- `/rewind [n]`: lists the prompts, or drops prompt n and everything
+  after it and prints its text so it can be sent again (the conversation
+  only; files stay as they are)
 - `/exit`
-
-The other built-ins report that they are not available yet.
 
 With `-p "/name args"`, the skill is expanded the same way. A built-in
 there is a usage error, and an unknown `/word` is sent as plain text.

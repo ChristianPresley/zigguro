@@ -21,7 +21,7 @@ pub const all = [_]BuiltinCommand{
     .{ .name = "plan", .help = "Enter plan mode, optionally with a prompt", .args_hint = "[prompt]" },
     .{ .name = "mode", .help = "Switch the permission mode", .args_hint = "<mode>" },
     .{ .name = "branch", .help = "Fork the conversation into a new session", .args_hint = "[name]" },
-    .{ .name = "rewind", .help = "Go back to an earlier point in the conversation" },
+    .{ .name = "rewind", .help = "Go back to an earlier point in the conversation", .args_hint = "[n]" },
     .{ .name = "resume", .help = "Resume a saved session", .args_hint = "[id|name]" },
     .{ .name = "rename", .help = "Rename this session", .args_hint = "<name>" },
     .{ .name = "cost", .help = "Show tokens and cost so far" },

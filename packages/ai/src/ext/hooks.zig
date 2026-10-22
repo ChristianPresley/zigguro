@@ -111,9 +111,20 @@ const Entry = struct {
     layer: Layer,
     scope: ?[]const u8,
     matcher: hook_match.Matcher,
+    /// The matcher as written.
+    matcher_text: []const u8,
     handler: Handler,
     /// Over the command and its arguments.
     hash: u64,
+};
+
+/// One configured hook, for `/hooks`.
+pub const Listed = struct {
+    event: HookEvent,
+    layer: Layer,
+    scope: ?[]const u8,
+    matcher: []const u8,
+    command: []const u8,
 };
 
 pub const HookEngine = struct {
@@ -149,15 +160,24 @@ pub const HookEngine = struct {
         const a = e.arena.allocator();
         for (sources) |s| for (s.configs) |cfg| {
             const m = try hook_match.Matcher.compile(a, cfg.matcher);
+            const mt = try a.dupe(u8, cfg.matcher);
             for (cfg.hooks) |h| try e.entries.append(e.gpa, .{
                 .event = s.event,
                 .layer = s.layer,
                 .scope = if (s.scope) |x| try a.dupe(u8, x) else null,
                 .matcher = m,
+                .matcher_text = mt,
                 .handler = try dupeHandler(a, h),
                 .hash = commandHash(h),
             });
         };
+    }
+
+    /// Every configured hook in order (strings borrowed from the engine).
+    pub fn list(e: *const HookEngine, arena: Allocator) Allocator.Error![]const Listed {
+        const out = try arena.alloc(Listed, e.entries.items.len);
+        for (e.entries.items, out) |x, *o| o.* = .{ .event = x.event, .layer = x.layer, .scope = x.scope, .matcher = x.matcher_text, .command = x.handler.command };
+        return out;
     }
 
     /// Scoped hooks of `scope` run from now on (a skill or agent started).
