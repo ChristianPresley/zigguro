@@ -1,0 +1,15 @@
+// Sublime Text preset. Applies on top of the default keymap.
+// Sublime's mod+l (expand to line) and mod+shift+l (split into lines) take
+// the keys the default keymap gives the agent pane, so this preset moves the
+// agent pane to mod+alt+l.
+.{
+    .{ .key = "mod+shift+p", .command = "workbench.showCommands" },
+    .{ .key = "mod+p", .command = "quickOpen.files" },
+    .{ .key = "mod+d", .command = "editor.addSelectionToNextMatch", .when = "editorFocus" },
+    .{ .key = "mod+shift+l", .command = "editor.splitSelectionIntoLines", .when = "editorTextFocus" },
+    .{ .key = "mod+l", .command = "-agent.togglePane" },
+    .{ .key = "mod+l", .command = "editor.expandLineSelection", .when = "editorTextFocus" },
+    .{ .key = "mod+alt+l", .command = "agent.togglePane" },
+    .{ .key = "ctrl+g", .command = "editor.goToLine", .when = "editorFocus" },
+    .{ .key = "mod+r", .command = "quickOpen.symbolsInFile" },
+}

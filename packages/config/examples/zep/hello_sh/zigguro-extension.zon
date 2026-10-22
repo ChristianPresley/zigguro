@@ -1,0 +1,10 @@
+.{
+    .id = "examples.hello-sh",
+    .name = "hello-sh",
+    .version = "0.1.0",
+    .description = "ZEP example in POSIX sh.",
+    .engines = .{ .zigguro = ">=0.1.0" },
+    .main = "hello.sh",
+    .activation_events = .{"onCommand:hello-sh.say"},
+    .contributes = .{ .commands = .{.{ .id = "hello-sh.say", .title = "Hello (sh): Say Hello" }} },
+}

@@ -1,0 +1,21 @@
+.{
+    .name = .zg_config,
+    .version = "0.0.0",
+    .fingerprint = 0xe97fe3c6b4c7cec8,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_jsonrpc = .{ .path = "../jsonrpc" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+        "docs",
+        "examples",
+    },
+}
