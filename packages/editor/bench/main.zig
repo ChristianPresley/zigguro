@@ -356,6 +356,59 @@ fn register(b: *bench.Bench) !void {
     try registerLspSync(b, text);
     try registerDecorations(b, text);
     try registerAiOverlays(b, text);
+    try registerAgentEdit(b, text);
+}
+
+const AgentBench = struct {
+    session: *api.agent_edit.AgentEditSession,
+    h: api.registry.DocHandle,
+    cs: *const zg_editor.model.edit.change_set.ChangeSet,
+    base: u64,
+
+    fn deny(_: *anyopaque, _: u64, _: api.registry.DocHandle, _: api.agent_edit.ProposalSummary) api.agent_edit.Decision {
+        return .deny;
+    }
+};
+
+fn registerAgentEdit(b: *bench.Bench, text: []const u8) !void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var reg: api.registry.DocumentRegistry = .init(b.gpa, .posix);
+    defer reg.deinit();
+    const h = try reg.openFile("/bench.zig", text);
+    defer reg.release(h);
+    var dummy: u8 = 0;
+    var session: api.agent_edit.AgentEditSession = .init(b.gpa, &reg, 1, .{ .ctx = &dummy, .decide = AgentBench.deny });
+    defer session.deinit();
+    const doc = reg.get(h).?;
+    const base = doc.version;
+    // The agent edits 20 places in the second half...
+    var edits: [20]buffer.piece_tree.Edit = undefined;
+    for (&edits, 0..) |*e, i| {
+        const st = doc.tree.lineStart(60_000 + i * 1000);
+        e.* = .{ .range = .{ .start = st, .end = st + 5 }, .text = "agent" };
+    }
+    var cs = try ChangeSet.fromEdits(b.gpa, doc.len(), &edits);
+    defer cs.deinit();
+    // ...while the user types 100 characters in the first half.
+    for (0..100) |i| {
+        const at = doc.tree.lineStart(1000 + i * 10);
+        var u = try ChangeSet.fromEdits(b.gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at }, .text = "u" }});
+        defer u.deinit();
+        try doc.applyChangeSet(&u, .{ .user = 0 });
+    }
+    var ab: AgentBench = .{ .session = &session, .h = h, .cs = &cs, .base = base };
+    try b.run("editor.agent.rebase_100_edits", &ab, agentRebase);
+}
+
+/// Validates and rebases a 20-replace proposal over 100 user edits (the
+/// policy denies it, so nothing is applied).
+fn agentRebase(a: *AgentBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var o = a.session.propose(a.h, .{ .change_set = .{ .cs = a.cs, .base_version = a.base } }, "bench") catch unreachable;
+        std.debug.assert(o == .rejected and o.rejected == .denied);
+        o.deinit(std.heap.smp_allocator);
+    }
 }
 
 const AiBench = struct {
