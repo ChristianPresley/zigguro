@@ -121,6 +121,8 @@ pub const process = struct {
     pub const Pty = pty.Pty;
     /// See `process/env.zig`.
     pub const env = @import("process/env.zig");
+    /// Windows command lines and environment blocks (builds everywhere).
+    pub const cmdline_windows = @import("process/cmdline_windows.zig");
     /// Linux process spawning without a PTY.
     pub const spawn_linux = if (@import("builtin").os.tag == .linux) @import("process/spawn_linux.zig") else struct {};
 };
@@ -461,6 +463,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
+    .{ .path = "process/pty_windows.zig", .src = @embedFile("process/pty_windows.zig") },
+    .{ .path = "process/cmdline_windows.zig", .src = @embedFile("process/cmdline_windows.zig") },
     .{ .path = "dbus/signature.zig", .src = @embedFile("dbus/signature.zig") },
     .{ .path = "dbus/marshal.zig", .src = @embedFile("dbus/marshal.zig") },
     .{ .path = "dbus/variant.zig", .src = @embedFile("dbus/variant.zig") },
