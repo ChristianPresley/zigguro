@@ -183,8 +183,9 @@ pub const AgentHost = struct {
         // Before the agent: it copies the manager's deps.
         h.context.install(&h.mgr.deps);
         h.agent = try h.mgr.create(.{ .model = model_name, .cwd = h.cwd });
-        h.review_port = .{ .agent = h.agent };
+        h.review_port = .{ .agent = h.agent, .reminders = &h.context.queue };
         try h.review.bindAgent(h.review_port.port());
+        try h.review.bindOutcomes(h.review_port.outcomeSink());
         // Undo groups name the agent's session.
         h.files.edits.session = @truncate(h.agent.ref.session);
         // Plan mode: `exit_plan_mode` asks through the panel's plan card.

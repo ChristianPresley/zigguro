@@ -108,7 +108,9 @@ const id2 = try q.submitter().commitBatch(b2);     // any thread: visible after 
   folded is `superseded`. Other sessions never fold.
 - `auto_apply` is ignored until the review policy exists (fail closed).
 - Listeners get `submitted`, `updated`, `state` and `removed` events on
-  the owner thread.
+  the owner thread. Each apply also sends `decided` (every hunk's
+  decision and the reviewer's rewrites, valid only during the callback)
+  and, when something was written, `applied`.
 
 ## Store
 
