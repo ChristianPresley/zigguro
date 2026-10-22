@@ -241,7 +241,8 @@ pub const ReplyHandler = struct {
     func: *const fn (ctx: ?*anyopaque, reply: Error!*Reply) void,
 };
 
-/// A signal as seen by a handler: views valid only during the call.
+/// A signal or method call as seen by a handler: views valid only during
+/// the call.
 pub const Incoming = struct {
     msg: *const message.Message,
     /// The signal's fds; set an entry to -1 to keep it, the rest are closed.
@@ -259,6 +260,14 @@ pub const Incoming = struct {
 pub const SignalHandler = struct {
     ctx: ?*anyopaque,
     func: *const fn (ctx: ?*anyopaque, in: *const Incoming) void,
+};
+
+/// Answers method calls to this connection (services and test fakes).
+/// Runs on the reader; returns false to let the bus reply
+/// `UnknownMethod`. Reply with `Bus.replyTo` or `Bus.replyError`.
+pub const MethodHandler = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, bus: *Bus, in: *const Incoming) bool,
 };
 
 /// Identifies one subscription.
@@ -368,6 +377,7 @@ pub const Bus = struct {
     dispatch_arena: std.heap.ArenaAllocator,
     handlers_scratch: std.ArrayList(SignalHandler) = .empty,
     reader: ?std.Thread = null,
+    method_handler: ?MethodHandler = null,
 
     /// Connects to the session bus: `DBUS_SESSION_BUS_ADDRESS`, else
     /// `unix:path=$XDG_RUNTIME_DIR/bus`.
@@ -527,6 +537,45 @@ pub const Bus = struct {
             .signature = sig,
             .unix_fds = @intCast(body.fds.items.len),
         }, body.buf.items, body.fds.items);
+    }
+
+    /// Sets the handler for incoming method calls. Set it before the
+    /// connection is visible to callers (for example before RequestName).
+    pub fn setMethodHandler(b: *Bus, handler: ?MethodHandler) void {
+        b.lock.lockUncancelable(b.io);
+        defer b.lock.unlock(b.io);
+        b.method_handler = handler;
+    }
+
+    /// Replies to method call `in` with `args` of signature `sig`.
+    pub fn replyTo(b: *Bus, in: *const Incoming, comptime sig: []const u8, args: anytype) Error!void {
+        var body: marshal.Encoder = .init(b.gpa, 0);
+        defer body.deinit();
+        try marshal.encode(&body, sig, args);
+        if (body.fds.items.len > 0 and !b.unix_fd) return error.FdPassingUnsupported;
+        try b.sendMessage(.{
+            .type = .method_return,
+            .serial = b.nextSerial(),
+            .reply_serial = in.msg.header.serial,
+            .destination = in.msg.header.sender,
+            .signature = sig,
+            .unix_fds = @intCast(body.fds.items.len),
+        }, body.buf.items, body.fds.items);
+    }
+
+    /// Replies to method call `in` with error `name` and `text`.
+    pub fn replyError(b: *Bus, in: *const Incoming, name: []const u8, text: []const u8) Error!void {
+        var body: marshal.Encoder = .init(b.gpa, 0);
+        defer body.deinit();
+        try marshal.encode(&body, "s", .{text});
+        try b.sendMessage(.{
+            .type = .@"error",
+            .serial = b.nextSerial(),
+            .reply_serial = in.msg.header.serial,
+            .destination = in.msg.header.sender,
+            .error_name = name,
+            .signature = "s",
+        }, body.buf.items, &.{});
     }
 
     /// Subscribes `handler` to signals matching `rule`. Each subscriber has
@@ -757,7 +806,7 @@ pub const Bus = struct {
                 slot.release(b.gpa);
             },
             .signal => b.dispatchSignal(&m, fds),
-            .method_call => try b.answerCall(&m),
+            .method_call => try b.answerCall(&m, fds),
             _ => {},
         }
     }
@@ -777,15 +826,26 @@ pub const Bus = struct {
         for (b.handlers_scratch.items) |hd| hd.func(hd.ctx, &in);
     }
 
-    /// Answers `org.freedesktop.DBus.Peer.Ping`; every other call to us
-    /// gets `UnknownMethod`.
-    fn answerCall(b: *Bus, m: *const message.Message) Error!void {
+    /// Answers `org.freedesktop.DBus.Peer.Ping`, passes other calls to the
+    /// method handler, and answers the rest with `UnknownMethod`.
+    fn answerCall(b: *Bus, m: *const message.Message, fds: []i32) Error!void {
         const h = &m.header;
-        if (h.flags.no_reply_expected) return;
         const ping = optEql("org.freedesktop.DBus.Peer", h.interface) and std.mem.eql(u8, h.member.?, "Ping");
         if (ping) {
+            if (h.flags.no_reply_expected) return;
             return b.sendMessage(.{ .type = .method_return, .serial = b.nextSerial(), .reply_serial = h.serial, .destination = h.sender }, "", &.{});
         }
+        const handler = blk: {
+            b.lock.lockUncancelable(b.io);
+            defer b.lock.unlock(b.io);
+            break :blk b.method_handler;
+        };
+        if (handler) |hd| {
+            defer _ = b.dispatch_arena.reset(.retain_capacity);
+            const in: Incoming = .{ .msg = m, .fds = fds, .arena = b.dispatch_arena.allocator() };
+            if (hd.func(hd.ctx, b, &in)) return;
+        }
+        if (h.flags.no_reply_expected) return;
         var body: marshal.Encoder = .init(b.gpa, 0);
         defer body.deinit();
         try marshal.encode(&body, "s", .{"No such method"});
@@ -931,13 +991,15 @@ test "match rules parse and match" {
 }
 
 /// A private `dbus-daemon` for tests, or null when none is installed.
-const TestDaemon = struct {
+/// A private `dbus-daemon` for integration tests (tests only).
+pub const TestDaemon = struct {
     child: std.process.Child,
     tmp: testing.TmpDir,
     addr_buf: [300]u8 = undefined,
     addr_len: usize = 0,
 
-    fn start(d: *TestDaemon) !bool {
+    /// Starts it; false when dbus-daemon is not installed.
+    pub fn start(d: *TestDaemon) !bool {
         d.tmp = testing.tmpDir(.{});
         var pbuf: [256]u8 = undefined;
         const n = try d.tmp.dir.realPath(testing.io, &pbuf);
@@ -964,11 +1026,13 @@ const TestDaemon = struct {
         return error.DaemonDidNotStart;
     }
 
-    fn address(d: *const TestDaemon) []const u8 {
+    /// The bus address.
+    pub fn address(d: *const TestDaemon) []const u8 {
         return d.addr_buf[0..d.addr_len];
     }
 
-    fn stop(d: *TestDaemon) void {
+    /// Kills the daemon and removes its directory.
+    pub fn stop(d: *TestDaemon) void {
         d.child.kill(testing.io);
         d.tmp.cleanup();
     }
@@ -1141,4 +1205,47 @@ test "integration: pending calls fail when the bus goes away" {
     };
     defer p.deinit();
     try testing.expectError(error.Disconnected, p.wait(5 * std.time.ns_per_s));
+}
+
+test "integration: method handler answers calls; unhandled calls get UnknownMethod" {
+    var d: TestDaemon = undefined;
+    if (!try d.start()) return error.SkipZigTest;
+    defer d.stop();
+    const service = try Bus.connectAddress(testing.allocator, testing.io, d.address(), .{});
+    defer service.deinit();
+    const Echo = struct {
+        fn on(_: ?*anyopaque, bus: *Bus, in: *const Incoming) bool {
+            if (!std.mem.eql(u8, in.msg.header.member.?, "Echo")) return false;
+            const a = in.args() catch return false;
+            if (std.mem.eql(u8, a[0].string, "fail")) {
+                bus.replyError(in, "org.zigguro.Error.Failed", "asked to fail") catch {};
+            } else bus.replyTo(in, "su", .{ a[0].string, @as(u32, 7) }) catch {};
+            return true;
+        }
+    };
+    service.setMethodHandler(.{ .ctx = null, .func = Echo.on });
+    const client = try Bus.connectAddress(testing.allocator, testing.io, d.address(), .{});
+    defer client.deinit();
+
+    var p = try client.call(service.unique_name, "/", "org.zigguro.Test", "Echo", "s", .{"hi"});
+    defer p.deinit();
+    var r = try p.wait(5 * std.time.ns_per_s);
+    defer r.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = try r.args(arena.allocator());
+    try testing.expectEqualStrings("hi", a[0].string);
+    try testing.expectEqual(7, a[1].u32);
+
+    var p2 = try client.call(service.unique_name, "/", "org.zigguro.Test", "Echo", "s", .{"fail"});
+    defer p2.deinit();
+    var r2 = try p2.wait(5 * std.time.ns_per_s);
+    defer r2.deinit();
+    try testing.expectEqualStrings("org.zigguro.Error.Failed", r2.errorName().?);
+
+    var p3 = try client.call(service.unique_name, "/", "org.zigguro.Test", "Other", "", .{});
+    defer p3.deinit();
+    var r3 = try p3.wait(5 * std.time.ns_per_s);
+    defer r3.deinit();
+    try testing.expectEqualStrings("org.freedesktop.DBus.Error.UnknownMethod", r3.errorName().?);
 }
