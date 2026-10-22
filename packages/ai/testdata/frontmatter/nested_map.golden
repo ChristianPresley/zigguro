@@ -1,0 +1,1 @@
+{"meta":{"hooks":{"PreToolUse":{"matcher":"Bash","command":"./check.sh"}},"model":"sonnet"},"body_line":8,"body":""}

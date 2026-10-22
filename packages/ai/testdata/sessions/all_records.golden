@@ -1,0 +1,11 @@
+{"v":1,"seq":0,"t":0,"type":"header","session":"01J80000000000000000000001","created":0,"cwd":"/work/repo","workspace_key":"repo-ddc5e473a09bd156","prompt_version":"p1","app_version":"0.0.0","origin":"cli","model":"claude-x"}
+{"v":1,"seq":1,"t":0,"type":"user","message":{"role":"user","content":[{"type":"text","text":"fix the bug"}]}}
+{"v":1,"seq":2,"t":0,"type":"checkpoint","id":1,"turn":1,"label":"fix the bug"}
+{"v":1,"seq":3,"t":0,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"running"},{"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a"}},{"type":"tool_use","id":"t2","name":"grep","input":{}}]}}
+{"v":1,"seq":4,"t":0,"type":"tool_results","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"ok"}]},{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"ok"}],"is_error":true}]}}
+{"v":1,"seq":5,"t":0,"type":"usage","model":"claude-x","usage":{"input":10,"output":20,"cache_read":5,"cache_write_5m":0,"cache_write_1h":0,"reasoning":0,"server_tool_requests":0},"cost_micros":42}
+{"v":1,"seq":6,"t":0,"type":"event","kind":"mode","data":{"mode":"plan"}}
+{"v":1,"seq":7,"t":0,"type":"compaction","head_seq":8,"trigger":"auto_threshold","tokens_before":1000,"tokens_after":100,"model":"claude-x"}
+{"v":1,"seq":8,"t":0,"type":"title","title":"Fix the bug"}
+{"v":1,"seq":9,"t":0,"type":"rewind","to_seq":1,"action":"conversation"}
+{"v":1,"seq":10,"t":0,"type":"end","reason":"exit"}
