@@ -26,6 +26,9 @@ pub const Kind = enum(u8) {
     /// The next changeset, apply and checkpoint ids, written by a
     /// compaction so that ids of dropped records are not handed out again.
     ids = 5,
+    /// An approval request and its outcome (F05.S02); a later one with the
+    /// same id wins.
+    approval = 6,
     _,
 };
 
