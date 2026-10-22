@@ -86,6 +86,13 @@ pub const Prefilter = struct {
         gpa.free(pf.lits);
     }
 
+    /// Whether the prefilter scans faster than the lazy DFA steps, so the
+    /// DFA should jump to its candidates whenever it is idle. Aho-Corasick
+    /// costs about as much per byte as the DFA itself.
+    pub fn isFast(pf: *const Prefilter) bool {
+        return pf.kind != .ac;
+    }
+
     /// Next candidate start in a contiguous slice at `>= from`.
     pub fn findSlice(pf: *const Prefilter, hay: []const u8, from: usize) ?usize {
         return switch (pf.kind) {
