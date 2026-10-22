@@ -7,6 +7,12 @@
 //! expanded to `tab_size` columns, and the core editing commands. Every
 //! edit goes through `Document.applyChangeSet` and the undo tree. Edits
 //! from elsewhere (agents, reload) map the selections through the change.
+//!
+//! The selections are the model's `SelectionSet`, so the multi-cursor
+//! commands of `model/edit/multi_cursor.zig` (add cursor above/below,
+//! next/all occurrences, split into lines, box selection, cursor undo)
+//! run on the view directly; box selection and vertical cursors measure
+//! rows through the view's `displayMap` (unwrapped lines, pixel x).
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -17,6 +23,7 @@ const sel_mod = @import("../model/edit/selection.zig");
 const undo_mod = @import("../model/edit/undo.zig");
 const syntax_mod = @import("../model/syntax.zig");
 const deco_store = @import("../model/decorations/store.zig");
+const multi = @import("../model/edit/multi_cursor.zig");
 
 const Allocator = std.mem.Allocator;
 const Document = document.Document;
@@ -25,6 +32,7 @@ const ChangeSet = cs_mod.ChangeSet;
 const Range = cs_mod.Range;
 const Replace = cs_mod.Replace;
 const Selection = sel_mod.Selection;
+const SelectionSet = sel_mod.SelectionSet;
 const UndoTree = undo_mod.UndoTree;
 const CoalesceKey = undo_mod.CoalesceKey;
 const TextSystem = zg_gui.paint.TextSystem;
@@ -65,10 +73,9 @@ pub const EditorView = struct {
     gpa: Allocator,
     doc: *Document,
     listener: document.ListenerId,
-    /// Sorted by start and non-overlapping.
-    sels: std.ArrayList(Selection) = .empty,
-    /// Index of the primary selection (the one scrolled into view).
-    primary: usize = 0,
+    /// Sorted by start and non-overlapping; the primary is the one
+    /// scrolled into view.
+    sels: SelectionSet,
     undo: UndoTree,
     /// Highlighting, fed this document's changes by the view (one view
     /// per `DocumentSyntax`). Not owned.
@@ -97,10 +104,9 @@ pub const EditorView = struct {
     pub fn init(gpa: Allocator, doc: *Document, opts: Options) !*EditorView {
         const v = try gpa.create(EditorView);
         errdefer gpa.destroy(v);
-        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .undo = .init(gpa, .{}), .opts = opts };
+        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .sels = try .init(gpa, .caret(0)), .undo = .init(gpa, .{}), .opts = opts };
         errdefer v.undo.deinit();
-        try v.sels.append(gpa, .caret(0));
-        errdefer v.sels.deinit(gpa);
+        errdefer v.sels.deinit();
         v.listener = try doc.subscribe(.{ .ctx = v, .onChange = onDocChange });
         return v;
     }
@@ -108,7 +114,7 @@ pub const EditorView = struct {
     /// Unsubscribes and frees the view (not the document).
     pub fn deinit(v: *EditorView) void {
         v.doc.unsubscribe(v.listener);
-        v.sels.deinit(v.gpa);
+        v.sels.deinit();
         v.undo.deinit();
         v.scratch.deinit(v.gpa);
         v.gpa.destroy(v);
@@ -150,7 +156,18 @@ pub const EditorView = struct {
 
     /// The primary selection.
     pub fn primarySel(v: *const EditorView) Selection {
-        return v.sels.items[v.primary];
+        return v.sels.primary();
+    }
+
+    /// The selections, sorted.
+    pub fn selections(v: *const EditorView) []const Selection {
+        return v.sels.slice();
+    }
+
+    /// The primary selection, to change in place (call `normalize`
+    /// after).
+    pub fn primaryPtr(v: *EditorView) *Selection {
+        return &v.sels.items.items[v.sels.primaryIndex()];
     }
 
     fn touch(v: *EditorView) void {
@@ -161,7 +178,7 @@ pub const EditorView = struct {
         const v: *EditorView = @ptrCast(@alignCast(ctx));
         if (v.syntax) |ds| ds.onChange(ev, &v.doc.tree, null) catch {};
         if (v.in_edit) return;
-        for (v.sels.items) |*s| s.* = s.map(ev.changes);
+        for (v.sels.items.items) |*s| s.* = s.map(ev.changes);
         v.normalize();
         v.touch();
         if (v.on_change) |h| h.f(h.ctx, v);
@@ -301,53 +318,24 @@ pub const EditorView = struct {
     // -- selections --------------------------------------------------------
 
     /// Sorts the selections and merges overlapping ones (touching carets
-    /// merge; touching ranges do not).
+    /// merge, and so do a caret and a range it touches; touching ranges do
+    /// not).
     pub fn normalize(v: *EditorView) void {
-        if (v.sels.items.len == 0) {
-            v.sels.append(v.gpa, .caret(0)) catch {};
-            v.primary = 0;
+        if (v.sels.count() == 0) {
+            v.sels.set(&.{.caret(0)}, 0) catch {};
             return;
         }
         const len = v.doc.len();
-        const prim_head = v.sels.items[@min(v.primary, v.sels.items.len - 1)].head;
-        for (v.sels.items) |*s| {
+        for (v.sels.items.items) |*s| {
             s.anchor = @min(s.anchor, len);
             s.head = @min(s.head, len);
         }
-        std.sort.pdq(Selection, v.sels.items, {}, struct {
-            fn lt(_: void, a: Selection, b: Selection) bool {
-                return a.start() < b.start() or (a.start() == b.start() and a.end() < b.end());
-            }
-        }.lt);
-        var out: usize = 0;
-        for (v.sels.items) |s| {
-            if (out > 0) {
-                const last = &v.sels.items[out - 1];
-                const overlap = s.start() < last.end() or (s.start() == last.end() and (s.isCaret() or last.isCaret()));
-                if (overlap) {
-                    const fwd = last.head >= last.anchor;
-                    const lo = last.start();
-                    const hi = @max(last.end(), s.end());
-                    last.* = if (fwd) .{ .anchor = lo, .head = hi } else .{ .anchor = hi, .head = lo };
-                    continue;
-                }
-            }
-            v.sels.items[out] = s;
-            out += 1;
-        }
-        v.sels.shrinkRetainingCapacity(out);
-        v.primary = 0;
-        for (v.sels.items, 0..) |s, i| if (s.start() <= prim_head and prim_head <= s.end()) {
-            v.primary = i;
-            break;
-        };
+        v.sels.normalize(.for_edit);
     }
 
     /// Replaces the selections with one caret or range.
     pub fn setSelection(v: *EditorView, s: Selection) void {
-        v.sels.clearRetainingCapacity();
-        v.sels.append(v.gpa, s) catch {};
-        v.primary = 0;
+        v.sels.set(&.{s}, 0) catch {};
         v.normalize();
         v.undo.breakGroup();
         v.touch();
@@ -355,8 +343,8 @@ pub const EditorView = struct {
 
     /// Adds a caret (Alt+click).
     pub fn addCaret(v: *EditorView, off: u64) void {
-        v.sels.append(v.gpa, .caret(off)) catch return;
-        v.primary = v.sels.items.len - 1;
+        v.sels.pushHistory() catch {};
+        v.sels.add(.caret(off)) catch return;
         v.normalize();
         v.undo.breakGroup();
         v.touch();
@@ -457,9 +445,9 @@ pub const EditorView = struct {
     /// Moves every selection by one character or word; `extend` keeps the
     /// anchor. Without `extend`, a range collapses to its edge first.
     pub fn moveH(v: *EditorView, forward: bool, unit: Unit, extend: bool) void {
-        for (v.sels.items) |*s| {
+        for (v.sels.items.items) |*s| {
             if (!extend and !s.isCaret() and unit == .char) {
-                s.* = .caret(if (forward) s.end() else s.start());
+                s.* = .{ .anchor = if (forward) s.end() else s.start(), .head = if (forward) s.end() else s.start(), .id = s.id };
                 continue;
             }
             const to = switch (unit) {
@@ -477,7 +465,7 @@ pub const EditorView = struct {
     /// sticky x.
     pub fn moveV(v: *EditorView, lines: i64, extend: bool) void {
         const n = v.lineCount();
-        for (v.sels.items) |*s| {
+        for (v.sels.items.items) |*s| {
             const line = v.lineOf(s.head);
             const gx = s.goal_x orelse v.posOf(s.head).x;
             const target_i = @as(i64, @intCast(line)) + lines;
@@ -498,7 +486,7 @@ pub const EditorView = struct {
 
     /// Home: to the first non-blank, or to column 0 when already there.
     pub fn home(v: *EditorView, extend: bool) void {
-        for (v.sels.items) |*s| {
+        for (v.sels.items.items) |*s| {
             const r = v.lineRange(v.lineOf(s.head));
             var first = r.start;
             while (first < r.end and (v.byteAt(first) == ' ' or v.byteAt(first) == '\t')) first += 1;
@@ -512,7 +500,7 @@ pub const EditorView = struct {
 
     /// End of line.
     pub fn end(v: *EditorView, extend: bool) void {
-        for (v.sels.items) |*s| {
+        for (v.sels.items.items) |*s| {
             const to = v.lineRange(v.lineOf(s.head)).end;
             s.head = to;
             if (!extend) s.anchor = to;
@@ -536,6 +524,80 @@ pub const EditorView = struct {
         v.touch();
     }
 
+    // -- multi-cursor ------------------------------------------------------
+
+    /// Rows and x for the model's box selection and vertical cursors: one
+    /// row per line, x in pixels from the text origin.
+    pub fn displayMap(v: *EditorView) multi.DisplayMapQuery {
+        return .{ .ptr = v, .rowCountFn = dmRows, .hitTestFn = dmHit, .rowOfFn = dmRowOf };
+    }
+
+    fn dmRows(ptr: *anyopaque) u64 {
+        const v: *EditorView = @ptrCast(@alignCast(ptr));
+        return v.lineCount();
+    }
+
+    fn dmHit(ptr: *anyopaque, row: u64, x: f32) multi.Hit {
+        const v: *EditorView = @ptrCast(@alignCast(ptr));
+        const r = v.lineRange(@min(row, v.lineCount() - 1));
+        const t = v.text(r);
+        const col = v.colAt(t, x);
+        const past = x - v.xInLine(t, t.len);
+        const virtual: u32 = if (col == t.len and past > 0) @intFromFloat(@round(past / v.spaceW())) else 0;
+        return .{ .offset = r.start + col, .virtual = virtual };
+    }
+
+    fn dmRowOf(ptr: *anyopaque, pos: u64) multi.RowPos {
+        const v: *EditorView = @ptrCast(@alignCast(ptr));
+        const p = v.posOf(pos);
+        return .{ .row = v.lineOf(pos), .x = p.x };
+    }
+
+    /// The display position (row, x) of text-area point `p`.
+    pub fn displayPosAt(v: *EditorView, p: Vec2) multi.DisplayPos {
+        const row_f = @max(0, @floor(p.y / v.lineHeight()));
+        const row: u64 = @min(@as(u64, @intFromFloat(row_f)), v.lineCount() - 1);
+        return .{ .row = row, .col_px = @max(0, p.x) };
+    }
+
+    /// Column (box) selection between two display positions.
+    pub fn boxSelect(v: *EditorView, anchor: multi.DisplayPos, head: multi.DisplayPos) void {
+        multi.boxToSelections(.{ .anchor = anchor, .head = head }, v.displayMap(), &v.sels) catch return;
+        v.afterMove();
+    }
+
+    /// The commands of `multi_cursor.zig` the editor binds.
+    pub const CursorCommand = enum { add_above, add_below, add_next_occurrence, skip_occurrence, select_all_occurrences, split_into_lines, collapse, undo_cursor };
+
+    /// Runs `c`; false when it changed nothing.
+    pub fn cursorCommand(v: *EditorView, c: CursorCommand) !bool {
+        const changed = switch (c) {
+            .add_above, .add_below => blk: {
+                var snap = v.doc.snapshot();
+                defer snap.release();
+                break :blk try multi.addCursorVertical(&snap, &v.sels, if (c == .add_above) .up else .down, .{ .tab_size = v.opts.tab_size });
+            },
+            .add_next_occurrence => try multi.addNextOccurrence(v.doc, &v.sels, .{}),
+            .skip_occurrence => try multi.skipOccurrence(v.doc, &v.sels, .{}),
+            .select_all_occurrences => try multi.selectAllOccurrences(v.doc, &v.sels, .{}) > 0,
+            .split_into_lines => blk: {
+                var snap = v.doc.snapshot();
+                defer snap.release();
+                const n = v.sels.count();
+                try multi.splitIntoLines(&snap, &v.sels);
+                break :blk v.sels.count() != n;
+            },
+            .collapse => blk: {
+                if (v.sels.count() <= 1) break :blk false;
+                try multi.collapse(&v.sels);
+                break :blk true;
+            },
+            .undo_cursor => try v.sels.undoCursorOp(),
+        };
+        if (changed) v.afterMove();
+        return changed;
+    }
+
     // -- editing -----------------------------------------------------------
 
     fn timestamp(v: *const EditorView) std.Io.Timestamp {
@@ -545,7 +607,7 @@ pub const EditorView = struct {
     /// Applies one edit per selection (in selection order) and leaves a
     /// caret after each edit's text.
     fn applyPerSelection(v: *EditorView, edits: []const Replace, key: ?CoalesceKey) !void {
-        std.debug.assert(edits.len == v.sels.items.len);
+        std.debug.assert(edits.len == v.sels.count());
         if (v.opts.read_only) return;
         var nonempty = false;
         for (edits) |e| if (e.range.start != e.range.end or e.text.len > 0) {
@@ -558,28 +620,31 @@ pub const EditorView = struct {
         var inverse = try cs.invert(v.doc.tree, v.gpa);
         var inv_owned = true;
         defer if (inv_owned) inverse.deinit();
-        const before = try sel_mod.dupe(v.gpa, v.sels.items);
+        const before = try sel_mod.dupe(v.gpa, v.sels.slice());
         defer v.gpa.free(before);
 
         v.in_edit = true;
         defer v.in_edit = false;
         try v.doc.applyChangeSet(&cs, .{ .user = 0 });
-        for (v.sels.items, edits) |*s, e| {
-            s.* = .caret(cs.mapPos(e.range.start, .left) + e.text.len);
+        for (v.sels.items.items, edits) |*s, e| {
+            const at = cs.mapPos(e.range.start, .left) + e.text.len;
+            s.* = .{ .anchor = at, .head = at, .id = s.id };
         }
+        v.sels.clearHistory();
+        v.sels.word_search = false;
         v.normalize();
         cs_owned = false;
         inv_owned = false;
-        try v.undo.record(cs, inverse, before, v.sels.items, .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = key });
+        try v.undo.record(cs, inverse, before, v.sels.slice(), .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = key });
         v.revealPrimary();
         v.touch();
     }
 
     /// Types `t` over every selection.
     pub fn insertText(v: *EditorView, t: []const u8) !void {
-        const edits = try v.gpa.alloc(Replace, v.sels.items.len);
+        const edits = try v.gpa.alloc(Replace, v.sels.count());
         defer v.gpa.free(edits);
-        for (v.sels.items, edits) |s, *e| e.* = .{ .range = s.range(), .text = t };
+        for (v.sels.slice(), edits) |s, *e| e.* = .{ .range = s.range(), .text = t };
         const space = t.len > 0 and std.mem.indexOfNone(u8, t, " \t") == null;
         const key: ?CoalesceKey = if (std.mem.indexOfScalar(u8, t, '\n') != null) null else if (space) .typing_space else .typing_word;
         try v.applyPerSelection(edits, key);
@@ -590,8 +655,8 @@ pub const EditorView = struct {
         var arena: std.heap.ArenaAllocator = .init(v.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const edits = try a.alloc(Replace, v.sels.items.len);
-        for (v.sels.items, edits) |s, *e| {
+        const edits = try a.alloc(Replace, v.sels.count());
+        for (v.sels.slice(), edits) |s, *e| {
             const r = v.lineRange(v.lineOf(s.start()));
             var i = r.start;
             while (i < s.start() and (v.byteAt(i) == ' ' or v.byteAt(i) == '\t')) i += 1;
@@ -607,8 +672,8 @@ pub const EditorView = struct {
         var arena: std.heap.ArenaAllocator = .init(v.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const edits = try a.alloc(Replace, v.sels.items.len);
-        for (v.sels.items, edits) |s, *e| {
+        const edits = try a.alloc(Replace, v.sels.count());
+        for (v.sels.slice(), edits) |s, *e| {
             if (!v.opts.insert_spaces) {
                 e.* = .{ .range = s.range(), .text = "\t" };
                 continue;
@@ -626,9 +691,9 @@ pub const EditorView = struct {
 
     /// Deletes the selections, or one character or word before each caret.
     pub fn backspace(v: *EditorView, unit: Unit) !void {
-        const edits = try v.gpa.alloc(Replace, v.sels.items.len);
+        const edits = try v.gpa.alloc(Replace, v.sels.count());
         defer v.gpa.free(edits);
-        for (v.sels.items, edits) |s, *e| {
+        for (v.sels.slice(), edits) |s, *e| {
             const r: Range = if (!s.isCaret()) s.range() else .{ .start = switch (unit) {
                 .char => v.prevChar(s.head),
                 .word => v.prevWord(s.head),
@@ -640,9 +705,9 @@ pub const EditorView = struct {
 
     /// Deletes the selections, or one character or word after each caret.
     pub fn deleteForward(v: *EditorView, unit: Unit) !void {
-        const edits = try v.gpa.alloc(Replace, v.sels.items.len);
+        const edits = try v.gpa.alloc(Replace, v.sels.count());
         defer v.gpa.free(edits);
-        for (v.sels.items, edits) |s, *e| {
+        for (v.sels.slice(), edits) |s, *e| {
             const r: Range = if (!s.isCaret()) s.range() else .{ .start = s.head, .end = switch (unit) {
                 .char => v.nextChar(s.head),
                 .word => v.nextWord(s.head),
@@ -658,11 +723,11 @@ pub const EditorView = struct {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
         var all_carets = true;
-        for (v.sels.items) |s| if (!s.isCaret()) {
+        for (v.sels.slice()) |s| if (!s.isCaret()) {
             all_carets = false;
         };
         var last_line: ?u64 = null;
-        for (v.sels.items, 0..) |s, i| {
+        for (v.sels.slice(), 0..) |s, i| {
             if (all_carets) {
                 const line = v.lineOf(s.head);
                 if (last_line == line) continue;
@@ -684,13 +749,13 @@ pub const EditorView = struct {
         const t = try v.copyText(gpa);
         errdefer gpa.free(t);
         var all_carets = true;
-        for (v.sels.items) |s| if (!s.isCaret()) {
+        for (v.sels.slice()) |s| if (!s.isCaret()) {
             all_carets = false;
         };
         if (all_carets) {
-            for (v.sels.items) |*s| {
+            for (v.sels.items.items) |*s| {
                 const r = v.lineRangeWithEol(s.head);
-                s.* = .{ .anchor = r.start, .head = r.end };
+                s.* = .{ .anchor = r.start, .head = r.end, .id = s.id };
             }
             v.normalize();
         }
@@ -703,7 +768,7 @@ pub const EditorView = struct {
     /// whole text at every selection.
     pub fn paste(v: *EditorView, t: []const u8) !void {
         if (t.len == 0) return;
-        const n = v.sels.items.len;
+        const n = v.sels.count();
         var lines: std.ArrayList([]const u8) = .empty;
         defer lines.deinit(v.gpa);
         if (n > 1) {
@@ -712,7 +777,7 @@ pub const EditorView = struct {
         }
         const edits = try v.gpa.alloc(Replace, n);
         defer v.gpa.free(edits);
-        for (v.sels.items, edits, 0..) |s, *e, i| {
+        for (v.sels.slice(), edits, 0..) |s, *e, i| {
             e.* = .{ .range = s.range(), .text = if (lines.items.len == n) lines.items[i] else t };
         }
         v.undo.breakGroup();
@@ -724,9 +789,8 @@ pub const EditorView = struct {
         v.in_edit = true;
         defer v.in_edit = false;
         try v.doc.applyChangeSet(step.changes, origin);
-        v.sels.clearRetainingCapacity();
-        try v.sels.appendSlice(v.gpa, step.selections);
-        v.primary = v.sels.items.len -| 1;
+        if (step.selections.len > 0) try v.sels.set(step.selections, step.selections.len - 1);
+        v.sels.clearHistory();
         v.normalize();
         v.revealPrimary();
         v.touch();
