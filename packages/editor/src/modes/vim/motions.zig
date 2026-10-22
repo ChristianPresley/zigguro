@@ -53,11 +53,19 @@ pub const Motion = enum {
     search_word_backward,
     search_next,
     search_prev,
+    /// `'x`: the first non-blank of mark x's line.
+    mark_line,
+    /// `` `x ``: mark x itself.
+    mark_exact,
+    /// `/` and `?`: a pattern typed on the command line (the Vim state
+    /// reads it, then runs `search_next`).
+    search_prompt_forward,
+    search_prompt_backward,
 
     /// Whether the motion is a jump (sets the previous-context mark).
     pub fn isJump(m: Motion) bool {
         return switch (m) {
-            .goto_first_line, .goto_line, .match_pair, .paragraph_back, .paragraph_forward, .sentence_back, .sentence_forward, .search_word_forward, .search_word_backward, .search_next, .search_prev => true,
+            .goto_first_line, .goto_line, .match_pair, .paragraph_back, .paragraph_forward, .sentence_back, .sentence_forward, .search_word_forward, .search_word_backward, .search_next, .search_prev, .mark_line, .mark_exact, .search_prompt_forward, .search_prompt_backward => true,
             else => false,
         };
     }
@@ -70,7 +78,16 @@ pub const Motion = enum {
     /// Whether the motion takes a character argument.
     pub fn takesChar(m: Motion) bool {
         return switch (m) {
-            .find_forward, .find_backward, .till_forward, .till_backward => true,
+            .find_forward, .find_backward, .till_forward, .till_backward, .mark_line, .mark_exact => true,
+            else => false,
+        };
+    }
+
+    /// Whether a delete with the motion goes to register 1 even within a
+    /// line (Vim's `use_reg_one`).
+    pub fn usesRegisterOne(m: Motion) bool {
+        return switch (m) {
+            .match_pair, .sentence_back, .sentence_forward, .paragraph_back, .paragraph_forward, .mark_exact, .search_next, .search_prev, .search_word_forward, .search_word_backward, .search_prompt_forward, .search_prompt_backward => true,
             else => false,
         };
     }
@@ -79,16 +96,17 @@ pub const Motion = enum {
 /// The last `f`/`F`/`t`/`T`, for `;` and `,`.
 pub const LastFind = struct { motion: Motion, char: u21 };
 
-/// The last `*`/`#` (or `/`) search, for `n` and `N`.
-pub const LastSearch = struct {
-    buf: [256]u8 = undefined,
-    len: u8 = 0,
-    whole_word: bool = false,
-    backward: bool = false,
-
-    pub fn pattern(s: *const LastSearch) []const u8 {
-        return s.buf[0..s.len];
-    }
+/// What motions need from outside the text: marks and the compiled last
+/// search pattern (both kept by the Vim state).
+pub const Ext = struct {
+    ctx: *anyopaque,
+    /// Mark `name`'s position, or null when it is not set.
+    markFn: *const fn (ctx: *anyopaque, name: u21) ?u64,
+    /// The next match of the last search pattern after (or before) `pos`,
+    /// wrapping around; null when there is none.
+    searchFn: *const fn (ctx: *anyopaque, pos: u64, backward: bool) ?u64,
+    /// The direction of the last `/`, `?`, `*` or `#`.
+    search_backward: bool = false,
 };
 
 pub const Context = struct {
@@ -104,7 +122,7 @@ pub const Context = struct {
     want: ?u32 = 0,
     char: u21 = 0,
     last_find: ?LastFind = null,
-    last_search: ?*const LastSearch = null,
+    ext: ?Ext = null,
     /// Scratch for searches (whole lines).
     scratch: ?*std.ArrayList(u8) = null,
     gpa: ?std.mem.Allocator = null,
@@ -273,6 +291,13 @@ pub fn eval(x: Text, pos: u64, m: Motion, c: Context) ?Result {
             return .{ .pos = p, .kind = .exclusive };
         },
         .search_word_forward, .search_word_backward, .search_next, .search_prev => return search(x, pos, m, n, c),
+        .mark_line, .mark_exact => {
+            const e = c.ext orelse return null;
+            const p = @min(e.markFn(e.ctx, c.char) orelse return null, x.len);
+            if (m == .mark_line) return .{ .pos = x.firstNonBlank(x.lineOf(p)), .kind = .linewise };
+            return .{ .pos = p, .kind = .exclusive };
+        },
+        .search_prompt_forward, .search_prompt_backward => return null,
     }
 }
 
@@ -700,43 +725,16 @@ pub fn wordUnderCursor(x: Text, pos: u64) ?struct { start: u64, end: u64, keywor
 }
 
 fn search(x: Text, pos: u64, m: Motion, n: u32, c: Context) ?Result {
-    const s = c.last_search orelse return null;
-    const pat = s.pattern();
-    if (pat.len == 0) return null;
+    const e = c.ext orelse return null;
+    // "*" and "#" start from the word's start, so they skip it.
     const backward = switch (m) {
         .search_word_backward => true,
         .search_word_forward => false,
-        .search_next => s.backward,
-        else => !s.backward,
+        .search_next => e.search_backward,
+        else => !e.search_backward,
     };
     var p = pos;
-    for (0..n) |_| p = searchOnce(x, p, pat, s.whole_word, backward) orelse return null;
+    if (m == .search_word_forward or m == .search_word_backward) p = (wordUnderCursor(x, pos) orelse return null).start;
+    for (0..n) |_| p = e.searchFn(e.ctx, p, backward) orelse return null;
     return .{ .pos = p, .kind = .exclusive };
-}
-
-fn matchesAt(x: Text, p: u64, pat: []const u8, whole: bool) bool {
-    if (p + pat.len > x.len) return false;
-    for (pat, 0..) |b, i| if (x.byte(p + i) != b) return false;
-    if (whole) {
-        if (p > 0 and text_mod.classOf(x.byte(p - 1)) == 2 and x.byte(p - 1) < 0x80) return false;
-        const e = p + pat.len;
-        if (e < x.len and text_mod.classOf(x.byte(e)) == 2 and x.byte(e) < 0x80) return false;
-    }
-    return true;
-}
-
-/// The next match of `pat` after (or before) `pos`, wrapping around.
-fn searchOnce(x: Text, pos: u64, pat: []const u8, whole: bool, backward: bool) ?u64 {
-    if (x.len == 0) return null;
-    var p = pos;
-    var steps: u64 = 0;
-    while (steps <= x.len) : (steps += 1) {
-        if (backward) {
-            p = if (p == 0) x.len - 1 else p - 1;
-        } else {
-            p = if (p + 1 >= x.len) 0 else p + 1;
-        }
-        if (matchesAt(x, p, pat, whole)) return p;
-    }
-    return null;
 }

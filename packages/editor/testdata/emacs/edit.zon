@@ -1,0 +1,18 @@
+// Emacs edit cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "self insert", .before = "a¦b", .keys = "xyz", .after = "axyz¦b" },
+    .{ .name = "RET", .before = "ab¦cd", .keys = "<CR>", .after = "ab\n¦cd" },
+    .{ .name = "C-o open line", .before = "ab¦cd", .keys = "<C-o>", .after = "ab¦\ncd" },
+    .{ .name = "C-t", .before = "ab¦cd", .keys = "<C-t>", .after = "acb¦d" },
+    .{ .name = "C-t at end of line", .before = "abcd¦\nx", .keys = "<C-t>", .after = "abdc¦\nx" },
+    .{ .name = "C-t at start fails", .before = "¦ab", .keys = "<C-t>x", .after = "¦ab" },
+    .{ .name = "M-t", .before = "foo ¦bar", .keys = "<M-t>", .after = "bar foo¦" },
+    .{ .name = "M-t in word", .before = "fo¦o bar baz", .keys = "<M-t>", .after = "bar foo¦ baz" },
+    .{ .name = "M-t punctuation", .before = "foo, ¦bar", .keys = "<M-t>", .after = "bar, foo¦" },
+    .{ .name = "DEL at start fails", .before = "¦ab", .keys = "<BS>x", .after = "¦ab" },
+    .{ .name = "C-d", .before = "a¦bc", .keys = "<C-d><C-d>", .after = "a¦" },
+    .{ .name = "C-j", .before = "ab¦cd", .keys = "<C-j>", .after = "ab\n¦cd" },
+    .{ .name = "tab", .before = "¦ab", .keys = "<Tab>", .after = "\t¦ab" },
+    .{ .name = "delete key", .before = "a¦bc", .keys = "<Del>", .after = "a¦c" },
+    .{ .name = "space", .before = "a¦b", .keys = " ", .after = "a ¦b" },
+}

@@ -174,3 +174,23 @@ test "session: new changesets append; the cursor keeps its hunk" {
     try testing.expectEqualStrings("a.txt", s.fileChange(1).?.path);
     try testing.expectEqual(key, s.hunk().?.key);
 }
+
+test "session: an edited accept writes the reviewer's text, and undo reverts it" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    _ = try fx.submit(1, &.{.{ "b.txt", three, "A\n.\nB\n.\nc\n" }});
+    const s = try ReviewSession.init(gpa, fx.q, &fx.ap, .{ .session = 1 });
+    defer s.deinit();
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    try testing.expectEqualStrings("B\n", (try s.proposedText(arena_state.allocator(), 0, 1)).?);
+    try testing.expectEqualStrings("A\n", (try s.proposedText(arena_state.allocator(), 0, 0)).?);
+
+    s.focus(.{ .file = 0, .hunk = 1 });
+    try testing.expect(try s.acceptHunkEdited("Bee\nbee\n") == null);
+    try fx.expectDisk("b.txt", "a\n.\nBee\nbee\n.\nc\n");
+    try testing.expectEqual(@as(u32, 1), s.progress().decided);
+    try testing.expect(try s.undo() == null);
+    try fx.expectDisk("b.txt", three);
+}

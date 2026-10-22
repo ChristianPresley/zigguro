@@ -139,8 +139,7 @@ const Ctx = struct {
         if (e.size > (c.body.len - e.data_offset) * 1032 + 1024) return error.CorruptPack;
         const out = try gpa.alloc(u8, @intCast(e.size));
         errdefer gpa.free(out);
-        var r: std.Io.Reader = .fixed(c.body[@intCast(e.data_offset)..]);
-        zlib.inflateExact(&r, out) catch return error.CorruptPack;
+        _ = zlib.inflateExact(c.body[@intCast(e.data_offset)..], out) catch return error.CorruptPack;
         return out;
     }
 
@@ -232,12 +231,11 @@ pub fn indexBytes(gpa: Allocator, io: std.Io, data: []const u8, fmt: ObjectForma
     for (0..count) |i| {
         const h = pack_mod.parseEntryHeader(body, off, fmt) catch return error.CorruptPack;
         var e: Entry = .{ .offset = off, .kind = h.kind, .size = h.size, .data_offset = h.data_offset, .crc = 0 };
-        var r: std.Io.Reader = .fixed(body[@intCast(h.data_offset)..]);
         if (h.size > (body.len - h.data_offset) * 1032 + 1024) return error.CorruptPack;
         const buf = try gpa.alloc(u8, @intCast(h.size));
         defer gpa.free(buf);
-        zlib.inflateExact(&r, buf) catch return error.CorruptPack;
-        const end = h.data_offset + r.seek;
+        const used = zlib.inflateExact(body[@intCast(h.data_offset)..], buf) catch return error.CorruptPack;
+        const end = h.data_offset + used;
         e.crc = std.hash.Crc32.hash(body[@intCast(off)..@intCast(end)]);
         switch (h.base) {
             .none => {

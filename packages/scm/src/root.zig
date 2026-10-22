@@ -45,6 +45,8 @@ pub const materialize = @import("merge/materialize.zig");
 pub const parse_markers = @import("merge/parse_markers.zig");
 /// Path-level three-way tree merges.
 pub const tree_merge = @import("merge/tree_merge.zig");
+/// Three-way and N-way file content merge.
+pub const content_merge = @import("merge/content_merge.zig");
 /// Operation objects and their metadata.
 pub const operation = @import("oplog/operation.zig");
 /// Views: heads, refs, working copies and lanes at one operation.
@@ -74,6 +76,10 @@ pub const ai = struct {
     pub const landing = @import("ai/landing.zig");
     /// Tools for agents, through zg_ai's foreign-tool contract.
     pub const agent_tools = @import("ai/agent_tools.zig");
+    /// The files a proposal changes, for review items.
+    pub const proposal_files = @import("ai/proposal_files.zig");
+    /// Approving an edited description.
+    pub const describe = @import("ai/describe.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -124,6 +130,7 @@ test {
     _ = @import("graph/layout_test.zig");
     _ = @import("graph/revset_test.zig");
     _ = @import("merge/markers_test.zig");
+    _ = @import("merge/content_merge_test.zig");
     _ = @import("oplog/oplog_test.zig");
     _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
@@ -132,4 +139,6 @@ test {
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
     _ = @import("ai/agent_tools_test.zig");
+    _ = @import("ai/proposal_files.zig");
+    _ = @import("ai/describe.zig");
 }

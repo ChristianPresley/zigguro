@@ -95,6 +95,18 @@ pub const Command = enum {
     reselect,
     escape,
     repeat,
+    /// `q{reg}` (the register is `char`) and the `q` that ends it.
+    record_macro,
+    stop_record,
+    /// `@{reg}`; `@@` has `char` '@'.
+    play_macro,
+    /// `m{a-zA-Z'`}`.
+    set_mark,
+    /// `Ctrl-O` and `Ctrl-I` (`<Tab>`).
+    jump_older,
+    jump_newer,
+    /// `:`: the command line.
+    cmdline,
     // Visual mode only.
     swap_ends,
     swap_ends_block,
@@ -134,7 +146,7 @@ pub const Action = union(enum) {
     run: VimCommand,
 };
 
-const Prefix = enum { none, g, register, find, replace_char, object_inner, object_around };
+const Prefix = enum { none, g, register, find, replace_char, object_inner, object_around, macro_reg, play_reg, mark_set };
 
 pub const Pending = struct {
     register: ?u8 = null,
@@ -146,12 +158,14 @@ pub const Pending = struct {
     /// `g` was typed after an operator (`dgg`, `gUgU`).
     op_g: bool = false,
     find: Motion = .find_forward,
+    /// A macro is being recorded (`q` then ends it). Kept across resets.
+    recording: bool = false,
     /// Keys typed so far, for the status line ("showcmd").
     shown: [24]u8 = undefined,
     shown_len: u8 = 0,
 
     pub fn reset(p: *Pending) void {
-        p.* = .{};
+        p.* = .{ .recording = p.recording };
     }
 
     /// The keys of the command being typed.
@@ -219,6 +233,16 @@ pub const Pending = struct {
                 const c = k.text() orelse (if (k.is(.enter)) @as(u21, '\r') else return p.fail());
                 return p.done(.{ .target = .{ .motion = .{ .m = p.find, .char = c } } });
             },
+            .macro_reg, .play_reg, .mark_set => {
+                const which = p.prefix;
+                p.prefix = .none;
+                const c = k.text() orelse return p.fail();
+                return p.done(.{ .command = switch (which) {
+                    .macro_reg => .record_macro,
+                    .play_reg => .play_macro,
+                    else => .set_mark,
+                }, .char = c });
+            },
             .replace_char => {
                 p.prefix = .none;
                 const c = k.text() orelse (if (k.is(.enter)) @as(u21, '\n') else return p.fail());
@@ -246,6 +270,8 @@ pub const Pending = struct {
         }
         if (k.isCtrl('r')) return if (p.op == null) p.done(.{ .command = .redo }) else p.fail();
         if (k.isCtrl('h')) return p.motionKey(.back_wrap);
+        if (k.isCtrl('o')) return if (p.op == null) p.done(.{ .command = .jump_older }) else p.fail();
+        if (k.isCtrl('i') or k.is(.tab)) return if (p.op == null) p.done(.{ .command = .jump_newer }) else p.fail();
         if (k.is(.backspace)) return p.motionKey(.back_wrap);
         if (k.is(.enter)) return p.motionKey(.down_first_non_blank);
         if (k.is(.left)) return p.motionKey(.left);
@@ -334,7 +360,26 @@ pub const Pending = struct {
             p.prefix = .g;
             return .pending;
         }
+        if (c == ':') return if (p.op == null) p.done(.{ .command = .cmdline }) else p.fail();
         if (p.op != null) return p.fail();
+        switch (c) {
+            'q' => {
+                if (p.recording and p.count1 == 0 and p.register == null) return p.done(.{ .command = .stop_record });
+                if (visual) return p.fail();
+                p.prefix = .macro_reg;
+                return .pending;
+            },
+            '@' => {
+                p.prefix = .play_reg;
+                return .pending;
+            },
+            'm' => {
+                if (visual) return p.fail();
+                p.prefix = .mark_set;
+                return .pending;
+            },
+            else => {},
+        }
         const cmd: Command = switch (c) {
             'x' => .delete_char,
             'X' => .delete_char_before,
@@ -447,6 +492,10 @@ fn motionFor(c: u21) ?Motion {
         '#' => .search_word_backward,
         'n' => .search_next,
         'N' => .search_prev,
+        '\'' => .mark_line,
+        '`' => .mark_exact,
+        '/' => .search_prompt_forward,
+        '?' => .search_prompt_backward,
         else => null,
     };
 }
@@ -484,4 +533,21 @@ test "vim parser: counts multiply and operators double" {
     try std.testing.expectEqual(@as(u32, 10), feedAll(&p, "10x", false).run.count);
     try std.testing.expectEqual(Command.escape, feedAll(&p, "<Esc>", false).run.command.?);
     try std.testing.expectEqual(Action.passthrough, feedAll(&p, "<C-p>", false));
+    const q = feedAll(&p, "qa", false).run;
+    try std.testing.expectEqual(Command.record_macro, q.command.?);
+    try std.testing.expectEqual(@as(u21, 'a'), q.char);
+    p.recording = true;
+    try std.testing.expectEqual(Command.stop_record, feedAll(&p, "q", false).run.command.?);
+    try std.testing.expect(p.recording);
+    const at = feedAll(&p, "3@b", false).run;
+    try std.testing.expectEqual(Command.play_macro, at.command.?);
+    try std.testing.expectEqual(@as(u32, 3), at.count);
+    try std.testing.expectEqual(Command.set_mark, feedAll(&p, "mx", false).run.command.?);
+    const dm = feedAll(&p, "d'x", false).run;
+    try std.testing.expectEqual(Motion.mark_line, dm.target.motion.m);
+    try std.testing.expectEqual(@as(u21, 'x'), dm.target.motion.char);
+    try std.testing.expectEqual(Motion.search_prompt_forward, feedAll(&p, "d/", false).run.target.motion.m);
+    try std.testing.expectEqual(Command.jump_older, feedAll(&p, "<C-o>", false).run.command.?);
+    try std.testing.expectEqual(Command.jump_newer, feedAll(&p, "<Tab>", false).run.command.?);
+    try std.testing.expectEqual(Command.cmdline, feedAll(&p, ":", false).run.command.?);
 }

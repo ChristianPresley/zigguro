@@ -23,6 +23,12 @@ const smart_edit = @import("../../model/edit/smart_edit.zig");
 const commands_move = @import("../../model/edit/commands_move.zig");
 const runner = @import("../../model/edit/runner.zig");
 const cs_mod = @import("../../model/edit/change_set.zig");
+const registers_mod = @import("registers.zig");
+const marks_mod = @import("marks.zig");
+const macros = @import("macros.zig");
+const search_mod = @import("search.zig");
+const repeat_mod = @import("repeat.zig");
+const ex = @import("ex.zig");
 
 const Allocator = std.mem.Allocator;
 const Key = key_mod.Key;
@@ -36,6 +42,45 @@ const ChangeEvent = document.ChangeEvent;
 pub const Operator = parser.Operator;
 pub const VimCommand = parser.VimCommand;
 pub const Register = ops.Register;
+pub const Registers = registers_mod.Registers;
+
+/// Options `:set` changes (shared by every Vim state, like Vim's global
+/// options; the view reads `number`, `relativenumber` and `wrap`).
+pub const Options = struct {
+    number: bool = false,
+    relativenumber: bool = false,
+    wrap: bool = true,
+    ignorecase: bool = false,
+    smartcase: bool = false,
+};
+
+/// What every editor's Vim state shares: registers, file marks, the last
+/// search and substitute, and options.
+pub const Shared = struct {
+    regs: Registers,
+    global_marks: marks_mod.GlobalMarks = .{},
+    search: search_mod.Search,
+    options: Options = .{},
+    /// `:noh`: the search highlight is off until the next search.
+    highlight_off: bool = false,
+    /// The last `:s` pattern, replacement and flags (for `:s` alone and
+    /// `~`).
+    sub_replacement: std.ArrayList(u8) = .empty,
+    sub_flags: [8]u8 = undefined,
+    sub_flags_len: u8 = 0,
+    sub_used: bool = false,
+
+    pub fn init(gpa: Allocator) Shared {
+        return .{ .regs = .init(gpa), .search = .init(gpa) };
+    }
+
+    pub fn deinit(sh: *Shared) void {
+        const gpa = sh.regs.gpa;
+        sh.regs.deinit();
+        sh.search.deinit();
+        sh.sub_replacement.deinit(gpa);
+    }
+};
 
 pub const Mode = enum {
     normal,
@@ -45,6 +90,8 @@ pub const Mode = enum {
     visual_line,
     visual_block,
     op_pending,
+    /// `:`, `/` or `?`: typing on the command line.
+    cmdline,
 
     pub fn isVisual(m: Mode) bool {
         return m == .visual or m == .visual_line or m == .visual_block;
@@ -78,13 +125,32 @@ pub const VimState = struct {
     mode: Mode = .normal,
     cursors: std.ArrayList(Cursor) = .empty,
     pending: parser.Pending = .{},
-    /// The unnamed register (E05.F09.S01.T02 adds the others).
+    /// What the operator being run yanked or deleted; stored in the
+    /// registers when it is done.
     reg: Register = .{},
     group: mode_mod.ChangeGroup,
     last_find: ?motions.LastFind = null,
-    last_search: motions.LastSearch = .{},
-    /// The last command, for dot repeat (E05.F09.S01.T02).
-    last_change: ?VimCommand = null,
+    /// Registers, file marks, the last search and options; `own` unless
+    /// the editor shares one between its Vim states.
+    shared: ?*Shared = null,
+    own: Shared,
+    marks: marks_mod.Marks = .{},
+    rep: repeat_mod.Repeat = .{},
+    recording: ?macros.Recording = null,
+    last_macro: ?u8 = null,
+    /// Keys still to run from a macro.
+    queue: std.ArrayList(Key) = .empty,
+    queue_head: usize = 0,
+    // Command line.
+    cmd_kind: u8 = ':',
+    cmd_buf: std.ArrayList(u8) = .empty,
+    /// The command waiting for a `/` or `?` pattern (`d/foo<CR>`).
+    cmd_saved: ?VimCommand = null,
+    cmd_return: Mode = .normal,
+    /// A message for the status line (`:s` counts, errors), until the next key.
+    message: [160]u8 = undefined,
+    message_len: usize = 0,
+    message_error: bool = false,
     // Insert session.
     ins_count: u32 = 1,
     ins_kind: InsertKind = .insert,
@@ -98,14 +164,27 @@ pub const VimState = struct {
     synced: std.ArrayList(Selection) = .empty,
     doc: ?*Document = null,
     listener: ?document.ListenerId = null,
-    status: [48]u8 = undefined,
+    status: [200]u8 = undefined,
     status_len: usize = 0,
     /// Set when the last key was refused (Vim beeps).
     bell: bool = false,
     scratch: std.ArrayList(Selection) = .empty,
 
     pub fn init(gpa: Allocator) VimState {
-        return .{ .gpa = gpa, .group = .init(gpa) };
+        return .{ .gpa = gpa, .group = .init(gpa), .own = .init(gpa) };
+    }
+
+    /// The registers, file marks, search and options in use.
+    pub fn sh(vs: *VimState) *Shared {
+        return vs.shared orelse &vs.own;
+    }
+
+    /// Sets the status-line message (cleared by the next key).
+    pub fn setMessage(vs: *VimState, is_error: bool, comptime fmt: []const u8, args: anytype) []const u8 {
+        const m = std.fmt.bufPrint(&vs.message, fmt, args) catch vs.message[0..];
+        vs.message_len = m.len;
+        vs.message_error = is_error;
+        return m;
     }
 
     pub fn deinit(vs: *VimState) void {
@@ -118,6 +197,12 @@ pub const VimState = struct {
         vs.replaced.deinit(vs.gpa);
         vs.synced.deinit(vs.gpa);
         vs.scratch.deinit(vs.gpa);
+        vs.own.deinit();
+        vs.marks.deinit(vs.gpa);
+        vs.rep.deinit(vs.gpa);
+        if (vs.recording) |*r| r.deinit(vs.gpa);
+        vs.queue.deinit(vs.gpa);
+        vs.cmd_buf.deinit(vs.gpa);
     }
 
     /// The `ModeHandler` for this state.
@@ -142,16 +227,24 @@ pub const VimState = struct {
 
     /// The mode line: "-- INSERT --" and so on, then the pending keys.
     pub fn statusText(vs: *VimState) []const u8 {
+        if (vs.mode == .cmdline) {
+            const s = std.fmt.bufPrint(&vs.status, "{c}{s}", .{ vs.cmd_kind, vs.cmd_buf.items }) catch vs.status[0..];
+            vs.status_len = s.len;
+            return s;
+        }
+        if (vs.message_len > 0) return vs.message[0..vs.message_len];
         const m: []const u8 = switch (vs.mode) {
             .insert => "-- INSERT --",
             .replace => "-- REPLACE --",
             .visual => "-- VISUAL --",
             .visual_line => "-- VISUAL LINE --",
             .visual_block => "-- VISUAL BLOCK --",
-            .normal, .op_pending => "",
+            .normal, .op_pending, .cmdline => "",
         };
         const cmd = vs.pending.showcmd();
-        const s = std.fmt.bufPrint(&vs.status, "{s}{s}{s}", .{ m, if (m.len > 0 and cmd.len > 0) " " else "", cmd }) catch m;
+        var rec: [16]u8 = undefined;
+        const r: []const u8 = if (vs.recording) |rc| std.fmt.bufPrint(&rec, "recording @{c}", .{rc.register}) catch "" else "";
+        const s = std.fmt.bufPrint(&vs.status, "{s}{s}{s}{s}{s}", .{ m, if (m.len > 0 and r.len > 0) " " else "", r, if (m.len + r.len > 0 and cmd.len > 0) " " else "", cmd }) catch m;
         vs.status_len = s.len;
         return s;
     }
@@ -161,6 +254,7 @@ pub const VimState = struct {
             .insert => .bar,
             .replace => .underline,
             .op_pending => .half_block,
+            .cmdline => .bar,
             else => if (vs.pending.opPending()) .half_block else .block,
         };
     }
@@ -195,6 +289,14 @@ pub const VimState = struct {
             c.pos = ev.changes.mapPos(c.pos, .left);
             c.anchor = ev.changes.mapPos(c.anchor, .left);
         }
+        vs.marks.map(ev.changes);
+        vs.sh().global_marks.map(ev.doc, ev.changes);
+        const rs = ev.changes.replaces;
+        if (rs.len > 0) vs.marks.last_change = ev.changes.mapPos(rs[rs.len - 1].range.start, .left);
+        if (vs.last_visual) |*lv| {
+            lv.anchor = ev.changes.mapPos(lv.anchor, .left);
+            lv.pos = ev.changes.mapPos(lv.pos, .left);
+        }
     }
 
     /// Reads the host's selections into the cursors when something else
@@ -215,7 +317,7 @@ pub const VimState = struct {
             const p = if (vs.mode == .insert or vs.mode == .replace) s.head else x.clampNormal(s.head);
             try vs.cursors.append(vs.gpa, .{ .pos = p, .anchor = s.anchor, .want = x.column(p) });
         }
-        if (vs.mode.isVisual()) vs.mode = .normal;
+        if (vs.mode.isVisual() or vs.mode == .cmdline) vs.mode = .normal;
     }
 
     /// Writes the cursors to the host's selections.
@@ -228,9 +330,10 @@ pub const VimState = struct {
         const x = ops.txt(host);
         vs.scratch.clearRetainingCapacity();
         const primary = 0;
+        const shown = if (vs.mode == .cmdline) vs.cmd_return else vs.mode;
         for (vs.cursors.items) |c| {
-            if (vs.mode.isVisual()) {
-                try visual_mod.display(x, vs.mode == .visual_line, vs.mode == .visual_block, c, &vs.scratch, vs.gpa);
+            if (shown.isVisual()) {
+                try visual_mod.display(x, shown == .visual_line, shown == .visual_block, c, &vs.scratch, vs.gpa);
             } else try vs.scratch.append(vs.gpa, .caret(x.clampNormal(c.pos)));
         }
         if (vs.scratch.items.len == 0) try vs.scratch.append(vs.gpa, .caret(0));
@@ -243,14 +346,57 @@ pub const VimState = struct {
     // -- keys -------------------------------------------------------------------
 
     pub fn handleKey(vs: *VimState, k: Key, host: *Host) !mode_mod.KeyResult {
+        if (vs.recording) |*r| try r.add(vs.gpa, k);
+        const res = try vs.feedKey(k, host);
+        try vs.drain(host);
+        return res;
+    }
+
+    /// Runs the keys a macro queued, stopping at the first that fails.
+    fn drain(vs: *VimState, host: *Host) !void {
+        var budget: usize = 1_000_000;
+        while (vs.queue_head < vs.queue.items.len) {
+            if (budget == 0) {
+                vs.bell = true;
+                break;
+            }
+            budget -= 1;
+            const k = vs.queue.items[vs.queue_head];
+            vs.queue_head += 1;
+            _ = try vs.feedKey(k, host);
+            if (vs.bell) break;
+        }
+        vs.queue.clearRetainingCapacity();
+        vs.queue_head = 0;
+    }
+
+    /// Queues `keys` `times` times ahead of the keys already queued.
+    fn queueFront(vs: *VimState, keys: []const Key, times: u32) !void {
+        const rest = vs.queue.items[vs.queue_head..];
+        var next: std.ArrayList(Key) = .empty;
+        errdefer next.deinit(vs.gpa);
+        for (0..times) |_| try next.appendSlice(vs.gpa, keys);
+        try next.appendSlice(vs.gpa, rest);
+        vs.queue.deinit(vs.gpa);
+        vs.queue = next;
+        vs.queue_head = 0;
+    }
+
+    fn feedKey(vs: *VimState, k: Key, host: *Host) !mode_mod.KeyResult {
         try vs.attach(host.doc);
         try vs.syncIn(host);
         vs.bell = false;
+        vs.message_len = 0;
+        vs.pending.recording = vs.recording != null;
+        const inserting = vs.mode == .insert or vs.mode == .replace;
+        if (inserting and vs.rep.capturing and !vs.rep.replaying) try vs.rep.addKey(vs.gpa, k);
         const r: mode_mod.KeyResult = switch (vs.mode) {
             .insert => try vs.insertKey(k, host),
             .replace => try vs.replaceKey(k, host),
+            .cmdline => try vs.cmdlineKey(k, host),
             else => try vs.normalKey(k, host),
         };
+        if (vs.rep.capturing and vs.mode != .insert and vs.mode != .replace) vs.rep.commit(vs.gpa);
         try vs.syncOut(host);
         return r;
     }
@@ -281,6 +427,38 @@ pub const VimState = struct {
 
     /// Runs a parsed command.
     pub fn run(vs: *VimState, cmd: VimCommand, host: *Host) !void {
+        const visual = vs.mode.isVisual();
+        const record = !vs.rep.replaying and repeat_mod.repeatable(cmd, visual);
+        if (record) {
+            const c = vs.cursors.items[0];
+            const ext: ?repeat_mod.Extent = if (visual) repeat_mod.Extent.of(ops.txt(host), switch (vs.mode) {
+                .visual_line => .visual_line,
+                .visual_block => .visual_block,
+                else => .visual,
+            }, c.anchor, c.pos, c.want) else null;
+            vs.rep.begin(vs.gpa, cmd, ext);
+        }
+        vs.runInner(cmd, host) catch |e| {
+            if (record) vs.rep.abort(vs.gpa);
+            return e;
+        };
+        if (record) {
+            if (vs.mode == .insert or vs.mode == .replace) vs.rep.capturing = true else vs.rep.commit(vs.gpa);
+        }
+    }
+
+    fn runInner(vs: *VimState, cmd: VimCommand, host: *Host) anyerror!void {
+        if (cmd.target == .motion) switch (cmd.target.motion.m) {
+            .search_prompt_forward, .search_prompt_backward => {
+                vs.cmd_saved = cmd;
+                return vs.startCmdline(if (cmd.target.motion.m == .search_prompt_forward) '/' else '?', host);
+            },
+            else => {},
+        };
+        if (cmd.command) |c| switch (c) {
+            .record_macro, .stop_record, .play_macro, .set_mark, .jump_older, .jump_newer, .cmdline, .repeat => return vs.runExtra(c, cmd, host),
+            else => {},
+        };
         if (vs.mode.isVisual()) return vs.runVisual(cmd, host);
         if (cmd.command) |c| return vs.runCommand(c, cmd, host);
         if (cmd.op) |op| return vs.runOperator(op, cmd, host);
@@ -297,26 +475,67 @@ pub const VimState = struct {
             .want = c.want,
             .char = ch,
             .last_find = vs.last_find,
-            .last_search = &vs.last_search,
+            .ext = .{ .ctx = vs, .markFn = markFn, .searchFn = searchFn, .search_backward = vs.sh().search.backward },
         };
+    }
+
+    fn markFn(ctx: *anyopaque, name: u21) ?u64 {
+        const vs: *VimState = @ptrCast(@alignCast(ctx));
+        return vs.markPos(name);
+    }
+
+    /// Mark `name`'s position in this document.
+    pub fn markPos(vs: *VimState, name: u21) ?u64 {
+        switch (name) {
+            'A'...'Z' => {
+                const g = vs.sh().global_marks.get(name) orelse return null;
+                const doc = vs.doc orelse return null;
+                return if (g.doc == doc.id) g.pos else null;
+            },
+            '<', '>' => {
+                const lv = vs.last_visual orelse return null;
+                const lo = @min(lv.anchor, lv.pos);
+                const hi = @max(lv.anchor, lv.pos);
+                return if (name == '<') lo else hi;
+            },
+            else => return vs.marks.get(name),
+        }
+    }
+
+    fn searchFn(ctx: *anyopaque, pos: u64, backward: bool) ?u64 {
+        const vs: *VimState = @ptrCast(@alignCast(ctx));
+        const doc = vs.doc orelse return null;
+        const se = &vs.sh().search;
+        const m = se.nextMatch(&doc.tree, pos, backward) orelse return null;
+        return se.place(&doc.tree, m);
     }
 
     fn noteMotion(vs: *VimState, m: Motion, ch: u21, host: *Host, pos: u64) void {
         if (m.takesChar()) vs.last_find = .{ .motion = m, .char = ch };
         if (m == .search_word_forward or m == .search_word_backward) {
+            // "*" searches for \<word\> ('ignorecase' applies, 'smartcase' not).
             const x = ops.txt(host);
-            if (motions.wordUnderCursor(x, pos)) |w| {
-                const n: u8 = @intCast(@min(w.end - w.start, vs.last_search.buf.len));
-                for (0..n) |i| vs.last_search.buf[i] = x.byte(w.start + i);
-                vs.last_search.len = n;
-                vs.last_search.whole_word = w.keyword;
-                vs.last_search.backward = m == .search_word_backward;
+            const w = motions.wordUnderCursor(x, pos) orelse return;
+            var pat: std.ArrayList(u8) = .empty;
+            defer pat.deinit(vs.gpa);
+            if (w.keyword) pat.appendSlice(vs.gpa, "\\<") catch return;
+            var p = w.start;
+            while (p < w.end) : (p += 1) {
+                const b = x.byte(p);
+                if (std.mem.indexOfScalar(u8, "\\/.*$^~[]", b) != null) pat.append(vs.gpa, '\\') catch return;
+                pat.append(vs.gpa, b) catch return;
             }
+            if (w.keyword) pat.appendSlice(vs.gpa, "\\>") catch return;
+            const o = vs.sh().options;
+            vs.sh().search.set(pat.items, m == .search_word_backward, .{ .ignorecase = o.ignorecase }) catch return;
+            vs.sh().highlight_off = false;
+            vs.sh().regs.setReadOnly('/', pat.items) catch {};
         }
     }
 
     fn moveAll(vs: *VimState, m: Motion, ch: u21, count: u32, host: *Host) !void {
         if (vs.cursors.items.len > 0) vs.noteMotion(m, ch, host, vs.cursors.items[0].pos);
+        const before = if (vs.cursors.items.len > 0) vs.cursors.items[0].pos else 0;
         const x = ops.txt(host);
         var moved = false;
         for (vs.cursors.items) |*c| {
@@ -329,6 +548,8 @@ pub const VimState = struct {
         }
         vs.dedupe();
         if (!moved) return error.Beep;
+        // A jump remembers where it came from (`''`, `Ctrl-O`).
+        if (m.isJump()) try vs.marks.pushJump(vs.gpa, before);
     }
 
     fn dedupe(vs: *VimState) void {
@@ -354,7 +575,7 @@ pub const VimState = struct {
         return vs.scratch.items;
     }
 
-    fn beginChange(vs: *VimState, host: *Host) !void {
+    pub fn beginChange(vs: *VimState, host: *Host) !void {
         try vs.group.begin(try vs.caretsOf());
         _ = host;
     }
@@ -367,7 +588,7 @@ pub const VimState = struct {
         if (i < before.len) before[i] = .caret(pos);
     }
 
-    fn commitChange(vs: *VimState, host: *Host) !void {
+    pub fn commitChange(vs: *VimState, host: *Host) !void {
         try vs.group.commit(host.undo, try vs.caretsOf(), .{ .label = "Vim", .origin = host.edit.origin, .timestamp = host.now() });
     }
 
@@ -405,6 +626,10 @@ pub const VimState = struct {
         vs.reg.kind = reg_kind orelse .charwise;
         vs.dedupe();
         if (!any) return error.Beep;
+        if (op == .yank or op == .delete or op == .change) {
+            const use_one = cmd.target == .motion and cmd.target.motion.m.usesRegisterOne();
+            try vs.sh().regs.record(cmd.register, if (op == .yank) .yank else .delete, &vs.reg, use_one);
+        }
         if (insert_after) {
             try vs.enterInsert(host, .insert, 1);
         }
@@ -573,7 +798,10 @@ pub const VimState = struct {
             .change_to_eol => return vs.runOperator(.change, withMotion(cmd, .line_end), host),
             .delete_to_eol => return vs.runOperator(.delete, withMotion(cmd, .line_end), host),
             .yank_line => return vs.runOperator(.yank, withLines(cmd), host),
-            .put_after, .put_before => try vs.put(command == .put_after, n, host),
+            .put_after, .put_before => {
+                const src = vs.sh().regs.get(cmd.register orelse '"') orelse return error.Beep;
+                try vs.put(src, command == .put_after, n, host);
+            },
             .join, .join_raw => {
                 try vs.beginChange(host);
                 defer vs.commitChange(host) catch {};
@@ -695,12 +923,12 @@ pub const VimState = struct {
         }
     }
 
-    fn put(vs: *VimState, after: bool, count: u32, host: *Host) !void {
-        if (vs.reg.pieceCount() == 0) return error.Beep;
+    fn put(vs: *VimState, src: *const Register, after: bool, count: u32, host: *Host) !void {
+        if (src.pieceCount() == 0) return error.Beep;
         try vs.beginChange(host);
         defer vs.commitChange(host) catch {};
-        const per_cursor = vs.reg.pieceCount() == vs.cursors.items.len;
-        const all = try vs.reg.joined(vs.gpa);
+        const per_cursor = src.pieceCount() == vs.cursors.items.len;
+        const all = try src.joined(vs.gpa);
         defer vs.gpa.free(all);
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(vs.gpa);
@@ -709,11 +937,11 @@ pub const VimState = struct {
             i -= 1;
             const x = ops.txt(host);
             const c = &vs.cursors.items[i];
-            const t = if (per_cursor) vs.reg.piece(i) else all;
+            const t = if (per_cursor) src.piece(i) else all;
             buf.clearRetainingCapacity();
             for (0..count) |_| try buf.appendSlice(vs.gpa, t);
             const l = x.lineOf(c.pos);
-            if (vs.reg.kind == .linewise) {
+            if (src.kind == .linewise) {
                 var at: u64 = undefined;
                 if (after) {
                     at = x.nextLineStart(l);
@@ -764,6 +992,238 @@ pub const VimState = struct {
         vs.cursors.clearRetainingCapacity();
         const p = x.clampNormal(cursor.?);
         try vs.cursors.append(vs.gpa, .{ .pos = p, .want = x.column(p) });
+    }
+
+    // -- macros, marks, jumps, dot repeat, the command line ----------------------
+
+    fn runExtra(vs: *VimState, c: parser.Command, cmd: VimCommand, host: *Host) !void {
+        const n = if (cmd.count == 0) 1 else cmd.count;
+        const x = ops.txt(host);
+        switch (c) {
+            .record_macro => {
+                const name: u8 = if (cmd.char < 0x80) @intCast(cmd.char) else return error.Beep;
+                if (name == '"' or name == '_' or !Registers.valid(name) or (name >= '0' and name <= '9') or name == '.' or name == ':' or name == '/') return error.Beep;
+                vs.recording = .{ .register = name };
+            },
+            .stop_record => {
+                var r = vs.recording orelse return error.Beep;
+                defer r.deinit(vs.gpa);
+                vs.recording = null;
+                try vs.sh().regs.put(r.register, r.finished(), .charwise);
+            },
+            .play_macro => {
+                var name: u8 = if (cmd.char < 0x80) @intCast(cmd.char) else return error.Beep;
+                if (name == '@') name = vs.last_macro orelse return error.Beep;
+                vs.last_macro = name;
+                if (name == ':') {
+                    const line = vs.sh().regs.get(':') orelse return error.Beep;
+                    const text = try line.joined(vs.gpa);
+                    defer vs.gpa.free(text);
+                    for (0..n) |_| try vs.runCmdline(':', text, host);
+                    return;
+                }
+                const reg = vs.sh().regs.get(name) orelse return error.Beep;
+                const text = try reg.joined(vs.gpa);
+                defer vs.gpa.free(text);
+                var keys: std.ArrayList(Key) = .empty;
+                defer keys.deinit(vs.gpa);
+                try macros.decode(text, vs.gpa, &keys);
+                if (reg.kind == .linewise and (text.len == 0 or text[text.len - 1] != '\n')) try keys.append(vs.gpa, .ctrlOf('j'));
+                try vs.queueFront(keys.items, n);
+            },
+            .set_mark => {
+                const p = vs.cursors.items[0].pos;
+                if (cmd.char >= 'A' and cmd.char <= 'Z') {
+                    _ = vs.sh().global_marks.set(cmd.char, host.doc.id, p);
+                } else if (!vs.marks.set(cmd.char, p)) return error.Beep;
+            },
+            .jump_older, .jump_newer => {
+                const delta: i64 = if (c == .jump_older) -@as(i64, n) else n;
+                const p = (try vs.marks.walk(vs.gpa, x, vs.cursors.items[0].pos, delta)) orelse return error.Beep;
+                vs.cursors.clearRetainingCapacity();
+                const q = x.clampNormal(@min(p, x.len));
+                try vs.cursors.append(vs.gpa, .{ .pos = q, .want = x.column(q) });
+            },
+            .cmdline => {
+                try vs.startCmdline(':', host);
+                if (vs.cmd_return.isVisual()) {
+                    try vs.cmd_buf.appendSlice(vs.gpa, "'<,'>");
+                } else if (cmd.count > 1) {
+                    try vs.cmd_buf.print(vs.gpa, ".,.+{d}", .{cmd.count - 1});
+                } else if (cmd.count == 1) try vs.cmd_buf.append(vs.gpa, '.');
+            },
+            .repeat => try vs.repeatLast(cmd.count, host),
+            else => unreachable,
+        }
+    }
+
+    /// `.`: runs the last change again at the cursors.
+    fn repeatLast(vs: *VimState, count: u32, host: *Host) !void {
+        const last = &(vs.rep.last orelse return error.Beep);
+        if (count != 0) last.cmd.count = count;
+        // "1p... puts registers 1, 2, 3 in turn.
+        if (last.cmd.command) |c| if ((c == .put_after or c == .put_before) and last.cmd.register != null) {
+            const r = last.cmd.register.?;
+            if (r >= '1' and r < '9') last.cmd.register = r + 1;
+        };
+        vs.rep.replaying = true;
+        defer vs.rep.replaying = false;
+        if (last.visual) |e| {
+            const x = ops.txt(host);
+            for (vs.cursors.items) |*c| {
+                c.anchor = c.pos;
+                c.pos = e.endFrom(x, c.pos);
+                c.want = if (e.to_eol) null else x.column(c.pos);
+            }
+            vs.mode = switch (e.mode) {
+                .visual => .visual,
+                .visual_line => .visual_line,
+                .visual_block => .visual_block,
+            };
+        }
+        try vs.runInner(last.cmd, host);
+        for (last.keys.items) |k| {
+            _ = switch (vs.mode) {
+                .insert => try vs.insertKey(k, host),
+                .replace => try vs.replaceKey(k, host),
+                else => break,
+            };
+        }
+    }
+
+    fn startCmdline(vs: *VimState, kind: u8, host: *Host) !void {
+        _ = host;
+        vs.cmd_return = if (vs.mode.isVisual()) vs.mode else .normal;
+        if (vs.cmd_return.isVisual() and kind == ':') {
+            const c = vs.cursors.items[0];
+            vs.last_visual = .{ .mode = vs.mode, .anchor = c.anchor, .pos = c.pos };
+        }
+        vs.mode = .cmdline;
+        vs.cmd_kind = kind;
+        vs.cmd_buf.clearRetainingCapacity();
+    }
+
+    fn cmdlineKey(vs: *VimState, k: Key, host: *Host) !mode_mod.KeyResult {
+        if (k.isEscape()) {
+            vs.cancelCmdline();
+            return .consumed;
+        }
+        if (k.is(.enter) or k.isCtrl('m') or k.isCtrl('j')) {
+            const kind = vs.cmd_kind;
+            const line = try vs.gpa.dupe(u8, vs.cmd_buf.items);
+            defer vs.gpa.free(line);
+            vs.runCmdline(kind, line, host) catch |e| switch (e) {
+                error.Beep => vs.bell = true,
+                else => return e,
+            };
+            return .consumed;
+        }
+        if (k.is(.backspace) or k.isCtrl('h')) {
+            if (vs.cmd_buf.items.len == 0) {
+                vs.cancelCmdline();
+                return .consumed;
+            }
+            popChar(&vs.cmd_buf);
+            return .consumed;
+        }
+        if (k.isCtrl('u')) {
+            vs.cmd_buf.clearRetainingCapacity();
+            return .consumed;
+        }
+        if (k.isCtrl('w')) {
+            const b = &vs.cmd_buf;
+            while (b.items.len > 0 and b.items[b.items.len - 1] == ' ') _ = b.pop();
+            while (b.items.len > 0 and text_mod.classOf(b.items[b.items.len - 1]) == 2) _ = b.pop();
+            return .consumed;
+        }
+        const cp = k.text() orelse (if (k.is(.tab)) @as(u21, '\t') else return .consumed);
+        var buf: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(cp, &buf);
+        try vs.cmd_buf.appendSlice(vs.gpa, buf[0..len]);
+        return .consumed;
+    }
+
+    fn cancelCmdline(vs: *VimState) void {
+        vs.mode = vs.cmd_return;
+        vs.cmd_saved = null;
+    }
+
+    /// Runs a command line: an ex command (`:`) or a search (`/`, `?`).
+    pub fn runCmdline(vs: *VimState, kind: u8, line: []const u8, host: *Host) anyerror!void {
+        vs.mode = vs.cmd_return;
+        vs.cmd_return = .normal;
+        if (kind == ':') {
+            if (vs.mode.isVisual()) try vs.leaveVisual(host);
+            vs.mode = .normal;
+            if (line.len > 0) try vs.sh().regs.setReadOnly(':', line);
+            switch (try ex.runEx(vs, host, line)) {
+                .ok => {},
+                .message => |m| vs.message_len = m.len,
+                .err => |m| {
+                    vs.message_len = m.len;
+                    vs.message_error = true;
+                    return error.Beep;
+                },
+            }
+            return;
+        }
+        var cmd = vs.cmd_saved orelse VimCommand{ .target = .{ .motion = .{ .m = .search_next } } };
+        vs.cmd_saved = null;
+        cmd.target = .{ .motion = .{ .m = .search_next } };
+        const backward = kind == '?';
+        // The pattern ends at an unescaped delimiter; an offset follows.
+        var pat = line;
+        var offset: ?search_mod.Offset = null;
+        var i: usize = 0;
+        while (i < pat.len) : (i += 1) {
+            if (pat[i] == '\\') {
+                i += 1;
+            } else if (pat[i] == kind) {
+                offset = search_mod.Offset.parse(line[i + 1 ..]) orelse {
+                    _ = vs.setMessage(true, "E488: Trailing characters: {s}", .{line[i + 1 ..]});
+                    return error.Beep;
+                };
+                pat = pat[0..i];
+                break;
+            }
+        }
+        const sh_ = vs.sh();
+        const old_offset = sh_.search.offset;
+        if (pat.len == 0) {
+            if (sh_.search.pattern.items.len == 0) {
+                _ = vs.setMessage(true, "E35: No previous regular expression", .{});
+                return error.Beep;
+            }
+            const prev = try vs.gpa.dupe(u8, sh_.search.pattern.items);
+            defer vs.gpa.free(prev);
+            try vs.setSearch(prev, backward);
+        } else try vs.setSearch(pat, backward);
+        // "/<CR>" keeps the last offset; "//<CR>" drops it.
+        sh_.search.offset = offset orelse if (pat.len == 0) old_offset else .{};
+        vs.run(cmd, host) catch |e| switch (e) {
+            error.Beep => {
+                _ = vs.setMessage(true, "E486: Pattern not found: {s}", .{sh_.search.pattern.items});
+                return e;
+            },
+            else => return e,
+        };
+    }
+
+    /// Makes `pat` the last search pattern, with the 'ignorecase' and
+    /// 'smartcase' options; a pattern that does not translate is an error
+    /// message naming the offending part.
+    pub fn setSearch(vs: *VimState, pat: []const u8, backward: bool) !void {
+        const sh_ = vs.sh();
+        var d: @import("pattern.zig").Diag = .{};
+        sh_.search.set(pat, backward, .{ .ignorecase = sh_.options.ignorecase, .smartcase = sh_.options.smartcase, .diag = &d }) catch |e| switch (e) {
+            error.Unsupported, error.Syntax => {
+                _ = vs.setMessage(true, "E486: {s}: {s}", .{ d.msg, pat[@min(d.start, pat.len)..@min(@max(d.end, d.start), pat.len)] });
+                return error.Beep;
+            },
+            else => return e,
+        };
+        sh_.highlight_off = false;
+        try sh_.regs.setReadOnly('/', pat);
     }
 
     // -- insert and replace mode ---------------------------------------------
@@ -831,6 +1291,7 @@ pub const VimState = struct {
     }
 
     fn leaveInsert(vs: *VimState, host: *Host) !mode_mod.KeyResult {
+        try vs.sh().regs.setReadOnly('.', vs.ins_text.items);
         if (vs.ins_kind == .block and vs.mode == .insert) return vs.leaveBlockInsert(host);
         // A count repeats what was typed.
         if (vs.ins_count > 1 and vs.ins_text.items.len > 0 and vs.mode == .insert) {
@@ -1023,31 +1484,29 @@ pub const VimState = struct {
                 return vs.endVisual(host);
             },
             .put_after, .put_before => {
-                // Replace the selection with the register.
-                const saved_kind = vs.reg.kind;
-                const saved = try vs.gpa.dupe(u8, vs.reg.text.items);
-                defer vs.gpa.free(saved);
-                const saved_ends = try vs.gpa.dupe(u32, vs.reg.ends.items);
-                defer vs.gpa.free(saved_ends);
+                // Replace the selection with the register; the replaced
+                // text goes to the unnamed register.
+                const src = vs.sh().regs.get(cmd.register orelse '"') orelse return error.Beep;
+                var saved: Register = .{ .kind = src.kind };
+                defer saved.deinit(vs.gpa);
+                try saved.text.appendSlice(vs.gpa, src.text.items);
+                try saved.ends.appendSlice(vs.gpa, src.ends.items);
                 try vs.beginChange(host);
                 defer vs.commitChange(host) catch {};
                 const linewise = vs.mode == .visual_line;
                 const c0 = vs.cursors.items[0];
                 const op_start = @min(c0.pos, c0.anchor);
                 const start_line = x.lineOf(op_start);
-                try vs.visualOperator(.delete, cmd, host, false);
-                vs.reg.kind = saved_kind;
-                vs.reg.text.clearRetainingCapacity();
-                try vs.reg.text.appendSlice(vs.gpa, saved);
-                vs.reg.ends.clearRetainingCapacity();
-                try vs.reg.ends.appendSlice(vs.gpa, saved_ends);
+                var del = cmd;
+                del.register = null;
+                try vs.visualOperator(.delete, del, host, false);
                 // Vim puts after the cursor only when the delete left it
                 // before where the area started (the area ended a line or
                 // the buffer).
                 const px = ops.txt(host);
                 const p0 = vs.cursors.items[0].pos;
                 const forward = if (linewise) px.lineOf(p0) < start_line else p0 < op_start;
-                try vs.put(forward, 1, host);
+                try vs.put(&saved, forward, 1, host);
                 return;
             },
             else => return error.Beep,
@@ -1108,6 +1567,12 @@ pub const VimState = struct {
             else => .charwise,
         });
         vs.blocks.clearRetainingCapacity();
+        // The area as selected ('< and '>), before the operator moves the
+        // cursor; changes map it from here.
+        if (vs.cursors.items.len > 0) {
+            const c = vs.cursors.items[0];
+            vs.last_visual = .{ .mode = vs.mode, .anchor = c.anchor, .pos = c.pos };
+        }
         const amount = if (cmd.count == 0) 1 else cmd.count;
         var i = vs.cursors.items.len;
         while (i > 0) {
@@ -1186,10 +1651,7 @@ pub const VimState = struct {
                 },
             }
         }
-        if (vs.cursors.items.len > 0) {
-            const c = vs.cursors.items[0];
-            vs.last_visual = .{ .mode = vs.mode, .anchor = c.anchor, .pos = c.pos };
-        }
+        if (op == .yank or op == .delete or op == .change) try vs.sh().regs.record(cmd.register, if (op == .yank) .yank else .delete, &vs.reg, false);
         vs.mode = .normal;
         if (vs.blocks.items.len > 0) return vs.enterBlockInsert(host);
         if (insert_after) return vs.enterInsert(host, .insert, 1);
