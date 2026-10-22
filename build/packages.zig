@@ -35,6 +35,7 @@ pub const all = [_]Package{
     .{ .name = "zg_ai", .dir = "packages/ai", .has_bench = true },
     .{ .name = "zg_release", .dir = "packages/release", .has_bench = true },
     .{ .name = "zg_update", .dir = "packages/update", .has_bench = true },
+    .{ .name = "zg_crash", .dir = "packages/crash", .has_bench = true },
     // pkgtool:insert
 };
 
