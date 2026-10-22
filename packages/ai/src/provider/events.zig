@@ -17,6 +17,9 @@ pub const RateLimitSnapshot = struct {
     output_tokens_remaining: ?u64 = null,
     /// Milliseconds until the tightest window resets.
     reset_ms: ?u64 = null,
+    /// Unix milliseconds when the tightest window resets (absolute form,
+    /// e.g. Anthropic's RFC 3339 `*-reset` headers).
+    reset_at_ms: ?i64 = null,
     /// Server-requested wait (Retry-After), in milliseconds.
     retry_after_ms: ?u64 = null,
 };
