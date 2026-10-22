@@ -6,3 +6,5 @@
 # Binary test fixtures: never convert line endings.
 *.zgtrace binary
 *.minisig binary
+# CRLF fixture: its line endings are the point of the test.
+packages/ai/testdata/frontmatter/crlf.md -text
