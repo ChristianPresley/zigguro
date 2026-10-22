@@ -6,7 +6,8 @@
 //! Targets: a headless sink (a persistent backbuffer, damage passed on), an
 //! external presenter in shm mode (a ring of `allocCpuBuffer` buffers with
 //! buffer-age repaint), or a caller-owned `CpuImage` (`renderToImage`).
-//! Layers are CPU textures repainted in their own pass before the window.
+//! Layers are CPU textures repainted in their own pass before the window,
+//! with the wraparound addressing and LRU budget of `r2d/layers.zig`.
 
 const std = @import("std");
 const platform = @import("zg_platform");
@@ -33,10 +34,7 @@ const history_len = 4;
 /// Presenter buffers in the shm ring.
 const ring_len = 3;
 
-const Layer = struct {
-    tex: CpuTexture,
-    valid: bool,
-};
+const LayerTable = r2d.layers.LayerTable(*CpuTexture);
 
 const Slot = struct {
     buf: platform.surface.CpuBuffer,
@@ -60,8 +58,13 @@ threads: u32,
 /// Textures by id; slot 0 is reserved for "none".
 textures: std.ArrayList(?*const CpuTexture) = .empty,
 free_ids: std.ArrayList(u16) = .empty,
-layers: std.AutoHashMapUnmanaged(r2d.LayerId, *Layer) = .empty,
+layers: LayerTable = .{},
 layer_view: std.ArrayList(?*const CpuTexture) = .empty,
+/// Translated prims and clips of wrapped layer pieces.
+xprims: std.ArrayList(r2d.Prim) = .empty,
+xclips: std.ArrayList(r2d.ClipRect) = .empty,
+/// Frames rendered (layer LRU clock).
+frame_no: u64 = 0,
 bins: bin.Bins = .{},
 scratch: []raster.Scratch,
 repaint: std.ArrayList(PxRect) = .empty,
@@ -102,13 +105,11 @@ pub fn destroy(self: *SwRenderer) void {
     };
     self.textures.deinit(gpa);
     self.free_ids.deinit(gpa);
-    var it = self.layers.valueIterator();
-    while (it.next()) |l| {
-        l.*.tex.deinit(gpa);
-        gpa.destroy(l.*);
-    }
+    for (self.layers.entries.items) |e| freeLayerTex(gpa, e.res);
     self.layers.deinit(gpa);
     self.layer_view.deinit(gpa);
+    self.xprims.deinit(gpa);
+    self.xclips.deinit(gpa);
     self.bins.deinit(gpa);
     self.repaint.deinit(gpa);
     gpa.free(self.scratch);
@@ -158,10 +159,7 @@ fn vDestroyTexture(p: *anyopaque, id: r2d.TextureId) void {
 }
 fn vDestroyLayer(p: *anyopaque, id: r2d.LayerId) void {
     const self = cast(p);
-    if (self.layers.fetchRemove(id)) |kv| {
-        kv.value.tex.deinit(self.gpa);
-        self.gpa.destroy(kv.value);
-    }
+    if (self.layers.remove(id)) |e| freeLayerTex(self.gpa, e.res);
 }
 fn vBackend(_: *anyopaque) r2d.Backend {
     return .software;
@@ -171,8 +169,8 @@ fn vDeinit(p: *anyopaque) void {
 }
 fn vLayerValid(p: *anyopaque, id: r2d.LayerId, size: Size) bool {
     const self = cast(p);
-    const l = self.layers.get(id) orelse return false;
-    return l.valid and l.tex.width == size.w and l.tex.height == size.h;
+    const l = self.layers.find(id) orelse return false;
+    return l.valid and l.size.w == size.w and l.size.h == size.h;
 }
 
 /// Creates a zeroed texture.
@@ -383,10 +381,10 @@ fn workTask(job: *Job, worker: u32) std.Io.Cancelable!void {
 }
 
 /// Bins and shades prims of `layer` (0 = window) into `target`.
-fn pass(self: *SwRenderer, dl: *const DrawList, range: [2]u32, layer: u16, target: raster.Target, repaint: []const PxRect, ctx: *const raster.ShadeCtx) RenderError!struct { px: u64, tiles: u32 } {
+fn pass(self: *SwRenderer, prims: []const r2d.Prim, range: [2]u32, layer: u16, target: raster.Target, repaint: []const PxRect, ctx: *const raster.ShadeCtx) RenderError!struct { px: u64, tiles: u32 } {
     const grid: bin.TileGrid = .{ .width = target.width, .height = target.height };
-    bin.binPrims(self.gpa, dl.prims.items, range, layer, dl.clips.items, grid, repaint, &self.bins) catch return error.OutOfMemory;
-    var job: Job = .{ .self = self, .target = target, .grid = grid, .repaint = repaint, .prims = dl.prims.items, .ctx = ctx };
+    bin.binPrims(self.gpa, prims, range, layer, ctx.clips, grid, repaint, &self.bins) catch return error.OutOfMemory;
+    var job: Job = .{ .self = self, .target = target, .grid = grid, .repaint = repaint, .prims = prims, .ctx = ctx };
     var group: std.Io.Group = .init;
     var spawned: u32 = 1;
     const want = @min(self.threads, grid.count());
@@ -401,48 +399,84 @@ fn pass(self: *SwRenderer, dl: *const DrawList, range: [2]u32, layer: u16, targe
 fn renderTarget(self: *SwRenderer, dl: *const DrawList, target: raster.Target, repaint: []const PxRect) RenderError!r2d.FrameStats {
     var stats: r2d.FrameStats = .{ .backend = .software, .prims = @intCast(dl.prims.items.len) };
     var ctx: raster.ShadeCtx = .{ .clips = dl.clips.items, .textures = self.textures.items, .layers = &.{}, .text = self.opts.text };
+    self.frame_no += 1;
     // Layer passes.
     self.layer_view.resize(self.gpa, dl.layers.items.len) catch return error.OutOfMemory;
     for (dl.layers.items, 0..) |lu, i| {
         self.layer_view.items[i] = null;
+        self.layers.markUsed(lu.id, self.frame_no);
         if (!lu.drawn) {
-            if (self.layers.get(lu.id)) |l| self.layer_view.items[i] = &l.tex;
+            if (self.layers.find(lu.id)) |l| self.layer_view.items[i] = l.res;
             continue;
         }
-        const l = try self.getLayer(lu.id, lu.size);
+        const l = try self.getLayer(lu.id, lu.size, lu.kind);
+        const tex = l.res;
         const full = [_]PxRect{.{ .x = 0, .y = 0, .w = lu.size.w, .h = lu.size.h }};
         const dmg = dl.layerDamage(lu);
         const rep: []const PxRect = if (!l.valid or dmg.len == 0) &full else dmg;
-        for (rep) |r| l.tex.clear(r);
-        const res = try self.pass(dl, .{ lu.prim_start, lu.prim_end }, @intCast(i + 1), .{ .pixels = l.tex.pixels, .stride = l.tex.stride, .width = lu.size.w, .height = lu.size.h, .bgra = false }, rep, &ctx);
         l.valid = true;
-        self.layer_view.items[i] = &l.tex;
-        stats.repainted_px += res.px;
-        stats.draws += res.tiles;
+        const layer_target: raster.Target = .{ .pixels = tex.pixels, .stride = tex.stride, .width = lu.size.w, .height = lu.size.h, .bgra = false };
+        const z: u16 = @intCast(i + 1);
+        for (rep) |r| {
+            var pieces: [4]r2d.layers.Piece = undefined;
+            const n = r2d.layers.wrapRects(r, lu.origin, lu.size, &pieces);
+            for (pieces[0..n]) |pc| {
+                tex.clear(pc.rect);
+                const one = [_]PxRect{pc.rect};
+                const res = if (pc.offset[0] == 0 and pc.offset[1] == 0)
+                    try self.pass(dl.prims.items, .{ lu.prim_start, lu.prim_end }, z, layer_target, &one, &ctx)
+                else blk: {
+                    // Content shown at an offset: draw translated copies.
+                    self.xprims.clearRetainingCapacity();
+                    self.xclips.clearRetainingCapacity();
+                    r2d.layers.appendTranslated(self.gpa, dl.prims.items[lu.prim_start..lu.prim_end], z, dl.clips.items, pc, &self.xprims) catch return error.OutOfMemory;
+                    r2d.layers.appendTranslatedClips(self.gpa, dl.clips.items, pc.offset, &self.xclips) catch return error.OutOfMemory;
+                    var xctx = ctx;
+                    xctx.clips = self.xclips.items;
+                    break :blk try self.pass(self.xprims.items, .{ 0, @intCast(self.xprims.items.len) }, z, layer_target, &one, &xctx);
+                };
+                stats.repainted_px += res.px;
+                stats.draws += res.tiles;
+            }
+        }
+        self.layer_view.items[i] = tex;
     }
+    // Least recently composited layers beyond the budget go.
+    while (self.layers.evictOne(self.opts.layer_budget_bytes, self.frame_no)) |e| freeLayerTex(self.gpa, e.res);
     ctx.layers = self.layer_view.items;
-    const res = try self.pass(dl, .{ 0, @intCast(dl.prims.items.len) }, 0, target, repaint, &ctx);
+    const res = try self.pass(dl.prims.items, .{ 0, @intCast(dl.prims.items.len) }, 0, target, repaint, &ctx);
     stats.repainted_px += res.px;
     stats.draws += res.tiles;
     return stats;
 }
 
-fn getLayer(self: *SwRenderer, id: r2d.LayerId, size: Size) RenderError!*Layer {
+fn getLayer(self: *SwRenderer, id: r2d.LayerId, size: Size, kind: r2d.LayerKind) RenderError!*LayerTable.Entry {
     if (size.w == 0 or size.h == 0 or size.w > 16384 or size.h > 16384) return error.InvalidArgument;
-    if (self.layers.get(id)) |l| {
-        if (l.tex.width == size.w and l.tex.height == size.h) return l;
-        const t = CpuTexture.init(self.gpa, .{ .width = size.w, .height = size.h, .format = .rgba8 }) catch return error.OutOfMemory;
-        l.tex.deinit(self.gpa);
-        l.tex = t;
+    if (self.layers.find(id)) |l| {
+        l.kind = kind;
+        if (l.size.w == size.w and l.size.h == size.h) return l;
+        const t = try newLayerTex(self.gpa, size);
+        freeLayerTex(self.gpa, l.res);
+        l.res = t;
+        l.size = size;
         l.valid = false;
         return l;
     }
-    const l = self.gpa.create(Layer) catch return error.OutOfMemory;
-    errdefer self.gpa.destroy(l);
-    l.* = .{ .tex = CpuTexture.init(self.gpa, .{ .width = size.w, .height = size.h, .format = .rgba8 }) catch return error.OutOfMemory, .valid = false };
-    errdefer l.tex.deinit(self.gpa);
-    self.layers.put(self.gpa, id, l) catch return error.OutOfMemory;
-    return l;
+    const t = try newLayerTex(self.gpa, size);
+    errdefer freeLayerTex(self.gpa, t);
+    return self.layers.put(self.gpa, .{ .id = id, .size = size, .kind = kind, .last_used = self.frame_no, .res = t }) catch return error.OutOfMemory;
+}
+
+fn newLayerTex(gpa: Allocator, size: Size) RenderError!*CpuTexture {
+    const t = gpa.create(CpuTexture) catch return error.OutOfMemory;
+    errdefer gpa.destroy(t);
+    t.* = CpuTexture.init(gpa, .{ .width = size.w, .height = size.h, .format = .rgba8 }) catch return error.OutOfMemory;
+    return t;
+}
+
+fn freeLayerTex(gpa: Allocator, t: *CpuTexture) void {
+    t.deinit(gpa);
+    gpa.destroy(t);
 }
 
 const testing = std.testing;
