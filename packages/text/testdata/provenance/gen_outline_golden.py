@@ -3,6 +3,12 @@
 
     python3 testdata/provenance/gen_outline_golden.py <font> <glyph>... > testdata/golden/<area>/<name>.zon
     python3 testdata/provenance/gen_outline_golden.py --all <font>   # "gid path" per glyph, for ad-hoc diffs
+    python3 testdata/provenance/gen_outline_golden.py --loc wght=13916 <font> <glyph>...
+
+--loc gives normalized F2Dot14 coordinates (as zg_text computes them). At a
+location, glyf outlines are placed relative to the unrounded left phantom
+point (as HarfBuzz and zg_text do): fontTools rounds the side bearing, so
+its `otRound` is replaced by the identity while drawing.
 
 Paths use the `Path.format` grammar: M x y, L x y, Q cx cy x y,
 C c1x c1y c2x c2y x y, Z. Quadratic B-splines are split at implied on-curve
@@ -33,18 +39,31 @@ def path(gs, name):
     gs[name].draw(pen)
     return ' '.join(pen.out)
 
+def glyph_set(f, loc):
+    if not loc:
+        return f.getGlyphSet()
+    from fontTools.ttLib import ttGlyphSet
+    ttGlyphSet.otRound = lambda v: v
+    return f.getGlyphSet(location={k: v / 16384 for k, v in loc.items()}, normalized=True)
+
 def main(argv):
+    loc = {}
+    if argv[0] == '--loc':
+        loc = {k: int(v) for k, v in (kv.split('=') for kv in argv[1].split(','))}
+        argv = argv[2:]
     if argv[0] == '--all':
-        f = TTFont(argv[1]); gs = f.getGlyphSet()
+        f = TTFont(argv[1]); gs = glyph_set(f, loc)
         for gid, n in enumerate(f.getGlyphOrder()):
             print(gid, path(gs, n))
         return
     font, glyphs = argv[0], argv[1:]
-    f = TTFont(font); gs = f.getGlyphSet(); order = f.getGlyphOrder()
+    f = TTFont(font); gs = glyph_set(f, loc); order = f.getGlyphOrder()
     print('// Producer: fontTools %s BasePen, via testdata/provenance/gen_outline_golden.py' % fontTools.version)
-    print('// Command: gen_outline_golden.py %s %s' % (os.path.basename(font), ' '.join(glyphs)))
+    locarg = ('--loc ' + ','.join('%s=%d' % kv for kv in loc.items()) + ' ') if loc else ''
+    print('// Command: gen_outline_golden.py %s%s %s' % (locarg, os.path.basename(font), ' '.join(glyphs)))
     print('.{')
     print('    .font = "%s",' % os.path.basename(font))
+    print('    .coords = .{ %s },' % ', '.join(str(v) for v in loc.values()))
     print('    .glyphs = .{')
     for n in glyphs:
         print('        .{ .gid = %d, .name = "%s", .path = "%s" },' % (order.index(n), n, path(gs, n)))
