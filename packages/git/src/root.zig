@@ -62,6 +62,23 @@ pub const refs = struct {
 };
 /// The object database.
 pub const odb = @import("odb.zig");
+/// Wire protocol framing: pkt-lines, sidebands and capabilities.
+pub const proto = struct {
+    /// pkt-line reader and writer.
+    pub const pktline = @import("proto/pktline.zig");
+    /// Sideband demultiplexing and progress parsing.
+    pub const sideband = @import("proto/sideband.zig");
+    /// v0 and v2 capability lists.
+    pub const caps = @import("proto/caps.zig");
+    /// See `pktline.PktReader`.
+    pub const PktReader = pktline.PktReader;
+    /// See `pktline.PktWriter`.
+    pub const PktWriter = pktline.PktWriter;
+    /// See `sideband.Sideband`.
+    pub const Sideband = sideband.Sideband;
+    /// See `caps.Caps`.
+    pub const Caps = caps.Caps;
+};
 
 /// See `oid.Oid`.
 pub const Oid = oid.Oid;
@@ -80,5 +97,8 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("object_test.zig");
     _ = @import("refs/refs_test.zig");
+    _ = @import("proto/pktline_test.zig");
+    _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
+    std.testing.refAllDecls(proto);
 }
