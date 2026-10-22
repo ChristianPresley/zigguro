@@ -1133,8 +1133,8 @@ pub const Workbench = struct {
         const head = wb.view.primarySel().head;
         const line = wb.view.lineOf(head);
         const col = head - wb.view.lineRange(line).start;
-        const pos = if (wb.view.sels.items.len > 1)
-            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.sels.items.len }) catch ""
+        const pos = if (wb.view.selections().len > 1)
+            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
         var items: [7]zg_gui.w.StatusItem = undefined;
