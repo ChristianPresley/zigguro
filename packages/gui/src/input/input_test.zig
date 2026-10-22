@@ -6,6 +6,7 @@ const ui_mod = @import("../core/ui.zig");
 const view_mod = @import("../core/view.zig");
 const geom = @import("../core/geom.zig");
 const controls = @import("../widgets/controls.zig");
+const text_field = @import("../widgets/text_field/root.zig");
 const keys_mod = @import("keys.zig");
 const event = @import("event.zig");
 const TestApp = @import("../testing/test_app.zig").TestApp;
@@ -118,7 +119,7 @@ const Recorder = struct {
     got: std.ArrayList(u8) = .empty,
     fn handle(p: *anyopaque, k: event.KeyPress, ctxs: []const []const u8) bool {
         const self: *Recorder = @ptrCast(@alignCast(p));
-        if (k.key != .key_p) return false;
+        if (k.key != .key_p or k.action == .release) return false;
         for (ctxs) |c| self.got.appendSlice(std.testing.allocator, c) catch {};
         return true;
     }
@@ -135,6 +136,72 @@ test "unhandled keys reach the key handler with key contexts" {
     t.press(.tab, .{});
     t.press(.key_p, .{ .ctrl = true, .shift = true });
     try std.testing.expectEqualStrings("form", rec.got.items);
+}
+
+/// A text field plus a key handler that plays a two-stroke chord.
+const ChordForm = struct {
+    buf: text_field.TextBuffer,
+
+    pub fn build(self: *ChordForm, ui: *Ui) void {
+        ui.open(.{ .style = .{ .padding = .all(10) }, .key_context = "form" });
+        defer ui.close();
+        _ = text_field.textField(ui, .{ .buffer = &self.buf, .a11y_label = "field" });
+    }
+};
+
+const Chord = struct {
+    pending: bool = false,
+    fired: u32 = 0,
+    releases: u32 = 0,
+
+    fn handle(p: *anyopaque, k: event.KeyPress, _: []const []const u8) bool {
+        const self: *Chord = @ptrCast(@alignCast(p));
+        if (k.action == .release) {
+            self.releases += 1;
+            return false;
+        }
+        if (self.pending) {
+            self.pending = false;
+            if (k.key == .key_x) self.fired += 1;
+            return true;
+        }
+        if (k.key == .key_k and k.mods.ctrl) {
+            self.pending = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn isPending(p: *anyopaque) bool {
+        const self: *Chord = @ptrCast(@alignCast(p));
+        return self.pending;
+    }
+};
+
+test "a pending chord takes the next stroke before the focused field" {
+    var f: ChordForm = .{ .buf = try .init(std.testing.allocator, "") };
+    defer f.buf.deinit();
+    const t = try TestApp.init(std.testing.allocator, .{ .root = view_mod.AnyView.of(&f) });
+    defer t.deinit();
+    var c: Chord = .{};
+    t.win.key_handler = .{ .ptr = &c, .handle = Chord.handle, .pending = Chord.isPending };
+    _ = t.settle();
+    try t.click(.{ .role = .textbox });
+    t.press(.key_k, .{ .ctrl = true });
+    try std.testing.expect(c.pending);
+    // The platform sends the key, then its text.
+    t.win.dispatch(.{ .key = .{ .key = .key_x, .codepoint = 'x' } });
+    t.win.dispatch(.{ .text = "x" });
+    t.win.dispatch(.{ .key = .{ .key = .key_x, .action = .release } });
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u32, 1), c.fired);
+    try std.testing.expectEqualStrings("", f.buf.slice());
+    try std.testing.expectEqual(@as(u32, 2), c.releases);
+    // Without a chord, typing reaches the field.
+    t.win.dispatch(.{ .key = .{ .key = .key_y, .codepoint = 'y' } });
+    t.win.dispatch(.{ .text = "y" });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("y", f.buf.slice());
 }
 
 const Layered = struct {
