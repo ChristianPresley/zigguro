@@ -12,6 +12,10 @@
 //! redactor. Recordings are written atomically by `finish`, so an aborted
 //! recording leaves no partial cassette.
 //!
+//! Hand-written cassettes (end-to-end fixtures) may mark an entry
+//! `"match":"any"`: it serves the next request that matches no recorded
+//! entry, in file order.
+//!
 //! A replay miss fails the request with `error.Aborted` (the transport's
 //! error set) and leaves a unified diff against the nearest recorded
 //! request in `last_miss`.
@@ -52,6 +56,8 @@ pub const Entry = struct {
     status: u16,
     resp_headers: []const Header,
     chunks: []const Chunk,
+    /// Serves any request (hand-written fixtures).
+    any: bool = false,
 };
 
 /// Header values replaced by `<redacted>` (case-insensitive).
@@ -165,15 +171,18 @@ pub const Cassette = struct {
         return c.recordOne(io, arena, req, sink, key);
     }
 
-    /// The first unused entry with `key`, marked used.
+    /// The first unused entry with `key`, else the first unused `any`
+    /// entry, marked used.
     fn take(c: *Cassette, key: u64) ?Entry {
         c.mutex.lockUncancelable(c.io);
         defer c.mutex.unlock(c.io);
-        for (c.entries.items, c.used.items) |e, *u| if (!u.* and e.req_hash == key) {
-            u.* = true;
-            c.replays += 1;
-            return e;
-        };
+        for ([_]bool{ false, true }) |any| {
+            for (c.entries.items, c.used.items) |e, *u| if (!u.* and (if (any) e.any else !e.any and e.req_hash == key)) {
+                u.* = true;
+                c.replays += 1;
+                return e;
+            };
+        }
         return null;
     }
 
@@ -233,7 +242,7 @@ pub const Cassette = struct {
         if (best) |b| {
             try out.appendSlice(a, "--- nearest recorded request\n+++ this request\n");
             try unifiedDiff(a, &out, b, want);
-        } else try out.appendSlice(a, "(the cassette is empty)\n");
+        } else try out.print(a, "(nothing recorded to compare with)\n{s}\n", .{want});
         c.last_miss = out.items;
         if (c.opts.print_misses) std.debug.print("{s}", .{out.items});
     }
@@ -462,6 +471,10 @@ fn encodeEntry(w: *Io.Writer, e: Entry) !void {
     try s.beginObject();
     try s.objectField("req_hash");
     try s.write(e.req_hash);
+    if (e.any) {
+        try s.objectField("match");
+        try s.write("any");
+    }
     try s.objectField("method");
     try s.write(e.method);
     try s.objectField("url");
@@ -533,8 +546,10 @@ fn decodeEntry(a: Allocator, line: []const u8) !Entry {
         if (cv != .object) return error.InvalidCassette;
         c.* = .{ .dt_ms = @intCast(intOf(cv.object, "dt_ms") orelse 0), .bytes = try bytesOf(a, cv.object, "text") };
     }
+    const any = if (strOf(o, "match")) |m| std.mem.eql(u8, m, "any") else false;
     return .{
-        .req_hash = @intCast(intOf(o, "req_hash") orelse return error.InvalidCassette),
+        .any = any,
+        .req_hash = @intCast(intOf(o, "req_hash") orelse if (any) 0 else return error.InvalidCassette),
         .method = strOf(o, "method") orelse "POST",
         .url = strOf(o, "url") orelse "",
         .req_headers = try headersOf(a, o.get("req_headers")),
