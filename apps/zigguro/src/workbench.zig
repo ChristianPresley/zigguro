@@ -294,7 +294,10 @@ pub const Workbench = struct {
         const nf = &wb.files.items[wb.files.items.len - 1];
         nf.panel = try wb.addEditorPanel(nf.*);
         try wb.showEditor(nf);
-        if (wb.win != null) nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        if (wb.win != null) {
+            nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
         return nf;
     }
 
@@ -615,7 +618,10 @@ pub const Workbench = struct {
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        for (wb.files.items) |f| f.view.on_change = null;
+        for (wb.files.items) |f| {
+            f.view.on_change = null;
+            f.view.on_caret = null;
+        }
         wb.win = null;
     }
 
@@ -655,7 +661,10 @@ pub const Workbench = struct {
         wb.adapter.on_status = .{ .ctx = wb, .f = onStatus };
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
-        for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        for (wb.files.items) |f| {
+            f.view.on_change = .{ .ctx = wb, .f = onViewChange };
+            f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+        }
         wb.approvals = .init(wb.gpa, wb.io, .{});
         if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
             inb.win = win;
@@ -706,6 +715,8 @@ pub const Workbench = struct {
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
+        .{ .id = "editor.addCursorAbove", .title = "Add Cursor Above", .category = "Selection", .run = addCursorAbove },
+        .{ .id = "editor.addCursorBelow", .title = "Add Cursor Below", .category = "Selection", .run = addCursorBelow },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
@@ -808,6 +819,16 @@ pub const Workbench = struct {
 
     fn redo(wb: *Workbench) !void {
         _ = try wb.view.redoStep();
+    }
+
+    /// The keymap's binding (Shift+Alt+Up/Down on Linux, Ctrl+Alt+Up/Down
+    /// elsewhere; the editor also takes Ctrl+Alt itself).
+    fn addCursorAbove(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_above);
+    }
+
+    fn addCursorBelow(wb: *Workbench) !void {
+        _ = try wb.view.cursorCommand(.add_below);
     }
 
     fn selectAll(wb: *Workbench) !void {
