@@ -10,6 +10,12 @@ const std = @import("std");
 pub const vt = @import("vt.zig");
 /// Screen model: cells, pages, page list, screens.
 pub const screen = @import("screen.zig");
+/// Terminal executor: control functions, modes, reports, OSC/DCS.
+pub const term = @import("term.zig");
+/// Shell-integration marks.
+pub const shell = @import("shell.zig");
+/// The terminal.
+pub const Terminal = term.Terminal;
 
 test {
     std.testing.refAllDecls(@This());
