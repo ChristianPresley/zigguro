@@ -3,15 +3,20 @@
 //! line, driven by the E15 keymap (VS Code preset) and command palette.
 //!
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
-//! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `workspace.manageTrust`,
-//! `editor.undo`, `editor.redo`, `editor.selectAll` and
-//! `workbench.toggleTheme`.
+//! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `agent.togglePane`
+//! (Ctrl+L), `workspace.manageTrust`, `editor.undo`, `editor.redo`,
+//! `editor.selectAll` and `workbench.toggleTheme`.
+//!
+//! The document lives in an E05 `DocumentRegistry`, so the agent pane's
+//! file tools read and edit it through the editor (agent/editor_files.zig)
+//! and their approvals come up as dialogs (agent/approvals.zig).
 //!
 //! Workspace trust is asked per session until the trust store
 //! (E16.F07.S01.T01) persists it; the status line shows Restricted Mode.
 //! `approvals` is the dialog ApprovalPort for consumers (agents, MCP).
 
 const std = @import("std");
+const zg_core = @import("zg_core");
 const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
@@ -20,22 +25,28 @@ const zg_terminal_view = @import("zg_terminal_view");
 const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
+const AgentHost = @import("agent/host.zig").AgentHost;
+const AgentPanel = @import("agent/panel.zig").AgentPanel;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
 const EditorView = zg_editor.view.EditorView;
 const Document = zg_editor.model.document.Document;
+const DocumentRegistry = zg_editor.model.api.registry.DocumentRegistry;
 const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
 const registry = zg_config.commands;
 const themes = zg_gui.theme.theme;
 
 /// See the module doc.
 pub const Workbench = struct {
+    rt: *zg_core.Runtime,
     gpa: std.mem.Allocator,
     io: std.Io,
     env: *const std.process.Environ.Map,
     /// The file being edited, or null for an untitled buffer.
     path: ?[]u8 = null,
+    /// The open documents (owns `doc`).
+    docs: DocumentRegistry,
     doc: *Document,
     view: *EditorView,
     langs: zg_syntax.Registry,
@@ -65,14 +76,23 @@ pub const Workbench = struct {
     /// This session's trust in the working folder (until the trust store).
     trust: zg_security.contracts.TrustState = .unknown,
     approvals: zg_security_ui.DialogApprovalPort = undefined,
+    /// Created on first show, with the panel.
+    agent: ?*AgentHost = null,
+    agent_panel: ?*AgentPanel = null,
+    show_agent: bool = false,
+    focus_agent: bool = false,
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
-    pub fn init(wb: *Workbench, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, path: ?[]const u8) !void {
+    pub fn init(wb: *Workbench, rt: *zg_core.Runtime, env: *const std.process.Environ.Map, path: ?[]const u8) !void {
+        const gpa = rt.gpa;
+        const io = rt.io;
         wb.* = .{
+            .rt = rt,
             .gpa = gpa,
             .io = io,
             .env = env,
+            .docs = .init(gpa, .native),
             .doc = undefined,
             .view = undefined,
             .langs = try zg_syntax.defaultRegistry(gpa),
@@ -90,7 +110,14 @@ pub const Workbench = struct {
                 else => return e,
             };
         }
-        wb.doc = try Document.initBytes(gpa, @enumFromInt(1), bytes);
+        const h = if (wb.path) |p| blk: {
+            const cwd = try std.process.currentPathAlloc(io, gpa);
+            defer gpa.free(cwd);
+            const abs = try std.fs.path.resolve(gpa, &.{ cwd, p });
+            defer gpa.free(abs);
+            break :blk try wb.docs.openFile(abs, bytes);
+        } else try wb.docs.openUntitled(bytes);
+        wb.doc = wb.docs.get(h).?;
         wb.view = try EditorView.init(gpa, wb.doc, .{});
         if (wb.langs.detect(wb.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
             wb.syntax = try DocumentSyntax.init(gpa, lang, &wb.langs, &wb.doc.tree, wb.doc.version);
@@ -106,6 +133,12 @@ pub const Workbench = struct {
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        // The panel stops the agent first: its tools may be waiting on
+        // this thread or on an approval dialog.
+        if (wb.agent_panel) |p| p.destroy();
+        wb.agent_panel = null;
+        if (wb.agent) |a| a.destroy();
+        wb.agent = null;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
         wb.approvals.deinit();
@@ -128,7 +161,7 @@ pub const Workbench = struct {
         wb.keys.deinit();
         wb.view.deinit();
         if (wb.syntax) |*s| s.deinit();
-        wb.doc.deinit();
+        wb.docs.deinit();
         wb.langs.deinit(wb.gpa);
         if (wb.path) |p| wb.gpa.free(p);
     }
@@ -162,6 +195,7 @@ pub const Workbench = struct {
     const commands = [_]Cmd{
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
+        .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
@@ -249,6 +283,43 @@ pub const Workbench = struct {
         w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
     }
 
+    /// Shows the agent pane (starting the agent) and focuses its prompt,
+    /// or hides it and focuses the editor.
+    pub fn toggleAgent(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        if (wb.show_agent) {
+            wb.show_agent = false;
+            if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
+            return;
+        }
+        if (wb.agent_panel == null) {
+            const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, wb.approvals.port());
+            errdefer host.destroy();
+            host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
+            const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
+            p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            wb.agent = host;
+            wb.agent_panel = p;
+        }
+        wb.show_agent = true;
+        wb.focus_agent = true;
+        w.markAllDirty();
+        w.afterNextFrame(.{ .ctx = wb, .f = focusAgent });
+    }
+
+    fn focusAgent(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.focus_agent) if (wb.agent_panel) |p| if (!p.input_node.isNone()) w.setFocus(p.input_node, false);
+        wb.focus_agent = false;
+    }
+
+    /// An agent edit landed in the open document (the view follows the
+    /// document's changes): repaint.
+    fn onAgentEdit(ctx: *anyopaque, _: zg_editor.model.api.registry.DocHandle, _: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     /// Asks whether to trust the working folder.
     pub fn manageTrust(wb: *Workbench) !void {
         const w = wb.win orelse return;
@@ -289,9 +360,16 @@ pub const Workbench = struct {
     pub fn build(wb: *Workbench, ui: *Ui) void {
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column, .bg = .{ .token = .bg_base } } });
         defer ui.close();
+        ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 } } });
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
         _ = zg_editor.view.editor(ui, .{ .view = wb.view, .a11y_label = wb.path orelse "Untitled" });
         wb.editor_node = ui.lastNode();
+        ui.close();
+        if (wb.show_agent) if (wb.agent_panel) |p| {
+            ui.open(.{ .style = .{ .dir = .column, .h = .{ .pct = 100 }, .shrink = 0 }, .key_context = "agentPaneFocus" });
+            p.build(ui);
+            ui.close();
+        };
         ui.close();
         wb.terminal_node = .none;
         if (wb.show_terminal) if (wb.terminal) |t| wb.terminalPanel(ui, t);
@@ -330,7 +408,7 @@ pub const Workbench = struct {
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.sels.items.len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [6]zg_gui.w.StatusItem = undefined;
+        var items: [7]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -345,6 +423,8 @@ pub const Workbench = struct {
             n += 1;
         }
         items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };
+        n += 1;
+        items[n] = .{ .id = "agent", .text = "Agent", .side = .right, .priority = 11, .action = "agent.togglePane" };
         n += 1;
         // A dirty file shows a dot after its name.
         var name_buf: [128]u8 = undefined;
