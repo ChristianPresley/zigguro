@@ -259,3 +259,20 @@ test "stdio: unknown command => CommandNotFound" {
     defer _ = rt.deinit();
     try testing.expectError(error.CommandNotFound, StdioTransport.start(&rt, testing.allocator, .{ .command = "/nonexistent/zg-mcp-server" }));
 }
+
+test "era: stdio legacy -32601 => initialize (real pipe)" {
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const Client = zg_mcp.client.Client;
+    const c = try Client.connect(&rt, testing.allocator, .{ .stdio = .{ .command = fixtures.echo_server } }, .{
+        .client_info = .{ .name = "zigguro-test", .version = "0.0.1" },
+    });
+    defer c.close();
+    try testing.expectEqual(zg_mcp.protocol.revision.Era.legacy, c.serverInfo().era);
+    try testing.expectEqual(zg_mcp.protocol.Revision.v2025_06_18, c.serverInfo().revision);
+    try testing.expectEqual(Transport.Kind.stdio, c.serverInfo().detection.transport);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    _ = try c.request(.ping, .{}, .{ .arena = arena.allocator() });
+}
