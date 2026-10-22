@@ -46,6 +46,7 @@ pub const all = [_]Package{
     .{ .name = "zg_gui", .dir = "packages/gui", .has_bench = true },
     .{ .name = "zg_review", .dir = "packages/review", .has_bench = true },
     .{ .name = "zg_install", .dir = "packages/install", .has_bench = true },
+    .{ .name = "zg_codeintel", .dir = "packages/codeintel", .has_bench = true },
     // pkgtool:insert
 };
 
