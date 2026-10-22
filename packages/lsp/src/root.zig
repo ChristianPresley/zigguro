@@ -29,6 +29,9 @@ pub const client = struct {
     pub const client_capabilities = @import("client/client_capabilities.zig");
     pub const doc_selector = @import("client/doc_selector.zig");
     pub const Client = @import("client/Client.zig");
+    pub const host = @import("client/host.zig");
+    pub const progress = @import("client/progress.zig");
+    pub const server_requests = @import("client/server_requests.zig");
     pub const restart = @import("client/restart.zig");
     pub const trace = @import("client/trace.zig");
     pub const transcript = @import("client/transcript.zig");
@@ -49,4 +52,6 @@ test {
     _ = @import("client/caps_test.zig");
     _ = @import("proto/uri_test.zig");
     _ = @import("client/client_test.zig");
+    _ = @import("client/server_requests_test.zig");
+    _ = @import("client/progress_test.zig");
 }
