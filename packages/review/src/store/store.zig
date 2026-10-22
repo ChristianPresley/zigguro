@@ -121,6 +121,22 @@ pub const ChangesetStore = struct {
         s.append(.changeset, aw.written()) catch |e| log.err("review store: changeset {f} not recorded: {t}", .{ cs.id, e });
     }
 
+    /// The history's recorder port.
+    pub fn recorder(s: *ChangesetStore) model.Recorder {
+        return .{ .ctx = s, .apply = jApply };
+    }
+
+    fn jApply(ctx: *anyopaque, a: *const model.Apply) void {
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        var aw: std.Io.Writer.Allocating = .init(s.gpa);
+        defer aw.deinit();
+        records.writeApply(&aw.writer, a) catch |e| {
+            log.err("review store: apply {d} not recorded: {t}", .{ a.id, e });
+            return;
+        };
+        s.append(.apply, aw.written()) catch |e| log.err("review store: apply {d} not recorded: {t}", .{ a.id, e });
+    }
+
     fn jRemoved(ctx: *anyopaque, id: model.ChangesetId) void {
         const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
         var buf: [40]u8 = undefined;
@@ -305,15 +321,17 @@ pub const ChangesetStore = struct {
 
     // ------------------------------------------------- queue binding
 
-    /// A sink that restores into `q` (load and tail).
-    pub fn queueSink(s: *ChangesetStore, q: *model.Queue) QueueSink {
-        return .{ .store = s, .q = q };
+    /// A sink that restores into `q` (load and tail), and apply records
+    /// into `history` when given.
+    pub fn queueSink(s: *ChangesetStore, q: *model.Queue, history: ?*model.History) QueueSink {
+        return .{ .store = s, .q = q, .history = history };
     }
 };
 
 pub const QueueSink = struct {
     store: *ChangesetStore,
     q: *model.Queue,
+    history: ?*model.History = null,
 
     pub fn sink(qs: *QueueSink) Sink {
         return .{ .ctx = qs, .on = on };
@@ -333,6 +351,11 @@ pub const QueueSink = struct {
             .remove => {
                 const id = intOf(u64, if (rec == .object) rec.object.get("id") else null) orelse return error.InvalidRecord;
                 qs.q.restoreRemoved(@enumFromInt(id));
+            },
+            .apply => if (qs.history) |h| {
+                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
+                defer arena.deinit();
+                try h.restore(try records.readApply(arena.allocator(), rec));
             },
             else => {},
         }
