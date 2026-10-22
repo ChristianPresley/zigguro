@@ -104,6 +104,63 @@ fn hitTest(t: *TestApp, s: *bench.State) void {
     }
 }
 
+/// A scroll area holding 2 000 laid-out rows.
+const ScrollPage = struct {
+    area: zg_gui.core.ids.NodeId = .none,
+
+    pub fn build(self: *ScrollPage, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .w = .{ .px = 800 }, .h = .{ .px = 600 } } });
+        defer ui.close();
+        self.area = zg_gui.w.scrollArea(ui, .{});
+        defer ui.close();
+        var i: u32 = 0;
+        while (i < 1000) : (i += 1) {
+            ui.id(i);
+            ui.open(.{ .style = .{ .h = .{ .px = 20 }, .shrink = 0 } });
+            ui.textf("line {d}", .{i}, .{});
+            ui.close();
+        }
+    }
+};
+
+/// A million-row virtual list.
+const BigList = struct {
+    node: zg_gui.core.ids.NodeId = .none,
+
+    pub fn build(self: *BigList, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .w = .{ .px = 800 }, .h = .{ .px = 600 } } });
+        defer ui.close();
+        self.node = zg_gui.w.virtualList(ui, .{ .count = 1_000_000, .row_h = 20 }, self, row).node;
+    }
+
+    fn row(_: *BigList, ui: *Ui, i: usize) void {
+        ui.textf("row {d}", .{i}, .{});
+    }
+};
+
+const ScrollCtx = struct { t: *TestApp, node: zg_gui.core.ids.NodeId, step: f32 };
+
+/// One frame per one-step scroll, bouncing between the ends.
+fn scrollFrame(c: *ScrollCtx, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        if (!c.t.win.scrollBy(c.node, .{ .y = c.step })) c.step = -c.step;
+        bench.doNotOptimizeAway(c.t.frame().nodes_replayed);
+    }
+}
+
+/// `set` then `find` on a 10M-row height index.
+fn heightIndex(h: *zg_gui.w.HeightIndex, s: *bench.State) void {
+    var rng: std.Random.DefaultPrng = .init(0x1010);
+    const r = rng.random();
+    const total = h.total();
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        h.set(r.uintLessThan(usize, h.len()), 18 + r.float(f32) * 4);
+        bench.doNotOptimizeAway(h.find(r.float(f32) * total));
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -126,5 +183,25 @@ fn register(b: *bench.Bench) !void {
         defer t.deinit();
         try b.run("gui.layout.flex_10k", t, layoutFlex);
         try b.run("gui.input.hit_test_10k", t, hitTest);
+    }
+    {
+        var v: ScrollPage = .{};
+        const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
+        defer t.deinit();
+        var c: ScrollCtx = .{ .t = t, .node = v.area, .step = 7 };
+        try b.run("gui.scroll_frame", &c, scrollFrame);
+    }
+    {
+        var v: BigList = .{};
+        const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
+        defer t.deinit();
+        var c: ScrollCtx = .{ .t = t, .node = v.node, .step = 20 };
+        try b.run("gui.virtual.scroll_frame_1m", &c, scrollFrame);
+    }
+    {
+        var h: zg_gui.w.HeightIndex = .init(b.gpa);
+        defer h.deinit();
+        try h.resize(10_000_000, 20);
+        try b.run("gui.virtual.height_index_10m", &h, heightIndex);
     }
 }
