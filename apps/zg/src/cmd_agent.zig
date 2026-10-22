@@ -10,6 +10,8 @@
 //!   ZG_CASSETTE_MODE     replay (default), record or record_missing
 //!   ZG_CASSETTE_SPEED    1 replays with the recorded timing
 //!   ZIGGURO_STATE_DIR    where sessions are kept (see zg_crash.paths)
+//!
+//! `--mcp-config <file>` connects MCP servers (`mcp_servers.zig`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -19,6 +21,7 @@ const zg_net = @import("zg_net");
 const zg_crash = @import("zg_crash");
 const zg_config = @import("zg_config");
 const zg_mcp = @import("zg_mcp");
+const mcp_servers = @import("mcp_servers.zig");
 
 const headless = zg_ai.headless;
 const Cassette = zg_ai.testing.cassette.Cassette;
@@ -124,6 +127,13 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     try tool_registry.addSource(web_fetch.source());
     var web_search: zg_ai.tools.builtin.web_search.WebSearch = .init(io, transport, .provider_native);
     try tool_registry.addSource(web_search.source());
+    // MCP servers from --mcp-config, as `mcp__<server>__<tool>`.
+    var mcp: mcp_servers.Servers = .init(gpa);
+    defer mcp.deinit();
+    try mcp.load(rt, client, opts.mcp_configs, &env, cwd, err);
+    var adapters: zg_ai.tools.adapters.all.Adapters = .init(gpa, io);
+    defer adapters.deinit();
+    try adapters.registerAll(&tool_registry, &.{ .mcp = mcp.exporters.items }, .{}, .{});
     var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &tool_registry, .{
         .deny = try bareRules(arena, opts.disallowed_tools),
         .mode = opts.permission_mode,
@@ -278,6 +288,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .agents = agent_defs.items,
         .hooks = &hook_engine,
         .validator = validator,
+        .mcp_servers = mcp.statuses.items,
     };
 
     const code = if (one_shot)

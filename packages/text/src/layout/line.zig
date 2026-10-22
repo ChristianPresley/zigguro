@@ -50,7 +50,7 @@ const dflt = ot.tag("dflt");
 
 /// Per (instance, feature set): whether ASCII shapes trivially, and the
 /// glyph and advance (font units) of each printable ASCII character.
-const AsciiInfo = struct {
+pub const AsciiInfo = struct {
     /// No lookup can touch ASCII glyphs.
     trivial: bool,
     /// The fast path applies to text without `hot` characters.
@@ -182,7 +182,7 @@ pub const TextLayout = struct {
     }
 
     /// The ASCII table of an instance and feature set, built on first use.
-    fn asciiInfo(tl: *TextLayout, id: InstanceId, fs: FeatureSetId) !*const AsciiInfo {
+    pub fn asciiInfo(tl: *TextLayout, id: InstanceId, fs: FeatureSetId) !*const AsciiInfo {
         const key = @as(u64, id) << 16 | fs;
         if (tl.ascii.get(key)) |v| return v;
         const info = try tl.gpa.create(AsciiInfo);

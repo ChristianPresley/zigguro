@@ -216,6 +216,31 @@ turns them on. Each adapter:
 Calls lock the paths named in `path`, `file_path`, `file`, `uri` or
 `paths`. Mutating SCM tools take the `.scm` lock.
 
+### MCP servers
+
+`zg_mcp.client.agent_tools.ToolExporter` is the MCP exporter. It is
+generic over this contract, so zg_mcp does not import zg_ai. One
+exporter wraps one connected server:
+
+- `list` reads the server's tool catalog (`zg_mcp.client.CatalogStore`).
+  The catalog is cached by the server's `ttlMs`, refreshed on
+  `tools/list_changed`, and stripped of definitions that fail the hygiene
+  checks. A refresh tells the registry to rebuild.
+- `call` sends `tools/call`, with `x-mcp-header` arguments as headers on
+  HTTP. A server error, a request for user input or a missing client
+  capability comes back to the model as an `isError` result. A header
+  mismatch or an unknown tool also refreshes the catalog.
+
+`zg agent --mcp-config <file>` (repeatable) connects the servers the
+file lists. The file uses Claude Code's `mcpServers` shape or VS Code's
+`servers` shape, with stdio (`command`, `args`, `env`, `cwd`) and HTTP
+(`url`, `headers`) entries. `${VAR}` and `${VAR:-default}` expand from the
+environment. A server that fails to start is reported as `failed` in the
+stream-json `init` event, and the run continues without it. Untrusted
+servers' tools need an approval or an `--allowed-tools` rule, like
+`run_command`. Scoped config files, trust and reload come with
+E11.F07.S01.
+
 ## Web tools
 
 **`web_fetch`** (`tools/builtin/web_fetch.zig`) fetches one URL:
