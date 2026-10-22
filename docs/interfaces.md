@@ -3325,7 +3325,7 @@ Unstable until the store and the E10 binding land.
 ## zg_review.store (ChangesetStore)
 
 ### Defined in
-`packages/review/src/store/{store,journal,records,blobs}.zig` (E12.F01.S02.T01).
+`packages/review/src/store/{store,journal,records,blobs,gc}.zig` (E12.F01.S02.T01).
 
 ### Implemented by
 E12.F01.S02.T01.
@@ -3347,8 +3347,19 @@ pub const ChangesetStore = struct {
     pub fn recorder(s) model.Recorder;                           // for History.init: journals apply records
     pub fn checkpointRecorder(s) model.CheckpointRecorder;       // for Checkpoints.init; thread-safe
     pub fn queueSink(s, q: *model.Queue, history: ?*model.History, checkpoints: ?model.CheckpointSink) QueueSink;
+    pub fn journalSize(s) !struct { segments: u32, bytes: u64 };
+    // For gc.zig: run under the lock after flushing and tailing; frame a snapshot; swap it in.
+    pub fn withExclusive(s, sink: Sink, ctx: anytype, comptime f: fn (@TypeOf(ctx)) anyerror!void) !void;
+    pub fn frameInto(s, out: *ArrayList(u8), kind: journal.Kind, record_json: []const u8) !void;
+    pub fn replaceJournal(s, frames: []const u8) !u32;           // new segment first, then old ones deleted
 };
-pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, _ };
+pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, ids = 5, _ };
+pub fn gc.collect(s, sink: Sink, live: gc.Live{ q, history: ?*History, checkpoints: ?model.CheckpointList },
+    r: gc.Retention{ decided_days = 30, keep_last_n = 500, blob_grace_ms = 10 min }) !gc.Report;
+    // Report{ changesets_removed, checkpoints_removed, applies_removed, segments_removed, blobs_removed, bytes_before, bytes_after }
+pub const model.CheckpointList = struct { ctx, list, forget, next_id };   // Checkpoints.gcList()
+pub fn model.Queue.reserve(q, next: u64) void; pub fn model.History.reserve(h, next: u64) void;
+pub fn model.History.dropThrough(h, cutoff: u64) u32;
 pub fn records.writeChangeset(w, cs, blobs, scratch) !void;
 pub fn records.readChangeset(gpa, v: std.json.Value, blobs) !*Changeset;
 pub fn records.writeApply(w, a: *const model.Apply) !void;
@@ -3362,9 +3373,14 @@ Deviations from the spec text:
   `decide` record.
 - `flush` is called by the owner of the store's worker. There is no
   internal worker or fsync window yet.
+- Compaction and GC are one call, `gc.collect`. It replaces the whole
+  journal with a snapshot segment. It does not run on its own: the caller
+  schedules it (`journalSize` tells when). There is no `gc` record. An
+  `ids` record keeps the id watermarks of what was dropped. Blob
+  reachability is every 64-hex string in the remaining journal, and
+  blobs younger than `blob_grace_ms` are kept. Comments are not
+  implemented yet, so they are not reachability roots.
 - Not implemented yet:
-  - compaction;
-  - GC and retention;
   - mapped large blobs;
   - the read-only workspace fallback directory;
   - watcher-driven tailing (callers call `tail`).

@@ -23,6 +23,9 @@ pub const Kind = enum(u8) {
     checkpoint = 3,
     /// A `History` record: what an apply, undo or restore wrote.
     apply = 4,
+    /// The next changeset, apply and checkpoint ids, written by a
+    /// compaction so that ids of dropped records are not handed out again.
+    ids = 5,
     _,
 };
 

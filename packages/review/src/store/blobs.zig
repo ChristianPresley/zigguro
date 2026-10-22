@@ -91,6 +91,46 @@ pub const DiskBlobs = struct {
         for (batch.keys(), batch.values()) |h, v| try d.write(h, v);
     }
 
+    /// Deletes the blobs on disk that are not in `keep`, not pending and
+    /// not modified at or after `before` (GC). Returns how many.
+    pub fn sweep(d: *DiskBlobs, keep: *const std.AutoHashMapUnmanaged(BlobHash, void), before: Io.Timestamp) !u32 {
+        var n: u32 = 0;
+        var root = d.dir.openDir(d.io, "blobs", .{ .iterate = true }) catch |e| switch (e) {
+            error.FileNotFound => return 0,
+            else => return e,
+        };
+        defer root.close(d.io);
+        var it = root.iterate();
+        while (try it.next(d.io)) |e| {
+            if (e.kind != .directory or e.name.len != 2) continue;
+            var hi: [1]u8 = undefined;
+            _ = std.fmt.hexToBytes(&hi, e.name) catch continue;
+            var sub = try root.openDir(d.io, e.name, .{ .iterate = true });
+            defer sub.close(d.io);
+            var it2 = sub.iterate();
+            while (try it2.next(d.io)) |f| {
+                if (f.kind != .file or f.name.len != 62) continue;
+                var h: BlobHash = undefined;
+                h[0] = hi[0];
+                _ = std.fmt.hexToBytes(h[1..], f.name) catch continue;
+                if (keep.contains(h)) continue;
+                {
+                    d.mutex.lockUncancelable(d.io);
+                    defer d.mutex.unlock(d.io);
+                    if (d.pending.contains(h)) continue;
+                }
+                const st = sub.statFile(d.io, f.name, .{}) catch continue;
+                if (st.mtime.nanoseconds >= before.nanoseconds) continue;
+                sub.deleteFile(d.io, f.name) catch |err| switch (err) {
+                    error.FileNotFound => continue,
+                    else => return err,
+                };
+                n += 1;
+            }
+        }
+        return n;
+    }
+
     fn write(d: *DiskBlobs, h: BlobHash, bytes: []const u8) !void {
         const p = pathOf(h);
         if (d.dir.access(d.io, &p, .{})) |_| return else |_| {}
