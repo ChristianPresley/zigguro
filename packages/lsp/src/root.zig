@@ -10,6 +10,8 @@ pub const protocol = @import("gen/protocol.zig");
 pub const json = @import("proto/json.zig");
 /// LSP glob patterns (document selectors, watched files, file operations).
 pub const glob = @import("proto/glob.zig");
+/// `file:` URI <-> path mapping and URI comparison.
+pub const uri = @import("proto/uri.zig");
 /// Fuzzy scoring for completion, symbol pickers and REPL completions.
 pub const fuzzy = @import("features/fuzzy.zig");
 /// Byte transports (stdio pipes, TCP) shared with zg_dap.
@@ -21,6 +23,9 @@ pub const transport = struct {
 /// The LSP client: server processes and sessions.
 pub const client = struct {
     pub const ServerProcess = @import("client/ServerProcess.zig");
+    pub const caps = @import("client/caps.zig");
+    pub const client_capabilities = @import("client/client_capabilities.zig");
+    pub const doc_selector = @import("client/doc_selector.zig");
 };
 /// Test support shared with zg_dap: the scripted-peer engine behind the
 /// fake language server and debug adapter.
@@ -35,4 +40,6 @@ test {
     _ = @import("proto/protocol_test.zig");
     _ = @import("testing/script_test.zig");
     _ = @import("client/ServerProcess_test.zig");
+    _ = @import("client/caps_test.zig");
+    _ = @import("proto/uri_test.zig");
 }
