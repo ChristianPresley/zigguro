@@ -4,6 +4,15 @@
 //! - `annotations`: lock-free key/value table snapshotted by the crash path.
 //! - `store`: list, prune and "unseen" queries over `<state>/crashes`.
 //! - `timefmt`: allocation-free UTC report names.
+//! - `capture`: `install`, `handleSegfault` and the signal and panic hooks.
+//!
+//! App wiring:
+//! ```zig
+//! pub const std_options: std.Options = .{ .enable_segfault_handler = true, .signal_stack_size = 256 * 1024, ... };
+//! pub const panic = std.debug.FullPanic(zg_core.report.panicHandler);
+//! pub const debug = struct { pub const handleSegfault = zg_crash.handleSegfault; };
+//! // first thing in main: zg_crash.install(.{ .crash_dir = ..., .state_dir = ... }) catch {};
+//! ```
 
 const std = @import("std");
 
@@ -15,6 +24,16 @@ pub const annotations = @import("annotations.zig");
 pub const store = @import("store.zig");
 /// Report names and civil time.
 pub const timefmt = @import("timefmt.zig");
+/// Crash capture.
+pub const capture = @import("capture.zig");
+/// Linux crash-path primitives (maps, build ids, threads).
+pub const linux = @import("linux.zig");
+/// Default state and crash directories.
+pub const paths = @import("paths.zig");
+
+pub const Options = capture.Options;
+pub const install = capture.install;
+pub const handleSegfault = capture.handleSegfault;
 
 test {
     std.testing.refAllDecls(@This());
@@ -22,4 +41,8 @@ test {
     _ = annotations;
     _ = store;
     _ = timefmt;
+    _ = capture;
+    _ = linux;
+    _ = paths;
+    _ = @import("crash_test.zig");
 }
