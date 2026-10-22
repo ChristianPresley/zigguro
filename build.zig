@@ -479,6 +479,13 @@ fn addApp(
         .use_llvm = if (target.result.cpu.arch == .aarch64) true else null,
     });
     if (target.result.ofmt == .elf) exe.build_id = .sha1;
+    // ADR-E02-001: the GUI links the system libc dynamically on glibc
+    // Linux, because the Vulkan loader and its drivers are libc-linked
+    // shared objects (opened with dlopen). Elsewhere Vulkan stays
+    // unavailable and the software renderer draws.
+    if (comptime std.mem.eql(u8, name, "zigguro")) {
+        if (target.result.os.tag == .linux and target.result.abi.isGnu()) exe.root_module.link_libc = true;
+    }
     return exe;
 }
 
