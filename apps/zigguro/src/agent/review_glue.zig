@@ -16,10 +16,16 @@
 //!   turn ends (`end_turn`), already applied and marked auto-applied, so
 //!   the review panel lists what every turn changed (`model`).
 //!
-//! Proposals are still applied as soon as the tool's approval passed;
-//! holding them in the review queue (`Outcome.pending`) waits for a review
-//! mode setting. Contents live in memory for the app's run, like the agent
-//! sessions; the durable store comes with saved sessions.
+//! - In `review` mode (`mode`) proposals to files not open in the editor
+//!   are held instead (`Outcome.pending`): the turn's changes live in
+//!   memory until it ends, then become one pending changeset. The agent
+//!   reads its session's pending changes back (`read_as`, `kind_as`,
+//!   through zg_review's `AgentView`), with a note when other sessions
+//!   have changes pending on the file. Open documents still take edits
+//!   at once.
+//!
+//! Contents live in memory for the app's run, like the agent sessions;
+//! the durable store comes with saved sessions.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
@@ -55,12 +61,20 @@ pub const ReviewGlue = struct {
     applier: zg_review.apply.Applier,
     /// The review panel's rows (read under `mutex`).
     model: *zg_review.queue_view.QueueModel,
+    /// What each agent sees: the disk with its session's pending changes.
+    overlay: zg_review.overlay.OverlayFs,
+    conflicts: *zg_review.rebase.ConflictIndex,
+    /// Whether agent proposals land at once or wait for review. Read when
+    /// a turn first proposes; the panel switches it (under `mutex`).
+    mode: Mode = .auto_apply,
     /// What each running turn wrote: the content before its first write.
     turns: std.ArrayList(Turn) = .empty,
     /// Called after a turn's changeset is in the queue, on the agent's
     /// task (the panel posts a repaint).
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     mutex: Io.Mutex = .init,
+
+    pub const Mode = enum { auto_apply, review };
 
     const Turn = struct {
         agent: zg_ai_proto.AgentRef,
@@ -70,6 +84,10 @@ pub const ReviewGlue = struct {
         /// The history records of its writes, folded into the
         /// changeset's apply at the end.
         writes: std.ArrayList(u64) = .empty,
+        /// Review mode: nothing is written; `after` holds each path's
+        /// proposed content.
+        held: bool = false,
+        after: std.StringArrayHashMapUnmanaged(zg_review.apply.files.Entry) = .empty,
         arena: std.heap.ArenaAllocator,
     };
 
@@ -90,13 +108,18 @@ pub const ReviewGlue = struct {
             .cps = undefined,
             .applier = undefined,
             .model = undefined,
+            .overlay = undefined,
+            .conflicts = undefined,
         };
         errdefer g.dir.close(io);
         g.workspace = .{ .dir = g.dir, .io = io };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
         g.cps = .init(gpa, io, g.q, &g.history, g.workspace.files(), null);
         g.applier = .init(gpa, io, g.q, g.workspace.files(), &g.history);
-        g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{});
+        g.conflicts = try zg_review.rebase.ConflictIndex.init(gpa, g.q, .{ .history = &g.history });
+        errdefer g.conflicts.deinit();
+        g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{ .conflicts = g.conflicts });
+        g.overlay = .{ .q = g.q, .files = g.workspace.files() };
         return g;
     }
 
@@ -106,6 +129,7 @@ pub const ReviewGlue = struct {
         for (g.turns.items) |*t| t.arena.deinit();
         g.turns.deinit(gpa);
         g.model.deinit();
+        g.conflicts.deinit();
         g.cps.deinit();
         g.q.deinit();
         g.history.deinit();
@@ -116,7 +140,7 @@ pub const ReviewGlue = struct {
 
     /// The `Files` for paths not open in the editor (`EditorFiles.outside`).
     pub fn files(g: *ReviewGlue) zfiles.Files {
-        return .{ .ctx = g, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn } };
+        return .{ .ctx = g, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn, .kind_as = kindAs, .read_as = readAs } };
     }
 
     /// E10's `deps.Checkpoints`.
@@ -152,13 +176,90 @@ pub const ReviewGlue = struct {
         return d.vtable.read(d.ctx, io, arena, abs, max_bytes);
     }
 
-    /// Writes through `DiskFiles` and records what changed.
+    /// `agent`'s view of `rel`: its turn's held change, else its
+    /// session's pending changes over the disk. Locked.
+    fn viewed(g: *ReviewGlue, arena: Allocator, rel: []const u8, agent: zg_ai_proto.AgentRef) !?zg_review.apply.files.Entry {
+        if (g.heldTurn(agent)) |t| if (t.after.get(rel)) |e| return e;
+        const r = try zg_review.overlay.agentView(&g.overlay, agent, null).readText(arena, rel) orelse return null;
+        return .{ .bytes = r.text, .executable = r.executable };
+    }
+
+    /// The running turn of `agent` that holds its changes.
+    fn heldTurn(g: *ReviewGlue, agent: zg_ai_proto.AgentRef) ?*Turn {
+        var i = g.turns.items.len;
+        while (i > 0) {
+            i -= 1;
+            const t = &g.turns.items[i];
+            if (t.held and t.agent.session == agent.session and t.agent.agent == agent.agent) return t;
+        }
+        return null;
+    }
+
+    fn kindAs(ctx: *anyopaque, io: Io, abs: []const u8, agent: zg_ai_proto.AgentRef) zfiles.Kind {
+        const g = cast(ctx);
+        const d = g.diskFiles();
+        const disk = d.vtable.kind(d.ctx, io, abs);
+        if (disk == .directory) return disk;
+        var arena_state: std.heap.ArenaAllocator = .init(g.gpa);
+        defer arena_state.deinit();
+        const rel = g.relative(arena_state.allocator(), abs) orelse return disk;
+        g.mutex.lockUncancelable(io);
+        defer g.mutex.unlock(io);
+        const e = g.viewed(arena_state.allocator(), rel, agent) catch return disk;
+        return if (e != null) .file else .missing;
+    }
+
+    /// The agent's view, with a note on other sessions' pending changes.
+    fn readAs(ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize, agent: zg_ai_proto.AgentRef) anyerror!zfiles.Read {
+        const g = cast(ctx);
+        const rel = g.relative(arena, abs) orelse return read(ctx, io, arena, abs, max_bytes);
+        g.mutex.lockUncancelable(io);
+        defer g.mutex.unlock(io);
+        const e = try g.viewed(arena, rel, agent) orelse return error.FileNotFound;
+        const notes = try zg_review.overlay.agentView(&g.overlay, agent, g.conflicts).pendingWarning(arena, rel);
+        if (e.bytes.len > max_bytes) return .{ .version = 0, .bytes = &.{}, .size = e.bytes.len, .notes = notes };
+        return .{ .version = DiskFiles.version(e.bytes), .bytes = e.bytes, .size = e.bytes.len, .notes = notes };
+    }
+
+    /// Review mode: `p` on the agent's view of `rel`, kept in its turn.
+    /// Locked.
+    fn hold(g: *ReviewGlue, arena: Allocator, rel: []const u8, p: zfiles.Proposal, origin: zfiles.Origin) !zfiles.Outcome {
+        const cur = try g.viewed(arena, rel, origin.agent);
+        const text: []const u8 = switch (p) {
+            .create => |c| if (cur != null) return .{ .rejected = .already_exists } else c.text,
+            .str_replace => |sr| switch (try zfiles.strReplace(arena, (cur orelse return .{ .rejected = .not_found }).bytes, sr.old, sr.new, sr.occurrence)) {
+                .ok => |ok| ok.text,
+                .not_found => return .{ .rejected = .not_found },
+                .not_unique => |n| return .{ .rejected = .{ .not_unique = n } },
+            },
+            .whole_file => |wf| blk: {
+                const c = cur orelse return .{ .rejected = .not_found };
+                if (wf.base_version) |b| if (b != DiskFiles.version(c.bytes)) return .{ .rejected = .stale };
+                break :blk wf.text;
+            },
+        };
+        const t = try g.turnOf(origin);
+        t.held = true;
+        const a = t.arena.allocator();
+        if (!t.before.contains(rel)) {
+            const copy: ?zg_review.apply.files.Entry = if (cur) |c| .{ .bytes = try a.dupe(u8, c.bytes), .executable = c.executable } else null;
+            try t.before.put(a, try a.dupe(u8, rel), copy);
+        }
+        const key = t.before.getKey(rel).?;
+        try t.after.put(a, key, .{ .bytes = try a.dupe(u8, text), .executable = if (cur) |c| c.executable else false });
+        return .{ .pending = .{} };
+    }
+
+    /// Writes through `DiskFiles` and records what changed; in review mode
+    /// holds the change instead (`hold`).
     fn propose(ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, p: zfiles.Proposal, origin: zfiles.Origin) anyerror!zfiles.Outcome {
         const g = cast(ctx);
         const d = g.diskFiles();
         const rel = g.relative(arena, abs) orelse return d.vtable.propose(d.ctx, io, arena, abs, p, origin);
         g.mutex.lockUncancelable(io);
         defer g.mutex.unlock(io);
+        const held = if (g.findTurn(origin.agent, origin.turn)) |t| t.held else g.mode == .review;
+        if (held) return g.hold(arena, rel, p, origin);
         const ws = g.workspace.files();
         const before = try ws.read(arena, rel);
         const out = try d.vtable.propose(d.ctx, io, arena, abs, p, origin);
@@ -174,12 +275,7 @@ pub const ReviewGlue = struct {
 
     /// Remembers what `rel` held before the turn's first write. Locked.
     fn noteTurn(g: *ReviewGlue, rel: []const u8, before: ?zg_review.apply.files.Entry, origin: zfiles.Origin, rec: ?u64) !void {
-        const t = for (g.turns.items) |*t| {
-            if (std.meta.eql(t.agent.session, origin.agent.session) and t.agent.agent == origin.agent.agent and t.turn == origin.turn) break t;
-        } else blk: {
-            try g.turns.append(g.gpa, .{ .agent = .{ .session = origin.agent.session, .agent = origin.agent.agent }, .turn = origin.turn, .arena = .init(g.gpa) });
-            break :blk &g.turns.items[g.turns.items.len - 1];
-        };
+        const t = try g.turnOf(origin);
         const a = t.arena.allocator();
         if (rec) |id| try t.writes.append(a, id);
         if (t.before.contains(rel)) return;
@@ -187,8 +283,23 @@ pub const ReviewGlue = struct {
         try t.before.put(a, try a.dupe(u8, rel), copy);
     }
 
+    fn findTurn(g: *ReviewGlue, agent: zg_ai_proto.AgentRef, turn: u32) ?*Turn {
+        for (g.turns.items) |*t| {
+            if (t.agent.session == agent.session and t.agent.agent == agent.agent and t.turn == turn) return t;
+        }
+        return null;
+    }
+
+    /// The running turn of `origin`, started on its first change.
+    fn turnOf(g: *ReviewGlue, origin: zfiles.Origin) !*Turn {
+        if (g.findTurn(origin.agent, origin.turn)) |t| return t;
+        try g.turns.append(g.gpa, .{ .agent = .{ .session = origin.agent.session, .agent = origin.agent.agent }, .turn = origin.turn, .arena = .init(g.gpa) });
+        return &g.turns.items[g.turns.items.len - 1];
+    }
+
     /// E10's `Files.end_turn`: the turn's writes become one changeset,
-    /// applied and marked auto-applied. Null when the turn wrote nothing.
+    /// applied and marked auto-applied, or, when the turn held its
+    /// changes, one pending changeset. Null when the turn changed nothing.
     fn endTurn(ctx: *anyopaque, io: Io, agent: zg_ai_proto.AgentRef, turn: u32) anyerror!?u64 {
         const g = cast(ctx);
         const id = blk: {
@@ -220,7 +331,7 @@ pub const ReviewGlue = struct {
         var n: usize = 0;
         var landed: std.ArrayList(model.ApplyFile) = .empty;
         for (t.before.keys(), t.before.values()) |path, before| {
-            const after = try g.workspace.files().read(arena, path);
+            const after = if (t.held) t.after.get(path) else try g.workspace.files().read(arena, path);
             if (before == null and after == null) continue;
             if (before != null and after != null and std.mem.eql(u8, before.?.bytes, after.?.bytes) and before.?.executable == after.?.executable) continue;
             if (after) |x| _ = try g.blobs.blobs().put(x.bytes);
@@ -247,6 +358,7 @@ pub const ReviewGlue = struct {
             return null;
         }
         const id = try g.q.commitBatch(b, .{});
+        if (t.held) return id;
         const cs = g.q.getMut(id) orelse return id;
         for (cs.files) |*f| {
             for (f.hunks) |*h| h.decision = .accepted;
@@ -322,7 +434,11 @@ pub const ReviewGlue = struct {
                     break :blk try g.applier.apply(.{ .cs = cs, .items = items.items });
                 };
                 return switch (r) {
-                    .ok => .ok,
+                    .ok => blk: {
+                        // Other pending changes on those files move onto the new text.
+                        _ = g.conflicts.rebaseApplied() catch |e| log.warn("rebasing after an apply failed: {t}", .{e});
+                        break :blk .ok;
+                    },
                     .failed => |f| .{ .failed = .{ .path = try arena.dupe(u8, f.path), .err = f.err } },
                 };
             },
@@ -539,4 +655,55 @@ test "review glue: undo, accept and reject a turn from the panel" {
     const out = try rs.restore_to(rs.ctx, testing.io, arena, cp);
     try testing.expectEqual(@as(usize, 0), out.skipped.len);
     try testing.expectEqualStrings("one\ntwo\n", try read(tmp.dir, arena, "a.txt"));
+}
+
+test "review glue: review mode holds a turn's changes as one pending changeset" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    defer g.destroy();
+    g.mode = .review;
+    const fs = g.files();
+    const a_txt = (try fs.resolve(testing.io, arena, "a.txt")).abs;
+    const b_txt = (try fs.resolve(testing.io, arena, "b.txt")).abs;
+    const t1: zfiles.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+
+    // Held: the disk is untouched; the agent reads its own changes.
+    try testing.expect(try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, t1) == .pending);
+    try testing.expect(try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "two", .new = "TWO" } }, t1) == .pending);
+    try testing.expect(try fs.propose(testing.io, arena, b_txt, .{ .create = .{ .text = "b\n" } }, t1) == .pending);
+    try testing.expect((try fs.propose(testing.io, arena, b_txt, .{ .create = .{ .text = "again\n" } }, t1)).rejected == .already_exists);
+    try testing.expectEqualStrings("ONE\nTWO\n", (try fs.readAs(testing.io, arena, a_txt, 1 << 20, s1)).bytes);
+    try testing.expectEqual(zfiles.Kind.file, fs.kindAs(testing.io, b_txt, s1));
+    try testing.expectEqual(zfiles.Kind.missing, fs.kindAs(testing.io, b_txt, s2));
+    try testing.expectEqualStrings("one\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
+
+    // The turn ends: one pending changeset, still read back by its session.
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+    const cs = g.q.get(id).?;
+    try testing.expectEqual(model.State.pending, cs.state);
+    try testing.expectEqual(@as(usize, 2), cs.files.len);
+    try testing.expectEqualStrings("ONE\nTWO\n", (try fs.readAs(testing.io, arena, a_txt, 1 << 20, s1)).bytes);
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(testing.io, "b.txt", .{}));
+    // Another session sees the disk, with a note.
+    const other = try fs.readAs(testing.io, arena, a_txt, 1 << 20, s2);
+    try testing.expectEqualStrings("one\ntwo\n", other.bytes);
+    try testing.expect(other.notes != null);
+
+    // The next turn builds on the pending text and folds into it.
+    try testing.expect(try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "ONE", .new = "1" } }, .{ .agent = s1, .turn = 2, .tool = "edit_file", .tool_call_id = "u" }) == .pending);
+    _ = try fs.endTurn(testing.io, s1, 2);
+    try testing.expectEqualStrings("1\nTWO\n", (try fs.readAs(testing.io, arena, a_txt, 1 << 20, s1)).bytes);
+
+    // Accepting writes it.
+    try testing.expect(try g.actLocked(arena, id, .accept) == .ok);
+    try testing.expectEqualStrings("1\nTWO\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
+    try testing.expectEqualStrings("b\n", try tmp.dir.readFileAlloc(testing.io, "b.txt", arena, .limited(64)));
 }
