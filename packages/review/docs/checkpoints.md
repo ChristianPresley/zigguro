@@ -1,0 +1,44 @@
+# Checkpoints and restore
+
+`zg_review.checkpoint.Checkpoints` (E12.F04). An agent turn starts with
+`create(origin, turn, label)`. It returns at once (well under 1 ms) and
+copies no file. It records two numbers:
+
+- the newest `History` record id (`after_apply`);
+- the next changeset id (`next_changeset`).
+
+Every file the applier writes already has its preimage in the blob
+store. So a checkpoint only needs to know which applies came after it.
+
+## Restore (agent-only)
+
+`restoreTo(arena, id, .{ .scope = .session })`:
+
+1. It collects the applies after the checkpoint for this session (or for
+   every agent with `.all_agents`), skipping applies that were undone.
+   It groups them per file, oldest first.
+2. It undoes them newest first. Each step is a three-way merge of the
+   current content against that apply's pre and post images. A user's
+   edit to other lines survives, even one made between two agent turns.
+3. Some files are left as they are and reported as conflicts:
+   - the user changed the same lines;
+   - the user edited a file the agent created;
+   - the user deleted a file the agent modified;
+   - a file now sits where the agent deleted one.
+4. All writes run as one transaction. If one fails, the writes already
+   done are rolled back. The writes are recorded as a `restore` in
+   `History`.
+5. Changesets submitted after the checkpoint that are still open get
+   closed. Pending ones become `discarded`. Partially applied ones become
+   `rejected`.
+
+`dry_run` returns the same report and writes nothing.
+
+## Differences from Claude Code checkpointing
+
+| Claude Code limitation | zigguro |
+|---|---|
+| Changes made by bash commands are not tracked | The same: only changes that went through review are reverted. The untracked report (E08 watcher attribution) is not done yet. |
+| External changes (other sessions, the user) are not tracked | They are kept: each revert is a three-way merge, and overlaps are reported as conflicts instead of being overwritten. |
+| Not a replacement for version control | The same. Full mode through E09 operations is not done yet. |
+| Restoring discards later checkpoints' work | Later changesets are marked `discarded`, not deleted. Redo is not done yet. |
