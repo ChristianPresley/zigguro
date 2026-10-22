@@ -9,9 +9,15 @@
 //! IME composition is built in (ime.zig): focus enables the platform IME
 //! with the caret rectangle and surrounding text, preedit shows inline.
 //!
+//! PRIMARY selection (X11 and Wayland): a non-empty selection becomes the
+//! PRIMARY text when it changes (never from password fields), and a
+//! middle click pastes PRIMARY at the click point as one undo step.
+//!
+//! Agent prompts install `Props.prompt` (prompt_hooks.zig): typing `@` or
+//! `/` at a word start reports the offset and caret rectangle.
+//!
 //! Not yet: bidi visual caret movement (waits on E03 `moveVisual`), caret
-//! blink (the caret is steady, so idle frames stay at zero), PRIMARY
-//! selection and the agent-prompt hooks (E04.F05.S02.T02 follow-ups).
+//! blink (the caret is steady, so idle frames stay at zero).
 
 const std = @import("std");
 const zg_text = @import("zg_text");
@@ -31,6 +37,7 @@ const model = @import("model.zig");
 const undo_mod = @import("undo.zig");
 const commands = @import("commands.zig");
 const ime_mod = @import("ime.zig");
+const prompt_mod = @import("prompt_hooks.zig");
 
 const grapheme = zg_text.unicode.grapheme;
 const Size = geom.Size;
@@ -96,6 +103,8 @@ pub const TextField = struct {
         font: text_mod.FontId = .ui,
         a11y_label: []const u8 = "",
         hooks: ?*const ImeHooks = null,
+        /// Completion triggers for prompt and chat inputs.
+        prompt: ?*const prompt_mod.PromptHooks = null,
     };
 
     /// Pointer-drag granularity.
@@ -117,6 +126,8 @@ pub const TextField = struct {
         lines: LineCache = .{},
         /// The bytes of `preedit`.
         ime_text: ime_mod.PreeditStore = .{},
+        /// The selection last made PRIMARY (empty: none).
+        primary_sel: [2]u32 = .{ 0, 0 },
 
         /// Selects the whole text.
         pub fn selectAll(s: *State, buf: *TextBuffer) void {
@@ -313,6 +324,7 @@ pub const TextField = struct {
                 return false;
             },
             .pointer_down => |p| {
+                if (p.button == .middle) return pastePrimary(ec, props, state, ed, p.pos);
                 if (p.button != .left) return false;
                 const at = hitAt(ec, props, state, p.pos);
                 switch (p.clicks) {
@@ -374,6 +386,11 @@ pub const TextField = struct {
                 state.preedit = null;
                 const changed = (if (composing) ed.commitText(s) else ed.insert(s)) catch false;
                 after(ec, props, state, changed);
+                if (changed and !composing) if (props.prompt) |p| if (p.on_trigger) |f| {
+                    const end = state.sel.head;
+                    if (end > 0) if (prompt_mod.trigger(p, props.buffer.slice(), end - 1, s)) |ch|
+                        f(p.ctx, ch, end - 1, caretRect(ec, props, state, geoFor(ec, props, state)));
+                };
                 return true;
             },
             .ime_preedit => |pe| {
@@ -465,6 +482,31 @@ pub const TextField = struct {
         return true;
     }
 
+    /// Middle click: the caret goes to `pos` and PRIMARY is inserted there.
+    fn pastePrimary(ec: *EventCx, props: *const Props, state: *State, ed: Editor, pos: Vec2) bool {
+        const s = ec.primary() orelse return false;
+        ec.focus();
+        if (props.read_only or s.len == 0) return true;
+        ed.moveTo(hitAt(ec, props, state, pos), false);
+        state.sel.goal_x = null;
+        state.undo.breakGroup();
+        const changed = ed.commitText(s) catch false;
+        after(ec, props, state, changed);
+        return true;
+    }
+
+    /// Makes a new non-empty selection the PRIMARY text.
+    fn publishPrimary(ec: *EventCx, props: *const Props, state: *State) void {
+        const r = state.sel.range();
+        if (r[0] == r[1]) {
+            state.primary_sel = .{ 0, 0 };
+            return;
+        }
+        if (props.password or std.mem.eql(u32, &r, &state.primary_sel)) return;
+        state.primary_sel = r;
+        ec.setPrimary(props.buffer.slice()[r[0]..r[1]]);
+    }
+
     fn vertical(ec: *EventCx, props: *const Props, state: *State, ed: Editor, dir: i32, extend: bool) void {
         const g = geoFor(ec, props, state);
         const t = ed.text();
@@ -500,6 +542,7 @@ pub const TextField = struct {
         }
         ec.repaint();
         reportIme(ec, props, state, g);
+        publishPrimary(ec, props, state);
         if (props.hooks) |h| {
             if (h.onCaretMoved) |f| f(state, ec, caretRect(ec, props, state, g));
             if (h.onSelectionChanged) |f| f(state, ec);
