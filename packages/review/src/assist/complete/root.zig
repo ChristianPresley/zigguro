@@ -8,6 +8,7 @@ pub const fim = @import("fim.zig");
 pub const scheduler = @import("scheduler.zig");
 pub const cache = @import("cache.zig");
 pub const providers = @import("providers.zig");
+pub const engine = @import("engine.zig");
 pub const provider_chat = @import("provider_chat.zig");
 
 pub const CompletionRequest = context.CompletionRequest;
@@ -22,6 +23,7 @@ pub const Gate = scheduler.Gate;
 pub const Cache = cache.Cache;
 pub const CacheKey = cache.CacheKey;
 pub const FimProvider = providers.FimProvider;
+pub const CompletionEngine = engine.CompletionEngine;
 pub const HttpFim = providers.HttpFim;
 pub const ChatFim = provider_chat.ChatFim;
 pub const ChatPort = provider_chat.ChatPort;
@@ -31,4 +33,5 @@ test {
     _ = @import("complete_test.zig");
     _ = @import("scheduler_test.zig");
     _ = @import("providers_test.zig");
+    _ = @import("engine_test.zig");
 }

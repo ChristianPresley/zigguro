@@ -290,6 +290,13 @@ pub const Scheduler = struct {
         return if (st.inflight) |f| f.id else null;
     }
 
+    /// Bytes typed into the request in flight for `doc` (hidden from its
+    /// answer).
+    pub fn typedLen(s: *const Scheduler, doc: u64) u32 {
+        const st = s.docs.get(doc) orelse return 0;
+        return if (st.inflight) |f| f.typed_len else 0;
+    }
+
     /// The user typed `text` at the cursor while a request is in flight
     /// and its answer so far is `streamed`. A speculative request always
     /// goes; otherwise it stays while the typed text is how the answer
