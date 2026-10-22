@@ -14,6 +14,7 @@ const style_mod = @import("style.zig");
 const cell_mod = @import("cell.zig");
 const unicode = @import("unicode.zig");
 const print_mod = @import("print.zig");
+const fill = @import("fill.zig");
 
 pub const Cell = cell_mod.Cell;
 pub const Row = cell_mod.Row;
@@ -115,6 +116,7 @@ pub const SavedCursor = struct {
     charsets: Charsets,
     /// DECOM at save time (owned by the terminal's modes).
     origin: bool,
+    autowrap: bool = true,
 };
 
 /// Modes the print path and region ops consult (the terminal keeps them in
@@ -386,7 +388,7 @@ fn scrollUpImpl(s: *Screen, r: Region, n_in: u16, o: EraseOpts, into_scrollback:
         const blank = bceCell(o.bce);
         for (0..n) |_| {
             const p = try s.pages.grow();
-            if (@as(u64, @bitCast(blank)) != 0) @memset(p.cells(), blank);
+            if (@as(u64, @bitCast(blank)) != 0) fill.fill(Cell, p.cells(), blank);
         }
         return;
     }
@@ -525,11 +527,12 @@ pub fn reverseIndex(s: *Screen, o: EraseOpts) !void {
 
 /// DECSC.
 pub fn saveCursor(s: *Screen, origin: bool) void {
-    s.saved = .{ .x = s.cursor.x, .y = s.cursor.y, .pending_wrap = s.cursor.pending_wrap, .style = s.cursor.style, .protected = s.cursor.protected, .charsets = s.charsets, .origin = origin };
+    s.saved = .{ .x = s.cursor.x, .y = s.cursor.y, .pending_wrap = s.cursor.pending_wrap, .style = s.cursor.style, .protected = s.cursor.protected, .charsets = s.charsets, .origin = origin, .autowrap = s.modes.autowrap };
 }
 
-/// DECRC; returns the saved origin mode (false when nothing was saved, after
-/// homing the cursor and resetting attributes as xterm does).
+/// DECRC; restores autowrap into `modes` and returns the saved origin mode
+/// (false when nothing was saved, after homing the cursor and resetting
+/// attributes as xterm does).
 pub fn restoreCursor(s: *Screen) bool {
     const sv = s.saved orelse {
         s.cursor.x = 0;
@@ -546,6 +549,7 @@ pub fn restoreCursor(s: *Screen) bool {
     s.setStyle(sv.style);
     s.cursor.protected = sv.protected;
     s.charsets = sv.charsets;
+    s.modes.autowrap = sv.autowrap;
     return sv.origin;
 }
 
@@ -594,6 +598,11 @@ pub fn printAscii(s: *Screen, run: []const u8) void {
 /// Prints code points at the cursor.
 pub fn print(s: *Screen, cps: []const u21) void {
     print_mod.print(s, cps);
+}
+
+/// REP: prints the last printed cluster `n` more times.
+pub fn repeat(s: *Screen, n: u16) void {
+    print_mod.repeat(s, n);
 }
 
 /// Appends the text of active row `y` as UTF-8 (wide spacers skipped, empty
