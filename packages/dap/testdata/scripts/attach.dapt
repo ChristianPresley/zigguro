@@ -1,0 +1,12 @@
+# Attach to a running process by pid, then detach without killing it.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true, "supportTerminateDebuggee": true}}
+> attach {"pid": 4242}
+< {}
+< event initialized
+> configurationDone
+< {}
+< event process {"name": "app", "systemProcessId": 4242, "startMethod": "attach"}
+< event thread {"reason": "started", "threadId": 1}
+> disconnect {"terminateDebuggee": false}
+< {}
