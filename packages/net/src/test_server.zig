@@ -27,22 +27,31 @@ pub const TestServer = struct {
     }
 
     fn run(self: *TestServer, io: Io) Io.Cancelable!void {
+        // Each connection gets its own task: a client may keep one
+        // connection idle in its pool while it opens another, and a serial
+        // server would then block on the idle one forever.
+        var group: Io.Group = .init;
+        defer group.cancel(io);
         while (self.served.load(.monotonic) < self.max) {
             const conn = self.server.accept(io) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 else => return,
             };
-            defer conn.close(io);
-            var rbuf: [8192]u8 = undefined;
-            var wbuf: [8192]u8 = undefined;
-            var sr = conn.reader(io, &rbuf);
-            var sw = conn.writer(io, &wbuf);
-            var http: std.http.Server = .init(&sr.interface, &sw.interface);
-            while (self.served.load(.monotonic) < self.max) {
-                var req = http.receiveHead() catch break;
-                _ = self.served.fetchAdd(1, .monotonic);
-                self.handler(self, &req) catch break;
-            }
+            group.concurrent(io, serve, .{ self, io, conn }) catch serve(self, io, conn);
+        }
+    }
+
+    fn serve(self: *TestServer, io: Io, conn: Io.net.Stream) void {
+        defer conn.close(io);
+        var rbuf: [8192]u8 = undefined;
+        var wbuf: [8192]u8 = undefined;
+        var sr = conn.reader(io, &rbuf);
+        var sw = conn.writer(io, &wbuf);
+        var http: std.http.Server = .init(&sr.interface, &sw.interface);
+        while (self.served.load(.monotonic) < self.max) {
+            var req = http.receiveHead() catch break;
+            _ = self.served.fetchAdd(1, .monotonic);
+            self.handler(self, &req) catch break;
         }
     }
 
