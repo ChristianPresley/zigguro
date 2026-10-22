@@ -107,9 +107,9 @@ fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face,
         try vt.FaceInstance.initNormalized(gpa, face, norm[0..k])
     else
         try vt.FaceInstance.init(gpa, face, user[0..n_user]);
-    if (face.glyf() == null) {
-        std.debug.print("text-dump outline: {t} outlines: not implemented\n", .{face.outline_kind});
-        return 2;
+    if (face.glyf() == null and face.cff() == null) {
+        std.debug.print("text-dump outline: no supported outlines ({t})\n", .{face.outline_kind});
+        return 1;
     }
     var scratch: vt.OutlineScratch = .{};
     var path: zg_text.outline.Path = .{};
