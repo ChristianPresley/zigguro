@@ -121,8 +121,11 @@ in visual order. Sets: `code_ligatures` (JetBrains Mono and Fira Code
 operators, `liga=0,calt=0`, stylistic sets, a bold instance), `gpos_kern`
 (Inter and Source Serif kerning, fractions, CFF2 at wght=650), `gpos_marks`
 (precomposed and decomposed mark stacks), `driver` (ignorables, variation
-selectors, `.notdef`, space fallbacks, U+2011, RTL Latin) and `random`
-(seeded code-punctuation and accented strings). `src/shape/shaper_test.zig`
+selectors, `.notdef`, space fallbacks, U+2011, RTL Latin), `random`
+(seeded code-punctuation and accented strings) and `arabic` (Noto Sans
+Arabic joining forms, ZWJ/ZWNJ, tatweel, marks and modifier combining marks,
+Persian letters, digits, feature toggles, Syriac selection, and seeded random
+strings). A case's `.script` defaults to Latin. `src/shape/shaper_test.zig`
 compares every case exactly. Producer: `provenance/gen_shape_golden.py`, run
 with uharfbuzz 0.56 (HarfBuzz 14.6):
 
