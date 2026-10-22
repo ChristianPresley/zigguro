@@ -1,0 +1,14 @@
+# Graceful stop: `terminate` first, then `disconnect` after `terminated`.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> terminate
+< {}
+< event exited {"exitCode": 143}
+< event terminated
+> disconnect
+< {}
