@@ -301,7 +301,7 @@ const StringValidator = struct {
         return v;
     }
 
-    fn check(_: *anyopaque, compiled: *const anyopaque, value: std.json.Value, errs: *validate.ErrorList) bool {
+    fn check(_: *anyopaque, compiled: *const anyopaque, _: Allocator, value: std.json.Value, errs: *validate.ErrorList) bool {
         const s: *const std.json.Value = @ptrCast(@alignCast(compiled));
         if (value != .object) return false;
         var it = s.object.get("properties").?.object.iterator();
