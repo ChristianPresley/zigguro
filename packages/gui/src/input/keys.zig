@@ -18,6 +18,13 @@ pub const KeyHandler = struct {
     }
 };
 
+/// Sees every key event before the focused node (the menubar's Alt and
+/// Alt+letter handling). Return true to consume the key.
+pub const KeyFilter = struct {
+    ptr: *anyopaque,
+    filter: *const fn (ptr: *anyopaque, key: event.KeyPress) bool,
+};
+
 test {
     std.testing.refAllDecls(@This());
 }

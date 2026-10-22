@@ -8,3 +8,5 @@
 *.minisig binary
 # CRLF fixture: its line endings are the point of the test.
 packages/ai/testdata/frontmatter/crlf.md -text
+# Generated SPIR-V (packages/vulkan/src/shaders/gen) is compared byte for byte.
+*.spv binary

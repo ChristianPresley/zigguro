@@ -13,10 +13,14 @@
 //! (`SetWindowTextW`, `ShowWindow`) never run under the mutex, because the
 //! window procedure takes it.
 //!
+//! The refresh period comes from `DwmGetCompositionTimingInfo` (re-read on
+//! `WM_DISPLAYCHANGE`); monitor scales from shcore's `GetDpiForMonitor`.
+//! Inside the modal size/move loop a `WM_TIMER` keeps frames flowing.
+//!
 //! Not yet here: the custom frame and hit-testing (#219), raw input, pen
 //! and touch (#222), IME (#226), clipboard (#230; `clipboard_read`
-//! answers from our own `clipboard_write`), drag and drop (#232), the
-//! modal size-move timer, cursors and `DwmGetCompositionTimingInfo`.
+//! answers from our own `clipboard_write`), drag and drop (#232), cursors
+//! and cloaking until the first present.
 
 const std = @import("std");
 const Io = std.Io;
@@ -35,6 +39,7 @@ const Wake = @import("../queue/wake.zig").Wake;
 const t = @import("bindings/types.zig");
 const user32 = @import("bindings/user32.zig");
 const kernel32 = @import("bindings/kernel32.zig");
+const dwmapi = @import("bindings/dwmapi.zig");
 const msgs = @import("msgs.zig");
 const WM = msgs.WM;
 const wkeys = @import("keys.zig");
@@ -54,9 +59,13 @@ const log = std.log.scoped(.win32);
 
 /// Options for `Win32Backend.init`.
 pub const InitOptions = struct {
-    /// Frame interval while frames are requested.
-    refresh_ns: u32 = 16_666_667,
+    /// Frame interval while frames are requested; null reads it from DWM
+    /// (60 Hz when DWM cannot tell).
+    refresh_ns: ?u32 = null,
 };
+
+/// shcore's `GetDpiForMonitor`, loaded at runtime (Windows 8.1+).
+const GetDpiForMonitorFn = *const fn (t.HMONITOR, u32, *u32, *u32) callconv(t.winapi) t.HRESULT;
 
 /// Private messages to the message window and to top-level windows.
 const WM_APP_CREATE = WM.APP + 1;
@@ -124,6 +133,9 @@ pub const Win32Backend = struct {
     start_failed: bool = false,
     msg_hwnd: ?t.HWND = null,
     hooks: native_api.NativeHooks,
+    /// The frame interval in use (see `InitOptions.refresh_ns`).
+    refresh_ns: std.atomic.Value(u32) = .init(16_666_667),
+    get_dpi_for_monitor: ?GetDpiForMonitorFn = null,
 
     /// Starts the platform thread and waits until its message window exists.
     pub fn init(gpa: Allocator, io: Io, opts: InitOptions) !*Win32Backend {
@@ -204,6 +216,7 @@ pub const Win32Backend = struct {
         b.unlock();
         w.* = .{ .b = b, .id = id, .presenter = .init(b.gpa, b.io), .min_size = opts.min_size };
         w.presenter.bind();
+        w.presenter.on_present = .{ .ctx = w, .f = onPresented };
         var req: CreateRequest = .{ .w = w, .title = title, .size = .{ .w = std.math.clamp(opts.size.w, 1, 16384), .h = std.math.clamp(opts.size.h, 1, 16384) } };
         _ = user32.SendMessageW(b.msg_hwnd.?, WM_APP_CREATE, 0, @bitCast(@intFromPtr(&req)));
         if (!req.ok) {
@@ -321,14 +334,55 @@ pub const Win32Backend = struct {
     /// See `Platform.VTable.release`. No large payloads yet.
     pub fn release(_: *Win32Backend, _: types.PayloadSlice) void {}
 
-    /// See `Platform.VTable.monitors`.
-    pub fn monitors(_: *Win32Backend, out: []types.MonitorInfo) usize {
-        var ctx: MonitorEnum = .{ .out = out };
+    /// After each CPU present: `Event.present_feedback` stamped now (GDI
+    /// gives no scanout time).
+    fn onPresented(ctx: *anyopaque, seq: u64) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        b.stage(.{ .present_feedback = .{ .win = w.id, .presented_ns = b.nowNs(), .seq = seq, .flags = 0 } });
+    }
+
+    /// Reads the refresh period from DWM unless `InitOptions` fixed it.
+    fn readRefresh(b: *Win32Backend) void {
+        if (b.opts.refresh_ns) |r| return b.refresh_ns.store(r, .release);
+        var ti: t.DWM_TIMING_INFO = .{};
+        var ns: ?u32 = null;
+        if (dwmapi.DwmGetCompositionTimingInfo(null, &ti) >= 0) {
+            ns = dpi.refreshNsFromRatio(ti.rateRefresh.uiNumerator, ti.rateRefresh.uiDenominator);
+            if (ns == null) {
+                var freq: i64 = 0;
+                _ = kernel32.QueryPerformanceFrequency(&freq);
+                ns = dpi.refreshNsFromQpc(ti.qpcRefreshPeriod, freq);
+            }
+        }
+        b.refresh_ns.store(ns orelse 16_666_667, .release);
+    }
+
+    fn refreshNs(b: *const Win32Backend) u32 {
+        return b.refresh_ns.load(.acquire);
+    }
+
+    /// The effective DPI of `hmon`, or null without shcore.
+    fn monitorDpi(b: *const Win32Backend, hmon: t.HMONITOR) ?u32 {
+        const f = b.get_dpi_for_monitor orelse return null;
+        var x: u32 = 0;
+        var y: u32 = 0;
+        if (f(hmon, msgs.MDT_EFFECTIVE_DPI, &x, &y) < 0 or x == 0) return null;
+        return x;
+    }
+
+    /// See `Platform.VTable.monitors`. Scales come from each monitor's
+    /// effective DPI; every monitor reports the DWM refresh rate.
+    pub fn monitors(b: *Win32Backend, out: []types.MonitorInfo) usize {
+        var ctx: MonitorEnum = .{ .b = b, .out = out };
         _ = user32.EnumDisplayMonitors(null, null, MonitorEnum.callback, @bitCast(@intFromPtr(&ctx)));
         return ctx.n;
     }
 
     const MonitorEnum = struct {
+        b: *Win32Backend,
         out: []types.MonitorInfo,
         n: usize = 0,
 
@@ -337,7 +391,9 @@ pub const Win32Backend = struct {
             var mi: t.MONITORINFOEXW = .{};
             if (user32.GetMonitorInfoW(hmon, &mi) == 0) return t.TRUE;
             if (self.n < self.out.len) {
-                var m: types.MonitorInfo = .{ .id = @truncate(@intFromPtr(hmon)), .rect_px = rectOf(mi.rcMonitor), .work_px = rectOf(mi.rcWork), .scale = .{}, .refresh_mhz = 60000, .primary = mi.dwFlags & 1 != 0 };
+                const mdpi = self.b.monitorDpi(hmon) orelse msgs.default_dpi;
+                const refresh_mhz: u32 = @intCast(@as(u64, std.time.ns_per_s) * 1000 / self.b.refreshNs());
+                var m: types.MonitorInfo = .{ .id = @truncate(@intFromPtr(hmon)), .rect_px = rectOf(mi.rcMonitor), .work_px = rectOf(mi.rcWork), .scale = .{ .factor = dpi.scaleOf(mdpi) }, .refresh_mhz = refresh_mhz, .primary = mi.dwFlags & 1 != 0 };
                 const name = wide.fromWide(&m.name_buf, mi.szDevice[0..wide.len(@ptrCast(&mi.szDevice))]) catch "";
                 m.name_len = @intCast(name.len);
                 self.out[self.n] = m;
@@ -409,6 +465,10 @@ pub const Win32Backend = struct {
     fn threadMain(b: *Win32Backend) void {
         // Before any window exists; fails harmlessly when a manifest set it.
         _ = user32.SetProcessDpiAwarenessContext(user32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if (kernel32.LoadLibraryExW(L("shcore.dll"), null, msgs.LOAD_LIBRARY_SEARCH_SYSTEM32)) |shcore| {
+            if (kernel32.GetProcAddress(shcore, "GetDpiForMonitor")) |f| b.get_dpi_for_monitor = @ptrCast(@alignCast(f));
+        }
+        b.readRefresh();
         const wc: t.WNDCLASSEXW = .{
             .lpfnWndProc = wndProc,
             .hInstance = b.hinstance,
@@ -455,7 +515,7 @@ pub const Win32Backend = struct {
         defer b.unlock();
         var next: ?u64 = null;
         for (b.windows.items) |w| if (w.frame_requested) {
-            const due = w.last_frame_ns + b.opts.refresh_ns;
+            const due = w.last_frame_ns + b.refreshNs();
             next = if (next) |x| @min(x, due) else due;
         };
         const due = next orelse return msgs.INFINITE;
@@ -468,11 +528,12 @@ pub const Win32Backend = struct {
         b.lock();
         defer b.unlock();
         const now = b.nowNs();
+        const refresh = b.refreshNs();
         for (b.windows.items) |w| {
-            if (!w.frame_requested or now < w.last_frame_ns + b.opts.refresh_ns) continue;
+            if (!w.frame_requested or now < w.last_frame_ns + refresh) continue;
             w.frame_requested = false;
             w.last_frame_ns = now;
-            b.stage(.{ .frame = .{ .win = w.id, .target_ns = now + b.opts.refresh_ns, .refresh_ns = b.opts.refresh_ns } });
+            b.stage(.{ .frame = .{ .win = w.id, .target_ns = now + refresh, .refresh_ns = refresh } });
         }
     }
 
@@ -487,6 +548,7 @@ pub const Win32Backend = struct {
             log.err("CreateWindowExW failed (error {d})", .{kernel32.GetLastError()});
             return;
         };
+        const wdpi = @max(user32.GetDpiForWindow(hwnd), 1);
         {
             b.lock();
             defer b.unlock();
@@ -494,7 +556,14 @@ pub const Win32Backend = struct {
                 _ = user32.DestroyWindow(hwnd);
                 return;
             };
-            w.dpi = @max(user32.GetDpiForWindow(hwnd), 1);
+            w.dpi = wdpi;
+        }
+        // Created on another monitor's DPI: size the frame for this one
+        // while the window is still hidden, so the client size is exact.
+        if (wdpi != msgs.default_dpi) {
+            var rd: t.RECT = .{ .left = 0, .top = 0, .right = @intCast(req.size.w), .bottom = @intCast(req.size.h) };
+            _ = user32.AdjustWindowRectExForDpi(&rd, style, t.FALSE, msgs.WS.EX_APPWINDOW, wdpi);
+            _ = user32.SetWindowPos(hwnd, null, 0, 0, rd.right - rd.left, rd.bottom - rd.top, msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE | msgs.SWP_NOMOVE);
         }
         _ = user32.ShowWindow(hwnd, msgs.SW_SHOWNORMAL);
         var cr: t.RECT = undefined;
@@ -617,6 +686,29 @@ pub const Win32Backend = struct {
                 b.lock();
                 defer b.unlock();
                 b.configure(w, .{ .w = @intCast(@max(1, cr.right - cr.left)), .h = @intCast(@max(1, cr.bottom - cr.top)) }, true);
+                b.stage(.monitors_changed);
+                return 0;
+            },
+            WM.DISPLAYCHANGE => {
+                b.readRefresh();
+                b.lock();
+                defer b.unlock();
+                b.stage(.monitors_changed);
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
+            },
+            WM.ENTERSIZEMOVE => {
+                // DispatchMessage does not return until the drag ends; the
+                // timer runs the frame pacing meanwhile.
+                _ = user32.SetTimer(hwnd, msgs.modal_timer_id, msgs.USER_TIMER_MINIMUM, null);
+                return 0;
+            },
+            WM.EXITSIZEMOVE => {
+                _ = user32.KillTimer(hwnd, msgs.modal_timer_id);
+                return 0;
+            },
+            WM.TIMER => {
+                if (wp != msgs.modal_timer_id) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                b.dueFrames();
                 return 0;
             },
             WM.GETMINMAXINFO => {
@@ -907,4 +999,48 @@ test "win32: a newer present releases the older buffer" {
     try pr.present(c.handle, &.{.{ .x = 0, .y = 0, .w = 4, .h = 4 }}, .none, null);
     try testing.expectEqual(@as(usize, 1), pr.pollReleased(&got));
     try testing.expectEqual(a.handle, got[0]);
+}
+
+test "win32: presents report feedback; WM_DISPLAYCHANGE reports monitors" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg feedback", .size = .{ .w = 320, .h = 200 } });
+    const pr = try p.cpuPresenter(win);
+    const buf = try pr.allocCpuBuffer(32, 32, @import("cpu_present.zig").fourcc_argb8888);
+    try pr.present(buf.handle, &.{}, .none, null);
+    const fb = (try waitFor(p, .present_feedback, win)).present_feedback;
+    try testing.expectEqual(@as(u64, 1), fb.seq);
+    try testing.expect(fb.presented_ns > 0);
+
+    const hwnd = try b.hwndOf(win);
+    _ = user32.SendMessageW(hwnd, WM.DISPLAYCHANGE, 32, 0);
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    var seen = false;
+    while (!seen) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .monitors_changed) {
+            seen = true;
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        if (!seen) p.waitEvents(deadline);
+    }
+    var mons: [8]types.MonitorInfo = undefined;
+    const n = p.monitors(&mons);
+    try testing.expect(n >= 1);
+    try testing.expect(mons[0].refresh_mhz >= 5000 and mons[0].refresh_mhz <= 1_000_000);
+    try testing.expect(mons[0].scale.factor >= 1.0);
+    p.destroyWindow(win);
+}
+
+test "win32: InitOptions.refresh_ns fixes the frame interval" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{ .refresh_ns = 8_000_000 });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg refresh", .size = .{ .w = 320, .h = 200 } });
+    try p.submit(.{ .request_frame = win });
+    const fr = (try waitFor(p, .frame, win)).frame;
+    try testing.expectEqual(@as(u32, 8_000_000), fr.refresh_ns);
+    p.destroyWindow(win);
 }

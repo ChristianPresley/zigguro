@@ -204,6 +204,8 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/dmabuf.zig`.
+    pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
@@ -267,6 +269,8 @@ pub const x11 = if (is_linux) struct {
     pub const XvfbForTest = @import("x11/backend.zig").XvfbForTest;
     /// See `x11/present.zig`.
     pub const present = @import("x11/present.zig");
+    /// See `x11/dri3.zig`.
+    pub const dri3 = @import("x11/dri3.zig");
     /// See `x11/dpi.zig`.
     pub const dpi = @import("x11/dpi.zig");
     /// See `x11/keymap.zig`.
@@ -404,10 +408,12 @@ test {
         _ = @import("wayland/wire/fuzz.zig");
         _ = @import("wayland/backend.zig");
         _ = @import("wayland/shm.zig");
+        _ = @import("wayland/dmabuf.zig");
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
         _ = @import("x11/backend.zig");
+        _ = @import("x11/dri3.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
@@ -473,6 +479,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
     .{ .path = "wayland/shm.zig", .src = @embedFile("wayland/shm.zig") },
+    .{ .path = "wayland/dmabuf.zig", .src = @embedFile("wayland/dmabuf.zig") },
     .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
     .{ .path = "x11/conn.zig", .src = @embedFile("x11/conn.zig") },
     .{ .path = "x11/auth.zig", .src = @embedFile("x11/auth.zig") },
@@ -483,6 +490,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/testing/fake_server.zig", .src = @embedFile("x11/testing/fake_server.zig") },
     .{ .path = "x11/backend.zig", .src = @embedFile("x11/backend.zig") },
     .{ .path = "x11/present.zig", .src = @embedFile("x11/present.zig") },
+    .{ .path = "x11/dri3.zig", .src = @embedFile("x11/dri3.zig") },
     .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
     .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
