@@ -42,8 +42,9 @@ pub const VTable = struct {
 /// The transport variants.
 pub const Kind = enum { stdio, http_modern, http_legacy, http_sse, in_process };
 
-/// Errors from sending.
-pub const SendError = error{ OutOfMemory, Closed, ConcurrencyUnavailable };
+/// Errors from sending. `InvalidMessage`: the body is not one line of
+/// compact JSON (stdio framing).
+pub const SendError = error{ OutOfMemory, Closed, ConcurrencyUnavailable, InvalidMessage };
 
 /// A serialized request plus what HTTP transports mirror into headers.
 pub const OutgoingRequest = struct {
@@ -90,7 +91,14 @@ pub const InboundSink = struct {
 };
 
 /// How a child process ended.
-pub const ExitInfo = struct { code: ?u32 = null, signal: ?u32 = null };
+pub const ExitInfo = struct {
+    code: ?u32 = null,
+    signal: ?u32 = null,
+    /// The process exited before its first response.
+    during_startup: bool = false,
+    /// The end of its stderr (valid during the callback).
+    stderr_tail: []const u8 = "",
+};
 
 /// Why a request produced no response.
 pub const TransportError = union(enum) {
