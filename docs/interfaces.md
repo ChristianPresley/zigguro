@@ -1843,7 +1843,7 @@ panel, "undo agent change"), E12 checkpoints.
 
 ### Signature
 ```zig
-pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0 };
+pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0, virtual: u32 = 0 };
 pub const CoalesceKey = enum { typing_word, typing_space, delete_left, delete_right };
 pub const GroupMeta = struct { label: []const u8 = "", origin: EditOrigin, timestamp: std.Io.Timestamp, coalesce_key: ?CoalesceKey = null };
 pub const NodeId = enum(u32) { root = 0, none = maxInt(u32), _ };
@@ -1874,6 +1874,69 @@ invalidated by a `record` that prunes.
 
 ### Stability
 Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+
+## zg_editor.model.edit selections (SelectionSet, multi_cursor, runner)
+
+### Defined in
+`packages/editor/src/model/edit/{selection.zig, multi_cursor.zig, runner.zig}` (E05.F02.S01).
+
+### Implemented by
+E05.F02.S01.T02.
+
+### Consumed by
+`EditorView` (F05) and the E15 command layer (multi-cursor commands), F07 smart typing and F08
+line operations (as `EditFn`s), E05.F09 Vim/Emacs.
+
+### Signature
+```zig
+pub const max_selections = 100_000;
+pub const NormalizeMode = enum { for_display, for_edit }; // for_edit also merges a caret touching a range
+pub const SelectionSet = struct { gpa, items, primary_id: u32, word_search: bool,
+    pub fn init(gpa, first: Selection) !SelectionSet; pub fn deinit(s) void;
+    pub fn slice(s) []const Selection; pub fn count(s) usize; pub fn ranges(s) RangeIterator;
+    pub fn primary(s) Selection; pub fn primaryIndex(s) u32; pub fn setPrimary(s, idx: u32) void;
+    pub fn add(s, sel) error{TooManySelections, OutOfMemory}!void;     // becomes primary; normalize after
+    pub fn set(s, sels: []const Selection, primary_idx: usize) !void;
+    pub fn normalize(s, mode: NormalizeMode) void; pub fn mapThrough(s, cs: *const ChangeSet) void;
+    pub fn collapseToPrimary(s) void;
+    pub fn pushHistory(s) !void; pub fn undoCursorOp(s) !bool; pub fn clearHistory(s) void };
+// multi_cursor.zig
+pub const DisplayPos = struct { row: u64, col_px: f32 };
+pub const Hit = struct { offset: u64, virtual: u32 = 0 };
+pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn; pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit };
+pub const ColumnOptions = struct { tab_size: u32 = 4, width: zg_text.unicode.width.WidthOptions = .{} };
+pub const ColumnMap = struct { gpa, snap: *const Snapshot, o: ColumnOptions; pub fn query(m) DisplayMapQuery }; // headless
+pub const BoxSelection = struct { anchor: DisplayPos, head: DisplayPos, virtual_space: bool = false };
+pub fn boxToSelections(b: BoxSelection, dm: DisplayMapQuery, out: *SelectionSet) !void;
+pub fn addCursorVertical(snap, sels, dir: enum { up, down }, o: ColumnOptions) !bool;
+pub fn splitIntoLines(snap, sels) !void; pub fn collapse(sels) !void;
+pub const OccurrenceOptions = struct { case_sensitive: ?bool = null, whole_word: ?bool = null, wrap: bool = true };
+pub fn addNextOccurrence(doc, sels, o) !bool; pub fn skipOccurrence(doc, sels, o) !bool;
+pub fn selectAllOccurrences(doc, sels, o) !usize;
+pub fn columnOf(line, at, o) u32; pub fn byteAtColumn(line, col, o) struct { byte: usize, virtual: u32 };
+// runner.zig
+pub const Target = union(enum) { map, in_edit: struct { edit: u32, delta: ?u32 = null },
+    range_in_edit: struct { edit: u32, anchor: u32, head: u32 } };
+pub const EditBuilder = struct { pub fn replace(b, range, text) !u32; pub fn insert(b, at, text) !u32;
+    pub fn delete(b, range) !u32; pub fn select(b, t: Target) void };
+pub const EditFn = *const fn (ctx: *anyopaque, snap: *const Snapshot, sel: Selection, out: *EditBuilder) anyerror!void;
+pub const RunResult = struct { dropped: u32 = 0, changed: bool = false };
+pub fn runPerSelection(doc, sels, f: EditFn, ctx: *anyopaque, origin: EditOrigin) !RunResult;
+pub fn typeText(doc, sels, text, origin) !RunResult; // pads carets in virtual space first
+```
+Edits are ordered by position, then selection order; an edit overlapping one kept before it
+is dropped (counted in `dropped`) and its selection is mapped instead. A run clears the cursor
+history and `word_search`. Occurrence commands started from a caret select the word under each
+caret first and then match whole words case-sensitively (VS Code).
+
+### Threading
+Owner (UI) thread, with the Document.
+
+### Ownership/lifetime
+The set owns its selections and history. `ColumnMap` borrows the snapshot.
+
+### Stability
+Unstable until the F05 display map supplies `DisplayMapQuery`.
 
 ## zg_editor.model.diff
 
