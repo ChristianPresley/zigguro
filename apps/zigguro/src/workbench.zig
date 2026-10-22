@@ -625,7 +625,13 @@ pub const Workbench = struct {
     fn layoutSnapshot(ctx: *anyopaque, arena: std.mem.Allocator) anyerror!persist.LayoutFile {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         var windows: [1]persist.WindowLayout = .{.{ .id = "main" }};
-        if (wb.win) |w| windows[0].rect = .{ 0, 0, @intFromFloat(@max(0, w.size.w)), @intFromFloat(@max(0, w.size.h)) };
+        if (wb.win) |w| {
+            // The size the window opens at next time: without the
+            // invisible resize margins of client-side decorations (or
+            // each session grows by them).
+            const m = w.chrome.margins(w.scale);
+            windows[0].rect = .{ 0, 0, @intFromFloat(@round(@max(0, w.size.w - m.l - m.r))), @intFromFloat(@round(@max(0, w.size.h - m.t - m.b))) };
+        }
         return persist.fromModel(arena, &wb.dock, layout_kinds, &windows, &.{});
     }
 
@@ -1531,4 +1537,27 @@ test "workbench: the gutter shows edits against the file" {
     _ = t.settle();
     Workbench.onAppMessage(&wb, &t.app, .{ .kind = diff_model.ui_msg_kind, .a = @intFromPtr(m) });
     try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+}
+
+test "workbench: the saved window size leaves out decoration margins" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    t.win.chrome.client = true;
+    t.win.chrome.margins_px = .{ 12, 12, 12, 12 };
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const file = try Workbench.layoutSnapshot(&wb, arena.allocator());
+    try std.testing.expectEqual(@as(i32, 876), file.windows[0].rect[2]);
+    try std.testing.expectEqual(@as(i32, 576), file.windows[0].rect[3]);
 }

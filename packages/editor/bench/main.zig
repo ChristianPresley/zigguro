@@ -362,6 +362,7 @@ fn register(b: *bench.Bench) !void {
     try registerMoves(b, text);
     try registerSmart(b, text);
     try registerLineOps(b, text);
+    try registerVim(b, text);
     try registerEncoding(b, text);
     try registerSave(b, text);
     try registerUndoFile(b, text);
@@ -486,6 +487,44 @@ fn newlineCursors(c: *SmartBench, s: *bench.State) void {
     while (i < s.iterations()) : (i += 1) {
         _ = zg_editor.model.edit.smart_edit.newline(c.doc, c.sels, smartCtx(c)) catch unreachable;
         c.doc.endFrame();
+    }
+}
+
+const VimBench = struct {
+    vs: *zg_editor.modes.vim.state.VimState,
+    host: *zg_editor.modes.mode.Host,
+    keys: []const zg_editor.modes.key.Key,
+    at: usize = 0,
+};
+
+/// One Vim key at a time in a 100k-line document (budget: under 20 µs a
+/// key): `w`/`b` motions, and `dd` then `u` so the text stays the same.
+fn registerVim(b: *bench.Bench, text: []const u8) !void {
+    const edit = zg_editor.model.edit;
+    const modes = zg_editor.modes;
+    inline for (.{ .{ "editor.vim.key_motion", "wwwbbb" }, .{ "editor.vim.key_dd_undo", "ddu" } }) |c| {
+        const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+        defer doc.deinit();
+        var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(doc.tree.lineStart(doc.tree.lineCount() / 2)));
+        defer sels.deinit();
+        var undo: edit.undo.UndoTree = .init(b.gpa, .{});
+        defer undo.deinit();
+        var vs: modes.vim.state.VimState = .init(b.gpa);
+        defer vs.deinit();
+        var host: modes.mode.Host = .{ .doc = doc, .sels = &sels, .undo = &undo, .edit = .{} };
+        var keys: [8]modes.key.Key = undefined;
+        const n = try modes.key.parse(c[1], &keys);
+        var vb: VimBench = .{ .vs = &vs, .host = &host, .keys = keys[0..n] };
+        try b.run(c[0], &vb, vimKeys);
+    }
+}
+
+fn vimKeys(c: *VimBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        _ = c.vs.handleKey(c.keys[c.at], c.host) catch unreachable;
+        c.at = (c.at + 1) % c.keys.len;
+        c.host.doc.endFrame();
     }
 }
 

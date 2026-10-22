@@ -894,7 +894,14 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         if (ext_acq) |a| {
             ext_open = false;
             try self.ext.?.present(fs, a, if (full_repaint) &.{} else damage.slice());
-        } else self.readback.present(fs);
+        } else {
+            self.readback.present(fs);
+            // A CPU sink shows the frame once its copy lands. Deliver it
+            // now (this runs on the render thread): left to the next
+            // render's poll, each frame would show only when another one
+            // follows, and the first frame of an idle window never would.
+            self.readback.waitIdle();
+        }
     }
     if (full_frame or size_changed) self.history.pushFull() else self.history.push(damage.slice());
     self.carry = .{};

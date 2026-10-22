@@ -125,6 +125,26 @@ test "gpu: vk renderer: idle frames submit nothing; damage limits the copy" {
     try validation.expectNoValidationErrors(gpu);
 }
 
+test "gpu: vk renderer: a CPU sink gets each frame when it renders" {
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const vr = try newRenderer(gpu, &sink);
+    defer vr.destroy();
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+    // The first frame of an idle window: nothing renders after it.
+    dl.reset(.{ .w = 200, .h = 100 }, 1);
+    dl.damageAll();
+    keystrokeScene(&dl, 0);
+    _ = try vr.render(&dl);
+    try testing.expectEqual(@as(u32, 1), counter.frames);
+    try testing.expectEqual(@as(u64, 200 * 100), counter.rect_px);
+    try validation.expectNoValidationErrors(gpu);
+}
+
 test "gpu: vk renderer: 500 random-damage frames stay validation clean" {
     const gpa = testing.allocator;
     const gpu = try testing_gpu.gpuOrSkip();

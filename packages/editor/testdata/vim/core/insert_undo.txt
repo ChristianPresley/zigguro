@@ -1,0 +1,445 @@
+=== i
+--- before
+a¦bc
+--- keys
+iXY<Esc>
+--- after
+aX¦Ybc
+
+=== a
+--- before
+a¦bc
+--- keys
+aXY<Esc>
+--- after
+abX¦Yc
+
+=== I
+--- before
+  a¦bc
+--- keys
+IX<Esc>
+--- after
+  ¦Xabc
+
+=== A
+--- before
+a¦bc
+--- keys
+AX<Esc>
+--- after
+abc¦X
+
+=== gI
+--- before
+  a¦bc
+--- keys
+gIX<Esc>
+--- after
+¦X  abc
+
+=== a at end
+--- before
+ab¦c
+--- keys
+aX<Esc>
+--- after
+abc¦X
+
+=== a on empty line
+--- before
+a
+¦
+b
+--- keys
+aX<Esc>
+--- after
+a
+¦X
+b
+
+=== o
+--- before
+  a¦bc
+d
+--- keys
+oX<Esc>
+--- after
+  abc
+  ¦X
+d
+
+=== O
+--- before
+a
+  b¦c
+--- keys
+OX<Esc>
+--- after
+a
+  ¦X
+  bc
+
+=== o last line
+--- before
+a¦bc
+--- keys
+oX<Esc>
+--- after
+abc
+¦X
+
+=== 3i
+--- before
+a¦bc
+--- keys
+3iXY<Esc>
+--- after
+aXYXYX¦Ybc
+
+=== 3a
+--- before
+a¦bc
+--- keys
+3aX<Esc>
+--- after
+abXX¦Xc
+
+=== 3o
+--- before
+a¦bc
+--- keys
+3oX<Esc>
+--- after
+abc
+X
+X
+¦X
+
+=== 2O
+--- before
+a¦bc
+--- keys
+2OX<Esc>
+--- after
+X
+¦X
+abc
+
+=== 2A
+--- before
+a¦bc
+--- keys
+2AX<Esc>
+--- after
+abcX¦X
+
+=== i enter
+--- before
+ab¦cd
+--- keys
+i<CR><Esc>
+--- after
+ab
+¦cd
+
+=== i enter indent
+--- before
+    ab¦cd
+--- keys
+i<CR>x<Esc>
+--- after
+    ab
+    ¦xcd
+
+=== i bs
+--- before
+ab¦cd
+--- keys
+iX<BS><BS><Esc>
+--- after
+¦acd
+
+=== i bs joins
+--- before
+ab
+¦cd
+--- keys
+i<BS><Esc>
+--- after
+a¦bcd
+
+=== i ctrl-w
+--- before
+foo bar¦ baz
+--- keys
+i<C-w><Esc>
+--- after
+foo¦  baz
+
+=== i ctrl-u
+--- before
+foo bar¦ baz
+--- keys
+i<C-u><Esc>
+--- after
+¦ baz
+
+=== i esc at start
+--- before
+¦abc
+--- keys
+i<Esc>
+--- after
+¦abc
+
+=== i pending
+--- before
+a¦bc
+--- keys
+iX
+--- after
+aX¦bc
+[insert]
+
+=== A pending
+--- before
+a¦bc
+--- keys
+AX
+--- after
+abcX¦
+[insert]
+
+=== i del
+--- before
+a¦bcd
+--- keys
+i<Del><Esc>
+--- after
+¦acd
+
+=== R
+--- before
+a¦bcdef
+--- keys
+RXY<Esc>
+--- after
+aX¦Ydef
+
+=== R past end
+--- before
+a¦bc
+--- keys
+RXYZW<Esc>
+--- after
+aXYZ¦W
+
+=== R bs restores
+--- before
+a¦bcdef
+--- keys
+RXY<BS><BS><Esc>
+--- after
+¦abcdef
+
+=== R pending
+--- before
+a¦bc
+--- keys
+RX
+--- after
+aX¦c
+[replace]
+
+=== u
+--- before
+a¦bc
+--- keys
+xu
+--- after
+a¦bc
+
+=== u twice
+--- before
+a¦bcd
+--- keys
+xxuu
+--- after
+a¦bcd
+
+=== u insert session
+--- before
+a¦bc
+--- keys
+iXY<CR>Z<Esc>u
+--- after
+a¦bc
+
+=== u then ctrl-r
+--- before
+a¦bcd
+--- keys
+xxuu<C-r>
+--- after
+a¦cd
+
+=== 2u
+--- before
+a¦bcd
+--- keys
+xx2u
+--- after
+a¦bcd
+
+=== u cw
+--- before
+foo ¦bar baz
+--- keys
+cwX<Esc>u
+--- after
+foo ¦bar baz
+
+=== u dd
+--- before
+one
+t¦wo
+three
+--- keys
+ddu
+--- after
+one
+¦two
+three
+
+=== u o
+--- before
+o¦ne
+two
+--- keys
+oX<Esc>u
+--- after
+o¦ne
+two
+
+=== u J
+--- before
+o¦ne
+two
+--- keys
+Ju
+--- after
+o¦ne
+two
+
+=== u nothing
+--- before
+a¦bc
+--- keys
+u
+--- after
+a¦bc
+
+=== ctrl-r nothing
+--- before
+a¦bc
+--- keys
+<C-r>
+--- after
+a¦bc
+
+=== u 3x
+--- before
+a¦bcde
+--- keys
+3xu
+--- after
+a¦bcde
+
+=== u p
+--- before
+a¦bc
+--- keys
+ylpu
+--- after
+a¦bc
+
+=== u visual d
+--- before
+a¦bcdef
+--- keys
+vlldu
+--- after
+a¦bcdef
+
+=== u r
+--- before
+a¦bc
+--- keys
+rxu
+--- after
+a¦bc
+
+=== u >>
+--- before
+a¦bc
+--- keys
+>>u
+--- after
+¦abc
+
+=== u ~
+--- before
+a¦bc
+--- keys
+~u
+--- after
+a¦bc
+
+=== esc cancels op
+--- before
+a¦bc
+--- keys
+d<Esc>x
+--- after
+a¦c
+
+=== esc cancels count
+--- before
+a¦bcde
+--- keys
+3<Esc>x
+--- after
+a¦cde
+
+=== count 0 is motion
+--- before
+ab¦c
+--- keys
+0x
+--- after
+¦bc
+
+=== 10x
+--- before
+a¦bcdefghijklmn
+--- keys
+10x
+--- after
+a¦lmn
+
+=== d esc then w
+--- before
+a¦b cd
+--- keys
+d<Esc>w
+--- after
+ab ¦cd
+
+=== invalid op combo
+--- before
+a¦bc def
+--- keys
+dyw
+--- after
+abc ¦def
