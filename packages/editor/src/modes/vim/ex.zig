@@ -408,8 +408,23 @@ const Ex = struct {
         var lines: u64 = 0;
         var last_line: ?u64 = null;
         var last_text: []const u8 = "";
+        // With \zs/\ze the replaced text is that group's (`&` included);
+        // the group is left out of the numbered ones.
+        const group = search_mod.Search.matchGroup(re);
+        const names_all = re.captureNames();
+        const names: []const ?[]const u8 = if (group) |g| blk: {
+            const ns = try a.alloc(?[]const u8, names_all.len - 1);
+            var j: usize = 0;
+            for (names_all, 0..) |nm, i| if (i != g) {
+                ns[j] = nm;
+                j += 1;
+            };
+            break :blk ns;
+        } else names_all;
         var it = re.findIter(cache, in.withSpan(.{ .start = span_start, .end = span_end }));
-        while (it.next()) |m| {
+        while (it.next()) |m_whole| {
+            const have = re.captures(cache, in.withSpan(.{ .start = m_whole.start, .end = span_end }).withAnchored(true), &caps);
+            const m: zg_regex.Match = if (group) |g| (if (have) (caps.get(g) orelse m_whole) else m_whole) else m_whole;
             if (m.start > limit) break;
             const l = xx.lineOf(m.start);
             if (last_line != null and last_line.? == l and !all) continue;
@@ -417,14 +432,18 @@ const Ex = struct {
             if (edits.items.len > 0 and m.start < edits.items[edits.items.len - 1].range.end) continue;
             if (last_line == null or last_line.? != l) lines += 1;
             last_line = l;
-            const texts = try a.alloc(?[]const u8, caps.len());
-            if (re.captures(cache, in.withSpan(.{ .start = m.start, .end = span_end }).withAnchored(true), &caps)) {
-                for (texts, 0..) |*t, i| t.* = if (caps.get(i)) |g| try tree.copyRange(a, .{ .start = g.start, .end = g.end }) else null;
-            } else {
-                @memset(texts, null);
-                texts[0] = try tree.copyRange(a, .{ .start = m.start, .end = m.end });
+            const texts = try a.alloc(?[]const u8, names.len);
+            @memset(texts, null);
+            if (have) {
+                var j: usize = 0;
+                for (0..caps.len()) |i| {
+                    if (group != null and i == group.?) continue;
+                    texts[j] = if (caps.get(i)) |g| try tree.copyRange(a, .{ .start = g.start, .end = g.end }) else null;
+                    j += 1;
+                }
             }
-            const sg: replace_mod.SliceGroups = .{ .texts = texts, .names = re.captureNames() };
+            texts[0] = try tree.copyRange(a, .{ .start = m.start, .end = m.end });
+            const sg: replace_mod.SliceGroups = .{ .texts = texts, .names = names };
             const out = try replace_mod.expandReplacement(a, template, sg.groups(), false);
             try edits.append(a, .{ .range = .{ .start = m.start, .end = m.end }, .text = out });
             last_text = texts[0] orelse "";
