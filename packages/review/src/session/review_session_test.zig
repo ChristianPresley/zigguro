@@ -98,6 +98,11 @@ test "session: accept writes, undo reverts the apply" {
     const id = try fx.submit(1, &.{.{ "f.txt", three, "A\n.\nB\n.\nC\n" }});
     const s = try ReviewSession.init(gpa, fx.q, &fx.ap, .{ .changeset = id });
     defer s.deinit();
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const tx = (try s.texts(arena_state.allocator(), 0)).?;
+    try testing.expectEqualStrings(three, tx.base);
+    try testing.expectEqualStrings("A\n.\nB\n.\nC\n", tx.new);
     try testing.expectEqual(@as(?rs.Failure, null), try s.acceptHunk());
     try fx.expectDisk("f.txt", "A\n.\nb\n.\nc\n");
     // The next hunk is under the cursor now.
