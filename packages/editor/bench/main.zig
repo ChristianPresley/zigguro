@@ -19,6 +19,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 pub const pending = [_][]const u8{
     "editor.open.1gb_first_screen",
     "editor.open.10mb_full",
+    "editor.find.viewport_1gb",
 };
 
 /// A source-like file of `lines` lines (20-120 columns).
@@ -200,6 +201,82 @@ fn intralineHunk(p: *DiffPair, s: *bench.State) void {
     }
 }
 
+const FindDoc = struct { doc: *zg_editor.model.document.Document };
+
+/// Literal find-all over the whole document (bytes/s = len / time).
+fn findAll(f: *FindDoc, s: *bench.State) void {
+    findAllCase(f, s, .sensitive);
+}
+
+/// Case-insensitive literal find-all (the smart-case default for "needle").
+fn findAllIcase(f: *FindDoc, s: *bench.State) void {
+    findAllCase(f, s, .insensitive);
+}
+
+fn findAllCase(f: *FindDoc, s: *bench.State, case: @FieldType(zg_editor.model.search.find.FindOptions, "case")) void {
+    const find = zg_editor.model.search.find;
+    s.setBytes(f.doc.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var fs = find.FindSession.start(std.heap.smp_allocator, f.doc, .{ .pattern = "needle", .case = case }, .{ .start = 0, .end = 0 }, null) catch unreachable;
+        fs.finish() catch unreachable;
+        bench.doNotOptimizeAway(fs.matchCount().known);
+        fs.stop();
+    }
+}
+
+/// Viewport search (100 lines) in the middle of the document.
+fn findViewport(f: *FindDoc, s: *bench.State) void {
+    const find = zg_editor.model.search.find;
+    const mid = f.doc.tree.lineStart(f.doc.tree.lineCount() / 2);
+    const end = f.doc.tree.lineStart(f.doc.tree.lineCount() / 2 + 100);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var fs = find.FindSession.start(std.heap.smp_allocator, f.doc, .{ .pattern = "needle" }, .{ .start = mid, .end = end }, null) catch unreachable;
+        bench.doNotOptimizeAway(fs.matchCount().known);
+        fs.stop();
+    }
+}
+
+/// Replace all ~100k matches in a 10 MB document (alternating directions
+/// so every iteration replaces the same number).
+fn replaceAll(f: *FindDoc, s: *bench.State) void {
+    const find = zg_editor.model.search.find;
+    const gpa = std.heap.smp_allocator;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const from, const to = if (i % 2 == 0) .{ "needle", "NEEDLE" } else .{ "NEEDLE", "needle" };
+        var fs = find.FindSession.start(gpa, f.doc, .{ .pattern = from, .case = .sensitive }, .{ .start = 0, .end = 0 }, null) catch unreachable;
+        bench.doNotOptimizeAway(fs.replaceAll(to, .{ .user = 0 }) catch unreachable);
+        fs.stop();
+        f.doc.endFrame();
+    }
+}
+
+fn registerFind(b: *bench.Bench) !void {
+    const Document = zg_editor.model.document.Document;
+    inline for (.{
+        .{ "editor.find.all_literal_100mb", 100 << 20, findAll, 10 },
+        .{ "editor.find.all_literal_icase_100mb", 100 << 20, findAllIcase, 10 },
+        .{ "editor.find.viewport_100mb", 100 << 20, findViewport, 10 },
+        .{ "editor.replace.all_100k", 10 << 20, replaceAll, 1 },
+    }) |c| {
+        // Lines of 100 bytes; one in c[3] holds "needle" (100k in 10 MB).
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(b.gpa);
+        try text.ensureTotalCapacity(b.gpa, c[1]);
+        var k: usize = 0;
+        while (text.items.len < c[1]) : (k += 1) {
+            try text.appendSlice(b.gpa, "the quick brown fox jumps over the lazy dog; and then some more words, ");
+            try text.appendSlice(b.gpa, if (k % c[3] == 0) "a needle in the hay\n" else "nothing in the hay\n");
+        }
+        const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text.items);
+        defer doc.deinit();
+        var f: FindDoc = .{ .doc = doc };
+        try b.run(c[0], &f, c[2]);
+    }
+}
+
 fn registerDiff(b: *bench.Bench) !void {
     {
         var p: DiffPair = .{
@@ -275,4 +352,5 @@ fn register(b: *bench.Bench) !void {
         try b.run(entry[0], d, entry[1]);
     }
     try registerDiff(b);
+    try registerFind(b);
 }
