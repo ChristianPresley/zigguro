@@ -1,0 +1,13 @@
+class Shape(ABC):
+    """A shape."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    @property
+    def area(self) -> float:
+        raise NotImplementedError
+
+    @classmethod
+    def create(cls, **kwargs):
+        return cls(**kwargs)
