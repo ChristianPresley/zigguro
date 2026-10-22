@@ -131,7 +131,7 @@ pub const AgentHost = struct {
         errdefer h.tracker.deinit();
         h.files = .init(gpa, app, h.cwd, docs, 0);
         errdefer h.files.deinit();
-        h.review = try ReviewGlue.create(gpa, io, h.cwd);
+        h.review = try ReviewGlue.create(gpa, io, h.cwd, .{ .persist = true });
         errdefer h.review.destroy();
         h.files.outside = h.review.files();
         h.file_tools = .{ .files = h.files.files(), .tracker = &h.tracker };
