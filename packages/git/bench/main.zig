@@ -105,6 +105,26 @@ fn register(b: *bench.Bench) !void {
     }
     try b.run("git.loose_encode: zlib-encode a 64 KiB object", @as([]const u8, blob64k), looseEncode);
     try b.run("git.pack_write: 2k growing versions with deltas", @as([]const []const u8, @ptrCast(chain_objs)), packWrite);
+
+    var refs_text: std.Io.Writer.Allocating = .init(gpa);
+    defer refs_text.deinit();
+    try refs_text.writer.writeAll("# pack-refs with: peeled fully-peeled sorted \n");
+    for (0..50_000) |i| {
+        var hb: [64]u8 = undefined;
+        const id = git.oid.hashBytes(.sha1, std.mem.asBytes(&i));
+        try refs_text.writer.print("{s} refs/tags/release-{d:0>6}\n", .{ id.hex(&hb), i });
+    }
+    try b.run("git.packed_refs_50k: parse and index 50k packed refs", @as([]const u8, refs_text.written()), packedRefs);
+}
+
+fn packedRefs(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| {
+        const copy = s.allocator().dupe(u8, text) catch unreachable;
+        var p = git.refs.packed_refs.PackedRefs.parse(s.allocator(), copy, .sha1) catch unreachable;
+        bench.doNotOptimizeAway(p.find("refs/tags/release-025000"));
+        p.deinit(s.allocator());
+    }
 }
 
 fn packReadHot(c: HotCtx, s: *State) void {
