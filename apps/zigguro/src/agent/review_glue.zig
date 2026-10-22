@@ -40,8 +40,9 @@
 //!
 //! `Options.approvals` (the workbench's approvals inbox) is journaled to
 //! the same store: approval records are loaded when the store opens
-//! (requests a crash left pending show as expired) and written as they
-//! change.
+//! (requests a crash left pending show as expired, and are journaled so)
+//! and written as they change. `refresh` takes answers that `zg review
+//! approve` and `deny` appended for this window's pending requests.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
@@ -541,8 +542,13 @@ pub const ReviewGlue = struct {
             g.sink.approvals = b.restoreSink();
         }
         errdefer if (g.approvals) |b| b.bind(null, 0);
-        defer g.sink.approvals = null;
+        errdefer g.sink.approvals = null;
         const rep = try st.load(g.sink.sink());
+        if (g.approvals) |b| {
+            b.journalRestored();
+            // From now on only answers from `zg review approve`.
+            g.sink.approvals = b.remoteSink();
+        }
         if (rep.truncated_bytes > 0 or rep.quarantined > 0)
             log.warn("review store: {d} torn bytes cut, {d} segments quarantined", .{ rep.truncated_bytes, rep.quarantined });
         g.cps.mutex.lockUncancelable(g.io);
