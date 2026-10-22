@@ -296,7 +296,7 @@ pub const Window = struct {
 
     /// True when the next `frame` call would do work.
     pub fn wantsFrame(w: *const Window) bool {
-        return w.needs_frame;
+        return w.needs_frame or w.anyDirtyView();
     }
 
     /// Resizes the window (layout and full repaint next frame).
