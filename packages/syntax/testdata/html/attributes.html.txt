@@ -1,0 +1,5 @@
+<a href="https://example.com/?a=1&amp;b=2" target=_blank rel='noopener'>link</a>
+<input disabled type="checkbox" checked>
+<div data-id="42" aria-label='Close "dialog"' hidden></div>
+<img src=logo.png alt="">
+<button onclick="go()" class="btn btn-primary">Go</button>
