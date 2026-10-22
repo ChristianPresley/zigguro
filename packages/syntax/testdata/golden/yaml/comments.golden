@@ -1,0 +1,5 @@
+1| comment:# full line comment
+2| property:key punctuation.delimiter:: string:value comment:# trailing comment
+3| property:url punctuation.delimiter:: string:http://x#notcomment
+4| comment:# indented comment
+5| property:quoted punctuation.delimiter:: string:"a # b" comment:# c
