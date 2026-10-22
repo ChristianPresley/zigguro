@@ -281,6 +281,64 @@ test "runPeer: dap framing" {
     try testing.expect(r.out[5].object.get("success").?.bool);
 }
 
+test "runPeer: dap response shortcut and reverse request" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const r = try runInProcess(arena.allocator(),
+        \\> launch
+        \\< {"body": {}}
+        \\< reverse runInTerminal {"kind": "integrated", "args": ["/bin/true"]}
+        \\> response runInTerminal {"success": true, "body": {"processId": 42}}
+        \\< event process {"systemProcessId": 42}
+    , &.{
+        \\{"seq":1,"type":"request","command":"launch","arguments":{}}
+        ,
+        \\{"seq":2,"type":"response","request_seq":2,"command":"runInTerminal","success":true,"body":{"processId":42}}
+        ,
+    }, .dap);
+    try testing.expectEqual(@as(u8, 0), r.status);
+    const launch = r.out[0].object;
+    try testing.expectEqualStrings("response", launch.get("type").?.string);
+    try testing.expectEqualStrings("launch", launch.get("command").?.string);
+    try testing.expectEqual(@as(i64, 1), launch.get("request_seq").?.integer);
+    try testing.expect(launch.get("success").?.bool);
+    const rev = r.out[1].object;
+    try testing.expectEqualStrings("request", rev.get("type").?.string);
+    try testing.expectEqualStrings("runInTerminal", rev.get("command").?.string);
+    try testing.expectEqual(@as(i64, 2), rev.get("seq").?.integer);
+    try testing.expectEqualStrings("process", r.out[2].object.get("event").?.string);
+}
+
+test "runPeer: dap reverse response must answer the reverse request" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const r = try runInProcess(arena.allocator(),
+        \\< reverse startDebugging {"request": "launch", "configuration": {}}
+        \\> response startDebugging
+    , &.{
+        \\{"seq":1,"type":"response","request_seq":7,"command":"startDebugging","success":true}
+        ,
+    }, .dap);
+    try testing.expectEqual(script.mismatch_status, r.status);
+    try testing.expect(std.mem.indexOf(u8, r.diag, "request_seq 7") != null);
+}
+
+test "runPeer: dap client seq regression" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const msgs: []const []const u8 = &.{
+        \\{"seq":2,"type":"request","command":"initialize","arguments":{}}
+        ,
+        \\{"seq":2,"type":"request","command":"launch","arguments":{}}
+        ,
+    };
+    const bad = try runInProcess(arena.allocator(), "> initialize\n< {}\n> launch\n", msgs, .dap);
+    try testing.expectEqual(script.mismatch_status, bad.status);
+    try testing.expect(std.mem.indexOf(u8, bad.diag, "seq regression") != null);
+    const off = try runInProcess(arena.allocator(), "seq-check off\n> initialize\n< {}\n> launch\n", msgs, .dap);
+    try testing.expectEqual(@as(u8, 0), off.status);
+}
+
 // --- the fake server as a real child process ---
 
 const Child = struct {
