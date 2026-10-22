@@ -648,10 +648,14 @@ pub const DockModel = struct {
 
     const min_ratio: f32 = 1e-3;
 
+    /// Scales `r` to sum 1. Only non-positive or non-finite entries are
+    /// raised to `min_ratio`, so a normalized split stays as it is (a
+    /// share that fell below `min_ratio` by the division survives a
+    /// save and reload).
     fn renormalize(r: []f32) void {
         var sum: f32 = 0;
         for (r) |*x| {
-            if (!(x.* > min_ratio) or !std.math.isFinite(x.*)) x.* = min_ratio;
+            if (!(x.* > 0) or !std.math.isFinite(x.*)) x.* = min_ratio;
             sum += x.*;
         }
         for (r) |*x| x.* /= sum;
