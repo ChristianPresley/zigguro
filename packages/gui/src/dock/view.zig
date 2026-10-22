@@ -407,9 +407,11 @@ pub const DockView = struct {
     }
 
     fn closePanel(dv: *DockView, p: PanelRef) void {
+        // A refused close may still change the model (a side panel hides
+        // its area instead), so the window rebuilds either way.
+        defer dv.changed();
         if (dv.host.can_close) |f| if (!f(dv.host.ctx, p)) return;
         dv.dock.close(p) catch {};
-        dv.changed();
     }
 
     /// Rebuilds the window after a model change.
