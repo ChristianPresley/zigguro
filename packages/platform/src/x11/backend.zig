@@ -26,8 +26,13 @@
 //! scroll valuators (emulated wheel buttons are dropped) and touch.
 //! Without XI2, core events and wheel buttons.
 //!
-//! Not yet here (later E01.F05 tasks): RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
-//! XDND (#253).
+//! Drag and drop (E01.F05.S03.T03): XDND v5 in `xdnd.zig`. Our windows
+//! are XdndAware; drops are read from `XdndSelection` through
+//! `selection.zig`. A drag we start grabs the pointer and walks the
+//! windows under it for an XDND target.
+//!
+//! Not yet here (later E01.F05 tasks): RandR monitors,
+//! _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors.
 
 const std = @import("std");
 const Io = std.Io;
@@ -57,6 +62,7 @@ const dri3 = @import("dri3.zig");
 const selection = @import("selection.zig");
 const xkb_ext = @import("xkb.zig");
 const xinput2 = @import("xinput2.zig");
+const xdnd = @import("xdnd.zig");
 const seat_mod = @import("../wayland/seat.zig");
 const compose = @import("../xkb/compose.zig");
 
@@ -106,6 +112,11 @@ const window_events = proto.EventMask.key_press | proto.EventMask.key_release |
     proto.EventMask.pointer_motion | proto.EventMask.exposure |
     proto.EventMask.visibility_change | proto.EventMask.structure_notify |
     proto.EventMask.focus_change | proto.EventMask.property_change;
+
+/// A drag over our windows ends after this long without a message.
+const xdnd_target_timeout_ns: u64 = 30 * std.time.ns_per_s;
+/// A drop we sent ends after this long without `XdndFinished`.
+const xdnd_finish_timeout_ns: u64 = 10 * std.time.ns_per_s;
 
 /// Multi-click timing.
 const double_click_ns: u64 = 400 * std.time.ns_per_ms;
@@ -166,6 +177,8 @@ pub const X11Backend = struct {
     xi_opcode: ?u8 = null,
     /// Scroll valuators. Guarded by the mutex.
     scrolling: xinput2.Scrolling = .{},
+    /// The master pointer of the last XI2 event (a drag grabs it).
+    xi_pointer: u16 = 2,
     /// The last pointer position, to tell scroll-only motion apart.
     ptr_pos: [2]f32 = .{ -1, -1 },
     scale: f32 = 1.0,
@@ -181,6 +194,11 @@ pub const X11Backend = struct {
     staged: std.ArrayList(Event) = .empty,
     /// Selections. Guarded by the mutex.
     sel: selection.Selections = undefined,
+    xdnd_atoms: xdnd.Atoms,
+    /// A drag over one of our windows. Guarded by the mutex.
+    xdnd_target: ?xdnd.Target = null,
+    /// A drag we started. Guarded by the mutex.
+    xdnd_source: ?xdnd.Source = null,
     /// The newest server timestamp seen in an event (0 = CurrentTime).
     last_time: u32 = 0,
     /// Payloads over the arena's limit, by id. Guarded by the mutex.
@@ -215,6 +233,7 @@ pub const X11Backend = struct {
             .opts = opts,
             .conn = conn,
             .atoms = try conn.internAtoms(&atom_names),
+            .xdnd_atoms = try conn.internAtoms(&xdnd.atom_names),
             .path = .put_image,
             .arena = arena,
             .ui_wake = ui_wake,
@@ -433,6 +452,7 @@ pub const X11Backend = struct {
         const a = &b.atoms;
         try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
         try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
+        try b.setAtoms(w.xid, b.xdnd_atoms.get("XdndAware"), &.{xdnd.version});
         try b.setTitle(w.xid, opts.title);
         // WM_CLASS must match the desktop file's StartupWMClass (E17).
         try b.setProp(w.xid, proto.Atom.wm_class, proto.Atom.string, 8, "zigguro\x00Zigguro\x00");
@@ -534,7 +554,13 @@ pub const X11Backend = struct {
                 // Wake `waitEvents` for a local answer or the new deadline.
                 b.ui_wake.signal();
             },
-            .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .start_drag => |t| {
+                try b.xdndStart(t.win, t.items, t.allowed);
+                // The pointer grab needs a reply: `dispatch` takes it.
+                b.ui_wake.signal();
+            },
+            .set_drop_effect => |t| b.xdndSetEffect(t.win, t.accept, t.effect),
+            .begin_move, .begin_resize, .show_window_menu, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
     }
 
@@ -609,6 +635,15 @@ pub const X11Backend = struct {
     /// Mutex held.
     fn drainSelections(b: *X11Backend) void {
         for (b.sel.done.items) |d| {
+            if (d.xdnd) {
+                const live = if (b.xdnd_target) |t| t.dropping else false;
+                const data: types.PayloadSlice = if (live and d.ok and d.data.len > 0) b.putOwned(d.data) else blk: {
+                    b.gpa.free(d.data);
+                    break :blk .empty;
+                };
+                b.xdndDropped(d.ok, data);
+                continue;
+            }
             const data: types.PayloadSlice = if (d.ok and d.data.len > 0) b.putOwned(d.data) else blk: {
                 b.gpa.free(d.data);
                 break :blk .empty;
@@ -649,6 +684,7 @@ pub const X11Backend = struct {
         defer b.unlock();
         b.sel.expire(b.nowNs());
         b.drainSelections();
+        b.xdndExpire(b.nowNs());
         b.dueFrames(b.nowNs());
         const take = @min(out.len - n, b.staged.items.len);
         for (b.staged.items[0..take], 0..) |e, i| {
@@ -691,9 +727,11 @@ pub const X11Backend = struct {
                 defer b.unlock();
                 b.sel.expire(now);
                 b.drainSelections();
+                b.xdndExpire(now);
                 if (b.staged.items.len > 0) return;
                 if (b.nextFrameNs()) |t| until = if (until) |d| @min(d, t) else t;
                 if (b.sel.nextDeadline()) |t| until = if (until) |d| @min(d, t) else t;
+                if (b.xdndDeadline()) |t| until = if (until) |d| @min(d, t) else t;
             }
             if (b.wake_pending.load(.acquire)) return;
             if (until) |u| if (now >= u) return;
@@ -724,6 +762,8 @@ pub const X11Backend = struct {
         b.windows.deinit(b.gpa);
         b.unlock();
         b.staged.deinit(b.gpa);
+        if (b.xdnd_target) |*t| t.deinit(b.gpa);
+        if (b.xdnd_source) |*s| s.deinit(b.gpa);
         b.sel.deinit();
         var it = b.large.valueIterator();
         while (it.next()) |v| b.gpa.free(v.*);
@@ -745,6 +785,11 @@ pub const X11Backend = struct {
     /// Translates every X event the socket has.
     fn dispatch(b: *X11Backend) void {
         if (b.dead) return;
+        {
+            b.lock();
+            defer b.unlock();
+            b.xdndGrab();
+        }
         while (true) {
             const ev = b.conn.pollEvent() catch |err| {
                 log.err("X connection lost: {t}", .{err});
@@ -753,7 +798,12 @@ pub const X11Backend = struct {
                 for (b.windows.items) |w| b.stage(.{ .window_close_requested = w.id });
                 b.unlock();
                 return;
-            } orelse return;
+            } orelse {
+                // Send what translating queued (XDND answers) even when
+                // the app only polls.
+                b.conn.flush() catch {};
+                return;
+            };
             b.lock();
             defer b.unlock();
             b.translate(ev);
@@ -775,7 +825,17 @@ pub const X11Backend = struct {
         };
         if (b.gpu) |g| if (code == proto.generic_event and ev[1] == g.present_opcode) return b.onPresentEvent(ev);
         if (b.xkb_event) |base| if (code == base) return b.onXkbEvent(ev);
-        if (b.xi_opcode) |op| if (code == proto.generic_event and ev[1] == op) return b.onXiEvent(ev);
+        // While we drag, the pointer grab sends core events to us.
+        if (b.xdnd_source) |s| if (s.grabbed and b.xi_opcode == null) switch (code) {
+            proto.EventCode.motion_notify => return b.xdndSourceMotion(.{ @bitCast(u16At(ev, 20)), @bitCast(u16At(ev, 22)) }, u32At(ev, 4)),
+            proto.EventCode.button_release => return if (ev[1] < 4 or ev[1] > 7) b.xdndSourceRelease(u32At(ev, 4)),
+            proto.EventCode.button_press, proto.EventCode.enter_notify, proto.EventCode.leave_notify => return,
+            else => {},
+        };
+        if (b.xi_opcode) |op| if (code == proto.generic_event and ev[1] == op) {
+            if (b.xdnd_source) |s| if (s.grabbed) return b.xdndXiEvent(ev);
+            return b.onXiEvent(ev);
+        };
         // With XI2 the server sends XI2 pointer events instead of core
         // ones; ignore any core stragglers.
         if (b.xi_opcode != null) switch (code) {
@@ -835,6 +895,7 @@ pub const X11Backend = struct {
                 b.stage(.{ .window_configure = .{ .win = w.id, .size = size, .scale = .{ .factor = b.scale }, .state = .{ .maximized = w.maximized, .fullscreen = w.fullscreen, .activated = w.focused }, .serial = w.serial, .screen_origin_px = .{ .x = @as(i16, @bitCast(u16At(ev, 16))), .y = @as(i16, @bitCast(u16At(ev, 18))) } } });
             },
             proto.EventCode.client_message => {
+                if (xdnd.decode(&b.xdnd_atoms, ev)) |m| return b.onXdnd(u32At(ev, 4), m);
                 const w = b.byXid(u32At(ev, 4)) orelse return;
                 if (u32At(ev, 8) == b.atoms.get("WM_PROTOCOLS") and u32At(ev, 12) == b.atoms.get("WM_DELETE_WINDOW")) {
                     b.stage(.{ .window_close_requested = w.id });
@@ -892,6 +953,8 @@ pub const X11Backend = struct {
     fn onKey(b: *X11Backend, ev: []const u8, pressed: bool) void {
         const w = b.byXid(u32At(ev, 12)) orelse return;
         const keycode = ev[1];
+        // Escape cancels a drag we started.
+        if (pressed and keycode == 9 and b.xdnd_source != null) return b.xdndCancel();
         if (b.xkb_event != null) {
             if (keycode < 8) return;
             const evdev: u32 = keycode - 8;
@@ -947,6 +1010,7 @@ pub const X11Backend = struct {
             else => {
                 const e = xinput2.decodeDeviceEvent(ev) orelse return;
                 const w = b.byXid(e.window) orelse return;
+                b.xi_pointer = e.device_id;
                 const mods = modsFromState(e.mods);
                 switch (e.evtype) {
                     xinput2.EventType.motion => {
@@ -1015,6 +1079,350 @@ pub const X11Backend = struct {
             w.last_click_button = detail;
         }
         b.stage(.{ .pointer_button = .{ .win = w.id, .button = button, .pressed = pressed, .pos_px = pos, .mods = mods, .clicks = if (pressed) w.clicks else 0, .time_ns = now } });
+    }
+
+    // ---- XDND drag and drop (E01.F05.S03.T03, mutex held) ----
+
+    /// Sends an XDND message naming `window` to `dest`.
+    fn xdndSend(b: *X11Backend, dest: u32, window: u32, comptime ty: []const u8, l: [5]u32) void {
+        _ = b.conn.request(proto.SendEvent, .{ .destination = dest, .event_mask = 0, .event = xdnd.clientMessage(window, b.xdnd_atoms.get(ty), l) }, &.{}) catch |err| log.warn("sending {s}: {t}", .{ ty, err });
+    }
+
+    /// An XDND message to our window `xid`.
+    fn onXdnd(b: *X11Backend, xid: u32, m: xdnd.Message) void {
+        const a = &b.xdnd_atoms;
+        switch (m) {
+            .enter => |e| {
+                const w = b.byXid(xid) orelse return;
+                if (e.version < 3) return;
+                b.xdndEndTarget(true);
+                var t: xdnd.Target = .{ .source = e.source, .win = w.id, .xid = xid, .version = @min(e.version, xdnd.version), .last_ns = b.nowNs() };
+                b.xdndTypes(&t, e) catch |err| {
+                    log.warn("XDND type list: {t}", .{err});
+                    t.deinit(b.gpa);
+                    return;
+                };
+                b.xdnd_target = t;
+            },
+            .position => |p| {
+                const t = &(b.xdnd_target orelse return);
+                if (t.source != p.source or t.dropping) return;
+                t.last_ns = b.nowNs();
+                t.requested = p.action;
+                if (t.offset == null) {
+                    const c = b.conn;
+                    const cookie = c.request(proto.TranslateCoordinates, .{ .src_window = c.screen().root, .dst_window = t.xid, .src_x = 0, .src_y = 0 }, &.{}) catch return;
+                    const r = c.reply(cookie) catch return;
+                    t.offset = .{ r.x, r.y };
+                }
+                t.pos = .{ @floatFromInt(@as(i32, p.root[0]) + t.offset.?[0]), @floatFromInt(@as(i32, p.root[1]) + t.offset.?[1]) };
+                // XDND names one action per position; none means copy.
+                const asked = xdnd.actionOf(a, p.action);
+                const allowed: clipboard.DragActions = if (@as(u8, @bitCast(asked)) == 0) .{ .copy = true } else asked;
+                if (!t.entered) {
+                    // The first position carries the place the drag entered.
+                    t.entered = true;
+                    var buf: [16]u8 = undefined;
+                    const mimes = t.mimeIds(&b.sel, b.xdnd_source != null, &buf);
+                    b.stage(.{ .drop = .{ .win = t.win, .phase = .enter, .allowed = allowed, .pos_px = t.pos, .mimes = b.arena.put(mimes) catch .empty } });
+                } else b.stage(.{ .drop = .{ .win = t.win, .phase = .over, .allowed = allowed, .pos_px = t.pos } });
+                // The app's last answer; `set_drop_effect` sends a newer one.
+                b.xdndSend(t.source, t.source, "XdndStatus", t.status(a, &b.sel));
+            },
+            .leave => |l| {
+                const t = b.xdnd_target orelse return;
+                if (t.source != l.source or t.dropping) return;
+                b.xdndEndTarget(true);
+            },
+            .drop => |d| {
+                const t = &(b.xdnd_target orelse return);
+                if (t.source != d.source or t.dropping) return;
+                if (!t.accepting(&b.sel)) {
+                    b.xdndSend(t.source, t.source, "XdndFinished", .{ t.xid, 0, 0, 0, 0 });
+                    return b.xdndEndTarget(true);
+                }
+                t.action = xdnd.chooseAction(a, t.effect, t.requested);
+                b.sel.readXdnd(t.accept.?, d.time, b.nowNs()) catch |err| {
+                    log.warn("reading a drop: {t}", .{err});
+                    b.xdndSend(t.source, t.source, "XdndFinished", .{ t.xid, 0, 0, 0, 0 });
+                    return b.xdndEndTarget(true);
+                };
+                t.dropping = true;
+                // A drag of our own is answered at once.
+                b.drainSelections();
+            },
+            .status => |st| {
+                const s = &(b.xdnd_source orelse return);
+                const tg = s.target orelse return;
+                if (tg.window != st.target or s.dropped) return;
+                if (s.statusArrived(st.accept, st.action)) |p| b.xdndSendPosition(p);
+                if (s.release_pending and !s.waiting_status) b.xdndRelease();
+            },
+            .finished => |f| {
+                const s = b.xdnd_source orelse return;
+                const tg = s.target orelse return;
+                if (!s.dropped or tg.window != f.target) return;
+                // Before v5 `XdndFinished` carries no action: the last status's.
+                const act: clipboard.DragActions = if (tg.version < 5) xdnd.actionOf(a, s.action) else if (f.accepted) xdnd.actionOf(a, f.action) else .{};
+                b.xdndEndSource(act);
+            },
+        }
+    }
+
+    /// The offered types: inline in `XdndEnter`, or from `XdndTypeList`.
+    fn xdndTypes(b: *X11Backend, t: *xdnd.Target, e: @FieldType(xdnd.Message, "enter")) !void {
+        if (!e.more_types) {
+            for (e.types) |ty| if (ty != 0) try t.types.append(b.gpa, ty);
+            return;
+        }
+        const c = b.conn;
+        const p = try c.reply(try c.request(proto.GetProperty, .{ .window = e.source, .property = b.xdnd_atoms.get("XdndTypeList"), .type = proto.Atom.atom }, &.{}));
+        if (p.format != 32) return;
+        var i: usize = 0;
+        while (i + 4 <= p.value.len) : (i += 4) try t.types.append(b.gpa, u32At(p.value, i));
+    }
+
+    /// Forgets the drag over our window; `leave` tells the app, if it saw
+    /// the drag.
+    fn xdndEndTarget(b: *X11Backend, leave: bool) void {
+        var t = b.xdnd_target orelse return;
+        b.xdnd_target = null;
+        if (leave and t.entered) b.stage(.{ .drop = .{ .win = t.win, .phase = .leave, .allowed = .{}, .pos_px = t.pos } });
+        t.deinit(b.gpa);
+    }
+
+    /// The dropped data arrived (or the read failed): `drop` (or `leave`)
+    /// and `XdndFinished`.
+    fn xdndDropped(b: *X11Backend, ok: bool, data: types.PayloadSlice) void {
+        const t = b.xdnd_target orelse return;
+        if (!t.dropping) return;
+        if (ok) b.stage(.{ .drop = .{ .win = t.win, .phase = .drop, .allowed = xdnd.actionOf(&b.xdnd_atoms, t.action), .pos_px = t.pos, .data = data } });
+        const l: [5]u32 = if (t.version >= 5) .{ t.xid, @intFromBool(ok), if (ok) t.action else 0, 0, 0 } else .{ t.xid, 0, 0, 0, 0 };
+        b.xdndSend(t.source, t.source, "XdndFinished", l);
+        b.xdndEndTarget(!ok);
+    }
+
+    /// `Command.set_drop_effect`: remember the answer and tell the source.
+    fn xdndSetEffect(b: *X11Backend, win: WindowId, accept: ?clipboard.MimeId, effect: clipboard.DragActions) void {
+        const t = &(b.xdnd_target orelse return);
+        if (t.win != win or t.dropping) return;
+        t.accept = accept;
+        t.effect = effect;
+        if (t.entered) b.xdndSend(t.source, t.source, "XdndStatus", t.status(&b.xdnd_atoms, &b.sel));
+    }
+
+    /// `Command.start_drag`: own `XdndSelection` with `items`; the pointer
+    /// grab follows on the dispatching thread (`xdndGrab`).
+    fn xdndStart(b: *X11Backend, win: WindowId, items: []const clipboard.ClipItem, allowed: clipboard.DragActions) !void {
+        const w = try b.lookup(win);
+        if (b.xdnd_source != null) b.xdndCancel();
+        var s: xdnd.Source = .{ .win = win, .allowed = if (@as(u8, @bitCast(allowed)) == 0) .{ .copy = true } else allowed, .time = b.last_time };
+        errdefer s.deinit(b.gpa);
+        for (items) |it| try s.types.appendSlice(b.gpa, b.sel.targetsFor(it.mime).slice());
+        if (s.types.items.len > 3) {
+            var buf: [32 * 4]u8 = undefined;
+            const n = @min(s.types.items.len, 32);
+            for (s.types.items[0..n], 0..) |t, i| std.mem.writeInt(u32, buf[i * 4 ..][0..4], t, .little);
+            try b.setProp(w.xid, b.xdnd_atoms.get("XdndTypeList"), proto.Atom.atom, 32, buf[0 .. n * 4]);
+        }
+        try b.sel.ownXdnd(items, b.last_time);
+        b.xdnd_source = s;
+    }
+
+    /// The window a drag of ours started from.
+    fn xdndSourceXid(b: *X11Backend) ?u32 {
+        const s = b.xdnd_source orelse return null;
+        return if (b.find(s.win)) |w| w.xid else null;
+    }
+
+    /// Takes the pointer grab of a new drag.
+    fn xdndGrab(b: *X11Backend) void {
+        const s = &(b.xdnd_source orelse return);
+        if (!s.grab_pending) return;
+        s.grab_pending = false;
+        const xid = b.xdndSourceXid() orelse return b.xdndEndSource(.{});
+        // With XI2 the button press began an XI2 implicit grab, which a
+        // core grab cannot replace.
+        const status = b.grabPointer(xid) catch return b.xdndEndSource(.{});
+        if (status != 0) {
+            log.warn("drag: pointer grab refused ({d})", .{status});
+            return b.xdndEndSource(.{});
+        }
+        // The reply may have ended the drag (another one replaced it).
+        if (b.xdnd_source) |*now| now.grabbed = true;
+    }
+
+    /// Grabs the pointer for `xid`: the grab status (0 is success).
+    fn grabPointer(b: *X11Backend, xid: u32) !u8 {
+        const c = b.conn;
+        if (b.xi_opcode != null) {
+            const E = xinput2.EventType;
+            const mask: u32 = (1 << E.button_press) | (1 << E.button_release) | (1 << E.motion);
+            return (try c.reply(try c.request(xinput2.GrabDevice, .{ .grab_window = xid, .device_id = b.xi_pointer, .mask = mask }, &.{}))).status;
+        }
+        const mask = proto.EventMask.button_press | proto.EventMask.button_release | proto.EventMask.pointer_motion;
+        return (try c.reply(try c.request(proto.GrabPointer, .{ .grab_window = xid, .event_mask = @intCast(mask) }, &.{}))).status;
+    }
+
+    /// Releases a drag's pointer grab.
+    fn ungrabPointer(b: *X11Backend) void {
+        if (b.xi_opcode != null) {
+            _ = b.conn.request(xinput2.UngrabDevice, .{ .device_id = b.xi_pointer }, &.{}) catch {};
+        } else _ = b.conn.request(proto.UngrabPointer, .{}, &.{}) catch {};
+    }
+
+    /// An XI2 event while a drag of ours holds the grab.
+    fn xdndXiEvent(b: *X11Backend, ev: []const u8) void {
+        if (ev.len < 12) return;
+        const e = xinput2.decodeDeviceEvent(ev) orelse return;
+        switch (e.evtype) {
+            xinput2.EventType.motion => b.xdndSourceMotion(.{ @intFromFloat(@floor(e.root[0])), @intFromFloat(@floor(e.root[1])) }, e.time),
+            xinput2.EventType.button_release => if (e.detail < 4 or e.detail > 7) b.xdndSourceRelease(e.time),
+            else => {},
+        }
+    }
+
+    /// The child of `parent` containing root point `root`, if any.
+    fn childAt(b: *X11Backend, parent: u32, root: [2]i16) ?u32 {
+        const c = b.conn;
+        const cookie = c.request(proto.TranslateCoordinates, .{ .src_window = c.screen().root, .dst_window = parent, .src_x = root[0], .src_y = root[1] }, &.{}) catch return null;
+        const r = c.reply(cookie) catch return null;
+        return if (r.child == 0) null else r.child;
+    }
+
+    /// One window property's first 32-bit value of type `ty`.
+    fn prop32(b: *X11Backend, win: u32, prop: u32, ty: u32) ?u32 {
+        const c = b.conn;
+        const cookie = c.request(proto.GetProperty, .{ .window = win, .property = prop, .type = ty, .long_length = 1 }, &.{}) catch return null;
+        const p = c.reply(cookie) catch return null;
+        if (p.format != 32 or p.value.len < 4) return null;
+        return u32At(p.value, 0);
+    }
+
+    /// `win` as a drop target: its proxy (an `XdndProxy` naming itself)
+    /// or itself, if XdndAware at version 3 or later.
+    fn xdndAware(b: *X11Backend, win: u32) ?xdnd.Source.Found {
+        const a = &b.xdnd_atoms;
+        var proxy = win;
+        if (b.prop32(win, a.get("XdndProxy"), proto.Atom.window)) |px| {
+            if (b.prop32(px, a.get("XdndProxy"), proto.Atom.window) == px) proxy = px;
+        }
+        const ver = b.prop32(proxy, a.get("XdndAware"), proto.Atom.atom) orelse return null;
+        if (ver < 3) return null;
+        return .{ .window = win, .proxy = proxy, .version = @intCast(@min(ver, xdnd.version)) };
+    }
+
+    /// The drop target under root point `root`: the first XdndAware
+    /// window from the top level down, cached per top level.
+    fn xdndFind(b: *X11Backend, root: [2]i16) ?xdnd.Source.Found {
+        const s = &b.xdnd_source.?;
+        const top = b.childAt(b.conn.screen().root, root) orelse return null;
+        if (top == s.top) return s.found;
+        s.top = top;
+        s.found = null;
+        var w = top;
+        var depth: usize = 0;
+        while (depth < 8) : (depth += 1) {
+            if (b.xdndAware(w)) |f| {
+                s.found = f;
+                break;
+            }
+            w = b.childAt(w, root) orelse break;
+        }
+        return s.found;
+    }
+
+    fn xdndSendPosition(b: *X11Backend, root: [2]i16) void {
+        const s = &(b.xdnd_source orelse return);
+        const t = s.target orelse return;
+        const src = b.xdndSourceXid() orelse return;
+        b.xdndSend(t.proxy, t.window, "XdndPosition", .{ src, 0, xdnd.packRoot(root[0], root[1]), s.time, xdnd.chooseAction(&b.xdnd_atoms, s.allowed, 0) });
+    }
+
+    /// The grabbed pointer moved to `root` at `time`.
+    fn xdndSourceMotion(b: *X11Backend, root: [2]i16, time: u32) void {
+        const s = &(b.xdnd_source orelse return);
+        if (s.dropped or s.release_pending) return;
+        s.time = time;
+        const src = b.xdndSourceXid() orelse return b.xdndCancel();
+        const found = b.xdndFind(root);
+        const same = if (found) |f| (if (s.target) |t| t.window == f.window else false) else s.target == null;
+        if (!same) {
+            if (s.target) |t| b.xdndSend(t.proxy, t.window, "XdndLeave", .{ src, 0, 0, 0, 0 });
+            s.retarget(found);
+            if (found) |f| b.xdndSend(f.proxy, f.window, "XdndEnter", s.enterData(src, f.version));
+        }
+        if (s.target != null and s.moved(root)) b.xdndSendPosition(root);
+    }
+
+    /// The button went up at `time`: drop once the target has answered
+    /// the last position.
+    fn xdndSourceRelease(b: *X11Backend, time: u32) void {
+        const s = &(b.xdnd_source orelse return);
+        if (s.dropped or s.release_pending) return;
+        s.time = time;
+        s.pending = null;
+        if (s.waiting_status) {
+            s.release_pending = true;
+            return;
+        }
+        b.xdndRelease();
+    }
+
+    /// Drops on an accepting target, else leaves and ends the drag.
+    fn xdndRelease(b: *X11Backend) void {
+        const s = &b.xdnd_source.?;
+        s.release_pending = false;
+        if (s.grabbed) {
+            b.ungrabPointer();
+            s.grabbed = false;
+        }
+        const t = s.target orelse return b.xdndEndSource(.{});
+        const src = b.xdndSourceXid() orelse return b.xdndEndSource(.{});
+        if (!s.accepted) {
+            b.xdndSend(t.proxy, t.window, "XdndLeave", .{ src, 0, 0, 0, 0 });
+            return b.xdndEndSource(.{});
+        }
+        b.xdndSend(t.proxy, t.window, "XdndDrop", .{ src, 0, s.time, 0, 0 });
+        s.dropped = true;
+        s.deadline_ns = b.nowNs() + xdnd_finish_timeout_ns;
+    }
+
+    /// Cancels a drag we started (Escape, or a new drag).
+    fn xdndCancel(b: *X11Backend) void {
+        const s = b.xdnd_source orelse return;
+        if (s.target) |t| if (!s.dropped) {
+            if (b.xdndSourceXid()) |src| b.xdndSend(t.proxy, t.window, "XdndLeave", .{ src, 0, 0, 0, 0 });
+        };
+        b.xdndEndSource(.{});
+    }
+
+    /// Ends our drag: `source_finished` with `action`.
+    fn xdndEndSource(b: *X11Backend, action: clipboard.DragActions) void {
+        var s = b.xdnd_source orelse return;
+        b.xdnd_source = null;
+        if (s.grabbed) b.ungrabPointer();
+        b.sel.ownXdnd(&.{}, s.time) catch {};
+        s.deinit(b.gpa);
+        b.stage(.{ .drop = .{ .win = s.win, .phase = .source_finished, .allowed = action, .pos_px = .{ 0, 0 } } });
+    }
+
+    /// Ends drags whose peer went quiet.
+    fn xdndExpire(b: *X11Backend, now: u64) void {
+        if (b.xdnd_target) |t| if (!t.dropping and now >= t.last_ns + xdnd_target_timeout_ns) b.xdndEndTarget(true);
+        if (b.xdnd_source) |s| if (s.dropped and now >= s.deadline_ns) b.xdndEndSource(.{});
+    }
+
+    /// When `xdndExpire` has work next.
+    fn xdndDeadline(b: *X11Backend) ?u64 {
+        var d: ?u64 = null;
+        if (b.xdnd_target) |t| if (!t.dropping) {
+            d = t.last_ns + xdnd_target_timeout_ns;
+        };
+        if (b.xdnd_source) |s| if (s.dropped) {
+            d = if (d) |x| @min(x, s.deadline_ns) else s.deadline_ns;
+        };
+        return d;
     }
 
     // ---- native hooks ----
@@ -1493,4 +1901,84 @@ test "Xvfb: XInput2 pointer via XTEST (motion, buttons, wheel)" {
     }
     try testing.expectEqual(@as(usize, 1), scrolls);
     try testing.expectEqual(@as(f32, -1), dy);
+}
+
+test "Xvfb: XDND between two clients (enter, status, drop, finished)" {
+    var x = XvfbForTest.start(8) catch return error.SkipZigTest;
+    defer x.stop();
+    const a = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer a.deinit();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (a.conn.extension("XTEST") == null) return error.SkipZigTest;
+    const pa = a.platform();
+    const pb = b.platform();
+    // The target maps second, so it stacks above the source at (0, 0).
+    const wa = try pa.createWindow(.{ .title = "zg drag source", .size = .{ .w = 200, .h = 200 } });
+    _ = try waitFor(pa, .window_configure, wa);
+    const wb = try pb.createWindow(.{ .title = "zg drop target", .size = .{ .w = 50, .h = 50 } });
+    _ = try waitFor(pb, .window_configure, wb);
+    try b.conn.sync();
+
+    const root = a.conn.screen().root;
+    _ = try a.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 150, .root_y = 150 }, &.{});
+    _ = try a.conn.request(XTestFakeInput, .{ .type = 4, .detail = 1 }, &.{});
+    try a.conn.sync();
+    const uris = "file:///tmp/zg-dnd.txt\r\n";
+    try pa.submit(.{ .start_drag = .{ .win = wa, .items = &.{.{ .mime = .uri_list, .data = uris }}, .allowed = .{ .copy = true, .move = true } } });
+    // Dispatch takes the grab.
+    var evs: [64]Event = undefined;
+    _ = pa.pollEvents(&evs);
+    try testing.expect(a.xdnd_source.?.grabbed);
+
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 5 * std.time.ns_per_s;
+    var step: u8 = 0;
+    var entered = false;
+    var dropped: ?clipboard.DropEvent = null;
+    var finished: ?clipboard.DropEvent = null;
+    var moves: i16 = 0;
+    while (dropped == null or finished == null) {
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        if (step == 0) {
+            _ = try a.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 20, .root_y = 20 }, &.{});
+            try a.conn.flush();
+            step = 1;
+        }
+        const nb = pb.pollEvents(&evs);
+        for (evs[0..nb]) |e| if (e == .drop) switch (e.drop.phase) {
+            .enter => {
+                entered = true;
+                try testing.expectEqual([2]f32{ 20, 20 }, e.drop.pos_px);
+                const mimes = pb.payload(e.drop.mimes);
+                try testing.expectEqual(@intFromEnum(clipboard.MimeId.uri_list), std.mem.readInt(u16, mimes[0..2], .little));
+                try pb.submit(.{ .set_drop_effect = .{ .win = wb, .accept = .uri_list, .effect = .{ .copy = true } } });
+            },
+            .drop => {
+                dropped = e.drop;
+                try testing.expectEqualStrings(uris, pb.payload(e.drop.data));
+            },
+            .leave => return error.UnexpectedLeave,
+            else => {},
+        };
+        const na = pa.pollEvents(&evs);
+        for (evs[0..na]) |e| if (e == .drop and e.drop.phase == .source_finished) {
+            finished = e.drop;
+        };
+        // Once the target accepted, move on it again, then release.
+        if (step == 1 and entered and a.xdnd_source != null and a.xdnd_source.?.accepted) {
+            moves += 1;
+            _ = try a.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 20 + moves, .root_y = 22 }, &.{});
+            if (moves == 3) {
+                _ = try a.conn.request(XTestFakeInput, .{ .type = 5, .detail = 1 }, &.{});
+                step = 2;
+            }
+            try a.conn.flush();
+        }
+        pa.waitEvents(now + 2 * std.time.ns_per_ms);
+    }
+    try testing.expectEqual(clipboard.DragActions{ .copy = true }, dropped.?.allowed);
+    try testing.expectEqual(wa, finished.?.win);
+    try testing.expectEqual(clipboard.DragActions{ .copy = true }, finished.?.allowed);
+    try testing.expect(a.xdnd_source == null and b.xdnd_target == null);
 }
