@@ -11,10 +11,13 @@ pub const Deferred = @import("Deferred.zig").Deferred;
 pub const Damage = @import("Damage.zig");
 pub const DamageHistory = Damage.DamageHistory;
 pub const RectList = Damage.RectList;
+/// The offscreen render plus copy-to-CPU target.
+pub const Readback = @import("Readback.zig");
 
 test {
     _ = FrameScheduler;
     _ = @import("Deferred.zig");
     _ = Damage;
+    _ = Readback;
     _ = @import("gpu_test.zig");
 }

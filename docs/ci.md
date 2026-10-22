@@ -9,7 +9,7 @@ external binary it runs is the official Zig release named in
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `.github/workflows/ci.yml` | pull requests to `main`, pushes to `main`, manual | `lint`, `test` (4 runners × Debug/ReleaseSafe), `cross`, `bench-smoke`, `fuzz-smoke` |
+| `.github/workflows/ci.yml` | pull requests to `main`, pushes to `main`, manual | `lint`, `test` (4 runners × Debug/ReleaseSafe), `cross`, `bench-smoke`, `fuzz-smoke`, `vulkan` |
 | `.github/workflows/nightly.yml` | 03:17 UTC daily, manual | `fuzz` (35 min per target on x86_64 and aarch64 Linux), `bench` (full, Linux and Windows), `toolchain-selftest` (cold cache, all 4 runners) |
 
 `ci.yml` cancels the previous run of the same pull request when a new push
@@ -26,6 +26,14 @@ artifact, and reported by `.github/scripts/fuzz-triage.sh` as an issue
 labelled `fuzz-crash`, one per distinct input SHA-256. A run ended by
 `timeout` (exit 124) is a pass.
 
+`vulkan` installs Mesa lavapipe and the Khronos validation layer from the
+Ubuntu archive and runs `zig build test-vulkan-gpu test-golden`: the
+`gpu:` tests (pipelines, frame scheduling, readback, and the scene corpus
+through the Vulkan backend compared with the software goldens at
+`Tolerance.gpu`). On failure the `*.actual.png` and `*.diff.png` images are
+uploaded as an artifact. Elsewhere the `gpu:` tests skip when no Vulkan
+driver is found.
+
 ## Required checks
 
 A maintainer sets branch protection on `main` to require these checks:
@@ -38,6 +46,7 @@ A maintainer sets branch protection on `main` to require these checks:
 - `cross`
 - `bench-smoke`
 - `fuzz-smoke`
+- `vulkan`
 
 ## Toolchain setup
 

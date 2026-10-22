@@ -2168,6 +2168,58 @@ GPU is idle.
 ### Stability
 Internal to E02.
 
+## zg_vulkan.VkRenderer and present.Readback (Vulkan 2D backend)
+
+### Defined in
+`packages/vulkan/src/r2d/vk/VkRenderer.zig`, `r2d/vk/batch.zig`
+(E02.F06.S01.T02); `packages/vulkan/src/present/Readback.zig`
+(E02.F04.S02.T02).
+
+### Implemented by
+E02.
+
+### Consumed by
+E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
+`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+
+### Signature
+```zig
+pub const VkRenderer = struct {
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless targets for now
+    pub fn createWithGpu(gpa, io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer;
+    pub fn destroy(self: *VkRenderer) void;
+    pub fn renderer(self: *VkRenderer) r2d.Renderer;
+    pub fn render(self, dl: *const DrawList) RenderError!FrameStats;              // no submit without damage
+    pub fn renderToImage(self, dl: *const DrawList, out: *CpuImage) RenderError!FrameStats;   // waits for the pixels
+};
+pub const Batch = struct { pipeline: enum(u1) { prim, text_subpixel }, first: u32, count: u32 };
+pub fn buildBatches(gpa, prims: []const Prim, clips: []const ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void;
+pub const Readback = struct {
+    pub const Sink = union(enum) { headless: *HeadlessSink, memory: *CpuImage };
+    pub fn init(gpu, mem, sched, sink, window) Readback;  pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) !Acquired;             // { image: *Texture, age: u32 }
+    pub fn recordCopy(self, fs: *FrameSlot, rects: []const PxRect) !void;   // before submit
+    pub fn present(self, fs: *const FrameSlot) void;          // after submit
+    pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
+};
+```
+Deviations from the spec text:
+- Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
+- The copy is split into `recordCopy` (before submit) and `present` (after submit).
+- The shm presenter sink, async delivery of copies over 1 MiB, layers (E02.F06.S03), the swapchain and dmabuf targets, GPU timing and async device creation are not implemented yet.
+- `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
+
+### Threading
+Render thread only.
+
+### Ownership/lifetime
+The renderer owns its device when made by `create`, not with
+`createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
+retires the slot with the next frame.
+
+### Stability
+Internal to E02 behind `r2d.Renderer`.
+
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in

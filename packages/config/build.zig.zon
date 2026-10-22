@@ -7,6 +7,7 @@
         .zg_build = .{ .path = "../build" },
         .zg_core = .{ .path = "../core" },
         .zg_jsonrpc = .{ .path = "../jsonrpc" },
+        .zg_gui = .{ .path = "../gui" },
     },
     .paths = .{
         "build.zig",
