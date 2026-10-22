@@ -58,6 +58,8 @@ pub const Search = struct {
     backward: bool = false,
     re: ?zg_regex.Regex = null,
     cache: ?zg_regex.Cache = null,
+    /// Captures for patterns with `\zs`/`\ze` (`matchGroup`).
+    caps: ?zg_regex.Captures = null,
     /// The case flags `re` was compiled with.
     case: struct { ignorecase: bool, smartcase: bool } = .{ .ignorecase = false, .smartcase = false },
 
@@ -71,10 +73,18 @@ pub const Search = struct {
     }
 
     fn drop(s: *Search) void {
+        if (s.caps) |*c| c.deinit(s.gpa);
+        s.caps = null;
         if (s.cache) |*c| c.deinit();
         if (s.re) |*r| r.deinit(s.gpa);
         s.cache = null;
         s.re = null;
+    }
+
+    /// The capture index of `\zs`/`\ze`'s group, or null.
+    pub fn matchGroup(re: *const zg_regex.Regex) ?usize {
+        for (re.captureNames(), 0..) |n, i| if (n) |name| if (std.mem.eql(u8, name, pattern.match_group)) return i;
+        return null;
     }
 
     /// Compiles Vim pattern `vim_pat` (without changing the last search).
@@ -104,10 +114,13 @@ pub const Search = struct {
         }
         var re = try compile(s.gpa, vim_pat, flags);
         errdefer re.deinit(s.gpa);
-        const cache = try re.newCache(s.gpa);
+        var cache = try re.newCache(s.gpa);
+        errdefer cache.deinit();
+        const caps: ?zg_regex.Captures = if (matchGroup(&re) != null) try re.newCaptures(s.gpa) else null;
         s.drop();
         s.re = re;
         s.cache = cache;
+        s.caps = caps;
         s.case = .{ .ignorecase = flags.ignorecase, .smartcase = flags.smartcase };
         s.backward = backward;
         s.offset = .{};
@@ -130,6 +143,7 @@ pub const Search = struct {
         const cache = &s.cache.?;
         const len = t.len();
         const in = find.treeInput(t);
+        const group = matchGroup(re);
         if (!backward) {
             // Matches from the start of the cursor's line, each search
             // going on at the end of the one before, the first that
@@ -137,10 +151,12 @@ pub const Search = struct {
             const from = t.lineStart(t.lineOf(@min(pos, len)));
             var it = re.findIter(cache, in.withSpan(.{ .start = from, .end = len }));
             while (it.next()) |m| {
-                if (m.start > pos) return .{ .start = m.start, .end = m.end };
+                const em = s.effective(group, in, m);
+                if (em.start > pos) return em;
             }
-            const m = re.find(cache, in) orelse return null;
-            return .{ .start = m.start, .end = m.end };
+            var it2 = re.findIter(cache, in);
+            const m = it2.next() orelse return null;
+            return s.effective(group, in, m);
         }
         // Backward: the last match starting before `pos`, else the last
         // match in the buffer.
@@ -148,10 +164,20 @@ pub const Search = struct {
         var before: ?Match = null;
         var last: ?Match = null;
         while (it.next()) |m| {
-            if (m.start < pos) before = .{ .start = m.start, .end = m.end };
-            last = .{ .start = m.start, .end = m.end };
+            const em = s.effective(group, in, m);
+            if (em.start < pos) before = em;
+            last = em;
         }
         return before orelse last;
+    }
+
+    /// The part of match `m` between `\zs` and `\ze` (all of it without).
+    fn effective(s: *Search, group: ?usize, in: zg_regex.Input, m: zg_regex.Match) Match {
+        const g = group orelse return .{ .start = m.start, .end = m.end };
+        const caps = &s.caps.?;
+        if (!s.re.?.captures(&s.cache.?, in.withSpan(.{ .start = m.start, .end = m.end }).withAnchored(true), caps)) return .{ .start = m.start, .end = m.end };
+        const z = caps.get(g) orelse return .{ .start = m.start, .end = m.end };
+        return .{ .start = z.start, .end = z.end };
     }
 
     /// Where the cursor goes for match `m` with the search offset.
@@ -203,7 +229,7 @@ test "vim: search wraps both ways" {
     try s.set("\\<ba", false, .{});
     try std.testing.expectEqual(@as(?u64, 8), s.next(&doc.tree, 4, false));
     var d: pattern.Diag = .{};
-    try std.testing.expectError(error.Unsupported, s.set("a\\zsb", false, .{ .diag = &d }));
+    try std.testing.expectError(error.Unsupported, s.set("a\\@=b", false, .{ .diag = &d }));
     // A failed pattern keeps the last one.
     try std.testing.expectEqualStrings("\\<ba", s.pattern.items);
 }
