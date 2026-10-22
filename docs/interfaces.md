@@ -2438,7 +2438,7 @@ Deviations from the spec text:
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
 - `.win32` targets get a `Swapchain` (device created with the win32 surface extensions); `Readback` gets `Sink.none` and serves `renderToImage` only. Swapchain frames report `present_id` 1, 2, ... (the FramePacer's ids); minimised windows render nothing and carry their damage. While the surface's extent differs from the list's, the frame draws 1:1 into the image and repaints fully. `FrameScheduler.cancel` abandons a begun frame whose acquire failed. Not yet verified on a Windows GPU (cross-compiles; the Linux CI GPU is lavapipe).
 - `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
-- Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
+- Async delivery of copies over 1 MiB and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
 ### Threading
@@ -2448,6 +2448,9 @@ Render thread only.
 The renderer owns its device when made by `create`, not with
 `createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
 retires the slot with the next frame.
+
+### Stability
+Internal to E02 behind `r2d.Renderer`.
 
 ## zg_vulkan.Recovering (device-loss recovery)
 
