@@ -13,17 +13,20 @@ const ChangeSet = model.changeset.ChangeSet;
 const Proc = struct {
     store: *ChangesetStore,
     q: *model.Queue,
+    history: model.History = undefined,
     sink: store_mod.QueueSink = undefined,
 
     fn open(self: *Proc, dir: std.Io.Dir, o: store_mod.Options) !store_mod.LoadReport {
         self.store = try ChangesetStore.open(testing.allocator, io, dir, "review", o);
         self.q = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = self.store.blobs(), .journal = self.store.journalPort() });
-        self.sink = self.store.queueSink(self.q);
+        self.history = .init(testing.allocator, self.store.recorder());
+        self.sink = self.store.queueSink(self.q, &self.history);
         return self.store.load(self.sink.sink());
     }
     fn close(self: *Proc) void {
         self.store.close();
         self.q.deinit();
+        self.history.deinit();
     }
     fn tail(self: *Proc) !u32 {
         return self.store.tail(self.sink.sink());
@@ -185,4 +188,36 @@ test "store: two processes see each other's appends" {
     try testing.expectEqual(@as(u32, 3), try a.tail());
     try testing.expect(a.q.get(id) == null);
     try testing.expect(a.q.get(id2) != null);
+}
+
+test "store: applies and their records reach another process" {
+    const apply = @import("../apply/root.zig");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var a: Proc = undefined;
+    _ = try a.open(tmp.dir, .{ .process_tag = 1 });
+    defer a.close();
+    var b: Proc = undefined;
+    _ = try b.open(tmp.dir, .{ .process_tag = 2 });
+    defer b.close();
+
+    var disk: apply.MemFiles = .init(testing.allocator);
+    defer disk.deinit();
+    try disk.put("a.txt", "one\ntwo\n", false);
+    const id = try submit(a.q, "a.txt", "one\ntwo\n", 4, "1.5\n");
+    var ap: apply.Applier = .init(testing.allocator, io, a.q, disk.files(), &a.history);
+    const r = try ap.acceptAll(id);
+    try a.store.flush();
+
+    try testing.expect(try b.tail() >= 2);
+    try testing.expectEqual(model.State.applied, b.q.get(id).?.state);
+    const rec = b.history.get(r.ok.apply.?).?;
+    try testing.expectEqual(@as(?model.ChangesetId, id), rec.cs);
+    try testing.expectEqualSlices(u8, &model.blobHash("one\n1.5\ntwo\n"), &rec.files[0].post.?);
+    // The preimage is a blob B can read.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("one\ntwo\n", (try b.store.blobs().get(arena.allocator(), rec.files[0].pre.?)).?);
+    // B's next record gets a later id.
+    try testing.expect(b.history.next_id > rec.id);
 }
