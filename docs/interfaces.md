@@ -2252,17 +2252,41 @@ pub fn unified.writeUnified(w: *std.Io.Writer, edits, hunks, a, b, names: [2][]c
 pub fn intraline.intralineEdits(gpa, edits, a, b, mode: enum { word, char }) ![]DiffRange;
 pub fn postprocess.slideHunks(edits: []Edit, ids_a, ids_b, a, b) usize;      // returns the new length
 pub fn moves.detectMoves(gpa, edits, a, b, o: struct { min_lines = 3, min_chars = 60 }) ![]Move;
+
+// diff_model.zig: live base-vs-current diff
+pub const HunksChanged = struct { first: u32, removed: u32, inserted: u32, version: u64 };
+pub const DiffListener = struct { ctx: *anyopaque, onHunks: *const fn (ctx, ev: HunksChanged) void };
+pub const ui_msg_kind: u32 = 0x0507_0001;   // payload a = *DiffModel; route to DiffModel.handleMsg
+pub const DiffModel = struct {
+    pub fn init(gpa, rt: ?*zg_core.Runtime, base: Snapshot, current: *Document, o: DiffOptions) !*DiffModel; // takes base
+    pub fn deinit(m) void;
+    pub fn setBase(m, base: Snapshot) !void;
+    pub fn hunks(m) []const LineHunk;          // no context lines; old = base lines, new = current lines
+    pub fn version(m) u64; pub fn fullPending(m) bool;
+    pub fn subscribe(m, l: DiffListener) !void;
+    pub fn onChange(m, ev: *const ChangeEvent) !void; // called by the document listener it registers
+    pub fn completeFull(m) !void;  pub fn handleMsg(msg: zg_core.UiMsg) void;
+    pub fn hunkChangeSet(m, idx: u32, direction: enum { current_to_base, base_to_current }) !ChangeSet;
+    pub fn intraline(m, idx: u32, mode, gpa) ![]DiffRange; // lazy; new ranges in current offsets
+};
 ```
+`DiffModel` runs a full diff on a worker (`init`, `setBase`, edits over 10,000 lines, rediff
+windows over 2,000 lines) and otherwise rediffs a window around each edit bounded by 3 equal
+lines on each side, splicing its hunks; hunks after the edit shift by its line delta. Results
+of a full diff are mapped through the edits made while it ran. Lines compare without
+terminators, so terminator-only changes are not hunks. A keystroke in a 10k-line file with 100
+hunks costs about 2.7 µs including the document edit.
 
 ### Threading
-Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`).
+Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`). A
+`DiffModel` belongs to its document's owner (UI) thread; only its full diffs run on workers.
 
 ### Ownership/lifetime
 Results are owned by the caller (`DiffResult.deinit`). `LineSource.fromBytes`
 borrows the text; `fromTree` copies it.
 
 ### Stability
-Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
+Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
@@ -3225,6 +3249,73 @@ A `BracketSource` must describe the text the tree is updated to.
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
+
+## zg_syntax.semantic (SemanticOverlay, Legend)
+
+### Defined in
+`packages/syntax/src/semantic/legend.zig`, `semantic/overlay.zig`,
+`highlight_names.zig` (`HighlightNames`); the document adapter is
+`DocumentSyntax.semanticOverlay`/`mergedTokens` in
+`packages/editor/src/model/syntax.zig`.
+
+### Implemented by
+E05.F04.S04.T01.
+
+### Consumed by
+E07 (feeds `textDocument/semanticTokens/full`, `/full/delta` and `/range`
+results), E04 (draws `mergedTokens`), E15 (themes resolve the extra names by
+dotted prefix through `HighlightNames.parentOf`).
+
+### Signature
+```zig
+pub const HighlightNames = struct {           // fixed ids first, extras from HighlightId.count
+    pub fn init(gpa) HighlightNames; pub fn deinit(n) void;
+    pub fn intern(n, dotted: []const u8) !HighlightId;
+    pub fn name(n, id) []const u8; pub fn parentOf(n, id) ?HighlightId; pub fn isWithin(n, id, ancestor) bool };
+pub const SemanticLegend = struct { types: []const []const u8, modifiers: []const []const u8,
+    pub fn compile(l, gpa, names: *HighlightNames) !CompiledLegend };
+pub const CompiledLegend = struct { pub fn resolve(c, ty: u32, mods: u32) !HighlightId; pub fn deinit(c) void };
+// Types: method -> function.method, parameter -> variable.parameter, class -> type.class,
+// enumMember -> constant.enum, ...; unknown -> semantic.<name>. One modifier refines the name:
+// defaultLibrary gives <family>.builtin (function/variable/type/constant), else the first of deprecated,
+// readonly, static, abstract, async, declaration, definition, modification, documentation, custom ones.
+pub const SemToken = struct { start: u32, end: u32, hl: HighlightId };    // bytes of the line
+pub const DeltaEdit = struct { start: u32, delete_count: u32, data: []const u32 };
+pub const SemanticOverlay = struct { enc: zg_core.utf8.Encoding = .utf16, version: u64,
+    pub fn init(gpa, line_count: u64, version: u64) !SemanticOverlay; pub fn deinit(o) void;
+    pub fn onEdits(o, edits: []const LineEdit, new_version: u64) !void;     // edited lines lose tokens
+    pub fn applyFull(o, version, result_id: ?[]const u8, data: []const u32, legend: *CompiledLegend, src: LineSource) !bool;
+    pub fn applyDelta(o, version, result_id, edits: []const DeltaEdit, legend, src) !bool;
+    pub fn applyRange(o, version, first: u64, end: u64, data, legend, src) !bool;
+    pub fn lastResultId(o) ?[]const u8;
+    pub fn lineTokens(o, line: u64) []const SemToken; pub fn isStale(o, line, tokens_version) bool;
+    pub fn setKeep(o, families: []const HighlightId) void;                  // default comment, string, character
+    pub fn mergeLine(o, line, lexical: []const Token, line_len: u32, out: *ArrayList(Token), gpa) !void };
+// zg_editor.model.syntax
+pub fn DocumentSyntax.semanticOverlay(ds, tree) !*SemanticOverlay;          // created on first use
+pub fn DocumentSyntax.clearSemantic(ds) void;
+pub fn DocumentSyntax.mergedTokens(ds, tree, line: u64, out: *ArrayList(Token)) !void;
+```
+A result carries the document version it was computed for. Older results
+are mapped through the line edits since (the last 64 changes); tokens on
+lines edited after that version are dropped and those lines draw lexical
+tokens until a newer result arrives. `apply*` returns false when a result
+cannot be used (from the future, older than the log, or a delta that does
+not fit the previous array): E07 re-requests in full. Semantic highlights
+replace lexical ones except inside the kept families, so escapes inside
+strings stay visible; token kinds (and brackets) stay lexical.
+
+### Threading
+The UI thread, with the `DocumentSyntax` it belongs to. Results are decoded
+there (a 100-line viewport merges in about 7 µs).
+
+### Ownership/lifetime
+The overlay copies `data`, delta edits and result ids. A `CompiledLegend`
+borrows its `HighlightNames`, which must outlive it and every id it gave
+out; one legend per server can be shared by its documents.
+
+### Stability
+Unstable until E07 feeds it and E04 draws `mergedTokens`.
 
 ## zg_editor.view.markdown_highlighter (MarkdownHighlighter)
 

@@ -53,6 +53,32 @@ To create a key:
 
 Archives are deterministic: entries sorted byte-wise with explicit directories, every timestamp is `SOURCE_DATE_EPOCH`, modes are 0755 for executables, directories and links and 0644 otherwise, owners are 0 with empty names, gzip has MTIME 0 and OS 3 at level 9, and zip entries use version made by Unix 6.3, UTF-8 names and no extra fields. Input file mtimes never reach the archives.
 
+On Windows the dist tree also holds `zigguro-setup.exe` without a payload: the helper that uninstalls and applies updates from inside `app\`.
+
+## Windows installer
+
+`zig build setup-exe -Dtarget=x86_64-windows -Doptimize=ReleaseFast -Dversion=<v> -Dcommit=<hex> -Dsetup-payload=zig-out/release/zigguro-<v>-x86_64-windows.zip` writes `zig-out/setup/zigguro-setup.exe`, the per-user installer (ReleaseSmall, GUI subsystem) with the release zip embedded. Use the same `-Dversion` and `-Dcommit` as the `package` run: setup checks that the payload's `BUILDINFO.zon` has that version and target.
+
+```
+zigguro-setup.exe [--silent] [--dir <path>] [--no-path] [--no-start-menu] [--desktop-shortcut]
+                  [--no-open-with] [--no-folder-menu] [--no-launch]
+```
+
+It installs into `%LOCALAPPDATA%\Programs\zigguro` (or `--dir`) without administrator rights: the payload is checked (CRC-32 of every entry), staged next to the install and swapped in as `app\` with the updater's journaled swap, so an upgrade keeps the previous version in `app.prev\`. A fresh install registers the app (Apps & features, Open with, folder context menu, App Paths), adds `app\` to the user's PATH, creates the Start Menu shortcut and writes `receipt.zon`; an upgrade keeps the receipt's registrations and updates the version. While zigguro runs (it holds the named mutex `Local\dev.zigguro.zigguro.instance`) setup asks to close it, or exits with 2 when silent. Every run appends to `%TEMP%\zigguro-setup.log`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | installed |
+| 1 | cancelled, or another setup is running |
+| 2 | zigguro is running (silent) |
+| 3 | file system or registry failure, or not enough disk space |
+| 4 | the embedded payload is damaged or not the expected build |
+| 5 | bad arguments, or a helper without payload asked to install |
+
+### Uninstall
+
+Apps & features runs `<root>\app\zigguro-setup.exe --uninstall` (`--silent` for the quiet uninstall string; add `--remove-user-data` to also delete settings and data). The helper copies itself to `%TEMP%\zigguro-uninstall-<rand>.exe`, starts the copy and exits; the copy waits for it, asks for confirmation (and whether to delete settings and data), reverses the receipt in reverse order (restoring overwritten values, deleting only keys it created that are empty, removing exactly its PATH entry and shortcuts), deletes the install root and finally has `cmd` delete the copy. A missing or corrupt receipt falls back to every registration setup can make for that root. Settings and data (`%APPDATA%\zigguro`, `%LOCALAPPDATA%\zigguro\{data,state,cache}`) are deleted only when each path ends in `zigguro` or `zigguro\data|state|cache`, so a misconfigured environment can never point it at a user folder. A root holding neither `receipt.zon` nor `app\zigguro.exe` is refused (exit 5).
+
 Then:
 
 - `zg-release sums --dir zig-out/release` writes `SHA256SUMS` (`sha256sum -c` compatible).

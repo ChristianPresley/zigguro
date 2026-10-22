@@ -135,6 +135,52 @@ test "view: undo groups typing and redo restores it" {
     try f.expectText("ab c");
 }
 
+test "view: undoing back to the saved text makes the document clean" {
+    var f: Fx = undefined;
+    try f.init("abc");
+    defer f.deinit();
+    try testing.expect(!f.doc.isDirty());
+    f.t.typeText("x");
+    try testing.expect(f.doc.isDirty());
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try f.expectText("abc");
+    try testing.expect(!f.doc.isDirty());
+    f.press(.{ .key = .key_y, .mods = .{ .ctrl = true } });
+    try testing.expect(f.doc.isDirty());
+
+    // A change from outside the view's history (an agent edit) keeps the
+    // document dirty even when the view's undo is back at the saved state.
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try testing.expect(!f.doc.isDirty());
+    f.t.typeText("y");
+    var cs = try cs_mod.ChangeSet.fromEdits(gpa, f.doc.len(), &.{.{ .range = .{ .start = 0, .end = 0 }, .text = "agent " }});
+    defer cs.deinit();
+    try f.doc.applyChangeSet(&cs, .{ .agent = 1 });
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try testing.expect(f.doc.isDirty());
+}
+
+test "view: on_caret reports caret moves, not every repaint" {
+    var f: Fx = undefined;
+    try f.init("one\ntwo");
+    defer f.deinit();
+    var calls: u32 = 0;
+    f.view.on_caret = .{ .ctx = &calls, .f = struct {
+        fn bump(ctx: *anyopaque, _: *EditorView) void {
+            const n: *u32 = @ptrCast(@alignCast(ctx));
+            n.* += 1;
+        }
+    }.bump };
+    f.press(.{ .key = .arrow_right });
+    try testing.expectEqual(@as(u32, 1), calls);
+    f.press(.{ .key = .arrow_down });
+    try testing.expectEqual(@as(u32, 2), calls);
+    // A repaint or a scroll without a caret move reports nothing.
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    try testing.expectEqual(@as(u32, 2), calls);
+}
+
 test "view: arrows, words, home and end" {
     var f: Fx = undefined;
     try f.init("  alpha beta\nxy\nlonger line");

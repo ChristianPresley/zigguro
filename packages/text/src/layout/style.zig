@@ -160,6 +160,9 @@ pub const Line = struct {
     y_off: []const f32 = &.{},
     /// Byte offset of each glyph's cluster.
     clusters: []const u32 = &.{},
+    /// Per glyph: breaking the line before it changes its shaping (from
+    /// the shaper); empty when no glyph is.
+    unsafe_to_break: []const bool = &.{},
     carets: []const Caret = &.{},
     graphemes: []const VisGrapheme = &.{},
     width: f32 = 0,

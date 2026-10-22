@@ -1,9 +1,11 @@
 //! Paragraph wrapping: lays the paragraph out once to get grapheme widths,
 //! picks breaks greedily among UAX #14 opportunities (trailing spaces do
 //! not count against the width; a grapheme break when no opportunity
-//! fits), then lays out each line on its own so shaping across a break
-//! (`unsafe_to_break`) is redone and bidi reordering is per line (L1–L2)
-//! with the paragraph's embedding levels.
+//! fits), then builds each line. A left-to-right line without tabs is a
+//! slice of the paragraph's layout when the shaper marked neither of its
+//! edges `unsafe_to_break`; any other line is laid out on its own, so
+//! shaping across the break is redone and bidi reordering is per line
+//! (L1–L2) with the paragraph's embedding levels.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -142,8 +144,16 @@ pub fn wrap(tl: *TextLayout, arena: Allocator, text: []const u8, styles: []const
             try lines.append(arena, try ellipsisLine(tl, arena, text, styles, &w, start, end, limit, lv.base, o));
         } else {
             const e = trimNewline(text, start, end);
-            const levels = if (para) |p| try itemize_mod.lineByteLevels(arena, p, start, e) else null;
-            var line = try tl.buildLine(arena, text[start..e], start, try sliceStyles(arena, styles, start, e), levels, lv.base, o.tab_width_px);
+            // Without bidi or tabs a line is a slice of the measured
+            // paragraph unless shaping across its edges was unsafe.
+            const sliced = if (para == null and std.mem.indexOfScalar(u8, text[start..e], '\t') == null)
+                try tl.sliceLine(arena, &measured, start, e)
+            else
+                null;
+            var line = sliced orelse blk: {
+                const levels = if (para) |p| try itemize_mod.lineByteLevels(arena, p, start, e) else null;
+                break :blk try tl.buildLine(arena, text[start..e], start, try sliceStyles(arena, styles, start, e), levels, lv.base, o.tab_width_px);
+            };
             line.end = end;
             try lines.append(arena, line);
         }
