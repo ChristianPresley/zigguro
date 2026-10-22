@@ -136,7 +136,7 @@ shared by every process working on it:
 
 Bind a queue to a store with `.blobs = store.blobs()` and
 `.journal = store.journalPort()`, then call
-`store.load(store.queueSink(q, &history).sink())`.
+`store.load(store.queueSink(q, &history, checkpoints.sink()).sink())`.
 
 ## Apply
 
@@ -168,3 +168,21 @@ old one.
 `model.merge3.merge(base, ours, theirs)` is the line-level three-way merge
 that undo accept and checkpoint restore use: `merge(post, current, pre)`
 reverts an apply while keeping later edits.
+
+## Undo accept
+
+`Applier.undoApply(arena, apply_id)` reverts the newest apply of a
+changeset (`apply/revert.zig`):
+
+- Each file goes back to its preimage by a three-way merge, so later
+  edits to other lines survive.
+- If any file conflicts, nothing is written and the conflicts are
+  returned.
+- Otherwise the files are written as one transaction and `History`
+  records an `undo`.
+- What the apply landed is reopened. Each text file gets back the line
+  diff from its preimage to its postimage, followed by what was still
+  pending, with undecided hunks. Creates and renames get their operation
+  back.
+
+Checkpoints and restore are in `checkpoints.md`.
