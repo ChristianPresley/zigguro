@@ -72,6 +72,22 @@ pub fn pipelineBarrier(cb: vk.CommandBuffer, dd: *const tables.Device, images: [
     });
 }
 
+/// Orders the previous frames' transfers and shader reads before this
+/// frame's transfers (first command of every frame). Host waits on the
+/// timeline make memory reuse safe for the CPU, but a later submission's
+/// copies into reused staging, readback or ring memory still need a GPU
+/// dependency on the earlier submissions' accesses (synchronization
+/// validation flags WAW/WAR hazards otherwise).
+pub fn frameStart(cb: vk.CommandBuffer, dd: *const tables.Device) void {
+    const m = [_]vk.MemoryBarrier2{.{
+        .src_stage_mask = .{ .all_transfer = true, .vertex_shader = true, .fragment_shader = true },
+        .src_access_mask = .{ .transfer_write = true },
+        .dst_stage_mask = .{ .all_transfer = true },
+        .dst_access_mask = .{ .transfer_write = true, .transfer_read = true },
+    }};
+    dd.cmd_pipeline_barrier2(cb, &.{ .memory_barrier_count = 1, .p_memory_barriers = &m });
+}
+
 /// A buffer barrier from transfer writes to shader and vertex reads.
 pub fn transferToShaderRead(buf: vk.Buffer, offset: u64, size: u64) vk.BufferMemoryBarrier2 {
     return .{
