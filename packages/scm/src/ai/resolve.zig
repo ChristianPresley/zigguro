@@ -425,11 +425,11 @@ fn language(path: []const u8) ?[]const u8 {
     const ext = base[dot..];
     if (dot == 0 or ext.len < 2) return null;
     const map = [_][2][]const u8{
-        .{ ".zig", "zig" },     .{ ".c", "c" },           .{ ".h", "c" },           .{ ".cc", "cpp" },
-        .{ ".cpp", "cpp" },     .{ ".hpp", "cpp" },       .{ ".rs", "rust" },       .{ ".go", "go" },
-        .{ ".py", "python" },   .{ ".js", "javascript" }, .{ ".ts", "typescript" }, .{ ".json", "json" },
-        .{ ".toml", "toml" },   .{ ".yaml", "yaml" },     .{ ".yml", "yaml" },      .{ ".md", "markdown" },
-        .{ ".sh", "shell" },    .{ ".zon", "zig" },
+        .{ ".zig", "zig" },   .{ ".c", "c" },           .{ ".h", "c" },           .{ ".cc", "cpp" },
+        .{ ".cpp", "cpp" },   .{ ".hpp", "cpp" },       .{ ".rs", "rust" },       .{ ".go", "go" },
+        .{ ".py", "python" }, .{ ".js", "javascript" }, .{ ".ts", "typescript" }, .{ ".json", "json" },
+        .{ ".toml", "toml" }, .{ ".yaml", "yaml" },     .{ ".yml", "yaml" },      .{ ".md", "markdown" },
+        .{ ".sh", "shell" },  .{ ".zon", "zig" },
     };
     for (map) |e| if (std.mem.eql(u8, e[0], ext)) return e[1];
     return ext[1..];

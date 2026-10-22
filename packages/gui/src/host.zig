@@ -25,6 +25,8 @@
 //!   binds the UI thread with a waker that wakes the platform, and drains
 //!   the mailbox (worker results) on every pump;
 //! - window timers run on every pump, and `run` sleeps until the earliest;
+//! - on Windows each window gets a UI Automation bridge (E04.F09.S01.T02)
+//!   that turns its accessibility tree on when a screen reader asks;
 //! - with a `FontText`, the glyph atlas is uploaded to every window's
 //!   renderer (one texture per atlas page) before it renders; uploads go
 //!   through the render thread's queue, ahead of the list that uses them.
@@ -33,6 +35,7 @@
 //! drive `pump` against the headless backend.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_platform = @import("zg_platform");
 const zg_vulkan = @import("zg_vulkan");
 const geom = @import("core/geom.zig");
@@ -45,6 +48,7 @@ const FontText = @import("paint/font_text.zig").FontText;
 const chrome = @import("dock/chrome.zig");
 const hit_map = @import("dock/hit_map.zig");
 const floating = @import("dock/floating.zig");
+const uia = @import("a11y/uia/root.zig");
 const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
@@ -89,6 +93,8 @@ pub const HostWindow = struct {
     hit_rects: std.ArrayList(hit_map.HitMap.Entry) = .empty,
     /// The renderer texture of each glyph atlas page.
     pages: std.ArrayList(r2d.TextureId) = .empty,
+    /// The UI Automation bridge (Windows).
+    uia: ?*uia.Bridge = null,
 
     fn createTexture(hw: *HostWindow, desc: r2d.TextureDesc) !r2d.TextureId {
         return switch (hw.out) {
@@ -258,6 +264,7 @@ pub const Host = struct {
         hw.win = try h.app.openWindow(.{ .size = opts.size, .scale = scale, .root = opts.root, .text = h.text_sys, .canvas = hw.dlc.canvas() });
         errdefer h.app.closeWindow(hw.win);
         try h.windows.append(h.gpa, hw);
+        if (builtin.os.tag == .windows) h.openUia(hw);
         // The new renderer has none of the atlas yet.
         if (h.fonts) |ft| ft.reuploadAll();
         return hw;
@@ -292,12 +299,25 @@ pub const Host = struct {
         return h.platform.monitors(out);
     }
 
+    /// Hooks a UI Automation bridge to `hw`; without one the window is
+    /// just not accessible, so failures are ignored.
+    fn openUia(h: *Host, hw: *HostWindow) void {
+        const b = uia.Bridge.create(h.gpa, uia.Api.windows(), hw.win, @intFromEnum(hw.id)) catch return;
+        b.install(h.platform.native(), hw.id) catch {
+            b.close();
+            return;
+        };
+        hw.uia = b;
+    }
+
     /// Closes `hw` and its platform window.
     pub fn close(h: *Host, hw: *HostWindow) void {
         for (h.windows.items, 0..) |x, i| if (x == hw) {
             _ = h.windows.swapRemove(i);
             break;
         };
+        // Before the window goes: the bridge detaches its tree from it.
+        if (hw.uia) |b| b.close();
         h.app.closeWindow(hw.win);
         hw.deinitOutput();
         hw.pages.deinit(h.gpa);

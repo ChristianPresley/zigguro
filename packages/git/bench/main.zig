@@ -104,7 +104,8 @@ fn register(b: *bench.Bench) !void {
         while (w.end + 64 < blob64k.len) : (k += 1) w.print("fn f{d}(x: u32) u32 {{ return x * {d}; }}\n", .{ k, r.int(u16) }) catch break;
         @memset(blob64k[w.end..], '\n');
     }
-    try b.run("git.loose_encode: zlib-encode a 64 KiB object", @as([]const u8, blob64k), looseEncode);
+    try b.run("git.loose_encode: zlib-encode a 64 KiB object (loose level, as git)", @as([]const u8, blob64k), looseEncode);
+    try b.run("git.deflate_default: zlib-encode a 64 KiB object at zlib's default level", @as([]const u8, blob64k), deflateDefault);
     try b.run("git.pack_write: 2k growing versions with deltas", @as([]const []const u8, @ptrCast(chain_objs)), packWrite);
 
     var refs_text: std.Io.Writer.Allocating = .init(gpa);
@@ -226,8 +227,19 @@ fn looseEncode(blob: []const u8, s: *State) void {
     defer aw.deinit();
     for (0..s.iterations()) |_| {
         aw.clearRetainingCapacity();
-        git.loose.encode(s.allocator(), &aw.writer, .blob, blob, .default) catch unreachable;
+        git.loose.encode(s.allocator(), &aw.writer, .blob, blob, git.loose.default_level) catch unreachable;
         bench.doNotOptimizeAway(aw.written().len);
+    }
+}
+
+fn deflateDefault(blob: []const u8, s: *State) void {
+    s.setBytes(blob.len);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(s.allocator());
+    for (0..s.iterations()) |_| {
+        out.clearRetainingCapacity();
+        git.zlib.deflate.zlibDeflate(s.allocator(), &out, blob, .default) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
     }
 }
 

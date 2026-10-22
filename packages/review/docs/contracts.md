@@ -99,8 +99,20 @@ carrying the rationale and lane. The review id is the changeset id.
 
 E09 calls the port on its worker thread, so the binding must run it under the queue's owner (the glue mutex).
 
+A conflict resolution is reviewed region by region before it becomes an
+item. `scm.RegionReview` wraps E09's `resolve.Run` and records one choice
+for each region:
+
+- `accept` takes the proposal. Only `ok` proposals can be taken.
+- `edit` uses the reviewer's text. Text regions only.
+- `side` takes side 0 or side 1.
+- `keepConflict` leaves diff3 markers. Text regions only.
+
+Regions that E09 marks `needs_human` (binary, mode, type and delete conflicts, or proposals that failed their checks) need a side or the reviewer's own text. `acceptProposed` takes every undecided `ok` proposal at once.
+
+Once every region is decided, `submit(repo, port, …)` calls `resolve.applyResolutions`, which builds a detached preview. It then submits the result as a `resolve` proposal through the port. The rationale of each region taken as proposed goes into the proposal's rationale. Approving the item adopts the preview, and rejecting it discards the preview. Nothing reaches the repository before that approval.
+
 Still open:
 
-- per-region resolve decisions, which wait for E09's `RegionDecision`
 - persisting `Item` (preview op, lane) across restarts
 - the proposal view in the IDE

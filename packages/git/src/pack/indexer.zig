@@ -341,15 +341,7 @@ pub fn indexBytes(gpa: Allocator, io: std.Io, data: []const u8, fmt: ObjectForma
 }
 
 fn zlibPlain(gpa: Allocator, w: *std.Io.Writer, data: []const u8) !void {
-    const flate = std.compress.flate;
-    const window = try gpa.alloc(u8, flate.max_window_len);
-    defer gpa.free(window);
-    const comp = try gpa.create(flate.Compress);
-    defer gpa.destroy(comp);
-    _ = try w.writableSliceGreedy(16);
-    comp.* = try .init(w, window, .zlib, .default);
-    try comp.writer.writeAll(data);
-    try comp.finish();
+    try zlib.compress(gpa, w, &.{data}, .default);
 }
 
 fn findEntry(entries: []const Entry, off: u64) ?usize {
