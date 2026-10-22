@@ -13,6 +13,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 fn register(b: *bench.Bench) !void {
     try b.run("lsp.glob: **/*.{zig,zon} on 60-byte paths", {}, globMatch);
     try b.run("lsp.fuzzy.20k: 20k identifiers x 3 patterns", {}, fuzzy20k);
+    try b.run("lsp.caps.supports: 50 registrations, selector match", {}, capsSupports);
 }
 
 const paths = [_][]const u8{
@@ -64,4 +65,35 @@ fn fuzzy20k(_: void, s: *State) void {
         }
         bench.doNotOptimizeAway(total);
     }
+}
+
+fn capsSupports(_: void, s: *State) void {
+    const gpa = s.allocator();
+    const caps = zg_lsp.client.caps;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const empty: zg_lsp.protocol.ServerCapabilities = .{};
+    var c = caps.ServerCaps.fromInitializeResult(gpa, &empty, .{ .roots = &.{"/ws"} }) catch unreachable;
+    defer c.deinit();
+    // 50 registrations spread over the methods a server typically
+    // registers dynamically, all for another language.
+    const methods = [_][]const u8{
+        "textDocument/codeLens",       "textDocument/definition", "textDocument/references",   "textDocument/documentSymbol",
+        "textDocument/formatting",     "textDocument/rename",     "textDocument/foldingRange", "textDocument/semanticTokens",
+        "textDocument/inlayHint",      "textDocument/codeAction", "textDocument/completion",   "textDocument/signatureHelp",
+        "textDocument/implementation",
+    };
+    for (0..50) |i| {
+        const opts = std.json.parseFromSliceLeaky(std.json.Value, a, "{\"documentSelector\": [{\"language\": \"rust\"}, {\"pattern\": \"**/*.rs\"}]}", .{}) catch unreachable;
+        c.addRegistration(.{ .id = std.fmt.allocPrint(a, "r{d}", .{i}) catch unreachable, .method = methods[i % methods.len], .registerOptions = opts }) catch unreachable;
+    }
+    const hover_opts = std.json.parseFromSliceLeaky(std.json.Value, a, "{\"documentSelector\": [{\"language\": \"zig\"}]}", .{}) catch unreachable;
+    c.addRegistration(.{ .id = "hover", .method = "textDocument/hover", .registerOptions = hover_opts }) catch unreachable;
+    const doc: zg_lsp.client.doc_selector.DocMatch = .{ .language_id = "zig", .scheme = "file", .path = "/ws/src/main.zig" };
+    var hits: usize = 0;
+    for (0..s.iterations()) |i| {
+        if (c.supports(if (i & 1 == 0) .hover else .code_lens, doc)) hits += 1;
+    }
+    bench.doNotOptimizeAway(hits);
 }
