@@ -1,0 +1,3 @@
+const @"weird name" = 1;
+const e = .@"enum";
+const f = @"weird name" + @"esc\x41aped";
