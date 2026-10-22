@@ -177,6 +177,15 @@ pub fn optionsModule(b: *std.Build, f: Flags) *std.Build.Module {
     return m;
 }
 
+/// `-Dversion` with build metadata, the same rule as
+/// `zg_release.build_info.versionString`: unchanged when it has `+`, else
+/// `+g<12 hex commit>`, or `+local` when the commit is unknown.
+pub fn versionWithMetadata(b: *std.Build, f: Flags) []const u8 {
+    if (std.mem.indexOfScalar(u8, f.version, '+') != null) return f.version;
+    if (f.commit.len == 0 or std.mem.eql(u8, f.commit, "unknown")) return b.fmt("{s}+local", .{f.version});
+    return b.fmt("{s}+g{s}", .{ f.version, f.commit[0..@min(12, f.commit.len)] });
+}
+
 /// `{arch}-{os}-{abi}`, plus `.{major}.{minor}` of the glibc version on
 /// Linux gnu, e.g. `x86_64-linux-gnu.2.28`. Stable across Zig's default OS
 /// version ranges, unlike `Target.zigTriple`.
