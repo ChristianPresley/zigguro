@@ -160,9 +160,14 @@ pub fn print(s: *Screen, cps: []const u21) void {
 fn fastRun(s: *Screen, cps: []const u21) usize {
     if (s.modes.grapheme or s.modes.insert or s.charsets.single != null) return 0;
     const ascii_ok = s.charsets.g[s.charsets.gl] == .ascii;
+    const wo = s.widthOptions();
+    // Only wrap once the first code point is known to print here: a
+    // zero-width mark after the last column must join it, not wrap.
+    if (cps.len == 0 or (cps[0] < 0x80 and !ascii_ok)) return 0;
+    const w0 = unicode.wcwidth(cps[0], wo);
+    if (w0 != 1 and w0 != 2) return 0;
     applyPendingWrap(s);
     const right = rightEdge(s);
-    const wo = s.widthOptions();
     var x = s.cursor.x;
     var n: usize = 0;
     var cells: u16 = 0;
