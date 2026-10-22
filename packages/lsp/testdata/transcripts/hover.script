@@ -1,0 +1,7 @@
+# Hover over a symbol in an opened document.
+> initialize
+< {"id": $1, "result": {"capabilities": {"hoverProvider": true, "textDocumentSync": 1}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"uri": "file://${workspace}/main.zig", "languageId": "zig"}}
+> textDocument/hover {"textDocument": {"uri": "file://${workspace}/main.zig"}, "position": {"line": 0, "character": 6}}
+< {"id": $1, "result": {"contents": {"kind": "markdown", "value": "```zig\nconst std = @import(\"std\")\n```"}, "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 9}}}}
