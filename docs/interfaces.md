@@ -2120,6 +2120,7 @@ pub const Decoder = struct {                            // streaming; skips the 
 };
 pub fn decodeAll(e, bytes, gpa) ![]u8;
 pub fn encode(e, utf8: []const u8, out: *std.ArrayList(u8), gpa) error{ Unrepresentable, OutOfMemory }!void; // BOM first
+pub fn encodeBody(e, utf8, out, gpa) error{ Unrepresentable, OutOfMemory }!void; // no BOM, for streaming
 pub fn firstUnrepresentable(e, utf8) ?usize;
 pub fn label(e) []const u8; pub fn fromLabel(s) ?Encoding;
 ```
@@ -2138,6 +2139,66 @@ Callers own the output lists.
 
 ### Stability
 Stable formats; new encodings append to the enum.
+
+## zg_editor.model.buffer.save / external / eol
+
+### Defined in
+`packages/editor/src/model/buffer/{save.zig, external.zig, eol.zig}`, tests `save_test.zig`
+(E05.F01.S02.T02).
+
+### Implemented by
+E05.F01.S02.T02.
+
+### Consumed by
+The workbench save and reload commands (E04/E15), the file watcher glue (E01.F06), conflict UI.
+
+### Signature
+```zig
+// eol.zig
+pub const Eol = enum { lf, crlf, cr, mixed };             // bytes(), native()
+pub const EolStats = struct { dominant: Eol, style: Eol, counts: [3]u64, sampled: bool };
+pub fn detectEol(t: PieceTree) EolStats;                 // first 1 MiB
+pub fn detectEolBytes(text: []const u8) EolStats;
+// save.zig
+pub const SaveOptions = struct { trim_trailing_whitespace = false, insert_final_newline = false,
+    eol_override: ?Eol = null, encoding_override: ?Encoding = null, overwrite = false, backup_dir: ?Dir = null };
+pub const DiskState = struct { size: u64, mtime: Io.Timestamp, file_id: u128, content_hash: u64 }; // XxHash3
+pub const FileState = struct { dir: Dir, path: []const u8, encoding: Encoding, eol: Eol, disk: ?DiskState };
+pub fn normalizationChanges(gpa, t: PieceTree, o) !?ChangeSet;
+pub fn applyNormalizations(doc, undo: ?*UndoTree, o, now) !bool;   // one group "Save normalizations"
+pub fn begin(doc, file: *const FileState, undo, o, now) !struct { job: SaveJob, normalized: bool }; // UI
+pub const SaveJob = struct { ...; pub fn run(job, io) SaveError!DiskState; pub fn deinit(job) void }; // worker
+pub fn commit(doc, file: *FileState, job: *const SaveJob, disk: DiskState, undo) void;            // UI
+pub fn save(doc, file, rt: *zg_core.Runtime, undo, o) !SaveResult;  // all three, blocking
+// external.zig
+pub fn load(gpa, io, dir, path, hint: ?Encoding, fallback: Encoding) !Loaded; // text, encoding, eol, disk
+pub fn probe(gpa, io, file: *const FileState) !Probe;    // worker: unchanged | touched | changed | deleted
+pub const ExternalChange = union(enum) { none, reloaded_clean, conflict: ConflictInfo, deleted };
+pub fn applyProbe(doc, file, undo, p: Probe, now) !ExternalChange; // UI; "Reload from disk" group
+pub fn onWatchEvent(doc, file, rt, undo) !ExternalChange; // probe + applyProbe, blocking
+pub fn reloadChanges(gpa, old: PieceTree, new_text) !?ChangeSet;
+pub fn merge3(gpa, base, mine, theirs: []const u8, labels: MergeLabels) !MergeResult; // text, conflicts
+```
+A save writes a temp file beside the target (`createFileAtomic`, current permissions), syncs
+it and renames it over the target; any failure leaves the original. Symlinks and files with
+more than one hard link are written in place instead (backup copy to `backup_dir/<hash>`
+first, encodability checked before the file is opened, length set after the last byte).
+Before writing, a target whose size, mtime or file id differ from `DiskState` fails with
+`ExternalChangeConflict` unless its hash is unchanged (a touch) or `overwrite` is set; a
+read-only target fails with `AccessDenied`. A reload applies only the changed lines (trimmed
+to the differing bytes) and changed terminators, so positions outside them map unchanged.
+`merge3` is line-based diff3; changes on adjacent lines conflict, as in git.
+
+### Threading
+`begin`, `commit`, `applyNormalizations` and `applyProbe` run on the document's owner (UI)
+thread; `SaveJob.run`, `load` and `probe` block on the disk and run on workers.
+
+### Ownership/lifetime
+`FileState.dir` and `path` are borrowed. A `SaveJob` holds a snapshot until `deinit`. A
+`Probe` passed to `applyProbe` is consumed; a `conflict` owns `theirs`.
+
+### Stability
+Unstable: Windows mapped originals (large-file mode) are not handled yet.
 
 ## zg_editor.model.diff
 
