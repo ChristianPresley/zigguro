@@ -1,0 +1,8 @@
+# Push diagnostics after didOpen, then a pull diagnostics request.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1, "diagnosticProvider": {"interFileDependencies": false, "workspaceDiagnostics": false}}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"uri": "file://${workspace}/main.zig", "version": 1}}
+< event textDocument/publishDiagnostics {"uri": "file://${workspace}/main.zig", "version": 1, "diagnostics": [{"range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 9}}, "severity": 1, "source": "fake", "message": "use of undeclared identifier 'foo'"}]}
+> textDocument/diagnostic {"textDocument": {"uri": "file://${workspace}/main.zig"}}
+< {"id": $1, "result": {"kind": "full", "resultId": "r1", "items": []}}
