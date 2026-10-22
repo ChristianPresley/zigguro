@@ -4,8 +4,13 @@
 //! same `Applier`, so both can work on one workspace at once: each
 //! writes its records to the journal and reads the other's.
 //!
+//! Approvals (`approvals`, `approve`, `deny`) are the requests another
+//! process (the IDE) waits on: an answer is appended to the store, and
+//! that process takes it when it next reads the journal (the IDE: within
+//! a second).
+//!
 //! Not here yet: review comments and fix requests (`comment`, `threads`,
-//! `fix`) and approvals (`approvals`, `approve`, `deny`) wait for F05;
+//! `fix`) wait for F05.S01;
 //! `zg agent --review` and the `review` stream events come next; the
 //! "file is open in zigguro" refusal needs the IDE's `doc_open` records.
 //!
@@ -55,6 +60,12 @@ pub const usage =
     \\  restore CKPT [--mode agent|full] [--dry-run]
     \\        undo what review applied after a checkpoint: its session's
     \\        changes (agent, the default) or every agent's (full)
+    \\  approvals [--all] [--json]
+    \\        the requests waiting for approval (all of them with --all)
+    \\  approve AID [--session | --always [RULE] | --edit TEXT]
+    \\        allow a request once (default), for the session, always (saving
+    \\        RULE, else the suggested rule) or with an edited input
+    \\  deny AID [--reason TEXT]
     \\  debug-dump [--from SEQ]
     \\        the store's journal records as NDJSON
     \\  policy explain PATH [--op OP] [--from OLD] [--origin ORIGIN] [--tool NAME]
@@ -143,6 +154,8 @@ const Ws = struct {
     cps: zg_review.checkpoint.Checkpoints,
     applier: apply.Applier,
     sink: zg_review.store.store.QueueSink,
+    /// Approval requests as recorded (pending ones stay pending).
+    approvals: zg_review.approvals.ApprovalBroker,
 
     fn open(ws: *Ws, gpa: Allocator, io: Io, dir: Io.Dir, root: []const u8) !void {
         ws.store = try .open(gpa, io, dir, store_path, .{});
@@ -154,6 +167,9 @@ const Ws = struct {
         ws.cps = .init(gpa, io, ws.q, &ws.history, ws.disk.files(), ws.store.checkpointRecorder());
         ws.applier = .init(gpa, io, ws.q, ws.disk.files(), &ws.history);
         ws.sink = ws.store.queueSink(ws.q, &ws.history, ws.cps.sink());
+        ws.approvals = .init(gpa, io, .{});
+        errdefer ws.approvals.deinit();
+        ws.sink.approvals = ws.approvals.mirrorSink();
         _ = try ws.store.load(ws.sink.sink());
     }
 
@@ -164,6 +180,7 @@ const Ws = struct {
 
     fn close(ws: *Ws) void {
         ws.store.close();
+        ws.approvals.deinit();
         ws.cps.deinit();
         ws.q.deinit();
         ws.history.deinit();
@@ -203,8 +220,11 @@ const Cmd = struct {
         if (eql(sub, "restore")) return c.restore(rest);
         if (eql(sub, "debug-dump")) return c.debugDump(rest);
         if (eql(sub, "policy")) return c.policyCmd(rest);
-        for ([_][]const u8{ "comment", "threads", "fix", "approvals", "approve", "deny" }) |later| if (eql(sub, later)) {
-            try c.err.print("zg review {s}: not available yet (review comments and approvals arrive with E12.F05)\n", .{sub});
+        if (eql(sub, "approvals")) return c.approvalsCmd(rest);
+        if (eql(sub, "approve")) return c.answerCmd(rest, true);
+        if (eql(sub, "deny")) return c.answerCmd(rest, false);
+        for ([_][]const u8{ "comment", "threads", "fix" }) |later| if (eql(sub, later)) {
+            try c.err.print("zg review {s}: not available yet (review comments arrive with E12.F05.S01)\n", .{sub});
             return .usage;
         };
         return c.usageError("unknown command {s}", .{sub});
@@ -511,6 +531,103 @@ const Cmd = struct {
         if (json) {
             for (shown.items) |cp| try render.jsonCheckpoint(c.out, cp);
         } else try render.writeCheckpoints(c.out, c.o.style, shown.items);
+        return .ok;
+    }
+
+    // -------------------------------------------------------- approvals
+
+    fn approvalsCmd(c: *Cmd, args: []const []const u8) !Exit {
+        var all = false;
+        var json = false;
+        for (args) |a| {
+            if (eql(a, "--json")) {
+                json = true;
+            } else if (eql(a, "--all")) {
+                all = true;
+            } else return c.usageError("approvals: unexpected {s}", .{a});
+        }
+        var ws: Ws = undefined;
+        if (!try c.openWs(&ws)) {
+            if (!json) try c.out.writeAll("No approval requests.\n");
+            return .ok;
+        }
+        defer ws.close();
+        const items = try ws.approvals.list(c.arena, .{ .answered = all });
+        if (json) {
+            for (items) |*it| {
+                try zg_review.approvals.writeRecord(c.out, it);
+                try c.out.writeByte('\n');
+            }
+            return .ok;
+        }
+        if (items.len == 0) {
+            try c.out.writeAll(if (all) "No approval requests.\n" else "No approval requests waiting.\n");
+            return .ok;
+        }
+        var age_buf: [16]u8 = undefined;
+        for (items) |*it| {
+            try c.out.print("{f}  {s: <16}  {s: >4}  {f}  {s}", .{ it.id, @tagName(it.state), render.ageText(&age_buf, c.o.style.now_ms, it.req.created_ms), it.req.actor, it.req.title });
+            if (it.req.command) |cmd| try c.out.print(": {s}", .{cmd});
+            try c.out.writeByte('\n');
+            for (it.req.risk) |r| try c.out.print("      ! {s}\n", .{r});
+        }
+        return .ok;
+    }
+
+    /// `approve` (allow) or `deny`: appends the answer for the process
+    /// that waits on the request.
+    fn answerCmd(c: *Cmd, args: []const []const u8, allow: bool) !Exit {
+        const ap = zg_review.approvals;
+        var id: ?ap.ApprovalId = null;
+        var how: enum { once, session, always, edit } = .once;
+        var text: ?[]const u8 = null;
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (allow and eql(a, "--session")) {
+                how = .session;
+            } else if (allow and eql(a, "--always")) {
+                how = .always;
+                if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "--")) {
+                    i += 1;
+                    text = args[i];
+                }
+            } else if (allow and eql(a, "--edit")) {
+                how = .edit;
+                text = value(args, &i) orelse return c.usageError("--edit needs the edited input", .{});
+            } else if (!allow and eql(a, "--reason")) {
+                text = value(args, &i) orelse return c.usageError("--reason needs a text", .{});
+            } else if (id == null and !std.mem.startsWith(u8, a, "--")) {
+                const digits = if (std.mem.startsWith(u8, a, "!")) a[1..] else a;
+                id = @enumFromInt(std.fmt.parseInt(u64, digits, 10) catch return c.usageError("not an approval id: {s}", .{a}));
+            } else return c.usageError("{s}: unexpected {s}", .{ if (allow) "approve" else "deny", a });
+        }
+        const aid = id orelse return c.usageError("{s} needs an approval id (see `zg review approvals`)", .{if (allow) "approve" else "deny"});
+        var ws: Ws = undefined;
+        if (!try c.openWs(&ws)) return c.noStore();
+        defer ws.close();
+        var it = ws.approvals.get(aid) orelse return c.fail(.not_found, "no approval request {f}", .{aid});
+        if (it.state != .pending) return c.fail(.conflict, "{f} is already {s}", .{ aid, @tagName(it.state) });
+        const r = &it.req;
+        const answer: zg_review.approvals.Answer = if (!allow) .{ .deny = text orelse "denied from the CLI" } else switch (how) {
+            .once => .allow_once,
+            .session => .{ .allow_session = r.rule_suggestion orelse r.command orelse r.title },
+            .always => .{ .allow_always = text orelse r.rule_suggestion orelse return c.usageError("{f} has no suggested rule: give one after --always", .{aid}) },
+            .edit => blk: {
+                if (!r.editable) return c.fail(.conflict, "{f} cannot be edited", .{aid});
+                if (r.command == null and !(std.json.validate(c.arena, text.?) catch false)) return c.usageError("the edited input must be JSON", .{});
+                break :blk .{ .edit = text.? };
+            },
+        };
+        it.state = .of(answer);
+        it.answer = answer;
+        it.answered_by = "cli";
+        it.answered_ms = Io.Clock.real.now(c.io).toMilliseconds();
+        var aw: Writer.Allocating = .init(c.arena);
+        try zg_review.approvals.writeRecord(&aw.writer, &it);
+        try ws.store.append(.approval, aw.written());
+        try ws.flush();
+        try c.out.print("{f} {s}.\n", .{ aid, it.state.label() });
         return .ok;
     }
 
