@@ -6,5 +6,6 @@ test {
     _ = @import("agent/editor_files.zig");
     _ = @import("agent/panel.zig");
     _ = @import("agent/plan_card.zig");
+    _ = @import("agent/commands.zig");
     _ = @import("path_crumbs.zig");
 }
