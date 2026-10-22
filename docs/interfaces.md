@@ -2252,17 +2252,41 @@ pub fn unified.writeUnified(w: *std.Io.Writer, edits, hunks, a, b, names: [2][]c
 pub fn intraline.intralineEdits(gpa, edits, a, b, mode: enum { word, char }) ![]DiffRange;
 pub fn postprocess.slideHunks(edits: []Edit, ids_a, ids_b, a, b) usize;      // returns the new length
 pub fn moves.detectMoves(gpa, edits, a, b, o: struct { min_lines = 3, min_chars = 60 }) ![]Move;
+
+// diff_model.zig: live base-vs-current diff
+pub const HunksChanged = struct { first: u32, removed: u32, inserted: u32, version: u64 };
+pub const DiffListener = struct { ctx: *anyopaque, onHunks: *const fn (ctx, ev: HunksChanged) void };
+pub const ui_msg_kind: u32 = 0x0507_0001;   // payload a = *DiffModel; route to DiffModel.handleMsg
+pub const DiffModel = struct {
+    pub fn init(gpa, rt: ?*zg_core.Runtime, base: Snapshot, current: *Document, o: DiffOptions) !*DiffModel; // takes base
+    pub fn deinit(m) void;
+    pub fn setBase(m, base: Snapshot) !void;
+    pub fn hunks(m) []const LineHunk;          // no context lines; old = base lines, new = current lines
+    pub fn version(m) u64; pub fn fullPending(m) bool;
+    pub fn subscribe(m, l: DiffListener) !void;
+    pub fn onChange(m, ev: *const ChangeEvent) !void; // called by the document listener it registers
+    pub fn completeFull(m) !void;  pub fn handleMsg(msg: zg_core.UiMsg) void;
+    pub fn hunkChangeSet(m, idx: u32, direction: enum { current_to_base, base_to_current }) !ChangeSet;
+    pub fn intraline(m, idx: u32, mode, gpa) ![]DiffRange; // lazy; new ranges in current offsets
+};
 ```
+`DiffModel` runs a full diff on a worker (`init`, `setBase`, edits over 10,000 lines, rediff
+windows over 2,000 lines) and otherwise rediffs a window around each edit bounded by 3 equal
+lines on each side, splicing its hunks; hunks after the edit shift by its line delta. Results
+of a full diff are mapped through the edits made while it ran. Lines compare without
+terminators, so terminator-only changes are not hunks. A keystroke in a 10k-line file with 100
+hunks costs about 2.7 µs including the document edit.
 
 ### Threading
-Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`).
+Pure functions; safe on any thread (snapshots go through `LineSource.fromTree`). A
+`DiffModel` belongs to its document's owner (UI) thread; only its full diffs run on workers.
 
 ### Ownership/lifetime
 Results are owned by the caller (`DiffResult.deinit`). `LineSource.fromBytes`
 borrows the text; `fromTree` copies it.
 
 ### Stability
-Unstable until DiffModel (E05.F07.S02.T01) lands. Unified output matches
+Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
