@@ -115,6 +115,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (use_wb and frames_arg == null) {
             var state_buf: [std.fs.max_path_bytes]u8 = undefined;
             if (zg_crash.paths.stateDir(min.environ, &state_buf)) |state| {
+                wb.enableUndoFiles(state);
                 if (wb.loadLayout(state)) |s| size = s;
             }
         }
