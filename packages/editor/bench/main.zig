@@ -354,6 +354,76 @@ fn register(b: *bench.Bench) !void {
     try registerDiff(b);
     try registerFind(b);
     try registerLspSync(b, text);
+    try registerDecorations(b, text);
+}
+
+const deco = zg_editor.model.decorations.store;
+
+const DecoBench = struct {
+    doc: *zg_editor.model.document.Document,
+    store: *deco.DecorationStore,
+    owner: deco.OwnerId,
+    set: []deco.Decoration,
+};
+
+fn registerDecorations(b: *bench.Bench, text: []const u8) !void {
+    const Document = zg_editor.model.document.Document;
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var store: deco.DecorationStore = .init(b.gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    const owner = try store.registerOwner("lsp.diagnostics", 10);
+    // 100k diagnostics, one per line.
+    const set = try b.gpa.alloc(deco.Decoration, doc.tree.lineCount() - 1);
+    defer b.gpa.free(set);
+    for (set, 0..) |*d, i| {
+        const st = doc.tree.lineStart(i);
+        d.* = .{ .range = .{ .start = st + 2, .end = st + 8 }, .owner = owner, .kind = .{ .underline = .{ .style = @enumFromInt(1) } } };
+    }
+    var db: DecoBench = .{ .doc = doc, .store = &store, .owner = owner, .set = set };
+    try b.run("editor.deco.replace_100k", &db, decoReplace);
+    var db10k = db;
+    db10k.set = set[0..10_000];
+    try b.run("editor.deco.replace_10k", &db10k, decoReplace);
+    try store.setOwnerDecorations(owner, doc.version, set);
+    try b.run("editor.deco.viewport_query_100k", &db, decoQuery);
+    try b.run("editor.deco.edit_shift_100k", &db, decoEdit);
+}
+
+/// Replaces an owner's 100k decorations (LSP diagnostics push).
+fn decoReplace(d: *DecoBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        d.store.setOwnerDecorations(d.owner, d.doc.version, d.set) catch unreachable;
+    }
+}
+
+/// 80 visible lines in the middle of 100k decorated lines.
+fn decoQuery(d: *DecoBench, s: *bench.State) void {
+    const mid = d.doc.tree.lineCount() / 2;
+    const r: zg_editor.model.buffer.piece_tree.Range = .{ .start = d.doc.tree.lineStart(mid), .end = d.doc.tree.lineStart(mid + 80) };
+    var out: std.ArrayList(deco.DecoRef) = .empty;
+    defer out.deinit(std.heap.smp_allocator);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        out.clearRetainingCapacity();
+        d.store.query(r, .initFull(), std.heap.smp_allocator, &out) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
+    }
+}
+
+/// A typed character at the top of the document: every later decoration
+/// moves (one tree shift) and the decoration on that line is remapped.
+fn decoEdit(d: *DecoBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, d.doc.len(), &.{.{ .range = .{ .start = 4, .end = 4 }, .text = "x" }}) catch unreachable;
+        d.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        d.doc.endFrame();
+    }
 }
 
 const api = zg_editor.model.api;
