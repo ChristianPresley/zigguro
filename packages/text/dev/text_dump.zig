@@ -5,7 +5,7 @@
 //!   text-dump metrics <font> [--index N]
 //!   text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
 //!   text-dump shape   <font> <text> [--features ...] [--dir rtl] [--script arab]
-//!   text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
+//!   text-dump raster  <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coords wght=700,...]
 //!
 //! Subcommands whose engine is not merged yet print "not implemented" and
 //! exit with status 2.
@@ -51,7 +51,16 @@ pub fn main(init: std.process.Init) !u8 {
         };
         return dumpOutlines(out, gpa, &face, args[3..]);
     }
-    if (std.mem.eql(u8, cmd, "shape") or std.mem.eql(u8, cmd, "raster")) {
+    if (std.mem.eql(u8, cmd, "raster")) {
+        var font = try ot.MappedFont.openAlloc(io, std.Io.Dir.cwd(), args[2], gpa);
+        defer font.close(io);
+        const face = ot.Face.init(font.bytes(), 0) catch |e| {
+            std.debug.print("text-dump: cannot open face: {t}\n", .{e});
+            return 1;
+        };
+        return dumpRaster(out, gpa, &face, args[3..]);
+    }
+    if (std.mem.eql(u8, cmd, "shape")) {
         std.debug.print("text-dump {s}: not implemented\n", .{cmd});
         return 2;
     }
@@ -63,7 +72,7 @@ fn usage() u8 {
         \\usage: text-dump metrics <font> [--index N]
         \\       text-dump outline <font> <gid|U+XXXX|all>... [--coords wght=700,...] [--norm 13916,...]
         \\       text-dump shape   <font> <text> [--features "liga=0,ss01"] [--dir rtl] [--script arab]
-        \\       text-dump raster  <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
+        \\       text-dump raster  <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coords wght=700,...]
         \\
     , .{});
     return 2;
@@ -136,6 +145,48 @@ fn dumpOutlines(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face,
         }
     }
     inst.deinit(gpa);
+    return 0;
+}
+
+/// Writes one glyph's coverage bitmap as an ASCII PGM (P2), with the
+/// bearings in a comment line, so raster dumps diff as text.
+fn dumpRaster(w: *std.Io.Writer, gpa: std.mem.Allocator, face: *const ot.Face, specs: []const []const u8) !u8 {
+    if (specs.len < 2) return usage();
+    const vt = ot.variation;
+    const gid: u16 = if (std.mem.startsWith(u8, specs[0], "U+"))
+        face.glyphIndex(try std.fmt.parseInt(u21, specs[0][2..], 16))
+    else
+        try std.fmt.parseInt(u16, specs[0], 10);
+    var params: zg_text.raster.RasterParams = .{ .px_per_em = try std.fmt.parseFloat(f32, specs[1]) };
+    var user: [vt.fvar.max_axes]vt.AxisValue = undefined;
+    var n_user: usize = 0;
+    var i: usize = 2;
+    while (i + 1 < specs.len) : (i += 2) {
+        if (std.mem.eql(u8, specs[i], "--subpixel")) {
+            params.subpixel_x = try std.fmt.parseFloat(f32, specs[i + 1]);
+        } else if (std.mem.eql(u8, specs[i], "--coords")) {
+            var it = std.mem.splitScalar(u8, specs[i + 1], ',');
+            while (it.next()) |kv| {
+                if (kv.len < 6 or kv[4] != '=') return usage();
+                user[n_user] = .{ .tag = std.mem.readInt(u32, kv[0..4], .big), .value = try std.fmt.parseFloat(f32, kv[5..]) };
+                n_user += 1;
+            }
+        } else return usage();
+    }
+    if (i != specs.len) return usage();
+    var inst = try vt.FaceInstance.init(gpa, face, user[0..n_user]);
+    defer inst.deinit(gpa);
+    var r: zg_text.raster.Rasterizer = .init(gpa);
+    defer r.deinit();
+    const bm = r.rasterizeGlyph(&inst, gid, params) catch |e| {
+        std.debug.print("text-dump raster: {t}\n", .{e});
+        return 1;
+    };
+    try w.print("P2\n# gid {d} px {d} left {d} top {d}\n{d} {d}\n255\n", .{ gid, params.px_per_em, bm.left, bm.top, bm.width, bm.height });
+    for (0..bm.height) |y| {
+        for (bm.row(y), 0..) |v, x| try w.print("{s}{d}", .{ if (x == 0) "" else " ", v });
+        try w.writeByte('\n');
+    }
     return 0;
 }
 
