@@ -1,0 +1,1 @@
+[{"label":"printf","kind":3,"insertText":"printf(${1:const char *restrict format, ...})","insertTextFormat":2,"documentation":"Print formatted output."}]
