@@ -1737,3 +1737,72 @@ afterwards. `enumerateAlloc` results belong to the caller.
 
 ### Stability
 Internal to E02: regenerated when vk.xml or the allowlist changes.
+
+## zg_vulkan.gpu (device bring-up)
+
+### Defined in
+`packages/vulkan/src/gpu/` (E02.F02): `Gpu.zig`, `instance.zig`,
+`debug.zig`, `select.zig`, `features.zig`, `device.zig`, `info.zig`,
+`lost.zig`, `marker.zig`.
+
+### Implemented by
+E02. Selection policy in `select.zig` (pure `choose`/`score` over `Probe`).
+
+### Consumed by
+E02's Vulkan backend (memory, presentation, 2D renderer); `zg doctor gpu`
+(E10/E17 CLI) through `writeReport`; E17 crash reports through the same
+report; E01 supplies `Presenter.drmDevice()` for `CreateOptions.drm_device`.
+
+### Signature
+```zig
+pub const Gpu = struct {
+    loader: Loader, instance: InstanceBundle, pdev: vk.PhysicalDevice, dev: vk.Device, ddisp: tables.Device,
+    exts: ExtSet, info: GpuInfo, gfx: Queue, transfer: ?Queue, debug: ?Debug, sink: Sink,
+    probes: []Probe, chosen: usize, lost: std.atomic.Value(bool), ...
+    pub fn create(gpa: Allocator, io: std.Io, opts: CreateOptions) CreateError!*Gpu;
+    pub fn destroy(self: *Gpu) void;
+    pub fn name(self: *const Gpu, handle: anytype, label: [:0]const u8) void;
+    pub fn checkLost(self: *Gpu, r: vk.Result) error{DeviceLost}!void;
+    pub fn checkLostAt(self: *Gpu, r: vk.Result, at: ?Fault.At) error{DeviceLost}!void;
+    pub fn report(self: *const Gpu, losses: []const u64) Report;
+};
+pub const CreateOptions = struct { instance: InstanceOptions, prefer: Preference, drm_device: ?DrmDevice, forced: ?[]const u8,
+    need_dmabuf_export: bool, loader_path: ?[]const u8, marker_dir: ?std.Io.Dir, fault: ?[]const u8, log_emit: ?fn };
+pub fn choose(probes: []const Probe, opts: SelectOptions) ?usize; // pure
+pub fn score(p: *const Probe, opts: SelectOptions) i32;           // pure
+pub const Recovery = struct {
+    pub fn record(self: *Recovery, now_ns: u64) Outcome;          // pure policy
+    pub fn onLost(self: *Recovery, now_ns: u64, hooks: Hooks) anyerror!Outcome;
+    pub fn history(self: *const Recovery) []const u64;
+};
+pub fn writeReport(w: *std.Io.Writer, r: Report, fmt: enum { text, json }) !void;
+```
+Deviations from the spec text: `choose`/`score` take `SelectOptions` (the
+selection-relevant part of `CreateOptions`); `Probe.queues` holds
+`VkQueueFamilyProperties` (not the `2` variant) plus a `present_mask`;
+CPU devices are never rejected (`cpu_device_not_forced` does not exist),
+they score −10000 and are used when forced or alone; `createInstance`
+takes the `Sink` so the messenger chained into instance creation can
+count; `Recovery.onLost` takes renderer `Hooks` (teardown, recreate,
+switch to software) instead of a `*VkRenderer`, which lands with
+E02.F06; `writeReport` takes a `Report` value. Win32 presentation support
+is checked per family with `vkGetPhysicalDeviceWin32PresentationSupportKHR`,
+so no `HWND` is needed at selection. The crash marker
+(`~/.cache/zigguro/gpu-init.lock`) forces software for one start, then
+Vulkan is tried again. `ZG_VK_FAULT` is honoured only in Debug and test
+builds.
+
+### Threading
+`create` may run on a worker (it does not touch the UI). The result is
+immutable except `lost` (atomic) and the queue mutexes: lock
+`Queue.mutex` around submits and presents. The debug callback runs on any
+thread and only touches the `Sink` atomics.
+
+### Ownership/lifetime
+`Gpu` owns the loader, instance, messenger, device and probes; `destroy`
+frees them (waiting for the device only if it was not lost). Recovery
+destroys and recreates the whole `Gpu`.
+
+### Stability
+Internal to E02 except `writeReport`'s JSON schema (golden-tested) and
+`CreateOptions`, which the app fills from `EnvOverrides` and E15 settings.
