@@ -147,12 +147,14 @@ fn collectFeatures(b: *PlanBuilder) std.mem.Allocator.Error!void {
     try b.enableFeature(tag("mset"), .none, 1);
 }
 
-fn dataInit(p: *ShapePlan) void {
+/// Sets the per-form masks (also used by USE for joining scripts).
+pub fn dataInit(p: *ShapePlan) void {
     inline for (form_features, 0..) |f, i| p.shaper_masks[i] = p.mask1(tag(f));
     p.shaper_masks[@intFromEnum(Action.none)] = 0;
 }
 
-fn setupMasks(p: *const ShapePlan, b: *Buffer) void {
+/// Assigns joining forms and their masks (also used by USE).
+pub fn setupMasks(p: *const ShapePlan, b: *Buffer) void {
     joining(b);
     if (p.script == .Mong) mongolianVariationSelectors(b);
     for (b.infos.items) |*g| g.mask |= p.shaper_masks[@intFromEnum(actionOf(g.*))];
