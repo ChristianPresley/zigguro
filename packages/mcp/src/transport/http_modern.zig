@@ -84,6 +84,7 @@ pub fn transport(self: *HttpModernTransport) Transport {
 const vtable: Transport.VTable = .{
     .request = vRequest,
     .notify = vNotify,
+    .respond = vRespond,
     .cancel = vCancel,
     .setInbound = vSetInbound,
     .close = vClose,
@@ -105,6 +106,12 @@ fn vNotify(ptr: *anyopaque, n: Transport.OutgoingNotification) Transport.SendErr
         .revision = n.revision,
     };
     return self.start(req, null, null);
+}
+
+fn vRespond(ptr: *anyopaque, body: []const u8, revision: protocol.Revision) Transport.SendError!void {
+    // Modern servers send no requests (MRTR replaced them); a lenient
+    // answer to one is POSTed like a notification, without `Mcp-Method`.
+    return vNotify(ptr, .{ .method_str = "", .body = body, .revision = revision });
 }
 
 fn vCancel(ptr: *anyopaque, id: RequestId, reason: ?[]const u8) void {
@@ -241,16 +248,15 @@ fn runCall(c: *Call) void {
 }
 
 const SinkRef = struct {
-    ctx: ?*anyopaque,
     sink: ?*Transport.RequestSink,
 
-    pub fn onResponse(self: SinkRef, _: ?*anyopaque, r: @import("zg_jsonrpc").message.Response) void {
+    pub fn onResponse(self: SinkRef, r: @import("zg_jsonrpc").message.Response) void {
         if (self.sink) |s| s.onResponse(s.ctx, r);
     }
-    pub fn onNotification(self: SinkRef, _: ?*anyopaque, n: protocol.Notification, raw: @import("zg_jsonrpc").message.Notification) void {
+    pub fn onNotification(self: SinkRef, n: protocol.Notification, raw: @import("zg_jsonrpc").message.Notification) void {
         if (self.sink) |s| s.onNotification(s.ctx, n, raw);
     }
-    pub fn onServerRequest(self: SinkRef, _: ?*anyopaque, r: @import("zg_jsonrpc").message.Request) void {
+    pub fn onServerRequest(self: SinkRef, r: @import("zg_jsonrpc").message.Request) void {
         // A protocol violation in the modern era; forwarded leniently.
         if (self.sink) |s| s.onServerRequest(s.ctx, r);
     }
@@ -263,7 +269,7 @@ fn perform(c: *Call) !void {
     while (true) {
         const auth_value: ?[]const u8 = if (self.opts.auth) |au| try au.headerFor(au.ctx, a) else null;
         const hs = try common.postHeaders(a, &self.opts, &c.req, c.req.revision, true, auth_value, null);
-        const ref: SinkRef = .{ .ctx = null, .sink = c.sink };
+        const ref: SinkRef = .{ .sink = c.sink };
         var router = common.BodyRouter(SinkRef).init(self.gpa, c.id, ref, self.opts.max_response_bytes);
         defer router.deinit();
         var head = self.client.stream(.{
