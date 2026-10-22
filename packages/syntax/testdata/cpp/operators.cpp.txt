@@ -1,0 +1,7 @@
+auto cmp = a <=> b;
+x = p->*member;
+y = obj.*member;
+z = a :: b;
+w = a < b && c > d;
+i += 1; j <<= 2;
+auto f = [&](int n) -> int { return n; };

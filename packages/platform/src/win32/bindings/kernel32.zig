@@ -1,6 +1,7 @@
 //! kernel32: modules, events and waits, global memory, code pages,
 //! high-resolution time, Toolhelp snapshots, and processes, pipes, job
-//! objects and pseudoconsoles (ConPTY).
+//! objects and pseudoconsoles (ConPTY), and directory change
+//! notifications on a completion port.
 //!
 //! planned: E01.F02.S01.T02 (modules, events, timers), E01.F02.S04.T01
 //! (global memory), E06 foreground-process lookup (Toolhelp).
@@ -105,6 +106,18 @@ pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
 pub const ERROR_PATH_NOT_FOUND: DWORD = 3;
 /// `ERROR_ACCESS_DENIED`.
 pub const ERROR_ACCESS_DENIED: DWORD = 5;
+/// `ERROR_INVALID_FUNCTION` (RDCW on a file system without notifications).
+pub const ERROR_INVALID_FUNCTION: DWORD = 1;
+/// `ERROR_NETNAME_DELETED`.
+pub const ERROR_NETNAME_DELETED: DWORD = 64;
+/// `ERROR_OPERATION_ABORTED` (`CancelIoEx`).
+pub const ERROR_OPERATION_ABORTED: DWORD = 995;
+/// `ERROR_IO_PENDING`.
+pub const ERROR_IO_PENDING: DWORD = 997;
+/// `ERROR_NOTIFY_ENUM_DIR` (change buffer overflowed).
+pub const ERROR_NOTIFY_ENUM_DIR: DWORD = 1022;
+/// `WAIT_TIMEOUT` as a `GetLastError` code.
+pub const ERROR_WAIT_TIMEOUT: DWORD = 258;
 /// `ERROR_DIRECTORY`.
 pub const ERROR_DIRECTORY: DWORD = 267;
 /// `ERROR_BAD_EXE_FORMAT`.
@@ -140,6 +153,65 @@ pub extern "kernel32" fn SetInformationJobObject(HANDLE, class: i32, info: *cons
 pub extern "kernel32" fn AssignProcessToJobObject(job: HANDLE, process: HANDLE) callconv(.winapi) BOOL;
 /// Ends every process in a job.
 pub extern "kernel32" fn TerminateJobObject(HANDLE, code: UINT) callconv(.winapi) BOOL;
+/// `FILE_LIST_DIRECTORY` access.
+pub const FILE_LIST_DIRECTORY: DWORD = 0x0001;
+/// `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`.
+pub const FILE_SHARE_ALL: DWORD = 0x0007;
+/// `OPEN_EXISTING`.
+pub const OPEN_EXISTING: DWORD = 3;
+/// `FILE_FLAG_BACKUP_SEMANTICS` (needed to open a directory).
+pub const FILE_FLAG_BACKUP_SEMANTICS: DWORD = 0x0200_0000;
+/// `FILE_FLAG_OVERLAPPED`.
+pub const FILE_FLAG_OVERLAPPED: DWORD = 0x4000_0000;
+/// `INVALID_FILE_ATTRIBUTES`.
+pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFF_FFFF;
+/// `FILE_ATTRIBUTE_DIRECTORY`.
+pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x10;
+/// `FILE_NOTIFY_CHANGE_*` filter bits.
+pub const FILE_NOTIFY_CHANGE = struct {
+    /// Names of files.
+    pub const FILE_NAME: DWORD = 0x001;
+    /// Names of directories.
+    pub const DIR_NAME: DWORD = 0x002;
+    /// Attributes.
+    pub const ATTRIBUTES: DWORD = 0x004;
+    /// Sizes.
+    pub const SIZE: DWORD = 0x008;
+    /// Last-write times.
+    pub const LAST_WRITE: DWORD = 0x010;
+    /// Creation times.
+    pub const CREATION: DWORD = 0x040;
+};
+/// `FILE_ACTION_*` values of `FILE_NOTIFY_INFORMATION.Action`.
+pub const FILE_ACTION = struct {
+    /// Added.
+    pub const ADDED: DWORD = 1;
+    /// Removed.
+    pub const REMOVED: DWORD = 2;
+    /// Modified.
+    pub const MODIFIED: DWORD = 3;
+    /// Renamed: the old name.
+    pub const RENAMED_OLD_NAME: DWORD = 4;
+    /// Renamed: the new name.
+    pub const RENAMED_NEW_NAME: DWORD = 5;
+};
+
+/// What `CreateFileW` returns on failure.
+pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(~@as(usize, 0));
+/// Opens a file or (with backup semantics) a directory.
+pub extern "kernel32" fn CreateFileW(name: LPCWSTR, access: DWORD, share: DWORD, sa: ?*anyopaque, disposition: DWORD, flags: DWORD, template: ?HANDLE) callconv(.winapi) HANDLE;
+/// Starts an asynchronous read of directory changes.
+pub extern "kernel32" fn ReadDirectoryChangesW(dir: HANDLE, buf: *anyopaque, len: DWORD, subtree: BOOL, filter: DWORD, returned: ?*DWORD, ov: ?*t.OVERLAPPED, routine: ?*const anyopaque) callconv(.winapi) BOOL;
+/// Creates a completion port or associates a handle with one.
+pub extern "kernel32" fn CreateIoCompletionPort(file: HANDLE, port: ?HANDLE, key: usize, threads: DWORD) callconv(.winapi) ?HANDLE;
+/// Dequeues one completion; false with a null overlapped on timeout.
+pub extern "kernel32" fn GetQueuedCompletionStatus(port: HANDLE, bytes: *DWORD, key: *usize, ov: *?*t.OVERLAPPED, ms: DWORD) callconv(.winapi) BOOL;
+/// Queues a completion packet.
+pub extern "kernel32" fn PostQueuedCompletionStatus(port: HANDLE, bytes: DWORD, key: usize, ov: ?*t.OVERLAPPED) callconv(.winapi) BOOL;
+/// Cancels a handle's outstanding I/O.
+pub extern "kernel32" fn CancelIoEx(HANDLE, ov: ?*t.OVERLAPPED) callconv(.winapi) BOOL;
+/// A path's attributes, or `INVALID_FILE_ATTRIBUTES`.
+pub extern "kernel32" fn GetFileAttributesW(LPCWSTR) callconv(.winapi) DWORD;
 /// Reads from a file or pipe.
 pub extern "kernel32" fn ReadFile(HANDLE, buf: [*]u8, len: DWORD, read: ?*DWORD, overlapped: ?*anyopaque) callconv(.winapi) BOOL;
 /// Writes to a file or pipe.

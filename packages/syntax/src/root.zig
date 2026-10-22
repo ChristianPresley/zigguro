@@ -14,7 +14,13 @@ pub const lex = struct {
     pub const lexer = @import("lex/lexer.zig");
 };
 pub const langs = struct {
+    pub const common = @import("langs/common.zig");
     pub const zig = @import("langs/zig.zig");
+    pub const c = @import("langs/c.zig");
+    pub const rust = @import("langs/rust.zig");
+    pub const go = @import("langs/go.zig");
+    pub const python = @import("langs/python.zig");
+    pub const yaml = @import("langs/yaml.zig");
 };
 pub const structure = struct {
     pub const structure = @import("structure/structure.zig");
@@ -58,7 +64,15 @@ pub const BracketSource = brackets.bracket_tree.BracketSource;
 pub const fallbackStructure = structure.fallback.fallbackStructure;
 
 /// Every built-in language, in registration order.
-pub const builtin_languages = [_]*const Language{&langs.zig.zig_language};
+pub const builtin_languages = [_]*const Language{
+    &langs.zig.zig_language,
+    &langs.c.c_language,
+    &langs.c.cpp_language,
+    &langs.rust.rust_language,
+    &langs.go.go_language,
+    &langs.python.python_language,
+    &langs.yaml.yaml_language,
+};
 
 /// A registry with plain text and every built-in language.
 pub fn defaultRegistry(gpa: std.mem.Allocator) std.mem.Allocator.Error!Registry {
@@ -79,4 +93,9 @@ test {
     _ = @import("structure/fallback_test.zig");
     _ = @import("highlight/highlighter_test.zig");
     _ = @import("langs/zig_test.zig");
+    _ = @import("langs/c_test.zig");
+    _ = @import("langs/rust_test.zig");
+    _ = @import("langs/go_test.zig");
+    _ = @import("langs/python_test.zig");
+    _ = @import("langs/yaml_test.zig");
 }

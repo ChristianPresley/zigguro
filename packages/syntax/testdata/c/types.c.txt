@@ -1,0 +1,14 @@
+unsigned long long a;
+signed char b;
+short int c;
+float f; double d; long double ld;
+_Bool ok = true;
+bool also = false;
+size_t n; ptrdiff_t diff; uint8_t byte; int64_t big;
+char16_t u16; char32_t u32; wchar_t w;
+my_handle_t h;
+struct Point { int x, y; } origin;
+enum Color { RED, GREEN = 2 };
+union Value { int i; float f; };
+void *p = NULL;
+int *q = nullptr;

@@ -1,0 +1,14 @@
+1| keyword.storage:func function:Map punctuation.bracket:[ variable:T punctuation.delimiter:, variable:U type.builtin:any punctuation.bracket:] punctuation.bracket:( variable:s punctuation.bracket:[ punctuation.bracket:] variable:T punctuation.delimiter:, variable:f keyword.storage:func punctuation.bracket:( variable:T punctuation.bracket:) variable:U punctuation.bracket:) punctuation.bracket:[ punctuation.bracket:] variable:U punctuation.bracket:{
+2| variable:r operator::= function.builtin:make punctuation.bracket:( punctuation.bracket:[ punctuation.bracket:] variable:U punctuation.delimiter:, number:0 punctuation.delimiter:, function.builtin:len punctuation.bracket:( variable:s punctuation.bracket:) punctuation.bracket:)
+3| keyword.control:for variable:_ punctuation.delimiter:, variable:v operator::= keyword.control:range variable:s punctuation.bracket:{
+4| variable:r operator:= function.builtin:append punctuation.bracket:( variable:r punctuation.delimiter:, function:f punctuation.bracket:( variable:v punctuation.bracket:) punctuation.bracket:)
+5| punctuation.bracket:}
+6| keyword.control:return variable:r
+7| punctuation.bracket:}
+8| keyword.storage:type type:Number keyword.storage:interface punctuation.bracket:{
+9| operator:~ type.builtin:int operator:| operator:~ type.builtin:int64 operator:| operator:~ type.builtin:float64
+10| punctuation.bracket:}
+11| keyword.storage:type type:Pair punctuation.bracket:[ variable:K type.builtin:comparable punctuation.delimiter:, variable:V type.builtin:any punctuation.bracket:] keyword.storage:struct punctuation.bracket:{
+12| variable:Key variable:K
+13| variable:Val variable:V
+14| punctuation.bracket:}

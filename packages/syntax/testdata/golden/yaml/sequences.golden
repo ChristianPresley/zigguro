@@ -1,0 +1,9 @@
+1| property:items punctuation.delimiter::
+2| punctuation.delimiter:- string:one
+3| punctuation.delimiter:- string:two
+4| punctuation.delimiter:- property:key punctuation.delimiter:: string:value
+5| property:other punctuation.delimiter:: number:3
+6| punctuation.delimiter:-
+7| punctuation.delimiter:- string:nested
+8| punctuation.delimiter:- string:top
+9| string:-not-an-item

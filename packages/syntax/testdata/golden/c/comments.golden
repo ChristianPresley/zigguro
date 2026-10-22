@@ -1,0 +1,11 @@
+1| comment:// a line comment
+2| type.builtin:int variable:x punctuation.delimiter:; comment:// trailing comment
+3| comment:/* a block comment */ type.builtin:int variable:y punctuation.delimiter:;
+4| comment:/* a block
+5| comment:   comment
+6| comment:   over lines */ type.builtin:int variable:z punctuation.delimiter:;
+7| comment:/* /* not nested */ type.builtin:int variable:w punctuation.delimiter:;
+8| type.builtin:int variable:v operator:= number:1 comment:/* inline */ operator:+ number:2 punctuation.delimiter:;
+9| comment:// comment with "string" and 'c'
+10| comment:/**/ type.builtin:int variable:u punctuation.delimiter:;
+11| comment:/***/ type.builtin:int variable:t punctuation.delimiter:;

@@ -1,0 +1,8 @@
+1| keyword.storage:let variable:a operator:= string:b"bytes string.escape:\x00\n string:" punctuation.delimiter:;
+2| keyword.storage:let variable:b operator:= string:br"raw bytes" punctuation.delimiter:;
+3| keyword.storage:let variable:c operator:= string:br#"raw "bytes""# punctuation.delimiter:;
+4| keyword.storage:let variable:d operator:= string:c"c string string.escape:\0 string:" punctuation.delimiter:;
+5| keyword.storage:let variable:e operator:= string:cr#"raw c"# punctuation.delimiter:;
+6| keyword.storage:let variable:f operator:= character:b'x' punctuation.delimiter:;
+7| keyword.storage:let variable:g operator:= character:b' string.escape:\' character:' punctuation.delimiter:;
+8| keyword.storage:let variable:h operator:= character:b' string.escape:\x7f character:' punctuation.delimiter:;

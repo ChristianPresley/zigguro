@@ -1,0 +1,9 @@
+1| keyword.storage:def function:f punctuation.bracket:( punctuation.bracket:) punctuation.delimiter::
+2| string:""" string:Docstring on
+3| string:    several lines with 'quotes' and "quotes"
+4| string:    and an escaped  string.escape:\" string:"" inside.
+5| string:    """
+6| variable:s operator:= string:''' string:single
+7| string:triple'''
+8| keyword.control:return variable:s
+9| variable:x operator:= string:""" string:one line"""

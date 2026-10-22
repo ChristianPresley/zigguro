@@ -1,0 +1,8 @@
+total = first + \
+    second
+s = "a string \
+continued"
+items = [
+    1,
+    2,
+]

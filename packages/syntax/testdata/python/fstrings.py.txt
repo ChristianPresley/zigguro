@@ -1,0 +1,11 @@
+name = "world"
+a = f"hello {name}!"
+b = f"{{literal braces}} and {name!r}"
+c = f"{value:>10}"
+d = f"{value:{width}.{precision}f}"
+e = f"{x=}"
+f = f"{items[0]['key']}"
+g = f'{a if b else c}'
+h = f"""multi
+{line}
+text"""

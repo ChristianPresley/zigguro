@@ -1,0 +1,19 @@
+1| keyword.storage:namespace variable:app punctuation.bracket:{
+2| keyword.storage:class type:Widget keyword.storage:final punctuation.delimiter:: keyword.storage:public type:Base punctuation.bracket:{
+3| keyword.storage:public punctuation.delimiter::
+4| keyword.storage:explicit function:Widget punctuation.bracket:( type.builtin:int variable:n punctuation.bracket:) keyword:noexcept punctuation.delimiter:;
+5| keyword.storage:virtual operator:~ function:Widget punctuation.bracket:( punctuation.bracket:) keyword.storage:override operator:= keyword.control:default punctuation.delimiter:;
+6| keyword.storage:static keyword.storage:constexpr type.builtin:int variable:kMax operator:= number:10 punctuation.delimiter:;
+7| keyword.storage:mutable type.builtin:int variable:cache punctuation.delimiter:;
+8| keyword.storage:private punctuation.delimiter::
+9| keyword.storage:friend keyword.storage:class type:Other punctuation.delimiter:;
+10| keyword.storage:protected punctuation.delimiter::
+11| keyword.storage:template operator:< keyword.storage:typename type:T operator:> type:T function:get punctuation.bracket:( punctuation.bracket:) keyword.storage:const punctuation.delimiter:;
+12| punctuation.bracket:} punctuation.delimiter:;
+13| punctuation.bracket:}
+14| keyword.control:try punctuation.bracket:{ keyword.control:throw variable:std punctuation.delimiter::: function:runtime_error punctuation.bracket:( string:"x" punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:} keyword.control:catch punctuation.bracket:( keyword.storage:const variable:std punctuation.delimiter::: variable:exception operator:& variable:e punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+15| keyword.storage:auto variable:p operator:= keyword.operator:new type.builtin:int punctuation.bracket:( number:3 punctuation.bracket:) punctuation.delimiter:; keyword.operator:delete variable:p punctuation.delimiter:;
+16| keyword.control:co_await variable:x punctuation.delimiter:; keyword.control:co_return number:1 punctuation.delimiter:; keyword.control:co_yield number:2 punctuation.delimiter:;
+17| keyword.storage:consteval type.builtin:int function:f punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:; keyword.storage:constinit type.builtin:int variable:g operator:= number:0 punctuation.delimiter:;
+18| keyword.control:if punctuation.bracket:( variable:a keyword.operator:and variable:b keyword.operator:or keyword.operator:not variable:c punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+19| type.builtin:bool variable:ok operator:= constant.builtin:true punctuation.delimiter:; variable.builtin:this operator:-> variable:x operator:= constant.builtin:nullptr punctuation.delimiter:;

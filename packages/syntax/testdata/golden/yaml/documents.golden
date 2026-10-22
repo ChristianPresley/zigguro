@@ -1,0 +1,8 @@
+1| keyword:%YAML 1.2
+2| keyword:%TAG ! tag:example.com,2000:
+3| punctuation.delimiter:---
+4| property:a punctuation.delimiter:: number:1
+5| punctuation.delimiter:...
+6| punctuation.delimiter:--- comment:# second document
+7| property:b punctuation.delimiter:: number:2
+8| string:---not-a-marker

@@ -1,0 +1,9 @@
+items:
+  - one
+  - two
+  - key: value
+    other: 3
+  -
+    - nested
+- top
+-not-an-item

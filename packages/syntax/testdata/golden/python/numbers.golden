@@ -1,0 +1,9 @@
+1| variable:a operator:= number:42
+2| variable:b operator:= number:1_000_000
+3| variable:c operator:= number:0x1F operator:+ number:0o17 operator:+ number:0b1010
+4| variable:d operator:= number:3.14
+5| variable:e operator:= number:.5
+6| variable:f operator:= number:1e10 operator:+ number:2.5E-3
+7| variable:g operator:= number:3j operator:+ number:1.5J
+8| variable:h operator:= number:1_0.0_1
+9| variable:i operator:= number:07

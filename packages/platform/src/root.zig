@@ -325,6 +325,12 @@ pub const win32 = struct {
     pub const ime = @import("win32/ime.zig");
     /// See `win32/pointer.zig`.
     pub const pointer = @import("win32/pointer.zig");
+    /// See `win32/theme.zig`.
+    pub const theme = @import("win32/theme.zig");
+    /// See `win32/dialogs.zig`.
+    pub const dialogs = @import("win32/dialogs.zig");
+    /// See `win32/shell.zig`.
+    pub const shell = @import("win32/shell.zig");
     /// See `win32/backend.zig`.
     pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
     /// See `win32/backend.zig`.
@@ -435,6 +441,7 @@ test {
         _ = @import("x11/dri3.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
+    _ = @import("fswatch/windows_rdcw.zig");
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -462,6 +469,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "fswatch/ignore.zig", .src = @embedFile("fswatch/ignore.zig") },
     .{ .path = "fswatch/coalesce.zig", .src = @embedFile("fswatch/coalesce.zig") },
     .{ .path = "fswatch/linux_inotify.zig", .src = @embedFile("fswatch/linux_inotify.zig") },
+    .{ .path = "fswatch/windows_rdcw.zig", .src = @embedFile("fswatch/windows_rdcw.zig") },
+    .{ .path = "fswatch/test_util.zig", .src = @embedFile("fswatch/test_util.zig") },
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
@@ -536,6 +545,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
     .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
     .{ .path = "win32/pointer.zig", .src = @embedFile("win32/pointer.zig") },
+    .{ .path = "win32/theme.zig", .src = @embedFile("win32/theme.zig") },
+    .{ .path = "win32/dialogs.zig", .src = @embedFile("win32/dialogs.zig") },
+    .{ .path = "win32/shell.zig", .src = @embedFile("win32/shell.zig") },
     .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 

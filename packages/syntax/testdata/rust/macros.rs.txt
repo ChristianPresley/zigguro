@@ -1,0 +1,10 @@
+println!("hello {}", name);
+vec![1, 2, 3];
+assert_eq!(a, b);
+macro_rules! square {
+    ($x:expr) => { $x * $x };
+}
+let ne = a != b;
+let not = !flag;
+format!("{x:?}");
+my_crate::my_macro!{ }

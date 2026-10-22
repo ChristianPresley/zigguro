@@ -1,0 +1,7 @@
+1| string:" string.escape:\n\t\r\a\b\f\v\\\?\'\" string:"
+2| string:" string.escape:\x41\x4a4b string: and  string.escape:\x string:"
+3| string:" string.escape:\0 string:  string.escape:\01 string:  string.escape:\012 string:  string.escape:\012 string:3"
+4| string:" string.escape:\u00e9 string:  string.escape:\U0001F600 string:  string.escape:\u{1F600} string:"
+5| string:" string.escape:\N{LATIN SMALL LETTER E} string:"
+6| character:' string.escape:\x7f character:' character:' string.escape:\177 character:' character:' string.escape:\u00e9 character:'
+7| string:" string.escape:\q string: unknown escape"

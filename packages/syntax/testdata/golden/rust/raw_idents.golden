@@ -1,0 +1,5 @@
+1| keyword.storage:let variable:r#match operator:= number:1 punctuation.delimiter:;
+2| keyword.storage:let variable:r#type operator:= variable:r#match operator:+ number:1 punctuation.delimiter:;
+3| keyword.storage:fn function:r#fn punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+4| keyword.storage:let variable:r operator:= number:1 punctuation.delimiter:;
+5| keyword.storage:let variable:r2 operator:= variable:r#type punctuation.delimiter:;

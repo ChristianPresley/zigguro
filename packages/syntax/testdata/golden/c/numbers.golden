@@ -1,0 +1,8 @@
+1| type.builtin:int variable:a operator:= number:0 punctuation.delimiter:, variable:b operator:= number:42 punctuation.delimiter:, variable:c operator:= number:0x1F punctuation.delimiter:, variable:d operator:= number:0X1f punctuation.delimiter:, variable:e operator:= number:017 punctuation.delimiter:, variable:f operator:= number:0b1010 punctuation.delimiter:;
+2| type.builtin:unsigned variable:g operator:= number:42u punctuation.delimiter:, variable:h operator:= number:42UL punctuation.delimiter:, variable:i operator:= number:42ull punctuation.delimiter:;
+3| type.builtin:double variable:j operator:= number:1.0 punctuation.delimiter:, variable:k operator:= number:.5 punctuation.delimiter:, variable:l operator:= number:1e10 punctuation.delimiter:, variable:m operator:= number:1.5e-3 punctuation.delimiter:, variable:n operator:= number:1E+3 punctuation.delimiter:;
+4| type.builtin:float variable:o operator:= number:3.14f punctuation.delimiter:, variable:p operator:= number:2.f punctuation.delimiter:;
+5| type.builtin:double variable:q operator:= number:0x1.8p3 punctuation.delimiter:, variable:r operator:= number:0x1p-2 punctuation.delimiter:;
+6| type.builtin:int variable:s operator:= number:1'000'000 punctuation.delimiter:;
+7| type.builtin:long variable:t operator:= number:0xFFFF'FFFFL punctuation.delimiter:;
+8| variable:x operator:= variable:a punctuation.delimiter:. variable:b operator:+ number:1.e2 punctuation.delimiter:;

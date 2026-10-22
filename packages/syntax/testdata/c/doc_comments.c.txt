@@ -1,0 +1,9 @@
+/// A doc comment.
+//// Not a doc comment.
+//! Inner doc.
+/** Block doc
+ * @param x the value
+ */
+int f(int x);
+/*! Qt style */
+/***************/

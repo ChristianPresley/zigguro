@@ -1,0 +1,6 @@
+a: "simple"
+b: "escapes \n \t \" \\ \x41 \u00e9"
+c: "spans
+  several
+  lines"
+d: after

@@ -127,6 +127,8 @@ pub const Runner = struct {
             .system_append = if (system.items.len > 0) system.items else null,
             .cwd = env.cwd,
             .budgets = .{ .max_turns = r.opts.max_turns, .max_wall_ms = r.opts.max_time_ms, .max_cost_micros = r.opts.max_budget_micros },
+            // Cut tool output is saved next to spilled stdin.
+            .tool_output = .{ .spill_dir = try std.fmt.allocPrint(a, "{s}{c}tool-output", .{ env.spill_dir, std.fs.path.sep }) },
         };
 
         if (r.opts.resume_session != null or r.opts.continue_session) {
@@ -519,7 +521,7 @@ pub const Runner = struct {
                 },
                 .interrupt => r.agent.cancel(.turn),
                 .permission_response => |p| if (r.broker) |*b| {
-                    b.answer(p.request_id, .{ .allow = p.behavior == .allow, .message = p.message }) catch {};
+                    b.answer(p.request_id, .{ .allow = p.behavior == .allow, .message = p.message, .updated_input = p.updated_input }) catch {};
                 } else r.note("permission_response ignored: run with --permission-prompts stream", .{}),
                 .unknown => |t| r.note("skipped an input line of unknown type {s}", .{t}),
             }

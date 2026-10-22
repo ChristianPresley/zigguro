@@ -1,0 +1,6 @@
+1| property:a punctuation.delimiter:: type:!!str number:123
+2| property:b punctuation.delimiter:: type:!!int string:"42"
+3| property:c punctuation.delimiter:: type:!custom string:value
+4| property:d punctuation.delimiter:: type:!<tag:yaml.org,2002:str> string:verbatim
+5| property:e punctuation.delimiter:: type:!!map
+6| property:k punctuation.delimiter:: string:v

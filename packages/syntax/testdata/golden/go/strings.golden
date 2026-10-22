@@ -1,0 +1,7 @@
+1| variable:a operator::= string:"plain"
+2| variable:b operator::= string:""
+3| variable:c operator::= string:"with  string.escape:\" string:quotes string.escape:\" string:"
+4| variable:d operator::= string:"escapes  string.escape:\n string:  string.escape:\t string:  string.escape:\\ string:  string.escape:\x41 string:  string.escape:\101 string:  string.escape:\u00e9 string:  string.escape:\U0001F600 string:"
+5| variable:e operator::= string:"unterminated
+6| variable:f operator::= string:"// not a comment"
+7| variable:g operator::= string:"a" operator:+ string:"b"

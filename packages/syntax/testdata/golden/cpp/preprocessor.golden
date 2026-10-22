@@ -1,0 +1,10 @@
+1| keyword:#include string.special:<iostream>
+2| keyword:#include string.special:"app.hpp"
+3| keyword:#define function.macro:DECLARE punctuation.bracket:( type:T punctuation.bracket:)
+4| type:T variable:value_ operator:## type:T punctuation.delimiter:;
+5| keyword:#pragma variable:once
+6| keyword:#if variable:__cplusplus operator:>= number:202002L
+7| keyword.storage:import variable:std punctuation.delimiter:;
+8| keyword:#endif
+9| keyword.storage:module punctuation.delimiter:;
+10| keyword.storage:export keyword.storage:module variable:app punctuation.delimiter:;

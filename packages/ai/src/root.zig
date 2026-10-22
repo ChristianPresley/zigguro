@@ -131,6 +131,12 @@ pub const tools = struct {
     pub const toolset = @import("tools/toolset.zig");
     pub const search_tools = @import("tools/search_tools.zig");
     pub const read_tracker = @import("tools/read_tracker.zig");
+    pub const invoke = @import("tools/invoke.zig");
+    /// Tools exported by other subsystems (LSP, workspace, SCM, MCP, ...).
+    pub const adapters = struct {
+        pub const foreign = @import("tools/adapters/foreign.zig");
+        pub const all = @import("tools/adapters/all.zig");
+    };
     /// Built-in tools.
     pub const builtin = struct {
         pub const terminal_host = @import("tools/builtin/terminal_host.zig");
@@ -150,6 +156,8 @@ pub const tools = struct {
     pub const ToolsetConfig = toolset.ToolsetConfig;
     test {
         _ = @import("tools/registry_test.zig");
+        _ = @import("tools/invoke_test.zig");
+        _ = @import("tools/adapters/adapters_test.zig");
         _ = @import("tools/builtin/run_test.zig");
         _ = @import("tools/builtin/process_host_test.zig");
         _ = @import("tools/builtin/read_test.zig");

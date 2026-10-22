@@ -94,13 +94,21 @@ pub const StaticTools = struct {
     }
 };
 
-/// Writing tools with a `path` (or `file_path`) input lock that path;
-/// commands use terminal 0; other mutating tools are workspace-global.
+/// Tools lock the paths in their `path`, `file_path`, `file`, `uri` or
+/// `paths` inputs; commands use terminal 0; mutating SCM tools (exported
+/// by the `scm` extension) use `.scm`; other mutating tools are
+/// workspace-global.
 pub fn defaultResources(spec: *const proto.ToolSpec, input: std.json.Value, arena: Allocator) []const scheduler.Resource {
     const e = spec.effectiveEffects();
     if (e.executes) return single(arena, .{ .terminal = 0 });
+    if (!e.read_only and spec.origin == .extension and std.mem.eql(u8, spec.origin.extension, "scm")) return single(arena, .scm);
     if (input == .object) {
-        for ([_][]const u8{ "path", "file_path" }) |k| if (input.object.get(k)) |v| if (v == .string) return single(arena, .{ .path = v.string });
+        for ([_][]const u8{ "path", "file_path", "file", "uri" }) |k| if (input.object.get(k)) |v| if (v == .string) return single(arena, .{ .path = v.string });
+        if (input.object.get("paths")) |v| if (v == .array and v.array.items.len > 0) {
+            const out = arena.alloc(scheduler.Resource, v.array.items.len) catch return single(arena, .workspace_global);
+            for (v.array.items, out) |x, *r| r.* = if (x == .string) .{ .path = x.string } else .workspace_global;
+            return out;
+        };
     }
     return if (e.read_only) &.{} else single(arena, .workspace_global);
 }
@@ -114,12 +122,31 @@ fn single(arena: Allocator, r: scheduler.Resource) []const scheduler.Resource {
 pub const Decision = union(enum) {
     allow,
     deny: []const u8,
+    /// Allowed with the input the user edited in the approval (JSON).
+    allow_edited: []const u8,
+};
+
+/// What the `PreToolUse` hooks decided, for the permission check.
+pub const Hint = enum {
+    none,
+    /// Skip the prompt; deny rules still apply.
+    hook_allow,
+    /// Prompt even where the rules would allow.
+    hook_ask,
 };
 
 /// Decides whether a tool call may run; may block on an approval.
 pub const Permission = struct {
     ctx: *anyopaque,
     check: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8) Io.Cancelable!Decision,
+    /// `check` with the hooks' hint; null calls `check`, so a hook allow
+    /// still prompts where the rules say so and a hook ask does not force one.
+    check_hinted: ?*const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: Hint) Io.Cancelable!Decision = null,
+
+    pub fn decide(p: Permission, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: Hint) Io.Cancelable!Decision {
+        if (p.check_hinted) |f| return f(p.ctx, io, agent, spec, input_json, hint);
+        return p.check(p.ctx, io, agent, spec, input_json);
+    }
 
     pub const allow_all: Permission = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .check = struct {
         fn f(_: *anyopaque, _: Io, _: proto.AgentRef, _: *const proto.ToolSpec, _: []const u8) Io.Cancelable!Decision {
@@ -238,11 +265,46 @@ pub const StopDecision = union(enum) {
     block: []const u8,
 };
 
-/// `UserPromptSubmit` and `Stop` hooks (F09).
+/// A `PreToolUse` outcome.
+pub const PreToolDecision = struct {
+    decision: enum { none, allow, deny, ask } = .none,
+    reason: []const u8 = "",
+    /// Replaces the input (JSON); validated again.
+    updated_input_json: ?[]const u8 = null,
+};
+
+/// A `PostToolUse` / `PostToolUseFailure` outcome.
+pub const PostToolDecision = struct {
+    /// Appended to the output as a text part.
+    additional_context: ?[]const u8 = null,
+    /// Replaces the output.
+    updated_output: ?proto.ToolOutput = null,
+};
+
+/// `UserPromptSubmit`, `Stop`, `PreToolUse` and `PostToolUse` hooks (F09).
+/// A hook that fails is skipped: hooks never block on their own errors.
 pub const Hooks = struct {
     ctx: *anyopaque,
     prompt_submit: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, text: []const u8) anyerror!PromptDecision = null,
     stop: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, last: *const proto.Message) anyerror!StopDecision = null,
+    pre_tool_use: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8) anyerror!PreToolDecision = null,
+    /// `failed` selects `PostToolUseFailure` (the output is an error).
+    post_tool_use: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, output: *const proto.ToolOutput, failed: bool) anyerror!PostToolDecision = null,
+};
+
+/// One decision about a tool call, for the E16 audit log and the bus.
+pub const ToolDecision = struct {
+    id: []const u8,
+    tool: []const u8,
+    stage: enum { validation, pre_hook, permission, post_hook, bound },
+    outcome: enum { allow, deny, ask, edit, replace, context, truncate },
+    reason: []const u8 = "",
+};
+
+/// E16's audit sink: every tool decision, who made it and why.
+pub const Audit = struct {
+    ctx: *anyopaque,
+    record: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, d: ToolDecision) void,
 };
 
 test "default resources" {
@@ -262,4 +324,27 @@ test "default resources" {
     var r = w;
     r.read_only = true;
     try std.testing.expectEqual(@as(usize, 0), defaultResources(&r, .null, a).len);
+    // The resources extraction table.
+    const cases = [_]struct { input: []const u8, want: []const u8 }{
+        .{ .input = "{\"file\":\"a.zig\"}", .want = "path:a.zig" },
+        .{ .input = "{\"uri\":\"file:///w/b.zig\"}", .want = "path:file:///w/b.zig" },
+        .{ .input = "{\"file_path\":\"c.zig\"}", .want = "path:c.zig" },
+        .{ .input = "{\"paths\":[\"d.zig\",\"e.zig\"]}", .want = "path:d.zig path:e.zig" },
+        .{ .input = "{\"query\":\"x\"}", .want = "workspace_global" },
+    };
+    for (cases) |c| {
+        const in = try std.json.parseFromSliceLeaky(std.json.Value, a, c.input, .{});
+        var got: std.ArrayList(u8) = .empty;
+        for (defaultResources(&w, in, a), 0..) |res, i| {
+            if (i > 0) try got.append(a, ' ');
+            switch (res) {
+                .path => |p| try got.print(a, "path:{s}", .{p}),
+                else => try got.appendSlice(a, @tagName(res)),
+            }
+        }
+        try std.testing.expectEqualStrings(c.want, got.items);
+    }
+    var scm = w;
+    scm.origin = .{ .extension = "scm" };
+    try std.testing.expect(defaultResources(&scm, .null, a)[0] == .scm);
 }

@@ -1027,7 +1027,13 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`source = .continuous`. `open_dialog` shows `IFileOpenDialog`/`IFileSaveDialog`
+on a thread of its own (modal to `parent`) and answers with
+`dialog_result`; `deinit` joins open dialogs. `open_uri` passes `http`,
+`https` and `mailto` URIs to `ShellExecuteW` and refuses others with
+`error.Unsupported`. `appearance_changed` is staged at start and after a
+`WM_SETTINGCHANGE` that changes the theme, accent, high contrast or
+animation setting (dark-mode switches re-apply the title bars). Touch (`WM_POINTER*`, `pointer.zig`) stages
 `touch` events and still reaches `DefWindowProcW`, so Windows promotes the
 primary touch to mouse messages; pens stage `pointer_pressure` then
 `pointer_move`, with contact as the left button (right with the barrel
@@ -2359,8 +2365,8 @@ Internal to E02 behind `r2d.Renderer`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
-structure and structure queries).
+structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
+E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2441,6 +2447,25 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
     pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
+// Tier-1 languages (langs/*.zig), all in `builtin_languages`.
+pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language: Language;
+pub const EditRules = struct { line_comment, block_comment, auto_close,
+    insert_spaces: ?bool = null,                 // Go: false (tabs)
+    indent_after: []const []const u8,            // e.g. "{"
+    dedent_on: []const []const u8,               // e.g. "}"
+    dedent_after: []const []const u8 };          // Python: "return", "pass", ...
+// langs/c.zig: state `mode` = construct | Mode.directive while a directive continues;
+// a C++ raw string's delimiter is in `aux`.
+pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_tokens: bool = false }, st, s, out) void;
+// langs/rust.zig: block-comment depth in `depth`, raw-string `#` count in `aux[0]`.
+pub fn rust.classifyQuote(line: []const u8, pos: usize) struct { enum { char, lifetime, invalid }, usize };
+// langs/go.zig: tier 2 turns on automatic semicolons (a `Kind.virtual_semicolon` token at the line end).
+pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, st, s, out) void;
+// langs/python.zig: every string is a frame (2 bytes in `aux`: flags, field bracket depth; count in `mode`'s
+// low byte), so f-strings nest per PEP 701. Tier 2: NEWLINE tokens at the line end, and the first token of a
+// line carries `Kind.indent_flag` or a DEDENT count in `Kind.dedent_mask`; the indent stack follows the frames.
+pub fn python.lexLineWith(comptime o: struct { virtual_tokens: bool = false }, st, s, out) void;
+// langs/yaml.zig: a block scalar keeps its parent indentation + 1 in `depth` and an explicit indentation in `aux[0]`.
 ```
 
 ### Threading
