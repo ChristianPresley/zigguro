@@ -10,6 +10,7 @@ test {
     _ = @import("agent/panel.zig");
     _ = @import("agent/plan_card.zig");
     _ = @import("agent/pane_approvals.zig");
+    _ = @import("file_sync.zig");
     _ = @import("agent/commands.zig");
     _ = @import("agent/host.zig");
     _ = @import("agent/mcp_input.zig");
