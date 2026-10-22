@@ -7,6 +7,7 @@
 //! dirty does no work at all (idle-zero).
 
 const std = @import("std");
+const a11y_tree = @import("../a11y/tree.zig");
 const zg_platform = @import("zg_platform");
 const geom = @import("geom.zig");
 const ids = @import("ids.zig");
@@ -234,6 +235,9 @@ pub const Window = struct {
 
     /// The platform window this window presents to, if any.
     platform_win: ?zg_platform.types.WindowId = null,
+    /// The accessibility tree following this window (`A11yTree.attach`);
+    /// updated after each frame that did work.
+    a11y: ?*a11y_tree.A11yTree = null,
     close_requested: bool = false,
 
     /// See `internal_drop`. `f` answers `enter` and `over` (true
@@ -642,6 +646,7 @@ pub const Window = struct {
             w.engine.oom = false;
             w.markAllDirty();
         }
+        if (w.a11y) |t| _ = t.update(w);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         w.after_frame_due.clearRetainingCapacity();
         return w.stats;

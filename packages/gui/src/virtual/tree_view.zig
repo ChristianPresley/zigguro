@@ -468,7 +468,17 @@ pub const TreeBox = struct {
     }
 
     pub fn a11y(props: *const Props, _: *widget.NoState) widget.A11y {
-        return .{ .role = .tree, .name = props.label };
+        return .{ .role = .tree, .name = props.label, .row_count = props.tv.flat.len() };
+    }
+
+    /// `scroll_into_view` with a row index reveals a row that may not be
+    /// built yet.
+    pub fn a11yAction(props: *const Props, _: *widget.NoState, a: widget.A11yAction, arg: ?widget.A11yArg) bool {
+        if (a != .scroll_into_view) return false;
+        const x = arg orelse return false;
+        if (x != .index or x.index >= props.tv.flat.len()) return false;
+        props.tv.reveal(@intCast(x.index));
+        return true;
     }
 };
 
@@ -547,6 +557,23 @@ pub const TreeRow = struct {
             .expanded = if (props.expandable) props.expanded else null,
             .selected = props.selected,
             .level = props.depth + 1,
+            .row_index = props.index + 1,
         };
+    }
+
+    /// Expands, collapses and selects through the tree.
+    pub fn a11yAction(props: *const Props, _: *widget.NoState, a: widget.A11yAction, _: ?widget.A11yArg) bool {
+        const tv = props.tv;
+        const i: usize = props.index;
+        if (i >= tv.flat.len() or props.placeholder) return false;
+        switch (a) {
+            .expand => _ = tv.expandRow(i) catch return false,
+            .collapse => _ = tv.collapseRow(i),
+            .select => tv.moveTo(i, .replace),
+            .add_to_selection => if (!props.selected) tv.moveTo(i, .toggle),
+            .remove_from_selection => if (props.selected) tv.moveTo(i, .toggle),
+            else => return false,
+        }
+        return true;
     }
 };
