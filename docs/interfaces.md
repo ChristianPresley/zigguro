@@ -2035,6 +2035,8 @@ pub const Program = struct { name: []const u8, stage: Stage, build: *const fn (*
 // zg_vulkan.shaders (generated): one declaration per program
 pub const solid_vert: []align(4) const u8;
 pub const solid_frag: []align(4) const u8;
+pub const prim_vert, prim_frag, text_subpixel_frag, composite_vert, composite_frag: []align(4) const u8;
+pub const interface_hash: u64;   // zg_vulkan.shader_interface.hash() at generation
 ```
 Deviations from the spec text: the grammar lives in `tools/spirv/data`
 (the notices checker's convention); decorations and execution modes with
@@ -2057,6 +2059,62 @@ issues). The generated shader slices are static.
 Internal to E02. The descriptor and push-constant interface of the
 production shaders is frozen by E02.F05.S01.T05 and documented in
 `docs/rendering.md`.
+
+## zg_vulkan.pipeline (pipelines, descriptor heap, pipeline cache)
+
+### Defined in
+`packages/vulkan/src/pipeline/` (E02.F05.S02.T01): `layout.zig`,
+`DescriptorHeap.zig`, `pipelines.zig`, `cache.zig`; the frozen shader
+interface `packages/vulkan/src/shaders/interface.zig`
+(`zg_vulkan.shader_interface`).
+
+### Implemented by
+E02.
+
+### Consumed by
+E02's Vulkan backend (E02.F06). Nothing outside E02.
+
+### Signature
+```zig
+pub const SamplerKind = enum { linear_clamp, nearest_clamp, linear_repeat };
+pub const DescriptorHeap = struct {   // set_layout, pipeline_layout, set, max_textures
+    pub fn init(gpu: *Gpu, max_textures: u32) !DescriptorHeap;   // default_max_textures = 4096, clamped to the device limit
+    pub fn deinit(self: *DescriptorHeap) void;
+    pub fn allocSlot(self, view: vk.ImageView, kind: SamplerKind) !u32;   // slot 0 is never returned; error.OutOfSlots
+    pub fn writeSlot(self, slot: u32, view: vk.ImageView, kind: SamplerKind) void;
+    pub fn freeSlot(self, slot: u32, retire_value: u64) void;
+    pub fn reclaim(self, completed: u64) void;   // slots retired at or before `completed` become allocatable
+    pub fn bindBuffers(self, prims: vk.DescriptorBufferInfo, clips: vk.DescriptorBufferInfo) void;
+    pub fn bind(self, cb: vk.CommandBuffer) void;
+};
+pub const PipelineCache = struct {   // handle, loaded, rejected: ?Reject, created
+    pub fn load(io: std.Io, gpu: *Gpu, dir: ?std.Io.Dir, shaders: [16]u8) PipelineCache;   // never fails
+    pub fn saveIfChanged(self: *PipelineCache, io: std.Io, dir: std.Io.Dir) void;          // tmp + sync + rename
+    pub fn destroy(self: *PipelineCache) void;
+};
+pub fn parse(bytes: []const u8, expect: Expect) Parsed;   // cache.zig; pure, fuzzed
+pub fn shaderIdentity() [16]u8;                            // interface hash + SPIR-V hash
+pub fn createPipelines(gpu: *Gpu, cache: *PipelineCache, heap: *const DescriptorHeap, color_format: vk.Format) !Pipelines;
+pub const Pipelines = struct { prim: vk.Pipeline, text_subpixel: ?vk.Pipeline, composite: vk.Pipeline, ... };
+```
+Deviations from the spec text: `PipelineCache.load` also takes the
+shader identity and an optional directory, `handle` is a field, and
+`reclaim` and `writeSlot` are added for slot reuse and resized
+textures. `features.wanted` now includes
+`descriptorBindingUpdateUnusedWhilePending`; the texture binding uses it
+and variable descriptor counts when the device enabled them.
+`mem.Texture` views use `Format.viewFormat()` (UNORM for sRGB) and
+`Format.swizzle()` (rrrr for r8).
+
+### Threading
+Single-threaded per object; `createPipelines` may run on a worker.
+
+### Ownership/lifetime
+The heap owns its layouts, samplers, pool and set; pipelines and the
+cache are destroyed by their owners before the `Gpu`.
+
+### Stability
+Internal to E02.
 
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
