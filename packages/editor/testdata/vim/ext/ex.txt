@@ -684,3 +684,35 @@ b
 --- after
 ¦a
 b
+
+=== s zs
+--- before
+¦foobar foobaz
+--- keys
+:s/foo\zsba\zez/Q/g<CR>
+--- after
+¦foobar fooQz
+
+=== s zs overlap
+--- before
+¦aaaa
+--- keys
+:s/a\zsa/X/g<CR>
+--- after
+¦aXaX
+
+=== s zs ampersand and groups
+--- before
+¦key=value
+--- keys
+:s/\(\w\+\)=\zs\(\w\+\)/[&|\1|\2]/<CR>
+--- after
+¦key=[value|key|value]
+
+=== s ze only
+--- before
+¦price 10 usd
+--- keys
+:s/\d\+\ze usd/N/<CR>
+--- after
+¦price N usd
