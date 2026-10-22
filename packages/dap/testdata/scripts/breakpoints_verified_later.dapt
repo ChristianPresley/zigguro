@@ -1,0 +1,17 @@
+# A breakpoint in a library that is not loaded yet: unverified at first,
+# verified by a `breakpoint` event once the module loads.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> setBreakpoints {"source": {"path": "${workspace}/lib/plugin.zig"}, "breakpoints": [{"line": 12}]}
+< {"body": {"breakpoints": [{"id": 7, "verified": false, "message": "module not loaded"}]}}
+> configurationDone
+< {}
+~ 20ms
+< event module {"reason": "new", "module": {"id": 1, "name": "libplugin.so", "path": "${workspace}/zig-out/lib/libplugin.so"}}
+< event breakpoint {"reason": "changed", "breakpoint": {"id": 7, "verified": true, "line": 12}}
+< event stopped {"reason": "breakpoint", "threadId": 1, "hitBreakpointIds": [7]}
+> disconnect
+< {}
