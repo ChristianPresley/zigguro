@@ -1,0 +1,12 @@
+#![allow(dead_code)]
+#[derive(Debug, Clone)]
+#[cfg(test)]
+#[serde(rename = "x")]
+#[doc = "docs"]
+#[rustfmt::skip]
+struct S;
+#![no_std]
+#[
+    inline
+]
+fn f() {}
