@@ -1,0 +1,11 @@
+pub fn main() !void {
+    var x: u8 = 0;
+    defer x += 1;
+    errdefer unreachable;
+    const y = if (x > 0) x else 1;
+    _ = y orelse 0;
+    const z = try g() catch |err| switch (err) {
+        else => return,
+    };
+    _ = z and true or false;
+}
