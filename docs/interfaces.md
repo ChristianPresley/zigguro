@@ -3250,6 +3250,73 @@ Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
 
+## zg_syntax.semantic (SemanticOverlay, Legend)
+
+### Defined in
+`packages/syntax/src/semantic/legend.zig`, `semantic/overlay.zig`,
+`highlight_names.zig` (`HighlightNames`); the document adapter is
+`DocumentSyntax.semanticOverlay`/`mergedTokens` in
+`packages/editor/src/model/syntax.zig`.
+
+### Implemented by
+E05.F04.S04.T01.
+
+### Consumed by
+E07 (feeds `textDocument/semanticTokens/full`, `/full/delta` and `/range`
+results), E04 (draws `mergedTokens`), E15 (themes resolve the extra names by
+dotted prefix through `HighlightNames.parentOf`).
+
+### Signature
+```zig
+pub const HighlightNames = struct {           // fixed ids first, extras from HighlightId.count
+    pub fn init(gpa) HighlightNames; pub fn deinit(n) void;
+    pub fn intern(n, dotted: []const u8) !HighlightId;
+    pub fn name(n, id) []const u8; pub fn parentOf(n, id) ?HighlightId; pub fn isWithin(n, id, ancestor) bool };
+pub const SemanticLegend = struct { types: []const []const u8, modifiers: []const []const u8,
+    pub fn compile(l, gpa, names: *HighlightNames) !CompiledLegend };
+pub const CompiledLegend = struct { pub fn resolve(c, ty: u32, mods: u32) !HighlightId; pub fn deinit(c) void };
+// Types: method -> function.method, parameter -> variable.parameter, class -> type.class,
+// enumMember -> constant.enum, ...; unknown -> semantic.<name>. One modifier refines the name:
+// defaultLibrary gives <family>.builtin (function/variable/type/constant), else the first of deprecated,
+// readonly, static, abstract, async, declaration, definition, modification, documentation, custom ones.
+pub const SemToken = struct { start: u32, end: u32, hl: HighlightId };    // bytes of the line
+pub const DeltaEdit = struct { start: u32, delete_count: u32, data: []const u32 };
+pub const SemanticOverlay = struct { enc: zg_core.utf8.Encoding = .utf16, version: u64,
+    pub fn init(gpa, line_count: u64, version: u64) !SemanticOverlay; pub fn deinit(o) void;
+    pub fn onEdits(o, edits: []const LineEdit, new_version: u64) !void;     // edited lines lose tokens
+    pub fn applyFull(o, version, result_id: ?[]const u8, data: []const u32, legend: *CompiledLegend, src: LineSource) !bool;
+    pub fn applyDelta(o, version, result_id, edits: []const DeltaEdit, legend, src) !bool;
+    pub fn applyRange(o, version, first: u64, end: u64, data, legend, src) !bool;
+    pub fn lastResultId(o) ?[]const u8;
+    pub fn lineTokens(o, line: u64) []const SemToken; pub fn isStale(o, line, tokens_version) bool;
+    pub fn setKeep(o, families: []const HighlightId) void;                  // default comment, string, character
+    pub fn mergeLine(o, line, lexical: []const Token, line_len: u32, out: *ArrayList(Token), gpa) !void };
+// zg_editor.model.syntax
+pub fn DocumentSyntax.semanticOverlay(ds, tree) !*SemanticOverlay;          // created on first use
+pub fn DocumentSyntax.clearSemantic(ds) void;
+pub fn DocumentSyntax.mergedTokens(ds, tree, line: u64, out: *ArrayList(Token)) !void;
+```
+A result carries the document version it was computed for. Older results
+are mapped through the line edits since (the last 64 changes); tokens on
+lines edited after that version are dropped and those lines draw lexical
+tokens until a newer result arrives. `apply*` returns false when a result
+cannot be used (from the future, older than the log, or a delta that does
+not fit the previous array): E07 re-requests in full. Semantic highlights
+replace lexical ones except inside the kept families, so escapes inside
+strings stay visible; token kinds (and brackets) stay lexical.
+
+### Threading
+The UI thread, with the `DocumentSyntax` it belongs to. Results are decoded
+there (a 100-line viewport merges in about 7 µs).
+
+### Ownership/lifetime
+The overlay copies `data`, delta edits and result ids. A `CompiledLegend`
+borrows its `HighlightNames`, which must outlive it and every id it gave
+out; one legend per server can be shared by its documents.
+
+### Stability
+Unstable until E07 feeds it and E04 draws `mergedTokens`.
+
 ## zg_editor.view.markdown_highlighter (MarkdownHighlighter)
 
 ### Defined in
