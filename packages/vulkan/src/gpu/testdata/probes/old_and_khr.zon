@@ -1,0 +1,13 @@
+// Devices that fail one requirement each, and a 1.2 device with the KHR
+// dynamic rendering and synchronization2 extensions.
+.{
+    .{ .name = "Old GPU (Vulkan 1.1)", .api = .{ 1, 1 } },
+    .{
+        .name = "Vulkan 1.2 GPU with KHR extensions",
+        .api = .{ 1, 2 },
+        .exts = .{ .khr_dynamic_rendering, .khr_synchronization2 },
+    },
+    .{ .name = "No timeline semaphores", .unsupported = .{"v12.timeline_semaphore"} },
+    .{ .name = "Vulkan 1.2 GPU without dynamic rendering", .api = .{ 1, 2 }, .exts = .{.khr_synchronization2} },
+    .{ .name = "Compute only", .present = false },
+}
