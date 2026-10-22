@@ -13,6 +13,7 @@ const mark = @import("../shell/mark.zig");
 const vtt = @import("vtt.zig");
 const dump = @import("dump.zig");
 const invariants = @import("invariants.zig");
+const input_steps = @import("input_steps.zig");
 
 /// A file the scripts can `@send-file`, by path relative to the corpus root.
 pub const File = struct { []const u8, []const u8 };
@@ -82,6 +83,9 @@ pub fn run(gpa: Allocator, s: vtt.Script, o: RunOptions) !RunResult {
     var report: std.Io.Writer.Allocating = .init(gpa);
     defer report.deinit();
     const w = &report.writer;
+    // Bytes the input steps produced, for `@expect-input`.
+    var sent: std.ArrayList(u8) = .empty;
+    defer sent.deinit(gpa);
 
     for (s.steps, s.lines) |step, line| {
         if (step == .size and term == null) {
@@ -94,7 +98,7 @@ pub fn run(gpa: Allocator, s: vtt.Script, o: RunOptions) !RunResult {
             term.?.mark_sink = marks.sink();
         }
         const t = &term.?;
-        const ok = try runStep(gpa, t, &marks, step, o, w);
+        const ok = try runStep(gpa, t, &marks, &sent, step, o, w);
         if (ok) {
             invariants.checkInvariants(t) catch |err| {
                 try w.print("invariant broken after this step: {t}\n", .{err});
@@ -118,7 +122,7 @@ fn failed(gpa: Allocator, s: vtt.Script, o: RunOptions, line: u32, report: *std.
 }
 
 /// Runs one step; false (with a message in `w`) when an expectation fails.
-fn runStep(gpa: Allocator, t: *Terminal, marks: *Marks, step: vtt.Step, o: RunOptions, w: *std.Io.Writer) !bool {
+fn runStep(gpa: Allocator, t: *Terminal, marks: *Marks, sent: *std.ArrayList(u8), step: vtt.Step, o: RunOptions, w: *std.Io.Writer) !bool {
     switch (step) {
         .size, .resize => |sz| try t.resize(sz[0], sz[1]),
         .send => |bytes| t.feed(bytes),
@@ -153,6 +157,21 @@ fn runStep(gpa: Allocator, t: *Terminal, marks: *Marks, step: vtt.Step, o: RunOp
             return false;
         },
         .expect_cell => |e| return expectCell(t, e, w),
+        .key, .mouse, .paste, .focus => input_steps.run(gpa, t, step, sent) catch |err| switch (err) {
+            error.BadKey, error.BadMouse, error.BadString => {
+                try w.print("@{t}: malformed event ({t})\n", .{ step, err });
+                return false;
+            },
+            else => |e| return e,
+        },
+        .expect_input => |want| {
+            if (std.mem.eql(u8, want, sent.items)) {
+                sent.clearRetainingCapacity();
+                return true;
+            }
+            try w.print("@expect-input:\n  expected \"{f}\"\n  got      \"{f}\"\n", .{ std.zig.fmtString(want), std.zig.fmtString(sent.items) });
+            return false;
+        },
         .expect_mark => |e| {
             while (marks.next < marks.list.items.len) {
                 const m = marks.list.items[marks.next];
