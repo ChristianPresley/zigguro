@@ -1,5 +1,6 @@
 //! kernel32: modules, events and waits, global memory, code pages,
-//! high-resolution time and Toolhelp snapshots.
+//! high-resolution time, Toolhelp snapshots, and processes, pipes, job
+//! objects and pseudoconsoles (ConPTY).
 //!
 //! planned: E01.F02.S01.T02 (modules, events, timers), E01.F02.S04.T01
 //! (global memory), E06 foreground-process lookup (Toolhelp).
@@ -80,3 +81,66 @@ pub extern "kernel32" fn CreateToolhelp32Snapshot(flags: DWORD, pid: DWORD) call
 pub extern "kernel32" fn Process32FirstW(HANDLE, *t.PROCESSENTRY32W) callconv(.winapi) BOOL;
 /// The next process in a snapshot.
 pub extern "kernel32" fn Process32NextW(HANDLE, *t.PROCESSENTRY32W) callconv(.winapi) BOOL;
+
+/// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`.
+pub const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x0002_0016;
+/// `EXTENDED_STARTUPINFO_PRESENT`.
+pub const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x0008_0000;
+/// `CREATE_UNICODE_ENVIRONMENT`.
+pub const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x0000_0400;
+/// `CREATE_SUSPENDED`.
+pub const CREATE_SUSPENDED: DWORD = 0x0000_0004;
+/// `STARTF_USESTDHANDLES`: the child takes `hStd*` from STARTUPINFO (null
+/// here), so it does not inherit the parent's console or stdio.
+pub const STARTF_USESTDHANDLES: DWORD = 0x0000_0100;
+/// `JobObjectExtendedLimitInformation`.
+pub const JobObjectExtendedLimitInformation: i32 = 9;
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+pub const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: DWORD = 0x0000_2000;
+/// `STILL_ACTIVE` (`GetExitCodeProcess` of a running process).
+pub const STILL_ACTIVE: DWORD = 259;
+/// `ERROR_FILE_NOT_FOUND`.
+pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
+/// `ERROR_PATH_NOT_FOUND`.
+pub const ERROR_PATH_NOT_FOUND: DWORD = 3;
+/// `ERROR_ACCESS_DENIED`.
+pub const ERROR_ACCESS_DENIED: DWORD = 5;
+/// `ERROR_DIRECTORY`.
+pub const ERROR_DIRECTORY: DWORD = 267;
+/// `ERROR_BAD_EXE_FORMAT`.
+pub const ERROR_BAD_EXE_FORMAT: DWORD = 193;
+
+/// Creates an anonymous (synchronous) pipe.
+pub extern "kernel32" fn CreatePipe(read: *?HANDLE, write: *?HANDLE, attrs: ?*const t.SECURITY_ATTRIBUTES, size: DWORD) callconv(.winapi) BOOL;
+/// Creates a pseudoconsole on two pipes (Windows 10 1809+).
+pub extern "kernel32" fn CreatePseudoConsole(size: t.COORD, input: HANDLE, output: HANDLE, flags: DWORD, hpc: *?t.HPCON) callconv(.winapi) t.HRESULT;
+/// Resizes a pseudoconsole.
+pub extern "kernel32" fn ResizePseudoConsole(t.HPCON, size: t.COORD) callconv(.winapi) t.HRESULT;
+/// Closes a pseudoconsole; its client processes lose their console.
+pub extern "kernel32" fn ClosePseudoConsole(t.HPCON) callconv(.winapi) void;
+/// Sizes or initializes a process attribute list.
+pub extern "kernel32" fn InitializeProcThreadAttributeList(list: ?*anyopaque, count: DWORD, flags: DWORD, size: *usize) callconv(.winapi) BOOL;
+/// Sets one process attribute.
+pub extern "kernel32" fn UpdateProcThreadAttribute(list: *anyopaque, flags: DWORD, attr: usize, value: ?*const anyopaque, size: usize, prev: ?*anyopaque, ret_size: ?*usize) callconv(.winapi) BOOL;
+/// Frees an attribute list's contents.
+pub extern "kernel32" fn DeleteProcThreadAttributeList(list: *anyopaque) callconv(.winapi) void;
+/// Starts a process.
+pub extern "kernel32" fn CreateProcessW(app: ?LPCWSTR, cmdline: ?[*:0]u16, proc_attrs: ?*const t.SECURITY_ATTRIBUTES, thread_attrs: ?*const t.SECURITY_ATTRIBUTES, inherit: BOOL, flags: DWORD, env: ?*const anyopaque, cwd: ?LPCWSTR, si: *const t.STARTUPINFOW, pi: *t.PROCESS_INFORMATION) callconv(.winapi) BOOL;
+/// Resumes a suspended thread.
+pub extern "kernel32" fn ResumeThread(HANDLE) callconv(.winapi) DWORD;
+/// Ends a process.
+pub extern "kernel32" fn TerminateProcess(HANDLE, code: UINT) callconv(.winapi) BOOL;
+/// A process's exit code, or `STILL_ACTIVE`.
+pub extern "kernel32" fn GetExitCodeProcess(HANDLE, code: *DWORD) callconv(.winapi) BOOL;
+/// Creates a job object.
+pub extern "kernel32" fn CreateJobObjectW(attrs: ?*const t.SECURITY_ATTRIBUTES, name: ?LPCWSTR) callconv(.winapi) ?HANDLE;
+/// Sets job limits.
+pub extern "kernel32" fn SetInformationJobObject(HANDLE, class: i32, info: *const anyopaque, size: DWORD) callconv(.winapi) BOOL;
+/// Puts a process in a job.
+pub extern "kernel32" fn AssignProcessToJobObject(job: HANDLE, process: HANDLE) callconv(.winapi) BOOL;
+/// Ends every process in a job.
+pub extern "kernel32" fn TerminateJobObject(HANDLE, code: UINT) callconv(.winapi) BOOL;
+/// Reads from a file or pipe.
+pub extern "kernel32" fn ReadFile(HANDLE, buf: [*]u8, len: DWORD, read: ?*DWORD, overlapped: ?*anyopaque) callconv(.winapi) BOOL;
+/// Writes to a file or pipe.
+pub extern "kernel32" fn WriteFile(HANDLE, buf: [*]const u8, len: DWORD, written: ?*DWORD, overlapped: ?*anyopaque) callconv(.winapi) BOOL;

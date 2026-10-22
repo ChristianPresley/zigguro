@@ -444,18 +444,88 @@ pub const PROCESSENTRY32W = extern struct {
 /// `COMDLG_FILTERSPEC` (`IFileDialog.SetFileTypes`).
 pub const COMDLG_FILTERSPEC = extern struct { pszName: LPCWSTR, pszSpec: LPCWSTR };
 
+/// A pseudoconsole (`CreatePseudoConsole`).
+pub const HPCON = *opaque {};
+
+/// `COORD`.
+pub const COORD = extern struct { X: i16, Y: i16 };
+
+/// `SECURITY_ATTRIBUTES`.
+pub const SECURITY_ATTRIBUTES = extern struct {
+    nLength: DWORD = @sizeOf(SECURITY_ATTRIBUTES),
+    lpSecurityDescriptor: ?*anyopaque = null,
+    bInheritHandle: BOOL = 0,
+};
+
+/// `STARTUPINFOW`.
+pub const STARTUPINFOW = extern struct {
+    cb: DWORD = @sizeOf(STARTUPINFOW),
+    lpReserved: ?LPCWSTR = null,
+    lpDesktop: ?LPCWSTR = null,
+    lpTitle: ?LPCWSTR = null,
+    dwX: DWORD = 0,
+    dwY: DWORD = 0,
+    dwXSize: DWORD = 0,
+    dwYSize: DWORD = 0,
+    dwXCountChars: DWORD = 0,
+    dwYCountChars: DWORD = 0,
+    dwFillAttribute: DWORD = 0,
+    dwFlags: DWORD = 0,
+    wShowWindow: WORD = 0,
+    cbReserved2: WORD = 0,
+    lpReserved2: ?*u8 = null,
+    hStdInput: ?HANDLE = null,
+    hStdOutput: ?HANDLE = null,
+    hStdError: ?HANDLE = null,
+};
+
+/// `STARTUPINFOEXW`.
+pub const STARTUPINFOEXW = extern struct {
+    StartupInfo: STARTUPINFOW,
+    lpAttributeList: ?*anyopaque = null,
+};
+
+/// `PROCESS_INFORMATION`.
+pub const PROCESS_INFORMATION = extern struct {
+    hProcess: ?HANDLE = null,
+    hThread: ?HANDLE = null,
+    dwProcessId: DWORD = 0,
+    dwThreadId: DWORD = 0,
+};
+
+/// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` (with its basic limits and I/O
+/// counters inlined).
+pub const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
+    PerProcessUserTimeLimit: i64 = 0,
+    PerJobUserTimeLimit: i64 = 0,
+    LimitFlags: DWORD = 0,
+    MinimumWorkingSetSize: usize = 0,
+    MaximumWorkingSetSize: usize = 0,
+    ActiveProcessLimit: DWORD = 0,
+    Affinity: usize = 0,
+    PriorityClass: DWORD = 0,
+    SchedulingClass: DWORD = 0,
+    IoCounters: [6]u64 = @splat(0),
+    ProcessMemoryLimit: usize = 0,
+    JobMemoryLimit: usize = 0,
+    PeakProcessMemoryUsed: usize = 0,
+    PeakJobMemoryUsed: usize = 0,
+};
+
 /// Struct sizes for 64-bit Windows, from the SDK headers.
 const sizes_64 = .{
-    .{ RECT, 16 },             .{ POINT, 8 },             .{ MSG, 48 },
-    .{ WNDCLASSEXW, 80 },      .{ WINDOWPOS, 40 },        .{ NCCALCSIZE_PARAMS, 56 },
-    .{ MINMAXINFO, 40 },       .{ MONITORINFOEXW, 104 },  .{ TRACKMOUSEEVENT, 24 },
-    .{ FLASHWINFO, 32 },       .{ ICONINFO, 32 },         .{ PAINTSTRUCT, 72 },
-    .{ BITMAPINFOHEADER, 40 }, .{ BITMAPINFO, 44 },       .{ COMPOSITIONFORM, 28 },
-    .{ CANDIDATEFORM, 32 },    .{ RAWINPUTDEVICE, 16 },   .{ RAWINPUTHEADER, 24 },
-    .{ RAWMOUSE, 24 },         .{ RAWKEYBOARD, 16 },      .{ RAWINPUT, 48 },
-    .{ POINTER_INFO, 96 },     .{ GUID, 16 },             .{ FORMATETC, 32 },
-    .{ STGMEDIUM, 24 },        .{ DROPFILES, 20 },        .{ MARGINS, 16 },
-    .{ DWM_TIMING_INFO, 292 }, .{ PROCESSENTRY32W, 568 }, .{ COMDLG_FILTERSPEC, 16 },
+    .{ RECT, 16 },             .{ POINT, 8 },                .{ MSG, 48 },
+    .{ WNDCLASSEXW, 80 },      .{ WINDOWPOS, 40 },           .{ NCCALCSIZE_PARAMS, 56 },
+    .{ MINMAXINFO, 40 },       .{ MONITORINFOEXW, 104 },     .{ TRACKMOUSEEVENT, 24 },
+    .{ FLASHWINFO, 32 },       .{ ICONINFO, 32 },            .{ PAINTSTRUCT, 72 },
+    .{ BITMAPINFOHEADER, 40 }, .{ BITMAPINFO, 44 },          .{ COMPOSITIONFORM, 28 },
+    .{ CANDIDATEFORM, 32 },    .{ RAWINPUTDEVICE, 16 },      .{ RAWINPUTHEADER, 24 },
+    .{ RAWMOUSE, 24 },         .{ RAWKEYBOARD, 16 },         .{ RAWINPUT, 48 },
+    .{ POINTER_INFO, 96 },     .{ GUID, 16 },                .{ FORMATETC, 32 },
+    .{ STGMEDIUM, 24 },        .{ DROPFILES, 20 },           .{ MARGINS, 16 },
+    .{ DWM_TIMING_INFO, 292 }, .{ PROCESSENTRY32W, 568 },    .{ COMDLG_FILTERSPEC, 16 },
+    .{ COORD, 4 },             .{ SECURITY_ATTRIBUTES, 24 }, .{ STARTUPINFOW, 104 },
+    .{ STARTUPINFOEXW, 112 },  .{ PROCESS_INFORMATION, 24 }, .{ JOBOBJECT_EXTENDED_LIMIT_INFORMATION, 144 },
 };
 
 comptime {
