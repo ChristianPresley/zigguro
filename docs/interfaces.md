@@ -2731,6 +2731,7 @@ Internal to E02 behind `r2d.Renderer`.
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
 structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
 E05.F04.S02.T03 (JSON/JSONC, TOML and shell),
+E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2814,7 +2815,8 @@ pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
 pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language,
-    json_language, jsonc_language, toml_language, shell_language: Language;
+    json_language, jsonc_language, toml_language, shell_language,
+    javascript_language, typescript_language, jsx_language, tsx_language, css_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
@@ -2840,6 +2842,13 @@ pub fn json.lexLineWith(comptime dialect: enum { json, jsonc }, st, s, out) void
 // langs/shell.zig: `mode` = stack depth | queued here-documents << 8 | in-body 0x800 | continued 0x1000 |
 // case pattern 0x2000; `aux` = context stack (shell.Ctx codes, at most 8), then each here-document as a
 // header byte (0x80 strip tabs, 0x40 quoted, length) and its delimiter (at most 4 queued).
+// langs/js.zig: one lexer for JS/TS/JSX/TSX. `mode` bit 0 = "a `/` divides" (the regex-vs-division heuristic),
+// then block comment and string-continuation bits; `aux` = frame stack (js.Frame: template text, `${ }` and JSX
+// `{ }` expressions with their open-brace count, JSX opening tag, closing tag, children; at most 16).
+pub const js.Dialect = packed struct { typescript: bool = false, jsx: bool = false };
+pub fn js.lexLineWith(comptime d: Dialect, st, s, out) void;
+// langs/css.zig: `depth` = brace depth (selectors at 0, declarations inside; a line whose `{` comes before `;`/`}`
+// is a nested selector); `mode` = block comment | value continues | at-rule prelude.
 ```
 
 ### Threading
