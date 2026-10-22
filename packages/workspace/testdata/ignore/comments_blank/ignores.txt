@@ -1,0 +1,6 @@
+=== .gitignore
+# a comment
+
+   
+#README.md
+*.tmp

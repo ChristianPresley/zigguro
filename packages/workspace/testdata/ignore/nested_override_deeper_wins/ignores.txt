@@ -1,0 +1,6 @@
+=== .gitignore
+!*.html
+=== docs/.gitignore
+*.html
+=== docs/guide/.gitignore
+!intro.html

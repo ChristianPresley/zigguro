@@ -1,0 +1,4 @@
+=== .gitignore
+\#hash.txt
+\!bang.txt
+x\ y.txt
