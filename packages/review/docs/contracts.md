@@ -75,3 +75,33 @@ The decisions come from the queue's `decided` event, which the
 records and re-emitted by the store's `tail`. `zg agent` takes them in
 when a turn ends and queues the outcomes of its own changesets for its
 next request.
+
+## E09 AI SCM proposals as review items (E12.F05.S03.T01)
+
+`scm.ScmReviewPort` implements `zg_scm.ReviewPort`. Each `Proposal`
+(describe, split, resolve, land) becomes a changeset with
+`origin = .scm_proposal{kind, review}`, labelled with the summary and
+carrying the rationale and lane. The review id is the changeset id.
+
+| E09 provides | What E12 does with it |
+| --- | --- |
+| `PreviewFiles.files(arena, proposal)` | One `PreviewFile{path, base, new}` per path that the preview changes against the current view. A describe proposal sends `.zigguro/scm/description/<change>` with the old and new text. The files show the preview and are never written: `Applier.apply` returns `error.ScmProposal` for these changesets. |
+| `ScmActions.decide(item, decision)` | Carries out `ScmReviewPort.decide(cs, ScmDecision)`: describe approve (optionally with edited text) or reject, split and resolve approve or reject, and land with a `ReviewDecision`. `.conflicted` keeps the item open, because the preview no longer adopts cleanly. Otherwise the item is marked approved (applied) or rejected. `RepoActions` adopts or discards the preview on a `zg_scm.Repo` and forwards landing decisions to `LandingQueue.onReviewDecision`. It refuses edited descriptions, which need E09's describe operation. |
+| `LandingQueue.events()` | `bindLanding(lq)` mirrors each lane state onto `Item.landing`. `returned_conflict` and `returned_checks_failed` reopen the item with the reason. `rejected` and `cancelled` close it. |
+
+`status` maps changeset states as follows:
+
+- pending or partially applied → `in_review`
+- applied → `approved`
+- rejected → `rejected`
+- superseded or discarded → `cancelled`
+- anything that is not a proposal → `unknown`
+
+E09 calls the port on its worker thread, so the binding must run it under the queue's owner (the glue mutex).
+
+Still open:
+
+- per-region resolve decisions, which wait for E09's `RegionDecision`
+- persisting `Item` (preview op, lane) across restarts
+- the proposal view in the IDE
+- a zg_scm read model behind `PreviewFiles`
