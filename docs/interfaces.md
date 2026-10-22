@@ -993,7 +993,7 @@ DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
 first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
-E01.F02.S01.T02 / E01.F02.S05.T01.
+E01.F02.S01.T02 / E01.F02.S05.T01 / E01.F02.S04.T01.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1018,6 +1018,15 @@ DPI before it is shown. Each CPU present stages `Event.present_feedback`
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
 rate; `WM_DISPLAYCHANGE` and `WM_DPICHANGED` stage `monitors_changed`.
 Frames keep coming inside the modal size/move loop (a `WM_TIMER`).
+The clipboard (`clipboard.zig`) maps `text/plain;charset=utf-8` to
+`CF_UNICODETEXT` (LF ↔ CRLF), `text/html` to "HTML Format" (`cf_html.zig`),
+`text/uri-list` to `CF_HDROP` (`hdrop.zig`), `image/png` to "PNG" and the
+internal MIME to a private format. Payloads over 4 MiB are offered with
+delayed rendering and rendered on `WM_RENDERFORMAT`. `WM_CLIPBOARDUPDATE`
+from another writer stages `clipboard_changed`; our own writes do not.
+Reads over 64 KiB come back as large payloads freed with `release`.
+Windows has no primary selection: writes to it are ignored and reads
+return empty.
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1031,8 +1040,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 
 ### Stability
 Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
-raw input, pen and touch, IME, the Win32 clipboard (`clipboard_read`
-answers only from our own `clipboard_write`), OLE drag and drop,
+raw input, pen and touch, IME, bitmap clipboard formats (`CF_DIB`),
+OLE drag and drop,
 cursors, cloaking until the first present, the high-resolution waitable
 pacing timer and per-monitor refresh rates.
 
