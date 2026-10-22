@@ -1,0 +1,39 @@
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+type Point struct{ X, Y int }
+
+const Max = 10
+
+var global int
+
+func main() {
+	for i := 0; i < Max; i++ {
+		if i%2 == 0 {
+			continue
+		} else if i > 8 {
+			break
+		}
+	}
+	switch x := 1; x {
+	case 1:
+		fallthrough
+	default:
+	}
+	select {
+	case v := <-ch:
+		_ = v
+	}
+	defer cleanup()
+	go worker()
+	goto end
+end:
+	for k, v := range m {
+		_, _ = k, v
+	}
+	return
+}

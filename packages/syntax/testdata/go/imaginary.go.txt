@@ -1,0 +1,7 @@
+a := 1i
+b := 0i
+c := 2.5i
+d := 1e3i
+e := 0x1p-2i
+f := 0b1i
+g := complex(1, 2) + 3i

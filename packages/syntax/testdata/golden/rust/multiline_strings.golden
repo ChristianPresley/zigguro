@@ -1,0 +1,7 @@
+1| keyword.storage:let variable:a operator:= string:"first line
+2| string:second line  string.escape:\" string:escaped string.escape:\"
+3| string:third line" punctuation.delimiter:;
+4| keyword.storage:let variable:b operator:= string:"continued  string.escape:\
+5| string:    without newline" punctuation.delimiter:;
+6| keyword.storage:let variable:after operator:= number:1 punctuation.delimiter:;
+7| keyword.storage:let variable:c operator:= string:"unterminated

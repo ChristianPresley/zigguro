@@ -1,0 +1,16 @@
+#define MAX 100
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define STR(x) #x
+#define CAT(a, b) a ## b
+#undef MAX
+#if defined(DEBUG) && DEBUG > 1
+#  define LOG(...) printf(__VA_ARGS__)
+#elif 0
+#else
+#endif
+#ifdef _WIN32
+#pragma once
+#error "unsupported"
+#endif
+  #  line 42 "file.c"
+int x = MAX;

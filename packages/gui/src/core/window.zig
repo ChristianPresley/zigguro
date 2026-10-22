@@ -81,7 +81,48 @@ const Cmd = union(enum) {
     pop_clip,
     /// A scrollbar thumb, drawn above the scrolled content.
     thumb: struct { r: Rect, color: geom.Color },
+    /// Starts a scroll layer: the commands up to `layer_end` draw into
+    /// it, moved by `shift` (window → layer coordinates). `dmg` indexes
+    /// `Window.layer_damage`.
+    layer_begin: struct { id: u32, size: [2]u32, origin: [2]i32, shift: Vec2, dmg: [2]u32 },
+    /// Ends the layer and composites it into `dst`, `frac` physical
+    /// pixels further on (the sub-pixel scroll).
+    layer_end: struct { id: u32, dst: Rect, frac: Vec2 },
 };
+
+/// The scroll layer being painted.
+const LayerCtx = struct {
+    /// Window → layer coordinates (logical) of this frame's rects and of
+    /// the last paint's rects.
+    k_new: Vec2,
+    k_old: Vec2,
+    size: [2]u32,
+    scale: f32,
+    /// The whole layer repaints.
+    full: bool,
+    /// Its `layer_begin` in `cmds`.
+    cmd: usize,
+};
+
+/// The physical pixels of layer `size` that logical `r` covers, rounded
+/// out; null when none.
+fn pxIn(r: Rect, scale: f32, size: [2]u32) ?canvas.PxRect {
+    const x0 = @max(0, @floor(r.x * scale));
+    const y0 = @max(0, @floor(r.y * scale));
+    const x1 = @min(@as(f32, @floatFromInt(size[0])), @ceil((r.x + r.w) * scale));
+    const y1 = @min(@as(f32, @floatFromInt(size[1])), @ceil((r.y + r.h) * scale));
+    if (!(x1 > x0 and y1 > y0)) return null;
+    return .{ .x = @intFromFloat(x0), .y = @intFromFloat(y0), .w = @intFromFloat(x1 - x0), .h = @intFromFloat(y1 - y0) };
+}
+
+fn approxEql(a: Rect, b: Rect) bool {
+    const e = 0.01;
+    return @abs(a.x - b.x) < e and @abs(a.y - b.y) < e and @abs(a.w - b.w) < e and @abs(a.h - b.h) < e;
+}
+
+fn wrapMod(v: i32, n: u32) i32 {
+    return @mod(v, @as(i32, @intCast(@max(n, 1))));
+}
 
 /// A window: node tree, views, layout, paint cache and input state.
 pub const Window = struct {
@@ -112,6 +153,10 @@ pub const Window = struct {
     cur_ops: u1 = 0,
     cmds: std.ArrayList(Cmd) = .empty,
     damage: damage_mod.Damage = .{},
+    /// The scroll layer being painted (layers do not nest).
+    layer: ?LayerCtx = null,
+    /// Content damage of this frame's scroll layers, physical pixels.
+    layer_damage: std.ArrayList(canvas.PxRect) = .empty,
     canvas: ?canvas.Canvas = null,
     glyph_scratch: std.ArrayList(canvas.GlyphQuad) = .empty,
     z_scratch: std.ArrayList(NodeId) = .empty,
@@ -218,6 +263,7 @@ pub const Window = struct {
         w.ops[0].deinit(gpa);
         w.ops[1].deinit(gpa);
         w.cmds.deinit(gpa);
+        w.layer_damage.deinit(gpa);
         w.glyph_scratch.deinit(gpa);
         w.z_scratch.deinit(gpa);
         w.hits.deinit(gpa);
@@ -473,13 +519,15 @@ pub const Window = struct {
         const new = &w.ops[1 - w.cur_ops];
         new.clearRetainingCapacity();
         w.cmds.clearRetainingCapacity();
+        w.layer_damage.clearRetainingCapacity();
+        w.layer = null;
         w.hits.clear();
         if (w.full_repaint) {
             w.damage.add(.{ .w = w.size.w, .h = w.size.h });
             for (w.store.hot.items(.flags)[1..]) |*f| f.paint_dirty = true;
         }
         const viewport: Rect = .{ .w = w.size.w, .h = w.size.h };
-        w.walkPaint(w.root, .{}, viewport, false);
+        w.walkPaint(w.root, .{}, viewport, viewport, false);
         w.cur_ops = 1 - w.cur_ops;
         w.hits.finish(w.gpa, w.size) catch {};
         w.stats.ops = @intCast(new.ops.items.len);
@@ -487,17 +535,18 @@ pub const Window = struct {
         w.store.paint_pending = false;
     }
 
-    /// Paints `id` and its subtree. `cull` (children of a scroll
-    /// container) skips subtrees whose box lies outside `clip`; content
+    /// Paints `id` and its subtree. `clip` is what shows of it; `cull`
+    /// (children of a scroll container) skips subtrees whose box lies
+    /// outside `cull_clip` (the clip, or a scroll layer's extent); content
     /// that overflows its own box there is skipped with it.
-    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect, cull: bool) void {
+    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect, cull_clip: Rect, cull: bool) void {
         const s = &w.store;
         const i = id.index;
         var fl = s.hot.items(.flags)[i];
         const old_abs = s.absRect(id);
         if (fl.hidden) {
             if (fl.painted) {
-                w.damage.add(old_abs.outset(w.ringExtent(fl)).intersect(clip));
+                w.addNodeDamage(old_abs.outset(w.ringExtent(fl)), clip, true);
                 s.hot.items(.flags)[i].painted = false;
             }
             return;
@@ -505,19 +554,20 @@ pub const Window = struct {
         const abs = s.relRect(id).translate(origin);
         if (cull) {
             const ext = w.ringExtent(fl);
-            if (abs.outset(ext).intersect(clip).isEmpty()) {
+            if (abs.outset(ext).intersect(cull_clip).isEmpty()) {
                 if (fl.painted) {
-                    w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
+                    w.addNodeDamage(old_abs.outset(ext), clip.outset(ext), true);
                     s.hot.items(.flags)[i].painted = false;
                 }
                 return;
             }
         }
-        const moved = !fl.painted or !old_abs.eql(abs);
+        // Inside a scroll layer, moving with the scroll is not a change.
+        const moved = !fl.painted or if (w.layer) |l| !approxEql(old_abs.translate(l.k_old), abs.translate(l.k_new)) else !old_abs.eql(abs);
         if (fl.paint_dirty or moved) {
             const ext = w.ringExtent(fl);
-            if (fl.painted) w.damage.add(old_abs.outset(ext).intersect(clip.outset(ext)));
-            w.damage.add(abs.outset(ext).intersect(clip.outset(ext)));
+            if (fl.painted) w.addNodeDamage(old_abs.outset(ext), clip.outset(ext), true);
+            w.addNodeDamage(abs.outset(ext), clip.outset(ext), false);
         }
         const new = &w.ops[1 - w.cur_ops];
         const old = &w.ops[w.cur_ops];
@@ -558,12 +608,15 @@ pub const Window = struct {
 
         const st = &s.cold.items[i].style;
         var child_clip = clip;
+        var child_cull = cull_clip;
         if (fl.clips or st.clip) {
             child_clip = clip.intersect(abs);
+            child_cull = cull_clip.intersect(abs);
             w.cmds.append(w.gpa, .{ .push_clip = .{ .r = abs, .radius = st.radius } }) catch {};
         }
         const scroll = s.cold.items[i].scroll;
         const child_origin: Vec2 = .{ .x = abs.x - scroll.x, .y = abs.y - scroll.y };
+        const layered = w.beginLayer(id, abs, scroll, &child_cull);
         // Children in z order (stable for equal z).
         var needs_sort = false;
         var it = s.children(id);
@@ -575,7 +628,7 @@ pub const Window = struct {
         }
         if (!needs_sort) {
             it = s.children(id);
-            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, st.scrolls());
+            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, child_cull, st.scrolls());
         } else {
             const start = w.z_scratch.items.len;
             it = s.children(id);
@@ -588,12 +641,131 @@ pub const Window = struct {
             }.lt);
             var k: usize = 0;
             while (start + k < w.z_scratch.items.len and k < kids.len) : (k += 1) {
-                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, st.scrolls());
+                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, child_cull, st.scrolls());
             }
             w.z_scratch.shrinkRetainingCapacity(start);
         }
+        if (layered) w.endLayer(abs, scroll, clip);
         if (st.scrolls()) w.addThumbs(id, abs);
         if (fl.clips or st.clip) w.cmds.append(w.gpa, .pop_clip) catch {};
+    }
+
+    /// Marks `r` (window coordinates; `old`: as painted last time) as
+    /// changed: in the window, or in the open scroll layer's content.
+    fn addNodeDamage(w: *Window, r: Rect, clip: Rect, old: bool) void {
+        if (w.layer == null) {
+            w.damage.add(r.intersect(clip));
+            return;
+        }
+        const ctx = &w.layer.?;
+        if (ctx.full) return;
+        const lr = r.translate(if (old) ctx.k_old else ctx.k_new);
+        const px = pxIn(lr, ctx.scale, ctx.size) orelse return;
+        w.layer_damage.append(w.gpa, px) catch {
+            ctx.full = true;
+        };
+    }
+
+    /// Smallest viewport side (logical pixels) that gets a scroll layer.
+    pub const min_layer_side: f32 = 32;
+    /// More content damage rects than this merge into their bounds.
+    const max_layer_damage = 16;
+
+    /// Opens a scroll layer for scroll container `id` when the canvas
+    /// keeps layers (else draws in place). The layer is the viewport plus
+    /// a pixel (for the sub-pixel offset); a scroll by whole pixels moves
+    /// its wrap origin and repaints only the exposed strips. Sets `cull`
+    /// to the layer's extent.
+    fn beginLayer(w: *Window, id: NodeId, abs: Rect, scroll: Vec2, cull: *Rect) bool {
+        const cold = &w.store.cold.items[id.index];
+        const has = if (w.canvas) |c| c.hasLayers() else false;
+        if (!cold.style.scrolls() or !has or w.layer != null or abs.w < min_layer_side or abs.h < min_layer_side) {
+            cold.layer = null;
+            return false;
+        }
+        const sc = w.scale;
+        const size = [2]u32{ @intFromFloat(@ceil(abs.w * sc) + 1), @intFromFloat(@ceil(abs.h * sc) + 1) };
+        const si = [2]i32{ @intFromFloat(@floor(scroll.x * sc)), @intFromFloat(@floor(scroll.y * sc)) };
+        const sif: Vec2 = .{ .x = @as(f32, @floatFromInt(si[0])) / sc, .y = @as(f32, @floatFromInt(si[1])) / sc };
+        const k: Vec2 = .{ .x = scroll.x - abs.x, .y = scroll.y - abs.y };
+        const prev = cold.layer;
+        var full = w.full_repaint or prev == null or prev.?.scale != sc or prev.?.size[0] != size[0] or prev.?.size[1] != size[1];
+        var origin: [2]i32 = .{ 0, 0 };
+        const start = w.layer_damage.items.len;
+        if (!full) {
+            const p = prev.?;
+            const d = [2]i32{ si[0] - p.si[0], si[1] - p.si[1] };
+            origin = .{ wrapMod(p.origin[0] +% d[0], size[0]), wrapMod(p.origin[1] +% d[1], size[1]) };
+            if (@abs(d[0]) >= size[0] or @abs(d[1]) >= size[1]) {
+                full = true;
+            } else {
+                // The strips the scroll exposed.
+                const ww: i32 = @intCast(size[0]);
+                const hh: i32 = @intCast(size[1]);
+                if (d[1] != 0) w.layer_damage.append(w.gpa, .{ .x = 0, .y = if (d[1] > 0) hh - d[1] else 0, .w = size[0], .h = @abs(d[1]) }) catch {
+                    full = true;
+                };
+                if (d[0] != 0) w.layer_damage.append(w.gpa, .{ .x = if (d[0] > 0) ww - d[0] else 0, .y = 0, .w = @abs(d[0]), .h = size[1] }) catch {
+                    full = true;
+                };
+            }
+        }
+        const shift: Vec2 = .{ .x = k.x - sif.x, .y = k.y - sif.y };
+        w.cmds.append(w.gpa, .{ .layer_begin = .{ .id = @bitCast(id), .size = size, .origin = origin, .shift = shift, .dmg = .{ @intCast(start), @intCast(start) } } }) catch {
+            w.layer_damage.shrinkRetainingCapacity(start);
+            cold.layer = null;
+            return false;
+        };
+        w.layer = .{
+            .k_new = shift,
+            .k_old = if (prev) |p| .{ .x = p.k.x - sif.x, .y = p.k.y - sif.y } else shift,
+            .size = size,
+            .scale = sc,
+            .full = full,
+            .cmd = w.cmds.items.len - 1,
+        };
+        cold.layer = .{ .k = k, .si = si, .origin = origin, .size = size, .scale = sc };
+        cull.* = .{ .x = abs.x, .y = abs.y, .w = abs.w + 1 / sc, .h = abs.h + 1 / sc };
+        return true;
+    }
+
+    /// Closes the layer `beginLayer` opened: settles its content damage,
+    /// damages the viewport in the window when the content changed and
+    /// composites it.
+    fn endLayer(w: *Window, abs: Rect, scroll: Vec2, clip: Rect) void {
+        const l = w.layer.?;
+        w.layer = null;
+        const b = &w.cmds.items[l.cmd].layer_begin;
+        const start: usize = b.dmg[0];
+        const dmg = w.layer_damage.items[start..];
+        if (l.full) {
+            w.layer_damage.shrinkRetainingCapacity(start);
+            w.layer_damage.append(w.gpa, .{ .x = 0, .y = 0, .w = l.size[0], .h = l.size[1] }) catch {
+                // The layer's content is unknown: start over next frame.
+                w.full_repaint = true;
+                w.needs_frame = true;
+            };
+        } else if (dmg.len > max_layer_damage) {
+            var x0: i32 = std.math.maxInt(i32);
+            var y0: i32 = std.math.maxInt(i32);
+            var x1: i64 = 0;
+            var y1: i64 = 0;
+            for (dmg) |r| {
+                x0 = @min(x0, r.x);
+                y0 = @min(y0, r.y);
+                x1 = @max(x1, @as(i64, r.x) + r.w);
+                y1 = @max(y1, @as(i64, r.y) + r.h);
+            }
+            w.layer_damage.shrinkRetainingCapacity(start + 1);
+            w.layer_damage.items[start] = .{ .x = x0, .y = y0, .w = @intCast(x1 - x0), .h = @intCast(y1 - y0) };
+        }
+        b.dmg[1] = @intCast(w.layer_damage.items.len);
+        if (b.dmg[1] > b.dmg[0]) w.damage.add(abs.intersect(clip));
+        const id = b.id;
+        const frac: Vec2 = .{ .x = scroll.x * l.scale - @floor(scroll.x * l.scale), .y = scroll.y * l.scale - @floor(scroll.y * l.scale) };
+        w.cmds.append(w.gpa, .{ .layer_end = .{ .id = id, .dst = abs, .frac = frac } }) catch {
+            // `present` closes a layer left open.
+        };
     }
 
     /// Thickness of a scrollbar thumb, logical pixels.
@@ -693,12 +865,30 @@ pub const Window = struct {
         if (w.canvas) |c| {
             const ops = &w.ops[w.cur_ops];
             c.begin(w.size, w.scale);
+            // Inside a layer, commands move by its shift; a layer the
+            // renderer still holds is skipped.
+            var shift: Vec2 = .{};
+            var open = false;
+            var skip = false;
             for (w.cmds.items) |cmd| switch (cmd) {
-                .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
-                .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
-                .pop_clip => c.popClip(),
-                .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
+                .ops => |o| if (!skip) ops.replay(o.range, o.origin.add(shift), c, &w.glyph_scratch, w.gpa),
+                .push_clip => |p| if (!skip) c.pushClip(p.r.translate(shift), .all(p.radius)),
+                .pop_clip => if (!skip) c.popClip(),
+                .thumb => |t| if (!skip) c.rect(t.r.translate(shift), t.color, .all(@min(t.r.w, t.r.h) / 2)),
+                .layer_begin => |l| {
+                    open = c.beginScrollLayer(l.id, l.size, l.origin, w.layer_damage.items[l.dmg[0]..l.dmg[1]]);
+                    skip = !open;
+                    shift = l.shift;
+                },
+                .layer_end => |l| {
+                    if (open) c.endLayer();
+                    open = false;
+                    skip = false;
+                    shift = .{};
+                    c.drawLayer(l.id, l.dst, l.frac);
+                },
             };
+            if (open) c.endLayer();
             if (w.damage.full) c.addDamage(.{ .w = w.size.w, .h = w.size.h }) else for (w.damage.slice()) |r| c.addDamage(r);
             c.end();
         }
@@ -710,11 +900,13 @@ pub const Window = struct {
     pub fn replayInto(w: *Window, c: canvas.Canvas) void {
         const ops = &w.ops[w.cur_ops];
         c.begin(w.size, w.scale);
+        // Layers are drawn in place.
         for (w.cmds.items) |cmd| switch (cmd) {
             .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
             .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
             .pop_clip => c.popClip(),
             .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
+            .layer_begin, .layer_end => {},
         };
         c.end();
     }

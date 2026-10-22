@@ -13,6 +13,7 @@ const U16Array = lc.U16Array;
 const LookupRecords = lc.LookupRecords;
 const skippy = @import("skippy.zig");
 const Ctx = skippy.Ctx;
+const UFlags = @import("buffer.zig").UFlags;
 const Skippy = skippy.Skippy;
 const Matcher = skippy.Matcher;
 const max_context_length = skippy.max_context_length;
@@ -55,7 +56,11 @@ pub fn matchInput(c: *Ctx, start: usize, count: usize, values: U16Array, m: Matc
                 if (ligbase == .not_checked) {
                     var found = false;
                     var j = start;
-                    while (j > 0 and infos[j - 1].ligId() == first_lig_id) {
+                    while (j > 0 and (infos[j - 1].uflags & UFlags.deleted != 0 or infos[j - 1].ligId() == first_lig_id)) {
+                        if (infos[j - 1].uflags & UFlags.deleted != 0) {
+                            j -= 1;
+                            continue;
+                        }
                         if (infos[j - 1].ligComp() == 0) {
                             j -= 1;
                             found = true;

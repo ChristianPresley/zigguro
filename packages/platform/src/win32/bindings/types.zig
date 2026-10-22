@@ -332,6 +332,17 @@ pub const POINTER_INFO = extern struct {
     ButtonChangeType: i32,
 };
 
+/// `POINTER_PEN_INFO`.
+pub const POINTER_PEN_INFO = extern struct {
+    pointerInfo: POINTER_INFO,
+    penFlags: DWORD,
+    penMask: DWORD,
+    pressure: UINT,
+    rotation: UINT,
+    tiltX: i32,
+    tiltY: i32,
+};
+
 /// `GUID` (also IID and CLSID).
 pub const GUID = extern struct {
     data1: u32,
@@ -514,18 +525,19 @@ pub const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
 
 /// Struct sizes for 64-bit Windows, from the SDK headers.
 const sizes_64 = .{
-    .{ RECT, 16 },             .{ POINT, 8 },                .{ MSG, 48 },
-    .{ WNDCLASSEXW, 80 },      .{ WINDOWPOS, 40 },           .{ NCCALCSIZE_PARAMS, 56 },
-    .{ MINMAXINFO, 40 },       .{ MONITORINFOEXW, 104 },     .{ TRACKMOUSEEVENT, 24 },
-    .{ FLASHWINFO, 32 },       .{ ICONINFO, 32 },            .{ PAINTSTRUCT, 72 },
-    .{ BITMAPINFOHEADER, 40 }, .{ BITMAPINFO, 44 },          .{ COMPOSITIONFORM, 28 },
-    .{ CANDIDATEFORM, 32 },    .{ RAWINPUTDEVICE, 16 },      .{ RAWINPUTHEADER, 24 },
-    .{ RAWMOUSE, 24 },         .{ RAWKEYBOARD, 16 },         .{ RAWINPUT, 48 },
-    .{ POINTER_INFO, 96 },     .{ GUID, 16 },                .{ FORMATETC, 32 },
-    .{ STGMEDIUM, 24 },        .{ DROPFILES, 20 },           .{ MARGINS, 16 },
-    .{ DWM_TIMING_INFO, 292 }, .{ PROCESSENTRY32W, 568 },    .{ COMDLG_FILTERSPEC, 16 },
-    .{ COORD, 4 },             .{ SECURITY_ATTRIBUTES, 24 }, .{ STARTUPINFOW, 104 },
-    .{ STARTUPINFOEXW, 112 },  .{ PROCESS_INFORMATION, 24 }, .{ JOBOBJECT_EXTENDED_LIMIT_INFORMATION, 144 },
+    .{ RECT, 16 },                                  .{ POINT, 8 },              .{ MSG, 48 },
+    .{ WNDCLASSEXW, 80 },                           .{ WINDOWPOS, 40 },         .{ NCCALCSIZE_PARAMS, 56 },
+    .{ MINMAXINFO, 40 },                            .{ MONITORINFOEXW, 104 },   .{ TRACKMOUSEEVENT, 24 },
+    .{ FLASHWINFO, 32 },                            .{ ICONINFO, 32 },          .{ PAINTSTRUCT, 72 },
+    .{ BITMAPINFOHEADER, 40 },                      .{ BITMAPINFO, 44 },        .{ COMPOSITIONFORM, 28 },
+    .{ CANDIDATEFORM, 32 },                         .{ RAWINPUTDEVICE, 16 },    .{ RAWINPUTHEADER, 24 },
+    .{ RAWMOUSE, 24 },                              .{ RAWKEYBOARD, 16 },       .{ RAWINPUT, 48 },
+    .{ POINTER_INFO, 96 },                          .{ POINTER_PEN_INFO, 120 }, .{ GUID, 16 },
+    .{ FORMATETC, 32 },                             .{ STGMEDIUM, 24 },         .{ DROPFILES, 20 },
+    .{ MARGINS, 16 },                               .{ DWM_TIMING_INFO, 292 },  .{ PROCESSENTRY32W, 568 },
+    .{ COMDLG_FILTERSPEC, 16 },                     .{ COORD, 4 },              .{ SECURITY_ATTRIBUTES, 24 },
+    .{ STARTUPINFOW, 104 },                         .{ STARTUPINFOEXW, 112 },   .{ PROCESS_INFORMATION, 24 },
+    .{ JOBOBJECT_EXTENDED_LIMIT_INFORMATION, 144 },
 };
 
 comptime {

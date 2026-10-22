@@ -1,0 +1,19 @@
+namespace app {
+class Widget final : public Base {
+public:
+    explicit Widget(int n) noexcept;
+    virtual ~Widget() override = default;
+    static constexpr int kMax = 10;
+    mutable int cache;
+private:
+    friend class Other;
+protected:
+    template <typename T> T get() const;
+};
+}
+try { throw std::runtime_error("x"); } catch (const std::exception &e) {}
+auto p = new int(3); delete p;
+co_await x; co_return 1; co_yield 2;
+consteval int f(); constinit int g = 0;
+if (a and b or not c) {}
+bool ok = true; this->x = nullptr;

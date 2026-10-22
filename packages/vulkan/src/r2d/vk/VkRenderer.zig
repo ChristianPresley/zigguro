@@ -26,9 +26,12 @@
 //! Layers not used in a frame are evicted least recently used first once
 //! they exceed `RendererOptions.layer_budget_bytes`.
 //!
-//! Targets today: Readback to a headless sink, to memory, or to an
-//! external presenter's shm buffers. The Win32 swapchain and the Linux
-//! dmabuf ring follow.
+//! Targets: an external presenter gets the zero-copy dmabuf ring
+//! (`ExternalRing`) when the device and compositor share a format, else
+//! Readback into its shm buffers; Readback also serves headless sinks and
+//! `renderToImage`. When every ring image is held, the frame is skipped
+//! (`FrameStats.skipped`) and its damage carries to the next one. The
+//! Win32 swapchain follows.
 
 const VkRenderer = @This();
 
@@ -47,6 +50,7 @@ const pipeline = @import("../../pipeline/root.zig");
 const iface = @import("../../shaders/interface.zig");
 const FrameScheduler = @import("../../present/FrameScheduler.zig");
 const Readback = @import("../../present/Readback.zig");
+const ExternalRing = @import("../../present/ExternalRing.zig");
 const Damage = @import("../../present/Damage.zig");
 const CpuImage = @import("../../testing/CpuImage.zig");
 const batch = @import("batch.zig");
@@ -102,6 +106,13 @@ pipes: pipeline.Pipelines,
 ring: UploadRing,
 uploader: Uploader,
 readback: Readback,
+/// The dmabuf ring (external targets whose device can export).
+ext: ?ExternalRing = null,
+/// Render through Readback even with a ring (`renderToImage`).
+to_memory: bool = false,
+/// Damage of skipped frames, added to the next one.
+carry: Damage.RectList = .{},
+carry_full: bool = false,
 history: Damage.DamageHistory = .{},
 /// Textures by id (= descriptor slot); null when free.
 textures: std.ArrayList(?*Texture) = .empty,
@@ -130,15 +141,15 @@ timer: ?GpuTimer = null,
 last_gpu: ?GpuTimer.Durations = null,
 
 /// Creates a Vulkan device for `opts` and a renderer on it. Headless and
-/// external (shm readback) targets for now (`error.Unsupported`
-/// otherwise).
+/// external targets for now (`error.Unsupported` otherwise).
 pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !*VkRenderer {
     switch (opts.target) {
         .headless, .external => {},
         else => return error.Unsupported,
     }
     const gpu = try Gpu.create(gpa, io, .{
-        .instance = .{ .env_validation = opts.env.vk_validation },
+        .instance = .{ .env_validation = opts.env.vk_validation, .surface = if (opts.target == .external) .external else .headless },
+        .drm_device = if (opts.target == .external) opts.target.external.drmDevice() else null,
         .forced = opts.env.gpu orelse opts.gpu,
         .loader_path = opts.env.vk_loader_path,
         .fault = opts.env.vk_fault,
@@ -154,8 +165,8 @@ pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !*V
 pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer {
     const sink: Readback.Sink = switch (opts.target) {
         .headless => |s| .{ .headless = s },
-        // Until the dmabuf ring lands, external presenters get shm
-        // buffers filled by readback.
+        // Without a dmabuf path, external presenters get shm buffers
+        // filled by readback.
         .external => |p| .{ .shm = p },
         else => return error.Unsupported,
     };
@@ -176,6 +187,17 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
     self.cache = pipeline.PipelineCache.load(io, gpu, opts.cache_dir, pipeline.shaderIdentity());
     errdefer self.cache.destroy();
     self.readback = Readback.init(gpu, &self.mem, &self.sched, sink, opts.window);
+    self.ext = null;
+    self.to_memory = false;
+    self.carry = .{};
+    self.carry_full = false;
+    if (opts.target == .external) {
+        self.ext = ExternalRing.init(gpu, &self.mem, &self.sched, opts.target.external) catch |e| switch (e) {
+            error.ExportUnsupported => null,
+            else => return e,
+        };
+    }
+    errdefer if (self.ext) |*x| x.deinit();
     self.pipes = try pipeline.createPipelines(gpu, &self.cache, &self.heap, self.readback.vkFormat());
     errdefer self.pipes.deinit();
     self.ring = try UploadRing.init(&self.mem, frames, initial_ring_bytes);
@@ -210,6 +232,7 @@ pub fn destroy(self: *VkRenderer) void {
     const gpa = self.gpa;
     self.sched.waitValue(self.sched.submitted) catch {};
     if (self.timer) |*t| t.deinit();
+    if (self.ext) |*x| x.deinit();
     self.readback.deinit();
     self.uploader.deinit();
     for (self.textures.items) |t| if (t) |tex| {
@@ -301,6 +324,7 @@ fn mapErr(err: anyerror) RenderError {
     return switch (err) {
         error.OutOfMemory, error.OutOfHostMemory, error.OutOfDeviceMemory => error.OutOfMemory,
         error.DeviceLost => error.DeviceLost,
+        error.PresentFailed => error.SurfaceLost,
         else => blk: {
             log.err("render failed: {t}", .{err});
             break :blk error.DeviceLost;
@@ -554,6 +578,14 @@ pub fn renderToImage(self: *VkRenderer, dl: *const DrawList, out: *CpuImage) Ren
     const prev = self.readback.sink;
     self.readback.setSink(.{ .memory = out });
     defer self.readback.setSink(prev);
+    // With a dmabuf ring, the readback image and the ring images do not
+    // share a damage history: both sides start over fully.
+    if (self.ext != null) self.needs_full = true;
+    self.to_memory = true;
+    defer {
+        self.to_memory = false;
+        if (self.ext != null) self.needs_full = true;
+    }
     const stats = try self.render(dl);
     self.readback.waitIdle();
     return stats;
@@ -568,15 +600,33 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         self.extent = extent;
         self.needs_full = true;
     }
-    const full_frame = self.needs_full or dl.damage_full or dl.alloc_failed;
+    const full_frame = self.needs_full or self.carry_full or dl.damage_full or dl.alloc_failed;
+    // The list's damage plus that of skipped frames.
+    var damage: Damage.RectList = self.carry;
+    for (dl.damageRects()) |r| damage.add(r);
     const layers_drawn = for (dl.layers.items) |l| {
         if (l.drawn) break true;
     } else false;
-    if (!full_frame and dl.damage_len == 0 and !layers_drawn) {
+    if (!full_frame and damage.len == 0 and !layers_drawn) {
         // Idle: nothing changed, nothing is submitted.
         self.readback.poll();
         return stats;
     }
+    // A dmabuf ring image, unless the compositor holds them all.
+    var ext_acq: ?ExternalRing.Acquired = null;
+    if (self.ext) |*x| if (!self.to_memory) {
+        ext_acq = x.acquire(extent) catch |e| switch (e) {
+            error.NoFreeBuffer => {
+                self.carry = damage;
+                self.carry_full = full_frame;
+                stats.skipped = true;
+                return stats;
+            },
+            else => return e,
+        };
+    };
+    var ext_open = ext_acq != null;
+    errdefer if (ext_open) self.ext.?.abandon(ext_acq.?);
     self.frame_no += 1;
     try self.planLayers(dl);
 
@@ -591,14 +641,14 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     self.ring.beginFrame(fs.index);
     self.heap.reclaim(self.sched.completed());
     self.readback.poll();
-    const acq = try self.readback.acquire(extent);
+    const acq: Readback.Acquired = if (ext_acq) |a| .{ .image = a.image, .age = a.age } else try self.readback.acquire(extent);
 
     var repaint: Damage.RectList = .{};
     const r2d_rect = r2d.rect;
     if (full_frame) {
         repaint.add(r2d_rect.full(extent));
     } else {
-        self.history.repaintFor(acq.age, dl.damageRects(), extent, &repaint);
+        self.history.repaintFor(acq.age, damage.slice(), extent, &repaint);
     }
     const full_repaint = repaint.isFull(extent);
 
@@ -687,8 +737,12 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         if (timer) |t| t.mark(cb, fs.index, .main, .start);
         defer if (timer) |t| t.mark(cb, fs.index, .main, .end);
         const img = acq.image;
-        barriers.imageTransition(cb, d, img.image.handle, if (acq.age == 0) .undefined else img.access, .color_attachment, .{ .color = true });
-        img.access = .color_attachment;
+        if (ext_acq) |a| {
+            self.ext.?.beginRendering(cb, a);
+        } else {
+            barriers.imageTransition(cb, d, img.image.handle, if (acq.age == 0) .undefined else img.access, .color_attachment, .{ .color = true });
+            img.access = .color_attachment;
+        }
         self.beginPass(cb, img.view, extent, full_repaint);
         self.pushConstants(cb, extent, clip_base);
         for (repaint.slice()) |r| {
@@ -699,14 +753,26 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
             stats.repainted_px += r2d_rect.area(r);
         }
         d.cmd_end_rendering(cb);
+        if (ext_acq) |a| self.ext.?.endRendering(cb, a);
+    } else if (ext_acq) |a| {
+        // Only layers changed: the ring image stays as it was.
+        self.ext.?.cancel(a);
+        ext_acq = null;
+        ext_open = false;
     }
 
-    try self.readback.recordCopy(fs, repaint.slice());
+    if (ext_acq == null) try self.readback.recordCopy(fs, repaint.slice());
     if (timer) |t| t.mark(cb, fs.index, .frame, .end);
     self.retireDoomed();
-    try self.sched.submit(fs, &.{}, &.{});
-    self.readback.present(fs);
-    if (full_frame) self.history.pushFull() else self.history.push(dl.damageRects());
+    const signal: ?vk.SemaphoreSubmitInfo = if (ext_acq != null) self.ext.?.signalFor(fs) else null;
+    try self.sched.submit(fs, &.{}, if (signal) |*sg| sg[0..1] else &.{});
+    if (ext_acq) |a| {
+        ext_open = false;
+        try self.ext.?.present(fs, a, if (full_repaint) &.{} else damage.slice());
+    } else self.readback.present(fs);
+    if (full_frame) self.history.pushFull() else self.history.push(damage.slice());
+    self.carry = .{};
+    self.carry_full = false;
     self.needs_full = false;
     stats.needs_full_redraw = full_repaint;
     stats.present_id = fs.timeline_value;

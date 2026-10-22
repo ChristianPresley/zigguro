@@ -128,6 +128,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         drawn = hw.frames;
         hw.win.themeChanged(false); // force a full repaint next frame
     }
+    _ = host.flush(5 * std.time.ns_per_s);
     try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
     if (stringArg(min, rt.gpa, "--screenshot")) |path| {
         defer rt.gpa.free(path);

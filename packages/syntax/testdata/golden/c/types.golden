@@ -1,0 +1,14 @@
+1| type.builtin:unsigned type.builtin:long type.builtin:long variable:a punctuation.delimiter:;
+2| type.builtin:signed type.builtin:char variable:b punctuation.delimiter:;
+3| type.builtin:short type.builtin:int variable:c punctuation.delimiter:;
+4| type.builtin:float variable:f punctuation.delimiter:; type.builtin:double variable:d punctuation.delimiter:; type.builtin:long type.builtin:double variable:ld punctuation.delimiter:;
+5| type.builtin:_Bool variable:ok operator:= constant.builtin:true punctuation.delimiter:;
+6| type.builtin:bool variable:also operator:= constant.builtin:false punctuation.delimiter:;
+7| type.builtin:size_t variable:n punctuation.delimiter:; type.builtin:ptrdiff_t variable:diff punctuation.delimiter:; type.builtin:uint8_t variable:byte punctuation.delimiter:; type.builtin:int64_t variable:big punctuation.delimiter:;
+8| type.builtin:char16_t variable:u16 punctuation.delimiter:; type.builtin:char32_t variable:u32 punctuation.delimiter:; type.builtin:wchar_t variable:w punctuation.delimiter:;
+9| type:my_handle_t variable:h punctuation.delimiter:;
+10| keyword.storage:struct type:Point punctuation.bracket:{ type.builtin:int variable:x punctuation.delimiter:, variable:y punctuation.delimiter:; punctuation.bracket:} variable:origin punctuation.delimiter:;
+11| keyword.storage:enum type:Color punctuation.bracket:{ constant:RED punctuation.delimiter:, constant:GREEN operator:= number:2 punctuation.bracket:} punctuation.delimiter:;
+12| keyword.storage:union type:Value punctuation.bracket:{ type.builtin:int variable:i punctuation.delimiter:; type.builtin:float variable:f punctuation.delimiter:; punctuation.bracket:} punctuation.delimiter:;
+13| type.builtin:void operator:* variable:p operator:= constant.builtin:NULL punctuation.delimiter:;
+14| type.builtin:int operator:* variable:q operator:= constant.builtin:nullptr punctuation.delimiter:;

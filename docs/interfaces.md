@@ -437,7 +437,11 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, b: Backend, opts: InitOpt
 pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
 pub fn isForced(opts: InitOptions) bool; // opts.backend or a valid ZG_PLATFORM
 // InitOptions.environ_map is `?*std.process.Environ.Map` (mutable: Wayland consumes WAYLAND_SOCKET)
+// InitOptions.raw_mouse: bool = false — also stage Event.pointer_relative (Win32 only)
 pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
+// New variants go at the end, so recorded .zgtrace tags keep their values:
+//   pointer_pressure: { win, pressure: f32 }            // pen tip 0..1, before its pointer_move
+//   pointer_relative: { win, dx: f32, dy: f32, time_ns } // raw mouse counts
 ```
 
 Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
@@ -1002,7 +1006,10 @@ for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
 
 ### Signature
 ```zig
-pub const InitOptions = struct { refresh_ns: ?u32 = null }; // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+pub const InitOptions = struct {
+    refresh_ns: ?u32 = null, // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+    raw_mouse: bool = false, // RegisterRawInputDevices (mouse, focus window) → Event.pointer_relative
+};
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
 pub fn platform(b: *Win32Backend) Platform;
 // cpu_present.zig
@@ -1020,7 +1027,11 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
+`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`touch` events and still reaches `DefWindowProcW`, so Windows promotes the
+primary touch to mouse messages; pens stage `pointer_pressure` then
+`pointer_move`, with contact as the left button (right with the barrel
+button held at contact). A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
@@ -1067,7 +1078,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 
 ### Stability
 Experimental. Not yet: a theme or backdrop command (the system theme
-and no backdrop are used), raw input, pen and touch, TSF and
+and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`
+batching, TSF and
 `set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
 drag and drop, cloaking until the first present, the high-resolution
 waitable pacing timer and per-monitor refresh rates.
@@ -2287,6 +2299,18 @@ pub const Readback = struct {
     pub fn present(self, fs: *const FrameSlot) void;          // after submit
     pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
 };
+pub const ExternalRing = struct {                             // present/ExternalRing.zig (E02.F04.S02.T01)
+    pub fn init(gpu, mem, sched, presenter: *Presenter) InitError!ExternalRing;   // error.ExportUnsupported -> use Readback(.shm)
+    pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) AcquireError!Acquired;   // { image: *Texture, age, index }; error.NoFreeBuffer skips the frame
+    pub fn beginRendering(self, cb, a: Acquired) void;           // UNDEFINED or acquire from FOREIGN -> COLOR_ATTACHMENT
+    pub fn endRendering(self, cb, a: Acquired) void;             // release to FOREIGN in GENERAL
+    pub fn signalFor(self, fs) ?vk.SemaphoreSubmitInfo;          // SYNC_FD semaphore for the submit
+    pub fn present(self, fs, a: Acquired, damage: []const PxRect) AcquireError!void;
+    pub fn abandon(self, a: Acquired) void;  pub fn onFeedbackChanged(self) void;
+};
+pub fn drm_formats.vkFormatToFourcc(f: vk.Format, opaque_alpha: bool) ?u32;
+pub fn drm_formats.negotiate(fourcc: u32, compositor: []const FormatModifier, device: []const DeviceModifier, out: []u64) usize;
 pub const ShmRing = struct {                                  // present/ShmRing.zig
     pub fn init(presenter: *Presenter) ShmRing;  pub fn deinit(self) void;
     pub fn submit(self, back: *const CpuImage, damage: []const PxRect, full: bool) void;
@@ -2297,7 +2321,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
-- Until the dmabuf ring lands, `VkRenderer` serves every `.external` target through the shm sink.
+- `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
@@ -2322,8 +2346,8 @@ Internal to E02 behind `r2d.Renderer`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
-structure and structure queries).
+structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers),
+E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2404,6 +2428,19 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
     pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
+// Tier-1 languages (langs/*.zig), all in `builtin_languages`.
+pub const zig_language, c_language, cpp_language, rust_language, go_language: Language;
+pub const EditRules = struct { line_comment, block_comment, auto_close,
+    insert_spaces: ?bool = null,                 // Go: false (tabs)
+    indent_after: []const []const u8,            // e.g. "{"
+    dedent_on: []const []const u8 };             // e.g. "}"
+// langs/c.zig: state `mode` = construct | Mode.directive while a directive continues;
+// a C++ raw string's delimiter is in `aux`.
+pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_tokens: bool = false }, st, s, out) void;
+// langs/rust.zig: block-comment depth in `depth`, raw-string `#` count in `aux[0]`.
+pub fn rust.classifyQuote(line: []const u8, pos: usize) struct { enum { char, lifetime, invalid }, usize };
+// langs/go.zig: tier 2 turns on automatic semicolons (a `Kind.virtual_semicolon` token at the line end).
+pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, st, s, out) void;
 ```
 
 ### Threading
@@ -2696,6 +2733,8 @@ pub const RenderThread = struct {
     pub fn stats(self) FrameStats;                       // last completed frame
     pub fn shutdown(self) void;                          // joins, destroys the renderer
 };
+// FrameStats.skipped: the renderer had no free target buffer; the thread
+// re-renders (the same list if nothing newer was posted) one refresh later.
 pub const FramePacer = struct {
     pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
     pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };

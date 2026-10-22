@@ -41,6 +41,74 @@ fn genZig(gpa: std.mem.Allocator, lines: usize) ![]u8 {
     return out.toOwnedSlice();
 }
 
+const c_template =
+    \\/* Returns the {d}th widget, clamped to the table. */
+    \\static const struct widget *widget_{d}(struct table *self, size_t index) {{
+    \\    size_t i = index < self->len ? index : self->len - 1;
+    \\    if (self->len == 0) return NULL;
+    \\    uint64_t sum = 0x{x}u;
+    \\    for (size_t k = 0; k < i; k++) {{
+    \\        sum += (uint64_t)self->items[k].weight * k; // weighted
+    \\        if (self->items[k].flags & FLAG_HIDDEN) continue;
+    \\    }}
+    \\    const char *label = "widget \x41 {d}\n";
+    \\    LOG_DEBUG("%s %llu", label, (unsigned long long)sum);
+    \\    return &self->items[i];
+    \\}}
+    \\
+    \\
+;
+
+const rust_template =
+    \\/// Returns the {d}th widget, clamped to the table.
+    \\pub fn widget_{d}<'a>(&'a self, index: usize) -> Option<&'a Widget> {{
+    \\    let i = index.min(self.items.len().saturating_sub(1));
+    \\    if self.items.is_empty() {{ return None; }}
+    \\    let mut sum: u64 = 0x{x};
+    \\    for (k, w) in self.items[..i].iter().enumerate() {{
+    \\        sum = sum.wrapping_add(u64::from(w.weight) * k as u64); // weighted
+    \\        if w.flags.hidden {{ continue; }}
+    \\    }}
+    \\    let label = "widget \x41 {d}\n";
+    \\    debug!("{{}} {{}}", label, sum);
+    \\    Some(&self.items[i])
+    \\}}
+    \\
+    \\
+;
+
+const go_template =
+    \\// Widget{d} returns a widget, clamped to the table.
+    \\func (t *Table) Widget{d}(index int) *Widget {{
+    \\    i := min(index, len(t.items)-1)
+    \\    if len(t.items) == 0 {{
+    \\        return nil
+    \\    }}
+    \\    var sum uint64 = 0x{x}
+    \\    for k, w := range t.items[:i] {{
+    \\        sum += uint64(w.Weight) * uint64(k) // weighted
+    \\        if w.Flags.Hidden {{ continue }}
+    \\    }}
+    \\    label := "widget \x41 {d}\n"
+    \\    log.Printf("%s %d", label, sum)
+    \\    return &t.items[i]
+    \\}}
+    \\
+;
+
+/// A corpus of about `lines` lines from a 14-line template.
+fn genFrom(gpa: std.mem.Allocator, comptime tmpl: []const u8, lines: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    var n: usize = 0;
+    var i: usize = 0;
+    while (n < lines) : (i += 1) {
+        try out.writer.print(tmpl, .{ i, i, i * 2654435761 % 0xFFFF, i });
+        n += 14;
+    }
+    return out.toOwnedSlice();
+}
+
 fn splitLines(gpa: std.mem.Allocator, text: []const u8) ![][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -48,14 +116,14 @@ fn splitLines(gpa: std.mem.Allocator, text: []const u8) ![][]const u8 {
     return list.toOwnedSlice(gpa);
 }
 
-const LexCtx = struct { reg: *const syntax.Registry, lines: []const []const u8 };
+const LexCtx = struct { reg: *const syntax.Registry, lines: []const []const u8, id: syntax.LanguageId = .zig };
 
 fn lexAll(ctx: LexCtx, s: *bench.State) void {
     var sink: syntax.TokenSink = .{};
     defer sink.deinit(std.heap.smp_allocator);
     var it: u64 = 0;
     while (it < s.iterations()) : (it += 1) {
-        var st = syntax.LexState.init(.zig);
+        var st = syntax.LexState.init(ctx.id);
         for (ctx.lines) |l| {
             sink.begin(std.heap.smp_allocator, l.len) catch unreachable;
             syntax.lex.lexer.lexLine(ctx.reg, &st, l, &sink);
@@ -295,6 +363,36 @@ fn register(b: *bench.Bench) !void {
                 st.setBytes(c.text.len);
             }
         }.f);
+    }
+
+    // The other tier-1 languages: lexing throughput and keystrokes.
+    inline for (.{
+        .{ "c", c_template, &syntax.langs.c.c_language, true },
+        .{ "rust", rust_template, &syntax.langs.rust.rust_language, true },
+        .{ "go", go_template, &syntax.langs.go.go_language, false },
+    }) |l| {
+        const spaced = try genFrom(gpa, l[1], n_lines);
+        defer gpa.free(spaced);
+        // Go indents with tabs; Zig string literals cannot hold them.
+        const t = if (l[2].id == .go) try std.mem.replaceOwned(u8, gpa, spaced, "    ", "\t") else try gpa.dupe(u8, spaced);
+        defer gpa.free(t);
+        const ls = try splitLines(gpa, t);
+        defer gpa.free(ls);
+        try b.run("syntax.lex." ++ l[0], LexCtx{ .reg = &reg, .lines = ls, .id = l[2].id }, lexAll);
+        if (l[3]) {
+            const v: []const []const u8 = ls;
+            var h: syntax.Highlighter = try .init(gpa, l[2], &reg);
+            defer h.deinit();
+            const src = syntax.LineSource.fromSlice(&v);
+            try h.reset(src);
+            _ = try h.idle(src, null);
+            const mid = ls.len / 2;
+            const original = ls[mid];
+            const edited = try std.mem.concat(gpa, u8, &.{ original, "x" });
+            defer gpa.free(edited);
+            try b.run("syntax.keystroke." ++ l[0] ++ "_100k", KeyCtx{ .h = &h, .lines = ls, .view = &v, .edited = edited, .original = original }, keystroke);
+            ls[mid] = original;
+        }
     }
 
     inline for (.{ .{ "syntax.keystroke.zig_100k", &syntax.langs.zig.zig_language }, .{ "syntax.keystroke.toy_100k", &toy } }) |c| {

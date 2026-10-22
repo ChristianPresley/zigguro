@@ -1,0 +1,24 @@
+var a any
+var b bool = true
+var c byte
+var d error = nil
+var e rune
+var f string
+var g uintptr
+var h float64
+var i complex128
+const (
+	A = iota
+	B
+)
+n := len(s) + cap(s)
+s = append(s, 1)
+m := make(map[string]int)
+p := new(int)
+delete(m, "k")
+copy(dst, src)
+clear(m)
+panic("x")
+r := recover()
+len := 3
+x := min(1, 2) + max(3, 4)

@@ -45,6 +45,9 @@ pub const UFlags = struct {
     pub const continuation: u8 = 0x10;
     /// A variation selector kept as its own glyph.
     pub const variation_selector: u8 = 0x20;
+    /// Removed by a top-level ligature; dropped by `compact` when the
+    /// lookup finishes. Every matcher skips it until then.
+    pub const deleted: u8 = 0x40;
 };
 
 const lig_base_flag: u8 = 0x10;
@@ -217,6 +220,8 @@ pub const Buffer = struct {
     has_default_ignorables: bool = false,
     has_attachments: bool = false,
     has_non_ascii: bool = false,
+    /// Some glyphs carry `UFlags.deleted`.
+    has_deleted: bool = false,
 
     /// An empty buffer.
     pub fn init(gpa: Allocator) Buffer {
@@ -344,6 +349,27 @@ pub const Buffer = struct {
             b.mergeClusters(i, i + 2);
         }
         _ = b.infos.orderedRemove(i);
+    }
+
+    /// Marks glyph `i` deleted; `compact` removes it. Deferring the removal
+    /// keeps a lookup pass linear when it forms many ligatures.
+    pub fn markDeleted(b: *Buffer, i: usize) void {
+        b.infos.items[i].uflags |= UFlags.deleted;
+        b.has_deleted = true;
+    }
+
+    /// Drops glyphs marked deleted (glyph infos only: GSUB runs before
+    /// positions exist).
+    pub fn compact(b: *Buffer) void {
+        if (!b.has_deleted) return;
+        b.has_deleted = false;
+        var w: usize = 0;
+        for (b.infos.items) |g| {
+            if (g.uflags & UFlags.deleted != 0) continue;
+            b.infos.items[w] = g;
+            w += 1;
+        }
+        b.infos.shrinkRetainingCapacity(w);
     }
 
     /// Recomputes `glyph_set` for a face of `num_glyphs` glyphs.

@@ -1,0 +1,24 @@
+1| keyword.storage:var variable:a type.builtin:any
+2| keyword.storage:var variable:b type.builtin:bool operator:= constant.builtin:true
+3| keyword.storage:var variable:c type.builtin:byte
+4| keyword.storage:var variable:d type.builtin:error operator:= constant.builtin:nil
+5| keyword.storage:var variable:e type.builtin:rune
+6| keyword.storage:var variable:f type.builtin:string
+7| keyword.storage:var variable:g type.builtin:uintptr
+8| keyword.storage:var variable:h type.builtin:float64
+9| keyword.storage:var variable:i type.builtin:complex128
+10| keyword.storage:const punctuation.bracket:(
+11| variable:A operator:= constant.builtin:iota
+12| variable:B
+13| punctuation.bracket:)
+14| variable:n operator::= function.builtin:len punctuation.bracket:( variable:s punctuation.bracket:) operator:+ function.builtin:cap punctuation.bracket:( variable:s punctuation.bracket:)
+15| variable:s operator:= function.builtin:append punctuation.bracket:( variable:s punctuation.delimiter:, number:1 punctuation.bracket:)
+16| variable:m operator::= function.builtin:make punctuation.bracket:( keyword.storage:map punctuation.bracket:[ type.builtin:string punctuation.bracket:] type.builtin:int punctuation.bracket:)
+17| variable:p operator::= function.builtin:new punctuation.bracket:( type.builtin:int punctuation.bracket:)
+18| function.builtin:delete punctuation.bracket:( variable:m punctuation.delimiter:, string:"k" punctuation.bracket:)
+19| function.builtin:copy punctuation.bracket:( variable:dst punctuation.delimiter:, variable:src punctuation.bracket:)
+20| function.builtin:clear punctuation.bracket:( variable:m punctuation.bracket:)
+21| function.builtin:panic punctuation.bracket:( string:"x" punctuation.bracket:)
+22| variable:r operator::= function.builtin:recover punctuation.bracket:( punctuation.bracket:)
+23| variable:len operator::= number:3
+24| variable:x operator::= function.builtin:min punctuation.bracket:( number:1 punctuation.delimiter:, number:2 punctuation.bracket:) operator:+ function.builtin:max punctuation.bracket:( number:3 punctuation.delimiter:, number:4 punctuation.bracket:)

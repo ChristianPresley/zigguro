@@ -1,0 +1,11 @@
+// a line comment
+int x; // trailing comment
+/* a block comment */ int y;
+/* a block
+   comment
+   over lines */ int z;
+/* /* not nested */ int w;
+int v = 1 /* inline */ + 2;
+// comment with "string" and 'c'
+/**/ int u;
+/***/ int t;

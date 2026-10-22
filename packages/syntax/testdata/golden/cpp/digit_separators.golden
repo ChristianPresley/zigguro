@@ -1,0 +1,6 @@
+1| type.builtin:int variable:a operator:= number:1'000'000 punctuation.delimiter:;
+2| type.builtin:long variable:b operator:= number:0x7FFF'FFFF punctuation.delimiter:;
+3| keyword.storage:auto variable:c operator:= number:0b1010'1010 punctuation.delimiter:;
+4| type.builtin:double variable:d operator:= number:1'234.567'8 punctuation.delimiter:;
+5| type.builtin:char variable:e operator:= character:'x' punctuation.delimiter:; type.builtin:int variable:f operator:= number:1'0 punctuation.delimiter:;
+6| type.builtin:unsigned type.builtin:long type.builtin:long variable:g operator:= number:18'446'744'073'709'551'615ull punctuation.delimiter:;

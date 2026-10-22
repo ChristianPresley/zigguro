@@ -1,0 +1,10 @@
+1| function.macro:println! punctuation.bracket:( string:"hello {}" punctuation.delimiter:, variable:name punctuation.bracket:) punctuation.delimiter:;
+2| function.macro:vec! punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.delimiter:, number:3 punctuation.bracket:] punctuation.delimiter:;
+3| function.macro:assert_eq! punctuation.bracket:( variable:a punctuation.delimiter:, variable:b punctuation.bracket:) punctuation.delimiter:;
+4| function.macro:macro_rules! variable:square punctuation.bracket:{
+5| punctuation.bracket:( operator:$ variable:x punctuation.delimiter:: variable:expr punctuation.bracket:) operator:=> punctuation.bracket:{ operator:$ variable:x operator:* operator:$ variable:x punctuation.bracket:} punctuation.delimiter:;
+6| punctuation.bracket:}
+7| keyword.storage:let variable:ne operator:= variable:a operator:!= variable:b punctuation.delimiter:;
+8| keyword.storage:let variable:not operator:= operator:! variable:flag punctuation.delimiter:;
+9| function.macro:format! punctuation.bracket:( string:"{x:?}" punctuation.bracket:) punctuation.delimiter:;
+10| variable:my_crate punctuation.delimiter::: function.macro:my_macro! punctuation.bracket:{ punctuation.bracket:}

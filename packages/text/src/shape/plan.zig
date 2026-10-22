@@ -20,6 +20,7 @@ const Direction = buffer.Direction;
 const Feature = buffer.Feature;
 const kern_fallback = @import("kern_fallback.zig");
 const digest = @import("digest.zig");
+const complex_default = @import("complex/default.zig");
 
 /// Largest feature value a mask can hold (8 bits).
 pub const max_value = 255;
@@ -257,11 +258,18 @@ pub const ShapePlan = struct {
     space_glyph: GlyphId,
     /// Per-lookup accelerators of GSUB and GPOS, by lookup index.
     accels: [2][]const digest.LookupAccel = .{ &.{}, &.{} },
+    /// Region scalars of GDEF's variation store at the instance's
+    /// coordinates (empty at the default instance or without a store).
+    var_scalars: []const f32 = &.{},
+    /// The instance's normalized coordinates; empty at the default
+    /// instance, where no deltas apply (as in HarfBuzz without variations).
+    coords: []const i16 = &.{},
     /// Complex-shaper data (Arabic: per-form masks).
     shaper_masks: [8]u32 = @splat(0),
 
-    /// Builds the plan. `user` features are copied.
-    pub fn build(gpa: Allocator, inst: *const FaceInstance, script: Script, lang: Tag, dir: Direction, complex: *const ComplexShaper, user: []const Feature) Allocator.Error!ShapePlan {
+    /// Builds the plan. `user` features are copied; a null `complex_in`
+    /// picks the complex shaper from the script and the chosen GSUB script.
+    pub fn build(gpa: Allocator, inst: *const FaceInstance, script: Script, lang: Tag, dir: Direction, complex_in: ?*const ComplexShaper, user: []const Feature) Allocator.Error!ShapePlan {
         const face = inst.face;
         var plan: ShapePlan = .{
             .arena = .init(gpa),
@@ -269,7 +277,7 @@ pub const ShapePlan = struct {
             .script = script,
             .lang = lang,
             .dir = dir,
-            .complex = complex,
+            .complex = &complex_default.shaper,
             .gdef = if (face.knownTable(.gdef)) |t| Gdef.init(t) catch .{} else .{},
             .gsub = if (face.knownTable(.gsub)) |t| LayoutTable.init(t) catch null else null,
             .gpos = if (face.knownTable(.gpos)) |t| LayoutTable.init(t) catch null else null,
@@ -316,6 +324,8 @@ pub const ShapePlan = struct {
             langsys[ti] = selectLangSys(s, lang);
         }
         b.chosen_script = plan.chosen_script;
+        const complex = complex_in orelse complex_default.select(script, plan.chosen_script[0]);
+        plan.complex = complex;
 
         // Feature collection (hb_ot_shape_collect_features).
         try b.enableFeature(tag("rvrn"), .none, 1);
@@ -359,6 +369,12 @@ pub const ShapePlan = struct {
         plan.apply_kern = (!has_gpos_kern or !plan.apply_gpos) and plan.kern != null;
         plan.zero_marks = complex.zero_marks != .none and !(plan.apply_kern and plan.kern.?.has_state_machine);
         plan.adjust_mark_positioning_when_zeroing = !plan.apply_gpos and !(plan.apply_kern and plan.kern.?.has_cross_stream);
+        if (!inst.isDefault()) plan.coords = inst.coordsSlice();
+        if (plan.gdef.var_store) |*st| if (plan.coords.len != 0) {
+            const sc = try a.alloc(f32, st.region_count);
+            st.regionScalars(inst.coordsSlice(), sc);
+            plan.var_scalars = sc;
+        };
         if (complex.dataInit) |f| f(&plan);
         plan.space_participates = plan.computeSpaceParticipates();
         return plan;

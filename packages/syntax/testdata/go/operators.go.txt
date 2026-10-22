@@ -1,0 +1,13 @@
+a = b + c - d*e/f%g
+a += 1; a -= 1; a *= 2; a /= 2; a %= 3
+a <<= 1; a >>= 1; a &= m; a |= m; a ^= m; a &^= m
+x := a &^ b
+y := a << 2 >> 1
+z := !a && b || c
+ch <- v
+v := <-ch
+i++
+j--
+f(args...)
+p := &x; q := *p
+ok := a == b && a != c && a <= b && a >= c

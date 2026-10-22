@@ -29,6 +29,7 @@ pub const shape_cache = @import("shape_cache.zig");
 /// Complex shapers.
 pub const complex = struct {
     pub const default = @import("complex/default.zig");
+    pub const arabic = @import("complex/arabic.zig");
 };
 
 pub const Buffer = buffer.Buffer;
@@ -45,4 +46,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("shaper_test.zig");
     _ = @import("fuzz_test.zig");
+    _ = @import("complex/arabic_test.zig");
 }

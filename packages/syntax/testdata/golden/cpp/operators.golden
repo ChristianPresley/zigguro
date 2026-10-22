@@ -1,0 +1,7 @@
+1| keyword.storage:auto variable:cmp operator:= variable:a operator:<=> variable:b punctuation.delimiter:;
+2| variable:x operator:= variable:p operator:->* variable:member punctuation.delimiter:;
+3| variable:y operator:= variable:obj operator:.* variable:member punctuation.delimiter:;
+4| variable:z operator:= variable:a punctuation.delimiter::: variable:b punctuation.delimiter:;
+5| variable:w operator:= variable:a operator:< variable:b operator:&& variable:c operator:> variable:d punctuation.delimiter:;
+6| variable:i operator:+= number:1 punctuation.delimiter:; variable:j operator:<<= number:2 punctuation.delimiter:;
+7| keyword.storage:auto variable:f operator:= punctuation.bracket:[ operator:& punctuation.bracket:] punctuation.bracket:( type.builtin:int variable:n punctuation.bracket:) operator:-> type.builtin:int punctuation.bracket:{ keyword.control:return variable:n punctuation.delimiter:; punctuation.bracket:} punctuation.delimiter:;

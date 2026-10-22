@@ -1,0 +1,10 @@
+auto a = R"(raw \n no escapes)";
+auto b = R"delim(contains )" and ")delim";
+auto c = u8R"x(utf8 raw)x";
+auto d = LR"(wide raw)";
+auto sql = R"sql(
+SELECT *
+FROM t WHERE name = ")"
+)sql";
+int after;
+auto bad = R"too_long_delimiter_x(x)too_long_delimiter_x";

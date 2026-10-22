@@ -1,0 +1,8 @@
+1| keyword.storage:static type.builtin:int function:add punctuation.bracket:( type.builtin:int variable:a punctuation.delimiter:, type.builtin:int variable:b punctuation.bracket:) punctuation.bracket:{ keyword.control:return variable:a operator:+ variable:b punctuation.delimiter:; punctuation.bracket:}
+2| type.builtin:void punctuation.bracket:( operator:* variable:callback punctuation.bracket:) punctuation.bracket:( type.builtin:int punctuation.bracket:) operator:= constant.builtin:NULL punctuation.delimiter:;
+3| type.builtin:int function:main punctuation.bracket:( type.builtin:int variable:argc punctuation.delimiter:, type.builtin:char operator:* operator:* variable:argv punctuation.bracket:) punctuation.bracket:{
+4| function:printf punctuation.bracket:( string:"%d string.escape:\n string:" punctuation.delimiter:, function:add punctuation.bracket:( number:1 punctuation.delimiter:, number:2 punctuation.bracket:) punctuation.bracket:) punctuation.delimiter:;
+5| function:callback punctuation.bracket:( number:3 punctuation.bracket:) punctuation.delimiter:;
+6| keyword.control:return constant:EXIT_SUCCESS punctuation.delimiter:;
+7| punctuation.bracket:}
+8| type:MyType function:make_thing punctuation.bracket:( type.builtin:void punctuation.bracket:) punctuation.delimiter:;

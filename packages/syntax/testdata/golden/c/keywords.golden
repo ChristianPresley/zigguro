@@ -1,0 +1,17 @@
+1| keyword.storage:static type.builtin:int variable:counter operator:= number:0 punctuation.delimiter:;
+2| keyword.storage:extern keyword.storage:const keyword.storage:volatile type.builtin:int variable:reg punctuation.delimiter:;
+3| keyword.storage:typedef keyword.storage:struct variable:node type:node_t punctuation.delimiter:;
+4| type.builtin:int function:main punctuation.bracket:( type.builtin:void punctuation.bracket:) punctuation.bracket:{
+5| keyword.control:for punctuation.bracket:( type.builtin:int variable:i operator:= number:0 punctuation.delimiter:; variable:i operator:< number:10 punctuation.delimiter:; variable:i operator:++ punctuation.bracket:) punctuation.bracket:{
+6| keyword.control:if punctuation.bracket:( variable:i operator:% number:2 punctuation.bracket:) keyword.control:continue punctuation.delimiter:; keyword.control:else keyword.control:break punctuation.delimiter:;
+7| punctuation.bracket:}
+8| keyword.control:switch punctuation.bracket:( variable:counter punctuation.bracket:) punctuation.bracket:{
+9| keyword.control:case number:1 punctuation.delimiter:: keyword.control:goto variable:done punctuation.delimiter:;
+10| keyword.control:default punctuation.delimiter:: keyword.control:break punctuation.delimiter:;
+11| punctuation.bracket:}
+12| keyword.control:do punctuation.bracket:{ variable:counter operator:-- punctuation.delimiter:; punctuation.bracket:} keyword.control:while punctuation.bracket:( variable:counter operator:> number:0 punctuation.bracket:) punctuation.delimiter:;
+13| variable:done punctuation.delimiter::
+14| keyword.control:return keyword.operator:sizeof punctuation.bracket:( type:node_t punctuation.bracket:) operator:+ keyword.operator:_Alignof punctuation.bracket:( type.builtin:int punctuation.bracket:) punctuation.delimiter:;
+15| punctuation.bracket:}
+16| keyword:_Static_assert punctuation.bracket:( keyword.operator:sizeof punctuation.bracket:( type.builtin:int punctuation.bracket:) operator:== number:4 punctuation.delimiter:, string:"int" punctuation.bracket:) punctuation.delimiter:;
+17| keyword.storage:register keyword.storage:auto keyword.storage:restrict keyword.storage:inline keyword.storage:_Thread_local keyword.storage:_Noreturn

@@ -1,0 +1,8 @@
+type Config struct {
+	Name    string `json:"name"`
+	Port    int    `json:"port,omitempty"`
+	Enabled bool
+	inner   *Config
+}
+c := Config{Name: "x", Port: 80}
+c.inner = &Config{}

@@ -1,0 +1,11 @@
+1| keyword.storage:const type.builtin:char operator:* variable:a operator:= string:"plain" punctuation.delimiter:;
+2| keyword.storage:const type.builtin:char operator:* variable:b operator:= string:"" punctuation.delimiter:;
+3| keyword.storage:const type.builtin:char operator:* variable:c operator:= string:"with  string.escape:\" string:quotes string.escape:\" string: inside" punctuation.delimiter:;
+4| keyword.storage:const type.builtin:char operator:* variable:d operator:= string:u8"utf-8" punctuation.delimiter:;
+5| keyword.storage:const type.builtin:wchar_t operator:* variable:e operator:= string:L"wide" punctuation.delimiter:;
+6| keyword.storage:const type.builtin:char16_t operator:* variable:f operator:= string:u"utf-16" punctuation.delimiter:;
+7| keyword.storage:const type.builtin:char32_t operator:* variable:g operator:= string:U"utf-32" punctuation.delimiter:;
+8| keyword.storage:const type.builtin:char operator:* variable:h operator:= string:"unterminated
+9| type.builtin:int variable:after_unterminated punctuation.delimiter:;
+10| keyword.storage:const type.builtin:char operator:* variable:i operator:= string:"a" string:"b" string:"c" punctuation.delimiter:;
+11| keyword.storage:const type.builtin:char operator:* variable:j operator:= string:"// not a comment /* nor this */" punctuation.delimiter:;

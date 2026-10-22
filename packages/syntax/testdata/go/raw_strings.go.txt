@@ -1,0 +1,7 @@
+a := `raw \n no escapes`
+b := `multi
+line "raw"
+string`
+c := 1
+d := ``
+e := `// not a comment`

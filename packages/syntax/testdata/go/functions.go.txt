@@ -1,0 +1,10 @@
+func add(a, b int) int { return a + b }
+func (p *Point) Move(dx, dy int) {
+	p.X += dx
+	p.Y += dy
+}
+func variadic(xs ...int) (sum int, err error) {
+	return
+}
+var fn = func(x int) int { return x * 2 }
+result := fmt.Sprintf("%d", add(1, 2))

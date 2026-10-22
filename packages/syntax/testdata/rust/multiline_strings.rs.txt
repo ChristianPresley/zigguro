@@ -1,0 +1,7 @@
+let a = "first line
+second line \"escaped\"
+third line";
+let b = "continued \
+    without newline";
+let after = 1;
+let c = "unterminated

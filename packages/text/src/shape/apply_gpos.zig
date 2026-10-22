@@ -111,7 +111,8 @@ fn deviceDelta(c: *const Ctx, base: []const u8, off: u16) i32 {
     const store = &(c.gdef.var_store orelse return 0);
     const outer = readAt(u16, d, 0) catch return 0;
     const inner = readAt(u16, d, 2) catch return 0;
-    return @intFromFloat(@round(store.delta(outer, inner, c.coords)));
+    const v = if (c.var_scalars.len != 0) store.deltaScaled(outer, inner, c.var_scalars) else store.delta(outer, inner, c.coords);
+    return @intFromFloat(@round(v));
 }
 
 /// Adds the ValueRecord at `rec` (format `format`; device offsets from

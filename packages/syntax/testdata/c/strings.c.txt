@@ -1,0 +1,11 @@
+const char *a = "plain";
+const char *b = "";
+const char *c = "with \"quotes\" inside";
+const char *d = u8"utf-8";
+const wchar_t *e = L"wide";
+const char16_t *f = u"utf-16";
+const char32_t *g = U"utf-32";
+const char *h = "unterminated
+int after_unterminated;
+const char *i = "a" "b"  "c";
+const char *j = "// not a comment /* nor this */";
