@@ -321,31 +321,125 @@ pub const Cmap = struct {
     }
 
     /// Mapped code points as merged ranges; free with `CoverageSet.deinit`.
+    /// Well-ordered format 4, 12 and 13 subtables are read segment by
+    /// segment; anything else goes through `coverageSlow`.
     pub fn coverage(c: *const Cmap, gpa: std.mem.Allocator) std.mem.Allocator.Error!CoverageSet {
-        const Ctx = struct {
-            gpa: std.mem.Allocator,
-            list: std.ArrayList([2]u21) = .empty,
-            failed: bool = false,
-            fn add(self: *@This(), cp: u21, _: GlyphId) void {
-                if (self.failed) return;
-                if (self.list.items.len > 0) {
-                    const last = &self.list.items[self.list.items.len - 1];
-                    if (last[1] + 1 == cp) {
-                        last[1] = cp;
-                        return;
-                    }
-                    if (last[1] >= cp) return;
-                }
-                self.list.append(self.gpa, .{ cp, cp }) catch {
-                    self.failed = true;
-                };
-            }
+        var acc: RangeAcc = .{ .gpa = gpa };
+        errdefer acc.list.deinit(gpa);
+        const fast = !c.symbol and switch (c.format) {
+            4 => c.coverage4(&acc),
+            12, 13 => c.coverage12(&acc),
+            else => false,
         };
-        var ctx: Ctx = .{ .gpa = gpa };
-        errdefer ctx.list.deinit(gpa);
-        c.forEachMapping(&ctx, Ctx.add);
-        if (ctx.failed) return error.OutOfMemory;
-        return .{ .ranges = try ctx.list.toOwnedSlice(gpa) };
+        if (!fast) {
+            acc.list.deinit(gpa);
+            return c.coverageSlow(gpa);
+        }
+        if (acc.failed) return error.OutOfMemory;
+        return .{ .ranges = try acc.list.toOwnedSlice(gpa) };
+    }
+
+    /// `coverage` by looking up every code point of every segment (the
+    /// reference the fast path is tested against).
+    pub fn coverageSlow(c: *const Cmap, gpa: std.mem.Allocator) std.mem.Allocator.Error!CoverageSet {
+        var acc: RangeAcc = .{ .gpa = gpa };
+        errdefer acc.list.deinit(gpa);
+        c.forEachMapping(&acc, RangeAcc.addOne);
+        if (acc.failed) return error.OutOfMemory;
+        return .{ .ranges = try acc.list.toOwnedSlice(gpa) };
+    }
+
+    /// Format 4 by segment; false (nothing added) when the segments are
+    /// not ascending and disjoint, or the table is short.
+    fn coverage4(c: *const Cmap, acc: *RangeAcc) bool {
+        const s = c.sub;
+        const seg_x2 = readAt(u16, s, 6) catch return false;
+        const seg: usize = seg_x2 / 2;
+        const ends = 14;
+        const starts = 16 + @as(usize, seg_x2);
+        const deltas = starts + seg_x2;
+        const ranges = deltas + seg_x2;
+        if (s.len < ranges + seg_x2) return false;
+        var next: u32 = 0;
+        for (0..seg) |i| {
+            const end = readAt(u16, s, ends + i * 2) catch return false;
+            const start = readAt(u16, s, starts + i * 2) catch return false;
+            if (start > end or start < next) return false;
+            next = @as(u32, end) + 1;
+        }
+        for (0..seg) |i| {
+            const end: u32 = readAt(u16, s, ends + i * 2) catch unreachable;
+            const start: u32 = readAt(u16, s, starts + i * 2) catch unreachable;
+            const delta = readAt(u16, s, deltas + i * 2) catch unreachable;
+            const ro = readAt(u16, s, ranges + i * 2) catch unreachable;
+            var cp = start;
+            while (cp <= end and cp != 0xFFFF) : (cp += 1) {
+                const g: u16 = if (ro == 0) @truncate(cp +% delta) else blk: {
+                    const raw_g = readAt(u16, s, ranges + i * 2 + ro + (cp - start) * 2) catch 0;
+                    break :blk if (raw_g == 0) 0 else raw_g +% delta;
+                };
+                if (g != 0 and g < c.num_glyphs) acc.add(@intCast(cp), @intCast(cp));
+            }
+        }
+        return true;
+    }
+
+    /// Formats 12 and 13 by group, in closed form; false when the groups
+    /// are not ascending and disjoint.
+    fn coverage12(c: *const Cmap, acc: *RangeAcc) bool {
+        const s = c.sub;
+        const n = readAt(u32, s, 12) catch return false;
+        const groups: usize = @min(n, (s.len -| 16) / 12);
+        var next: u64 = 0;
+        for (0..groups) |i| {
+            const start = readAt(u32, s, 16 + i * 12) catch return false;
+            const end = readAt(u32, s, 16 + i * 12 + 4) catch return false;
+            if (start > end or start < next) return false;
+            next = @as(u64, end) + 1;
+        }
+        const ng: u64 = c.num_glyphs;
+        for (0..groups) |i| {
+            const start: u64 = readAt(u32, s, 16 + i * 12) catch unreachable;
+            if (start > 0x10FFFF) break;
+            const end: u64 = @min(readAt(u32, s, 16 + i * 12 + 4) catch unreachable, 0x10FFFF);
+            const glyph: u64 = readAt(u32, s, 16 + i * 12 + 8) catch unreachable;
+            if (c.format == 13) {
+                if (glyph != 0 and glyph < ng) acc.add(@intCast(start), @intCast(end));
+                continue;
+            }
+            // Glyph ids glyph + (cp - start), valid in [1, ng).
+            if (glyph >= ng) continue;
+            const lo = start + (if (glyph == 0) @as(u64, 1) else 0);
+            const hi = @min(end, start + (ng - 1 - glyph));
+            if (lo <= hi) acc.add(@intCast(lo), @intCast(hi));
+        }
+        return true;
+    }
+};
+
+/// Accumulates ascending code point ranges, merging adjacent ones.
+const RangeAcc = struct {
+    gpa: std.mem.Allocator,
+    list: std.ArrayList([2]u21) = .empty,
+    failed: bool = false,
+
+    fn add(self: *RangeAcc, lo: u21, hi: u21) void {
+        if (self.failed) return;
+        if (self.list.items.len > 0) {
+            const last = &self.list.items[self.list.items.len - 1];
+            if (@as(u32, last[1]) + 1 >= lo) {
+                last[1] = @max(last[1], hi);
+                return;
+            }
+        }
+        self.list.append(self.gpa, .{ lo, hi }) catch {
+            self.failed = true;
+        };
+    }
+
+    fn addOne(self: *RangeAcc, cp: u21, _: GlyphId) void {
+        if (self.list.items.len > 0 and self.list.items[self.list.items.len - 1][1] >= cp) return;
+        self.add(cp, cp);
     }
 };
 
