@@ -290,7 +290,7 @@ test "emacs: C-x chords and M-x run workbench commands" {
     // The chords agree with the E15 keymap layer.
     var root = try std.Io.Dir.openDirAbsolute(io, options.package_root, .{});
     defer root.close(io);
-    const src = try root.readFileAllocOptions(io, "data/keymaps/emacs.zon", gpa, .limited(1 << 16), .of(u8), 0);
+    const src = try root.readFileAllocOptions(io, "src/modes/emacs/keymap.zon", gpa, .limited(1 << 16), .of(u8), 0);
     defer gpa.free(src);
     const Binding = struct { key: []const u8, command: []const u8, when: ?[]const u8 = null };
     const layer = try std.zon.parse.fromSliceAlloc([]const Binding, gpa, src, null, .{ .ignore_unknown_fields = true });
