@@ -1,0 +1,37 @@
+<memory path="/r/ZIGGURO.md" scope="project">
+Use zig build.
+</memory>
+
+# Current plan
+
+1. fix
+2. test
+
+# Skills
+
+- release: Cut a release
+
+# Todos
+
+- [x] fix
+- [~] test
+
+<file path="src/a.zig">
+const a = 1;
+</file>
+
+Referenced file src/huge.zig
+
+<file path="src/c.zig">
+c
+</file>
+
+Referenced file src/d.zig
+
+<file path="src/e.zig">
+e
+</file>
+
+# Still running
+
+- zig build test (running 3m)
