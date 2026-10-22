@@ -2389,8 +2389,10 @@ follows Vim's `Ctrl-O`/`Ctrl-I`. Patterns are Vim's (`\v \m \M \V`, `\<
 \>`, `\{n,m}`, `\{-}`, `\c`, `\_s`, `\%x41`...), translated for zg_regex;
 search offsets (`/pat/e+1`, `s-1`, `+2`) work. The Ex subset is ranges (`%`,
 `.`, `$`, `'x`, `/pat/`, `+n`), `:s` with `g i I e n &` (`:s`, `:&&`, `~`),
-`:g`/`:v` with `d`, `:d`, `:noh`, `:set`, `:let @r = '...'`, and `:w` `:q`
-`:wq` `:x` `:e` through `Host.actions`.
+`:g`/`:v` with any of these commands (lines are marked first; a line
+deleted or joined by an earlier command is skipped), `:normal`, `:d`,
+`:noh`, `:set`, `:let @r = '...'`, and `:w` `:q` `:wq` `:x` `:e` through
+`Host.actions`. `:g` and `:normal` are one undo step.
 
 Emacs keeps a point and a mark per cursor; the mark is active for all or
 none (transient-mark-mode) and an active region is the host selection.
@@ -2420,8 +2422,8 @@ The `Host` and what it points to belong to the caller.
 ### Stability
 Unstable. Gaps: `=`, `!`, `H`/`M`/`L`, blockwise put, counts on Visual
 operators other than shifts; `:s` flag `c`; `\zs`, `\ze`, look-around and
-back references in patterns (reported with their span); `:g` with commands
-other than `d`; jumping to a file mark in another document (the host has to
+back references in patterns (reported with their span); `:normal` keys are
+the typed characters (no `<...>` notation); jumping to a file mark in another document (the host has to
 open it); marks on deleted lines move to the deletion instead of being
 dropped, and a mark keeps its place in the text where Vim keeps its column.
 Emacs: the mark ring is the primary cursor's; `C-v`/`M-v` move by
