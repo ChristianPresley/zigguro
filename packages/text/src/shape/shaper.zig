@@ -187,7 +187,8 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
         }
     }
 
-    try normalize.normalize(face, b, p.complex.reorderMarks);
+    if (p.complex.preprocessText) |f| try f(p, b);
+    try normalize.normalize(face, b, .{ .reorder = p.complex.reorderMarks, .short_circuit = p.complex.normalize_short_circuit, .compose = p.complex.compose });
     setupMasks(p, b);
 
     // GSUB.
@@ -203,11 +204,12 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
         for (p.gsub_stages) |stage| {
             try apply_gsub.applyLookups(&c, stage.lookups);
             if (stage.pause) |f| {
-                f(p, b);
-                b.computeMaskUnion();
+                try f(p, b);
+                // A pause may set masks or insert glyphs.
+                try b.computeGlyphSet(face.num_glyphs);
             }
         }
-    } else for (p.gsub_stages) |stage| if (stage.pause) |f| f(p, b);
+    } else for (p.gsub_stages) |stage| if (stage.pause) |f| try f(p, b);
 
     // Advances.
     try b.pos.resize(b.gpa, b.len());
@@ -226,7 +228,7 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
         for (p.gpos_stages) |stage| {
             try apply_gpos.applyLookups(&c, stage.lookups);
             if (stage.pause) |f| {
-                f(p, b);
+                try f(p, b);
                 b.computeMaskUnion();
             }
         }
