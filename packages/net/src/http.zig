@@ -10,8 +10,11 @@
 //! - Connect and request timeouts, and retries with full-jitter backoff that
 //!   honour `Retry-After` (`retry.zig`). A stream never retries once body
 //!   bytes have reached the sink.
-//! - `Authorization` is sent as a privileged header, which std drops on
-//!   redirects to another host. It is never logged.
+//! - Credentials (`Authorization`, `x-api-key`) are never logged. Requests
+//!   that carry them follow redirects here rather than in std: std 0.16
+//!   accepts `privileged_headers` but never writes them, and its
+//!   same-domain check ignores the port. They are dropped on any redirect
+//!   to another origin (scheme, host and port).
 //!
 //! Every call blocks: never call on the UI thread (`Runtime.assertNotUi`).
 //! Long streams run under the caller's `Subsystem` so they can be cancelled.
@@ -23,6 +26,7 @@ const StdClient = std.http.Client;
 const zg_core = @import("zg_core");
 const proxy = @import("proxy.zig");
 const retry = @import("retry.zig");
+const url_mod = @import("url.zig");
 
 pub const ProxyConfig = proxy.ProxyConfig;
 pub const RetryPolicy = retry.RetryPolicy;
@@ -261,9 +265,9 @@ pub const Client = struct {
             const can_retry = attempt < self.cfg.max_retries and retry.methodAllowed(req.retry, req.method);
             var streamed = false;
             const result = if (sink == null and self.cfg.request_timeout != null)
-                zg_core.runtime.withDeadline(self.io, .after(self.io, self.cfg.request_timeout.?), attemptOnce, .{ self, gpa, uri, req, sink, can_retry, &streamed })
+                zg_core.runtime.withDeadline(self.io, .after(self.io, self.cfg.request_timeout.?), attemptFollowing, .{ self, gpa, uri, req, sink, can_retry, &streamed })
             else
-                self.attemptOnce(gpa, uri, req, sink, can_retry, &streamed);
+                self.attemptFollowing(gpa, uri, req, sink, can_retry, &streamed);
             if (result) |resp| {
                 var r = resp;
                 if (can_retry and !streamed and retry.retryableStatus(r.status)) {
@@ -293,7 +297,47 @@ pub const Client = struct {
         return self.cfg.backoff.delayMs(attempt, std.mem.readInt(u64, &r, .little));
     }
 
-    fn attemptOnce(self: *Client, gpa: Allocator, uri: std.Uri, req: Request, sink: ?BodySink, can_retry: bool, streamed: *bool) !Response {
+    /// Requests with credentials follow up to `max_redirects` redirects
+    /// here, dropping the credentials when the origin changes.
+    fn attemptFollowing(self: *Client, gpa: Allocator, uri0: std.Uri, req0: Request, sink: ?BodySink, can_retry: bool, streamed: *bool) !Response {
+        const has_credentials = for (req0.headers) |h| {
+            if (isCredential(h.name)) break true;
+        } else false;
+        if (!has_credentials) return self.attemptOnce(gpa, uri0, req0, sink, can_retry, streamed, false);
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        var uri = uri0;
+        var req = req0;
+        var hops: u8 = 0;
+        while (true) : (hops += 1) {
+            var resp = try self.attemptOnce(gpa, uri, req, sink, can_retry, streamed, true);
+            if (resp.status.class() != .redirect or hops >= max_redirects) return resp;
+            const loc = resp.headers.get("location") orelse return resp;
+            const a = arena.allocator();
+            var aux = try a.alloc(u8, loc.len + 2048);
+            @memcpy(aux[0..loc.len], loc);
+            const next = uri.resolveInPlace(loc.len, &aux) catch return error.HttpRedirectLocationInvalid;
+            const status = resp.status;
+            resp.deinit(gpa);
+            if (!url_mod.sameOrigin(uri, next)) {
+                const kept = try a.alloc(std.http.Header, req.headers.len);
+                var n: usize = 0;
+                for (req.headers) |h| {
+                    if (isCredential(h.name)) continue;
+                    kept[n] = h;
+                    n += 1;
+                }
+                req.headers = kept[0..n];
+            }
+            if (status == .see_other or ((status == .moved_permanently or status == .found) and req.method == .POST)) {
+                req.method = .GET;
+                req.body = null;
+            }
+            uri = next;
+        }
+    }
+
+    fn attemptOnce(self: *Client, gpa: Allocator, uri: std.Uri, req: Request, sink: ?BodySink, can_retry: bool, streamed: *bool, manual_redirects: bool) !Response {
         const io = self.io;
         const protocol = StdClient.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
         if (protocol == .tls) try self.ensureCaLoaded();
@@ -306,21 +350,6 @@ pub const Client = struct {
             .tls => c.https_proxy,
         } != null;
 
-        // Authorization rides as a privileged header (dropped on cross-host redirects).
-        const split = try gpa.alloc(std.http.Header, req.headers.len);
-        defer gpa.free(split);
-        var n_extra: usize = 0;
-        var n_priv: usize = req.headers.len;
-        for (req.headers) |h| {
-            if (std.ascii.eqlIgnoreCase(h.name, "authorization") or std.ascii.eqlIgnoreCase(h.name, "x-api-key")) {
-                n_priv -= 1;
-                split[n_priv] = h;
-            } else {
-                split[n_extra] = h;
-                n_extra += 1;
-            }
-        }
-
         const conn: ?*StdClient.Connection = if (has_proxy) null else try c.connectTcpOptions(.{
             .host = host,
             .port = port,
@@ -329,13 +358,13 @@ pub const Client = struct {
         });
         var r = c.request(req.method, uri, .{
             .keep_alive = true,
+            .redirect_behavior = if (manual_redirects) .unhandled else .init(max_redirects),
             .connection = conn,
             .headers = .{
                 .user_agent = .{ .override = self.cfg.user_agent },
                 .accept_encoding = if (req.accept_encoding_gzip) .{ .override = "gzip, deflate" } else .omit,
             },
-            .extra_headers = split[0..n_extra],
-            .privileged_headers = split[n_priv..],
+            .extra_headers = req.headers,
         }) catch |err| {
             if (conn) |cn| c.connection_pool.release(cn, io);
             return err;
@@ -374,7 +403,7 @@ pub const Client = struct {
         };
 
         if (sink) |s| {
-            if (can_retry and retry.retryableStatus(status)) {
+            if ((can_retry and retry.retryableStatus(status)) or (manual_redirects and status.class() == .redirect)) {
                 _ = body.discardRemaining() catch {};
                 return .{ .status = status, .headers = headers, .body = &.{} };
             }
@@ -396,6 +425,12 @@ pub const Client = struct {
         return .{ .status = status, .headers = headers, .body = bytes };
     }
 };
+
+const max_redirects = 3;
+
+fn isCredential(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "authorization") or std.ascii.eqlIgnoreCase(name, "x-api-key");
+}
 
 /// The specific error behind a body `ReadFailed` (e.g. `error.Canceled`).
 fn readError(resp: *const StdClient.Response) anyerror {
@@ -430,52 +465,7 @@ fn isConnectError(err: anyerror) bool {
 
 const testing = std.testing;
 
-/// A plain-HTTP loopback server answering `handler` for up to `max` requests.
-const TestServer = struct {
-    server: Io.net.Server,
-    port: u16,
-    served: std.atomic.Value(u32) = .init(0),
-    handler: *const fn (*TestServer, *std.http.Server.Request) anyerror!void,
-    ctx: ?*anyopaque = null,
-    max: u32,
-    future: Io.Future(Io.Cancelable!void) = undefined,
-
-    fn start(self: *TestServer, io: Io) !void {
-        const addr: Io.net.IpAddress = .{ .ip4 = .loopback(0) };
-        self.server = try addr.listen(io, .{ .reuse_address = true });
-        self.port = self.server.socket.address.getPort();
-        self.future = try io.concurrent(run, .{ self, io });
-    }
-
-    fn stop(self: *TestServer, io: Io) void {
-        self.future.cancel(io) catch {};
-        self.server.deinit(io);
-    }
-
-    fn run(self: *TestServer, io: Io) Io.Cancelable!void {
-        while (self.served.load(.monotonic) < self.max) {
-            const conn = self.server.accept(io) catch |err| switch (err) {
-                error.Canceled => return error.Canceled,
-                else => return,
-            };
-            defer conn.close(io);
-            var rbuf: [8192]u8 = undefined;
-            var wbuf: [8192]u8 = undefined;
-            var sr = conn.reader(io, &rbuf);
-            var sw = conn.writer(io, &wbuf);
-            var http: std.http.Server = .init(&sr.interface, &sw.interface);
-            while (self.served.load(.monotonic) < self.max) {
-                var req = http.receiveHead() catch break;
-                _ = self.served.fetchAdd(1, .monotonic);
-                self.handler(self, &req) catch break;
-            }
-        }
-    }
-
-    fn url(self: *TestServer, buf: []u8, path: []const u8) []const u8 {
-        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ self.port, path }) catch unreachable;
-    }
-};
+const TestServer = @import("test_server.zig").TestServer;
 
 const Fixture = struct {
     rt: zg_core.Runtime,
@@ -616,6 +606,36 @@ test "http: POST is not retried by default" {
     defer r.deinit(testing.allocator);
     try testing.expectEqual(std.http.Status.service_unavailable, r.status);
     try testing.expectEqual(@as(u32, 1), srv.served.load(.monotonic));
+}
+
+test "http: Authorization is sent and kept on a same-origin redirect" {
+    const io = testing.io;
+    var srv: TestServer = .{ .server = undefined, .port = 0, .max = 2, .handler = struct {
+        fn h(_: *TestServer, req: *std.http.Server.Request) !void {
+            if (std.mem.eql(u8, req.head.target, "/start")) {
+                try req.respond("", .{ .status = .found, .extra_headers = &.{.{ .name = "location", .value = "/next" }}, .keep_alive = false });
+                return;
+            }
+            var it = req.iterateHeaders();
+            while (it.next()) |hd| {
+                if (std.ascii.eqlIgnoreCase(hd.name, "authorization")) return req.respond(hd.value, .{});
+            }
+            try req.respond("missing", .{});
+        }
+    }.h };
+    try srv.start(io);
+    defer srv.stop(io);
+    var f: Fixture = undefined;
+    try f.init(test_cfg);
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var r = try f.client.send(testing.allocator, .{
+        .url = srv.url(&buf, "/start"),
+        .headers = &.{.{ .name = "Authorization", .value = "Bearer secret" }},
+    });
+    defer r.deinit(testing.allocator);
+    try testing.expectEqual(std.http.Status.ok, r.status);
+    try testing.expectEqualStrings("Bearer secret", r.body);
 }
 
 test "http: redirect to another host drops Authorization" {
