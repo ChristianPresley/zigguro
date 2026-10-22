@@ -57,6 +57,10 @@ pub const transaction = @import("oplog/transaction.zig");
 pub const repo = @import("oplog/repo.zig");
 /// Undo, restore, the op log and op abandon.
 pub const undo = @import("oplog/undo.zig");
+/// Preview (detached) operations and view diffs.
+pub const preview = @import("oplog/preview.zig");
+/// Adopting a preview onto the current repo.
+pub const adopt = @import("oplog/adopt.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -79,6 +83,7 @@ pub const View = view.View;
 pub const RefTarget = view.RefTarget;
 pub const Operation = operation.Operation;
 pub const OpMeta = operation.OpMeta;
+pub const DetachedOp = preview.DetachedOp;
 
 test {
     std.testing.refAllDecls(@This());
@@ -91,4 +96,5 @@ test {
     _ = @import("merge/markers_test.zig");
     _ = @import("oplog/oplog_test.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
+    _ = @import("oplog/preview_test.zig");
 }
