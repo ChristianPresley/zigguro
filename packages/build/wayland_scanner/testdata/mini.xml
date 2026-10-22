@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="mini">
+  <copyright>Public domain test data.</copyright>
+  <interface name="mini_registry" version="2">
+    <description summary="a tiny registry">
+      Lists globals.
+
+      Second paragraph &amp; an entity.
+    </description>
+    <request name="bind">
+      <description summary="bind a global"/>
+      <arg name="name" type="uint"/>
+      <arg name="id" type="new_id"/>
+    </request>
+    <request name="destroy" type="destructor" since="2"/>
+    <event name="global">
+      <arg name="name" type="uint"/>
+      <arg name="interface" type="string"/>
+      <arg name="version" type="uint"/>
+    </event>
+    <event name="blob">
+      <arg name="data" type="array"/>
+      <arg name="fd" type="fd"/>
+      <arg name="label" type="string" allow-null="true"/>
+      <arg name="where" type="fixed"/>
+      <arg name="peer" type="object" interface="mini_registry" allow-null="true"/>
+      <arg name="kind" type="uint" enum="kind"/>
+      <arg name="caps" type="uint" enum="caps"/>
+    </event>
+    <enum name="kind">
+      <entry name="normal" value="0" summary="the usual"/>
+      <entry name="90" value="1"/>
+      <entry name="also_normal" value="0"/>
+    </enum>
+    <enum name="caps" bitfield="true">
+      <entry name="none" value="0"/>
+      <entry name="read" value="1"/>
+      <entry name="write" value="4"/>
+    </enum>
+  </interface>
+</protocol>
