@@ -160,6 +160,13 @@ pub const Event = union(enum(u8)) {
     /// Unaccelerated relative mouse motion in device counts, only when
     /// `InitOptions.raw_mouse` asked for it (Win32 raw input).
     pointer_relative: struct { win: WindowId, dx: f32, dy: f32, time_ns: u64 },
+    /// Who draws a window's decorations (Wayland). With `client`, the app
+    /// draws the title bar and borders inside the surface, and
+    /// `margins_px` (left, top, right, bottom, physical pixels) is the
+    /// invisible resize and shadow area around them, part of the
+    /// `window_configure` size. Staged before the configure it applies to,
+    /// when it changes.
+    window_decorations: struct { win: WindowId, client: bool, margins_px: [4]u32 },
 
     /// The tag type.
     pub const Tag = std.meta.Tag(Event);
