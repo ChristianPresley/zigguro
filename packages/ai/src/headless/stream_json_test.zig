@@ -213,7 +213,9 @@ test "golden stream from cassette" {
         const p = an.provider();
         defer p.deinit();
         h.useProvider(&p);
-        try testing.expectEqual(.ok, try h.run(try h.options(&(prompt_args ++ [_][:0]const u8{"--include-partial"})), input));
+        var o = try h.options(&(prompt_args ++ [_][:0]const u8{"--include-partial"}));
+        o.env.permission_clock = .real;
+        try testing.expectEqual(.ok, try h.run(o, input));
         try c.finish();
         outs[i] = try testing.allocator.dupe(u8, h.stdout());
     }
