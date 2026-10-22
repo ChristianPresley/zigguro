@@ -19,6 +19,9 @@ pub const Alias = struct {
 pub const Discovery = struct {
     /// Absolute, deduplicated, existing directories, in priority order.
     dirs: []const []const u8,
+    /// Font files registered outside `dirs` (Windows registry entries
+    /// with full paths), deduplicated; possibly missing.
+    files: []const []const u8 = &.{},
     /// Aliases in document order.
     aliases: []const Alias,
     /// Owns every string above.
@@ -53,6 +56,19 @@ pub const Discovery = struct {
             } else try out.append(arena, f);
         };
         return out.items;
+    }
+
+    /// Appends every font file discovery found: those under `dirs`
+    /// (`listFontFiles`), then `files`. Missing files are skipped.
+    pub fn listFiles(d: *const Discovery, gpa: Allocator, io: Io, out: *std.ArrayList(FileEntry)) !void {
+        try listFontFiles(gpa, io, d.dirs, out);
+        for (d.files) |f| {
+            const st = Io.Dir.cwd().statFile(io, f, .{}) catch continue;
+            if (st.kind != .file) continue;
+            const p = try gpa.dupe(u8, f);
+            errdefer gpa.free(p);
+            try out.append(gpa, .{ .path = p, .size = st.size, .mtime = st.mtime });
+        }
     }
 };
 
