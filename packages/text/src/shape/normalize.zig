@@ -20,6 +20,9 @@ pub const max_combining_marks = 32;
 /// Reorders a sorted mark run [start, end) further (Arabic modifier marks).
 pub const ReorderFn = *const fn (buf: *Buffer, start: usize, end: usize) void;
 
+/// The one-step decomposition of `ab` (a complex shaper's replacement).
+pub const DecomposeFn = *const fn (ab: u21) ?Pair;
+
 /// Composes `a` + `b` when recomposing (a complex shaper's filter).
 pub const ComposeFn = *const fn (a: u21, b: u21) ?u21;
 
@@ -30,6 +33,8 @@ pub const Options = struct {
     /// Keep a character the font maps instead of decomposing it (false is
     /// HarfBuzz's "composed diacritics, no short circuit" mode).
     short_circuit: bool = true,
+    /// Replaces `decompose` in the decomposition round.
+    decompose: ?DecomposeFn = null,
     /// Replaces `compose` in the recomposition round.
     compose: ?ComposeFn = null,
 };
@@ -44,7 +49,8 @@ const t_count = 28;
 const n_count = v_count * t_count;
 const s_count = l_count * n_count;
 
-const Pair = struct { a: u21, b: u21 };
+/// A one-step decomposition: `a` then `b` (`b == 0` for singletons).
+pub const Pair = struct { a: u21, b: u21 };
 
 /// The one-step canonical decomposition of `ab` (`b == 0` for singletons).
 pub fn decompose(ab: u21) ?Pair {
@@ -80,6 +86,7 @@ pub fn compose(a: u21, b: u21) ?u21 {
 const Ctx = struct {
     face: *const Face,
     b: *Buffer,
+    decompose: DecomposeFn = &decompose,
     idx: usize = 0,
 
     fn glyph(c: *const Ctx, cp: u21) GlyphId {
@@ -109,7 +116,7 @@ const Ctx = struct {
     }
 
     fn decomposeRec(c: *Ctx, shortest: bool, ab: u21) Allocator.Error!usize {
-        const d = decompose(ab) orelse return 0;
+        const d = c.decompose(ab) orelse return 0;
         var b_glyph: GlyphId = 0;
         if (d.b != 0) {
             b_glyph = c.glyph(d.b);
@@ -207,13 +214,14 @@ pub fn normalize(face: *const Face, b: *Buffer, opts: Options) Allocator.Error!v
     // keeps its glyph in place. Stop at the first character that needs
     // more; the prefix before it is final (a base followed by a mark is
     // left to its cluster).
+    const decomposeFn = opts.decompose orelse &decompose;
     var done: usize = 0;
     {
         const infos = b.infos.items;
         while (done < count) : (done += 1) {
             const g = &infos[done];
             if (g.isUnicodeMark()) break;
-            if (!opts.short_circuit and decompose(g.cp) != null) break;
+            if (!opts.short_circuit and decomposeFn(g.cp) != null) break;
             const gid = face.glyphIndex(g.cp);
             if (gid == 0) break;
             g.gid = gid;
@@ -224,7 +232,7 @@ pub fn normalize(face: *const Face, b: *Buffer, opts: Options) Allocator.Error!v
     b.out.clearRetainingCapacity();
     try b.out.ensureTotalCapacity(b.gpa, b.len());
     b.out.appendSliceAssumeCapacity(b.infos.items[0..done]);
-    var c: Ctx = .{ .face = face, .b = b, .idx = done };
+    var c: Ctx = .{ .face = face, .b = b, .idx = done, .decompose = decomposeFn };
     var all_simple = true;
 
     // Round 1: decompose.
