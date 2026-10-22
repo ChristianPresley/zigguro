@@ -1,8 +1,10 @@
 //! ucdgen: turns the vendored UCD text files into compact lookup tables.
 //!
-//!   ucdgen --version 18.0.0 --manifest <manifest.zon> <file>... <out-dir>
-//!       Files are given in `tables.files` order. Each is checked against its
-//!       SHA-256 in the manifest; writes <out-dir>/ucd.bin and ucd_tables.zig.
+//!   ucdgen --version 18.0.0 --manifest <manifest.zon> <file>...
+//!          --ms-use <manifest.zon> <file>... <out-dir>
+//!       UCD files in `tables.files` order, then Microsoft's USE override
+//!       files in `tables.ms_use_files` order. Each is checked against its
+//!       SHA-256 in its manifest; writes <out-dir>/ucd.bin and ucd_tables.zig.
 //!   ucdgen regex --version 18.0.0 --manifest <manifest.zon> <file>... <out-dir>
 //!       Files in `emit_regex.files` order; writes <out-dir>/regex_tables.zig
 //!       for zg_regex.
@@ -39,8 +41,9 @@ pub fn main(init: std.process.Init) !u8 {
 
     if (args.len >= 2 and std.mem.eql(u8, args[1], "fetch")) return fetchCmd(gpa, io, init.environ_map, args[2..]);
 
-    if (args.len != 5 + tables.files.len + 1 or !std.mem.eql(u8, args[1], "--version") or !std.mem.eql(u8, args[3], "--manifest")) {
-        std.debug.print("usage: ucdgen --version <v> --manifest <manifest.zon> <{d} UCD files> <out-dir>\n       ucdgen enums <PropertyValueAliases.txt>\n", .{tables.files.len});
+    const ms_at = 5 + tables.files.len;
+    if (args.len != ms_at + 2 + tables.ms_use_files.len + 1 or !std.mem.eql(u8, args[1], "--version") or !std.mem.eql(u8, args[3], "--manifest") or !std.mem.eql(u8, args[ms_at], "--ms-use")) {
+        std.debug.print("usage: ucdgen --version <v> --manifest <manifest.zon> <{d} UCD files> --ms-use <manifest.zon> <{d} ms-use files> <out-dir>\n       ucdgen enums <PropertyValueAliases.txt>\n", .{ tables.files.len, tables.ms_use_files.len });
         return 2;
     }
     const version = args[2];
@@ -68,9 +71,20 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
 
+    var ms: tables.MsUseInputs = undefined;
+    for (tables.ms_use_files, 0..) |rel, i| {
+        const path = args[ms_at + 2 + i];
+        if (!endsWithPath(path, rel)) {
+            std.debug.print("ucdgen: --ms-use argument {d} should be {s}, got {s}\n", .{ i + 1, rel, path });
+            return 2;
+        }
+        ms[i] = try cwd.readFileAlloc(io, path, arena, .limited(1 << 20));
+    }
+    if (!try verifySubset(arena, io, args[ms_at + 1], &tables.ms_use_files, &ms)) return 1;
+
     var diag: tables.Diag = .{};
     tables.checkAliases(inputs[tables.fileIndex("PropertyValueAliases.txt")], &diag) catch |err| return report(err, diag);
-    var ucd = tables.build(gpa, &inputs, &diag) catch |err| return report(err, diag);
+    var ucd = tables.build(gpa, &inputs, &ms, &diag) catch |err| return report(err, diag);
     defer ucd.deinit();
     const blob = try emit.buildBlob(arena, &ucd);
 
@@ -161,6 +175,8 @@ fn usageFetch() u8 {
 fn report(err: anyerror, diag: tables.Diag) u8 {
     if (err == error.UnknownPropertyValue) {
         std.debug.print("ucdgen: {s}:{d}: unknown property value {s} for enum {s}; extend it in tools/ucdgen/src/enums.zig (ucdgen enums)\n", .{ diag.file, diag.line, diag.value, diag.enum_name });
+    } else if (err == error.UseCategory) {
+        std.debug.print("ucdgen: USE classification failed at {s}\n", .{diag.value});
     } else std.debug.print("ucdgen: {t}\n", .{err});
     return 1;
 }
@@ -174,6 +190,7 @@ test {
     _ = @import("fetch.zig");
     _ = @import("emit_regex.zig");
     _ = @import("file_list.zig");
+    _ = @import("use_table.zig");
 }
 
 /// Whether `path` ends with the `/`-separated `rel`, accepting `\` as a
