@@ -7,6 +7,10 @@
 //! `set_drop_effect` (copy) only when the answer changes. On drop the
 //! URI list becomes local paths and the node under the pointer gets
 //! `InputEvent.drop_files`. Remote and non-`file:` URIs are skipped.
+//!
+//! Drags between our own windows (a dock tab, E04.F07.S02.T02) offer
+//! `application/x-zigguro-internal`; a window with an `internal_drop`
+//! hook hands those to it instead, and answers with a move.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,6 +24,10 @@ pub const DropState = struct {
     sent: ?bool = null,
     /// An answer for the Host to send.
     pending: ?bool = null,
+    /// The drag is one of ours (`application/x-zigguro-internal`).
+    internal: bool = false,
+    /// The format the pending answer accepts.
+    mime: zg_platform.clipboard.MimeId = .uri_list,
 
     /// Records `accept` as the answer; queued only when it changed.
     pub fn answer(s: *DropState, accept: bool) void {
@@ -30,16 +38,20 @@ pub const DropState = struct {
 
     /// The drag ended.
     pub fn reset(s: *DropState) void {
-        const pending = s.pending;
-        s.* = .{ .pending = pending };
+        s.* = .{ .pending = s.pending, .mime = s.mime };
     }
 };
 
 /// Whether a packed little-endian `u16` `MimeId` array offers a file list.
 pub fn offersFiles(mimes: []const u8) bool {
+    return offers(mimes, .uri_list);
+}
+
+/// Whether a packed little-endian `u16` `MimeId` array offers `id`.
+pub fn offers(mimes: []const u8, id: zg_platform.clipboard.MimeId) bool {
     var i: usize = 0;
     while (i + 2 <= mimes.len) : (i += 2) {
-        if (std.mem.readInt(u16, mimes[i..][0..2], .little) == @intFromEnum(zg_platform.clipboard.MimeId.uri_list)) return true;
+        if (std.mem.readInt(u16, mimes[i..][0..2], .little) == @intFromEnum(id)) return true;
     }
     return false;
 }

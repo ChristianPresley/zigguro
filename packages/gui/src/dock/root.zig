@@ -10,6 +10,8 @@ pub const geometry = @import("geometry.zig");
 pub const splitter = @import("splitter.zig");
 /// The `area_sash.zig` module.
 pub const area_sash = @import("area_sash.zig");
+/// The `floating.zig` module.
+pub const floating = @import("floating.zig");
 /// The `tab_strip.zig` module.
 pub const tab_strip = @import("tab_strip.zig");
 /// The `drop_zones.zig` module.
