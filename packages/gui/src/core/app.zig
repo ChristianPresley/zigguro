@@ -128,6 +128,8 @@ pub const App = struct {
     pub fn deinit(app: *App) void {
         // Background work first: it may post into what follows.
         if (app.work) |*wk| wk.shutdown();
+        // Deliver what finished work posted, so its owners can release it.
+        _ = app.drainMessages();
         app.local_calls.deinit(app.gpa);
         for (app.windows.items) |w| w.destroy();
         app.windows.deinit(app.gpa);
