@@ -13,6 +13,7 @@ const coverage = @import("coverage.zig");
 const flatten = @import("flatten.zig");
 const embolden = @import("embolden.zig");
 const lcd = @import("lcd.zig");
+const sdf = @import("sdf.zig");
 
 /// Largest bitmap side in pixels. Bigger requests fail with `TooLarge`;
 /// callers use SDF or tiles instead.
@@ -179,8 +180,12 @@ pub const Rasterizer = struct {
     out: std.ArrayList(u8) = .empty,
     /// Emboldened copy of a caller's path.
     work: Path = .{},
-    /// 3× coverage before the LCD filter.
+    /// 3× coverage before the LCD filter; the sign mask for SDF.
     sub: std.ArrayList(u8) = .empty,
+    /// SDF segment list and its grid buckets.
+    segs: std.ArrayList([2][2]f32) = .empty,
+    cell_start: std.ArrayList(u32) = .empty,
+    cell_items: std.ArrayList(u32) = .empty,
 
     /// A rasterizer with empty buffers.
     pub fn init(gpa: Allocator) Rasterizer {
@@ -195,6 +200,9 @@ pub const Rasterizer = struct {
         r.out.deinit(r.gpa);
         r.work.deinit(r.gpa);
         r.sub.deinit(r.gpa);
+        r.segs.deinit(r.gpa);
+        r.cell_start.deinit(r.gpa);
+        r.cell_items.deinit(r.gpa);
     }
 
     /// Rasterizes `path` (font units, y up) at `p`. An empty or non-finite
@@ -221,16 +229,16 @@ pub const Rasterizer = struct {
     }
 
     fn rasterizeMapped(r: *Rasterizer, path_in: *const Path, m: Affine, p: RasterParams) Error!Bitmap {
-        if (p.mode == .sdf) return error.Unsupported;
         const path = try r.emboldened(path_in, m, p);
+        if (p.mode == .sdf) return sdf.generateMapped(r, path, m, p.sdf_spread_px);
         if (p.mode == .gray) {
             const pl = place(transformedBounds(path, m)) orelse return .{};
             if (pl.width > max_side or pl.height > max_side) return error.TooLarge;
             try r.acc.reset(r.gpa, pl.width, pl.height);
             walk(path, m, .{ @floatFromInt(pl.left), @floatFromInt(pl.top) }, flatten.tol_gray, &r.acc);
-            const px = try r.output(pl.width * pl.height);
+            const px = try r.outputBuffer(pl.width * pl.height);
             r.acc.integrate(px, pl.width);
-            return bitmap(pl, pl.width, .gray8, px);
+            return bitmapOf(pl, pl.width, .gray8, px);
         }
         // LCD: x at 3×, padded by the filter's reach, with the left edge on
         // a whole pixel so every 3 subpixels make one pixel.
@@ -252,9 +260,9 @@ pub const Rasterizer = struct {
         try r.sub.ensureTotalCapacity(r.gpa, w3 * pl.height);
         r.sub.items.len = w3 * pl.height;
         r.acc.integrate(r.sub.items, w3);
-        const px = try r.output(w3 * pl.height);
+        const px = try r.outputBuffer(w3 * pl.height);
         lcd.filter(r.sub.items, w3, pl.height, w3, if (p.mode == .lcd_bgr) .bgr else .rgb, px, w3);
-        return bitmap(pl, w3, .lcd_rgb8x3, px);
+        return bitmapOf(pl, w3, .lcd_rgb8x3, px);
     }
 
     /// `path`, or a copy in `work` grown by synthetic bold and stem
@@ -283,14 +291,16 @@ pub const Rasterizer = struct {
         return &r.work;
     }
 
-    fn output(r: *Rasterizer, n: usize) Allocator.Error![]u8 {
+    /// The output buffer resized to `n` bytes (valid until the next call).
+    pub fn outputBuffer(r: *Rasterizer, n: usize) Allocator.Error![]u8 {
         r.out.clearRetainingCapacity();
         try r.out.ensureTotalCapacity(r.gpa, n);
         r.out.items.len = n;
         return r.out.items;
     }
 
-    fn bitmap(pl: Placement, stride: u32, format: Bitmap.Format, px: []u8) Error!Bitmap {
+    /// A `Bitmap` over `px` at placement `pl`.
+    pub fn bitmapOf(pl: Placement, stride: u32, format: Bitmap.Format, px: []u8) Error!Bitmap {
         return .{
             .width = @intCast(pl.width),
             .height = @intCast(pl.height),
