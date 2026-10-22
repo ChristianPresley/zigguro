@@ -21,6 +21,10 @@ pub const variation = @import("var/root.zig");
 pub const cbdt = @import("cbdt.zig");
 /// sbix bitmap strikes.
 pub const sbix = @import("sbix.zig");
+/// COLR v0/v1 colour glyphs.
+pub const colr = @import("colr.zig");
+/// CPAL colour palettes.
+pub const cpal = @import("cpal.zig");
 
 /// A glyph index; 0 is `.notdef`.
 pub const GlyphId = reader.GlyphId;
