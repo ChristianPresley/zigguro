@@ -994,7 +994,11 @@ Without it, the Xcursor theme from `XCURSOR_THEME`/`XCURSOR_SIZE`/
 thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
-shows the default arrow. Animated cursors show their first frame.
+shows the default arrow. Animated cursors (every frame of the nearest
+size is uploaded once) step on a timerfd in the platform thread's epoll
+while the pointer is over a window showing them, waiting each frame's
+delay (at least 10 ms); `leave` or another cursor stops them. Manual
+checklist: `docs/manual-tests/wayland-cursors.md`.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
 Activation, dialogs and URIs return `error.Unsupported`.
 
