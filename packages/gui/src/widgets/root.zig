@@ -12,6 +12,8 @@ pub const controls = @import("controls.zig");
 pub const scroll = @import("scroll.zig");
 /// The `height_index.zig` module.
 pub const height_index = @import("height_index.zig");
+/// The `text_field/` modules.
+pub const text_field = @import("text_field/root.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -33,6 +35,12 @@ pub const scrollArea = scroll.scrollArea;
 pub const virtualList = scroll.virtualList;
 /// See `height_index.HeightIndex`.
 pub const HeightIndex = height_index.HeightIndex;
+/// See `text_field.textField`.
+pub const textField = text_field.textField;
+/// See `text_field.TextField`.
+pub const TextField = text_field.TextField;
+/// See `text_field.TextBuffer`.
+pub const TextBuffer = text_field.TextBuffer;
 /// See `text.TextProps`.
 pub const TextProps = text.TextProps;
 
