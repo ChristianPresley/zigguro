@@ -130,6 +130,7 @@ pub fn build(b: *std.Build) void {
             }
         }
     }
+    const supply_chain = addTool(b, "check-supply-chain", "tools/check-supply-chain/main.zig", test_filters, f.optimize, tools_test_step);
 
     const zig_pin = b.addRunArtifact(zig_verify);
     zig_pin.setCwd(b.path("."));
@@ -157,6 +158,12 @@ pub fn build(b: *std.Build) void {
     check_layers.addDirectoryArg(b.path("."));
     check_layers.has_side_effects = true;
     b.step("check-layers", "Check the package graph against tools/pkgtool/layers.zon").dependOn(&check_layers.step);
+
+    const supply_chain_run = b.addRunArtifact(supply_chain);
+    supply_chain_run.addArgs(&.{"--root"});
+    supply_chain_run.addDirectoryArg(b.path("."));
+    supply_chain_run.has_side_effects = true;
+    b.step("check-supply-chain", "Fail on any third-party code: URL deps, @cImport, libc, C sources (E16.F01.S02.T01)").dependOn(&supply_chain_run.step);
 
     const new_pkg = b.addRunArtifact(pkgtool);
     new_pkg.addArgs(&.{ "new", "--root" });
