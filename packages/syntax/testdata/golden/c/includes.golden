@@ -1,0 +1,9 @@
+1| keyword:#include string.special:<stdio.h>
+2| keyword:#include string.special:<sys/types.h>
+3| keyword:#include string.special:"local.h"
+4| keyword:#  include string.special:<spaced.h>
+5| keyword:#include_next string.special:<next.h>
+6| keyword:#embed string.special:"data.bin"
+7| keyword:#include constant:MACRO_HEADER
+8| keyword:#include string.special:<unterminated.h
+9| type.builtin:int variable:after punctuation.delimiter:;
