@@ -120,6 +120,32 @@ fn retainRelease(d: *Doc, s: *bench.State) void {
     }
 }
 
+/// Undo then redo of one 10k-replacement group (the applies dominate).
+fn undo10k(d: *Doc, s: *bench.State) void {
+    const edit = zg_editor.model.edit;
+    const gpa = std.heap.page_allocator;
+    var edits: [10_000]buffer.piece_tree.Edit = undefined;
+    const step = d.tree.len() / edits.len;
+    for (&edits, 0..) |*e, k| e.* = .{ .range = .{ .start = k * step, .end = k * step + 1 }, .text = "zz" };
+    const cs = edit.change_set.ChangeSet.fromEdits(gpa, d.tree.len(), &edits) catch unreachable;
+    const inv = cs.invert(d.tree, gpa) catch unreachable;
+    const next = cs.apply(d.tree, &d.pool) catch unreachable;
+    d.tree.deinit(&d.pool);
+    d.tree = next;
+    var tree: edit.undo.UndoTree = .init(gpa, .{});
+    defer tree.deinit();
+    tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .zero }) catch unreachable;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        inline for (.{ edit.undo.UndoTree.undo, edit.undo.UndoTree.redo }) |f| {
+            const st = f(&tree).?;
+            const t = st.changes.apply(d.tree, &d.pool) catch unreachable;
+            d.tree.deinit(&d.pool);
+            d.tree = t;
+        }
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -133,6 +159,7 @@ fn register(b: *bench.Bench) !void {
         .{ "editor.buffer.offset_to_utf16", offsetToUtf16 },
         .{ "editor.buffer.replace_1k_cursors", replace1k },
         .{ "editor.snapshot.retain_release", retainRelease },
+        .{ "editor.undo.10k_group", undo10k },
     }) |entry| {
         const d = try Doc.init(b.gpa, text);
         defer d.deinit(b.gpa);
