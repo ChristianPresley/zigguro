@@ -206,6 +206,8 @@ jobs:
       - run: zig build test-vulkan-gpu test-golden --summary line
         env:
           ZG_GPU: llvmpipe
+          # Synchronization validation (the layer reads it from the environment).
+          VK_VALIDATION_VALIDATE_SYNC: "1"
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
