@@ -94,6 +94,16 @@ pub const Panel = struct {
     state: ?[]u8 = null,
 };
 
+/// Each area's size before the user resizes it (pixels along its axis).
+pub fn defaultSize(a: Area) f32 {
+    return switch (a) {
+        .left, .right => 240,
+        .bottom => 260,
+        .agent => 380,
+        .center => 0,
+    };
+}
+
 /// An area's tree and visibility.
 pub const AreaState = struct {
     root: ?Node = null,
@@ -179,6 +189,7 @@ pub const DockModel = struct {
     /// An empty layout: the center holds one empty group.
     pub fn init(gpa: Allocator) Allocator.Error!DockModel {
         var m: DockModel = .{ .gpa = gpa };
+        for (&m.areas, 0..) |*a, i| a.size = defaultSize(@enumFromInt(i));
         const g = try m.newGroup();
         m.areas[@intFromEnum(Area.center)].root = .{ .group = g };
         m.focused = g;
@@ -529,6 +540,13 @@ pub const DockModel = struct {
         if (ratios.len != sp.ratios.items.len) return;
         @memcpy(sp.ratios.items, ratios);
         renormalize(sp.ratios.items);
+    }
+
+    /// Sets an area's size without an undo step (live resize drags; call
+    /// `checkpoint` once when the gesture starts).
+    pub fn setAreaSizeLive(m: *DockModel, a: Area, px: f32) void {
+        if (!std.math.isFinite(px)) return;
+        m.areas[@intFromEnum(a)].size = @max(0, px);
     }
 
     /// Records an undo step for a gesture made of live changes.

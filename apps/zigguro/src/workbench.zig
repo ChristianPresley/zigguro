@@ -601,13 +601,17 @@ pub const Workbench = struct {
         wb.header(ui);
         wb.terminal_node = .none;
         ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
-        wb.sideArea(ui, .left, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.left)].size }, .shrink = 0 });
+        wb.sideArea(ui, .left, .{ .w = .{ .px = wb.areaSize(.left) }, .shrink = 0 });
+        wb.sash(ui, .left);
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .align_items = .stretch } });
         wb.sideArea(ui, .center, .{ .grow = 1, .basis = .{ .px = 0 } });
-        wb.sideArea(ui, .bottom, .{ .h = .{ .pct = 38 }, .shrink = 0 });
+        wb.sash(ui, .bottom);
+        wb.sideArea(ui, .bottom, .{ .h = .{ .px = wb.areaSize(.bottom) }, .shrink = 0 });
         ui.close();
-        wb.sideArea(ui, .right, .{ .w = .{ .px = wb.dock.areas[@intFromEnum(Area.right)].size }, .shrink = 0 });
-        wb.sideArea(ui, .agent, .{ .w = .{ .px = agent_w }, .shrink = 0 });
+        wb.sash(ui, .right);
+        wb.sideArea(ui, .right, .{ .w = .{ .px = wb.areaSize(.right) }, .shrink = 0 });
+        wb.sash(ui, .agent);
+        wb.sideArea(ui, .agent, .{ .w = .{ .px = wb.areaSize(.agent) }, .shrink = 0 });
         ui.close();
         if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |f| {
             wb.editor_node = f.node;
@@ -620,7 +624,38 @@ pub const Workbench = struct {
         wb.statusBar(ui);
     }
 
-    const agent_w: f32 = 380;
+    /// The room the center keeps when a side area grows.
+    const center_min: f32 = 160;
+
+    fn areaSize(wb: *const Workbench, area: Area) f32 {
+        return wb.dock.areas[@intFromEnum(area)].size;
+    }
+
+    fn areaShown(wb: *const Workbench, area: Area) bool {
+        const a = wb.dock.areas[@intFromEnum(area)];
+        return a.visible and a.root != null;
+    }
+
+    /// The resize handle on `area`'s inner edge, when it is shown. The
+    /// area may grow until the center keeps `center_min`.
+    fn sash(wb: *Workbench, ui: *Ui, area: Area) void {
+        if (!wb.areaShown(area)) return;
+        const win = ui.win.size;
+        const t = zg_gui.dock.splitter.thickness;
+        var others: f32 = 0;
+        const avail = if (area == .bottom) win.h - 120 else blk: {
+            for ([_]Area{ .left, .right, .agent }) |o| {
+                if (o != area and wb.areaShown(o)) others += wb.areaSize(o) + t;
+            }
+            break :blk win.w - others - t;
+        };
+        zg_gui.dock.area_sash.areaSash(ui, .{
+            .dock = &wb.dock,
+            .area = area,
+            .min_px = if (area == .bottom) 80 else 170,
+            .max_px = avail - center_min,
+        });
+    }
 
     /// `area` in a box styled `st`, when shown.
     fn sideArea(wb: *Workbench, ui: *Ui, area: Area, st: zg_gui.Style) void {
