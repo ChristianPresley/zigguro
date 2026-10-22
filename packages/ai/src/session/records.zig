@@ -19,6 +19,9 @@ pub const Parent = struct {
     session: proto.SessionId,
     /// Records with `seq <= at_seq` come from the parent.
     seq: u64,
+    /// The parent's records were copied into this file (a fork chain
+    /// deeper than 32); the parent is not read.
+    materialized: bool = false,
 };
 
 /// Who started the session.
@@ -120,6 +123,21 @@ pub const Line = struct {
     record: Record,
 };
 
+/// The message lines still active after the `rewind` records of `lines`
+/// (file order): a rewind to `to_seq` drops the messages after `to_seq`
+/// written before it. Rewound records stay in the file.
+pub fn activeMessages(a: Allocator, lines: []const Line) Allocator.Error![]const Line {
+    var out: std.ArrayList(Line) = .empty;
+    for (lines) |l| switch (l.record) {
+        .user, .assistant, .tool_results => try out.append(a, l),
+        .rewind => |r| {
+            while (out.items.len > 0 and out.items[out.items.len - 1].seq > r.to_seq) out.items.len -= 1;
+        },
+        else => {},
+    };
+    return out.items;
+}
+
 /// Writes `l` as one JSON line (with the trailing `\n`).
 pub fn encode(w: *std.Io.Writer, l: Line) std.Io.Writer.Error!void {
     var s: Stringify = .{ .writer = w, .options = .{ .emit_null_optional_fields = false } };
@@ -142,6 +160,7 @@ pub fn encode(w: *std.Io.Writer, l: Line) std.Io.Writer.Error!void {
                 const pid = proto.agent_ref.format(p.session);
                 try field(&s, "session", &pid);
                 try field(&s, "seq", p.seq);
+                if (p.materialized) try field(&s, "materialized", true);
                 try s.endObject();
             }
             try field(&s, "created", h.created_ms);
@@ -221,7 +240,7 @@ pub fn decode(arena: Allocator, text: []const u8) DecodeError!Line {
                 .model = json.str(o, "model") orelse "",
             };
             if (o.get("parent")) |pv| if (json.asObject(pv)) |po| {
-                h.parent = .{ .session = try ulid(po, "session"), .seq = json.int(u64, po, "seq") orelse return error.InvalidRecord };
+                h.parent = .{ .session = try ulid(po, "session"), .seq = json.int(u64, po, "seq") orelse return error.InvalidRecord, .materialized = json.boolean(po, "materialized") };
             };
             break :blk .{ .header = h };
         },
