@@ -77,6 +77,32 @@ pub fn parse(arena: Allocator, src: [:0]const u8, diags: *std.ArrayList(Diagnost
     };
 }
 
+/// Where a workspace keeps its settings (E15's workspace layer).
+pub const workspace_settings = ".zigguro/settings.zon";
+
+/// The `review` section of the workspace settings file in `root` (the
+/// default settings when there is none). Only the nested form
+/// `.review = .{ ... }` is read here; E15's store, with every layer and
+/// dotted keys, replaces this once the app loads settings through it.
+pub fn loadWorkspace(arena: Allocator, io: std.Io, root: std.Io.Dir, diags: *std.ArrayList(Diagnostic)) !Settings {
+    const src = root.readFileAllocOptions(io, workspace_settings, arena, .limited(1 << 20), .of(u8), 0) catch |e| switch (e) {
+        error.FileNotFound => return .{},
+        else => return e,
+    };
+    const File = struct { review: Settings = .{} };
+    var zd: std.zon.parse.Diagnostics = .{};
+    defer zd.deinit(arena);
+    const f = std.zon.parse.fromSliceAlloc(File, arena, src, &zd, .{ .ignore_unknown_fields = true, .free_on_error = false }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseZon => {
+            const msg = std.fmt.allocPrint(arena, "{s}: {f}", .{ workspace_settings, zd }) catch workspace_settings ++ ": invalid ZON";
+            try diags.append(arena, .{ .rule = null, .message = msg });
+            return .{};
+        },
+    };
+    return f.review;
+}
+
 pub const Rule = struct {
     action: RuleAction,
     paths: GlobSet,
@@ -219,4 +245,34 @@ test "rules: parse, compile and match" {
     const d = try parse(arena, ".{ .rules = 5 }", &bad);
     try testing.expectEqual(@as(usize, 0), d.rules.len);
     try testing.expectEqual(@as(usize, 1), bad.items.len);
+}
+
+test "rules: the review section of the workspace settings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    // No file: review everything.
+    try std.testing.expectEqual(@as(usize, 0), (try loadWorkspace(a, std.testing.io, tmp.dir, &diags)).rules.len);
+    try tmp.dir.createDirPath(std.testing.io, ".zigguro");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = workspace_settings, .data =
+        \\.{
+        \\    .editor = .{ .tabSize = 2 },
+        \\    .review = .{
+        \\        .rules = .{ .{ .paths = .{"docs/**"}, .action = .auto_accept } },
+        \\        .protected = .{"secrets/**"},
+        \\    },
+        \\}
+    });
+    const s = try loadWorkspace(a, std.testing.io, tmp.dir, &diags);
+    try std.testing.expectEqual(@as(usize, 1), s.rules.len);
+    try std.testing.expectEqual(RuleAction.auto_accept, s.rules[0].action);
+    try std.testing.expectEqualStrings("secrets/**", s.protected[0]);
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    // Broken: one diagnostic, the defaults.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = workspace_settings, .data = ".{ .review = .{ .rules = 3 } }" });
+    try std.testing.expectEqual(@as(usize, 0), (try loadWorkspace(a, std.testing.io, tmp.dir, &diags)).rules.len);
+    try std.testing.expectEqual(@as(usize, 1), diags.items.len);
 }

@@ -205,6 +205,11 @@ pub const Host = struct {
         /// Initial content size in logical pixels.
         size: geom.Size = .{ .w = 1280, .h = 800 },
         root: ?view_mod.AnyView = null,
+        /// The outer top-left corner on the virtual screen (physical
+        /// pixels); null lets the system place it. Ignored on Wayland.
+        position: ?zg_platform.types.PxPoint = null,
+        /// Keep it above normal windows (floating tool windows).
+        always_on_top: bool = false,
     };
 
     /// Opens a platform window showing `opts.root`.
@@ -215,6 +220,8 @@ pub const Host = struct {
         const id = try h.platform.createWindow(.{
             .title = opts.title,
             .size = .{ .w = @intFromFloat(@max(1, @round(opts.size.w * scale))), .h = @intFromFloat(@max(1, @round(opts.size.h * scale))) },
+            .position = opts.position,
+            .always_on_top = opts.always_on_top,
         });
         errdefer h.platform.destroyWindow(id);
         const hw = try h.gpa.create(HostWindow);
@@ -258,13 +265,26 @@ pub const Host = struct {
 
     /// Opens floating dock windows on this Host (`dock.floating`).
     pub fn windowOpener(h: *Host) floating.WindowOpener {
-        return .{ .ctx = h, .open = openForFloat, .monitors = monitorsForFloat };
+        return .{ .ctx = h, .open = openForFloat, .open_placed = openPlacedForFloat, .set_always_on_top = aboveForFloat, .monitors = monitorsForFloat };
     }
 
     fn openForFloat(ctx: *anyopaque, title: []const u8, size: geom.Size, root: view_mod.AnyView) anyerror!*Window {
+        return openPlacedForFloat(ctx, title, size, root, .{});
+    }
+
+    fn openPlacedForFloat(ctx: *anyopaque, title: []const u8, size: geom.Size, root: view_mod.AnyView, at: floating.Placement) anyerror!*Window {
         const h: *Host = @ptrCast(@alignCast(ctx));
-        const hw = try h.open(.{ .title = title, .size = size, .root = root });
+        const hw = try h.open(.{ .title = title, .size = size, .root = root, .position = at.position, .always_on_top = at.always_on_top });
         return hw.win;
+    }
+
+    fn aboveForFloat(ctx: *anyopaque, w: *Window, on: bool) bool {
+        const h: *Host = @ptrCast(@alignCast(ctx));
+        for (h.windows.items) |hw| if (hw.win == w) {
+            h.platform.submit(.{ .set_always_on_top = .{ .win = hw.id, .on = on } }) catch return false;
+            return true;
+        };
+        return false;
     }
 
     fn monitorsForFloat(ctx: *anyopaque, out: []zg_platform.types.MonitorInfo) usize {

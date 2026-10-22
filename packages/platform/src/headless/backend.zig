@@ -28,6 +28,7 @@ const Command = window_api.Command;
 const WindowId = types.WindowId;
 const PayloadSlice = types.PayloadSlice;
 const PxSize = types.PxSize;
+const PxPoint = types.PxPoint;
 const Platform = platform_api.Platform;
 const Error = platform_api.Error;
 
@@ -99,6 +100,8 @@ const Win = struct {
     state: window_api.WindowState = .{ .activated = true },
     cursor: @import("../api/cursor.zig").CursorShape = .default,
     ime_enabled: bool = false,
+    position: ?PxPoint = null,
+    always_on_top: bool = false,
     wants_frame: bool = true,
     frame: ?CpuBuf = null,
     presenter: *WinPresenter,
@@ -180,7 +183,7 @@ pub const Headless = struct {
         const wp = try h.gpa.create(WinPresenter);
         errdefer h.gpa.destroy(wp);
         wp.* = .{ .presenter = .{ .ptr = wp, .vtable = &presenter_vtable }, .h = h, .win = id };
-        try h.windows.put(h.gpa, @intFromEnum(id), .{ .title = owned_title, .size = opts.size, .restore_size = opts.size, .min_size = opts.min_size, .presenter = wp });
+        try h.windows.put(h.gpa, @intFromEnum(id), .{ .title = owned_title, .size = opts.size, .restore_size = opts.size, .min_size = opts.min_size, .position = opts.position, .always_on_top = opts.always_on_top, .presenter = wp });
         h.next_win += 1;
         const prev = h.focused;
         h.focused = id;
@@ -423,6 +426,14 @@ pub const Headless = struct {
         return .{ .width = f.w, .height = f.h, .stride = f.stride, .pixels = f.pixels };
     }
 
+    /// A window's last requested position and always-on-top state (tests).
+    pub fn placement(h: *Headless, win: WindowId) ?struct { position: ?PxPoint, always_on_top: bool } {
+        h.lock();
+        defer h.unlock();
+        const w = h.windows.getPtr(@intFromEnum(win)) orelse return null;
+        return .{ .position = w.position, .always_on_top = w.always_on_top };
+    }
+
     /// The title of `win`, or null if it does not exist.
     pub fn title(h: *Headless, win: WindowId) ?[]const u8 {
         h.lock();
@@ -530,6 +541,8 @@ pub const Headless = struct {
             },
             .set_cursor => |c| (try h.lookup(c.win)).cursor = c.shape,
             .set_ime_state => |c| (try h.lookup(c.win)).ime_enabled = c.enabled,
+            .set_position => |c| (try h.lookup(c.win)).position = c.pos,
+            .set_always_on_top => |c| (try h.lookup(c.win)).always_on_top = c.on,
             .set_min_size => |c| {
                 const w = try h.lookup(c.win);
                 w.min_size = c.size;
@@ -952,6 +965,25 @@ test "commands: clipboard, dialog, state and large payloads" {
     try testing.expectEqualStrings("new", h.title(win).?);
     try testing.expectEqualStrings("https://ziglang.org", h.opened_uris.items[0]);
     try testing.expectError(error.InvalidWindow, p.submit(.{ .set_title = .{ .win = @enumFromInt(99), .title = "x" } }));
+}
+
+test "commands: position and always-on-top" {
+    const h = try Headless.init(testing.allocator, testing.io, .{});
+    defer h.deinit();
+    const p = h.platform();
+    const a = try p.createWindow(.{ .title = "a", .size = .{ .w = 100, .h = 50 }, .position = .{ .x = -5, .y = 7 }, .always_on_top = true });
+    const b = try p.createWindow(.{ .title = "b", .size = .{ .w = 100, .h = 50 } });
+    try testing.expectEqual(PxPoint{ .x = -5, .y = 7 }, h.placement(a).?.position.?);
+    try testing.expect(h.placement(a).?.always_on_top);
+    try testing.expect(h.placement(b).?.position == null);
+    try testing.expect(!h.placement(b).?.always_on_top);
+    try p.submit(.{ .set_position = .{ .win = b, .pos = .{ .x = 10, .y = 20 } } });
+    try p.submit(.{ .set_always_on_top = .{ .win = b, .on = true } });
+    try p.submit(.{ .set_always_on_top = .{ .win = a, .on = false } });
+    try testing.expectEqual(PxPoint{ .x = 10, .y = 20 }, h.placement(b).?.position.?);
+    try testing.expect(h.placement(b).?.always_on_top);
+    try testing.expect(!h.placement(a).?.always_on_top);
+    try testing.expectError(error.InvalidWindow, p.submit(.{ .set_position = .{ .win = @enumFromInt(99), .pos = .{ .x = 0, .y = 0 } } }));
 }
 
 test "real-time waitEvents returns on wake from another thread" {

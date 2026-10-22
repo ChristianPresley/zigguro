@@ -112,6 +112,34 @@ fn atomList(comptime xs: []const u32) [xs.len * 4]u8 {
     return out;
 }
 
+/// WM_NORMAL_HINTS (ICCCM WM_SIZE_HINTS, 18 CARD32s): USPosition (1) with
+/// the position in longs 1 and 2, and PMinSize (16) with the minimum size
+/// in longs 5 and 6.
+pub fn normalHints(min: ?types.PxSize, pos: ?types.PxPoint) [18 * 4]u8 {
+    var hints: [18 * 4]u8 = @splat(0);
+    var flags: u32 = 0;
+    if (pos) |p| {
+        flags |= 1;
+        std.mem.writeInt(i32, hints[4..8], p.x, .little);
+        std.mem.writeInt(i32, hints[8..12], p.y, .little);
+    }
+    if (min) |m| {
+        flags |= 16;
+        std.mem.writeInt(u32, hints[20..24], m.w, .little);
+        std.mem.writeInt(u32, hints[24..28], m.h, .little);
+    }
+    std.mem.writeInt(u32, hints[0..4], flags, .little);
+    return hints;
+}
+
+test "WM_NORMAL_HINTS: position and minimum size" {
+    const h = normalHints(.{ .w = 200, .h = 100 }, .{ .x = -5, .y = 40 });
+    try std.testing.expectEqual(@as(u32, 17), std.mem.readInt(u32, h[0..4], .little));
+    try std.testing.expectEqual(@as(i32, -5), std.mem.readInt(i32, h[4..8], .little));
+    try std.testing.expectEqual(@as(u32, 200), std.mem.readInt(u32, h[20..24], .little));
+    try std.testing.expectEqual(@as(u32, 16), std.mem.readInt(u32, normalHints(.{ .w = 1, .h = 1 }, null)[0..4], .little));
+}
+
 test "_NET_WM_MOVERESIZE directions" {
     const want = [_]struct { ResizeEdge, u32 }{
         .{ .top_left, 0 },     .{ .top, 1 },    .{ .top_right, 2 },   .{ .right, 3 },

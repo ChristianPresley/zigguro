@@ -29,6 +29,9 @@ pub const Target = union(enum) {
     in_edit: struct { edit: u32, delta: ?u32 = null },
     /// A range inside the inserted text of edit `edit`.
     range_in_edit: struct { edit: u32, anchor: u32, head: u32 },
+    /// A caret at an offset of the snapshot the command saw, mapped
+    /// through the change (moving past text inserted there).
+    at: u64,
 };
 
 /// Collects one command's edits and the selections they leave.
@@ -111,7 +114,6 @@ pub fn runPerSelection(doc: *Document, sels: *SelectionSet, f: EditFn, ctx: *any
         try f(ctx, &snap, sel, &b);
     }
     var res: RunResult = .{};
-    if (b.edits.items.len == 0) return res;
 
     // Order by position (then selection order) and drop overlaps.
     const order = try gpa.alloc(u32, b.edits.items.len);
@@ -148,9 +150,12 @@ pub fn runPerSelection(doc: *Document, sels: *SelectionSet, f: EditFn, ctx: *any
     }
     var cs = try ChangeSet.fromEdits(gpa, snap.len(), kept.items);
     defer cs.deinit();
-    if (cs.isIdentity()) return res;
-    try doc.applyChangeSet(&cs, origin);
-    res.changed = true;
+    // Even without a change, `.at` targets move carets (typing over a
+    // closer).
+    if (!cs.isIdentity()) {
+        try doc.applyChangeSet(&cs, origin);
+        res.changed = true;
+    }
 
     // Index of each selection's first edit.
     const first = try gpa.alloc(u32, sels.items.items.len + 1);
@@ -168,6 +173,7 @@ pub fn runPerSelection(doc: *Document, sels: *SelectionSet, f: EditFn, ctx: *any
         const hi = first[si + 1];
         const placed: ?Selection = switch (t) {
             .map => null,
+            .at => |o| Selection.caret(cs.mapPos(o, .right)),
             .in_edit => |p| blk: {
                 if (lo + p.edit >= hi) break :blk null;
                 const ns = new_start[lo + p.edit];
@@ -192,6 +198,46 @@ pub fn runPerSelection(doc: *Document, sels: *SelectionSet, f: EditFn, ctx: *any
     sels.clearHistory();
     sels.word_search = false;
     return res;
+}
+
+/// How `applyEdits` moves selections. `keep` doesn't grow a range over
+/// text inserted at its edges; `grow` does (comment toggles keep the
+/// toggled lines selected).
+pub const Mapping = enum { keep, grow };
+
+/// Applies `edits` (against the current version, any order, no
+/// overlaps) as one change and maps every selection through it.
+pub fn applyEdits(doc: *Document, sels: *SelectionSet, edits: []const Replace, origin: EditOrigin, mapping: Mapping) !bool {
+    var cs = try ChangeSet.fromEdits(sels.gpa, doc.len(), edits);
+    defer cs.deinit();
+    if (cs.isIdentity()) return false;
+    try doc.applyChangeSet(&cs, origin);
+    switch (mapping) {
+        .keep => sels.mapThrough(&cs),
+        .grow => {
+            for (sels.items.items) |*x| {
+                if (x.isCaret()) {
+                    x.* = x.map(&cs);
+                    continue;
+                }
+                const lo = cs.mapPos(x.start(), .left);
+                const hi = cs.mapPos(x.end(), .right);
+                if (x.head > x.anchor) {
+                    x.anchor = lo;
+                    x.head = hi;
+                } else {
+                    x.anchor = hi;
+                    x.head = lo;
+                }
+                x.goal_x = null;
+                x.virtual = 0;
+            }
+            sels.normalize(.for_display);
+        },
+    }
+    sels.clearHistory();
+    sels.word_search = false;
+    return true;
 }
 
 const TypeCtx = struct { text: []const u8, pad: []const u8 };

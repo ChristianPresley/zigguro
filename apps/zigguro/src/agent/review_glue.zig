@@ -16,6 +16,11 @@
 //!   turn ends (`end_turn`), already applied and marked auto-applied, so
 //!   the review panel lists what every turn changed (`model`).
 //!
+//! - In `policy` mode the turn is held the same way, and when it ends
+//!   zg_review's `ReviewPolicy` (the workspace's `review` settings in
+//!   `.zigguro/settings.zon`) lands the files it auto-applies, rejects
+//!   the ones it denies and leaves the rest pending.
+//!
 //! - In `review` mode (`mode`) proposals to files not open in the editor
 //!   are held instead (`Outcome.pending`): the turn's changes live in
 //!   memory until it ends, then become one pending changeset. The agent
@@ -24,8 +29,14 @@
 //!   have changes pending on the file. Open documents still take edits
 //!   at once.
 //!
-//! Contents live in memory for the app's run, like the agent sessions;
-//! the durable store comes with saved sessions.
+//! With `Options.persist` the queue, the history and the checkpoints
+//! live in the workspace's review store (`.zigguro/review/`), the one
+//! `zg review` works on: what is there is loaded at start, every change
+//! is flushed when it is made, and `refresh` takes in what another
+//! process (the CLI, another window) appended since. A workspace without
+//! a store gets one when an agent first writes, not before (opening a
+//! folder leaves no trace). Without `persist` they live in memory for
+//! the app's run.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
@@ -53,7 +64,13 @@ pub const ReviewGlue = struct {
     dir: Io.Dir,
     disk: DiskFiles,
     workspace: zg_review.apply.DirFiles,
+    /// Contents when not persisting.
     blobs: model.MemBlobs,
+    /// The review store when persisting.
+    store: ?*zg_review.store.ChangesetStore = null,
+    sink: zg_review.store.store.QueueSink = undefined,
+    /// Persisting, but the store is created on the first write.
+    store_pending: bool = false,
     history: model.History,
     q: *model.Queue,
     cps: Checkpoints,
@@ -67,6 +84,11 @@ pub const ReviewGlue = struct {
     /// Whether agent proposals land at once or wait for review. Read when
     /// a turn first proposes; the panel switches it (under `mutex`).
     mode: Mode = .auto_apply,
+    /// The workspace's edit policy (`policy` mode).
+    policy: *zg_review.policy.ReviewPolicy,
+    /// The agents' permission mode, as the policy sees it (E16's real
+    /// probe comes with `Engine.probe`).
+    permission_mode: zg_review.policy.policy.Mode = .default,
     /// What each running turn wrote: the content before its first write.
     turns: std.ArrayList(Turn) = .empty,
     /// Called after a turn's changeset is in the queue, on the agent's
@@ -74,7 +96,7 @@ pub const ReviewGlue = struct {
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     mutex: Io.Mutex = .init,
 
-    pub const Mode = enum { auto_apply, review };
+    pub const Mode = enum { auto_apply, review, policy };
 
     const Turn = struct {
         agent: zg_ai_proto.AgentRef,
@@ -91,8 +113,16 @@ pub const ReviewGlue = struct {
         arena: std.heap.ArenaAllocator,
     };
 
+    pub const Options = struct {
+        /// Keep the review state in the workspace's `.zigguro/review/`.
+        persist: bool = false,
+    };
+
+    /// The store's directory under the workspace root.
+    pub const store_path = ".zigguro/review";
+
     /// Review of the workspace at `root` (absolute, normalized).
-    pub fn create(gpa: Allocator, io: Io, root: []const u8) !*ReviewGlue {
+    pub fn create(gpa: Allocator, io: Io, root: []const u8, o: Options) !*ReviewGlue {
         const g = try gpa.create(ReviewGlue);
         errdefer gpa.destroy(g);
         g.* = .{
@@ -110,12 +140,24 @@ pub const ReviewGlue = struct {
             .model = undefined,
             .overlay = undefined,
             .conflicts = undefined,
+            .policy = undefined,
         };
         errdefer g.dir.close(io);
+        errdefer g.blobs.deinit();
         g.workspace = .{ .dir = g.dir, .io = io };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
+        errdefer g.q.deinit();
         g.cps = .init(gpa, io, g.q, &g.history, g.workspace.files(), null);
+        errdefer g.cps.deinit();
+        if (o.persist) {
+            if (g.dir.access(io, store_path, .{})) |_| {
+                try g.openStore();
+            } else |_| g.store_pending = true;
+        }
+        errdefer if (g.store) |st| st.close();
         g.applier = .init(gpa, io, g.q, g.workspace.files(), &g.history);
+        g.policy = try g.loadPolicy();
+        errdefer g.policy.deinit();
         g.conflicts = try zg_review.rebase.ConflictIndex.init(gpa, g.q, .{ .history = &g.history });
         errdefer g.conflicts.deinit();
         g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{ .conflicts = g.conflicts });
@@ -130,6 +172,8 @@ pub const ReviewGlue = struct {
         g.turns.deinit(gpa);
         g.model.deinit();
         g.conflicts.deinit();
+        g.policy.deinit();
+        if (g.store) |st| st.close();
         g.cps.deinit();
         g.q.deinit();
         g.history.deinit();
@@ -258,7 +302,8 @@ pub const ReviewGlue = struct {
         const rel = g.relative(arena, abs) orelse return d.vtable.propose(d.ctx, io, arena, abs, p, origin);
         g.mutex.lockUncancelable(io);
         defer g.mutex.unlock(io);
-        const held = if (g.findTurn(origin.agent, origin.turn)) |t| t.held else g.mode == .review;
+        g.ensureStoreLocked();
+        const held = if (g.findTurn(origin.agent, origin.turn)) |t| t.held else g.mode != .auto_apply;
         if (held) return g.hold(arena, rel, p, origin);
         const ws = g.workspace.files();
         const before = try ws.read(arena, rel);
@@ -270,6 +315,7 @@ pub const ReviewGlue = struct {
             break :blk null;
         };
         g.noteTurn(rel, before, origin, rec) catch |e| log.warn("{s}: agent write not recorded for review: {t}", .{ rel, e });
+        g.flushLocked();
         return out;
     }
 
@@ -310,6 +356,7 @@ pub const ReviewGlue = struct {
             } else return null;
             var t = g.turns.swapRemove(i);
             defer t.arena.deinit();
+            defer g.flushLocked();
             break :blk try g.submitTurn(&t) orelse return null;
         };
         if (g.on_change) |h| h.f(h.ctx);
@@ -334,7 +381,7 @@ pub const ReviewGlue = struct {
             const after = if (t.held) t.after.get(path) else try g.workspace.files().read(arena, path);
             if (before == null and after == null) continue;
             if (before != null and after != null and std.mem.eql(u8, before.?.bytes, after.?.bytes) and before.?.executable == after.?.executable) continue;
-            if (after) |x| _ = try g.blobs.blobs().put(x.bytes);
+            if (after) |x| _ = try g.q.blobs.put(x.bytes);
             try landed.append(arena, .{
                 .path = path,
                 .pre = if (before) |x| model.blobHash(x.bytes) else null,
@@ -358,7 +405,10 @@ pub const ReviewGlue = struct {
             return null;
         }
         const id = try g.q.commitBatch(b, .{});
-        if (t.held) return id;
+        if (t.held) {
+            if (g.mode == .policy) g.applyPolicy(arena, id);
+            return id;
+        }
         const cs = g.q.getMut(id) orelse return id;
         for (cs.files) |*f| {
             for (f.hunks) |*h| h.decision = .accepted;
@@ -380,7 +430,7 @@ pub const ReviewGlue = struct {
     /// nothing changed. Locked.
     fn record(g: *ReviewGlue, arena: Allocator, rel: []const u8, before: ?zg_review.apply.files.Entry, agent: zg_ai_proto.AgentRef) !?u64 {
         const after = try g.workspace.files().read(arena, rel);
-        const b = g.blobs.blobs();
+        const b = g.q.blobs;
         if (before) |x| _ = try b.put(x.bytes);
         if (after) |x| _ = try b.put(x.bytes);
         const f: model.ApplyFile = .{
@@ -423,6 +473,7 @@ pub const ReviewGlue = struct {
     /// Runs `act` on changeset `cs`; the caller holds `mutex` (the panel
     /// builds under it). UI thread.
     pub fn actLocked(g: *ReviewGlue, arena: Allocator, cs: model.ChangesetId, act: Action) anyerror!ActionResult {
+        defer g.flushLocked();
         const c = g.q.getMut(cs) orelse return .{ .refused = .{ .path = "", .reason = "it is gone" } };
         switch (act) {
             .accept, .reject => {
@@ -463,6 +514,104 @@ pub const ReviewGlue = struct {
         }
     }
 
+    /// Opens (creating) the store, binds the queue, history and
+    /// checkpoints to it and loads it. Checkpoints taken before are
+    /// journaled now; nothing else can have changed yet.
+    fn openStore(g: *ReviewGlue) !void {
+        const st: *zg_review.store.ChangesetStore = try .open(g.gpa, g.io, g.dir, store_path, .{});
+        g.store = st;
+        g.q.blobs = st.blobs();
+        g.q.journal = st.journalPort();
+        g.history.recorder = st.recorder();
+        g.sink = st.queueSink(g.q, &g.history, g.cps.sink());
+        const rep = try st.load(g.sink.sink());
+        if (rep.truncated_bytes > 0 or rep.quarantined > 0)
+            log.warn("review store: {d} torn bytes cut, {d} segments quarantined", .{ rep.truncated_bytes, rep.quarantined });
+        g.cps.mutex.lockUncancelable(g.io);
+        defer g.cps.mutex.unlock(g.io);
+        const rec = st.checkpointRecorder();
+        for (g.cps.list.items) |*cp| rec.checkpoint(rec.ctx, cp);
+        g.cps.recorder = rec;
+    }
+
+    /// Before the first write of a persisting glue. Locked.
+    fn ensureStoreLocked(g: *ReviewGlue) void {
+        if (!g.store_pending) return;
+        g.store_pending = false;
+        g.openStore() catch |e| {
+            // Review goes on in memory for this run.
+            log.warn("review store: cannot create {s}: {t}", .{ store_path, e });
+            if (g.store) |st| st.close();
+            g.store = null;
+            g.q.journal = null;
+            g.history.recorder = null;
+        };
+    }
+
+    /// The workspace's `review` settings compiled; problems are logged and
+    /// the rule they concern is left out.
+    fn loadPolicy(g: *ReviewGlue) !*zg_review.policy.ReviewPolicy {
+        var arena_state: std.heap.ArenaAllocator = .init(g.gpa);
+        defer arena_state.deinit();
+        var diags: std.ArrayList(zg_review.policy.rules.Diagnostic) = .empty;
+        const settings: zg_review.policy.Settings = zg_review.policy.rules.loadWorkspace(arena_state.allocator(), g.io, g.dir, &diags) catch |e| blk: {
+            log.warn("review settings not read: {t}", .{e});
+            break :blk .{};
+        };
+        const p = try zg_review.policy.ReviewPolicy.init(g.gpa, settings);
+        for (diags.items) |d| log.warn("{s}", .{d.message});
+        for (p.diagnostics) |d| log.warn("review rule {?d}: {s}", .{ d.rule, d.message });
+        return p;
+    }
+
+    /// The probe the policy asks: no E16 rules (the agent's tool
+    /// permissions already ran), the permission mode as set.
+    fn probe(g: *ReviewGlue) zg_review.policy.SecurityProbe {
+        return .{ .ctx = g, .probe = probeAsk, .mode = probeMode };
+    }
+
+    fn probeAsk(_: *anyopaque, _: ?u128, _: []const u8, _: zg_review.policy.rules.Op) zg_review.policy.policy.ProbeResult {
+        return .{ .kind = .ask, .layer = .default };
+    }
+
+    fn probeMode(ctx: *anyopaque, _: ?u128) zg_review.policy.policy.Mode {
+        return cast(ctx).permission_mode;
+    }
+
+    /// `policy` mode, after a held turn is queued: lands what the policy
+    /// auto-applies, rejects what it denies. Locked.
+    fn applyPolicy(g: *ReviewGlue, arena: Allocator, id: model.ChangesetId) void {
+        const cs = g.q.get(id) orelse return;
+        var ctx: zg_review.policy.PolicyCtx = .of(cs);
+        ctx.security = g.probe();
+        const r = zg_review.policy.policy.autoApply(g.policy, ctx, &g.applier, id, arena) catch |e| {
+            log.warn("review policy on {f} failed: {t}", .{ id, e });
+            return;
+        };
+        if (r.failed) |e| log.warn("review policy: auto-applying {f} failed: {t}", .{ id, e });
+        if (r.apply != null) _ = g.conflicts.rebaseApplied() catch |e| log.warn("rebasing after an apply failed: {t}", .{e});
+    }
+
+    /// Writes what changed to the store (when persisting). Locked. A
+    /// failure is logged: the change stands, and the next flush retries.
+    fn flushLocked(g: *ReviewGlue) void {
+        const st = g.store orelse return;
+        st.flush() catch |e| log.warn("review store: flush failed: {t}", .{e});
+    }
+
+    /// Takes in what other processes (`zg review`, another window)
+    /// recorded since; whether anything changed. UI thread.
+    pub fn refresh(g: *ReviewGlue) bool {
+        const st = g.store orelse return false;
+        g.mutex.lockUncancelable(g.io);
+        defer g.mutex.unlock(g.io);
+        const n = st.tail(g.sink.sink()) catch |e| {
+            log.warn("review store: reading other processes' records failed: {t}", .{e});
+            return false;
+        };
+        return n > 0;
+    }
+
     /// `abs` relative to the root, `/`-separated; null outside it.
     fn relative(g: *const ReviewGlue, arena: Allocator, abs: []const u8) ?[]const u8 {
         if (abs.len <= g.root.len + 1 or !std.mem.startsWith(u8, abs, g.root) or !std.fs.path.isSep(abs[g.root.len])) return null;
@@ -475,6 +624,7 @@ pub const ReviewGlue = struct {
         const g = cast(ctx);
         g.mutex.lockUncancelable(io);
         defer g.mutex.unlock(io);
+        defer g.flushLocked();
         const r = try g.cps.restoreTo(arena, checkpoint, .{});
         if (r.failed) |f| {
             log.warn("restore of checkpoint {d} failed at {s}: {t}{s}", .{ checkpoint, f.path, f.err, if (f.rolled_back) "" else " (not rolled back)" });
@@ -518,7 +668,7 @@ test "review glue: agent writes are recorded and a checkpoint restore keeps the 
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\ntwo\n" });
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.txt", .data = "x\n" });
 
-    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
     defer g.destroy();
     const fs = g.files();
     const cps = g.checkpoints();
@@ -566,7 +716,7 @@ test "review glue: a turn's writes become one auto-applied changeset" {
     const arena = arena_state.allocator();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
 
-    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
     defer g.destroy();
     const fs = g.files();
     const in_turn = struct {
@@ -605,7 +755,7 @@ test "review glue: undo, accept and reject a turn from the panel" {
     const arena = arena_state.allocator();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
 
-    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
     defer g.destroy();
     const fs = g.files();
     const cps = g.checkpoints();
@@ -667,7 +817,7 @@ test "review glue: review mode holds a turn's changes as one pending changeset" 
     const arena = arena_state.allocator();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
 
-    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
     defer g.destroy();
     g.mode = .review;
     const fs = g.files();
@@ -706,4 +856,89 @@ test "review glue: review mode holds a turn's changes as one pending changeset" 
     try testing.expect(try g.actLocked(arena, id, .accept) == .ok);
     try testing.expectEqualStrings("1\nTWO\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
     try testing.expectEqualStrings("b\n", try tmp.dir.readFileAlloc(testing.io, "b.txt", arena, .limited(64)));
+}
+
+test "review glue: the persisted queue is shared with another process and survives a restart" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    // The IDE holds a turn for review. The store appears with the first
+    // write, and takes the checkpoint taken before it.
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{ .persist = true });
+    defer g.destroy();
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, ".zigguro", .{}));
+    g.mode = .review;
+    const fs = g.files();
+    const cps = g.checkpoints();
+    const cp = cps.create(cps.ctx, testing.io, s1, 0, "turn 0");
+    _ = try edit(fs, arena, "a.txt", s1, .{ .str_replace = .{ .old = "one", .new = "ONE" } });
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 0)).?);
+    try testing.expectEqual(model.State.pending, g.q.get(id).?.state);
+
+    // Another process (as `zg review` does) sees it and accepts it.
+    {
+        const other = try ReviewGlue.create(testing.allocator, testing.io, root, .{ .persist = true });
+        defer other.destroy();
+        try testing.expectEqual(model.State.pending, other.q.get(id).?.state);
+        try testing.expectEqualStrings("turn 0", other.cps.get(cp).?.label);
+        try testing.expect(try other.actLocked(arena, id, .accept) == .ok);
+    }
+    try testing.expectEqualStrings("ONE\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
+
+    // The IDE takes the decision in; nothing more the next time.
+    try testing.expect(g.refresh());
+    try testing.expectEqual(model.State.applied, g.q.get(id).?.state);
+    try testing.expect(!g.refresh());
+
+    // A new run loads the queue and the history: undo still works.
+    {
+        const again = try ReviewGlue.create(testing.allocator, testing.io, root, .{ .persist = true });
+        defer again.destroy();
+        try testing.expectEqual(model.State.applied, again.q.get(id).?.state);
+        try testing.expect(try again.actLocked(arena, id, .undo) == .ok);
+    }
+    try testing.expectEqualStrings("one\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena, .limited(64)));
+}
+
+test "review glue: policy mode lands what the workspace's rules auto-accept" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.createDirPath(testing.io, ".zigguro");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".zigguro/settings.zon", .data = ".{ .review = .{ .rules = .{ .{ .paths = .{\"docs/**\"}, .action = .auto_accept } } } }" });
+    try tmp.dir.createDirPath(testing.io, "docs");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "docs/a.md", .data = "# A\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.zig", .data = "const b = 1;\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .policy;
+    const fs = g.files();
+    _ = try edit(fs, arena, "docs/a.md", s1, .{ .str_replace = .{ .old = "# A", .new = "# Alpha" } });
+    _ = try edit(fs, arena, "b.zig", s1, .{ .str_replace = .{ .old = "1", .new = "2" } });
+    // Held during the turn.
+    try testing.expectEqualStrings("# A\n", try tmp.dir.readFileAlloc(testing.io, "docs/a.md", arena, .limited(64)));
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 0)).?);
+    try testing.expectEqualStrings("# Alpha\n", try tmp.dir.readFileAlloc(testing.io, "docs/a.md", arena, .limited(64)));
+    try testing.expectEqualStrings("const b = 1;\n", try tmp.dir.readFileAlloc(testing.io, "b.zig", arena, .limited(64)));
+    const cs = g.q.get(id).?;
+    try testing.expectEqual(model.State.partially_applied, cs.state);
+    try testing.expect(cs.auto_applied);
+
+    // accept_edits auto-applies plain edits whatever the rules say.
+    g.permission_mode = .accept_edits;
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "c.zig", .data = "const c = 1;\n" });
+    _ = try edit(fs, arena, "c.zig", s1, .{ .str_replace = .{ .old = "1", .new = "3" } });
+    _ = try fs.endTurn(testing.io, s1, 0);
+    try testing.expectEqualStrings("const c = 3;\n", try tmp.dir.readFileAlloc(testing.io, "c.zig", arena, .limited(64)));
 }

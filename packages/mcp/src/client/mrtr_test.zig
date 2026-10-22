@@ -404,3 +404,20 @@ test "rate limit: 6th concurrent request auto-declined" {
     try testing.expect(responses.get("k6") == null);
     try testing.expectEqual(0, f.si.open);
 }
+
+test "agent tools: exporter calls reach the input broker with useInput" {
+    var f: Fixture = undefined;
+    try f.init(.modern, .{});
+    defer f.deinit();
+    const X = @import("agent_tools.zig").ToolExporter(@import("agent_tools_test.zig").Foreign);
+    var x: X = undefined;
+    x.init(gpa, io, "srv", .{});
+    defer x.deinit();
+    x.attach(f.client);
+    x.useInput(&f.si);
+    const ex = x.exporter();
+    const r = try ex.call(ex.ctx, io, f.arena.allocator(), "form", "{}");
+    try testing.expect(std.mem.indexOf(u8, r.json, "done") != null);
+    try testing.expectEqual(1, f.broker.calls.load(.monotonic));
+    try testing.expectEqualStrings("form", f.broker.origin_name.?);
+}

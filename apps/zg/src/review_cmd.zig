@@ -57,6 +57,10 @@ pub const usage =
     \\        changes (agent, the default) or every agent's (full)
     \\  debug-dump [--from SEQ]
     \\        the store's journal records as NDJSON
+    \\  policy explain PATH [--op OP] [--from OLD] [--origin ORIGIN] [--tool NAME]
+    \\        [--agent NAME] [--mode MODE] [--lines N]
+    \\        what the edit policy (.zigguro/settings.zon `review`) decides for
+    \\        a change to PATH, and why
     \\
     \\ID is a changeset number (`3` or `#3`); SESSION is a session id or a
     \\prefix of it. --json prints NDJSON (see apps/zg/docs/review-json.md).
@@ -198,6 +202,7 @@ const Cmd = struct {
         if (eql(sub, "checkpoints")) return c.checkpoints(rest);
         if (eql(sub, "restore")) return c.restore(rest);
         if (eql(sub, "debug-dump")) return c.debugDump(rest);
+        if (eql(sub, "policy")) return c.policyCmd(rest);
         for ([_][]const u8{ "comment", "threads", "fix", "approvals", "approve", "deny" }) |later| if (eql(sub, later)) {
             try c.err.print("zg review {s}: not available yet (review comments and approvals arrive with E12.F05)\n", .{sub});
             return .usage;
@@ -427,7 +432,7 @@ const Cmd = struct {
             const n = render.counts(cs);
             try c.out.print("{s} all of {f} ({d} file{s}, +{d} -{d})? [y/N] ", .{ if (how == .accept) "Accept" else "Reject", cs_id, n.files, if (n.files == 1) "" else "s", n.added, n.removed });
             try c.out.flush();
-            const line = r.takeDelimiterExclusive('\n') catch "";
+            const line = (r.takeDelimiter('\n') catch null) orelse "";
             const ans = std.mem.trim(u8, line, " \t\r");
             if (!eql(ans, "y") and !eql(ans, "Y") and !eql(ans, "yes")) {
                 try c.out.writeAll("Nothing changed.\n");
@@ -546,6 +551,93 @@ const Cmd = struct {
             for (rep.discarded) |d| try c.out.print(" {f}", .{d});
             try c.out.writeByte('\n');
         }
+        return .ok;
+    }
+
+    // ------------------------------------------------------ policy explain
+
+    fn policyCmd(c: *Cmd, args: []const []const u8) !Exit {
+        if (args.len == 0 or !eql(args[0], "explain")) return c.usageError("policy: the command is `policy explain PATH`", .{});
+        const pol = zg_review.policy;
+        var subject: pol.rules.Subject = .{ .path = "", .op = .modify, .origin = .agent, .changed_lines = null };
+        var mode: pol.policy.Mode = .default;
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (eql(a, "--op")) {
+                const v = value(args, &i) orelse return c.usageError("--op needs create, modify, delete, rename or mode", .{});
+                subject.op = std.meta.stringToEnum(pol.rules.Op, v) orelse return c.usageError("--op is create, modify, delete, rename or mode, not {s}", .{v});
+            } else if (eql(a, "--from")) {
+                subject.from = value(args, &i) orelse return c.usageError("--from needs the old path", .{});
+            } else if (eql(a, "--origin")) {
+                const v = value(args, &i) orelse return c.usageError("--origin needs an origin", .{});
+                subject.origin = std.meta.stringToEnum(pol.rules.OriginKind, v) orelse return c.usageError("unknown origin {s}", .{v});
+            } else if (eql(a, "--tool")) {
+                subject.tool = value(args, &i) orelse return c.usageError("--tool needs a name", .{});
+            } else if (eql(a, "--agent")) {
+                subject.agent = value(args, &i) orelse return c.usageError("--agent needs a name", .{});
+            } else if (eql(a, "--mode")) {
+                const v = value(args, &i) orelse return c.usageError("--mode needs a permission mode", .{});
+                mode = std.meta.stringToEnum(pol.policy.Mode, v) orelse return c.usageError("--mode is default, accept_edits, plan, dont_ask or bypass, not {s}", .{v});
+            } else if (eql(a, "--lines")) {
+                const v = value(args, &i) orelse return c.usageError("--lines needs a number", .{});
+                subject.changed_lines = std.fmt.parseInt(u32, v, 10) catch return c.usageError("not a line count: {s}", .{v});
+            } else if (subject.path.len == 0 and !std.mem.startsWith(u8, a, "--")) {
+                subject.path = a;
+            } else return c.usageError("policy explain: unexpected {s}", .{a});
+        }
+        if (subject.path.len == 0) return c.usageError("policy explain needs a path", .{});
+        if (subject.op == .rename and subject.from == null) return c.usageError("--op rename needs --from OLD", .{});
+
+        var diags: std.ArrayList(pol.rules.Diagnostic) = .empty;
+        const settings = try pol.rules.loadWorkspace(c.arena, c.io, c.dir, &diags);
+        const p = try pol.ReviewPolicy.init(c.gpa, settings);
+        defer p.deinit();
+        for (diags.items) |d| try c.err.print("warning: {s}\n", .{d.message});
+        for (p.diagnostics) |d| if (d.rule) |r| try c.err.print("warning: rule {d} ignored: {s}\n", .{ r, d.message }) else try c.err.print("warning: {s}\n", .{d.message});
+
+        const Probe = struct {
+            mode: pol.policy.Mode,
+            fn probe(_: *anyopaque, _: ?u128, _: []const u8, _: pol.rules.Op) pol.policy.ProbeResult {
+                return .{ .kind = .ask, .layer = .default };
+            }
+            fn modeOf(ctx: *anyopaque, _: ?u128) pol.policy.Mode {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                return self.mode;
+            }
+        };
+        var probe: Probe = .{ .mode = mode };
+        const v = p.decide(.{ .origin = subject.origin, .tool = subject.tool, .agent_name = subject.agent, .security = .{ .ctx = &probe, .probe = Probe.probe, .mode = Probe.modeOf } }, subject);
+        try c.out.print("{s}: {s}\n", .{ subject.path, switch (v.action) {
+            .auto_apply => "auto-apply",
+            .review => "review",
+            .deny => "deny",
+        } });
+        try c.out.print("  step: {s} ({s})\n", .{ @tagName(v.step), v.reason });
+        if (v.rule) |r| if (r < settings.rules.len) {
+            const rc = settings.rules[r];
+            try c.out.print("  rule {d}: action {s}, paths", .{ r, @tagName(rc.action) });
+            for (rc.paths) |g| try c.out.print(" {s}", .{g});
+            if (rc.tools.len > 0) {
+                try c.out.writeAll(", tools");
+                for (rc.tools) |t| try c.out.print(" {s}", .{t});
+            }
+            if (rc.agents.len > 0) {
+                try c.out.writeAll(", agents");
+                for (rc.agents) |t| try c.out.print(" {s}", .{t});
+            }
+            if (rc.origins.len > 0) {
+                try c.out.writeAll(", origins");
+                for (rc.origins) |o| try c.out.print(" {s}", .{@tagName(o)});
+            }
+            if (rc.ops.len > 0) {
+                try c.out.writeAll(", ops");
+                for (rc.ops) |o| try c.out.print(" {s}", .{@tagName(o)});
+            }
+            if (rc.max_changed_lines) |m| try c.out.print(", at most {d} changed lines", .{m});
+            try c.out.writeByte('\n');
+        };
+        try c.out.print("  ({d} rule{s} in {s}; E16 permissions are not consulted here)\n", .{ settings.rules.len, if (settings.rules.len == 1) "" else "s", pol.rules.workspace_settings });
         return .ok;
     }
 

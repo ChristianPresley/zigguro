@@ -24,6 +24,32 @@ const Hunks = struct {
 fn register(b: *bench.Bench) !void {
     try registerHunks(b);
     try registerSubmit(b);
+    try registerApprovals(b);
+}
+
+/// Present, answer and collect one approval (the broker's share of the
+/// "answer to resumed waiter < 1 ms" budget), pruned every 1,000.
+fn registerApprovals(b: *bench.Bench) !void {
+    var br: zg_review.approvals.ApprovalBroker = .init(b.gpa, b.io, .{});
+    defer br.deinit();
+    try b.run("review.approvals.round_trip", &br, struct {
+        fn f(x: *zg_review.approvals.ApprovalBroker, st: *bench.State) void {
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                const id = x.present(.{
+                    .kind = .command,
+                    .actor = .{ .agent = .{ .session = "s1", .agent = "main" } },
+                    .title = "Run command",
+                    .detail_json = "{\"cwd\":\"/ws\"}",
+                    .command = "cargo test --release",
+                    .created_ms = 0,
+                }) catch unreachable;
+                x.answer(id, .allow_once, "bench") catch unreachable;
+                bench.doNotOptimizeAway(x.await(id, x.io) catch unreachable);
+                if (i % 1000 == 999) _ = x.prune(std.math.maxInt(i64));
+            }
+        }
+    }.f);
 }
 
 const Submit = struct {

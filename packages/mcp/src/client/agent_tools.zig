@@ -16,6 +16,11 @@
 //! services.mcp = &.{x.exporter()};
 //! ```
 //!
+//! With `useInput`, calls go through `mrtr.runWithInput`, so a server
+//! that asks for user input mid-call (elicitation, roots) reaches the
+//! host's `InputBroker`; without it such calls fail with an `isError`
+//! result.
+//!
 //! The registry namespaces the names (`mcp__github__create_issue`).
 //! Annotations count only for servers the user trusts (zg_ai decides).
 //! A server error comes back as an `isError` result naming the code, so
@@ -30,6 +35,8 @@ const protocol = @import("../protocol/root.zig");
 const headers = @import("../transport/headers.zig");
 const Client = @import("Client.zig");
 const catalog = @import("catalog.zig");
+const input = @import("input.zig");
+const mrtr = @import("mrtr.zig");
 
 const M = protocol.messages;
 
@@ -54,6 +61,8 @@ pub fn ToolExporter(comptime Foreign: type) type {
         fetcher: catalog.ClientFetcher = undefined,
         store: catalog.CatalogStore,
         client: ?*Client = null,
+        /// Answers the server's input requests (`useInput`).
+        input: ?*input.ServerInput = null,
         mutex: Io.Mutex = .init,
         changed: std.ArrayList(Foreign.ChangedCb) = .empty,
 
@@ -92,6 +101,13 @@ pub fn ToolExporter(comptime Foreign: type) type {
             self.store.invalidateAll();
         }
 
+        /// Routes calls through `si` (initialised on the same client) so
+        /// input requests reach its broker, and passes it
+        /// `notifications/elicitation/complete`. Before the first call.
+        pub fn useInput(self: *Self, si: *input.ServerInput) void {
+            self.input = si;
+        }
+
         /// The contract object for `Adapters.registerAll`.
         pub fn exporter(self: *Self) Foreign.Exporter {
             return .{
@@ -115,6 +131,7 @@ pub fn ToolExporter(comptime Foreign: type) type {
         fn onNotification(ctx: ?*anyopaque, n: protocol.Notification) void {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
             self.store.onNotification(n);
+            if (self.input) |si| si.onNotification(n);
         }
 
         fn onCatalogChange(ctx: ?*anyopaque, d: catalog.Delta, _: *catalog.Catalog) void {
@@ -177,11 +194,14 @@ pub fn ToolExporter(comptime Foreign: type) type {
                 };
             }
             var info: Client.ErrorInfo = .{};
-            const r = c.request(.tools_call, .{ .name = tool, .arguments = args }, .{
+            const params: M.ParamsType(.tools_call) = .{ .name = tool, .arguments = args };
+            const opts: Client.CallOptions = .{
                 .arena = arena,
                 .param_headers = param_headers,
                 .error_info = &info,
-            }) catch |err| {
+            };
+            const sent = if (self.input) |si| mrtr.runWithInput(si, .tools_call, params, opts) else c.request(.tools_call, params, opts);
+            const r = sent catch |err| {
                 self.store.noteCallError(err, &info);
                 return switch (err) {
                     error.OutOfMemory, error.Canceled, error.Timeout => err,

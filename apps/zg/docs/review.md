@@ -14,6 +14,7 @@ zg review reject ID (same selectors)
 zg review checkpoints [--session SESSION] [--json]
 zg review restore CKPT [--mode agent|full] [--dry-run]
 zg review debug-dump [--from SEQ]
+zg review policy explain PATH [--op OP] [--from OLD] [--origin ORIGIN] [--tool NAME] [--agent NAME] [--mode MODE] [--lines N]
 ```
 
 `ID` is a changeset number, `3` or `#3`. `SESSION` is an agent session id
@@ -69,6 +70,15 @@ are listed (exit 3). `--dry-run` prints what would change.
 `{"seq":N,"kind":"changeset|remove|checkpoint|apply|ids","record":{...}}`,
 from record `--from` on.
 
+**policy explain** shows what the edit policy decides for a change to
+`PATH`, and which step or rule decided it. The policy reads the `review`
+section of `.zigguro/settings.zon` (see
+`packages/review/docs/policy.md`). `--op` is create, modify, delete,
+rename (with `--from`) or mode. `--mode` is the agent's permission mode:
+default, accept_edits, plan, dont_ask or bypass. `--lines` is the number
+of changed lines; leave it out when it is unknown. Invalid rules are
+reported on stderr. E16's own permission rules are not consulted.
+
 ## Output
 
 Colour is used when stdout is a terminal and `NO_COLOR` is not set. With
@@ -90,7 +100,29 @@ described in [review-json.md](review-json.md).
 
 - `comment`, `threads`, `fix`, `approvals`, `approve` and `deny` arrive
   with review comments and approvals (E12.F05); today they exit 1.
-- `zg agent --review interactive|defer|policy` and the `review` events of
-  `zg.stream/1`.
+- The `review` events of `zg.stream/1`.
 - Refusing hunks of a file zigguro has open with unsaved edits needs the
   IDE's `doc_open` records.
+
+## zg agent --review
+
+`zg agent` sends its file edits through the same review glue as the IDE:
+
+- `--review defer` (the default): each turn's edits become one pending
+  changeset; nothing is written. The agent reads its own pending changes
+  back. At the end of the run the ids are printed on stderr, for
+  `zg review show ID --patch` and `zg review accept ID --all`.
+- `--review interactive`: on a terminal, each pending changeset of the
+  run is offered at the end: `a` accept, `r` reject, `v` view (through
+  `$PAGER` when set), `s` skip. Without a terminal it behaves as `defer`.
+- `--review apply`: edits are written at once and recorded as
+  auto-applied changesets (undoable from the IDE's review panel).
+- `--review policy`: each turn is held, then the workspace's edit policy
+  decides file by file. It applies what it auto-applies, rejects what it
+  denies, and leaves the rest pending. `--permission-mode accept_edits`
+  auto-applies plain edits outside protected paths, and `plan` denies
+  everything.
+
+The store is created by the first edit, so a run that edits nothing
+leaves no `.zigguro/review/` behind. The IDE takes in what the CLI decided
+while its review panel is open.

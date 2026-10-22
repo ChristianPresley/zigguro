@@ -154,11 +154,17 @@ pub const Servers = struct {
     entries: std.ArrayList(*Entry) = .empty,
     statuses: std.ArrayList(zg_ai.headless.stream_json.McpStatus) = .empty,
     exporters: std.ArrayList(zg_ai.tools.adapters.foreign.Exporter) = .empty,
+    /// Answers the servers' requests for user input (elicitation, roots)
+    /// during tool calls; without one such calls fail. Set before `load`.
+    broker: ?zg_mcp.client.InputBroker = null,
 
     const Entry = struct {
         x: Exporter,
         client: ?*zg_mcp.client.Client = null,
         env: ?std.process.Environ.Map = null,
+        /// With `broker`.
+        input: zg_mcp.client.ServerInput = undefined,
+        has_input: bool = false,
     };
 
     pub fn init(gpa: Allocator) Servers {
@@ -169,6 +175,7 @@ pub const Servers = struct {
         for (s.entries.items) |e| {
             e.x.deinit();
             if (e.client) |c| c.close();
+            if (e.has_input) e.input.deinit();
             if (e.env) |*m| m.deinit();
             s.gpa.destroy(e);
         }
@@ -217,16 +224,26 @@ pub const Servers = struct {
                 },
                 .http => |t| .{ .http = .{ .client = http, .opts = .{ .url = t.url, .static_headers = t.headers } } },
             };
-            const c = zg_mcp.client.Client.connect(rt, s.gpa, factory, .{
+            var opts: zg_mcp.client.Client.Options = .{
                 .client_info = .{ .name = "zigguro", .version = "0" },
                 .on_notification = e.x.notificationHandler(),
-            }) catch |err| {
+            };
+            if (s.broker) |b| {
+                e.input.init(s.gpa, io, b, .{ .server_id = spec.name });
+                e.has_input = true;
+                e.x.useInput(&e.input);
+                opts.on_server_request = e.input.serverRequestHandler();
+                // Sampling is not offered to servers.
+                opts.features.sampling = false;
+            }
+            const c = zg_mcp.client.Client.connect(rt, s.gpa, factory, opts) catch |err| {
                 try warn.print("zg agent: MCP server {s} did not start: {s}\n", .{ spec.name, @errorName(err) });
                 try s.statuses.append(s.gpa, .{ .name = spec.name, .status = "failed" });
                 continue;
             };
             e.client = c;
             e.x.attach(c);
+            if (e.has_input) e.input.attach(c);
             try s.exporters.append(s.gpa, e.x.exporter());
             try s.statuses.append(s.gpa, .{ .name = spec.name, .status = "connected" });
         }

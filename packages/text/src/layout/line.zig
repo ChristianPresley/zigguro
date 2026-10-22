@@ -16,6 +16,7 @@ const Gdef = @import("../ot/gdef.zig").Gdef;
 const unicode = @import("../unicode/root.zig");
 const Script = unicode.Script;
 const grapheme = unicode.grapheme;
+const decode = @import("../unicode/decode.zig");
 const fonts = @import("../fonts/root.zig");
 const FontRegistry = fonts.FontRegistry;
 const Fallback = fonts.Fallback;
@@ -232,14 +233,48 @@ pub const TextLayout = struct {
             try shaped.ensureTotalCapacity(arena, items.items.len);
             for (items.items) |it| {
                 const st = styles[it.style_index].style;
-                const r = tl.reg.get(it.instance);
                 var run: GlyphRun = .{};
                 const dir: buffer.Direction = if (it.level & 1 == 1) .rtl else .ltr;
-                try shape_cache.shapeCached(&tl.shaper, &tl.cache, r.inst, it.instance, st.features, text[it.start..it.end], it.script, dir, dflt, tl.feature_sets.items[st.features], &run, arena);
+                if (it.instance == fonts.registry.last_resort_instance) {
+                    run = try tl.lastResortRun(arena, text[it.start..it.end], st, dir);
+                } else {
+                    const r = tl.reg.get(it.instance);
+                    try shape_cache.shapeCached(&tl.shaper, &tl.cache, r.inst, it.instance, st.features, text[it.start..it.end], it.script, dir, dflt, tl.feature_sets.items[st.features], &run, arena);
+                }
                 shaped.appendAssumeCapacity(.{ .item = it, .run = run, .style = st });
             }
         }
         return tl.position(arena, text, offset, styles, shaped.items, base, tab_width_px);
+    }
+
+    /// Glyphs of text nothing maps: one last-resort glyph per grapheme,
+    /// 1 em wide in the style's primary instance (whose units the run
+    /// uses), in visual order for `dir`.
+    fn lastResortRun(tl: *TextLayout, arena: Allocator, text: []const u8, st: TextStyle, dir: buffer.Direction) !GlyphRun {
+        const upem: i32 = @intFromFloat(tl.reg.get(tl.fb.primary(st.chain)).upem);
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) : (n += 1) i = grapheme.nextBoundary(text, i);
+        var run = try GlyphRun.alloc(arena, n);
+        i = 0;
+        var k: usize = 0;
+        while (i < text.len) : (k += 1) {
+            const at = if (dir == .rtl) n - 1 - k else k;
+            run.gids[at] = tl.reg.lastResortGlyph(decode.at(text, i).cp);
+            run.clusters[at] = @intCast(i);
+            run.x_adv[at] = upem;
+            run.x_off[at] = 0;
+            run.y_off[at] = 0;
+            run.unsafe_to_break[at] = false;
+            i = grapheme.nextBoundary(text, i);
+        }
+        return run;
+    }
+
+    /// The registry entry whose metrics a run of `instance` in `st`
+    /// uses (the primary for last-resort runs).
+    fn metricsEntry(tl: *const TextLayout, instance: InstanceId, st: TextStyle) *const fonts.registry.Registered {
+        return tl.reg.get(if (instance == fonts.registry.last_resort_instance) tl.fb.primary(st.chain) else instance);
     }
 
     /// The line for ASCII text in one style whose glyphs need no shaping,
@@ -328,7 +363,8 @@ pub const TextLayout = struct {
         for (order, 0..) |oi, ri| {
             const s = shaped[oi];
             const it = s.item;
-            const reg = tl.reg.get(it.instance);
+            const last_resort = it.instance == fonts.registry.last_resort_instance;
+            const reg = tl.metricsEntry(it.instance, s.style);
             const scale = s.style.size_px / reg.upem;
             const rtl = it.level & 1 == 1;
             runs[ri] = .{
@@ -338,7 +374,7 @@ pub const TextLayout = struct {
                 .glyph_end = @intCast(g_out + s.run.len()),
                 .x = pen,
                 .size_px = s.style.size_px,
-                .mode = modeOf(reg, s.style.size_px),
+                .mode = if (last_resort) .gray else modeOf(reg, s.style.size_px),
             };
             const m = reg.inst.metrics();
             line.ascent = @max(line.ascent, @ceil(m.ascender * scale));
@@ -366,7 +402,7 @@ pub const TextLayout = struct {
                 for (i..j) |k| {
                     var gid = run.gids[k];
                     var adv = @as(f32, @floatFromInt(run.x_adv[k])) * scale;
-                    if (j - i == 1 and ce - cs == 1 and text[cs] == '\t') {
+                    if (!last_resort and j - i == 1 and ce - cs == 1 and text[cs] == '\t') {
                         gid = reg.inst.face.glyphIndex(' ');
                         const space = reg.inst.advance(gid) * scale;
                         const tab = if (tab_width_px > 0) tab_width_px else @max(space * 8, 1);
@@ -388,7 +424,7 @@ pub const TextLayout = struct {
                 edges[0] = gx0;
                 edges[k] = pen;
                 var have = false;
-                if (k > 1 and j - i == 1) {
+                if (k > 1 and j - i == 1 and !last_resort) {
                     var carets: [32]i16 = undefined;
                     const gdef = if (reg.inst.face.knownTable(.gdef)) |t| Gdef.init(t) catch Gdef{} else Gdef{};
                     const nc = gdef.ligatureCarets(run.gids[i], carets[0 .. k - 1]);
