@@ -5,6 +5,9 @@
 //!                      [--key-id-env ZIGGURO_RELEASE_KEY_ID] [--trusted "<comment>"]
 //!   zg-release verify  --pub <RW...|file> --file <f> [--sig <f.minisig>]
 //!   zg-release icongen --out <dir> [--check true]
+//!   zg-release split-debug --in <elf> --out <stripped> --debug <name.debug>
+//!   zg-release debug-id --file <elf|exe>
+//!   zg-release symcheck --stripped <elf> --debug <name.debug>
 //!
 //! Exit codes: 0 success, 1 verification or operation failure, 2 usage.
 
@@ -44,6 +47,12 @@ pub const png = @import("png.zig");
 pub const ico = @import("ico.zig");
 /// `icongen` subcommand.
 pub const icongen = @import("icongen.zig");
+/// `split-debug`, `debug-id` and `symcheck` subcommands.
+pub const symbols = @import("symbols.zig");
+/// ELF debug splitting.
+pub const elf_debug = @import("elf_debug.zig");
+/// PE CodeView records.
+pub const pe_debug = @import("pe_debug.zig");
 
 const usage =
     \\usage: zg-release <command> [--option value]...
@@ -54,6 +63,9 @@ const usage =
     \\  sums    --dir <d> [--out <d>/SHA256SUMS]
     \\  notices --check true | --generate true [--root .] [--out THIRD_PARTY_NOTICES.md]
     \\  icongen --out <dir> [--check true]
+    \\  split-debug --in <elf> --out <stripped> --debug <name.debug>
+    \\  debug-id --file <elf|exe>
+    \\  symcheck --stripped <elf> --debug <name.debug>
     \\  repro-compare <dirA> <dirB>
     \\
 ;
@@ -69,6 +81,9 @@ const commands = [_]struct { []const u8, Command }{
     .{ "sums", sums.run },
     .{ "notices", notices.run },
     .{ "icongen", icongen.run },
+    .{ "split-debug", symbols.splitRun },
+    .{ "debug-id", symbols.idRun },
+    .{ "symcheck", symbols.checkRun },
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -122,4 +137,7 @@ test {
     _ = png;
     _ = ico;
     _ = icongen;
+    _ = symbols;
+    _ = elf_debug;
+    _ = pe_debug;
 }
