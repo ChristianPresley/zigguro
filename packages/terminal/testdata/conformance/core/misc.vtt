@@ -1,0 +1,133 @@
+# Tabs, autowrap, insert mode, REP, character sets, resets, titles and
+# basic reports.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Controls-beginning-with-ESC
+
+@case HT stops every 8 columns
+@size 20x2
+@send "\tx"
+@expect-screen
+|········x···········|
+
+@case HT stops at the last column
+@size 10x2
+@send "\t\t\tx"
+@expect-screen
+|·········x|
+
+@case CHT moves forward n stops
+@size 20x2
+@send "\e[2Ix"
+@expect-screen
+|················x···|
+
+@case CBT moves back a stop
+@size 20x2
+@send "\e[1;15H\e[Zx"
+@expect-screen
+|········x···········|
+
+@case HTS sets a stop
+@size 20x2
+@send "\e[1;4H\eH\r\tx"
+@expect-screen
+|···x················|
+
+@case TBC 3 clears every stop
+@size 20x2
+@send "\e[3g\tx"
+@expect-screen
+|···················x|
+
+@case TBC 0 clears the stop at the cursor
+@size 20x2
+@send "\e[1;9H\e[0g\r\tx"
+@expect-screen
+|················x···|
+
+@case Without autowrap the last column is overwritten
+@size 10x2
+@send "\e[?7labcdefghijkl"
+@expect-screen
+|abcdefghil|
+
+@case Autowrap continues on the next line
+@size 10x2
+@send "abcdefghijkl"
+@expect-screen
+|abcdefghij|
+|kl········|
+
+@case IRM inserts
+@size 10x2
+@send "abcd\e[1;2H\e[4hX"
+@expect-screen
+|aXbcd·····|
+
+@case REP repeats the last character
+@size 10x2
+@send "a\e[3b"
+@expect-screen
+|aaaa······|
+
+@case DEC special graphics draw lines
+@size 10x2
+@send "\e(0qx\e(Bq"
+@expect-screen
+|─│q·······|
+
+@case SO and SI switch between G1 and G0
+@size 10x2
+@send "\e)0^Nq^Oq"
+@expect-screen
+|─q········|
+
+@case RIS clears the screen and attributes
+@size 10x2
+@send "\e[1mab\ecx"
+@expect-screen
+|x·········|
+@expect-cell 1,1 plain
+@expect-cursor 1,2
+
+@case DECSTR resets insert mode and keeps the screen
+@size 10x2
+@send "ab\e[1;1H\e[4h\e[!pX"
+@expect-screen
+|Xb········|
+
+@case The title stack pops the pushed title
+@size 10x2
+@send "\e]2;one\a\e[22;2t\e]2;two\a\e[23;2t"
+@expect-title "one"
+
+@case OSC 0 sets the title
+@size 10x2
+@send "\e]0;both\a"
+@expect-title "both"
+
+@case DA1 reports a VT220-class terminal
+@size 10x2
+@send "\e[c"
+@expect-reply "\e[?62;22c"
+
+@case DSR 5 reports OK
+@size 10x2
+@send "\e[5n"
+@expect-reply "\e[0n"
+
+@case DECRQM reports IRM
+@size 10x2
+@send "\e[4h\e[4$p"
+@expect-reply "\e[4;1$y"
+
+@case SGR 0 resets every attribute
+@size 10x2
+@send "\e[1;3;4;7;31;42mx\e[0my"
+@expect-cell 1,1 bold italic underline inverse fg=1 bg=2
+@expect-cell 1,2 plain
+
+@case Truecolor and 256-colour SGR
+@size 10x2
+@send "\e[38;2;255;0;16mx\e[48;5;123my"
+@expect-cell 1,1 fg=rgb:ff0010
+@expect-cell 1,2 bg=123
