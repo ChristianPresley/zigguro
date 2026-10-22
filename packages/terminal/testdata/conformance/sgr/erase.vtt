@@ -1,0 +1,27 @@
+# How rendition interacts with erasing, scrolling and DECRQSS.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Pm-m.1CA7
+
+@case EL erases with the background but not other attributes
+@size 10x2
+@send "abc\e[1;4;44m\e[1;1H\e[K"
+@expect-cell 1,1 bg=4 !bold underline=none
+
+@case Scrolling fills new lines with the current background
+@size 10x2
+@send "\e[45m\r\n\r\n"
+@expect-cell 2,1 bg=5
+
+@case DECRQSS m reports the current rendition
+@size 10x2
+@send "\e[1;31m\eP$qm\e\\"
+@expect-reply "\eP1$r0;1;31m\e\\"
+
+@case DECRQSS m reports truecolour in colon form
+@size 10x2
+@send "\e[48;2;1;2;3m\eP$qm\e\\"
+@expect-reply "\eP1$r0;48:2::1:2:3m\e\\"
+
+@case DECRQSS m reports underline styles
+@size 10x2
+@send "\e[4:3m\eP$qm\e\\"
+@expect-reply "\eP1$r0;4:3m\e\\"
