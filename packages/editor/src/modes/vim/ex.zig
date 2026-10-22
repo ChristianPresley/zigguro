@@ -1,12 +1,14 @@
 //! A subset of Vim's ex commands (cmdline.txt): ranges (`%`, `.`, `$`,
 //! numbers, marks, `/pat/`, `+n`/`-n`), `:{n}`, `:s` (flags `g`, `i`,
-//! `I`, `e`, `n`, `&`), `:g`/`:v` with `:d`, `:d`, `:noh`, `:set` for
-//! `number`, `relativenumber`, `wrap`, `ignorecase`, `smartcase`, and
+//! `I`, `e`, `n`, `&`), `:g`/`:v` with any of these commands (`:d` in one
+//! pass), `:normal`, `:p` (moves the cursor only), `:d`, `:noh`, `:set`
+//! for `number`, `relativenumber`, `wrap`, `ignorecase`, `smartcase`, and
 //! `:w`, `:q`, `:wq`, `:x`, `:e` through the host's actions.
 //!
 //! `:s` and `:g` translate the pattern with `pattern.zig`, match with the
 //! find engine's tree input and expand replacements with the replace
-//! engine (E05.F06); each command is one undo step.
+//! engine (E05.F06); each command is one undo step, `:g` and `:normal`
+//! included (`VimState.group_held`).
 
 const std = @import("std");
 const zg_regex = @import("zg_regex");
@@ -81,7 +83,7 @@ const Parser = struct {
 const ExError = error{ExFailed} || Allocator.Error;
 
 /// Runs one command line (without the leading `:`).
-pub fn runEx(vs: *VimState, host: *Host, line: []const u8) !ExResult {
+pub fn runEx(vs: *VimState, host: *Host, line: []const u8) anyerror!ExResult {
     var e: Ex = .{ .vs = vs, .host = host, .p = .{ .s = line } };
     return e.run() catch |err| switch (err) {
         error.ExFailed => .{ .err = vs.message[0..vs.message_len] },
@@ -140,11 +142,20 @@ const Ex = struct {
         if (abbrev(name, "substitute", 1)) return e.substitute(range, rest);
         if (abbrev(name, "global", 1) or abbrev(name, "vglobal", 1)) return e.global(range, std.mem.eql(u8, name[0..1], "v") or bang, rest);
         if (abbrev(name, "delete", 1)) return e.deleteLines(range.l0, range.l1, rest);
+        if (abbrev(name, "normal", 4)) return e.normal(range, rest);
         if (abbrev(name, "nohlsearch", 3)) {
             e.vs.sh().highlight_off = true;
             return .ok;
         }
         if (abbrev(name, "set", 2)) return e.set(rest);
+        // Nothing to print to; `:g/pat/` (`:g/pat/p`) just moves the cursor.
+        if (abbrev(name, "print", 1)) {
+            const xx = e.x();
+            const pos = xx.firstNonBlank(range.l1);
+            e.vs.cursors.clearRetainingCapacity();
+            try e.vs.cursors.append(e.vs.gpa, .{ .pos = pos, .want = xx.column(pos) });
+            return .ok;
+        }
         if (abbrev(name, "let", 3)) return e.let(rest);
         if (std.mem.eql(u8, name, "wq") or std.mem.eql(u8, name, "x") or abbrev(name, "xit", 2) or abbrev(name, "exit", 3)) {
             if (std.mem.eql(u8, name, "wq")) {
@@ -373,10 +384,14 @@ const Ex = struct {
             sh.sub_flags_len = @intCast(fl.len);
         }
 
-        var re = try compileFor(e, pat_copy, case);
-        defer re.deinit(gpa);
-        var cache = try re.newCache(gpa);
-        defer cache.deinit();
+        // Without i/I the pattern compiles as the last search did, so
+        // that regex is reused (`:g` runs :s once per line).
+        var own: ?zg_regex.Regex = if (case != null) try compileFor(e, pat_copy, case) else null;
+        defer if (own) |*r| r.deinit(gpa);
+        const re: *zg_regex.Regex = if (own) |*r| r else &sh.search.re.?;
+        var own_cache: ?zg_regex.Cache = if (own) |*r| try r.newCache(gpa) else null;
+        defer if (own_cache) |*c| c.deinit();
+        const cache: *zg_regex.Cache = if (own_cache) |*c| c else &sh.search.cache.?;
         var caps = try re.newCaptures(gpa);
         defer caps.deinit(gpa);
 
@@ -393,7 +408,7 @@ const Ex = struct {
         var lines: u64 = 0;
         var last_line: ?u64 = null;
         var last_text: []const u8 = "";
-        var it = re.findIter(&cache, in.withSpan(.{ .start = span_start, .end = span_end }));
+        var it = re.findIter(cache, in.withSpan(.{ .start = span_start, .end = span_end }));
         while (it.next()) |m| {
             if (m.start > limit) break;
             const l = xx.lineOf(m.start);
@@ -403,7 +418,7 @@ const Ex = struct {
             if (last_line == null or last_line.? != l) lines += 1;
             last_line = l;
             const texts = try a.alloc(?[]const u8, caps.len());
-            if (re.captures(&cache, in.withSpan(.{ .start = m.start, .end = span_end }).withAnchored(true), &caps)) {
+            if (re.captures(cache, in.withSpan(.{ .start = m.start, .end = span_end }).withAnchored(true), &caps)) {
                 for (texts, 0..) |*t, i| t.* = if (caps.get(i)) |g| try tree.copyRange(a, .{ .start = g.start, .end = g.end }) else null;
             } else {
                 @memset(texts, null);
@@ -432,8 +447,9 @@ const Ex = struct {
         const new_end: u64 = @intCast(@as(i64, @intCast(last.range.start)) + shift + @as(i64, @intCast(last.text.len)));
         const nx = e.x();
         // When the last match took a line break (lines were joined) the
-        // cursor stays where the join was, as in Vim.
-        const joined = std.mem.indexOfScalar(u8, last_text, '\n') != null;
+        // cursor stays where the join was, as in Vim (except under :g,
+        // which leaves it at the first non-blank).
+        const joined = std.mem.indexOfScalar(u8, last_text, '\n') != null and !vs.group_held;
         const pos = if (joined) nx.clampNormal(new_end) else nx.firstNonBlank(nx.lineOf(new_end));
         vs.cursors.clearRetainingCapacity();
         try vs.cursors.append(gpa, .{ .pos = pos, .want = nx.column(pos) });
@@ -473,7 +489,7 @@ const Ex = struct {
             cname = cmd[0..sp];
             reg_arg = std.mem.trim(u8, cmd[sp..], " ");
         }
-        if (!abbrev(cname, "delete", 1)) return e.fail("E492: Only :g/pat/d is supported: {s}", .{cmd});
+        if (vs.group_held) return e.fail("E147: Cannot do :global recursive", .{});
         const pat_copy = try gpa.dupe(u8, pat.items);
         defer gpa.free(pat_copy);
         vs.setSearch(pat_copy, false) catch return error.ExFailed;
@@ -493,6 +509,9 @@ const Ex = struct {
             if (invert) return e.fail("Pattern found in every line: {s}", .{pat_copy});
             return e.fail("E486: Pattern not found: {s}", .{pat_copy});
         }
+        // `:g/pat/d` deletes the marked lines in one pass; any other
+        // command runs on each marked line in turn.
+        if (cmd.len == 0 or !abbrev(cname, "delete", 1)) return e.eachLine(marked.items, .{ .ex = if (cmd.len == 0) "p" else cmd });
         try vs.beginChange(e.host);
         defer vs.commitChange(e.host) catch {};
         // Each line goes through the registers as Vim's :d does, top first.
@@ -519,6 +538,138 @@ const Ex = struct {
         try vs.cursors.append(gpa, .{ .pos = pos, .want = nx.column(pos) });
         if (n > report) return e.msg("{d} fewer lines", .{n});
         return .ok;
+    }
+
+    const LineCmd = union(enum) { ex: []const u8, keys: []const mode_mod.Key };
+
+    /// Runs `cmd` with the cursor at the start of each of `lines`, top
+    /// first, as one undo step. Lines are marked first, as Vim does: a
+    /// line deleted by an earlier command is skipped, and the rest follow
+    /// the edits (mapped through the document's change log); a line joined
+    /// onto the one above counts as deleted.
+    fn eachLine(e: *Ex, lines: []const u64, cmd: LineCmd) !ExResult {
+        const vs = e.vs;
+        const gpa = vs.gpa;
+        const doc = e.host.doc;
+        const xx = e.x();
+        // Each line's span [start, next line start). Spans not handled yet
+        // are at `span + shift` in the current text: a command that only
+        // changes text before them (the usual case: its own line) just
+        // moves them all, so each line costs O(1) on top of its command.
+        const spans = try gpa.alloc(Span, lines.len);
+        defer gpa.free(spans);
+        for (spans, lines) |*sp, l| sp.* = .{ .s = xx.lineStart(l), .e = xx.nextLineStart(l), .blank = xx.lineStart(l) == xx.nextLineStart(l) };
+        var shift: i64 = 0;
+        var ver = doc.version;
+        try vs.beginChange(e.host);
+        vs.group_held = true;
+        defer {
+            vs.group_held = false;
+            vs.commitChange(e.host) catch {};
+        }
+        var err_buf: [160]u8 = undefined;
+        var first_err: ?[]const u8 = null;
+        var any_ok = false;
+        var msg_buf: [160]u8 = undefined;
+        var last_msg: ?[]const u8 = null;
+        for (spans, 0..) |sp, k| {
+            const s0: u64 = @intCast(@as(i64, @intCast(sp.s)) + shift);
+            const e0: u64 = @intCast(@as(i64, @intCast(sp.e)) + shift);
+            run: {
+                if (s0 >= e0 and !sp.blank) break :run; // deleted
+                // Joined onto the line above: no longer a line of its own.
+                const now = e.x();
+                const pos = @min(s0, doc.len());
+                if (now.lineStart(now.lineOf(pos)) != pos) break :run;
+                vs.cursors.clearRetainingCapacity();
+                try vs.cursors.append(gpa, .{ .pos = pos, .want = 0 });
+                switch (cmd) {
+                    .ex => |c| switch (try runEx(vs, e.host, c)) {
+                        .ok => any_ok = true,
+                        .message => |m| {
+                            any_ok = true;
+                            const n = @min(m.len, msg_buf.len);
+                            @memcpy(msg_buf[0..n], m[0..n]);
+                            last_msg = msg_buf[0..n];
+                        },
+                        .err => |m| if (first_err == null) {
+                            const n = @min(m.len, err_buf.len);
+                            @memcpy(err_buf[0..n], m[0..n]);
+                            first_err = err_buf[0..n];
+                        },
+                    },
+                    .keys => |keys| {
+                        try vs.runNormal(keys, e.host);
+                        any_ok = true;
+                    },
+                }
+            }
+            // Bring the spans still to come up to date.
+            if (doc.version == ver) continue;
+            const entries = doc.change_log.since(ver) orelse return e.fail("E: the document changed too much during :global", .{});
+            for (entries) |*en| {
+                const cs = &en.changes;
+                if (cs.replaces.len == 0 or k + 1 == spans.len) continue;
+                const delta = @as(i64, @intCast(cs.newLen())) - @as(i64, @intCast(cs.base_len));
+                const next: u64 = @intCast(@as(i64, @intCast(spans[k + 1].s)) + shift);
+                if (cs.replaces[cs.replaces.len - 1].range.end <= next) {
+                    shift += delta;
+                    continue;
+                }
+                for (spans[k + 1 ..]) |*r| {
+                    const rs: u64 = @intCast(@as(i64, @intCast(r.s)) + shift);
+                    const re: u64 = @intCast(@as(i64, @intCast(r.e)) + shift);
+                    r.s = cs.mapPos(rs, .right);
+                    r.e = cs.mapPos(re, .left);
+                }
+                shift = 0;
+            }
+            ver = doc.version;
+        }
+        if (!any_ok) if (first_err) |m| return e.fail("{s}", .{m});
+        if (last_msg) |m| return e.msg("{s}", .{m});
+        return .ok;
+    }
+
+    /// A marked line; `blank` when it had no bytes (the empty last line).
+    const Span = struct { s: u64, e: u64, blank: bool };
+
+    // -- :normal ----------------------------------------------------------------
+
+    fn normal(e: *Ex, range: Range, rest_in: []const u8) !ExResult {
+        const gpa = e.vs.gpa;
+        // `:normal!` (no mappings here anyway) and the separating blank.
+        const rest = if (rest_in.len > 0 and rest_in[0] == '!') std.mem.trimStart(u8, rest_in[1..], " ") else rest_in;
+        if (rest.len == 0) return e.fail("E471: Argument required", .{});
+        var keys: std.ArrayList(mode_mod.Key) = .empty;
+        defer keys.deinit(gpa);
+        const view = std.unicode.Utf8View.init(rest) catch return e.fail("E: invalid UTF-8 in :normal", .{});
+        var it = view.iterator();
+        while (it.nextCodepoint()) |cp| try keys.append(gpa, switch (cp) {
+            0x1b => .named(.esc),
+            '\r', '\n' => .named(.enter),
+            '\t' => .named(.tab),
+            0x01...0x08, 0x0b, 0x0c, 0x0e...0x1a => .ctrlOf(cp + 'a' - 1),
+            else => .char(cp),
+        });
+        if (!range.given) {
+            if (e.vs.group_held) {
+                try e.vs.runNormal(keys.items, e.host);
+                return .ok;
+            }
+            try e.vs.beginChange(e.host);
+            e.vs.group_held = true;
+            defer {
+                e.vs.group_held = false;
+                e.vs.commitChange(e.host) catch {};
+            }
+            try e.vs.runNormal(keys.items, e.host);
+            return .ok;
+        }
+        const lines = try gpa.alloc(u64, range.l1 - range.l0 + 1);
+        defer gpa.free(lines);
+        for (lines, 0..) |*l, i| l.* = range.l0 + i;
+        return e.eachLine(lines, .{ .keys = keys.items });
     }
 
     fn recordLines(e: *Ex, xx: Text, l0: u64, l1: u64, name: ?u8) !void {
