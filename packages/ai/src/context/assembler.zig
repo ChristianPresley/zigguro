@@ -194,13 +194,22 @@ pub const ContextAssembler = struct {
         };
 
         // Tools.
-        const decls = try arena.alloc(request.ToolDecl, view.tools.len);
+        var decl_list: std.ArrayList(request.ToolDecl) = .empty;
         var tool_tokens: u64 = 0;
-        for (view.tools, decls) |t, *d| {
-            d.* = .{ .name = t.name, .description = t.description, .input_schema_json = t.input_schema_json, .defer_loading = t.defer_loading };
-            tool_tokens += a.tokens(model, t.name) + a.tokens(model, t.description) + a.tokens(model, t.input_schema_json);
+        for (view.tools) |*t| {
+            const d = request.declFor(t, model.provider) orelse continue;
+            try decl_list.append(arena, d);
+            tool_tokens += a.tokens(model, t.name) + a.tokens(model, t.description) + a.tokens(model, d.raw_json orelse t.input_schema_json);
         }
-        if (decls.len > 0 and cache_plan.worth(tool_tokens, model.cache_min_tokens)) decls[decls.len - 1].cache_break = true;
+        const decls = decl_list.items;
+        // The breakpoint goes on the last function tool (native ones are sent verbatim).
+        if (cache_plan.worth(tool_tokens, model.cache_min_tokens)) {
+            var k = decls.len;
+            while (k > 0) : (k -= 1) if (decls[k - 1].kind == .function) {
+                decls[k - 1].cache_break = true;
+                break;
+            };
+        }
         try sections.append(ra, .{ .name = "tools", .tokens = tool_tokens });
 
         // System prompt.
