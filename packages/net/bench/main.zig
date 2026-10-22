@@ -30,6 +30,39 @@ fn register(b: *bench.Bench) !void {
     }
     @memset(text[n..], '\n');
     try b.run("sse: parse 8 MiB of data lines", text, sseParse);
+
+    // Masked binary frames with 4 KiB payloads, as a server receives them.
+    const frames = try gpa.alloc(u8, stream_len);
+    defer gpa.free(frames);
+    var off: usize = 0;
+    while (off + 14 + 4096 <= frames.len) {
+        var h: [14]u8 = undefined;
+        const enc = zg_net.ws_frame.encodeHeader(&h, .{ .fin = true, .opcode = .binary, .masked = true, .len = 4096, .mask = .{ 1, 2, 3, 4 } });
+        @memcpy(frames[off..][0..enc.len], enc);
+        off += enc.len;
+        for (frames[off..][0..4096], 0..) |*c, i| c.* = @truncate(i);
+        off += 4096;
+    }
+    try b.run("ws: decode and unmask 8 MiB of 4 KiB frames", frames[0..off], wsDecode);
+}
+
+fn wsDecode(frames: []const u8, s: *State) void {
+    s.setBytes(frames.len);
+    const buf = s.allocator().alloc(u8, frames.len) catch unreachable;
+    for (0..s.iterations()) |_| {
+        @memcpy(buf, frames);
+        var off: usize = 0;
+        var total: u64 = 0;
+        while (off < buf.len) {
+            const d = zg_net.ws_frame.decodeHeader(buf[off..]) catch unreachable;
+            off += d.size;
+            const len: usize = @intCast(d.header.len);
+            zg_net.ws_frame.applyMask(d.header.mask, 0, buf[off..][0..len]);
+            total += len;
+            off += len;
+        }
+        bench.doNotOptimizeAway(total);
+    }
 }
 
 const Sink = struct {
