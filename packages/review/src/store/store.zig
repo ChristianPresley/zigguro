@@ -27,6 +27,7 @@ const model = @import("../model/root.zig");
 const journal = @import("journal.zig");
 const records = @import("records.zig");
 const DiskBlobs = @import("blobs.zig").DiskBlobs;
+const approvals = @import("../approvals/broker.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -129,6 +130,16 @@ pub const ChangesetStore = struct {
     /// The checkpoints' recorder port; thread-safe.
     pub fn checkpointRecorder(s: *ChangesetStore) model.CheckpointRecorder {
         return .{ .ctx = s, .checkpoint = jCheckpoint };
+    }
+
+    /// The approvals broker's recorder port; thread-safe.
+    pub fn approvalRecorder(s: *ChangesetStore) approvals.Recorder {
+        return .{ .ctx = s, .record = jApproval };
+    }
+
+    fn jApproval(ctx: *anyopaque, json: []const u8) void {
+        const s: *ChangesetStore = @ptrCast(@alignCast(ctx));
+        s.append(.approval, json) catch |e| log.err("review store: approval not recorded: {t}", .{e});
     }
 
     fn jCheckpoint(ctx: *anyopaque, c: *const model.Checkpoint) void {
@@ -437,6 +448,8 @@ pub const QueueSink = struct {
     q: *model.Queue,
     history: ?*model.History = null,
     checkpoints: ?model.CheckpointSink = null,
+    /// Approval records (a load only: pending ones come back expired).
+    approvals: ?approvals.RestoreSink = null,
 
     pub fn sink(qs: *QueueSink) Sink {
         return .{ .ctx = qs, .on = on };
@@ -474,6 +487,7 @@ pub const QueueSink = struct {
                 defer arena.deinit();
                 try h.restore(try records.readApply(arena.allocator(), rec));
             },
+            .approval => if (qs.approvals) |a| try a.restore(a.ctx, rec),
             else => {},
         }
     }

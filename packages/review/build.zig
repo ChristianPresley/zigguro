@@ -11,6 +11,9 @@ pub fn build(b: *std.Build) void {
     const proto = b.dependency("zg_ai", f.args()).module("zg_ai_proto");
     // E08's globs (the std-only zg_ignore leaf), not zg_workspace itself.
     const ignore = b.dependency("zg_workspace", f.args()).module("zg_ignore");
+    // E16's contracts (ApprovalPort, ApprovalRequest, Answer) for the
+    // approvals broker; never zg_security_ui.
+    const security = b.dependency("zg_security", f.args()).module("zg_security");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_review",
         .imports = &.{
@@ -18,6 +21,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_editor", .module = editor },
             .{ .name = "zg_ai_proto", .module = proto },
             .{ .name = "zg_ignore", .module = ignore },
+            .{ .name = "zg_security", .module = security },
         },
         .bench = "bench/main.zig",
     });
