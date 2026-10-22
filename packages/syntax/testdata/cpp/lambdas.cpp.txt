@@ -1,0 +1,6 @@
+auto add = [](int a, int b) { return a + b; };
+auto cap = [=, &total](auto x) mutable noexcept -> int {
+    total += x;
+    return total;
+};
+std::sort(v.begin(), v.end(), [](const auto &a, const auto &b) { return a < b; });
