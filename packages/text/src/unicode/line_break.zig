@@ -188,6 +188,9 @@ pub const Iterator = struct {
     state: State = .{},
     opts: Options,
     done: bool = false,
+    /// The ASCII shortcuts in `next`; tests turn them off to compare
+    /// against the rule chain alone.
+    fast: bool = true,
 
     /// Iterates `bytes` from the start.
     pub fn init(bytes: []const u8, opts: Options) Iterator {
@@ -223,7 +226,7 @@ pub const Iterator = struct {
             // LB28 AL × AL: a run of ASCII letters after a letter has no
             // opportunity (nor does the code tailoring add one); fold the
             // run into the context as pushing each letter would.
-            if (std.ascii.isAlphabetic(c0) and it.state.raw == .AL and !it.state.zw and it.state.a.cls == .AL and !it.state.a.sot and it.state.a.cp < 0x80) {
+            if (it.fast and std.ascii.isAlphabetic(c0) and it.state.raw == .AL and !it.state.zw and it.state.a.cls == .AL and !it.state.a.sot and it.state.a.cp < 0x80) {
                 var j = at + 1;
                 while (j < bytes.len and std.ascii.isAlphabetic(bytes[j])) j += 1;
                 const s = &it.state;
@@ -237,6 +240,22 @@ pub const Iterator = struct {
                 s.a = last;
                 it.pos = j;
                 continue;
+            }
+            // LB7 × SP, then LB18 SP ÷: after an ASCII letter, spaces
+            // then an ASCII letter break only before that letter. Push
+            // the spaces and the letter as `step` would.
+            if (!tailored and it.fast and c0 == ' ' and it.state.raw == .AL and !it.state.zw and it.state.a.cls == .AL and !it.state.a.sot and it.state.a.cp < 0x80) {
+                var j = at + 1;
+                while (j < bytes.len and bytes[j] == ' ') j += 1;
+                if (j < bytes.len and std.ascii.isAlphabetic(bytes[j])) {
+                    const s = &it.state;
+                    const sp: Item = .{ .cls = .SP, .cp = ' ' };
+                    for (at..j) |_| s.push(sp);
+                    s.push(.{ .cls = .AL, .cp = bytes[j] });
+                    s.raw = .AL;
+                    it.pos = j + 1;
+                    return .{ .offset = j, .kind = .allowed };
+                }
             }
             var len: usize = 1;
             var ci: Item = undefined;
