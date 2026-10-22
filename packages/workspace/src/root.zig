@@ -16,6 +16,12 @@ pub const IgnoreStack = @import("ignore/ignore_stack.zig").IgnoreStack;
 pub const Verdict = @import("ignore/ignore_stack.zig").Verdict;
 /// Watcher filter adapter (the E01 `IgnoreFilter` shape).
 pub const WatchFilter = @import("ignore/ignore_stack.zig").WatchFilter;
+/// The interned path tree.
+pub const paths = @import("paths/path_store.zig");
+/// The interned path tree (writer side).
+pub const PathStore = paths.PathStore;
+/// An immutable view of the path tree.
+pub const Snapshot = paths.Snapshot;
 /// `core.excludesFile` lookup.
 pub const gitconfig_excludes = @import("ignore/gitconfig_excludes.zig");
 
@@ -24,4 +30,5 @@ test {
     _ = @import("ignore/wildmatch_test.zig");
     _ = @import("ignore/ignore_stack_test.zig");
     _ = @import("ignore/globset_test.zig");
+    _ = @import("paths/path_store_test.zig");
 }
