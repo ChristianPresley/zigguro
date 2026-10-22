@@ -72,6 +72,11 @@ pub fn build(b: *std.Build) void {
         one.dependOn(&run.step);
         test_step.dependOn(&run.step);
         fuzz_step.dependOn(&run.step);
+        if (comptime std.mem.eql(u8, p.name, "zg_platform")) {
+            // The Wayland decoder fuzz test alone (`zig build fuzz-wl --fuzz`).
+            const wl_fuzz = b.addTest(.{ .name = "fuzz-wl", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"fuzz: wayland"} });
+            b.step("fuzz-wl", "Run the Wayland decoder fuzz test (use with --fuzz)").dependOn(&b.addRunArtifact(wl_fuzz).step);
+        }
     }
     // zg_mcp's stdio tests spawn a fixture server, so they are a separate
     // test binary defined by the package's build.zig.
