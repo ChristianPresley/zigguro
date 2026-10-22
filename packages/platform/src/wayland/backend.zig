@@ -59,6 +59,7 @@ const clipboard = @import("../api/clipboard.zig");
 const native_api = @import("../api/native.zig");
 const platform_api = @import("../api/platform.zig");
 const PayloadArena = @import("../queue/payload_arena.zig").PayloadArena;
+const portal = @import("../portal/desktop.zig");
 const EventRing = @import("../queue/event_ring.zig").EventRing;
 const Wake = @import("../queue/wake.zig").Wake;
 
@@ -115,6 +116,10 @@ pub const InitOptions = struct {
     presentation_feedback: bool = true,
     /// A selection transfer that has not finished by then fails.
     transfer_timeout_ns: u64 = 5 * std.time.ns_per_s,
+    /// The session bus for the portals (file dialogs, `open_uri`,
+    /// appearance); null finds it in `environ_map`, and without either
+    /// those commands return `error.Unsupported`.
+    dbus_address: ?[]const u8 = null,
 };
 
 /// Ring capacity.
@@ -293,6 +298,8 @@ pub const WaylandBackend = struct {
     hooks: native_api.NativeHooks,
     /// Pongs sent, for tests.
     pongs: std.atomic.Value(u32) = .init(0),
+    /// File dialogs, `open_uri` and appearance through the portals.
+    desktop: portal.Desktop = undefined,
 
     /// Connects, binds the globals, waits for the outputs and starts the
     /// platform thread.
@@ -407,7 +414,26 @@ pub const WaylandBackend = struct {
             try b.watch(b.cursor_timer_fd, 3);
         } else log.warn("timerfd_create failed; cursors do not animate", .{});
         b.thread = try std.Thread.spawn(.{}, threadMain, .{b});
+        var abuf: [256]u8 = undefined;
+        const address = opts.dbus_address orelse if (opts.environ_map) |env| portal.sessionAddress(&abuf, env) else null;
+        b.desktop.init(gpa, io, .{ .ctx = b, .func = wakeForPortal }, .{ .address = address });
         return b;
+    }
+
+    fn wakeForPortal(ctx: *anyopaque) void {
+        const b: *WaylandBackend = @ptrCast(@alignCast(ctx));
+        b.thread_wake.signal();
+    }
+
+    /// Turns portal answers into events. Mutex held.
+    fn takePortalLocked(b: *WaylandBackend) void {
+        while (b.desktop.take()) |a| switch (a) {
+            .dialog => |r| {
+                const paths: types.PayloadSlice = if (r.paths.len > 0) b.putOwned(r.paths) else .empty;
+                b.stage(.{ .dialog_result = .{ .request = r.request, .paths = paths, .cancelled = r.cancelled } }) catch {};
+            },
+            .appearance => |app| b.stage(.{ .appearance_changed = app }) catch {},
+        };
     }
 
     fn watch(b: *WaylandBackend, fd: i32, tag: u64) !void {
@@ -660,6 +686,7 @@ pub const WaylandBackend = struct {
 
     /// See `Platform.VTable.deinit`.
     pub fn deinit(b: *WaylandBackend) void {
+        b.desktop.deinit();
         b.stopping.store(true, .release);
         b.thread_wake.signal();
         if (b.thread) |t| t.join();
@@ -884,7 +911,9 @@ pub const WaylandBackend = struct {
                 // window urgent instead of focusing it.
                 try b.requestToken(win, false);
             },
-            .open_dialog, .open_uri => return error.Unsupported,
+            // No xdg-foreign export yet, so dialogs are not parented.
+            .open_dialog => |d| try b.desktop.openDialog(d, ""),
+            .open_uri => |uri| try b.desktop.openUri(uri, ""),
         }
     }
 
@@ -935,6 +964,7 @@ pub const WaylandBackend = struct {
             // Move staged events out under the lock, push them without it.
             b.lock();
             b.finishTransfersLocked(null);
+            b.takePortalLocked();
             std.mem.swap(std.ArrayList(Event), &moving, &b.staged);
             const timeout = b.nextTimeoutLocked();
             b.unlock();
@@ -3075,6 +3105,41 @@ test "cursor: set_shape uses the last enter serial; hidden clears the cursor" {
     try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
     try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
     _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+}
+
+test "portal: file dialogs, open_uri and appearance through xdg-desktop-portal" {
+    const dbus_conn = @import("../dbus/conn.zig");
+    var daemon: dbus_conn.TestDaemon = undefined;
+    if (!try daemon.start()) return error.SkipZigTest;
+    defer daemon.stop();
+    var fp: @import("../portal/fake_portal.zig").FakePortal = .{
+        .uris = &.{ "file:///tmp/a", "file:///tmp/b" },
+        .settings = &.{.{ "color-scheme", .{ .u32 = 1 } }},
+    };
+    try fp.start(testing.allocator, testing.io, daemon.address());
+    defer fp.stop();
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .dbus_address = daemon.address() }, &.{}, &all_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const app = try expectEvent(p, .appearance_changed, null);
+    try testing.expectEqual(event_api.ColorScheme.dark, app.scheme);
+    try p.submit(.{ .open_dialog = .{ .request = 9, .kind = .open_files } });
+    const res = try expectEvent(p, .dialog_result, null);
+    try testing.expectEqual(9, res.request);
+    try testing.expect(!res.cancelled);
+    try testing.expectEqualStrings("/tmp/a\x00/tmp/b\x00", p.payload(res.paths));
+    try p.submit(.{ .open_uri = "https://ziglang.org" });
+    try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "javascript:x" }));
+}
+
+test "portal: without a session bus, dialogs and URIs are unsupported" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{}, &.{}, &all_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    try testing.expectError(error.Unsupported, p.submit(.{ .open_dialog = .{ .request = 1, .kind = .open_file } }));
+    try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "https://ziglang.org" }));
 }
 
 test "xdg-activation: activate with and without a token; request_attention" {

@@ -71,6 +71,9 @@ pub const Request = struct {
     lock: std.Io.Mutex = .init,
     /// 0 waiting, 1 done.
     state: std.atomic.Value(u32) = .init(0),
+    /// 1 once the call's reply was handled. A Response can come first, and
+    /// the reply handler still holds the request until then.
+    replied: std.atomic.Value(u32) = .init(0),
     response: ?Response = null,
 
     /// Predicts the request path and subscribes to its Response. Pass
@@ -146,6 +149,10 @@ pub const Request = struct {
 
     fn onReply(ctx: ?*anyopaque, result: dbus.conn.Error!*dbus.conn.Reply) void {
         const r: *Request = @ptrCast(@alignCast(ctx.?));
+        defer {
+            r.replied.store(1, .release);
+            r.bus.io.futexWake(u32, &r.replied.raw, 1);
+        }
         const reply = result catch {
             r.fail(.other, true);
             return;
@@ -182,18 +189,21 @@ pub const Request = struct {
         r.bus.io.futexWake(u32, &r.state.raw, 1);
     }
 
-    /// Waits for the response (requests without a callback).
+    /// Waits for the response (requests without a callback) and for the
+    /// call's reply, so the request can be freed afterwards.
     pub fn wait(r: *Request, timeout_ns: ?u64) !Response {
         const io = r.bus.io;
         const deadline: ?i96 = if (timeout_ns) |t| std.Io.Clock.awake.now(io).nanoseconds + t else null;
-        while (r.state.load(.acquire) == 0) {
-            var t: std.Io.Timeout = .none;
-            if (deadline) |d| {
-                const left = d - std.Io.Clock.awake.now(io).nanoseconds;
-                if (left <= 0) return error.Timeout;
-                t = .{ .duration = .{ .raw = .fromNanoseconds(left), .clock = .awake } };
+        for ([_]*std.atomic.Value(u32){ &r.state, &r.replied }) |word| {
+            while (word.load(.acquire) == 0) {
+                var t: std.Io.Timeout = .none;
+                if (deadline) |d| {
+                    const left = d - std.Io.Clock.awake.now(io).nanoseconds;
+                    if (left <= 0) return error.Timeout;
+                    t = .{ .duration = .{ .raw = .fromNanoseconds(left), .clock = .awake } };
+                }
+                io.futexWaitTimeout(u32, &word.raw, 0, t) catch {};
             }
-            io.futexWaitTimeout(u32, &r.state.raw, 0, t) catch {};
         }
         r.lock.lockUncancelable(io);
         defer r.lock.unlock(io);
@@ -202,10 +212,23 @@ pub const Request = struct {
         return resp;
     }
 
-    /// Unsubscribes and frees the request. Safe once the response has
-    /// arrived, or to abandon it.
+    /// True once both the response (or failure) and the call's reply
+    /// were handled: nothing on the bus refers to the request any more
+    /// except its matches, which `deinit` removes.
+    pub fn settled(r: *const Request) bool {
+        return r.state.load(.acquire) != 0 and r.replied.load(.acquire) != 0;
+    }
+
+    /// Unsubscribes and frees the request. Safe once it has `settled`
+    /// (`wait` returned, or the callback ran and the reply came).
     pub fn deinit(r: *Request) void {
         for (r.matches) |m| if (m) |id| r.bus.removeMatch(id);
+        r.free();
+    }
+
+    /// Frees the request after its bus was closed: closing fails the
+    /// pending call, and the bus drops the matches itself.
+    pub fn free(r: *Request) void {
         if (r.response) |*resp| resp.deinit();
         r.gpa.destroy(r);
     }
