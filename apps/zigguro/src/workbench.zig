@@ -11,7 +11,8 @@
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
 //! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `agent.togglePane`
 //! (Ctrl+L), `workspace.manageTrust`, `editor.undo`, `editor.redo`,
-//! `editor.selectAll` and `workbench.toggleTheme`.
+//! `editor.selectAll`, `workbench.toggleTheme` and
+//! `workbench.floatingAlwaysOnTop`.
 //!
 //! The document lives in an E05 `DocumentRegistry`, so the agent pane's
 //! file tools read and edit it through the editor (agent/editor_files.zig)
@@ -667,6 +668,7 @@ pub const Workbench = struct {
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
+        .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -719,6 +721,12 @@ pub const Workbench = struct {
 
     fn selectAll(wb: *Workbench) !void {
         wb.view.selectAll();
+    }
+
+    fn toggleFloatOnTop(wb: *Workbench) !void {
+        const fl = if (wb.floater) |*fl| fl else return;
+        fl.setAlwaysOnTop(!fl.policy.always_on_top);
+        wb.notify(.info, "Floating windows {s}", .{if (fl.policy.always_on_top) "stay on top" else "no longer stay on top"});
     }
 
     fn toggleTheme(wb: *Workbench) !void {
