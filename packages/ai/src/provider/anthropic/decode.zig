@@ -9,6 +9,7 @@ const events = @import("../events.zig");
 const request = @import("../request.zig");
 const Provider = @import("../Provider.zig");
 const MessageAssembler = @import("../assembler.zig").MessageAssembler;
+const timefmt = @import("../timefmt.zig");
 
 const Allocator = std.mem.Allocator;
 const json = proto.json;
@@ -185,6 +186,10 @@ pub fn rateLimitFrom(headers: []const request.Header) ?events.RateLimitSnapshot 
         if (h.name.len <= prefix.len or !std.ascii.startsWithIgnoreCase(h.name, prefix)) continue;
         const rest = h.name[prefix.len..];
         any = true;
+        if (std.mem.endsWith(u8, rest, "-reset")) {
+            if (timefmt.parseRfc3339(std.mem.trim(u8, h.value, " "))) |at| r.reset_at_ms = if (r.reset_at_ms) |old| @min(old, at) else at;
+            continue;
+        }
         if (eq(rest, "requests-limit")) r.requests_limit = n;
         if (eq(rest, "requests-remaining")) r.requests_remaining = n;
         if (eq(rest, "tokens-limit")) r.tokens_limit = n;
