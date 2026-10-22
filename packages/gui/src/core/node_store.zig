@@ -36,7 +36,9 @@ pub const NodeFlags = packed struct(u32) {
     /// A scroll container whose view rebuilds when it scrolls (virtual
     /// lists build only the visible rows).
     rebuild_on_scroll: bool = false,
-    _pad: u17 = 0,
+    /// The node has a context menu (`zg_gui.w.menu.contextMenu`).
+    context_menu: bool = false,
+    _pad: u16 = 0,
 };
 
 /// The hot, per-frame fields of a node.
