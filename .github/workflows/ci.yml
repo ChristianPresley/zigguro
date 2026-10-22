@@ -79,8 +79,10 @@ jobs:
         with:
           path: ~\AppData\Local\zig
           key: zig-cache-test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.optimize }}-${{ hashFiles('**/build.zig.zon') }}
+      # pwsh, not Git Bash: on windows-11-arm, zig build segfaulted at
+      # startup under the x64-emulated MSYS bash, while zig ran from pwsh.
       - name: zig build test
-        shell: bash
+        shell: pwsh
         run: zig build test -Doptimize=${{ matrix.optimize }} --test-timeout 120s --summary line
       - name: zig build test-ci-scripts
         if: runner.os == 'Linux' && matrix.optimize == 'Debug'
