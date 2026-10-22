@@ -215,15 +215,20 @@ test "queue_model: filters, counts and the auto-applied group" {
     try testing.expectEqual(@as(?ChangesetId, b), fx.m.rows()[0].cs);
     try fx.m.setFilter(try qm.parseFilter(ar, "agent:writer"));
     try testing.expectEqual(@as(?ChangesetId, b), fx.m.rows()[0].cs);
+    // The pinned group is filtered too, but not by state.
     try fx.m.setFilter(try qm.parseFilter(ar, "conflicts:yes"));
-    try testing.expectEqualStrings("Recently auto-applied (last 24 h)", fx.m.rows()[0].label);
+    try testing.expectEqual(@as(usize, 0), fx.m.rows().len);
     try fx.m.setFilter(try qm.parseFilter(ar, "origin:lsp"));
-    try testing.expectEqual(@as(usize, 2), fx.m.rows().len);
+    try testing.expectEqual(@as(usize, 0), fx.m.rows().len);
+    try fx.m.setFilter(try qm.parseFilter(ar, "more"));
+    try testing.expectEqualStrings("Recently auto-applied (last 24 h)", fx.m.rows()[0].label);
+    try testing.expectEqual(@as(?ChangesetId, c), fx.m.rows()[1].cs);
 
-    // Older than a day: gone from the pinned group.
+    // Older than a day: gone from the pinned group (and applied).
+    try fx.m.setFilter(try qm.parseFilter(ar, ""));
     fx.q.getMut(c).?.decided_ms = Fx.now() - 2 * qm.auto_applied_window_ms;
     fx.q.emit(.{ .updated = c });
-    try testing.expectEqual(@as(usize, 0), fx.m.rows().len);
+    try testing.expectEqual(@as(usize, 2), fx.m.rows().len);
 }
 
 test "queue_model: 5,000 rows filter and incremental updates" {
