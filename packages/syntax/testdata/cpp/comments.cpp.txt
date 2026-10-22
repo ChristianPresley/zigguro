@@ -1,0 +1,7 @@
+// line
+/* block */ int a;
+/* multi
+   line */ int b;
+/// doc
+/** doc block */
+int c; // tail "string"
