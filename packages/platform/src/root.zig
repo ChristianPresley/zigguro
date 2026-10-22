@@ -149,11 +149,23 @@ pub const wayland = struct {
         pub const Global = @import("wayland/wire/registry.zig").Global;
         /// See `wayland/wire/registry.zig`.
         pub const RemoveCallback = @import("wayland/wire/registry.zig").RemoveCallback;
+        /// See `wayland/wire/registry.zig`.
+        pub const AddCallback = @import("wayland/wire/registry.zig").AddCallback;
         /// See `wayland/wire/marshal.zig`.
         pub const marshal = @import("wayland/wire/marshal.zig");
     } else struct {};
     /// See `wayland/testing/fake_compositor.zig`.
     pub const testing = if (is_linux) @import("wayland/testing/fake_compositor.zig") else struct {};
+    /// See `wayland/backend.zig`.
+    pub const WaylandBackend = if (is_linux) @import("wayland/backend.zig").WaylandBackend else void;
+    /// See `wayland/backend.zig`.
+    pub const InitOptions = if (is_linux) @import("wayland/backend.zig").InitOptions else void;
+    /// See `wayland/scale.zig`.
+    pub const scale = @import("wayland/scale.zig");
+    /// See `wayland/output.zig`.
+    pub const output = @import("wayland/output.zig");
+    /// See `wayland/window.zig`.
+    pub const window = @import("wayland/window.zig");
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
@@ -309,6 +321,9 @@ test {
     _ = @import("xkb/resolve.zig");
     inline for (wayland.protocol.interfaces) |I| std.testing.refAllDecls(I);
     std.testing.refAllDecls(wayland.wire);
+    _ = wayland.scale;
+    _ = wayland.output;
+    _ = wayland.window;
     std.testing.refAllDecls(portal);
     std.testing.refAllDecls(x11);
     std.testing.refAllDecls(win32);
@@ -321,6 +336,8 @@ test {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
         _ = @import("wayland/wire/fuzz.zig");
+        _ = @import("wayland/backend.zig");
+        _ = @import("wayland/shm.zig");
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
@@ -384,6 +401,11 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/wire/marshal.zig", .src = @embedFile("wayland/wire/marshal.zig") },
     .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
     .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
+    .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
+    .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
+    .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
+    .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
+    .{ .path = "wayland/shm.zig", .src = @embedFile("wayland/shm.zig") },
     .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
     .{ .path = "x11/conn.zig", .src = @embedFile("x11/conn.zig") },
     .{ .path = "x11/auth.zig", .src = @embedFile("x11/auth.zig") },
