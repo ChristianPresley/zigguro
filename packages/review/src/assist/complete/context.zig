@@ -217,7 +217,7 @@ fn isPythonLike(language: []const u8) bool {
 }
 
 /// The comment marker for the path line.
-fn commentFor(language: []const u8) []const u8 {
+pub fn commentFor(language: []const u8) []const u8 {
     if (eqlAny(language, &.{ "python", "py", "shell", "sh", "bash", "ruby", "yaml", "toml", "perl", "r" })) return "#";
     if (eqlAny(language, &.{ "lua", "sql", "haskell" })) return "--";
     return "//";
