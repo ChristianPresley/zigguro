@@ -78,6 +78,20 @@ The exact command for each file is in its header. Tests compare
 coordinates within 1/64 unit. For a full check, diff
 `gen_outline_golden.py --all <font>` against `zig build text-dump -- outline <font> all`.
 
+## Raster goldens
+
+`golden/raster/hashes.zon` holds an FNV-1a 64 hash per font and pixel size
+of the golden glyph set (30 glyphs from JetBrains Mono, Source Serif 4,
+Source Han Sans JP and Noto Sans Arabic at 8, 11, 14, 20, 32 and 72 px; the
+list is `golden_fonts` in `src/raster/coverage_test.zig`). The hashes must
+match on every target. After a deliberate rasterizer change the failing
+test prints the new entries to paste in. Look at any glyph with
+`text-dump raster`, which writes an ASCII PGM.
+
+Coverage itself is checked against a reference in the same test file: the
+winding number integrated exactly in x on 128 sub-scanlines per pixel row,
+within 2/255 per pixel.
+
 ## text-dump
 
 From `packages/text`:
@@ -86,7 +100,7 @@ From `packages/text`:
 zig build text-dump -- metrics testdata/fonts/JetBrainsMono[wght].ttf
 zig build text-dump -- outline <font> <gid|U+XXXX>... [--coords wght=700]
 zig build text-dump -- shape <font> <text> [--features "liga=0,ss01"] [--dir rtl] [--script arab]
-zig build text-dump -- raster <font> <gid> <px> [--mode gray|lcd_rgb|sdf]
+zig build text-dump -- raster <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coords wght=700]
 ```
 
 Subcommands whose engine has not landed print `not implemented` and exit 2.
