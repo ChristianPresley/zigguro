@@ -13,6 +13,10 @@
 //! to the platform IME after every input it handles (the window resends
 //! only changes), so the candidate window follows the caret; commits
 //! arrive as text. Inline preedit is not drawn yet.
+//!
+//! PRIMARY selection (X11 and Wayland): when a pointer drag or a key
+//! leaves a new non-empty primary selection, its text becomes PRIMARY; a
+//! middle click places the caret and pastes PRIMARY there.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -61,6 +65,8 @@ pub const Editor = struct {
     pub const State = struct {
         drag: Drag = .none,
         drag_origin: [2]u64 = .{ 0, 0 },
+        /// The selection last made PRIMARY (empty: none).
+        primary_pub: [2]u64 = .{ 0, 0 },
         decos: std.ArrayList(deco_store.DecoRef) = .empty,
         gpa: ?std.mem.Allocator = null,
     };
@@ -289,11 +295,32 @@ pub const Editor = struct {
         switch (ev.*) {
             .focus_lost => ec.setIme(null),
             .focus_gained, .text => reportIme(ec, v),
-            .key => |k| if (k.action != .release) reportIme(ec, v),
-            .pointer_down, .pointer_up => if (handled) reportIme(ec, v),
+            .key => |k| if (k.action != .release) {
+                reportIme(ec, v);
+                publishPrimary(ec, v, state);
+            },
+            .pointer_down => if (handled) reportIme(ec, v),
+            .pointer_up => if (handled) {
+                reportIme(ec, v);
+                publishPrimary(ec, v, state);
+            },
             else => {},
         }
         return handled;
+    }
+
+    /// Makes a new non-empty primary selection the PRIMARY text. Not
+    /// during a drag: large selections are copied once, on release.
+    fn publishPrimary(ec: *EventCx, v: *EditorView, state: *State) void {
+        const s = v.primarySel();
+        const r = s.range();
+        if (r.start == r.end) {
+            state.primary_pub = .{ 0, 0 };
+            return;
+        }
+        if (state.primary_pub[0] == r.start and state.primary_pub[1] == r.end) return;
+        state.primary_pub = .{ r.start, r.end };
+        ec.setPrimary(v.text(r));
     }
 
     /// Tells the IME where the primary caret is (window coordinates) and
@@ -324,6 +351,17 @@ pub const Editor = struct {
                 return false;
             },
             .pointer_down => |p| {
+                if (p.button == .middle) {
+                    const t = ec.primary() orelse return false;
+                    ec.focus();
+                    if (v.opts.read_only or t.len == 0) return true;
+                    v.setSelection(.caret(hitAt(ec, v, p.pos)));
+                    v.undo.breakGroup();
+                    try v.paste(t);
+                    ec.respond(.{ .changed = true });
+                    ec.repaint();
+                    return true;
+                }
                 if (p.button != .left) return false;
                 ec.focus();
                 const at = hitAt(ec, v, p.pos);
