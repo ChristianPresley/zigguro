@@ -1,0 +1,3 @@
+=== .gitignore
+trail.txt 
+foo/qux.txt   

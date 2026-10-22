@@ -1,0 +1,3 @@
+=== .gitignore
+Documentation/*.html
+!Documentation/foo.html

@@ -1,0 +1,5 @@
+=== .gitignore
+/*
+!/foo
+/foo/*
+!/foo/bar

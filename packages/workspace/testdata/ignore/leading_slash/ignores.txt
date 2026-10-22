@@ -1,0 +1,3 @@
+=== .gitignore
+/frotz
+/src/main.o

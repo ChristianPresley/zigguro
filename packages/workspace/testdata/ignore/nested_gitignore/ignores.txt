@@ -1,0 +1,6 @@
+=== .gitignore
+*.o
+=== src/.gitignore
+!main.o
+=== src/lib/.gitignore
+gen/

@@ -1,0 +1,3 @@
+=== .gitignore
+deep/**/e.txt
+src/**/*.zig
