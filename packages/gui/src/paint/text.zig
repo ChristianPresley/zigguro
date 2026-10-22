@@ -1,10 +1,13 @@
 //! Text measurement and glyph placement for widgets.
 //!
-//! `TextSystem` is the seam to E03: until E03's shaping and `TextLayout`
-//! (E03.F06–F08) and glyph cache (#332) land, zg_gui lays text out itself
-//! from per-codepoint advances (no shaping, no bidi), and the production
-//! implementation maps codepoints to atlas glyphs. `MonoText` is the
-//! deterministic implementation used by tests and the headless driver.
+//! `TextSystem` is the seam to E03. A system may shape: then `width` and
+//! the glyphs `PaintCx.textLine` draws come from E03's `TextLayout`
+//! (kerning, ligatures, font fallback, bidi), as in `FontText`. Otherwise,
+//! or for a style with `shape = false` (cell grids), text is laid out from
+//! per-codepoint advances. Line breaking stays greedy at spaces and
+//! measures lines by their advances, so wrapping matches between measure
+//! and paint. `MonoText` is the deterministic implementation used by tests
+//! and the headless driver (it does not shape).
 
 const std = @import("std");
 const geom = @import("../core/geom.zig");
@@ -23,7 +26,17 @@ pub const TextStyle = struct {
     size: f32 = 13,
     weight: u16 = 400,
     italic: bool = false,
+    /// Shape when the system can; false keeps one glyph per codepoint at
+    /// its advance (cell grids).
+    shape: bool = true,
 };
+
+/// A shaped glyph: an id for `TextSystem.shapedGlyph`, placed relative to
+/// the line's pen (y down).
+pub const ShapedGlyph = struct { id: u32, x: f32, y: f32 = 0 };
+
+/// A shaped line.
+pub const Shaped = struct { glyphs: []const ShapedGlyph, width: f32 };
 
 /// Vertical metrics of a font at a size.
 pub const LineMetrics = struct {
@@ -44,7 +57,31 @@ pub const TextSystem = struct {
         /// The quad for `cp` with its pen at `pen` (on the baseline), or
         /// null for blank glyphs such as spaces.
         glyph: *const fn (*anyopaque, TextStyle, cp: u21, pen: Vec2) ?GlyphQuad,
+        /// Optional shaping of one line (no newlines); the result is valid
+        /// until the next call. Null when shaping fails.
+        shape: ?*const fn (*anyopaque, TextStyle, s: []const u8) ?Shaped = null,
+        /// The quad for a shaped glyph with its origin at `pen`.
+        shaped_glyph: ?*const fn (*anyopaque, TextStyle, id: u32, pen: Vec2) ?GlyphQuad = null,
+        /// The shaped width of one line (cached by the system).
+        shaped_width: ?*const fn (*anyopaque, TextStyle, s: []const u8) f32 = null,
     };
+
+    /// Whether `st` is shaped by this system.
+    pub fn shapes(t: TextSystem, st: TextStyle) bool {
+        return st.shape and t.vtable.shape != null;
+    }
+
+    /// `s` (one line) shaped, or null when `st` is not shaped.
+    pub fn shape(t: TextSystem, st: TextStyle, s: []const u8) ?Shaped {
+        if (!t.shapes(st)) return null;
+        return t.vtable.shape.?(t.ptr, st, s);
+    }
+
+    /// See `VTable.shaped_glyph`.
+    pub fn shapedGlyph(t: TextSystem, st: TextStyle, id: u32, pen: Vec2) ?GlyphQuad {
+        const f = t.vtable.shaped_glyph orelse return null;
+        return f(t.ptr, st, id, pen);
+    }
 
     /// See `VTable.metrics`.
     pub fn metrics(t: TextSystem, st: TextStyle) LineMetrics {
@@ -61,6 +98,7 @@ pub const TextSystem = struct {
 
     /// The width of `s` on one line.
     pub fn width(t: TextSystem, st: TextStyle, s: []const u8) f32 {
+        if (st.shape) if (t.vtable.shaped_width) |f| return f(t.ptr, st, s);
         var w: f32 = 0;
         var it = Codepoints{ .s = s };
         while (it.next()) |cp| w += t.advance(st, cp);
@@ -86,7 +124,9 @@ pub const TextSystem = struct {
 pub const Line = struct { start: usize, end: usize, w: f32 };
 
 /// Greedy line breaking at spaces and newlines; a word wider than the
-/// line is broken between codepoints.
+/// line is broken between codepoints. Lines are measured by their
+/// advances, also when drawn shaped (kerning only narrows the drawn run),
+/// so measuring and painting break at the same places.
 pub const LineIter = struct {
     ts: TextSystem,
     st: TextStyle,

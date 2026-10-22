@@ -155,8 +155,25 @@ pub fn build(b: *std.Build) void {
         }), .filters = test_filters });
         const run = b.addRunArtifact(e2e);
         run.skip_foreign_checks = true;
-        b.step("test-zg", "Run the zg CLI end-to-end tests").dependOn(&run.step);
+        const zg_step = b.step("test-zg", "Run the zg CLI end-to-end tests");
+        zg_step.dependOn(&run.step);
         test_step.dependOn(&run.step);
+
+        // `zg ui-test` on the zg_gui example scripts (E04.F01.S03.T01).
+        const ux = b.addOptions();
+        ux.addOptionPath("zg", zg_exe.getEmittedBin());
+        ux.addOptionPath("scripts", b.path("packages/gui/src/testing/scripts"));
+        ux.addOptionPath("goldens", b.path("packages/gui/testdata/golden/scripts"));
+        const ui = b.addTest(.{ .name = "zg-ui-test-e2e", .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/zg/test/ui_test_e2e_test.zig"),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{.{ .name = "zg_e2e", .module = ux.createModule() }},
+        }), .filters = test_filters });
+        const ui_run = b.addRunArtifact(ui);
+        ui_run.skip_foreign_checks = true;
+        zg_step.dependOn(&ui_run.step);
+        test_step.dependOn(&ui_run.step);
     }
 
     // INV-01: every consumer against a deny-all engine (E16.F02.S01.T04).

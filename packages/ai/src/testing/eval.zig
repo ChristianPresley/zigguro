@@ -48,6 +48,7 @@ const disk_files = @import("../tools/builtin/disk_files.zig");
 const compactor = @import("../context/compactor.zig");
 const subagent_defs = @import("../subagent/defs.zig");
 const subagent_runner = @import("../subagent/runner.zig");
+const todos = @import("../plan/todos.zig");
 const task_tool = @import("../subagent/task_tool.zig");
 const args = @import("../headless/args.zig");
 const print = @import("../headless/print.zig");
@@ -394,6 +395,11 @@ pub fn runOne(io: Io, gpa: Allocator, a: Allocator, dir: []const u8, s: *const S
     var task: task_tool.TaskTool = try .init(gpa, &subagents);
     defer task.deinit();
     try reg.addSource(task.source());
+    // todo_write; ask_user stays out, as in a `-p` run.
+    var todo_store: todos.TodoStore = .init(gpa, io);
+    defer todo_store.deinit();
+    todo_store.mgr = mgr;
+    try reg.addSource(todo_store.source());
     var hooks: HookSet = .{ .rules = s.hooks };
     if (s.hooks.len > 0) mgr.deps.hooks = .{ .ctx = &hooks, .pre_tool_use = HookSet.pre };
     var compact: ?compactor.Compactor = null;

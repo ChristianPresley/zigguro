@@ -211,6 +211,12 @@
       "cost_usd": 0.0075
     },
     {
+      "name": "todo_progress",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
       "name": "write_existing_needs_read",
       "passed": true,
       "turns": 4,
