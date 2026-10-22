@@ -108,6 +108,7 @@ pub const Call = struct {
     spec: *const proto.ToolSpec,
     input_json: []const u8,
     agent: proto.AgentRef = .{ .session = 0 },
+    turn: u32 = 0,
     progress: ?proto.tool.ProgressSink = null,
 };
 
@@ -190,6 +191,7 @@ fn run(p: *const Pipeline, io: Io, ar: Allocator, c: Call) Error!proto.ToolOutpu
         .arena = ar,
         .io = io,
         .agent = c.agent,
+        .turn = c.turn,
         .progress = c.progress,
     };
     var out = c.spec.handler.call(c.spec.handler.ctx, &call) catch |e| switch (e) {

@@ -73,7 +73,7 @@ fn target(ft: *FileTools, c: *proto.ToolCall, path: []const u8) proto.ToolError!
 }
 
 fn origin(c: *proto.ToolCall) files.Origin {
-    return .{ .agent = c.agent, .tool = c.name, .tool_call_id = c.id };
+    return .{ .agent = c.agent, .turn = c.turn, .tool = c.name, .tool_call_id = c.id };
 }
 
 /// Records the agent's own change as read.
@@ -111,7 +111,7 @@ fn editCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutpu
     const o = ft.files.propose(c.io, a, t.r.abs, .{ .str_replace = .{ .old = old, .new = new, .occurrence = occ } }, origin(c)) catch |e|
         return proposeErr(a, t.r.rel, e);
     try track(ft, c, t.r.abs, o, after orelse t.read.bytes);
-    return files.outcomeText(a, t.r.rel, "edit", o, t.read.bytes, after orelse t.read.bytes, ft.cfg.diff_lines);
+    return ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, "edit", o, t.read.bytes, after orelse t.read.bytes, ft.cfg.diff_lines));
 }
 
 fn multiCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
@@ -140,5 +140,5 @@ fn multiCall(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutp
     const o = ft.files.propose(c.io, a, t.r.abs, .{ .whole_file = .{ .text = text, .base_version = t.read.version } }, origin(c)) catch |e|
         return proposeErr(a, t.r.rel, e);
     try track(ft, c, t.r.abs, o, text);
-    return files.outcomeText(a, t.r.rel, try std.fmt.allocPrint(a, "{d} edits", .{edits.?.array.items.len}), o, t.read.bytes, text, ft.cfg.diff_lines);
+    return ft.withDiagnostics(c, t.r.abs, o, try files.outcomeText(a, t.r.rel, try std.fmt.allocPrint(a, "{d} edits", .{edits.?.array.items.len}), o, t.read.bytes, text, ft.cfg.diff_lines));
 }

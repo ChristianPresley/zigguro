@@ -3528,3 +3528,174 @@ the caller's arena.
 
 ### Stability
 Unstable until the E10 binding and the timeline UI use it.
+
+## zg_review.policy (ReviewPolicy)
+
+### Defined in
+`packages/review/src/policy/{rules,policy,protected}.zig` (E12.F05.S01.T01); see `packages/review/docs/policy.md`.
+
+### Implemented by
+E12.F05.S01.T01.
+
+### Consumed by
+The zigguro app (auto-apply after submit, E05 `ApplyPolicy` for open documents), `zg review policy explain`, the review queue UI (recently auto-applied).
+
+### Signature
+```zig
+pub fn rules.parse(arena, zon_src: [:0]const u8, diags: *ArrayList(Diagnostic)) !Settings;   // the `review` section
+pub const rules.Settings = struct { rules: []const RuleConfig = &.{}, protected: []const []const u8 = &.{}, saveOnAccept: bool = true };
+pub const rules.RuleConfig = struct { paths = &.{"**"}, tools = &.{}, agents = &.{}, origins: []const OriginKind = &.{},
+    ops: []const Op{ create, modify, delete, rename, mode } = &.{}, max_changed_lines: ?u32 = null, action: RuleAction{ auto_accept, review, review_required } };
+pub const ReviewPolicy = struct {
+    pub fn init(gpa, settings: Settings) !*ReviewPolicy;          // invalid rules → diagnostics, left out
+    pub fn deinit(p) void;
+    pub fn decide(p, ctx: PolicyCtx, s: rules.Subject) Verdict;  // Verdict{ action: auto_apply|review|deny, step, rule: ?u32, reason }
+    pub fn decideChangeset(p, ctx, cs: *const Changeset, out: []Verdict) void;
+    pub fn isProtected(p, path) bool;
+    pub fn editorPolicy(p, e: *EditorPolicy) zg_editor.model.api.agent_edit.ApplyPolicy;
+};
+pub const PolicyCtx = struct { origin: OriginKind, session: ?u128, agent_name: ?[]const u8, tool: ?[]const u8,
+    security: SecurityProbe = .fail_closed, lines: ?LineCounter = null };
+pub const SecurityProbe = struct { ctx, probe: fn (ctx, session: ?u128, path, op: Op) ProbeResult, mode: fn (ctx, session: ?u128) Mode };
+pub fn policy.autoApply(p, ctx, ap: *Applier, cs: ChangesetId, arena) !AutoApplyResult;   // { auto_applied, denied, apply: ?u64, failed: ?anyerror }
+pub fn policy.recentlyAutoApplied(q, now_ms, window_ms, gpa, out: *ArrayList(ChangesetId)) !void;
+```
+Deviations from the spec text:
+- `SecurityProbe` uses E12's own `Mode` and `ProbeLayer` enums, because
+  zg_review does not import zg_security (a file cannot sit in two
+  modules, and zg_security has no std-only contracts module). The app's
+  probe maps `PermissionMode` and `policy.Step` onto them with an
+  exhaustive switch. The E16 defaults inside the workspace are repeated in
+  `protected.zig`.
+- `ReviewPolicy.init` takes parsed `Settings` (`rules.parse`), not
+  `zg_config.Settings`. Diagnostics name the rule index, not ZON
+  positions, except for ZON syntax errors.
+- The auto-applied log is the queue itself: `auto_applied` changesets
+  decided within a window. E05's `AgentEditApplied` is not yet turned
+  into synthetic changesets.
+- `explain` and the E15 schema export are not done.
+
+### Threading
+`decide` is read-only and can be called from any thread. `autoApply`
+runs on the queue's owner thread.
+
+### Ownership/lifetime
+`init` copies the settings. Verdict reasons are static strings or the
+probe's message, borrowed from the probe.
+
+### Stability
+Unstable until the app binds it.
+
+## zg_review.rebase (rebaseFile, ConflictIndex)
+
+### Defined in
+`packages/review/src/rebase/{closed_file,conflict_index}.zig` (E12.F02.S02.T01 closed-file part, E12.F02.S04.T01); see `packages/review/docs/rebase.md`.
+
+### Implemented by
+E12.F02.S04.T01.
+
+### Consumed by
+The zigguro app (calls `rebaseApplied` after each apply), E10 (`warningFor` in `read_file` and `edit_file` results), the review queue UI (conflict badges, "Accept in order").
+
+### Signature
+```zig
+pub const RebaseOutcome = union(enum) { unchanged, clean: struct { hunks: u32 }, conflicted: struct { hunks: u32 },
+    stale: enum { base_missing, became_binary, too_large, base_changed }, dropped_empty };
+pub fn rebaseFile(gpa, blobs: Blobs, cs_arena: Allocator, fc: *FileChange, new_base: ?[]const u8,
+    o: Options{ hunk_options, conflict_kind = .external_change, other: ?ChangesetId = null }) !RebaseOutcome;
+pub const ConflictPair = struct { a: HunkRef, b: HunkRef, kind: ConflictKind };
+pub const ConflictKind = enum { overlap, adjacent, same_change, create_create, delete_modify, rename_target };
+pub const whole_file: u32;   // HunkRef.hunk of a whole-file operation
+pub const ConflictIndex = struct {
+    pub fn init(gpa, q: *Queue, o: Options{ history: ?*const History = null, names: ?SessionNames = null }) !*ConflictIndex;
+    pub fn deinit(ci) void;
+    pub fn conflictsOf(ci, cs: ChangesetId) []const ConflictPair;
+    pub fn pendingOnPath(ci, path) []const HunkRef;
+    pub fn warningFor(ci, path, session: ?u128, gpa) !?[]u8;
+    pub fn acceptOrder(ci, set: []const ChangesetId, gpa) ![]ChangesetId;
+    pub fn rebaseApplied(ci) !RebaseReport;                          // owner thread, outside queue events
+    pub fn onApplied(ci, cs: ChangesetId, apply_id: u64) !RebaseReport;
+    stats: Stats{ path_recomputes },
+};
+pub const SessionNames = struct { ctx, name: fn (ctx, session: u128) ?[]const u8 };
+```
+Deviations from the spec text:
+- `onApplied` takes the History apply record, not file indices: the
+  record has what was written. The index queues `applied` events and
+  `rebaseApplied` handles them, because a listener must not change the
+  queue.
+- `init` takes `Options`: the History (for rebase) and session display
+  names (E10's registry) are injected.
+- Sibling rebase runs synchronously through `rebaseFile`; the full
+  `Rebaser` (watcher events, worker threads, open documents) is
+  E12.F02.S02.T01 and not done.
+- `SessionId` is `?u128` (`AgentRef.session`).
+- Conflicted files stay `pending`/`partially_applied`, with the conflict
+  on the hunk, so the Applier can take either answer.
+- Tests live in `src/rebase/conflict_index_test.zig`. The two-agent
+  ScriptedProvider integration test waits for the app binding.
+
+### Threading
+Owner thread of the queue. `rebaseFile` is pure and can run anywhere.
+
+### Ownership/lifetime
+Slices from `conflictsOf` and `pendingOnPath` are valid until the next
+queue event. `warningFor` and `acceptOrder` results belong to the caller.
+Conflict texts live in the changeset's arena.
+
+### Stability
+Unstable until the app binds it.
+
+## zg_review.overlay (OverlayFs, AgentView)
+
+### Defined in
+`packages/review/src/overlay/{overlay_fs,agent_view}.zig` (E12.F02.S01.T01); see `packages/review/docs/contracts.md` and `docs/rebase.md`.
+
+### Implemented by
+E12.F02.S01.T01.
+
+### Consumed by
+E10 file tools through the app's `Files` adapter (`read_file`, `edit_file`, `glob`, `grep`), and review UI previews (`changeset` and `all_pending` views).
+
+### Signature
+```zig
+pub const ViewSpec = union(enum) { disk, agent: struct { session: u128, agent: u32 = 0 }, changeset: ChangesetId, all_pending };
+pub const OverlayFs = struct {
+    q: *const Queue, files: Files, docs: ?DocSource = null, lister: ?Lister = null, o: Options = .{ .subagents_share_view = true },
+    pub fn read(fs, arena, view, path) !?Read;      // Read{ text, executable, base: ?BaseRef, includes_pending, others_pending, stale }
+    pub fn stat(fs, arena, view, path) !?Stat;      // Stat{ size, executable, pending }
+    pub fn listDir(fs, arena, view, dir) ![]DirEntry;   // DirEntry{ name, kind: file|directory }, sorted
+    pub fn visible(fs, view, cs: *const Changeset) bool;
+};
+pub const DocSource = struct { ctx, snapshot: fn (ctx, arena, path) anyerror!?[]const u8 };
+pub const Lister = struct { ctx, list: fn (ctx, arena, dir) anyerror![]const DirEntry };
+pub fn agentView(fs: *const OverlayFs, ref: AgentRef, conflicts: ?*const ConflictIndex) AgentView;
+pub const AgentView = struct {
+    pub fn readText(v, arena, path) !?Read;
+    pub fn baseFor(v, arena, path) !?[]const u8;
+    pub fn listDir(v, arena, dir) ![]DirEntry;
+    pub fn stat(v, arena, path) !?Stat;
+    pub fn pendingWarning(v, gpa, path) !?[]u8;
+};
+```
+Deviations from the spec text:
+- `agentView` takes the `OverlayFs` and an optional ConflictIndex rather
+  than the queue, DocumentRegistry and `Io`. Open documents come in
+  through the `DocSource` port, the disk through `Files`, and directories
+  through `Lister` (E08 PathStore in the app).
+- `Read` replaces `AgentRead`: no `edits_version`, the base is null for
+  a missing file, and `includes_pending` is a list.
+- A change whose base moved is merged in the view (`stale`) instead of
+  waiting on a Rebaser event.
+- Not done: `Materializer`, virtual proposal documents, the LRU cache,
+  synthetic mtimes, and the `bench-review-agentview` bench. Directories
+  emptied by pending deletes are still listed.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Everything returned is in the caller's arena.
+
+### Stability
+Unstable until E10 binds it.

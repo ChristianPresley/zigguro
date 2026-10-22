@@ -41,6 +41,10 @@ pub const Runner = struct {
     broker: ?permission.Broker = null,
     perm: permission.HeadlessPermission,
     agent: *Agent = undefined,
+    /// The settings every agent of this run starts from.
+    cfg: Agent.Config = undefined,
+    /// The current permission mode.
+    mode: args_mod.PermissionMode = .default,
     model_id: []const u8 = "",
     writer: ?*writer_mod.SessionWriter = null,
     resumed: ?resume_mod.Resumed = null,
@@ -126,7 +130,7 @@ pub const Runner = struct {
             if (system.items.len > 0) try system.appendSlice(a, "\n\n");
             try system.print(a, "Your final answer must be a single JSON value that validates against this JSON Schema, with no other text:\n{s}", .{text});
         }
-        var cfg: Agent.Config = .{
+        const cfg: Agent.Config = .{
             .model = r.model_id,
             .system_append = if (system.items.len > 0) system.items else null,
             .cwd = env.cwd,
@@ -135,52 +139,15 @@ pub const Runner = struct {
             .tool_output = .{ .spill_dir = try std.fmt.allocPrint(a, "{s}{c}tool-output", .{ env.spill_dir, std.fs.path.sep }) },
         };
 
-        if (r.opts.resume_session != null or r.opts.continue_session) {
-            const store = env.store orelse return r.fail(error.NoSessionStore, "sessions are not saved here, so there is nothing to resume", .{});
-            const id = try r.findSession();
-            r.resumed = try resume_mod.resumeAgent(r.mgr, r.io, id, .{
-                .fork = r.opts.fork_session,
-                .model_override = if (r.opts.model != null) r.model_id else null,
-            }, .{ .store = store, .config = cfg });
-            r.agent = r.resumed.?.agent;
-            if (env.todos) |ts| if (r.resumed.?.state.todos_json) |j| ts.restore(r.agent.ref, j) catch |e| r.note("could not restore the todo list: {s}", .{@errorName(e)});
-        } else if (env.store != null and !r.opts.no_session_persistence) {
-            const w = try env.store.?.create(r.io, .{ .id = env.session, .cwd = env.cwd, .model = r.model_id, .origin = .cli });
-            r.writer = w;
-            var d = r.mgr.deps;
-            d.session = w.sessionLog();
-            cfg.session = w.id;
-            r.agent = try r.mgr.createWith(cfg, d);
-            _ = try r.agent.subscribe(w.subscriber());
-        } else {
-            cfg.session = env.session;
-            r.agent = try r.mgr.create(cfg);
-        }
-        r.session_text = proto.agent_ref.format(r.agent.ref.session);
-        if (env.plan_mode) |pm| {
-            pm.agent = r.agent;
-            pm.targets.mode_sink = .{ .ctx = &r.perm, .set = setPermMode };
-            if (env.context) |c| {
-                pm.targets.state = &c.assembler.state;
-                if (c.compactor != null) pm.targets.compaction = &c.loop_compaction;
-            }
-            pm.setMode(r.opts.permission_mode);
-        } else {
-            r.agent.setPlanMode(r.opts.permission_mode == .plan);
-            if (env.context) |c| c.setMode(plan_mode_mod.promptMode(r.opts.permission_mode));
-        }
-        if (env.skills) |sk| {
-            if (sk.host) |h| r.skill_shell = .{ .host = h, .policy = r.perm.quietPolicy() };
-            if (sk.tool) |t| {
-                t.expand = r.expandCtx();
-                t.grants = .{ .ctx = &r.perm, .grant = grantRules };
-            }
-        }
+        r.cfg = cfg;
+        r.mode = r.opts.permission_mode;
 
-        r.seen_seq = r.agent.bus.lastSeq();
-        // Inline: output keeps event order with permission prompts written
-        // from tool tasks, and a slow reader holds the agent back.
-        r.sub = try r.agent.subscribe(.{ .ctx = r, .on_events = onEvents, .mode = .inline_ });
+        if (r.opts.resume_session != null or r.opts.continue_session) {
+            if (env.store == null) return r.fail(error.NoSessionStore, "sessions are not saved here, so there is nothing to resume", .{});
+            const id = try r.findSession();
+            try r.resumeInto(id, r.opts.fork_session, false);
+        } else try r.newSession(env.session);
+        try r.attachAgent();
         if (env.signals) |s| {
             r.watcher = .{ .signals = s, .ctx = r, .on_signal = onSignal };
             r.watch_future = r.io.concurrent(signals.Watcher.run, .{ &r.watcher.?, r.io }) catch null;
@@ -198,6 +165,121 @@ pub const Runner = struct {
                 .permission_mode = modeName(r.opts.permission_mode),
             } });
         }
+    }
+
+    /// Continues session `id` (forked into a new one when `fork`).
+    fn resumeInto(r: *Runner, id: proto.SessionId, fork: bool, in_process: bool) !void {
+        r.resumed = try resume_mod.resumeAgent(r.mgr, r.io, id, .{
+            .fork = fork,
+            .in_process = in_process,
+            .model_override = if (r.opts.model != null) r.model_id else null,
+        }, .{ .store = r.opts.env.store.?, .config = r.cfg });
+        r.agent = r.resumed.?.agent;
+        if (r.opts.env.todos) |ts| if (r.resumed.?.state.todos_json) |j| ts.restore(r.agent.ref, j) catch |e| r.note("could not restore the todo list: {s}", .{@errorName(e)});
+    }
+
+    /// Starts a new session (`id`, or a generated one): saved unless
+    /// persistence is off.
+    fn newSession(r: *Runner, id: ?proto.SessionId) !void {
+        const env = r.opts.env;
+        var cfg = r.cfg;
+        if (env.store != null and !r.opts.no_session_persistence) {
+            const w = try env.store.?.create(r.io, .{ .id = id, .cwd = env.cwd, .model = r.model_id, .origin = .cli });
+            r.writer = w;
+            var d = r.mgr.deps;
+            d.session = w.sessionLog();
+            cfg.session = w.id;
+            r.agent = try r.mgr.createWith(cfg, d);
+            _ = try r.agent.subscribe(w.subscriber());
+        } else {
+            cfg.session = id;
+            r.agent = try r.mgr.create(cfg);
+        }
+    }
+
+    /// Connects the run's tools, mode and output to `r.agent`.
+    fn attachAgent(r: *Runner) !void {
+        const env = r.opts.env;
+        r.session_text = proto.agent_ref.format(r.agent.ref.session);
+        if (env.plan_mode) |pm| {
+            pm.agent = r.agent;
+            pm.targets.mode_sink = .{ .ctx = &r.perm, .set = setPermMode };
+            if (env.context) |c| {
+                pm.targets.state = &c.assembler.state;
+                if (c.compactor != null) pm.targets.compaction = &c.loop_compaction;
+            }
+            pm.setMode(r.mode);
+        } else {
+            r.agent.setPlanMode(r.mode == .plan);
+            if (env.context) |c| c.setMode(plan_mode_mod.promptMode(r.mode));
+        }
+        if (env.skills) |sk| {
+            if (sk.host) |h| r.skill_shell = .{ .host = h, .policy = r.perm.quietPolicy() };
+            if (sk.tool) |t| {
+                t.expand = r.expandCtx();
+                t.grants = .{ .ctx = &r.perm, .grant = grantRules };
+            }
+        }
+        r.seen_seq = r.agent.bus.lastSeq();
+        // Inline: output keeps event order with permission prompts written
+        // from tool tasks, and a slow reader holds the agent back.
+        r.sub = try r.agent.subscribe(.{ .ctx = r, .on_events = onEvents, .mode = .inline_ });
+    }
+
+    /// Closes the current session: the agent goes, the log is closed and
+    /// the index updated.
+    fn closeSession(r: *Runner) void {
+        const id = r.sub orelse return;
+        r.agent.unsubscribe(id);
+        r.sub = null;
+        const snap = r.agent.snapshot();
+        const sid = r.agent.ref.session;
+        const persisted = r.resumed != null or r.writer != null;
+        const session = if (r.resumed) |res| res.session else sid;
+        r.mgr.dispose(r.agent);
+        if (r.resumed) |*res| res.deinit();
+        r.resumed = null;
+        if (r.writer) |w| w.close();
+        r.writer = null;
+        if (persisted) if (r.opts.env.index) |ix| r.updateIndex(ix, session, snap);
+    }
+
+    /// REPL `/resume` and `/branch`: closes this session and continues
+    /// `id`, forked into a new session when `fork`. When that fails, a new
+    /// session starts, so the REPL always has an agent.
+    pub fn switchSession(r: *Runner, id: proto.SessionId, fork: bool) !void {
+        if (r.opts.env.store == null) return error.NoSessionStore;
+        r.closeSession();
+        r.resumeInto(id, fork, fork) catch |e| {
+            try r.newSession(null);
+            try r.attachAgent();
+            return e;
+        };
+        r.model_id = try r.arena.allocator().dupe(u8, r.agent.cfg.model);
+        try r.attachAgent();
+    }
+
+    /// The session being written to.
+    pub fn currentSession(r: *Runner) proto.SessionId {
+        if (r.resumed) |res| return res.session;
+        return r.agent.ref.session;
+    }
+
+    /// The current session's log, when it is saved.
+    pub fn sessionWriter(r: *Runner) ?*writer_mod.SessionWriter {
+        if (r.resumed) |res| return res.writer;
+        return r.writer;
+    }
+
+    /// The session `want` names: an id, or a title in the index.
+    pub fn lookupSession(r: *Runner, want: []const u8) ?proto.SessionId {
+        if (proto.agent_ref.parse(want)) |id| return id else |_| {}
+        const ix = r.opts.env.index orelse return null;
+        var list: std.ArrayList(*const index_mod.SessionMeta) = .empty;
+        defer list.deinit(r.gpa);
+        ix.list(r.gpa, .{}, &list) catch return null;
+        for (list.items) |m| if (std.mem.eql(u8, m.label(), want)) return m.id;
+        return null;
     }
 
     fn grantRules(ctx: *anyopaque, io: Io, _: proto.AgentRef, _: []const u8, rules: []const []const u8) void {
@@ -219,6 +301,7 @@ pub const Runner = struct {
 
     /// Switches the permission mode between turns.
     pub fn setMode(r: *Runner, mode: args_mod.PermissionMode) void {
+        r.mode = mode;
         if (r.opts.env.plan_mode) |pm| return pm.setMode(mode);
         r.perm.setMode(mode);
         r.agent.setPlanMode(mode == .plan);
@@ -271,17 +354,8 @@ pub const Runner = struct {
     pub fn deinit(r: *Runner) void {
         if (r.watcher) |*w| w.stop.store(true, .release);
         if (r.watch_future) |*f| f.cancel(r.io);
-        const started = r.sub != null;
-        if (r.sub) |id| r.agent.unsubscribe(id);
-        if (started) {
-            const snap = r.agent.snapshot();
-            const sid = r.agent.ref.session;
-            const persisted = r.resumed != null or r.writer != null;
-            const session = if (r.resumed) |res| res.session else sid;
-            r.mgr.dispose(r.agent);
-            if (r.resumed) |*res| res.deinit();
-            if (r.writer) |w| w.close();
-            if (persisted) if (r.opts.env.index) |ix| r.updateIndex(ix, session, snap);
+        if (r.sub != null) {
+            r.closeSession();
         } else {
             if (r.resumed) |*res| {
                 r.mgr.dispose(res.agent);

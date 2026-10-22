@@ -62,6 +62,9 @@ pub const ToolCall = struct {
     arena: std.mem.Allocator,
     io: std.Io,
     agent: agent_ref.AgentRef = .{ .session = 0 },
+    /// The agent turn the call belongs to (E12 groups a turn's edits into
+    /// one changeset); 0 outside a turn.
+    turn: u32 = 0,
     progress: ?ProgressSink = null,
 };
 

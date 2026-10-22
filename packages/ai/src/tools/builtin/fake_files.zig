@@ -20,6 +20,8 @@ const Doc = struct {
 pub const Mode = union(enum) {
     apply,
     pending,
+    /// Pending in the turn's changeset, committed by `end_turn`.
+    batched,
     reject: files.Rejection,
 };
 
@@ -32,6 +34,10 @@ pub const FakeFiles = struct {
     next_changeset: u64 = 1,
     /// Recorded proposals.
     proposals: std.ArrayList(struct { abs: []const u8, p: files.Proposal, origin: files.Origin }) = .empty,
+    /// `.batched`: proposals of the open turn, then the committed turns.
+    open_changes: u32 = 0,
+    committed: std.ArrayList(struct { turn: u32, changes: u32, changeset: u64 }) = .empty,
+    mutex: Io.Mutex = .init,
 
     pub fn init(gpa: Allocator) FakeFiles {
         return .{ .arena = .init(gpa) };
@@ -42,7 +48,7 @@ pub const FakeFiles = struct {
     }
 
     pub fn asFiles(f: *FakeFiles) files.Files {
-        return .{ .ctx = f, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose } };
+        return .{ .ctx = f, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn } };
     }
 
     /// Sets the text of `rel` (on disk, or an unsaved buffer).
@@ -87,8 +93,21 @@ pub const FakeFiles = struct {
         return .{ .version = d.version, .bytes = try arena.dupe(u8, d.text[0..@min(d.text.len, max_bytes)]), .size = d.text.len, .from_buffer = d.buffer };
     }
 
-    fn propose(ctx: *anyopaque, _: Io, _: Allocator, abs: []const u8, p: files.Proposal, origin: files.Origin) anyerror!files.Outcome {
+    fn endTurn(ctx: *anyopaque, io: Io, _: @import("zg_ai_proto").AgentRef, turn: u32) anyerror!?u64 {
         const f: *FakeFiles = @ptrCast(@alignCast(ctx));
+        f.mutex.lockUncancelable(io);
+        defer f.mutex.unlock(io);
+        if (f.open_changes == 0) return null;
+        defer f.next_changeset += 1;
+        try f.committed.append(f.arena.allocator(), .{ .turn = turn, .changes = f.open_changes, .changeset = f.next_changeset });
+        f.open_changes = 0;
+        return f.next_changeset;
+    }
+
+    fn propose(ctx: *anyopaque, io: Io, _: Allocator, abs: []const u8, p: files.Proposal, origin: files.Origin) anyerror!files.Outcome {
+        const f: *FakeFiles = @ptrCast(@alignCast(ctx));
+        f.mutex.lockUncancelable(io);
+        defer f.mutex.unlock(io);
         const a = f.arena.allocator();
         try f.proposals.append(a, .{ .abs = try a.dupe(u8, abs), .p = p, .origin = origin });
         switch (f.mode) {
@@ -111,6 +130,10 @@ pub const FakeFiles = struct {
         if (f.mode == .pending) {
             defer f.next_changeset += 1;
             return .{ .pending = .{ .changeset = f.next_changeset } };
+        }
+        if (f.mode == .batched) {
+            f.open_changes += 1;
+            return .{ .pending = .{} };
         }
         const v = f.bump();
         try f.docs.put(a, try a.dupe(u8, abs), .{ .text = try a.dupe(u8, new), .version = v, .buffer = if (cur) |c| c.buffer else false });

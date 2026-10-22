@@ -9,12 +9,15 @@ pub fn build(b: *std.Build) void {
     const editor = b.dependency("zg_editor", f.args()).module("zg_editor");
     // E10's leaf types (AgentRef), not zg_ai itself.
     const proto = b.dependency("zg_ai", f.args()).module("zg_ai_proto");
+    // E08's globs (the std-only zg_ignore leaf), not zg_workspace itself.
+    const ignore = b.dependency("zg_workspace", f.args()).module("zg_ignore");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_review",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_editor", .module = editor },
             .{ .name = "zg_ai_proto", .module = proto },
+            .{ .name = "zg_ignore", .module = ignore },
         },
         .bench = "bench/main.zig",
     });
