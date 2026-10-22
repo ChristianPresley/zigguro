@@ -15,6 +15,23 @@ pub const files = tables.files;
 pub const code_points = tables.code_points;
 pub const build = tables.build;
 
+/// Whether `path` ends with the `/`-separated relative path `rel`, treating
+/// `\\` in `path` as `/` so Windows build paths match.
+pub fn pathEndsWith(path: []const u8, rel: []const u8) bool {
+    if (path.len < rel.len) return false;
+    for (path[path.len - rel.len ..], rel) |a, b| {
+        const n = if (a == '\\') '/' else a;
+        if (n != b) return false;
+    }
+    return true;
+}
+
+test "pathEndsWith accepts either separator" {
+    try std.testing.expect(pathEndsWith("a/ucd/extracted/X.txt", "extracted/X.txt"));
+    try std.testing.expect(pathEndsWith("D:\\a\\ucd\\extracted\\X.txt", "extracted/X.txt"));
+    try std.testing.expect(!pathEndsWith("a/ucd/X.txt", "extracted/X.txt"));
+}
+
 /// One `manifest.zon` entry.
 pub const ManifestEntry = struct { file: []const u8, sha256: []const u8 };
 
