@@ -54,6 +54,33 @@ pub const OpMeta = struct {
     pub fn validate(m: OpMeta) ValidateError!void {
         try object.validateExtra(m.tags);
     }
+
+    /// The value of tag `key`, if set.
+    pub fn tag(m: OpMeta, key: []const u8) ?[]const u8 {
+        for (m.tags) |e| if (std.mem.eql(u8, e.key, key)) return e.value;
+        return null;
+    }
+
+    /// `m` with tag `key` set to `value` (replacing an existing one), the
+    /// tags kept sorted. The new slice lives in `arena`.
+    pub fn withTag(m: OpMeta, arena: Allocator, key: []const u8, value: []const u8) Allocator.Error!OpMeta {
+        var tags: std.ArrayList(Extra) = .empty;
+        try tags.ensureTotalCapacity(arena, m.tags.len + 1);
+        var placed = false;
+        for (m.tags) |e| {
+            const o = std.mem.order(u8, e.key, key);
+            if (o == .eq) continue;
+            if (o == .gt and !placed) {
+                tags.appendAssumeCapacity(.{ .key = key, .value = value });
+                placed = true;
+            }
+            tags.appendAssumeCapacity(e);
+        }
+        if (!placed) tags.appendAssumeCapacity(.{ .key = key, .value = value });
+        var out = m;
+        out.tags = tags.items;
+        return out;
+    }
 };
 
 pub const Operation = struct {
