@@ -22,8 +22,8 @@
 //! Chakma, Cham, Javanese, Kayah Li, Lepcha, Limbu, Meetei Mayek, Rejang,
 //! Saurashtra, Sundanese, Tai Tham, Tai Viet and every script encoded since
 //! (through Unicode 18), plus the nine Indic scripts when the font uses
-//! their `xxx3` tags. Khmer and Myanmar keep the default shaper until their
-//! own shapers land (HarfBuzz does not send them to USE).
+//! their `xxx3` tags. Khmer and Myanmar have their own shapers (HarfBuzz
+//! does not send them to USE).
 //!
 //! Not yet done: HarfBuzz's vowel constraints (dotted circles for
 //! discouraged independent-vowel spellings).
@@ -234,8 +234,9 @@ fn setupMasks(p: *const ShapePlan, b: *Buffer) void {
     for (b.infos.items) |*gi| setCategory(gi, useCategory(gi.cp));
 }
 
-/// Leaves split vowels decomposed: no recomposition onto a mark.
-fn compose(a: u21, b: u21) ?u21 {
+/// Leaves split vowels decomposed: no recomposition onto a mark (shared
+/// by the syllabic shapers).
+pub fn compose(a: u21, b: u21) ?u21 {
     switch (unicode.props(a).gc) {
         .Mn, .Mc, .Me => return null,
         else => {},

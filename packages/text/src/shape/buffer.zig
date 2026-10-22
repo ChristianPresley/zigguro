@@ -75,6 +75,8 @@ pub const GlyphInfo = struct {
     unsafe_to_break: bool = false,
     /// Complex-shaper scratch (joining action, Indic category, ...).
     shaper: u8 = 0,
+    /// More complex-shaper scratch (Indic position).
+    shaper_aux: u8 = 0,
     /// The fallback width rule of a space mapped to U+0020's glyph.
     space: SpaceFallback = .none,
 
@@ -400,6 +402,22 @@ pub const Buffer = struct {
     pub fn swapOut(b: *Buffer) void {
         std.mem.swap(std.ArrayList(GlyphInfo), &b.infos, &b.out);
         b.out.clearRetainingCapacity();
+    }
+
+    /// Stable-sorts [`start`, `end`) by `key`, merging the clusters of
+    /// each moved glyph with those it passes (HarfBuzz's `sort`).
+    pub fn sortBy(b: *Buffer, start: usize, end: usize, comptime key: fn (GlyphInfo) u8) void {
+        const infos = b.infos.items;
+        var i = start + 1;
+        while (i < end) : (i += 1) {
+            var j = i;
+            while (j > start and key(infos[j - 1]) > key(infos[i])) j -= 1;
+            if (i == j) continue;
+            b.mergeClusters(j, i + 1);
+            const t = infos[i];
+            std.mem.copyBackwards(GlyphInfo, infos[j + 1 .. i + 1], infos[j..i]);
+            infos[j] = t;
+        }
     }
 
     /// Reverses glyphs and positions in [`start`, `end`).

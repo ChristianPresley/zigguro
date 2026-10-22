@@ -80,6 +80,8 @@ pub const ai = struct {
     pub const proposal_files = @import("ai/proposal_files.zig");
     /// Approving an edited description.
     pub const describe = @import("ai/describe.zig");
+    /// Proposing and applying conflict resolutions.
+    pub const resolve = @import("ai/resolve.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -141,4 +143,5 @@ test {
     _ = @import("ai/agent_tools_test.zig");
     _ = @import("ai/proposal_files.zig");
     _ = @import("ai/describe.zig");
+    _ = @import("ai/resolve.zig");
 }

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Conflict region resolution",
+  "type": "object",
+  "properties": {
+    "resolution": {
+      "type": "string",
+      "description": "The text that replaces the conflict region, exactly as it should appear in the file."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "One or two sentences on how the sides were combined."
+    },
+    "addresses_sides": {
+      "type": "array",
+      "items": { "type": "boolean" },
+      "description": "One entry per side: whether the resolution keeps that side's change."
+    }
+  },
+  "required": ["resolution", "rationale", "addresses_sides"],
+  "additionalProperties": false
+}

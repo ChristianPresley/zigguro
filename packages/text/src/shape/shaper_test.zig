@@ -129,6 +129,14 @@ test "shape golden: tibetan stacking (USE)" {
     try testing.expectEqual(@as(usize, 0), try checkGoldenFont("use", "NotoSerifTibetan-Subset.ttf", true));
 }
 
+test "shape golden: khmer coeng stacks" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansKhmer-Subset.ttf", true));
+}
+
+test "shape golden: myanmar reordering" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("indic", "NotoSansMyanmar-Subset.ttf", true));
+}
+
 const shape_cache = @import("shape_cache.zig");
 
 fn expectSameRun(a: GlyphRun, b: GlyphRun) !void {

@@ -35,6 +35,9 @@ pub const complex = struct {
     pub const use = @import("complex/use.zig");
     pub const syllable_dfa = @import("complex/syllable_dfa.zig");
     pub const dotted_circle = @import("complex/dotted_circle.zig");
+    pub const indic_tables = @import("complex/indic_tables.zig");
+    pub const khmer = @import("complex/khmer.zig");
+    pub const myanmar = @import("complex/myanmar.zig");
 };
 
 pub const Buffer = buffer.Buffer;
@@ -54,4 +57,6 @@ test {
     _ = @import("complex/arabic_test.zig");
     _ = @import("complex/syllable_dfa.zig");
     _ = @import("complex/use_test.zig");
+    _ = @import("complex/indic_tables.zig");
+    _ = @import("complex/khmer_myanmar_test.zig");
 }

@@ -9,6 +9,7 @@ const std = @import("std");
 const zg_build = @import("zg_build");
 const packages = @import("build/packages.zig");
 const release_resources = @import("build/release_resources.zig");
+const symbols = @import("build/symbols.zig");
 
 /// Tier-1 cross targets built by `zig build cross`.
 const cross_targets = [_][]const u8{
@@ -343,16 +344,39 @@ pub fn build(b: *std.Build) void {
     package_run.addArg("--out");
     package_run.addArg(b.getInstallPath(.prefix, "release"));
     if (f.target.result.os.tag == .windows) package_run.addArgs(&.{ "--portable", "true" });
-    inline for (.{ zigguro_exe, zg_exe }) |exe| {
-        const inst = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dist_dir } }, .pdb_dir = .disabled });
-        package_run.step.dependOn(&inst.step);
-    }
+    // `zig build dist`: the shipped binaries in zig-out/dist/<t> and their
+    // split symbols in zig-out/symbols/<t> (E17.F01.S01.T02).
+    const symbols_dir = b.fmt("symbols/{s}", .{dist_target});
+    const dist_step = b.step("dist", "Install stripped binaries into zig-out/dist/<t> and symbols into zig-out/symbols/<t>");
+    symbols.install(b, symbols.splitDebug(b, release_tool, zigguro_exe), dist_dir, symbols_dir, dist_step);
+    symbols.install(b, symbols.splitDebug(b, release_tool, zg_exe), dist_dir, symbols_dir, dist_step);
     // The uninstall and update helper ships in the Windows app directory.
-    if (f.target.result.os.tag == .windows) {
-        const inst = b.addInstallArtifact(setup_helper, .{ .dest_dir = .{ .override = .{ .custom = dist_dir } }, .pdb_dir = .disabled });
-        package_run.step.dependOn(&inst.step);
-    }
+    if (f.target.result.os.tag == .windows) symbols.install(b, symbols.splitDebug(b, release_tool, setup_helper), dist_dir, symbols_dir, dist_step);
+    package_run.addArg("--symbols");
+    package_run.addArg(b.getInstallPath(.prefix, symbols_dir));
+    package_run.step.dependOn(dist_step);
     package_step.dependOn(&package_run.step);
+
+    // `zig build test-build-symbols`: a fixture split like the release
+    // binaries passes `zg-release symcheck`.
+    {
+        const step = b.step("test-build-symbols", "Check that release binaries split into a stripped binary and a matching .debug file");
+        const fx = b.addExecutable(.{ .name = "symbols-fixture", .root_module = b.createModule(.{
+            .root_source_file = b.path("build/test/resources_fixture.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
+            .optimize = .ReleaseFast,
+        }) });
+        fx.build_id = .sha1;
+        const split = symbols.splitDebug(b, release_tool, fx);
+        const check = b.addRunArtifact(release_tool);
+        check.addArg("symcheck");
+        check.addArg("--stripped");
+        check.addFileArg(split.stripped);
+        check.addArg("--debug");
+        check.addFileArg(split.symbols.?);
+        step.dependOn(&check.step);
+        test_step.dependOn(step);
+    }
 
     const transcript_run = b.addRunArtifact(transcript);
     if (b.args) |args| transcript_run.addArgs(args);

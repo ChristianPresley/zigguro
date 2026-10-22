@@ -19,6 +19,8 @@ modification and SHA-256) and its license text under `fonts/LICENSES/`.
 | `NotoSansDevanagari-Subset.ttf` | Indic (P2 goldens) |
 | `NotoSansJavanese-Subset.ttf` | USE: Javanese pre-base vowels, medials, broken clusters |
 | `NotoSerifTibetan-Subset.ttf` | USE: Tibetan stacking, split vowels |
+| `NotoSansKhmer-Subset.ttf` | Khmer: coeng stacks, coeng + RO, split vowels |
+| `NotoSansMyanmar-Subset.ttf` | Myanmar (`mym2`): medial ra, kinzi, pre-base vowels |
 | `NotoColorEmoji-CBDT-Subset.ttf` | CBDT/CBLC bitmap emoji (6 glyphs, 109 ppem strike) |
 | `NotoColorEmoji-COLRv1-Subset.ttf` | COLRv1 emoji incl. ZWJ, keycap, flags |
 | `test_glyphs-glyf_colr_1*.ttf` | googlefonts COLRv1 conformance glyphs (static, variable) |
@@ -138,7 +140,10 @@ Arabic joining forms, ZWJ/ZWNJ, tatweel, marks and modifier combining marks,
 Persian letters, digits, feature toggles, Syriac selection, and seeded random
 strings) and `use` (Universal Shaping Engine: Noto Sans Javanese pre-base
 vowels, medials and broken clusters, Noto Serif Tibetan stacks and split
-vowels, and seeded random strings of both). A case's `.script` defaults to Latin. `src/shape/shaper_test.zig`
+vowels, and seeded random strings of both) and `indic` (the Khmer shaper on
+Noto Sans Khmer coeng stacks and split vowels, the Myanmar shaper on Noto
+Sans Myanmar kinzi, medials and pre-base vowels, and seeded random strings of
+both). A case's `.script` defaults to Latin. `src/shape/shaper_test.zig`
 compares every case exactly. Producer: `provenance/gen_shape_golden.py`, run
 with uharfbuzz 0.56 (HarfBuzz 14.6):
 
