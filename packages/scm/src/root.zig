@@ -1,6 +1,6 @@
 //! zg_scm: the AI-first source control core (epic E09). This module holds the
 //! content-addressed object store: object IDs, the object model and its
-//! canonical encoding.
+//! canonical encoding, and the segmented store.
 
 const std = @import("std");
 
@@ -10,6 +10,12 @@ pub const id = @import("store/id.zig");
 pub const object = @import("store/object.zig");
 /// The canonical binary encoding (and debug JSON).
 pub const encode = @import("store/encode.zig");
+/// Segment and index file formats.
+pub const segment = @import("store/segment.zig");
+/// The decode cache.
+pub const cache = @import("store/cache.zig");
+/// The segmented object store.
+pub const store = @import("store/store.zig");
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -20,8 +26,12 @@ pub const TreeEntry = object.TreeEntry;
 pub const Change = object.Change;
 pub const Signature = object.Signature;
 pub const ChunkedBlob = object.ChunkedBlob;
+pub const Store = store.Store;
+pub const WriteBatch = store.WriteBatch;
+pub const ObjectRef = store.ObjectRef;
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("store/encode_test.zig");
+    _ = @import("store/store_test.zig");
 }
