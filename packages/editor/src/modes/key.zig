@@ -1,6 +1,6 @@
 //! Keys as modal input handlers see them: a code point or a named key,
 //! with modifiers. The GUI turns its key events into these; tests write
-//! them in Vim notation (`d2w`, `<Esc>`, `<C-v>`, `<lt>`).
+//! them in Vim notation (`d2w`, `<Esc>`, `<C-v>`, `<M-f>`, `<lt>`, `<M-gt>`).
 
 const std = @import("std");
 
@@ -117,6 +117,8 @@ fn parseNamed(body: []const u8) ?Key {
     }
     if (std.ascii.eqlIgnoreCase(rest, "lt")) {
         k.code = '<';
+    } else if (std.ascii.eqlIgnoreCase(rest, "gt")) {
+        k.code = '>';
     } else if (std.ascii.eqlIgnoreCase(rest, "space")) {
         k.code = ' ';
     } else if (std.ascii.eqlIgnoreCase(rest, "bar")) {
@@ -150,4 +152,7 @@ test "key: notation" {
     try std.testing.expect(buf[8].isCtrl('r'));
     // An unknown name stays literal.
     try std.testing.expectEqual(@as(usize, 5), try parse("<foo>", &buf));
+    try std.testing.expectEqual(@as(usize, 2), try parse("<M-gt><C-M-s>", &buf));
+    try std.testing.expect(buf[0].eql(.{ .code = '>', .alt = true }));
+    try std.testing.expect(buf[1].eql(.{ .code = 's', .ctrl = true, .alt = true }));
 }
