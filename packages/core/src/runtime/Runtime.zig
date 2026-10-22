@@ -159,8 +159,11 @@ test "runtime: post/drain FIFO across 4 producer threads" {
         fn run(r: *Runtime, id: u32) void {
             var i: u64 = 0;
             while (i < per) {
+                // Yield rather than spin: on runners with fewer cores than
+                // threads (or under x86 emulation) spinning starves the
+                // consumer.
                 r.post(.{ .kind = 7, .source = id, .a = i }) catch {
-                    std.atomic.spinLoopHint();
+                    std.Thread.yield() catch {};
                     continue;
                 };
                 i += 1;
@@ -179,7 +182,7 @@ test "runtime: post/drain FIFO across 4 producer threads" {
             next[m.source] += 1;
         }
         received += n;
-        if (n == 0) std.atomic.spinLoopHint();
+        if (n == 0) std.Thread.yield() catch {};
     }
     for (threads) |t| t.join();
     try std.testing.expectEqual(@as(usize, 0), rt.drain(&buf));
