@@ -190,6 +190,25 @@ today are headless and in-memory readback. The whole scene corpus,
 multi-frame damage and layer scenes included, matches the software goldens
 on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
 
+## Render thread and pacing
+
+`zg_vulkan.present.RenderThread.spawn(gpa, io, renderer, .{ .pacing, .refresh_ns, .notify })`
+takes ownership of a `Renderer`. The UI thread fills `firstList()`, then
+calls `post(list)`, which returns the list to fill next and never blocks. If the
+render thread has not taken the previous post yet, that post is dropped
+(latest wins). Its window damage is merged into the new list. The layers it
+drew stop counting as cached, so the UI is woken (`notify`) to repaint them in
+full. Lists answer `beginLayer` from the thread's own cache table. Forward
+platform frame callbacks and configures with `onPlatformFrame`.
+
+`FramePacer` picks the start of each frame:
+- `present_wait2` / `present_wait` hold at most `max_queued` (1) frames in the queue.
+- `platform_frame` waits for E01's frame callback after a presented frame.
+- `timer` starts at most one frame per refresh interval.
+- `immediate` is for headless targets.
+
+With nothing posted, the thread sleeps on one event, so idle costs no wakeups.
+
 ## Golden images
 
 `zg_vulkan.testing.expectImage(io, @src(), name, &img, tolerance)` compares

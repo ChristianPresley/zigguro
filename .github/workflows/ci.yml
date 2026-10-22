@@ -14,7 +14,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Pull requests drop superseded runs; pushes to main let the running one
+  # finish (the newest queued push replaces older queued ones).
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   lint:

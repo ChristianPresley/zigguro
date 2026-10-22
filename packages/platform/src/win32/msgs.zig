@@ -41,6 +41,8 @@ pub const WM = struct {
     pub const NCLBUTTONDOWN: u32 = 0x00A1;
     /// WM_NCLBUTTONUP.
     pub const NCLBUTTONUP: u32 = 0x00A2;
+    /// WM_INPUTLANGCHANGE.
+    pub const INPUTLANGCHANGE: u32 = 0x0051;
     /// WM_KEYDOWN.
     pub const KEYDOWN: u32 = 0x0100;
     /// WM_KEYUP.
@@ -109,6 +111,12 @@ pub const CW_USEDEFAULT: i32 = @bitCast(@as(u32, 0x80000000));
 pub const HWND_MESSAGE: isize = -3;
 /// `GWLP_USERDATA`.
 pub const GWLP_USERDATA: i32 = -21;
+/// `PM_NOREMOVE`.
+pub const PM_NOREMOVE: u32 = 0x0000;
+/// `MAPVK_VK_TO_VSC_EX`.
+pub const MAPVK_VK_TO_VSC_EX: u32 = 4;
+/// `ToUnicodeEx` flag: leave the kernel's dead-key state alone (1607+).
+pub const TOUNICODE_NO_STATE_CHANGE: u32 = 0x4;
 /// `PM_REMOVE`.
 pub const PM_REMOVE: u32 = 0x0001;
 /// `QS_ALLINPUT`.
@@ -203,6 +211,8 @@ pub const VK = struct {
     pub const CAPITAL: u16 = 0x14;
     /// VK_ESCAPE.
     pub const ESCAPE: u16 = 0x1B;
+    /// VK_SPACE.
+    pub const SPACE: u16 = 0x20;
     /// VK_PRIOR (Page Up).
     pub const PRIOR: u16 = 0x21;
     /// VK_NEXT (Page Down).
@@ -229,10 +239,20 @@ pub const VK = struct {
     pub const RWIN: u16 = 0x5C;
     /// VK_F1; F2..F24 follow.
     pub const F1: u16 = 0x70;
+    /// VK_F10.
+    pub const F10: u16 = 0x79;
     /// VK_F24.
     pub const F24: u16 = 0x87;
     /// VK_NUMLOCK.
     pub const NUMLOCK: u16 = 0x90;
+    /// VK_SCROLL.
+    pub const SCROLL: u16 = 0x91;
+    /// VK_LCONTROL.
+    pub const LCONTROL: u16 = 0xA2;
+    /// VK_RCONTROL.
+    pub const RCONTROL: u16 = 0xA3;
+    /// VK_LMENU.
+    pub const LMENU: u16 = 0xA4;
     /// VK_RMENU (right Alt, AltGr).
     pub const RMENU: u16 = 0xA5;
 };

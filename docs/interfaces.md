@@ -1012,8 +1012,15 @@ pub fn platform(b: *Win32Backend) Platform;
 `window_configure` comes from `createWindow`; later ones from `WM_SIZE`
 and `WM_DPICHANGED` (scale = DPI / 96). `KeyEvent.text` carries the
 key's `WM_CHAR` text (taken from the queue with the key-down); Control
-chords carry none. Wheel notches are `scroll` lines with forward
-negative. A window created on a non-96 DPI monitor is resized for that
+chords carry none; their `keysym` is the layout's unshifted character
+(`ToUnicodeEx`, cached per scancode until `WM_INPUTLANGCHANGE`), so
+Ctrl+A reports `a`. AltGr's synthetic Left Ctrl is dropped. Coalesced
+auto-repeat becomes one `repeat` per count (at most 32).
+`native_ctrl_state` carries the console control-key bits. Focus loss
+releases every held key. Alt, Alt+Space and Alt+F4 keep their system
+meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
+with forward negative; sub-notch deltas (precision touchpads) report
+`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
@@ -2625,3 +2632,53 @@ evicted, so memory stays within the budget plus that frame's layers.
 Stable. `drawLayer` for a scroll layer must follow its `beginScrollLayer` in the
 same frame, which sets the wrap origin. The composite prim's `uv` holds
 scroll + origin. Window damage for a changed layer is still the caller's job.
+
+## zg_vulkan.present.RenderThread and FramePacer
+
+### Defined in
+`packages/vulkan/src/present/RenderThread.zig`, `present/FramePacer.zig` (E02.F04.S03.T01).
+
+### Implemented by
+E02.F04.S03.T01.
+
+### Consumed by
+E04 (window host: posts draw lists, forwards Event.frame and configure), E14 (frame stats).
+
+### Signature
+```zig
+pub const RenderThread = struct {
+    pub const Notify = struct { ctx: *anyopaque, wake_ui: *const fn (*anyopaque) void };
+    pub const FrameSignal = union(enum) { frame, configure: struct { size: Size, scale: f32 }, present_feedback: struct { present_id: u64, presented_ns: u64 } };
+    pub const Options = struct { pacing: FramePacer.Mode = .immediate, refresh_ns: u64 = 16_666_667, notify: ?Notify = null };
+    pub fn spawn(gpa, io, renderer: Renderer, opts: Options) !*RenderThread;
+    pub fn firstList(self) *DrawList;
+    pub fn post(self, dl: *DrawList) *DrawList;          // never blocks; returns the next list to fill
+    pub fn onPlatformFrame(self, ev: FrameSignal) void;
+    pub fn stats(self) FrameStats;                       // last completed frame
+    pub fn shutdown(self) void;                          // joins, destroys the renderer
+};
+pub const FramePacer = struct {
+    pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
+    pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };
+    pub const PresentWaiter = struct { ctx, wait: fn (ctx, present_id: u64, timeout_ns: u64) WaitResult };
+    pub fn selectMode(Caps) Mode;
+    pub fn init(mode: Mode, refresh_ns: u64) FramePacer;
+    pub fn nextPresentId(self) u64;
+    pub fn waitIdFor(self, id: u64) ?u64;               // id - max_queued
+    pub fn readiness(self, now_ns: u64) Readiness;       // now | at(ns) | signal
+    pub fn waitReady(self, timeout_ns: ?u64) WaitResult; // render thread only
+};
+```
+
+### Threading
+`post`, `onPlatformFrame`, `stats` and `shutdown` are called on the UI thread. Rendering, pacing and all
+renderer calls run on the render thread.
+
+### Ownership/lifetime
+The thread owns the renderer and three draw lists. A list returned by `post` belongs to
+the UI until it is posted again. Only lists from `firstList`/`post` may be posted.
+
+### Stability
+Unstable until E04 adopts it. `post` returns a non-null list, unlike the `?*DrawList` in the draft
+signature. The present-wait modes need a swapchain to install a `PresentWaiter`; until then they start
+frames at once.
