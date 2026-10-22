@@ -2292,7 +2292,7 @@ Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
-## zg_editor.modes (ModeHandler, Host, VimState)
+## zg_editor.modes (ModeHandler, Host, VimState, EmacsState)
 
 ### Defined in
 `packages/editor/src/modes.zig`, `packages/editor/src/modes/{key,mode}.zig` and
@@ -2300,8 +2300,9 @@ the region (JGit takes the first).
 
 ### Implemented by
 E05.F09.S01.T01 (Vim core) and E05.F09.S01.T02 (registers, dot repeat,
-macros, marks and the jumplist, searches, the Ex subset). Emacs comes with
-E05.F09.S02.
+macros, marks and the jumplist, searches, the Ex subset); E05.F09.S02.T01
+(Emacs: bindings, mark and region, kill ring, isearch, query replace, the
+universal argument).
 
 ### Consumed by
 EditorView (E04/E05 view: builds a `Host` per editor and routes keys), the
@@ -2320,7 +2321,8 @@ pub const Host = struct { doc: *Document, sels: *SelectionSet, undo: *UndoTree,
     edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null,
     actions: ?Actions = null };   // :w :q :x :e go here; without it they fail with a message
 pub const Action = union(enum) { write: struct { path: ?[]const u8, force: bool }, quit: struct { force: bool },
-    exit, edit: struct { path: ?[]const u8, force: bool } };
+    exit, edit: struct { path: ?[]const u8, force: bool }, command: []const u8 };
+pub const ClipboardPort = struct { ctx, getFn(ctx, Which{clipboard, primary}, gpa) !?[]u8, setFn(ctx, Which, []const u8) !void };
 pub const Actions = struct { ctx: *anyopaque, runFn: *const fn (ctx, Action) anyerror!void };
 pub const ModeHandler = struct { ctx: *anyopaque, handleKeyFn, statusTextFn, caretShapeFn,
     pub fn handleKey(h, k: Key, host: *Host) !KeyResult; pub fn statusText(h) []const u8; pub fn caretShape(h) CaretShape };
@@ -2343,9 +2345,24 @@ pub const VimState = struct {
     pub fn caretShape(vs) CaretShape; pub fn detach(vs) void;
 };
 // vim/registers.zig: a-z (A-Z append), 0-9, -, +, * (through ClipboardPort), . : / (read-only), _
-pub const ClipboardPort = struct { ctx, getFn(ctx, Which{clipboard, primary}, gpa) !?[]u8, setFn(ctx, Which, []const u8) !void };
 pub const Registers = struct { clipboard: ?ClipboardPort = null,
     pub fn get(r, name: u8) ?*const Register; pub fn put(r, name: u8, text, kind) !void };
+// emacs/emacs.zig
+pub const EmacsState = struct {
+    kill_ring: KillRing, mark_active: bool, isearch: ?ISearch,
+    failed: bool,   // the last key's command signalled an error or quit (a script stops)
+    pub fn init(gpa) EmacsState; pub fn deinit(es) void; pub fn handler(es) ModeHandler;
+    pub fn handleKey(es, k: Key, host: *Host) !KeyResult;   // .passthrough for keys Emacs leaves alone
+    pub fn statusText(es) []const u8;   // "I-search: foo", "Query replace ...", "C-u 4-", "C-x-", messages
+    pub fn caretShape(es) CaretShape; pub fn detach(es) void;
+};
+pub const commands = struct { save, find_file, switch_buffer, kill_buffer, execute_command, split_right };   // Action.command ids
+// emacs/kill_ring.zig
+pub const KillRing = struct { max: u32 = 120, clipboard: ?ClipboardPort,
+    pub fn kill(k, text, append: enum { no, after, before }) !void; pub fn killPieces(k, pieces, append) !void;
+    pub fn yank(k) !?[]const u8; pub fn yankPop(k) ?[]const u8; pub fn current(k, n: i64) !?*const Entry };
+// emacs/regexp.zig: Emacs regexp -> zg_regex syntax
+pub fn translate(gpa, src) error{Unsupported, Syntax, OutOfMemory}![]u8;
 // vim/pattern.zig: Vim regex -> zg_regex syntax
 pub fn translatePattern(gpa, vim_pat, Flags{ ignorecase, smartcase, diag: ?*Diag }) error{Unsupported, Syntax, OutOfMemory}![]u8;
 pub fn translateReplacement(gpa, rep, previous, diag) ![]u8;
@@ -2375,6 +2392,23 @@ search offsets (`/pat/e+1`, `s-1`, `+2`) work. The Ex subset is ranges (`%`,
 `:g`/`:v` with `d`, `:d`, `:noh`, `:set`, `:let @r = '...'`, and `:w` `:q`
 `:wq` `:x` `:e` through `Host.actions`.
 
+Emacs keeps a point and a mark per cursor; the mark is active for all or
+none (transient-mark-mode) and an active region is the host selection.
+Kills append when the previous command was a kill (backward kills before);
+the ring stores one piece per cursor and joins them with line breaks for
+the clipboard, and `C-y` gives each cursor its own piece when the counts
+match. A kill sets the clipboard (`KillRing.clipboard`); a clipboard
+changed elsewhere is pushed and yanked by the next `C-y`. `C-s`/`C-r`
+search incrementally with a `FindSession` (`C-M-s`, `C-u C-s`: Emacs
+regexps); `M-%`/`C-M-%` query replace with `y n ! . q`. Self-inserts
+amalgamate up to 20 per undo step (`CoalesceKey.amalgamate`), and undo
+follows Emacs: after any other command, `C-/` first undoes the undos.
+`C-x C-s`, `C-x C-f`, `C-x b`, `C-x k`, `C-x 3` and `M-x` become
+`Action.command` with the ids `data/keymaps/emacs.zon` gives the E15
+layer. Behaviour is checked against GNU Emacs 29: `testdata/emacs/*.zon`
+(132 cases) are recorded by `testdata/emacs/oracle.py` from `emacs
+--batch` keyboard macros and replayed by `emacs_test.zig`.
+
 ### Threading
 UI thread only, like the document it edits.
 
@@ -2390,6 +2424,11 @@ back references in patterns (reported with their span); `:g` with commands
 other than `d`; jumping to a file mark in another document (the host has to
 open it); marks on deleted lines move to the deletion instead of being
 dropped, and a mark keeps its place in the text where Vim keeps its column.
+Emacs: the mark ring is the primary cursor's; `C-v`/`M-v` move by
+`page_rows - 2` lines rather than scrolling; undo in an active region,
+isearch `C-w`/`M-r`, `M-y` without a yank (Emacs 28's kill-ring menu) and
+query replace `,`/`^`/`E` are not there; columns count characters, not
+display width.
 
 ## zg_vulkan.r2d (DrawList, Renderer, Prim)
 
