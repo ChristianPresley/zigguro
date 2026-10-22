@@ -15,7 +15,6 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",
     "text.cache_hit",
     "text.cache_screen",
     "text.cells_row_200",
@@ -181,6 +180,19 @@ fn register(b: *bench.Bench) !void {
     defer colr_r.deinit();
     try b.run("text.colr_32px", ColrCtx{ .inst = &colr_inst, .gids = colr_gids.items, .r = &colr_r }, colrGlyph);
 
+    // Atlas inserts of glyph-sized bitmaps (3–22 × 4–28 px), with page
+    // eviction once the four default gray pages fill.
+    var atlas = try zg_text.cache.Atlas.init(b.gpa, .{});
+    defer atlas.deinit();
+    const glyph_px = try b.gpa.alloc(u8, 22 * 28);
+    defer b.gpa.free(glyph_px);
+    @memset(glyph_px, 0x80);
+    var sizes: [1024][2]u16 = undefined;
+    var prng = std.Random.DefaultPrng.init(1);
+    for (&sizes) |*sz| sz.* = .{ prng.random().intRangeAtMost(u16, 3, 22), prng.random().intRangeAtMost(u16, 4, 28) };
+    var inserted: u64 = 0;
+    try b.run("text.atlas_insert", AtlasCtx{ .atlas = &atlas, .px = glyph_px, .sizes = &sizes, .n = &inserted }, atlasInsert);
+
     // Prefix-sum integration of a 256×256 accumulator; bytes/s = pixels/s.
     try b.run("text.integrate_gpix", b.gpa, integrate);
 }
@@ -234,6 +246,21 @@ fn colrGlyph(ctx: ColrCtx, s: *State) void {
         bench.doNotOptimizeAway(bm.pixels.len);
         k += 1;
         if (k == ctx.gids.len) k = 0;
+    }
+}
+
+const AtlasCtx = struct { atlas: *zg_text.cache.Atlas, px: []u8, sizes: []const [2]u16, n: *u64 };
+
+fn atlasInsert(ctx: AtlasCtx, s: *State) void {
+    // Frames advance across runs: the atlas keeps its pages between them.
+    for (0..s.iterations()) |_| {
+        const i = ctx.n.*;
+        ctx.n.* += 1;
+        const sz = ctx.sizes[i % ctx.sizes.len];
+        const frame: u32 = @intCast(1 + i / 256);
+        const bmp: zg_text.raster.Bitmap = .{ .width = sz[0], .height = sz[1], .stride = sz[0], .pixels = ctx.px[0 .. @as(usize, sz[0]) * sz[1]] };
+        const e = ctx.atlas.insert(&bmp, frame) catch unreachable;
+        bench.doNotOptimizeAway(e.x);
     }
 }
 
