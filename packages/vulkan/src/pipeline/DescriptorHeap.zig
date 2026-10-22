@@ -136,6 +136,42 @@ pub fn allocSlot(self: *DescriptorHeap, view: vk.ImageView, kind: SamplerKind) !
     return slot;
 }
 
+/// `allocSlot` for a chosen `slot` (device-loss recovery recreates
+/// textures under their old ids). `error.SlotInUse` when it is taken.
+pub fn allocSlotAt(self: *DescriptorHeap, slot: u32, view: vk.ImageView, kind: SamplerKind) !void {
+    try reserveSlot(self.gpu.gpa, &self.free, &self.next, self.max_textures, slot);
+    self.writeSlot(slot, view, kind);
+}
+
+/// Takes `slot` out of `free`/`next`; slots skipped over become free.
+fn reserveSlot(gpa: std.mem.Allocator, free: *std.ArrayList(u32), next: *u32, max: u32, slot: u32) !void {
+    if (slot == 0 or slot >= max) return error.OutOfSlots;
+    if (slot < next.*) {
+        const i = std.mem.indexOfScalar(u32, free.items, slot) orelse return error.SlotInUse;
+        _ = free.swapRemove(i);
+        return;
+    }
+    try free.ensureUnusedCapacity(gpa, slot - next.*);
+    while (next.* < slot) : (next.* += 1) free.appendAssumeCapacity(next.*);
+    next.* = slot + 1;
+}
+
+test "heap: reserving a chosen slot" {
+    const gpa = std.testing.allocator;
+    var free: std.ArrayList(u32) = .empty;
+    defer free.deinit(gpa);
+    var next: u32 = 1;
+    try reserveSlot(gpa, &free, &next, 16, 4);
+    try std.testing.expectEqual(@as(u32, 5), next);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2, 3 }, free.items);
+    try reserveSlot(gpa, &free, &next, 16, 2);
+    try std.testing.expectError(error.SlotInUse, reserveSlot(gpa, &free, &next, 16, 2));
+    try std.testing.expectError(error.SlotInUse, reserveSlot(gpa, &free, &next, 16, 4));
+    try std.testing.expectError(error.OutOfSlots, reserveSlot(gpa, &free, &next, 16, 16));
+    try std.testing.expectError(error.OutOfSlots, reserveSlot(gpa, &free, &next, 16, 0));
+    try std.testing.expectEqual(@as(usize, 2), free.items.len);
+}
+
 /// Repoints a slot the caller owns (a resized texture keeps its id). The
 /// slot must not be used by a pending frame unless the device enabled
 /// update-unused-while-pending and that frame does not draw with it.
