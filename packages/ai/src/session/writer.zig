@@ -172,7 +172,12 @@ pub const SessionWriter = struct {
 
     /// The agent's `SessionLog` seam: committed messages and turn-end sync.
     pub fn sessionLog(w: *SessionWriter) deps.SessionLog {
-        return .{ .ctx = w, .vtable = &.{ .message = logMessage, .sync = logSync } };
+        return .{ .ctx = w, .vtable = &.{ .message = logMessage, .sync = logSync, .compaction = logCompaction } };
+    }
+
+    fn logCompaction(ctx: *anyopaque, _: Io, _: proto.AgentRef, seq: u64, info: deps.CompactionInfo) anyerror!void {
+        const w: *SessionWriter = @ptrCast(@alignCast(ctx));
+        try w.append(seq, .{ .compaction = .{ .head_seq = info.head_seq, .trigger = info.trigger, .tokens_before = info.tokens_before, .tokens_after = info.tokens_after, .model = info.model } });
     }
 
     fn logMessage(ctx: *anyopaque, _: Io, _: proto.AgentRef, seq: u64, m: *const proto.Message) anyerror!void {

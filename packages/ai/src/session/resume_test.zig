@@ -148,3 +148,53 @@ test "resume reads from the latest compaction, and past it after a rewind" {
     try testing.expectEqual(@as(usize, 1), r.agent.messages().len);
     try testing.expectEqualStrings("old question", ts.firstText(r.agent.messages()[0]));
 }
+
+test "resume after a compaction in the loop" {
+    var f: Fixture = undefined;
+    try f.init(&.{ ts.script.text("First."), ts.script.text("Second.") });
+    defer f.deinit();
+    const Fake = struct {
+        var armed = false;
+        fn should(_: *anyopaque, _: u64, _: u32) bool {
+            return armed;
+        }
+        fn compact(_: *anyopaque, _: std.Io, arena: std.mem.Allocator, _: *const @import("../provider/request.zig").Request, history: []const proto.Message, _: bool) anyerror!@import("../loop/deps.zig").CompactedHistory {
+            armed = false;
+            const out = try arena.alloc(proto.Message, 3);
+            const b = try arena.alloc(proto.ContentBlock, 1);
+            b[0] = .{ .text = .{ .text = "SUMMARY" } };
+            out[0] = .{ .role = .user, .content = b, .meta = .{ .synthetic = true } };
+            const k = try arena.alloc(proto.ContentBlock, 1);
+            k[0] = .{ .text = .{ .text = "ok" } };
+            out[1] = .{ .role = .assistant, .content = k, .meta = .{ .synthetic = true } };
+            out[2] = history[history.len - 1];
+            return .{ .messages = out, .tokens_before = 100, .tokens_after = 10, .model = "s" };
+        }
+    };
+    var dummy: u8 = 0;
+    var d = f.deps();
+    d.compaction = .{ .ctx = &dummy, .should_compact = Fake.should, .compact = Fake.compact };
+    const live = try f.liveAgent(d);
+    _ = try live.agent.submit(.{ .text = "one" });
+    live.agent.waitIdle();
+    Fake.armed = true;
+    _ = try live.agent.submit(.{ .text = "two" });
+    live.agent.waitIdle();
+    try testing.expectEqual(@as(usize, 4), live.agent.messages().len);
+    const id = live.agent.ref.session;
+    f.manager.dispose(live.agent);
+    live.writer.close();
+
+    // The file holds the compaction record; a resume reads only the new history.
+    const l = try f.store.open(io, id, .{});
+    defer l.deinit();
+    try testing.expect(l.tail[0].record == .compaction);
+    var r = try resume_mod.resumeAgent(f.manager, io, id, .{}, .{ .store = &f.store, .config = .{ .model = "" } });
+    defer r.deinit();
+    defer f.manager.dispose(r.agent);
+    const msgs = r.agent.messages();
+    try testing.expectEqual(@as(usize, 4), msgs.len);
+    try testing.expectEqualStrings("SUMMARY", ts.firstText(msgs[0]));
+    try testing.expectEqualStrings("two", ts.firstText(msgs[2]));
+    try testing.expectEqualStrings("Second.", ts.firstText(msgs[3]));
+}

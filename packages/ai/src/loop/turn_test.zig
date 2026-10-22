@@ -10,6 +10,8 @@ const deps = @import("deps.zig");
 const scripted = @import("../provider/scripted.zig");
 const pevents = @import("../provider/events.zig");
 const reg = @import("../models/registry.zig");
+const guard = @import("../provider/guarded.zig");
+const ratelimit = @import("../provider/ratelimit.zig");
 
 const testing = std.testing;
 const io = testing.io;
@@ -471,6 +473,164 @@ test "cancel_while_running_tools" {
     try expectValidHistory(msgs);
     for (msgs[2].content) |b| try testing.expect(b.tool_result.is_error);
     try testing.expectEqual(ev.FinishReason.canceled, h.agent.snapshot().last_finish.?);
+}
+
+test "cancel_during_backoff" {
+    const overloaded = [_]Step{
+        .{ .event = .{ .provider_error = .{ .status = 529, .kind = "overloaded_error", .message = "busy" } } },
+        .{ .fail = error.Overloaded },
+    };
+    const turns = [_][]const Step{ &overloaded, script.text("never") };
+    var h: Harness = undefined;
+    try h.init(&turns, .{ .model = "m" }, null);
+    defer h.deinit();
+    // A real-clock guard whose first backoff waits 10 s.
+    var limiter = ratelimit.RateLimiter.init(testing.allocator, .real);
+    defer limiter.deinit();
+    h.provider = try guard.guarded(testing.allocator, h.provider, &limiter, .{ .instance = "anthropic", .seed = 1, .policy = .{ .base_ms = 10_000, .cap_ms = 10_000 } });
+    _ = try h.agent.submit(.{ .text = "go" });
+    try h.waitStatus(.retrying);
+    const t0 = std.Io.Timestamp.now(io, .awake);
+    h.agent.cancel(.turn);
+    try testing.expect(t0.untilNow(io, .awake).toMilliseconds() < 50);
+    h.agent.waitIdle();
+    try testing.expectEqual(ev.FinishReason.canceled, h.agent.snapshot().last_finish.?);
+    try testing.expectEqual(@as(usize, 1), h.sp.requests().len);
+    try expectValidHistory(h.agent.messages());
+    // The retry reached the bus with its attempt and status.
+    try testing.expect(std.mem.indexOf(u8, h.rec.out.items, "\"type\":\"retrying\",\"data\":{\"attempt\":2") != null);
+    try testing.expect(std.mem.indexOf(u8, h.rec.out.items, "\"status\":529") != null);
+}
+
+test "cancel_during_approval_wait" {
+    const turns = [_][]const Step{script.tools(&.{ .{ "t1", "edit", "{\"path\":\"a\"}" }, .{ "t2", "read", "{\"path\":\"b\"}" } })};
+    var h: Harness = undefined;
+    try h.init(&turns, .{ .model = "m" }, null);
+    defer h.deinit();
+    // An approval that never comes (E16 ticket stub): the wait is canceled.
+    const Approval = struct {
+        var waiting: std.atomic.Value(u32) = .init(0);
+        var canceled: std.atomic.Value(u32) = .init(0);
+        fn check(_: *anyopaque, cio: std.Io, _: proto.AgentRef, _: *const proto.ToolSpec, _: []const u8) std.Io.Cancelable!deps.Decision {
+            _ = waiting.fetchAdd(1, .monotonic);
+            cio.sleep(.fromSeconds(60), .awake) catch |e| {
+                _ = canceled.fetchAdd(1, .monotonic);
+                return e;
+            };
+            return .allow;
+        }
+    };
+    var dummy: u8 = 0;
+    h.agent.deps.permission = .{ .ctx = &dummy, .check = Approval.check };
+    _ = try h.agent.submit(.{ .text = "go" });
+    var n: u32 = 0;
+    while (Approval.waiting.load(.monotonic) == 0) : (n += 1) {
+        if (n > 5000) return error.Timeout;
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    const t0 = std.Io.Timestamp.now(io, .awake);
+    h.agent.cancel(.turn);
+    try testing.expect(t0.untilNow(io, .awake).toMilliseconds() < 50);
+    try testing.expect(Approval.canceled.load(.monotonic) >= 1);
+    try testing.expectEqual(@as(u32, 0), h.tools.calls.load(.monotonic));
+    const msgs = h.agent.messages();
+    try expectValidHistory(msgs);
+    for (msgs[2].content) |b| try testing.expect(b.tool_result.is_error);
+    try testing.expectEqual(ev.FinishReason.canceled, h.agent.snapshot().last_finish.?);
+}
+
+/// Fake compaction: keeps the newest message after a summary.
+const FakeCompaction = struct {
+    armed: bool = false,
+    runs: u32 = 0,
+    overflow: bool = false,
+
+    fn seam(f: *FakeCompaction) deps.Compaction {
+        return .{ .ctx = f, .should_compact = should, .compact = compact };
+    }
+
+    fn should(ctx: *anyopaque, _: u64, _: u32) bool {
+        const f: *FakeCompaction = @ptrCast(@alignCast(ctx));
+        return f.armed;
+    }
+
+    fn compact(ctx: *anyopaque, _: std.Io, arena: std.mem.Allocator, _: *const @import("../provider/request.zig").Request, history: []const proto.Message, overflow: bool) anyerror!deps.CompactedHistory {
+        const f: *FakeCompaction = @ptrCast(@alignCast(ctx));
+        f.armed = false;
+        f.runs += 1;
+        f.overflow = overflow;
+        const out = try arena.alloc(proto.Message, 3);
+        const b = try arena.alloc(proto.ContentBlock, 1);
+        b[0] = .{ .text = .{ .text = "SUMMARY" } };
+        out[0] = .{ .role = .user, .content = b, .meta = .{ .synthetic = true } };
+        const ack = try arena.alloc(proto.ContentBlock, 1);
+        ack[0] = .{ .text = .{ .text = "ok" } };
+        out[1] = .{ .role = .assistant, .content = ack, .meta = .{ .synthetic = true } };
+        out[2] = history[history.len - 1];
+        return .{ .messages = out, .tokens_before = 1000, .tokens_after = 10, .model = "s" };
+    }
+};
+
+test "compaction_at_threshold" {
+    const turns = [_][]const Step{ script.text("First."), script.text("Second.") };
+    var h: Harness = undefined;
+    try h.init(&turns, .{ .model = "m" }, null);
+    defer h.deinit();
+    var fc: FakeCompaction = .{};
+    h.agent.deps.compaction = fc.seam();
+    _ = try h.agent.submit(.{ .text = "one" });
+    h.agent.waitIdle();
+    fc.armed = true;
+    _ = try h.agent.submit(.{ .text = "two" });
+    h.agent.waitIdle();
+    try testing.expectEqual(@as(u32, 1), fc.runs);
+    try testing.expect(!fc.overflow);
+    // The second request was built from the compacted history.
+    const req = h.sp.requests()[1];
+    try testing.expectEqual(@as(usize, 3), req.messages.len);
+    try testing.expectEqualStrings("SUMMARY", req.messages[0].content[0].text.text);
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("uaua", h.roles(&buf));
+    try testing.expect(std.mem.indexOf(u8, h.rec.out.items, "\"action\":\"compacted\",\"detail\":\"auto_threshold\"") != null);
+    try testing.expect(std.mem.indexOf(u8, h.rec.out.items, "\"data\":\"compacting\"") != null);
+    // Sequence numbers keep increasing across the swap.
+    try testing.expect(h.agent.messageSeq(3) > h.agent.messageSeq(2));
+}
+
+test "compaction_on_overflow" {
+    const too_long = [_]Step{
+        .{ .event = .{ .message_start = .{ .id = "x", .model = "m" } } },
+        .{ .event = .{ .stop = .context_window_exceeded } },
+    };
+    const turns = [_][]const Step{ &.{.{ .fail = error.ContextOverflow }}, script.text("Fits now."), &too_long, script.text("Fits again.") };
+    var h: Harness = undefined;
+    try h.init(&turns, .{ .model = "m" }, null);
+    defer h.deinit();
+    var fc: FakeCompaction = .{};
+    h.agent.deps.compaction = fc.seam();
+    // The provider rejects the request as too long (an error).
+    _ = try h.agent.submit(.{ .text = "go" });
+    h.agent.waitIdle();
+    try testing.expectEqual(@as(u32, 1), fc.runs);
+    try testing.expect(fc.overflow);
+    try testing.expectEqual(ev.FinishReason.end_turn, h.agent.snapshot().last_finish.?);
+    try testing.expectEqualStrings("Fits now.", h.agent.messages()[h.agent.messages().len - 1].content[0].text.text);
+    // The model stops with context_window_exceeded.
+    _ = try h.agent.submit(.{ .text = "more" });
+    h.agent.waitIdle();
+    try testing.expectEqual(@as(u32, 2), fc.runs);
+    try testing.expectEqual(ev.FinishReason.end_turn, h.agent.snapshot().last_finish.?);
+    try expectValidHistory(h.agent.messages());
+
+    // Without compaction an overflow fails the turn.
+    const turns2 = [_][]const Step{&.{.{ .fail = error.ContextOverflow }}};
+    var h2: Harness = undefined;
+    try h2.init(&turns2, .{ .model = "m" }, null);
+    defer h2.deinit();
+    _ = try h2.agent.submit(.{ .text = "go" });
+    h2.agent.waitIdle();
+    try testing.expectEqual(ev.FinishReason.failed, h2.agent.snapshot().last_finish.?);
+    try testing.expect(std.mem.indexOf(u8, h2.rec.out.items, "context_overflow") != null);
 }
 
 test "turn_budget_stops_before_next_request" {
