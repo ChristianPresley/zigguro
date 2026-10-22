@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
     const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, f.optimize, tools_test_step);
     const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, f.optimize, tools_test_step);
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
+    _ = addTool(b, "wayland-scanner", "packages/build/wayland_scanner/main.zig", test_filters, f.optimize, tools_test_step);
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
