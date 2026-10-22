@@ -75,3 +75,35 @@ fields are left out when null. Unknown keys are ignored.
 ```json
 {"origin":{"type":"agent","ref":{"session":"01JABCDEFGHJKMNPQRSTVWXYZ0","agent":2,"tool_call":"toolu_1"},"turn":7,"model":"claude-x"},"label":"Turn 7: Fix the parser","tool_calls":["toolu_1","toolu_2"],"workspace":"/w","created_ms":1700000000000}
 ```
+
+## Queue
+
+`Queue` holds a workspace's changesets in submission order and belongs to
+one owner thread. Producers build a batch and commit it:
+
+```zig
+const b = try q.beginBatch(prov);                  // any thread
+try q.addEdit(b, "src/a.zig", base_text, doc_version, &edits);
+try q.addCreate(b, "src/new.zig", bytes);
+try q.addDelete(b, "old.zig", old_text);
+try q.addRename(b, "x.zig", "y.zig");
+try q.setExecutable(b, "run.sh", true);
+const id = try q.commitBatch(b, .{});              // owner thread: visible now
+const id2 = try q.submitter().commitBatch(b2);     // any thread: visible after drain()
+```
+
+- Paths become workspace-relative and `/`-separated. Paths outside the
+  root, inside `.git/` or inside `.zigguro/review/` are rejected.
+- Operations on one path combine (see `batch.zig`): edits compose, a
+  create absorbs later edits, edit then delete is a delete, create then
+  delete is nothing, delete then create is a whole-file edit.
+- Base texts, deleted texts and created texts go to the `Blobs` port (a
+  `MemBlobs` until the durable store lands). Hunks are derived at commit.
+- An edit made on top of the same session's undecided edit of the same
+  file folds into that changeset: the edits compose, the hunks are
+  derived again, the earlier file records `folded_from`, and the new
+  changeset keeps a `superseded` stub. A changeset whose every file
+  folded is `superseded`. Other sessions never fold.
+- `auto_apply` is ignored until the review policy exists (fail closed).
+- Listeners get `submitted`, `updated`, `state` and `removed` events on
+  the owner thread.
