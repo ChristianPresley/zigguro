@@ -1,0 +1,5 @@
+const el = document.getElementById("x") as HTMLInputElement;
+const n = <number>value;
+const sure = maybe!;
+function assert(v: unknown): asserts v is string {}
+let u: unique symbol;
