@@ -113,6 +113,8 @@ SETS = {
             "\u0926\u094d\u0927 \u0924\u094d\u0924 \u0936\u094d\u0930\u0940",
             "\u093f \u094d\u0915 \u0902",
             "\u0930\u094d \u0905\u0902 \u0906\u0930\u094d\u092f",
+            # Vowel constraints: dotted circles in discouraged spellings.
+            "\u0905\u093e \u0906\u0947 \u0930\u094d\u0907 \u0909\u0941 \u0905\u093e\u093e",
         ]],
         # Old-spec Devanagari (deva only): halant reordering, eyelash Ra.
         *[("NotoSansDevanagariOld-Subset.ttf", t, {}, {}, "ltr", "Deva") for t in [
@@ -131,6 +133,7 @@ SETS = {
             "\u09af\u09bc \u09a1\u09bc \u09ce",
             "\u09b8\u09cd\u09a4\u09cd\u09b0\u09c0 \u0995\u09cd\u09b0\u09bf",
             "\u09c7 \u09cd\u0995",
+            "\u0985\u09be \u098b\u09c3",
         ]],
         # Malayalam: chillus (atomic and with ZWJ), pre-base ra, split
         # matras, logical repha.
@@ -141,6 +144,7 @@ SETS = {
             "\u0d30\u0d4d\u200d \u0d30\u0d4d\u0d15 \u0d4e\u0d15",
             "\u0d38\u0d4d\u0d24\u0d4d\u0d30\u0d40 \u0d2e\u0d32\u0d2f\u0d3e\u0d33\u0d02",
             "\u0d46 \u0d4d",
+            "\u0d07\u0d57 \u0d12\u0d3e \u0d0e\u0d46 \u0d14",
         ]],
         # Tamil: pre-base vowels, split vowels, ksha, shri.
         *[("NotoSansTamil-Subset.ttf", t, {}, {}, "ltr", "Taml") for t in [
@@ -148,6 +152,7 @@ SETS = {
             "\u0b95\u0bcd\u0bb7 \u0bb8\u0bcd\u0bb0\u0bc0",
             "\u0b95\u0bcd\u0b95 \u0ba4\u0bae\u0bbf\u0bb4\u0bcd",
             "\u0bc6 \u0bcd",
+            "\u0b85\u0bc2",
         ]],
         # Khmer: coeng stacks, coeng + RO before the base, pre-base and
         # split vowels, robat, a broken cluster.
