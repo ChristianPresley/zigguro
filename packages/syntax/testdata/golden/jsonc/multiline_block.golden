@@ -1,0 +1,7 @@
+1| punctuation.bracket:{
+2| comment:/*
+3| comment:    "disabled": true,
+4| comment:    "also": [1, 2]
+5| comment:  */
+6| property:"enabled" punctuation.delimiter:: constant.builtin:false
+7| punctuation.bracket:}
