@@ -13,6 +13,8 @@ pub const gamma = @import("gamma.zig");
 pub const embolden = @import("embolden.zig");
 /// LCD subpixel filtering.
 pub const lcd = @import("lcd.zig");
+/// Signed distance fields.
+pub const sdf = @import("sdf.zig");
 /// `Rasterizer`, `Bitmap`, `RasterParams` and pixel placement.
 pub const rasterizer = @import("rasterizer.zig");
 
@@ -29,4 +31,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("coverage_test.zig");
     _ = @import("style_test.zig");
+    _ = @import("sdf_test.zig");
 }
