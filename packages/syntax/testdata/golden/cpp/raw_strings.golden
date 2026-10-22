@@ -1,0 +1,10 @@
+1| keyword.storage:auto variable:a operator:= string:R"(raw \n no escapes)" punctuation.delimiter:;
+2| keyword.storage:auto variable:b operator:= string:R"delim(contains )" and ")delim" punctuation.delimiter:;
+3| keyword.storage:auto variable:c operator:= string:u8R"x(utf8 raw)x" punctuation.delimiter:;
+4| keyword.storage:auto variable:d operator:= string:LR"(wide raw)" punctuation.delimiter:;
+5| keyword.storage:auto variable:sql operator:= string:R"sql(
+6| string:SELECT *
+7| string:FROM t WHERE name = ")"
+8| string:)sql" punctuation.delimiter:;
+9| type.builtin:int variable:after punctuation.delimiter:;
+10| keyword.storage:auto variable:bad operator:= type:R string:"too_long_delimiter_x(x)too_long_delimiter_x" punctuation.delimiter:;
