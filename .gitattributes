@@ -18,3 +18,5 @@ packages/ai/testdata/tools/read/image.png binary
 packages/ai/eval/fixtures/notes/data.bin binary
 *.pgm binary
 *.ppm binary
+packages/editor/testdata/encodings/** binary
+packages/editor/src/model/encoding/whatwg/*.txt -text
