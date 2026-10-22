@@ -1,0 +1,15 @@
+# workspace/workspaceFolders before and after a folder change the server
+# declared it takes.
+> initialize
+< {"id": $1, "result": {"capabilities": {"workspace": {"workspaceFolders": {"supported": true, "changeNotifications": true}}}}}
+> initialized
+< {"id": 1, "method": "workspace/workspaceFolders"}
+> response {"id": 1, "result": [{"uri": "file:///w", "name": "w"}]}
+< {"method": "test/ready"}
+> workspace/didChangeWorkspaceFolders {"event": {"added": [{"uri": "file:///x", "name": "x"}], "removed": [{"uri": "file:///w", "name": "w"}]}}
+< {"id": 2, "method": "workspace/workspaceFolders"}
+> response {"id": 2, "result": [{"uri": "file:///x", "name": "x"}]}
+< {"method": "test/ready"}
+> shutdown
+< {"id": $1, "result": null}
+> exit
