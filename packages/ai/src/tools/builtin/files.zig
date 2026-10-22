@@ -34,6 +34,9 @@ pub const Read = struct {
     size: u64,
     /// Came from an unsaved editor buffer.
     from_buffer: bool = false,
+    /// Shown to the model after the result, e.g. that other sessions have
+    /// pending changes on the file (E12 `AgentView.pendingWarning`).
+    notes: ?[]const u8 = null,
 };
 
 pub const Occurrence = union(enum) { unique, all };
@@ -95,6 +98,12 @@ pub const Files = struct {
         /// whose id is returned (null when there were none). Null when
         /// every proposal is applied or committed on its own.
         end_turn: ?*const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, turn: u32) anyerror!?u64 = null,
+        /// `kind` as `agent` sees it: its pending creates exist, its
+        /// pending deletes do not (E12 `AgentView`). Null uses `kind`.
+        kind_as: ?*const fn (ctx: *anyopaque, io: Io, abs: []const u8, agent: proto.AgentRef) Kind = null,
+        /// `read` as `agent` sees it: the text with its pending changes.
+        /// Null uses `read`.
+        read_as: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize, agent: proto.AgentRef) anyerror!Read = null,
     };
 
     pub fn resolve(f: Files, io: Io, arena: Allocator, path: []const u8) Allocator.Error!Resolved {
@@ -105,6 +114,17 @@ pub const Files = struct {
     }
     pub fn read(f: Files, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize) anyerror!Read {
         return f.vtable.read(f.ctx, io, arena, abs, max_bytes);
+    }
+    /// `kind` in `agent`'s view (`kind_as`, else `kind`).
+    pub fn kindAs(f: Files, io: Io, abs: []const u8, agent: proto.AgentRef) Kind {
+        const g = f.vtable.kind_as orelse return f.kind(io, abs);
+        return g(f.ctx, io, abs, agent);
+    }
+    /// `read` in `agent`'s view (`read_as`, else `read`). The file tools
+    /// read this way, so an agent edits its own pending text.
+    pub fn readAs(f: Files, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize, agent: proto.AgentRef) anyerror!Read {
+        const g = f.vtable.read_as orelse return f.read(io, arena, abs, max_bytes);
+        return g(f.ctx, io, arena, abs, max_bytes, agent);
     }
     pub fn propose(f: Files, io: Io, arena: Allocator, abs: []const u8, p: Proposal, origin: Origin) anyerror!Outcome {
         return f.vtable.propose(f.ctx, io, arena, abs, p, origin);
@@ -197,6 +217,17 @@ pub const FileTools = struct {
         const parts = try c.arena.alloc(proto.ResultPart, out.parts.len + 1);
         @memcpy(parts[0..out.parts.len], out.parts);
         parts[out.parts.len] = .{ .text = try std.fmt.allocPrint(c.arena, "Diagnostics after edit: {s}", .{text}) };
+        var o2 = out;
+        o2.parts = parts;
+        return o2;
+    }
+
+    /// Appends a read's `notes` to a result.
+    pub fn withNotes(c: *proto.ToolCall, notes: ?[]const u8, out: proto.ToolOutput) Allocator.Error!proto.ToolOutput {
+        const n = notes orelse return out;
+        const parts = try c.arena.alloc(proto.ResultPart, out.parts.len + 1);
+        @memcpy(parts[0..out.parts.len], out.parts);
+        parts[out.parts.len] = .{ .text = n };
         var o2 = out;
         o2.parts = parts;
         return o2;
