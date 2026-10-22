@@ -13,6 +13,24 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 fn register(b: *bench.Bench) !void {
     try b.run("dap.variables: substitute a launch configuration", {}, substitute);
     try b.run("dap.protocol: decode a 200-frame stackTrace body", {}, decodeStack);
+    try b.run("dap.events_10k: decode 10k event envelopes", {}, decodeEvents);
+}
+
+fn decodeEvents(_: void, s: *State) void {
+    const gpa = s.allocator();
+    const frame =
+        \\{"seq":123456,"type":"event","event":"output","body":{"category":"stdout","output":"line 42 of the program output\n","source":{"path":"/home/dev/proj/src/main.zig"},"line":42}}
+    ;
+    s.setBytes(frame.len * 10_000);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    for (0..s.iterations()) |_| {
+        for (0..10_000) |_| {
+            _ = arena.reset(.retain_capacity);
+            const env = zg_dap.conn.message.decode(arena.allocator(), frame) catch unreachable;
+            bench.doNotOptimizeAway(env.body.?.bytes.len);
+        }
+    }
 }
 
 const Ctx = struct {
