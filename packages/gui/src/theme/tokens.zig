@@ -48,6 +48,8 @@ pub const Token = enum(u16) {
     badge_fg,
     scrollbar_thumb,
     shadow,
+    // Overlays.
+    overlay_scrim,
 
     /// The number of tokens.
     pub const count = @typeInfo(Token).@"enum".fields.len;

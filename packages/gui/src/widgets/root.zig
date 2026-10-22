@@ -12,6 +12,12 @@ pub const controls = @import("controls.zig");
 pub const scroll = @import("scroll.zig");
 /// The `height_index.zig` module.
 pub const height_index = @import("height_index.zig");
+/// The `text_field/` modules.
+pub const text_field = @import("text_field/root.zig");
+/// The `overlay.zig` module.
+pub const overlay = @import("overlay.zig");
+/// The `dialog.zig` module.
+pub const dialog = @import("dialog.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -33,6 +39,18 @@ pub const scrollArea = scroll.scrollArea;
 pub const virtualList = scroll.virtualList;
 /// See `height_index.HeightIndex`.
 pub const HeightIndex = height_index.HeightIndex;
+/// See `text_field.textField`.
+pub const textField = text_field.textField;
+/// See `text_field.TextField`.
+pub const TextField = text_field.TextField;
+/// See `text_field.TextBuffer`.
+pub const TextBuffer = text_field.TextBuffer;
+/// See `overlay.popover`.
+pub const popover = overlay.popover;
+/// See `dialog.dialog`.
+pub const modalDialog = dialog.dialog;
+/// See `dialog.confirm`.
+pub const confirm = dialog.confirm;
 /// See `text.TextProps`.
 pub const TextProps = text.TextProps;
 

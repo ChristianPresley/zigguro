@@ -18,6 +18,7 @@ const app_mod = @import("app.zig");
 const window_mod = @import("window.zig");
 const style_mod = @import("../layout/style.zig");
 const theme_mod = @import("../theme/theme.zig");
+const overlay = @import("../widgets/overlay.zig");
 const box = @import("../widgets/box.zig");
 const text_w = @import("../widgets/text.zig");
 
@@ -271,6 +272,7 @@ pub const Ui = struct {
             ui.with(.{ .grow = 1 });
             ui.mount(v);
         }
+        overlay.build(ui, &ui.win.overlays);
         ui.pop();
     }
 
@@ -281,7 +283,8 @@ pub const Ui = struct {
         return &ui.frames.items[ui.frames.items.len - 1];
     }
 
-    fn currentView(ui: *Ui) u16 {
+    /// The view being built (0 outside any view).
+    pub fn currentView(ui: *Ui) u16 {
         return if (ui.top()) |f| f.view else 0;
     }
 

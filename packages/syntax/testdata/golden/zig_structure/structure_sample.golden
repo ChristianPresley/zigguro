@@ -1,0 +1,41 @@
+outline:
+  constant std @4:7
+  constant mem @5:7
+  constant Allocator @6:7
+  struct Point (pub) @10:11
+    field x @11:5
+    field y @12:5
+    function len (pub) @14:12
+  enum Color (pub) @19:11
+    field red @19:26
+    field green @19:31
+  union Shape @21:7
+    field circle @22:5
+    field square @23:5
+  variable counter @26:5
+  function helper @28:4
+  test_decl "helper sums" @44:6
+folds:
+  1-2 comment
+  8-9 comment
+  10-17 block
+  14-16 block
+  21-24 block
+  28-42 block
+  30-34 block
+  31-33 block
+  35-40 block
+  36-39 block
+  44-50 block
+  45-48 block
+scopes:
+  container Point @10:19 header "struct {"
+  function len @14:5 header "pub fn len(p: Point) f32 {"
+  container Color @19:19 header "enum { red, green }"
+  container Shape @21:15 header "union(enum) {"
+  function helper @28:1 header "fn helper(items: []const u32) u32 {"
+  for  @30:5 header "for (items) |it| {"
+  if  @31:9 header "if (it > 3) {"
+  block blk @35:15 header "blk: {"
+  switch  @36:20 header "switch (sum) {"
+  test_decl "helper sums" @44:1 header "test "helper sums" {"

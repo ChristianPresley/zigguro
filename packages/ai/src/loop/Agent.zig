@@ -258,6 +258,14 @@ pub fn messages(a: *Agent) []const proto.Message {
     return a.transcript.items;
 }
 
+/// A copy of transcript message `i`, or null past the end. Safe while a
+/// turn runs (the content it points to is never moved).
+pub fn messageAt(a: *Agent, i: usize) ?proto.Message {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    return if (i < a.transcript.items.len) a.transcript.items[i] else null;
+}
+
 /// The sequence number of transcript message `i` (0 when unknown).
 pub fn messageSeq(a: *Agent, i: usize) u64 {
     a.mutex.lockUncancelable(a.io);

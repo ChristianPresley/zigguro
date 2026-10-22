@@ -1,0 +1,13 @@
+fn f(n: u32) u32 {
+    const v = blk: {
+        if (n == 0) break :blk 1;
+        break :blk n;
+    };
+    outer: while (true) {
+        inner: for (0..3) |i| {
+            if (i == 1) continue :outer;
+            if (i == 2) break :inner;
+        }
+    }
+    return v;
+}

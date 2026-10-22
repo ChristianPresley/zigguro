@@ -1,0 +1,25 @@
+// A Wayland laptop: Intel iGPU (card0, renderD128), NVIDIA dGPU (card1,
+// renderD129) and Mesa's llvmpipe.
+.{
+    .{
+        .name = "Intel(R) Graphics (RPL-P)",
+        .kind = .integrated_gpu,
+        .exts = .{ .khr_swapchain, .ext_physical_device_drm, .khr_external_memory_fd, .ext_external_memory_dma_buf, .ext_image_drm_format_modifier, .khr_external_semaphore_fd },
+        .drm_primary = .{ 226, 0 },
+        .drm_render = .{ 226, 128 },
+        .unsupported = .{"v10.dual_src_blend"},
+    },
+    .{
+        .name = "NVIDIA GeForce RTX 4060 Laptop GPU",
+        .kind = .discrete_gpu,
+        .exts = .{ .khr_swapchain, .khr_present_id, .khr_present_wait, .ext_physical_device_drm },
+        .drm_primary = .{ 226, 1 },
+        .drm_render = .{ 226, 129 },
+        .rebar = true,
+    },
+    .{
+        .name = "llvmpipe (LLVM 19.1.7, 256 bits)",
+        .kind = .cpu,
+        .exts = .{ .khr_swapchain, .khr_external_memory_fd },
+    },
+}
