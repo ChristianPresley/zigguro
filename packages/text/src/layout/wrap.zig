@@ -95,7 +95,7 @@ pub fn wrap(tl: *TextLayout, arena: Allocator, text: []const u8, styles: []const
     const lv = try itemize_mod.resolveLevels(arena, text, o.base_dir);
     const para = if (lv.paragraph) |*p| p else null;
     const all_levels = if (para) |p| try itemize_mod.lineByteLevels(arena, p, 0, @intCast(text.len)) else null;
-    const measured = try tl.buildLine(arena, text, 0, styles, all_levels, lv.base, o.tab_width_px);
+    const measured = try tl.buildLine(arena, text, 0, styles, all_levels, lv.base, o.tab_width_px, false);
 
     // Logical grapheme widths.
     var sorted = true;
@@ -130,11 +130,17 @@ pub fn wrap(tl: *TextLayout, arena: Allocator, text: []const u8, styles: []const
         const limit = if (first) max_w else max_w - o.hanging_indent_px;
         while (bi < breaks.items.len and breaks.items[bi].offset <= start) bi += 1;
         var best: ?u32 = null;
+        // Candidate ends only grow (and so do their trimmed ends): walk
+        // the grapheme index forward instead of searching per candidate.
+        const si = w.index(start);
+        var gi = si;
         var k = bi;
         while (k < breaks.items.len) : (k += 1) {
             const b = breaks.items[k];
             const e: u32 = @intCast(b.offset);
-            if (w.width(start, trimEnd(text, start, e)) > limit + eps) break;
+            const te = trimEnd(text, start, e);
+            while (gi < w.starts.len - 1 and w.starts[gi] < te) gi += 1;
+            if (w.prefix[gi] - w.prefix[si] > limit + eps) break;
             best = e;
             if (b.kind == .mandatory) break;
         }
@@ -152,7 +158,7 @@ pub fn wrap(tl: *TextLayout, arena: Allocator, text: []const u8, styles: []const
                 null;
             var line = sliced orelse blk: {
                 const levels = if (para) |p| try itemize_mod.lineByteLevels(arena, p, start, e) else null;
-                break :blk try tl.buildLine(arena, text[start..e], start, try sliceStyles(arena, styles, start, e), levels, lv.base, o.tab_width_px);
+                break :blk try tl.buildLine(arena, text[start..e], start, try sliceStyles(arena, styles, start, e), levels, lv.base, o.tab_width_px, true);
             };
             line.end = end;
             try lines.append(arena, line);
