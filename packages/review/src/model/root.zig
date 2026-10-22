@@ -44,6 +44,7 @@ pub const HunkOptions = hunks.HunkOptions;
 pub const deriveHunks = hunks.deriveHunks;
 
 pub const transition = state.transition;
+pub const revive = state.revive;
 pub const fileTransition = state.fileTransition;
 pub const recomputeState = state.recomputeState;
 
@@ -60,12 +61,14 @@ pub const Journal = queue.Journal;
 pub const History = history.History;
 pub const Apply = history.Apply;
 pub const ApplyFile = history.ApplyFile;
+pub const Closed = history.Closed;
 pub const ApplyKind = history.ApplyKind;
 pub const Recorder = history.Recorder;
 
 pub const Checkpoint = checkpoint.Checkpoint;
 pub const CheckpointRecorder = checkpoint.CheckpointRecorder;
 pub const CheckpointSink = checkpoint.CheckpointSink;
+pub const CheckpointList = checkpoint.CheckpointList;
 
 test {
     @import("std").testing.refAllDecls(@This());

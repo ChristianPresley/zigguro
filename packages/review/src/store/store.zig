@@ -164,18 +164,18 @@ pub const ChangesetStore = struct {
     pub fn append(s: *ChangesetStore, kind: journal.Kind, record: []const u8) Allocator.Error!void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
-        s.seq += 1;
-        var body: std.ArrayList(u8) = .empty;
-        defer body.deinit(s.gpa);
-        try body.print(s.gpa, "{{\"p\":{d},\"s\":{d},\"r\":", .{ s.opts.process_tag, s.seq });
-        try body.appendSlice(s.gpa, record);
-        try body.append(s.gpa, '}');
-        try journal.encode(s.gpa, &s.pending, kind, body.items);
+        try s.frameLocked(&s.pending, kind, record);
     }
 
     /// Makes everything appended so far durable: blobs first, then the
     /// frames, under the lock.
     pub fn flush(s: *ChangesetStore) !void {
+        var lock = try s.lockFile();
+        defer lock.close(s.io);
+        try s.flushLocked();
+    }
+
+    fn flushLocked(s: *ChangesetStore) !void {
         try s.blobs_.flush();
         s.mutex.lockUncancelable(s.io);
         var frames = s.pending;
@@ -189,8 +189,6 @@ pub const ChangesetStore = struct {
             defer s.mutex.unlock(s.io);
             s.pending.insertSlice(s.gpa, 0, frames.items) catch {};
         }
-        var lock = try s.lockFile();
-        defer lock.close(s.io);
         var seg = try s.lastSegment();
         var name = segName(seg);
         var f = try s.dir.createFile(s.io, &name, .{ .truncate = false, .read = true });
@@ -205,6 +203,96 @@ pub const ChangesetStore = struct {
         defer f.close(s.io);
         try f.writePositionalAll(s.io, frames.items, len);
         try f.sync(s.io);
+    }
+
+    // ------------------------------------------------- compaction (gc.zig)
+
+    /// Calls `f(ctx)` with the lock held, after this process's pending
+    /// records are written and the other processes' appends are read into
+    /// `sink`: the journal cannot change under `f`.
+    pub fn withExclusive(s: *ChangesetStore, sink: Sink, ctx: anytype, comptime f: fn (@TypeOf(ctx)) anyerror!void) !void {
+        var lock = try s.lockFile();
+        defer lock.close(s.io);
+        try s.flushLocked();
+        _ = try s.tail(sink);
+        try f(ctx);
+    }
+
+    /// Frames `record` (JSON) as this process's next record into `out`.
+    pub fn frameInto(s: *ChangesetStore, out: *std.ArrayList(u8), kind: journal.Kind, record: []const u8) Allocator.Error!void {
+        s.mutex.lockUncancelable(s.io);
+        defer s.mutex.unlock(s.io);
+        try s.frameLocked(out, kind, record);
+    }
+
+    fn frameLocked(s: *ChangesetStore, out: *std.ArrayList(u8), kind: journal.Kind, record: []const u8) Allocator.Error!void {
+        s.seq += 1;
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(s.gpa);
+        try body.print(s.gpa, "{{\"p\":{d},\"s\":{d},\"r\":", .{ s.opts.process_tag, s.seq });
+        try body.appendSlice(s.gpa, record);
+        try body.append(s.gpa, '}');
+        try journal.encode(s.gpa, out, kind, body.items);
+    }
+
+    /// Inside `withExclusive`: replaces the journal with one new segment
+    /// holding `frames` (a snapshot of the live state). The blobs put
+    /// while building it are written first. The segment is written under
+    /// a temporary name, synced and renamed into place before the old
+    /// segments are deleted, so a crash leaves the old set or both, whose
+    /// replay is idempotent. Returns how many segments were deleted.
+    pub fn replaceJournal(s: *ChangesetStore, frames: []const u8) !u32 {
+        try s.blobs_.flush();
+        var segs: std.ArrayList(u32) = .empty;
+        defer segs.deinit(s.gpa);
+        try s.segments(&segs);
+        const next: u32 = if (segs.items.len == 0) 1 else segs.items[segs.items.len - 1] + 1;
+        const name = segName(next);
+        {
+            var af = try s.dir.createFileAtomic(s.io, &name, .{ .replace = true });
+            defer af.deinit(s.io);
+            try af.file.writeStreamingAll(s.io, frames);
+            try af.file.sync(s.io);
+            try af.replace(s.io);
+        }
+        for (segs.items) |n| {
+            const old = segName(n);
+            s.dir.deleteFile(s.io, &old) catch |e| switch (e) {
+                error.FileNotFound => {},
+                else => return e,
+            };
+            _ = s.read_pos.swapRemove(n);
+        }
+        try s.read_pos.put(s.gpa, next, frames.len);
+        return @intCast(segs.items.len);
+    }
+
+    /// The journal's segment count and total size.
+    pub fn journalSize(s: *ChangesetStore) !struct { segments: u32, bytes: u64 } {
+        var segs: std.ArrayList(u32) = .empty;
+        defer segs.deinit(s.gpa);
+        try s.segments(&segs);
+        var bytes: u64 = 0;
+        for (segs.items) |n| {
+            const name = segName(n);
+            const st = s.dir.statFile(s.io, &name, .{}) catch continue;
+            bytes += st.size;
+        }
+        return .{ .segments = @intCast(segs.items.len), .bytes = bytes };
+    }
+
+    /// Every segment's bytes, in order, for `f(ctx, bytes)` (gc's blob
+    /// reachability).
+    pub fn eachSegment(s: *ChangesetStore, ctx: anytype, comptime f: fn (@TypeOf(ctx), []const u8) anyerror!void) !void {
+        var segs: std.ArrayList(u32) = .empty;
+        defer segs.deinit(s.gpa);
+        try s.segments(&segs);
+        for (segs.items) |n| {
+            const name = segName(n);
+            const bytes = try s.dir.readFileAlloc(s.io, &name, s.gpa, .unlimited);
+            defer s.gpa.free(bytes);
+            try f(ctx, bytes);
+        }
     }
 
     fn lockFile(s: *ChangesetStore) !Io.File {
@@ -374,6 +462,12 @@ pub const QueueSink = struct {
                 defer arena.deinit();
                 const cp = try records.readCheckpoint(arena.allocator(), rec);
                 try c.restore(c.ctx, &cp);
+            },
+            .ids => {
+                const o = if (rec == .object) rec.object else return error.InvalidRecord;
+                if (intOf(u64, o.get("changeset"))) |n| qs.q.reserve(n);
+                if (qs.history) |h| if (intOf(u64, o.get("apply"))) |n| h.reserve(n);
+                if (qs.checkpoints) |c| if (c.reserve) |r| if (intOf(u64, o.get("checkpoint"))) |n| r(c.ctx, n);
             },
             .apply => if (qs.history) |h| {
                 var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);

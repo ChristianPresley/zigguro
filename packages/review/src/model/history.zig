@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const ids = @import("ids.zig");
+const changeset = @import("changeset.zig");
 
 const Allocator = std.mem.Allocator;
 const BlobHash = ids.BlobHash;
@@ -30,10 +31,16 @@ pub const ApplyFile = struct {
     post_exec: bool = false,
 };
 
+/// A changeset a restore closed, with its state before (for redo).
+pub const Closed = struct {
+    cs: ChangesetId,
+    from: changeset.State,
+};
+
 pub const ApplyKind = enum(u8) {
     /// Accepted hunks or files landed.
     apply,
-    /// An earlier apply was reverted (`undoes`).
+    /// An earlier apply was reverted, or a restore redone (`undoes`).
     undo,
     /// Files went back to a checkpoint.
     restore,
@@ -50,6 +57,8 @@ pub const Apply = struct {
     session: ?u128 = null,
     created_ms: i64,
     files: []const ApplyFile,
+    /// A restore: the changesets it closed.
+    closed: []const Closed = &.{},
 };
 
 /// Journals new records.
@@ -97,6 +106,20 @@ pub const History = struct {
         if (c.id >= h.next_id.load(.monotonic)) h.next_id.store(c.id + 1, .release);
     }
 
+    /// Ids below `next` are taken: a compaction dropped their records.
+    pub fn reserve(h: *History, next: u64) void {
+        if (next > h.next_id.load(.monotonic)) h.next_id.store(next, .release);
+    }
+
+    /// Drops the records with an id up to `cutoff` (GC); their memory is
+    /// kept until `deinit`. Returns how many.
+    pub fn dropThrough(h: *History, cutoff: u64) u32 {
+        var i: usize = 0;
+        while (i < h.applies.items.len and h.applies.items[i].id <= cutoff) i += 1;
+        h.applies.replaceRangeAssumeCapacity(0, i, &.{});
+        return @intCast(i);
+    }
+
     /// The id of the newest record (0 when none); any thread.
     pub fn lastId(h: *const History) u64 {
         return h.next_id.load(.acquire) - 1;
@@ -140,6 +163,7 @@ pub const History = struct {
         }
         var c = a;
         c.files = files;
+        c.closed = try ar.dupe(Closed, a.closed);
         return c;
     }
 };

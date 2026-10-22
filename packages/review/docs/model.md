@@ -55,6 +55,8 @@ none: their file decision is the only one.
 Changeset: open_batch → pending → partially_applied → applied | rejected
                         pending → applied | rejected | superseded | discarded
                         applied → pending           (undo accept)
+                        discarded → pending, rejected → partially_applied
+                                                    (redo of a checkpoint restore)
 File:      pending ⇄ partially_applied ⇄ applied, pending ⇄ rejected,
            conflicted / stale while rebasing, superseded (terminal)
 ```

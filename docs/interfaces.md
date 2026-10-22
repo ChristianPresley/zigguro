@@ -652,9 +652,18 @@ the test fake is `portal/fake_portal.zig` (E01.F07.S01.T02).
 E01.F07.S01.T02, on `zg_platform.dbus.Bus`.
 
 ### Consumed by
-The Wayland and X11 backends (E01.F04, E01.F05), which turn responses into
-`Event.dialog_result` and `Event.appearance_changed`; E04 falls back to its
-built-in picker when a response is `unavailable`.
+The Wayland and X11 backends (E01.F04, E01.F05) through `desktop.zig`,
+which they turn into `Event.dialog_result` and `Event.appearance_changed`.
+`desktop.Desktop` connects to the session bus (`InitOptions.dbus_address`,
+else `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus` from
+`environ_map`) and reads the settings on a start-up thread, so backend
+start-up never waits for the portal; the first `appearance_changed`
+arrives once they are read, with defaults when no portal answers. Without
+a bus, `open_dialog` and `open_uri` return `error.Unsupported`. When the
+bus has no portal, the first dialog answers `cancelled` and later
+`open_dialog`/`open_uri` calls return `error.Unsupported`, which is E04's
+cue to use its built-in picker. `open_uri` allows `http`, `https`,
+`mailto` and `file` (as an fd, via `OpenFile`).
 
 ### Signature
 ```zig
@@ -675,18 +684,31 @@ pub const Watcher = struct { bus, current: Appearance, callback: ChangeCallback,
 // window_handle.zig
 pub fn wayland(out: []u8, handle: []const u8) ![]const u8;               // "wayland:<handle>"
 pub fn x11(out: []u8, xid: u32) ![]const u8;                              // "x11:<hex>"
+// desktop.zig
+pub fn Desktop.init(self: *Desktop, gpa: Allocator, io: std.Io, notify: Notify, opts: Options) void;
+pub fn Desktop.openDialog(self: *Desktop, req: DialogRequest, parent: []const u8) !void;
+pub fn Desktop.openUri(self: *Desktop, uri: []const u8, parent: []const u8) !void;
+pub fn Desktop.take(self: *Desktop) ?Answer; // dialog (paths owned by the taker) or appearance
+pub fn sessionAddress(buf: []u8, env: *const std.process.Environ.Map) ?[]const u8;
 ```
-`Event.dialog_result` has no `unavailable` field yet: adding one changes
-the `.zgtrace` layout, so it lands with the first backend that emits it,
-together with a trace version bump.
+`Event.dialog_result` has no `unavailable` field: adding one would change
+the `.zgtrace` layout (and the recorded fixtures), so a missing portal is
+reported as one `cancelled` answer followed by `error.Unsupported`, as
+above.
 
 ### Threading
 Callbacks run on the bus reader thread. `settings.read` blocks on calls,
-so run it off the UI thread.
+so run it off the UI thread. `Desktop` queues answers under its own lock
+and calls `notify` (the Wayland platform thread's or the X11 UI thread's
+wake); the backend takes them on that thread. `openDialog` waits for the
+start-up thread if it is still running.
 
 ### Ownership/lifetime
 A `Response` owns its results; the callback (or the `wait` caller) must
-`deinit` it. Free a `Request` after its response arrived, or to abandon it.
+`deinit` it. A `Request` may be freed once it has `settled`: `wait`
+returns only then, and with a callback both the callback and the call's
+reply must have run (the Response can arrive first). After the bus is
+closed, `free` releases a request without touching the bus.
 
 ### Stability
 Experimental until the E01 PR merges.
@@ -1007,8 +1029,10 @@ carrying the newest input serial (for `activate` only), the focused surface
 and the window's app id, and activates with it when `done` arrives. The
 compositor decides: a token it does not trust usually marks the window
 urgent instead of raising it, which is what `request_attention` wants.
-Without the global both return `error.Unsupported`. Dialogs and URIs
-return `error.Unsupported`.
+Without the global both return `error.Unsupported`. `open_dialog`,
+`open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`
+(see that section); Wayland dialogs are not parented yet (that needs an
+xdg-foreign export handle).
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
@@ -1202,8 +1226,9 @@ destroys every window and closes the connection.
 
 ### Stability
 Experimental. Not yet: explicit sync (`PresentPixmapSynced`), XFIXES update regions
-(presents update the whole window) and MSC-based pacing. Dialogs and
-URIs return `error.Unsupported`.
+(presents update the whole window) and MSC-based pacing. `open_dialog`,
+`open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`,
+with dialogs parented by `x11:<xid>`.
 
 ## zg_platform.win32.Win32Backend
 
@@ -3300,7 +3325,7 @@ Unstable until the store and the E10 binding land.
 ## zg_review.store (ChangesetStore)
 
 ### Defined in
-`packages/review/src/store/{store,journal,records,blobs}.zig` (E12.F01.S02.T01).
+`packages/review/src/store/{store,journal,records,blobs,gc}.zig` (E12.F01.S02.T01).
 
 ### Implemented by
 E12.F01.S02.T01.
@@ -3322,8 +3347,19 @@ pub const ChangesetStore = struct {
     pub fn recorder(s) model.Recorder;                           // for History.init: journals apply records
     pub fn checkpointRecorder(s) model.CheckpointRecorder;       // for Checkpoints.init; thread-safe
     pub fn queueSink(s, q: *model.Queue, history: ?*model.History, checkpoints: ?model.CheckpointSink) QueueSink;
+    pub fn journalSize(s) !struct { segments: u32, bytes: u64 };
+    // For gc.zig: run under the lock after flushing and tailing; frame a snapshot; swap it in.
+    pub fn withExclusive(s, sink: Sink, ctx: anytype, comptime f: fn (@TypeOf(ctx)) anyerror!void) !void;
+    pub fn frameInto(s, out: *ArrayList(u8), kind: journal.Kind, record_json: []const u8) !void;
+    pub fn replaceJournal(s, frames: []const u8) !u32;           // new segment first, then old ones deleted
 };
-pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, _ };
+pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, ids = 5, _ };
+pub fn gc.collect(s, sink: Sink, live: gc.Live{ q, history: ?*History, checkpoints: ?model.CheckpointList },
+    r: gc.Retention{ decided_days = 30, keep_last_n = 500, blob_grace_ms = 10 min }) !gc.Report;
+    // Report{ changesets_removed, checkpoints_removed, applies_removed, segments_removed, blobs_removed, bytes_before, bytes_after }
+pub const model.CheckpointList = struct { ctx, list, forget, next_id };   // Checkpoints.gcList()
+pub fn model.Queue.reserve(q, next: u64) void; pub fn model.History.reserve(h, next: u64) void;
+pub fn model.History.dropThrough(h, cutoff: u64) u32;
 pub fn records.writeChangeset(w, cs, blobs, scratch) !void;
 pub fn records.readChangeset(gpa, v: std.json.Value, blobs) !*Changeset;
 pub fn records.writeApply(w, a: *const model.Apply) !void;
@@ -3337,9 +3373,14 @@ Deviations from the spec text:
   `decide` record.
 - `flush` is called by the owner of the store's worker. There is no
   internal worker or fsync window yet.
+- Compaction and GC are one call, `gc.collect`. It replaces the whole
+  journal with a snapshot segment. It does not run on its own: the caller
+  schedules it (`journalSize` tells when). There is no `gc` record. An
+  `ids` record keeps the id watermarks of what was dropped. Blob
+  reachability is every 64-hex string in the remaining journal, and
+  blobs younger than `blob_grace_ms` are kept. Comments are not
+  implemented yet, so they are not reachability roots.
 - Not implemented yet:
-  - compaction;
-  - GC and retention;
   - mapped large blobs;
   - the read-only workspace fallback directory;
   - watcher-driven tailing (callers call `tail`).
@@ -3394,7 +3435,9 @@ pub const model.History = struct {
     pub fn get(h, id) ?*const Apply; pub fn items(h) []const Apply; pub fn lastApplyOf(h, cs) ?*const Apply;
 };
 pub const model.Apply = struct { id: u64, kind: enum { apply, undo, restore }, cs: ?ChangesetId, undoes: ?u64,
-    session: ?u128, created_ms: i64, files: []const ApplyFile{ path, pre: ?BlobHash, post: ?BlobHash, pre_exec, post_exec } };
+    session: ?u128, created_ms: i64, files: []const ApplyFile{ path, from: ?[]const u8, pre: ?BlobHash, post: ?BlobHash, pre_exec, post_exec },
+    closed: []const Closed{ cs: ChangesetId, from: State } = &.{} };   // a restore's closed changesets, for redo
+pub fn model.revive(cs: *Changeset, to: State) !void;   // redo only: discarded → pending, rejected → partially_applied
 pub fn model.merge3.merge(gpa, base, ours, theirs, o: Options{ prefer: .ours | .theirs }) !Result{ text, conflicts };
 ```
 Deviations from the spec text:
@@ -3447,19 +3490,28 @@ pub const Checkpoints = struct {
     pub fn get(c, id) ?Checkpoint; pub fn listSession(c, session, out, gpa) !void;
     pub fn changesetsSince(c, id, scope: Scope, out: *ArrayList(ChangesetId), gpa) !void;
     pub fn restoreTo(c, arena, id, o: RestoreOptions{ dry_run = false, scope: .session | .all_agents = .session }) !RestoreReport;
+    pub fn redo(c, arena, restore_id: u64, o: RedoOptions{ dry_run = false }) !RedoReport;   // UnknownRestore, NotARestore, AlreadyRedone
 };
+pub const RedoReport = struct { restored: []const []const u8, conflicts: []const revert.Conflict,
+    revived: []const ChangesetId, record: ?u64, failed: ?txn.Failure };
 pub const RestoreReport = struct { restored: []const []const u8, conflicts: []const revert.Conflict,
     discarded: []const ChangesetId, record: ?u64, failed: ?txn.Failure };
 ```
 Deviations from the spec text:
-- Only agent-only mode. Full mode (E09 op restore), redo, the untracked
+- Only agent-only mode. Full mode (E09 op restore), the untracked
   report, symlink and hard-link skipping, ScmPort, retention and GC are
   not done.
+- A restore is recorded when it writes a file or closes a changeset. Redo
+  is recorded as an `undo` whose `undoes` is the restore; it reverts each
+  file three-way and revives only the closed changesets still in the
+  state the restore left them in. Revived changesets are not rebased (no
+  Rebaser yet).
 - Ordering uses `History` record ids and changeset ids, not store
   sequence numbers.
 - `create` copies the label; out of memory it still returns an id, which
   then restores as `error.UnknownCheckpoint`.
-- zg_review imports only `zg_ai_proto`, so the E10 binding is app glue:
+- zg_review imports only `zg_ai_proto`, so the E10 binding is app glue
+  (`apps/zigguro/src/agent/review_glue.zig`):
   `deps.Checkpoints{ .ctx = &checkpoints, .create = Checkpoints.createErased }`
   plus a `CheckpointRestore.restore_to` adapter that maps `RestoreReport`
   to `RestoreOutcome`.
@@ -3467,7 +3519,7 @@ Deviations from the spec text:
   agent turns on other lines survive (the spec accepted losing them).
 
 ### Threading
-`create` and `get` are thread-safe (`Io.Mutex`). `restoreTo`,
+`create` and `get` are thread-safe (`Io.Mutex`). `restoreTo`, `redo`,
 `changesetsSince` and the store sink run on the queue's owner thread.
 
 ### Ownership/lifetime
