@@ -129,6 +129,82 @@ fn register(b: *bench.Bench) !void {
     // workers >= 4x).
     try b.run("workspace/scan_100k", ScanCtx{ .abs = scan_dir, .workers = 0 }, scanOnce);
     try b.run("workspace/scan_100k_1worker", ScanCtx{ .abs = scan_dir, .workers = 1 }, scanOnce);
+
+    // Budgets (E08.F02.S02): classification >= 300 MB/s aggregate with 7
+    // workers (here one worker, per byte); trigram build >= 150 MB/s per
+    // worker; a selective literal over 70 k files < 20 ms.
+    const corpus = try codeCorpus(a, 70_000);
+    var corpus_bytes: usize = 0;
+    for (corpus) |d| corpus_bytes += d.len;
+    try b.run("workspace/index_classify", corpus, struct {
+        fn f(docs: []const []const u8, s: *bench.State) void {
+            const cfg: zg_workspace.content_class.IndexConfig = .{};
+            var n: u64 = 0;
+            for (0..s.iterations()) |i| {
+                const d = docs[i % docs.len];
+                n += @intFromEnum(zg_workspace.content_class.classify(d, d.len, "x.ts", &cfg));
+            }
+            bench.doNotOptimizeAway(n);
+        }
+    }.f);
+    try b.run("workspace/trigram_build", corpus[0..5000], struct {
+        fn f(docs: []const []const u8, s: *bench.State) void {
+            const gpa = std.heap.smp_allocator;
+            for (0..s.iterations()) |_| {
+                const ix = zg_workspace.trigram.TrigramIndex.open(gpa, s.ioHandle(), null, .{}) catch @panic("oom");
+                defer ix.deinit();
+                for (docs, 0..) |d, k| ix.add(k, .{ .index = @intCast(k), .gen = 1 }, d) catch @panic("oom");
+                ix.flush() catch @panic("oom");
+            }
+        }
+    }.f);
+    {
+        const gpa = std.heap.smp_allocator;
+        const ix = try zg_workspace.trigram.TrigramIndex.open(gpa, b.io, null, .{});
+        for (corpus, 0..) |d, k| {
+            try ix.add(k, .{ .index = @intCast(k), .gen = 1 }, d);
+            if (k % 10_000 == 9_999) try ix.flush();
+        }
+        try ix.flush();
+        const r = try ix.reader();
+        var seg_bytes: usize = 0;
+        for (r.segs) |sg| seg_bytes += sg.seg.bytes.len;
+        std.debug.print("trigram corpus: {d} docs, {d} MB text, {d} MB segments ({d}%)\n", .{ corpus.len, corpus_bytes >> 20, seg_bytes >> 20, seg_bytes * 100 / corpus_bytes });
+        try b.run("workspace/trigram_query", r, struct {
+            fn f(rd: *const zg_workspace.trigram.index.Reader, s: *bench.State) void {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                const q = zg_workspace.trigram.planLiteral(arena.allocator(), "handleRequest4711", false) catch @panic("oom");
+                for (0..s.iterations()) |_| {
+                    const c = rd.execute(q, std.heap.smp_allocator) catch @panic("oom");
+                    bench.doNotOptimizeAway(c);
+                    c.deinit(std.heap.smp_allocator);
+                }
+            }
+        }.f);
+    }
+}
+
+/// Seeded pseudo-source files, about 2 KB each, with identifiers like
+/// `handleRequest<n>` so a literal can be made selective.
+fn codeCorpus(a: std.mem.Allocator, n: usize) ![]const []const u8 {
+    var prng: std.Random.DefaultPrng = .init(42);
+    const r = prng.random();
+    const words = [_][]const u8{ "const", "return", "if", "else", "function", "value", "result", "error", "self", "buffer", "index", "count", "for", "while", "import", "export", "class", "public", "private", "string", "number", "await", "async", "null", "true", "false", "=", "{", "}", "(", ")", ";", "." };
+    const out = try a.alloc([]const u8, n);
+    for (out) |*d| {
+        var w: std.ArrayList(u8) = .empty;
+        while (w.items.len < 2048) {
+            if (r.uintLessThan(u8, 12) == 0) {
+                try w.print(a, "handleRequest{d}(", .{r.uintLessThan(u32, 1_000_000)});
+            } else {
+                try w.appendSlice(a, words[r.uintLessThan(usize, words.len)]);
+            }
+            try w.append(a, if (r.uintLessThan(u8, 10) == 0) '\n' else ' ');
+        }
+        d.* = w.items;
+    }
+    return out;
 }
 
 const ScanCtx = struct { abs: []const u8, workers: u8 };
