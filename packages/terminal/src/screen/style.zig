@@ -79,7 +79,13 @@ pub const Style = extern struct {
         var n = s;
         n._pad = 0;
         n.flags._p = 0;
-        return @truncate(std.hash.Wyhash.hash(0, std.mem.asBytes(&n)));
+        // Two multiply-xor rounds over the 16 bytes: cheaper than a
+        // general-purpose hash on this hot path, and well mixed in the low
+        // bits the index uses.
+        const w: [2]u64 = @bitCast(n);
+        var h = (w[0] ^ 0x9E3779B97F4A7C15) *% 0xBF58476D1CE4E5B9;
+        h = (h ^ w[1] ^ (h >> 31)) *% 0x94D049BB133111EB;
+        return @truncate(h ^ (h >> 29));
     }
 };
 
