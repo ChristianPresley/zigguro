@@ -1,0 +1,35 @@
+// JetBrains preset (IntelliJ IDEA default keymap for Windows/Linux).
+// Source: https://www.jetbrains.com/help/idea/reference-keymap-win-default.html
+// Applies on top of the default keymap; `mod` still maps to Cmd on macOS.
+.{
+    // Search Everywhere
+    .{ .key = "shift shift", .command = "quickOpen.everything" },
+    // Find Action
+    .{ .key = "mod+shift+a", .command = "workbench.showCommands" },
+    // Recent Files
+    .{ .key = "mod+e", .command = "quickOpen.recentFiles" },
+    // Go to Class / Symbol
+    .{ .key = "mod+n", .command = "quickOpen.symbols" },
+    // Go to File
+    .{ .key = "mod+shift+n", .command = "quickOpen.files" },
+    // Show Context Actions
+    .{ .key = "alt+enter", .command = "editor.quickFix", .when = "editorTextFocus" },
+    // Rename
+    .{ .key = "shift+f6", .command = "editor.rename", .when = "editorTextFocus" },
+    // Reformat Code
+    .{ .key = "mod+alt+l", .command = "editor.formatDocument", .when = "editorTextFocus && !editorReadonly" },
+    // Duplicate Line
+    .{ .key = "mod+d", .command = "editor.duplicateLine", .when = "editorTextFocus" },
+    // Delete Line
+    .{ .key = "mod+y", .command = "editor.deleteLine", .when = "editorTextFocus" },
+    // Extend / Shrink Selection
+    .{ .key = "mod+w", .command = "editor.expandSelection", .when = "editorTextFocus" },
+    .{ .key = "mod+shift+w", .command = "editor.shrinkSelection", .when = "editorTextFocus" },
+    // Project tool window
+    .{ .key = "alt+1", .command = "workbench.toggleSidebar" },
+    // Terminal tool window
+    .{ .key = "alt+f12", .command = "terminal.toggle" },
+    // Commit / Push
+    .{ .key = "mod+k", .command = "scm.commit" },
+    .{ .key = "mod+shift+k", .command = "scm.push" },
+}
