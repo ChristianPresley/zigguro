@@ -156,13 +156,17 @@ dropped_styles: u32 = 0,
 pub const Options = struct {
     max_bytes: usize = 64 << 20,
     scrollback: bool = true,
+    /// Scrollback rows kept hot before older lines are compacted.
+    hot_rows: u32 = 0,
+    /// Deflate compacted lines.
+    deflate: bool = true,
 };
 
 /// Creates a blank `cols` x `rows` screen.
 pub fn init(gpa: Allocator, cols: u16, rows: u16, o: Options) !Screen {
     return .{
         .gpa = gpa,
-        .pages = try .init(gpa, cols, rows, .{ .max_bytes = o.max_bytes, .scrollback = o.scrollback }),
+        .pages = try .init(gpa, cols, rows, .{ .max_bytes = o.max_bytes, .scrollback = o.scrollback, .hot_rows = o.hot_rows, .deflate = o.deflate }),
         .region = .{ .top = 0, .bottom = rows - 1, .left = 0, .right = cols - 1 },
     };
 }

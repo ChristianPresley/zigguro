@@ -12,7 +12,9 @@
 //! scrolls into scrollback once they are used up. When the content shrinks,
 //! rows come back from scrollback (bottom anchoring).
 //!
-//! Cold pages (E06.F03.S02.T01) do not exist yet; every page is hot.
+//! Cold pages (E06.F03.S02.T01) are not touched: they keep their lines and
+//! only recount their rows at the new width (`PageList.reflowed`); they
+//! re-wrap when decoded.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -61,7 +63,7 @@ pub fn reflow(pl: *PageList, cols: u16, rows: u16, cursor: ?*const TrackedPin) !
     defer pl.untrack(top);
 
     var r: u64 = 0;
-    var p: ?Pin = if (reflow_rows > 0) pl.screenRow(0) else null;
+    var p: ?Pin = if (reflow_rows > 0) pl.firstHot() else null;
     while (r < reflow_rows) {
         // One logical line: rows until one without `wrap`.
         const start = p.?;
@@ -115,6 +117,7 @@ pub fn reflow(pl: *PageList, cols: u16, rows: u16, cursor: ?*const TrackedPin) !
     pl.cols = cols;
     pl.rows = rows;
     pl.page_bytes = page_bytes;
+    pl.reflowed();
     if (pl.viewport) |v| {
         if (v.garbage or pl.rowIndex(v.pin) >= pl.scrollbackRows()) pl.untrack(v);
     }
@@ -132,7 +135,7 @@ fn trailingBlankRows(pl: *const PageList) u64 {
     var n: u64 = 0;
     var p: ?Pin = .{ .node = pl.tail, .y = pl.tail.page.rowCount() - 1 };
     while (p) |row| : (p = PageList.prev(row)) {
-        if (pl.total - n <= lowest) break;
+        if (pl.totalRows() - n <= lowest) break;
         const rw = row.row();
         if (rw.wrap or rw.wrap_continuation or !blank(row.cells())) break;
         n += 1;
