@@ -169,6 +169,18 @@ pub const tools = struct {
         _ = @import("tools/builtin/web_test.zig");
     }
 };
+/// Extensions: hooks (E10.F09.S03).
+pub const ext = struct {
+    pub const hooks = @import("ext/hooks.zig");
+    pub const hook_io = @import("ext/hook_io.zig");
+    pub const hook_match = @import("ext/hook_match.zig");
+    pub const HookEngine = hooks.HookEngine;
+    test {
+        _ = hook_io;
+        _ = hook_match;
+        _ = @import("ext/hooks_test.zig");
+    }
+};
 /// Plan mode, todos and questions to the user (E10.F09.S02).
 pub const plan = struct {
     pub const readonly = @import("plan/readonly.zig");
