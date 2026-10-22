@@ -1,0 +1,9 @@
+1| keyword.storage:declare keyword.storage:module string:"lib" punctuation.bracket:{
+2| keyword:export keyword.storage:function function:f punctuation.bracket:( variable:x operator:: type.builtin:number punctuation.bracket:) operator:: type.builtin:string punctuation.delimiter:;
+3| punctuation.bracket:}
+4| keyword.storage:declare variable:global punctuation.bracket:{
+5| keyword.storage:interface type:Window punctuation.bracket:{ variable:app operator:: type:App punctuation.bracket:}
+6| punctuation.bracket:}
+7| keyword.storage:declare keyword.storage:const constant:VERSION operator:: type.builtin:string punctuation.delimiter:;
+8| keyword:export keyword.storage:type punctuation.bracket:{ type:User punctuation.bracket:} keyword:from string:"./user" punctuation.delimiter:;
+9| keyword:import keyword.storage:type punctuation.bracket:{ type:Config punctuation.bracket:} keyword:from string:"./config" punctuation.delimiter:;

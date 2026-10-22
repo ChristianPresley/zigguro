@@ -1,0 +1,7 @@
+1| keyword.storage:const variable:r1 operator:= string.special:/ab+c/gi punctuation.delimiter:;
+2| keyword.storage:const variable:r2 operator:= string.special:/[/\]]+/u punctuation.delimiter:;
+3| keyword.storage:const variable:r3 operator:= string.special:/\d{3}-\d{4}/ punctuation.delimiter:. function:test punctuation.bracket:( variable:phone punctuation.bracket:) punctuation.delimiter:;
+4| keyword.control:if punctuation.bracket:( string.special:/^#/ punctuation.delimiter:. function:test punctuation.bracket:( variable:line punctuation.bracket:) punctuation.bracket:) function:skip punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+5| keyword.storage:const variable:half operator:= variable:total operator:/ number:2 operator:/ variable:count punctuation.delimiter:;
+6| keyword.storage:const variable:m operator:= variable:s punctuation.delimiter:. function:match punctuation.bracket:( string.special:/(?<year>\d{4})/ punctuation.bracket:) punctuation.delimiter:?. property:groups punctuation.delimiter:;
+7| keyword.control:return string.special:/x/y punctuation.delimiter:;

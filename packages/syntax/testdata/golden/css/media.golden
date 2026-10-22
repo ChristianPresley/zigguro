@@ -1,0 +1,9 @@
+1| keyword:@media constant:screen keyword.operator:and punctuation.bracket:( property:min-width punctuation.delimiter:: number:768px punctuation.bracket:) punctuation.bracket:{
+2| type:.col punctuation.bracket:{ property:width punctuation.delimiter:: number:50% punctuation.delimiter:; punctuation.bracket:}
+3| punctuation.bracket:}
+4| keyword:@media punctuation.bracket:( property:prefers-color-scheme punctuation.delimiter:: constant:dark punctuation.bracket:) punctuation.bracket:{
+5| attribute::root punctuation.bracket:{ variable:--bg punctuation.delimiter:: constant:#000 punctuation.delimiter:; punctuation.bracket:}
+6| punctuation.bracket:}
+7| keyword:@media keyword.operator:only constant:print keyword.operator:and punctuation.bracket:( property:max-width punctuation.delimiter:: number:600px punctuation.bracket:) punctuation.delimiter:, keyword.operator:not constant:screen punctuation.bracket:{
+8| tag:body punctuation.bracket:{ property:font-size punctuation.delimiter:: number:10pt punctuation.delimiter:; punctuation.bracket:}
+9| punctuation.bracket:}

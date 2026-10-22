@@ -1,0 +1,5 @@
+const rows = data.map((row: Row) => (
+  <tr key={row.id}>
+    {columns.map((c) => <td key={c}>{row[c]}</td>)}
+  </tr>
+));

@@ -1,0 +1,5 @@
+1| keyword.storage:const variable:rows operator:= variable:data punctuation.delimiter:. function:map punctuation.bracket:( punctuation.bracket:( variable:row operator:: type:Row punctuation.bracket:) operator:=> punctuation.bracket:(
+2| punctuation:< tag:tr attribute:key operator:= punctuation.bracket:{ variable:row punctuation.delimiter:. property:id punctuation.bracket:} punctuation:>
+3| string:     punctuation.bracket:{ variable:columns punctuation.delimiter:. function:map punctuation.bracket:( punctuation.bracket:( variable:c punctuation.bracket:) operator:=> punctuation:< tag:td attribute:key operator:= punctuation.bracket:{ variable:c punctuation.bracket:} punctuation:> punctuation.bracket:{ variable:row punctuation.bracket:[ variable:c punctuation.bracket:] punctuation.bracket:} punctuation:</ tag:td punctuation:> punctuation.bracket:) punctuation.bracket:}
+4| string:   punctuation:</ tag:tr punctuation:>
+5| punctuation.bracket:) punctuation.bracket:) punctuation.delimiter:;

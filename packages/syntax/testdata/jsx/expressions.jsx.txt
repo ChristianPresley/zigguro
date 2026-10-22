@@ -1,0 +1,3 @@
+const a = <p>{count} items, total {price * count}</p>;
+const b = <p>{/* comment */}</p>;
+const c = <p>{`template ${x}`}</p>;

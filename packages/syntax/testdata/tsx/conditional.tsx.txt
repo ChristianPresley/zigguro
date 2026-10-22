@@ -1,0 +1,6 @@
+return (
+  <div>
+    {user ? <Welcome name={user.name} /> : <Login />}
+    {items.length > 0 && <Badge count={items.length} />}
+  </div>
+);

@@ -1,0 +1,7 @@
+1| comment:/* header comment */
+2| type:.a punctuation.bracket:{ property:color punctuation.delimiter:: constant:red punctuation.delimiter:; comment:/* inline */ punctuation.bracket:}
+3| comment:/*
+4| comment:  multi-line
+5| comment:  comment
+6| comment:*/
+7| type:.b punctuation.bracket:{ property:margin punctuation.delimiter:: number:0 punctuation.bracket:}

@@ -1,0 +1,6 @@
+async function load(url) {
+  const res = await fetch(url);
+  for await (const chunk of res.body) yield chunk;
+}
+const p = async () => { await sleep(10); };
+function* gen() { yield 1; yield* other(); }

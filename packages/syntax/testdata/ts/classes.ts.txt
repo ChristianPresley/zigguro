@@ -1,0 +1,10 @@
+abstract class Shape {
+  private static count = 0;
+  protected abstract area(): number;
+  public override toString(): string { return "shape"; }
+  readonly #id: number = Shape.count++;
+}
+class Square extends Shape implements Drawable {
+  constructor(private side: number) { super(); }
+  area() { return this.side ** 2; }
+}

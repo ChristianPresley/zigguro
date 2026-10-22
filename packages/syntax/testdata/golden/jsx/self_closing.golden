@@ -1,0 +1,4 @@
+1| keyword.storage:const variable:a operator:= punctuation:< tag:br punctuation:/> punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= punctuation:< type:Comp punctuation.bracket:{ operator:... variable:props punctuation.bracket:} punctuation:/> punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= punctuation:< type:Comp attribute:x operator:= punctuation.bracket:{ number:1 punctuation.bracket:} attribute:y operator:= string:"2" punctuation:/> punctuation.delimiter:;
+4| keyword.storage:const variable:d operator:= variable:a operator:< variable:b operator:? variable:c operator:: variable:d operator:/ number:2 punctuation.delimiter:;

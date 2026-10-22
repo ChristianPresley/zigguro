@@ -1,0 +1,6 @@
+const a = "double \"quoted\" \n";
+const b = 'single \'quoted\' \x41 \u{1F600}';
+const c = "unterminated
+const d = "continued \
+on the next line";
+const e = '';

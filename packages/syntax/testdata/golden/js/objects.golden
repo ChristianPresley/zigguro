@@ -1,0 +1,10 @@
+1| keyword.storage:const variable:config operator:= punctuation.bracket:{
+2| variable:name operator:: string:"app" punctuation.delimiter:,
+3| variable:port operator:: number:8080 punctuation.delimiter:,
+4| variable:enabled operator:: constant.builtin:true punctuation.delimiter:,
+5| variable:nested operator:: punctuation.bracket:{ variable:deep operator:: punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.delimiter:, punctuation.bracket:{ variable:x operator:: constant.builtin:null punctuation.bracket:} punctuation.bracket:] punctuation.bracket:} punctuation.delimiter:,
+6| function:method punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ keyword.control:return constant.builtin:undefined punctuation.delimiter:; punctuation.bracket:} punctuation.delimiter:,
+7| punctuation.bracket:[ variable:computed punctuation.bracket:] operator:: constant.builtin:NaN punctuation.delimiter:,
+8| string:"quoted-key" operator:: constant.builtin:Infinity punctuation.delimiter:,
+9| punctuation.bracket:} punctuation.delimiter:;
+10| keyword.storage:const punctuation.bracket:{ variable:a punctuation.delimiter:, variable:b operator:: variable:renamed punctuation.delimiter:, operator:... variable:rest punctuation.bracket:} operator:= variable:config punctuation.delimiter:;

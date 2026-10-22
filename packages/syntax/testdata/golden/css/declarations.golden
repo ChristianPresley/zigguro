@@ -1,0 +1,9 @@
+1| type:.box punctuation.bracket:{
+2| property:display punctuation.delimiter:: constant:flex punctuation.delimiter:;
+3| property:justify-content punctuation.delimiter:: constant:space-between punctuation.delimiter:;
+4| property:margin punctuation.delimiter:: number:0 constant:auto number:10px punctuation.delimiter:;
+5| property:font punctuation.delimiter:: constant:italic constant:bold number:12px operator:/ number:30px constant:Georgia punctuation.delimiter:, constant:serif punctuation.delimiter:;
+6| property:color punctuation.delimiter:: constant:#ff0000 punctuation.delimiter:;
+7| property:background-color punctuation.delimiter:: function.builtin:rgba punctuation.bracket:( number:0 punctuation.delimiter:, number:0 punctuation.delimiter:, number:0 punctuation.delimiter:, number:0.5 punctuation.bracket:) punctuation.delimiter:;
+8| property:z-index punctuation.delimiter:: number:10 keyword:!important punctuation.delimiter:;
+9| punctuation.bracket:}

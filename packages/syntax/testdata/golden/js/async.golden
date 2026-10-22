@@ -1,0 +1,6 @@
+1| keyword.storage:async keyword.storage:function function:load punctuation.bracket:( variable:url punctuation.bracket:) punctuation.bracket:{
+2| keyword.storage:const variable:res operator:= keyword.control:await function:fetch punctuation.bracket:( variable:url punctuation.bracket:) punctuation.delimiter:;
+3| keyword.control:for keyword.control:await punctuation.bracket:( keyword.storage:const variable:chunk keyword.operator:of variable:res punctuation.delimiter:. property:body punctuation.bracket:) keyword.control:yield variable:chunk punctuation.delimiter:;
+4| punctuation.bracket:}
+5| keyword.storage:const variable:p operator:= keyword.storage:async punctuation.bracket:( punctuation.bracket:) operator:=> punctuation.bracket:{ keyword.control:await function:sleep punctuation.bracket:( number:10 punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:} punctuation.delimiter:;
+6| keyword.storage:function operator:* function:gen punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ keyword.control:yield number:1 punctuation.delimiter:; keyword.control:yield operator:* function:other punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}

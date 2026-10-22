@@ -1,0 +1,8 @@
+1| keyword.storage:const variable:type operator:= string:"a" punctuation.delimiter:;
+2| keyword.storage:const variable:as operator:= number:1 punctuation.delimiter:, variable:of operator:= number:2 punctuation.delimiter:, variable:get operator:= number:3 punctuation.delimiter:;
+3| keyword.storage:type type:T operator:= keyword.operator:typeof variable:type punctuation.delimiter:;
+4| keyword.storage:let variable:x operator:= variable:value keyword:as type.builtin:unknown keyword:as type.builtin:string punctuation.delimiter:;
+5| keyword.control:for punctuation.bracket:( keyword.storage:const variable:k keyword.operator:of variable:keys punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+6| keyword.storage:const variable:n operator:: type.builtin:number operator:= variable:obj punctuation.delimiter:. property:number punctuation.delimiter:;
+7| keyword.storage:const variable:s operator:= variable:config keyword.operator:satisfies type:Config punctuation.delimiter:;
+8| keyword.storage:function function:isString punctuation.bracket:( variable:v operator:: type.builtin:unknown punctuation.bracket:) operator:: variable:v keyword.operator:is type.builtin:string punctuation.bracket:{ keyword.control:return keyword.operator:typeof variable:v operator:=== string:"string" punctuation.delimiter:; punctuation.bracket:}
