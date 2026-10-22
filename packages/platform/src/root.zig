@@ -157,6 +157,7 @@ pub const wayland = struct {
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
+const is_windows = @import("builtin").os.tag == .windows;
 
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
 pub const dbus = struct {
@@ -209,6 +210,34 @@ pub const x11 = if (is_linux) struct {
     /// See `x11/testing/fake_server.zig`.
     pub const testing = @import("x11/testing/fake_server.zig");
 } else struct {};
+
+/// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
+/// advapi32), COM helpers and UTF-16 conversion. The pure parts (types,
+/// `com`, `wide`) build on every OS; the DLL bindings only on Windows.
+pub const win32 = struct {
+    /// See `win32/bindings/types.zig`.
+    pub const types = @import("win32/bindings/types.zig");
+    /// See `win32/com.zig`.
+    pub const com = @import("win32/com.zig");
+    /// See `win32/wide.zig`.
+    pub const wide = @import("win32/wide.zig");
+    /// See `win32/bindings/user32.zig`.
+    pub const user32 = if (is_windows) @import("win32/bindings/user32.zig") else struct {};
+    /// See `win32/bindings/kernel32.zig`.
+    pub const kernel32 = if (is_windows) @import("win32/bindings/kernel32.zig") else struct {};
+    /// See `win32/bindings/gdi32.zig`.
+    pub const gdi32 = if (is_windows) @import("win32/bindings/gdi32.zig") else struct {};
+    /// See `win32/bindings/imm32.zig`.
+    pub const imm32 = if (is_windows) @import("win32/bindings/imm32.zig") else struct {};
+    /// See `win32/bindings/ole32.zig`.
+    pub const ole32 = if (is_windows) @import("win32/bindings/ole32.zig") else struct {};
+    /// See `win32/bindings/shell32.zig`.
+    pub const shell32 = if (is_windows) @import("win32/bindings/shell32.zig") else struct {};
+    /// See `win32/bindings/dwmapi.zig`.
+    pub const dwmapi = if (is_windows) @import("win32/bindings/dwmapi.zig") else struct {};
+    /// See `win32/bindings/advapi32.zig`.
+    pub const advapi32 = if (is_windows) @import("win32/bindings/advapi32.zig") else struct {};
+};
 
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
@@ -282,6 +311,12 @@ test {
     std.testing.refAllDecls(wayland.wire);
     std.testing.refAllDecls(portal);
     std.testing.refAllDecls(x11);
+    std.testing.refAllDecls(win32);
+    _ = win32.types;
+    if (is_windows) {
+        inline for (.{ "user32", "kernel32", "gdi32", "imm32", "ole32", "shell32", "dwmapi", "advapi32" }) |n| std.testing.refAllDecls(@field(win32, n));
+        _ = @import("win32/bindings/windows_test.zig");
+    }
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -357,6 +392,17 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/ext.zig", .src = @embedFile("x11/ext.zig") },
     .{ .path = "x11/atoms.zig", .src = @embedFile("x11/atoms.zig") },
     .{ .path = "x11/testing/fake_server.zig", .src = @embedFile("x11/testing/fake_server.zig") },
+    .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
+    .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
+    .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },
+    .{ .path = "win32/bindings/gdi32.zig", .src = @embedFile("win32/bindings/gdi32.zig") },
+    .{ .path = "win32/bindings/imm32.zig", .src = @embedFile("win32/bindings/imm32.zig") },
+    .{ .path = "win32/bindings/ole32.zig", .src = @embedFile("win32/bindings/ole32.zig") },
+    .{ .path = "win32/bindings/shell32.zig", .src = @embedFile("win32/bindings/shell32.zig") },
+    .{ .path = "win32/bindings/dwmapi.zig", .src = @embedFile("win32/bindings/dwmapi.zig") },
+    .{ .path = "win32/bindings/advapi32.zig", .src = @embedFile("win32/bindings/advapi32.zig") },
+    .{ .path = "win32/com.zig", .src = @embedFile("win32/com.zig") },
+    .{ .path = "win32/wide.zig", .src = @embedFile("win32/wide.zig") },
 };
 
 test "init starts the headless backend" {
