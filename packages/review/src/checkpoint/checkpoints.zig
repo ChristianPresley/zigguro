@@ -15,14 +15,20 @@
 //!    edits on other lines survive, even those made between two agent
 //!    turns. Overlaps, edited creates and user deletions are conflicts
 //!    and stay as they are.
-//! 3. The reverts run as one transaction (rolled back on failure) and
-//!    are recorded as a `restore` in `History`.
+//! 3. The reverts run as one transaction (rolled back on failure).
 //! 4. Changesets submitted after the checkpoint in scope that are still
 //!    open are closed: pending ones `discarded`, partially applied ones
 //!    `rejected`.
+//! 5. The writes and the closed changesets are recorded as a `restore` in
+//!    `History`.
 //! `dry_run` stops after planning and writes nothing.
 //!
-//! Not yet: full mode through E09 operations, redo, the untracked-changes
+//! `redo` reverses a restore from its record: each file it wrote is
+//! reverted the same way (three-way, so edits made since survive), and the
+//! changesets it closed get their state back. It is recorded as an `undo`
+//! of the restore, so a restore is redone at most once.
+//!
+//! Not yet: full mode through E09 operations, the untracked-changes
 //! report, symlink and hard-link detection, retention and GC.
 
 const std = @import("std");
@@ -53,6 +59,22 @@ pub const RestoreReport = struct {
     /// The `History` restore record, when something was written.
     record: ?u64 = null,
     /// The transaction failed and was rolled back (see `rolled_back`).
+    failed: ?apply.txn.Failure = null,
+};
+
+pub const RedoOptions = struct {
+    dry_run: bool = false,
+};
+
+pub const RedoReport = struct {
+    /// Files written or deleted (or that would be, on a dry run).
+    restored: []const []const u8 = &.{},
+    /// Files changed since on the same lines, left as they are.
+    conflicts: []const apply.revert.Conflict = &.{},
+    /// Changesets given back the state they had before the restore.
+    revived: []const ChangesetId = &.{},
+    /// The `History` record of the redo.
+    record: ?u64 = null,
     failed: ?apply.txn.Failure = null,
 };
 
@@ -193,7 +215,7 @@ pub const Checkpoints = struct {
         report.discarded = closed.items;
         if (o.dry_run) return report;
 
-        // 3. Write, record.
+        // 3. Write.
         if (t.ops.items.len > 0) {
             try t.saveImages(c.q.blobs);
             if (t.run()) |f| {
@@ -201,16 +223,20 @@ pub const Checkpoints = struct {
                 report.discarded = &.{};
                 return report;
             }
-            report.record = try c.history.record(.{
-                .kind = .restore,
-                .cs = null,
-                .session = cp.session,
-                .created_ms = nowMs(c.io),
-                .files = try t.records(),
-            });
         }
+        if (t.ops.items.len == 0 and closed.items.len == 0) return report;
 
-        // 4. Close what came after.
+        // 4. Close what came after; 5. record.
+        const cl = try arena.alloc(model.Closed, closed.items.len);
+        for (closed.items, cl) |cid, *x| x.* = .{ .cs = cid, .from = c.q.get(cid).?.state };
+        report.record = try c.history.record(.{
+            .kind = .restore,
+            .cs = null,
+            .session = cp.session,
+            .created_ms = nowMs(c.io),
+            .files = try t.records(),
+            .closed = cl,
+        });
         for (closed.items) |cid| {
             const cs = c.q.getMut(cid).?;
             const from = cs.state;
@@ -218,6 +244,62 @@ pub const Checkpoints = struct {
             cs.decided_ms = nowMs(c.io);
             c.q.persist(cid);
             c.q.emit(.{ .state = .{ .cs = cid, .from = from, .to = cs.state } });
+        }
+        return report;
+    }
+
+    /// Reverses restore `restore_id` (see the file comment); owner
+    /// thread. The report is allocated in `arena`.
+    pub fn redo(c: *Checkpoints, arena: Allocator, restore_id: u64, o: RedoOptions) anyerror!RedoReport {
+        const r = c.history.get(restore_id) orelse return error.UnknownRestore;
+        if (r.kind != .restore) return error.NotARestore;
+        if (c.history.undone(restore_id)) return error.AlreadyRedone;
+        // `r` lives in the history's list: copy what is needed before
+        // recording.
+        const session = r.session;
+        const targets = try arena.alloc(apply.revert.Target, r.files.len);
+        for (r.files, targets) |f, *tg| {
+            const st = try arena.alloc(apply.revert.Step, 1);
+            st[0] = .{ .pre = f.pre, .pre_exec = f.pre_exec, .post = f.post, .post_exec = f.post_exec };
+            tg.* = .{ .path = f.path, .steps = st };
+        }
+        var revive: std.ArrayList(model.Closed) = .empty;
+        var revived: std.ArrayList(ChangesetId) = .empty;
+        for (r.closed) |x| {
+            const cs = c.q.get(x.cs) orelse continue;
+            const closed_as: model.State = if (x.from == .pending) .discarded else .rejected;
+            if (cs.state != closed_as) continue;
+            try revive.append(arena, x);
+            try revived.append(arena, x.cs);
+        }
+
+        var t: apply.txn.Txn = .init(arena, c.files);
+        const p = try apply.revert.plan(c.gpa, c.q.blobs, &t, targets);
+        var report: RedoReport = .{ .restored = p.reverted, .conflicts = p.conflicts, .revived = revived.items };
+        if (o.dry_run) return report;
+        if (t.ops.items.len > 0) {
+            try t.saveImages(c.q.blobs);
+            if (t.run()) |f| {
+                report.failed = f;
+                report.revived = &.{};
+                return report;
+            }
+        }
+        report.record = try c.history.record(.{
+            .kind = .undo,
+            .cs = null,
+            .undoes = restore_id,
+            .session = session,
+            .created_ms = nowMs(c.io),
+            .files = try t.records(),
+        });
+        for (revive.items) |x| {
+            const cs = c.q.getMut(x.cs).?;
+            const from = cs.state;
+            try model.revive(cs, x.from);
+            cs.decided_ms = null;
+            c.q.persist(x.cs);
+            c.q.emit(.{ .state = .{ .cs = x.cs, .from = from, .to = cs.state } });
         }
         return report;
     }
