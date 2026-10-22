@@ -1,0 +1,10 @@
+.{
+    .id = "examples.hello-ps1",
+    .name = "hello-ps1",
+    .version = "0.1.0",
+    .description = "ZEP example in PowerShell.",
+    .engines = .{ .zigguro = ">=0.1.0" },
+    .main = "hello.ps1",
+    .activation_events = .{"onCommand:hello-ps1.say"},
+    .contributes = .{ .commands = .{.{ .id = "hello-ps1.say", .title = "Hello (PowerShell): Say Hello" }} },
+}
