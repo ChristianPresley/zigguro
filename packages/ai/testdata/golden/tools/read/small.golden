@@ -1,0 +1,6 @@
+[file: small.zig · 5 lines · showing 1-5]
+     1	const std = @import("std");
+     2
+     3	pub fn main() void {
+     4	    std.debug.print("hi\n", .{});
+     5	}

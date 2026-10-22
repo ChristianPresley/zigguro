@@ -96,8 +96,10 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer hub.deinit();
     try hub.onSettingsChanged(io, &.{});
 
-    // Tools: the command tools over child processes (E06 terminals are
-    // the IDE's).
+    const cwd = try std.process.currentPathAlloc(io, arena);
+
+    // Tools: the file tools straight on disk and the command tools over
+    // child processes (the IDE uses E05 documents and E06 terminals).
     var tool_registry: zg_ai.tools.ToolRegistry = .init(gpa, io);
     defer tool_registry.deinit();
     var processes: zg_ai.tools.builtin.process_host.ProcessHost = .init(gpa, io);
@@ -106,6 +108,11 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     var run_tools: zg_ai.tools.builtin.run.RunTools = .init(gpa, io, processes.host(), .{ .visible = false });
     defer run_tools.deinit();
     try tool_registry.addSource(run_tools.source());
+    var read_tracker: zg_ai.tools.read_tracker.ReadTracker = .init(gpa, io);
+    defer read_tracker.deinit();
+    var disk: zg_ai.tools.builtin.disk_files.DiskFiles = .{ .root = cwd };
+    var file_tools: zg_ai.tools.builtin.files.FileTools = .{ .files = disk.asFiles(), .tracker = &read_tracker };
+    try tool_registry.addSource(file_tools.source());
     var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &tool_registry, .{
         .deny = try bareRules(arena, opts.disallowed_tools),
         .mode = opts.permission_mode,
@@ -116,7 +123,6 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer mgr.deinit();
 
     // Sessions live under the state directory.
-    const cwd = try std.process.currentPathAlloc(io, arena);
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state = stateDir(min, &env, &state_buf);
     var store: ?zg_ai.session.store.SessionStore = null;

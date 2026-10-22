@@ -17,12 +17,14 @@ pub const FramePacer = @import("FramePacer.zig");
 pub const RenderThread = @import("RenderThread.zig");
 /// The offscreen render plus copy-to-CPU target.
 pub const Readback = @import("Readback.zig");
+pub const ShmRing = @import("ShmRing.zig");
 
 test {
     _ = FrameScheduler;
     _ = @import("Deferred.zig");
     _ = Damage;
     _ = Readback;
+    _ = ShmRing;
     _ = FramePacer;
     _ = RenderThread;
     _ = @import("gpu_test.zig");

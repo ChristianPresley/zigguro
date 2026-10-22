@@ -10,3 +10,8 @@
 packages/ai/testdata/frontmatter/crlf.md -text
 # Generated SPIR-V (packages/vulkan/src/shaders/gen) is compared byte for byte.
 *.spv binary
+# read_file fixtures: encodings and line endings are what is tested.
+packages/ai/testdata/tools/read/crlf.txt -text
+packages/ai/testdata/tools/read/utf16le_bom.txt binary
+packages/ai/testdata/tools/read/binary.bin binary
+packages/ai/testdata/tools/read/image.png binary
