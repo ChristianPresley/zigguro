@@ -15,20 +15,19 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",    "text.cache_hit",
-    "text.cache_screen",    "text.casefold_ascii",
-    "text.cells_row_200",   "text.cff_outline",
-    "text.fontdb_load_3k",  "text.gamma",
-    "text.glyf_outline",    "text.gvar_apply",
-    "text.hit_test",        "text.integrate_gpix",
-    "text.itemize_200col",  "text.layout_200col",
-    "text.lcd",             "text.measure_hit",
-    "text.nfc_quickcheck",  "text.nfc_slow_mixed",
-    "text.raster_14px",     "text.raster_64px_cjk",
-    "text.raster_lcd_14px", "text.registry_get",
-    "text.sdf_48px",        "text.shape_code_line_200",
-    "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.var_advance",     "text.width_row_200",
+    "text.atlas_insert",         "text.cache_hit",
+    "text.cache_screen",         "text.cells_row_200",
+    "text.cff_outline",          "text.fontdb_load_3k",
+    "text.gamma",                "text.glyf_outline",
+    "text.gvar_apply",           "text.hit_test",
+    "text.integrate_gpix",       "text.itemize_200col",
+    "text.layout_200col",        "text.lcd",
+    "text.measure_hit",          "text.nfc_quickcheck",
+    "text.nfc_slow_mixed",       "text.raster_14px",
+    "text.raster_64px_cjk",      "text.raster_lcd_14px",
+    "text.registry_get",         "text.sdf_48px",
+    "text.shape_code_line_200",  "text.shape_latin_1k",
+    "text.shape_word_cache_hit", "text.var_advance",
     "text.wrap_10kb",
 };
 
@@ -91,6 +90,13 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.word_mixed", @as([]const u8, mixed), wordCount);
     try b.run("text.linebreak_mixed", @as([]const u8, mixed), lineBreakCount);
 
+    // Case folding over 1 MiB of ASCII source.
+    try b.run("text.casefold_ascii", FoldCtx{ .text = ascii, .gpa = b.gpa }, foldAscii);
+    // Cell width of a 200-column mixed row, per grapheme.
+    var row: [400]u8 = undefined;
+    fill(&row, &.{ "ls -la ", "\u{4E2D}\u{6587} ", "\u{1F44D}\u{1F3FD} ", "caf\u{E9} ", "\u{1F1FA}\u{1F1F8} " });
+    try b.run("text.width_row_200", @as([]const u8, &row), widthRow);
+
     // Bidi on one 200-column line: the LTR early-out and a full RTL line.
     var ltr_line: [200]u8 = undefined;
     fill(&ltr_line, &.{ "const total = items.len * 2; ", "// sum the widths\n" });
@@ -137,6 +143,24 @@ fn lineBreakCount(text: []const u8, s: *State) void {
         while (it.next()) |_| n += 1;
         bench.doNotOptimizeAway(n);
     }
+}
+
+const FoldCtx = struct { text: []const u8, gpa: std.mem.Allocator };
+
+fn foldAscii(ctx: FoldCtx, s: *State) void {
+    s.setBytes(ctx.text.len);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(ctx.gpa);
+    out.ensureTotalCapacity(ctx.gpa, ctx.text.len) catch unreachable;
+    for (0..s.iterations()) |_| {
+        out.clearRetainingCapacity();
+        zg_text.unicode.casefold.foldAppend(&out, ctx.gpa, ctx.text, .full) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
+    }
+}
+
+fn widthRow(row: []const u8, s: *State) void {
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_text.unicode.width.stringWidth(row, .{}, .grapheme));
 }
 
 fn bidiLtr(line: []const u8, s: *State) void {
