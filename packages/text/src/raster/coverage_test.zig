@@ -352,7 +352,8 @@ test "fuzz: raster-path" {
 }
 
 /// Input: byte 0 = size (px = 1 + b), byte 1 = subpixel quarter (bits
-/// 0-1), oblique, bold, stem darkening (bits 2-4) and mode (bits 5-6); then records of 1 verb byte plus its points as raw f32
+/// 0-1), oblique, bold, stem darkening (bits 2-4) and mode (bits 5-6:
+/// gray, SDF, LCD RGB, LCD BGR); then records of 1 verb byte plus its points as raw f32
 /// bits (so huge, NaN, infinite and denormal coordinates all occur). Any
 /// path must give a bitmap or `TooLarge`, never a crash.
 fn fuzzPath(input: []const u8) !void {
@@ -397,7 +398,8 @@ fn fuzzPath(input: []const u8) !void {
         .synth_bold = input[1] & 8 != 0,
         .stem_darkening = input[1] & 16 != 0,
         .mode = switch ((input[1] >> 5) & 3) {
-            0, 1 => .gray,
+            0 => .gray,
+            1 => .sdf,
             2 => .lcd_rgb,
             else => .lcd_bgr,
         },
