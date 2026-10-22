@@ -51,8 +51,15 @@ pub const word = @import("word.zig");
 pub const line_break = @import("line_break.zig");
 /// UAX #9 bidirectional algorithm.
 pub const bidi = @import("bidi.zig");
+/// Display width in terminal cells.
+pub const width = @import("width.zig");
+/// Case folding.
+pub const casefold = @import("casefold.zig");
+/// Case mapping and case shapes.
+pub const casemap = @import("casemap.zig");
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("decode.zig");
+    _ = @import("case_test.zig");
 }
