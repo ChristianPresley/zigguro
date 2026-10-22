@@ -17,6 +17,7 @@ const zg_core = @import("zg_core");
 const zg_ai = @import("zg_ai");
 const zg_net = @import("zg_net");
 const zg_crash = @import("zg_crash");
+const zg_config = @import("zg_config");
 
 const headless = zg_ai.headless;
 const Cassette = zg_ai.testing.cassette.Cassette;
@@ -97,6 +98,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     try hub.onSettingsChanged(io, &.{});
 
     const cwd = try std.process.currentPathAlloc(io, arena);
+    var state_buf_hooks: [std.fs.max_path_bytes]u8 = undefined;
 
     // Tools: the file tools straight on disk, the command tools over
     // child processes and the web tools (the IDE uses E05 documents and E06
@@ -161,6 +163,29 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     };
     try tool_registry.addSource(ask_user.source());
 
+    // Hooks (Claude Code format): managed and user `hooks.json`, then the
+    // workspace's `.zigguro/hooks.json` and `hooks.local.json`, and in
+    // compat `.claude/settings.json` and `settings.local.json`. Running
+    // `zg agent` in a directory trusts it, as `claude -p` does.
+    var hook_engine: zg_ai.ext.HookEngine = try .init(gpa, io, .{
+        .project_dir = cwd,
+        .environ = &env,
+        .compat = true,
+        .workspace_trusted = true,
+        .spill_dir = try std.fs.path.join(arena, &.{ stateDir(min, &env, &state_buf_hooks) orelse cwd, "tool-output" }),
+        .permission_mode = switch (opts.permission_mode) {
+            .default => "default",
+            .accept_edits => "acceptEdits",
+            .plan => "plan",
+            .bypass_permissions => "bypassPermissions",
+            .dont_ask => "dontAsk",
+        },
+        .audit = .{ .ctx = err, .record = hookRecord, .notice = hookNotice },
+    });
+    defer hook_engine.deinit();
+    try loadHooks(io, arena, &hook_engine, &env, cwd, err);
+    mgr.deps.hooks = hook_engine.hooks();
+
     // Sessions live under the state directory.
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state = stateDir(min, &env, &state_buf);
@@ -201,6 +226,43 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     out.flush() catch {};
     err.flush() catch {};
     return code.code();
+}
+
+const hook_files = [_]struct { []const u8, zg_ai.ext.hooks.Layer }{
+    .{ ".zigguro/hooks.json", .project },
+    .{ ".zigguro/hooks.local.json", .local },
+    .{ ".claude/settings.json", .project },
+    .{ ".claude/settings.local.json", .local },
+};
+
+/// Reads every hook file that exists; a broken one is reported and skipped.
+fn loadHooks(io: Io, arena: std.mem.Allocator, e: *zg_ai.ext.HookEngine, env: *const std.process.Environ.Map, cwd: []const u8, err: *Io.Writer) !void {
+    var files: std.ArrayList(struct { []const u8, zg_ai.ext.hooks.Layer }) = .empty;
+    if (zg_config.paths.resolve(arena, env, .{})) |p| {
+        if (p.managed) |m| try files.append(arena, .{ try std.fs.path.join(arena, &.{ m, "hooks.json" }), .managed });
+        try files.append(arena, .{ try p.join(arena, .config, &.{"hooks.json"}), .user });
+    } else |_| {}
+    for (hook_files) |f| try files.append(arena, .{ try std.fs.path.join(arena, &.{ cwd, f[0] }), f[1] });
+    for (files.items) |f| {
+        const text = Io.Dir.cwd().readFileAlloc(io, f[0], arena, .limited(1 << 20)) catch continue;
+        const parsed = zg_ai.ext.hooks.parseSettings(arena, text, f[1]) catch |e2| {
+            err.print("zg agent: ignoring hooks in {s}: {s}\n", .{ f[0], @errorName(e2) }) catch {};
+            continue;
+        };
+        for (parsed.unknown) |u| err.print("zg agent: {s}: unknown hook event {s}\n", .{ f[0], u }) catch {};
+        if (parsed.disable_all) e.opts.disable_non_managed = true;
+        e.add(parsed.sources) catch |e2| err.print("zg agent: ignoring hooks in {s}: {s}\n", .{ f[0], @errorName(e2) }) catch {};
+    }
+}
+
+fn hookRecord(_: *anyopaque, _: Io, r: zg_ai.ext.hooks.HookRun) void {
+    std.log.scoped(.zg_agent).debug("hook {t} {s}: exit {?d}, {d} ms, {s}", .{ r.event, r.handler, r.exit, r.duration_ms, r.decision });
+}
+
+fn hookNotice(ctx: *anyopaque, _: Io, text: []const u8) void {
+    const err: *Io.Writer = @ptrCast(@alignCast(ctx));
+    err.print("zg agent: {s}\n", .{text}) catch {};
+    err.flush() catch {};
 }
 
 /// `--disallowed-tools` rules without a pattern remove the tool from

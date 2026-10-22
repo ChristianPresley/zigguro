@@ -216,6 +216,8 @@ pub const wayland = struct {
     pub const cursor = @import("wayland/cursor.zig");
     /// See `wayland/text_input.zig`.
     pub const text_input = @import("wayland/text_input.zig");
+    /// See `wayland/csd.zig`.
+    pub const csd = @import("wayland/csd.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
@@ -473,6 +475,7 @@ test {
     _ = linux_util.xcursor;
     _ = wayland.cursor;
     _ = wayland.text_input;
+    _ = wayland.csd;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -565,6 +568,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
     .{ .path = "wayland/cursor.zig", .src = @embedFile("wayland/cursor.zig") },
     .{ .path = "wayland/text_input.zig", .src = @embedFile("wayland/text_input.zig") },
+    .{ .path = "wayland/csd.zig", .src = @embedFile("wayland/csd.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },

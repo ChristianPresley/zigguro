@@ -7,6 +7,12 @@
 //! switch in the header enters and leaves it, and a proposed plan shows
 //! as a card above the prompt (plan_card.zig).
 //!
+//! Subagents: with a `ChildRelay` attached (the host subscribes it to
+//! every agent of the manager), a child's replies, tool calls and failures
+//! nest under the `task` call that spawned it (`AgentRef.tool_call`),
+//! grandchildren under theirs. A task with children has a disclosure
+//! button; finished tasks collapse.
+//!
 //! The agent publishes on its own tasks: a queued bus subscriber copies
 //! each batch into an inbox under a mutex and posts one drain to the UI
 //! thread at a time, which applies it to the transcript (UI-thread
@@ -34,7 +40,7 @@ pub const AgentPanel = struct {
     sub: bus.SubscriptionId,
     /// Guards `inbox`.
     mutex: Io.Mutex = .init,
-    inbox: std.ArrayList(Op) = .empty,
+    inbox: std.ArrayList(Entry) = .empty,
     /// A drain is queued on the UI thread.
     posted: std.atomic.Value(bool) = .init(false),
     /// The transcript, oldest first (UI thread).
@@ -54,6 +60,8 @@ pub const AgentPanel = struct {
     follow: bool = false,
     /// Plan approvals and the plan mode switch (optional).
     plans: ?*PlanCards = null,
+    /// Where subagent events come from, while attached.
+    relay: ?*ChildRelay = null,
     plan_mode: ?*zg_ai.plan.PlanMode = null,
     /// Called after the transcript changed (the workbench repaints).
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
@@ -68,6 +76,36 @@ pub const AgentPanel = struct {
         /// Tool calls: the call id and how it went.
         id: []u8 = &.{},
         state: ToolState = .queued,
+        /// A `task` call: its subagent's transcript.
+        children: std.ArrayList(Item) = .empty,
+        /// The last child is assistant text still streaming.
+        child_streaming: bool = false,
+        /// Children shown; null follows the state (open while running).
+        expanded: ?bool = null,
+
+        fn deinit(it: *Item, gpa: Allocator) void {
+            it.text.deinit(gpa);
+            gpa.free(it.id);
+            for (it.children.items) |*c| c.deinit(gpa);
+            it.children.deinit(gpa);
+        }
+
+        /// Whether its children show.
+        pub fn open(it: *const Item) bool {
+            return it.expanded orelse (it.state == .queued or it.state == .running);
+        }
+    };
+
+    /// An inbox entry: a change to the main transcript, or (`call` set) to
+    /// the subagent under that `task` call.
+    const Entry = struct {
+        op: Op,
+        call: ?[]u8 = null,
+
+        fn deinit(e: Entry, gpa: Allocator) void {
+            e.op.deinit(gpa);
+            if (e.call) |c| gpa.free(c);
+        }
     };
 
     /// A transcript change, copied out of an agent event.
@@ -107,6 +145,7 @@ pub const AgentPanel = struct {
     /// Stops the agent's work and frees the panel. UI thread.
     pub fn destroy(p: *AgentPanel) void {
         p.agent.unsubscribe(p.sub);
+        if (p.relay) |r| r.attach(null);
         p.stopAll(.everything);
         // Tools may wait on the UI thread until the turn stops.
         while (p.stopping != null and !p.cancelDone()) {
@@ -116,15 +155,18 @@ pub const AgentPanel = struct {
         if (p.stopping) |*f| f.await(p.io);
         // A drain posted before the unsubscribe still holds `p`.
         while (p.posted.load(.acquire)) _ = p.app.drainMessages();
-        for (p.inbox.items) |op| op.deinit(p.gpa);
+        for (p.inbox.items) |e| e.deinit(p.gpa);
         p.inbox.deinit(p.gpa);
-        for (p.items.items) |*it| {
-            it.text.deinit(p.gpa);
-            p.gpa.free(it.id);
-        }
+        for (p.items.items) |*it| it.deinit(p.gpa);
         p.items.deinit(p.gpa);
         p.input.deinit();
         p.gpa.destroy(p);
+    }
+
+    /// Shows the subagents of this panel's agent from `r`. UI thread.
+    pub fn attachChildren(p: *AgentPanel, r: *ChildRelay) void {
+        p.relay = r;
+        r.attach(p);
     }
 
     /// Sends `text` to the agent (queued behind a running turn).
@@ -167,10 +209,14 @@ pub const AgentPanel = struct {
     }
 
     fn addItem(p: *AgentPanel, kind: Kind, text: []const u8) !void {
+        try p.addTo(&p.items, kind, text);
+    }
+
+    fn addTo(p: *AgentPanel, list: *std.ArrayList(Item), kind: Kind, text: []const u8) !void {
         var it: Item = .{ .kind = kind };
         try it.text.appendSlice(p.gpa, text);
         errdefer it.text.deinit(p.gpa);
-        try p.items.append(p.gpa, it);
+        try list.append(p.gpa, it);
     }
 
     fn changed(p: *AgentPanel) void {
@@ -182,15 +228,40 @@ pub const AgentPanel = struct {
 
     fn onEvents(ctx: *anyopaque, batch: []const ev.Envelope) void {
         const p: *AgentPanel = @ptrCast(@alignCast(ctx));
+        p.queue(batch, null);
+    }
+
+    /// A subagent's events, from the relay: kept when the child belongs to
+    /// this panel's session.
+    fn onChildEvents(p: *AgentPanel, ref: zg_ai.proto.AgentRef, batch: []const ev.Envelope) void {
+        const call = ref.tool_call orelse return;
+        if (ref.agent == 0 or ref.session != p.agent.ref.session) return;
+        p.queue(batch, call);
+    }
+
+    fn queue(p: *AgentPanel, batch: []const ev.Envelope, call: ?[]const u8) void {
         {
             p.mutex.lockUncancelable(p.io);
             defer p.mutex.unlock(p.io);
             for (batch) |e| {
-                const op = p.opOf(e.ev) catch continue orelse continue;
-                p.inbox.append(p.gpa, op) catch op.deinit(p.gpa);
+                const op = (if (call == null) p.opOf(e.ev) else p.childOpOf(e.ev)) catch continue orelse continue;
+                const entry: Entry = .{ .op = op, .call = if (call) |c| p.gpa.dupe(u8, c) catch {
+                    op.deinit(p.gpa);
+                    continue;
+                } else null };
+                p.inbox.append(p.gpa, entry) catch entry.deinit(p.gpa);
             }
         }
         if (!p.posted.swap(true, .acq_rel)) p.app.post(.{ .ctx = p, .f = drain }) catch p.posted.store(false, .release);
+    }
+
+    /// A subagent's transcript change: its text, tool calls, decisions
+    /// and failures, not its status or plan events.
+    fn childOpOf(p: *AgentPanel, e: ev.AgentEvent) Allocator.Error!?Op {
+        return switch (e) {
+            .status, .plan_approved => null,
+            else => p.opOf(e),
+        };
     }
 
     /// The transcript change `e` makes, if any (strings copied).
@@ -228,63 +299,57 @@ pub const AgentPanel = struct {
 
     fn drain(ctx: *anyopaque, _: *zg_gui.App) void {
         const p: *AgentPanel = @ptrCast(@alignCast(ctx));
-        var ops: std.ArrayList(Op) = .empty;
-        defer ops.deinit(p.gpa);
+        var entries: std.ArrayList(Entry) = .empty;
+        defer entries.deinit(p.gpa);
         {
             p.mutex.lockUncancelable(p.io);
             defer p.mutex.unlock(p.io);
-            std.mem.swap(std.ArrayList(Op), &ops, &p.inbox);
+            std.mem.swap(std.ArrayList(Entry), &entries, &p.inbox);
             p.posted.store(false, .release);
         }
-        for (ops.items) |op| {
-            p.apply(op) catch {};
-            op.deinit(p.gpa);
+        for (entries.items) |e| {
+            if (e.call) |c| {
+                // A child of a call not shown (yet) is dropped.
+                if (findTool(p.items.items, c)) |task| p.apply(&task.children, &task.child_streaming, e.op) catch {};
+            } else p.apply(&p.items, &p.streaming, e.op) catch {};
+            e.deinit(p.gpa);
         }
-        if (ops.items.len > 0) p.changed();
+        if (entries.items.len > 0) p.changed();
     }
 
-    fn apply(p: *AgentPanel, op: Op) !void {
+    /// Applies `op` to `list` (the main transcript or a subagent's).
+    fn apply(p: *AgentPanel, list: *std.ArrayList(Item), streaming: *bool, op: Op) !void {
         switch (op) {
             .delta => |s| {
-                if (!p.streaming) {
-                    try p.addItem(.assistant, "");
-                    p.streaming = true;
+                if (!streaming.*) {
+                    try p.addTo(list, .assistant, "");
+                    streaming.* = true;
                 }
-                try p.items.items[p.items.items.len - 1].text.appendSlice(p.gpa, s);
+                try list.items[list.items.len - 1].text.appendSlice(p.gpa, s);
             },
-            .committed => p.streaming = false,
+            .committed => streaming.* = false,
             .tool_queued => |t| {
-                p.streaming = false;
-                try p.addItem(.tool, t.text);
-                const it = &p.items.items[p.items.items.len - 1];
+                streaming.* = false;
+                try p.addTo(list, .tool, t.text);
+                const it = &list.items[list.items.len - 1];
                 it.id = try p.gpa.dupe(u8, t.id);
             },
-            .tool_started => |id| if (p.toolItem(id)) |it| {
+            .tool_started => |id| if (findTool(list.items, id)) |it| {
                 it.state = .running;
             },
-            .tool_finished => |t| if (p.toolItem(t.id)) |it| {
+            .tool_finished => |t| if (findTool(list.items, t.id)) |it| {
                 it.state = t.state;
             },
             .note => |s| {
-                p.streaming = false;
-                try p.addItem(.note, s);
+                streaming.* = false;
+                try p.addTo(list, .note, s);
             },
             .failure => |s| {
-                p.streaming = false;
-                try p.addItem(.failure, s);
+                streaming.* = false;
+                try p.addTo(list, .failure, s);
             },
             .status => |s| p.status = s,
         }
-    }
-
-    fn toolItem(p: *AgentPanel, id: []const u8) ?*Item {
-        var i = p.items.items.len;
-        while (i > 0) {
-            i -= 1;
-            const it = &p.items.items[i];
-            if (it.kind == .tool and std.mem.eql(u8, it.id, id)) return it;
-        }
-        return null;
     }
 
     // ── View ────────────────────────────────────────────────────────────
@@ -335,7 +400,7 @@ pub const AgentPanel = struct {
         }
     }
 
-    fn item(_: *AgentPanel, ui: *Ui, it: *const Item) void {
+    fn item(p: *AgentPanel, ui: *Ui, it: *Item) void {
         switch (it.kind) {
             .user => {
                 ui.open(.{ .style = .{ .padding = .xy(8, 6), .bg = .{ .token = .bg_base } } });
@@ -344,18 +409,9 @@ pub const AgentPanel = struct {
             },
             .assistant => ui.text(it.text.items, .{}),
             .tool => {
+                if (it.children.items.len > 0) return p.taskItem(ui, it);
                 ui.open(.{ .style = .{ .dir = .row, .gap = 6 } });
-                ui.text(switch (it.state) {
-                    .queued => "\u{25cb}",
-                    .running => "\u{25cf}",
-                    .ok => "\u{2713}",
-                    .failed => "\u{2717}",
-                    .skipped => "\u{2013}",
-                }, .{ .color = switch (it.state) {
-                    .ok => .success,
-                    .failed => .danger,
-                    else => .fg_muted,
-                }, .wrap = false });
+                ui.text(stateGlyph(it.state), .{ .color = stateColor(it.state), .wrap = false });
                 ui.text(it.text.items, .{ .style = .{ .font = .mono }, .color = .fg_muted });
                 ui.close();
             },
@@ -364,11 +420,96 @@ pub const AgentPanel = struct {
         }
     }
 
+    /// A `task` call with its subagent's transcript: the call line with a
+    /// disclosure button, then the children indented.
+    fn taskItem(p: *AgentPanel, ui: *Ui, it: *Item) void {
+        ui.open(.{ .style = .{ .dir = .column, .gap = 6 } });
+        defer ui.close();
+        ui.open(.{ .style = .{ .dir = .row, .gap = 6 } });
+        const open = it.open();
+        var buf: [32]u8 = undefined;
+        const n = it.children.items.len;
+        const label = std.fmt.bufPrint(&buf, "{s} {d} step{s}", .{ if (open) "\u{25be}" else "\u{25b8}", n, if (n == 1) "" else "s" }) catch "";
+        if (zg_gui.w.button(ui, .{ .label = label, .variant = .ghost }).clicked) {
+            it.expanded = !open;
+            ui.win.markAllDirty();
+        }
+        ui.text(stateGlyph(it.state), .{ .color = stateColor(it.state), .wrap = false });
+        ui.text(it.text.items, .{ .style = .{ .font = .mono }, .color = .fg_muted });
+        ui.close();
+        if (!open) return;
+        ui.open(.{ .style = .{ .dir = .column, .gap = 6, .padding = .{ .l = 18 } }, .test_id = "subagent" });
+        defer ui.close();
+        for (it.children.items, 0..) |*c, i| {
+            ui.id(@as(u32, @intCast(i)));
+            p.item(ui, c);
+        }
+    }
+
     fn scrollToEnd(ctx: *anyopaque, w: *zg_gui.Window) void {
         const p: *AgentPanel = @ptrCast(@alignCast(ctx));
         if (!p.area.isNone()) _ = w.scrollTo(p.area, .{ .y = std.math.floatMax(f32) });
     }
 };
+
+/// The tool call `id` in `items` or any subagent under them (latest first).
+fn findTool(items: []AgentPanel.Item, id: []const u8) ?*AgentPanel.Item {
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        const it = &items[i];
+        if (it.kind != .tool) continue;
+        if (std.mem.eql(u8, it.id, id)) return it;
+        if (findTool(it.children.items, id)) |c| return c;
+    }
+    return null;
+}
+
+/// Forwards the subagent events of an `AgentManager` (`subscribeAll`, which
+/// has no unsubscribe, so the relay lives as long as the manager) to the
+/// attached panel.
+pub const ChildRelay = struct {
+    io: Io,
+    mutex: Io.Mutex = .init,
+    panel: ?*AgentPanel = null,
+
+    pub fn subscriber(r: *ChildRelay) zg_ai.loop.AgentManager.AllSubscriber {
+        return .{ .ctx = r, .on_events = onEvents };
+    }
+
+    /// Sets the panel (null detaches); once it returns, the old panel gets
+    /// no more events.
+    pub fn attach(r: *ChildRelay, p: ?*AgentPanel) void {
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
+        r.panel = p;
+    }
+
+    fn onEvents(ctx: *anyopaque, ref: zg_ai.proto.AgentRef, batch: []const ev.Envelope) void {
+        const r: *ChildRelay = @ptrCast(@alignCast(ctx));
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
+        if (r.panel) |p| p.onChildEvents(ref, batch);
+    }
+};
+
+fn stateGlyph(s: AgentPanel.ToolState) []const u8 {
+    return switch (s) {
+        .queued => "\u{25cb}",
+        .running => "\u{25cf}",
+        .ok => "\u{2713}",
+        .failed => "\u{2717}",
+        .skipped => "\u{2013}",
+    };
+}
+
+fn stateColor(s: AgentPanel.ToolState) zg_gui.theme.Token {
+    return switch (s) {
+        .ok => .success,
+        .failed => .danger,
+        else => .fg_muted,
+    };
+}
 
 fn busy(s: ev.Status) bool {
     return switch (s) {
@@ -541,4 +682,118 @@ test "agent panel: a prompt, a denied tool call and the reply" {
     try testing.expectEqualStrings("rm -rf build", fp.presented.items[0].command.?);
     // The transcript is on screen.
     try testing.expect(t.count(.{ .test_id = "agent-transcript" }) == 1);
+}
+
+/// `read_file` (read-only, so no approval) for the subagent test.
+const ReadTool = struct {
+    specs: [1]proto.ToolSpec = undefined,
+
+    fn source(t: *ReadTool) zg_ai.tools.ToolSource {
+        t.specs = .{.{ .name = "read_file", .description = "Reads.", .input_schema_json = "{\"type\":\"object\"}", .read_only = true, .handler = .{ .ctx = t, .call = call } }};
+        return .{ .name = "read", .ctx = t, .list = list, .kind = .builtin };
+    }
+
+    fn list(ctx: *anyopaque, gpa: Allocator, out: *std.ArrayList(proto.ToolSpec)) anyerror!void {
+        const t: *ReadTool = @ptrCast(@alignCast(ctx));
+        try out.appendSlice(gpa, &t.specs);
+    }
+
+    fn call(_: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
+        return proto.ToolOutput.text(c.arena, "fn parse() void {}", false) catch error.OutOfMemory;
+    }
+};
+
+/// The parent delegates, the child reads a file and answers, the parent
+/// wraps up (one provider, played in order: the parent waits on the
+/// child). Borrowed by the provider, so they live for the whole test.
+const subagent_turns = [_][]const scripted.ScriptedProvider.Step{
+    scripted.script.tools(&.{.{ "x1", "task", "{\"agent\":\"general\",\"prompt\":\"find the callers of parse\",\"description\":\"Find callers\"}" }}),
+    scripted.script.tools(&.{.{ "c1", "read_file", "{\"path\":\"src/parse.zig\"}" }}),
+    scripted.script.text("Found 3 callers."),
+    scripted.script.text("Done."),
+};
+
+test "agent panel: a subagent's transcript nests under its task call" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    rt.bindUiThread(.noop);
+    defer _ = rt.deinit();
+
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &subagent_turns, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var reg: zg_ai.tools.ToolRegistry = .init(gpa, io);
+    defer reg.deinit();
+    var read: ReadTool = .{};
+    try reg.addSource(read.source());
+    var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &reg, .{});
+    defer agent_tools.deinit();
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &models, .providers = .fixed(&provider), .tools = agent_tools.tools() });
+    defer mgr.deinit();
+    var defs_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer defs_arena.deinit();
+    var defs: std.ArrayList(zg_ai.subagent.defs.AgentDef) = .empty;
+    try zg_ai.subagent.defs.loadDefs(io, defs_arena.allocator(), &.{}, &defs, null);
+    var runner: zg_ai.subagent.SubagentRunner = .init(gpa, io, mgr, &reg, defs.items, .{});
+    defer runner.deinit();
+    runner.main_tools = &agent_tools;
+    var task: zg_ai.subagent.task_tool.TaskTool = try .init(gpa, &runner);
+    defer task.deinit();
+    try reg.addSource(task.source());
+    var relay: ChildRelay = .{ .io = io };
+    try mgr.subscribeAll(relay.subscriber());
+    const agent = try mgr.create(.{ .model = "m" });
+
+    const Root = struct {
+        p: ?*AgentPanel = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.p) |x| x.build(ui);
+        }
+    };
+    var root: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 400, .h = 700 }, .root = .of(&root) });
+    defer t.deinit();
+    t.app.attachRuntime(&rt);
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+    p.attachChildren(&relay);
+    root.p = p;
+    t.win.markAllDirty();
+    _ = t.settle();
+
+    try p.submit("who calls parse?");
+    var spins: u32 = 0;
+    while (find(p, .assistant, "Done.") == null or busy(p.status)) : (spins += 1) {
+        try testing.expect(spins < 5000);
+        _ = t.settle();
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    _ = t.settle();
+
+    // The child's call and answer sit under the task call, not beside it.
+    const call = find(p, .tool, "task ").?;
+    try testing.expectEqualStrings("x1", call.id);
+    try testing.expectEqual(AgentPanel.ToolState.ok, call.state);
+    try testing.expectEqual(@as(usize, 2), call.children.items.len);
+    try testing.expectEqual(AgentPanel.Kind.tool, call.children.items[0].kind);
+    try testing.expectEqualStrings("c1", call.children.items[0].id);
+    try testing.expectEqual(AgentPanel.ToolState.ok, call.children.items[0].state);
+    try testing.expect(std.mem.startsWith(u8, call.children.items[0].text.items, "read_file "));
+    try testing.expectEqualStrings("Found 3 callers.", call.children.items[1].text.items);
+    try testing.expect(find(p, .assistant, "Found 3 callers.") == null);
+    try testing.expect(find(p, .tool, "read_file") == null);
+
+    // Finished, the task is collapsed; the disclosure button opens it.
+    try testing.expect(!call.open());
+    t.win.markAllDirty();
+    _ = t.settle();
+    try testing.expectEqual(@as(usize, 0), t.count(.{ .test_id = "subagent" }));
+    try t.click(.{ .role = .button, .name = "\u{25b8} 2 steps" });
+    _ = t.settle();
+    try testing.expect(call.open());
+    try testing.expectEqual(@as(usize, 1), t.count(.{ .test_id = "subagent" }));
 }
