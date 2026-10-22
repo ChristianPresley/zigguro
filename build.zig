@@ -89,6 +89,14 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run.step);
     }
 
+    // INV-01: every consumer against a deny-all engine (E16.F02.S01.T04).
+    inline for (packages.all, 0..) |p, i| {
+        if (comptime std.mem.eql(u8, p.name, "zg_security")) {
+            const t = b.addTest(.{ .name = "enforcement", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"INV-01 enforcement"} });
+            b.step("test-enforcement", "Prove every consumer denies under a deny-all engine (INV-01)").dependOn(&b.addRunArtifact(t).step);
+        }
+    }
+
     // Repository tools (std-only Zig programs under tools/).
     const tools_test_step = b.step("test-tools", "Run the tests of tools/*");
     test_step.dependOn(tools_test_step);
