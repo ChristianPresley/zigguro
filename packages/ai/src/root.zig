@@ -104,6 +104,13 @@ pub const context = struct {
     }
 };
 /// Sessions: the JSONL log, index, resume, fork and rewind (E10.F08).
+/// Cassettes and the eval runner (E10.F10.S02).
+pub const testing = struct {
+    pub const cassette = @import("testing/cassette.zig");
+    test {
+        _ = @import("testing/cassette_test.zig");
+    }
+};
 pub const session = struct {
     pub const key = @import("session/key.zig");
     pub const records = @import("session/records.zig");
@@ -167,4 +174,5 @@ test {
     std.testing.refAllDecls(loop);
     std.testing.refAllDecls(context);
     std.testing.refAllDecls(session);
+    std.testing.refAllDecls(testing);
 }
