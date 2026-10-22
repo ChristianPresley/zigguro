@@ -2299,6 +2299,18 @@ pub const Readback = struct {
     pub fn present(self, fs: *const FrameSlot) void;          // after submit
     pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
 };
+pub const Swapchain = struct {                                // present/Swapchain.zig (E02.F04.S01.T01), Win32
+    pub fn init(gpu, sched, hinstance, hwnd, extent: vk.Extent2D, prefs: PresentPrefs) !*Swapchain;
+    pub fn deinit(self) void;                                    // waits on present fences / queue idle
+    pub fn prepare(self) AcquireError!void;                      // recreate if needed; error.Minimized at 0x0
+    pub fn acquire(self, fs) AcquireError!Acquired;              // { image: *Texture, age, index }
+    pub fn beginRendering(self, cb, a) void;  pub fn endRendering(self, cb, a) void;   // UNDEFINED/PRESENT_SRC <-> COLOR_ATTACHMENT
+    pub fn submitInfos(self, fs, a) { wait, signal };            // acquire semaphore per slot, present semaphore per image
+    pub fn present(self, a, ext: PresentExt) PresentError!void;  // PresentExt{ present_id, regions, mode_override }
+    pub fn requestResize(self, extent) void;  pub fn presentWaiter(self) ?FramePacer.PresentWaiter;
+};
+// VkRenderer: pub fn presentWaiter(self) ?FramePacer.PresentWaiter;  pub fn pacerCaps(self) FramePacer.Caps;
+// RenderThread.Options.waiter: ?FramePacer.PresentWaiter (present-wait modes; present ids 1, 2, ... in FrameStats.present_id)
 pub const ExternalRing = struct {                             // present/ExternalRing.zig (E02.F04.S02.T01)
     pub fn init(gpu, mem, sched, presenter: *Presenter) InitError!ExternalRing;   // error.ExportUnsupported -> use Readback(.shm)
     pub fn deinit(self) void;
@@ -2321,6 +2333,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
+- `.win32` targets get a `Swapchain` (device created with the win32 surface extensions); `Readback` gets `Sink.none` and serves `renderToImage` only. Swapchain frames report `present_id` 1, 2, ... (the FramePacer's ids); minimised windows render nothing and carry their damage. While the surface's extent differs from the list's, the frame draws 1:1 into the image and repaints fully. `FrameScheduler.cancel` abandons a begun frame whose acquire failed. Not yet verified on a Windows GPU (cross-compiles; the Linux CI GPU is lavapipe).
 - `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
