@@ -193,6 +193,17 @@ pub const Engine = struct {
         }
         out.w = sane(out.w);
         out.h = sane(out.h);
+        if (mode == .layout) {
+            const cold2 = &s.cold.items[i];
+            cold2.content = content;
+            if (st.scrolls()) {
+                // Keep the offset inside the new extent.
+                const max_x = @max(0, content.w - (out.w - pad.horizontal()));
+                const max_y = @max(0, content.h - (out.h - pad.vertical()));
+                cold2.scroll.x = clamp(cold2.scroll.x, 0, max_x);
+                cold2.scroll.y = clamp(cold2.scroll.y, 0, max_y);
+            }
+        }
         const entry: CacheEntry = .{ .known_w = kw_e, .known_h = kh_e, .avail_w = aw_e, .avail_h = ah_e, .size = out };
         const c2 = &s.cold.items[i].cache;
         if (mode == .size) {
@@ -201,7 +212,13 @@ pub const Engine = struct {
         }
         e.layoutAbsolute(id, out);
         const r = &s.hot.items(.rect)[i];
-        if (r[2] != out.w or r[3] != out.h) s.hot.items(.flags)[i].paint_dirty = true;
+        if (r[2] != out.w or r[3] != out.h) {
+            const fl3 = &s.hot.items(.flags)[i];
+            fl3.paint_dirty = true;
+            if (fl3.rebuild_on_scroll) s.resized_views.append(s.gpa, s.hot.items(.view)[i]) catch {
+                e.oom = true;
+            };
+        }
         r[2] = out.w;
         r[3] = out.h;
         c2.valid = true;
@@ -226,9 +243,15 @@ pub const Engine = struct {
             }
             return .{};
         }
-        return switch (s.cold.items[i].style.display) {
-            .flex => e.flex(id, mode, inner_w, inner_h, avail_w, avail_h),
-            .stack => e.stack(id, mode, inner_w, inner_h, avail_w, avail_h),
+        // A scroll axis gives the children unbounded space on that axis.
+        const st = &s.cold.items[i].style;
+        const iw = if (st.scroll_x) null else inner_w;
+        const ih = if (st.scroll_y) null else inner_h;
+        const aw = if (st.scroll_x) null else avail_w;
+        const ah = if (st.scroll_y) null else avail_h;
+        return switch (st.display) {
+            .flex => e.flex(id, mode, iw, ih, aw, ah),
+            .stack => e.stack(id, mode, iw, ih, aw, ah),
             .none => .{},
         };
     }
