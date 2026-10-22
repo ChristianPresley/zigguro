@@ -1,0 +1,11 @@
+# Frontmatter corpus
+
+Test data for `src/context/frontmatter.zig` (E10.F07.S01.T01). Each `<name>.md`
+is parsed and dumped as JSON; the expected dump is `<name>.golden`.
+Regenerate with `zig build test-ai -Dupdate-golden` and review the diff.
+
+`skill_example.md`, `subagent_example.md` and `rule_example.md` adapt the
+frontmatter examples from the Claude Code documentation
+(https://code.claude.com/docs/en/skills, /sub-agents, /memory).
+`mdc_always.md` and `mdc_globs.md` follow the Cursor rules documentation
+(https://cursor.com/docs/context/rules).
