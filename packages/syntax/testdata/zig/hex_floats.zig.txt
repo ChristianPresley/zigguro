@@ -1,0 +1,4 @@
+const a = 0x1p-3;
+const b = 0x1.8p+1;
+const c = 0xAB.CDp10;
+const d = 0x10.0;

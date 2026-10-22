@@ -1,0 +1,6 @@
+const a = 'a';
+const b = '\n';
+const c = '\x41';
+const d = '\u{1F600}';
+const e = '\'';
+const f = '\\';

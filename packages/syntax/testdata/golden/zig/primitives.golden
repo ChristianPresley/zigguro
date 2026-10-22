@@ -1,0 +1,8 @@
+1| keyword.storage:const variable:a punctuation.delimiter:: type.builtin:u8 operator:= number:0 punctuation.delimiter:;
+2| keyword.storage:const variable:b punctuation.delimiter:: type.builtin:i64 operator:= operator:- number:1 punctuation.delimiter:;
+3| keyword.storage:const variable:c punctuation.delimiter:: type.builtin:usize operator:= constant.builtin:undefined punctuation.delimiter:;
+4| keyword.storage:const variable:d punctuation.delimiter:: operator:? operator:* type.builtin:anyopaque operator:= constant.builtin:null punctuation.delimiter:;
+5| keyword.storage:const variable:e punctuation.delimiter:: type.builtin:comptime_int operator:= number:1 punctuation.delimiter:;
+6| keyword.storage:const variable:f punctuation.delimiter:: type.builtin:type operator:= type.builtin:bool punctuation.delimiter:;
+7| keyword.storage:const variable:g punctuation.delimiter:: type.builtin:c_int operator:= number:0 punctuation.delimiter:;
+8| keyword.storage:const variable:h punctuation.delimiter:: type.builtin:u65535 operator:= number:0 punctuation.delimiter:;
