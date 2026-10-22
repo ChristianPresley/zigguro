@@ -20,8 +20,15 @@
 //! Keys (with the view focused, the composer closed): `j`/`k` (or the
 //! arrows) next and previous hunk, `J`/`K` next and previous file, `n`
 //! next undecided, `c` next conflict, `a`/`x` accept or reject the hunk,
-//! `A`/`X` the file, `m` comment on the hunk, `r` reply to and `R`
-//! resolve (or reopen) its first thread, `f` request fix, `u` undo.
+//! `A`/`X` the file, `m` comment on the hunk, `e` edit it, `r` reply to
+//! and `R` resolve (or reopen) its first thread, `f` request fix, `u`
+//! undo.
+//!
+//! Edit-before-accept: Edit (`e`) opens the hunk's proposed lines in a
+//! multi-line field under the header; Accept edit (or Ctrl+Enter) accepts
+//! the hunk with that text in place of its base lines (decision
+//! `edited`, undoable like any accept). Only the hunk's lines are in the
+//! field, so the edit cannot reach outside it.
 //!
 //! Layout: side by side (removed lines on the left, added on the right,
 //! paired in order) or inline, toggled in the header. Changed words in a
@@ -32,8 +39,8 @@
 //! header and the view's key scope carry the focused hunk's description
 //! ("Hunk 3 of 12, 4 lines added, 2 removed, pending") for screen readers.
 //!
-//! Still open (E05's DiffView): edit-before-accept, the 3-way conflict
-//! view, binary previews. The session lives on the glue's queue, so the
+//! Still open (E05's DiffView): editing in place in the diff, the 3-way
+//! conflict view, binary previews. The session lives on the glue's queue, so the
 //! view reads and acts under the glue's mutex, like the queue panel.
 
 const std = @import("std");
@@ -52,7 +59,7 @@ const ev_mod = zg_gui.input.event;
 const widget = zg_gui.core.widget;
 
 /// The keys `KeyScope` takes (see the module doc).
-const view_keys = "jkJKncaxAXmrRfu";
+const view_keys = "jkJKncaxAXmrRfue";
 
 /// Hunks with more lines than this start collapsed.
 pub const collapse_lines = 400;
@@ -132,6 +139,8 @@ pub const ReviewView = struct {
         /// A new thread on this hunk of the focused file.
         hunk: u32,
         reply: feedback.ThreadId,
+        /// Editing this hunk's proposed lines before accepting them.
+        edit: u32,
     };
 
     const Action = union(enum) {
@@ -144,6 +153,7 @@ pub const ReviewView = struct {
         next_file,
         prev_file,
         comment_hunk: u32,
+        edit_hunk: u32,
         reply: feedback.ThreadId,
         toggle_resolved: feedback.ThreadId,
         post,
@@ -373,18 +383,20 @@ pub const ReviewView = struct {
                     if (h.conflict != null) "  ·  ⚠ conflict" else "",
                 }) catch "", .{ .color = if (h.conflict != null) .danger else .fg_muted, .wrap = false });
                 ui.close();
-                ui.id(r.hunk * 4 + 3);
+                ui.id(r.hunk * 5 + 3);
                 if (v.collapsed(h)) {
                     v.button(ui, showLabel(&buf, h.base_lines.count + h.new_lines.count), .{ .toggle_lines = r.hunk });
                 } else if (h.decision == .accepted or h.base_lines.count + h.new_lines.count > collapse_lines) {
                     v.button(ui, "Hide lines", .{ .toggle_lines = r.hunk });
                 }
-                ui.id(r.hunk * 4);
+                ui.id(r.hunk * 5);
                 v.button(ui, "Accept", .{ .accept_hunk = r.hunk });
-                ui.id(r.hunk * 4 + 1);
+                ui.id(r.hunk * 5 + 1);
                 v.button(ui, "Reject", .{ .reject_hunk = r.hunk });
-                ui.id(r.hunk * 4 + 2);
+                ui.id(r.hunk * 5 + 2);
                 v.button(ui, "Comment", .{ .comment_hunk = r.hunk });
+                ui.id(r.hunk * 5 + 4);
+                if (h.new_lines.count > 0) v.button(ui, "Edit", .{ .edit_hunk = r.hunk });
             },
             .thread => {
                 const t = r.thread.?;
@@ -458,6 +470,14 @@ pub const ReviewView = struct {
                 v.startComposer(.{ .hunk = h });
                 break :blk null;
             },
+            .edit_hunk => |h| blk: {
+                const text = (s.proposedText(v.arena.allocator(), s.cursor.file, h) catch |e| break :blk e) orelse break :blk null;
+                s.focus(.{ .file = s.cursor.file, .hunk = h });
+                v.startComposer(.{ .edit = h });
+                // The field holds the lines without the last line end.
+                if (v.field) |*f| f.setText(if (std.mem.endsWith(u8, text, "\n")) text[0 .. text.len - 1] else text) catch |e| break :blk e;
+                break :blk null;
+            },
             .reply => |t| blk: {
                 v.startComposer(.{ .reply = t });
                 break :blk null;
@@ -520,6 +540,7 @@ pub const ReviewView = struct {
             'A' => return .accept_file,
             'X' => return .reject_file,
             'm' => return if (h) |x| .{ .comment_hunk = x } else null,
+            'e' => return if (h) |x| .{ .edit_hunk = x } else null,
             'r' => return if (v.cursorThread(true)) |t| .{ .reply = t } else null,
             'R' => return if (v.cursorThread(false)) |t| .{ .toggle_resolved = t } else null,
             'f' => return if (v.glue.feedback != null and v.openThreads() > 0) .request_fix else null,
@@ -560,13 +581,17 @@ pub const ReviewView = struct {
         ui.text(switch (c) {
             .hunk => |h| std.fmt.bufPrint(&buf, "Comment on hunk {d}", .{h + 1}) catch "Comment",
             .reply => "Reply",
+            .edit => |h| std.fmt.bufPrint(&buf, "Edit hunk {d}", .{h + 1}) catch "Edit",
         }, .{ .wrap = false });
         ui.open(.{ .style = .{ .grow = 1, .basis = .{ .px = 0 } } });
-        const r = zg_gui.w.textField(ui, .{ .buffer = f, .a11y_label = "Comment", .placeholder = "issue (blocking): …" });
+        const r = if (c == .edit)
+            zg_gui.w.textField(ui, .{ .buffer = f, .a11y_label = "Proposed lines", .multiline = true, .submit_on_enter = false, .min_rows = 3, .max_rows = 12 })
+        else
+            zg_gui.w.textField(ui, .{ .buffer = f, .a11y_label = "Comment", .placeholder = "issue (blocking): …" });
         ui.close();
         if (r.submitted) v.action = .post;
         if (r.cancelled) v.action = .cancel_comment;
-        if (zg_gui.w.button(ui, .{ .label = "Post", .variant = .primary }).clicked) v.action = .post;
+        if (zg_gui.w.button(ui, .{ .label = if (c == .edit) "Accept edit" else "Post", .variant = .primary }).clicked) v.action = .post;
         if (zg_gui.w.button(ui, .{ .label = "Cancel", .variant = .ghost }).clicked) v.action = .cancel_comment;
     }
 
@@ -574,10 +599,21 @@ pub const ReviewView = struct {
     fn post(v: *ReviewView) anyerror!?zg_review.session.Failure {
         const c = v.composer orelse return null;
         const body = if (v.field) |*f| f.slice() else return null;
-        if (std.mem.trim(u8, body, " \t\r\n").len == 0) return null;
+        // An empty edit accepts the hunk as a deletion of its base lines.
+        if (c != .edit and std.mem.trim(u8, body, " \t\r\n").len == 0) return null;
         const g = v.glue;
         const now = nowMs(v.io);
         switch (c) {
+            .edit => |hi| {
+                const s = v.session;
+                const old = try s.proposedText(v.arena.allocator(), s.cursor.file, hi) orelse return null;
+                // Lines keep their line ends when the proposal had one.
+                const text = if (std.mem.endsWith(u8, old, "\n")) try std.mem.concat(v.arena.allocator(), u8, &.{ body, "\n" }) else body;
+                s.focus(.{ .file = s.cursor.file, .hunk = hi });
+                const fail = try s.acceptHunkEdited(text);
+                v.composer = null;
+                return fail;
+            },
             .reply => |t| _ = try g.comments.reply(t, body, .{ .user = v.author }, now),
             .hunk => |hi| {
                 const s = v.session;
@@ -1356,4 +1392,71 @@ test "review view: side by side and inline layouts, highlights, collapsed hunks"
     try testing.expect(t.find(.{ .role = .button, .name = "Side by side" }) != null);
     try testing.expect(t.find(.{ .role = .group, .name = "- const answer = compute(41, base);" }) != null);
     try testing.expect(t.find(.{ .name = "41" }) != null);
+}
+
+test "review view: edit a hunk's proposed lines, then accept the edit" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\n.\n.\n.\ntwo\n" });
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x51 };
+    const origin: @import("zg_ai").tools.builtin.files.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    const abs = (try fs.resolve(testing.io, ar, "a.txt")).abs;
+    _ = try fs.propose(testing.io, ar, abs, .{ .whole_file = .{ .text = "ONE\n.\n.\n.\n.\nTWO\n", .base_version = null } }, origin);
+    const id: zg_review.model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+
+    const Root = struct {
+        v: ?*ReviewView = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.v) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 500 }, .root = .of(&view) });
+    defer t.deinit();
+    const v = try ReviewView.create(gpa, testing.io, &t.app, g, .{ .changeset = id });
+    defer v.destroy();
+    view.v = v;
+    t.win.markAllDirty();
+    _ = t.settle();
+
+    // `j` then `e` edits the second hunk: its proposed line is in the
+    // field.
+    const press = struct {
+        fn f(app: *zg_gui.testing.TestApp, k: @FieldType(ev_mod.KeyPress, "key"), cp: u21) void {
+            app.win.dispatch(.{ .key = .{ .key = k, .codepoint = cp } });
+            app.win.dispatch(.{ .key = .{ .key = k, .codepoint = cp, .action = .release } });
+            _ = app.settle();
+        }
+    }.f;
+    t.win.setFocus(t.find(.{ .role = .group, .name = "Review" }).?, false);
+    press(t, .key_j, 'j');
+    press(t, .key_e, 'e');
+    try testing.expect(v.composer != null and v.composer.? == .edit and v.composer.?.edit == 1);
+    try testing.expectEqualStrings("TWO", v.field.?.slice());
+    try testing.expect(t.find(.{ .name_contains = "Edit hunk 2" }) != null);
+
+    // The reviewer rewrites it as two lines and accepts the edit.
+    try v.field.?.setText("Two\nand three");
+    try t.click(.{ .role = .button, .name = "Accept edit" });
+    _ = t.settle();
+    try testing.expect(v.composer == null);
+    const got = try tmp.dir.readFileAlloc(testing.io, "a.txt", ar, .limited(64));
+    try testing.expectEqualStrings("one\n.\n.\n.\n.\nTwo\nand three\n", got);
+    try testing.expect(t.find(.{ .name_contains = "1 of 2 decided" }) != null);
+
+    // Undo puts the file back.
+    try t.click(.{ .role = .button, .name = "Undo" });
+    _ = t.settle();
+    try testing.expectEqualStrings("one\n.\n.\n.\n.\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", ar, .limited(64)));
 }

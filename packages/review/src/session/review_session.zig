@@ -276,6 +276,24 @@ pub const ReviewSession = struct {
         return s.decide(&.{.{ .file = s.files_.items[s.cursor.file].idx, .input = .{ .accept = &.{h} } }}, 1, null);
     }
 
+    /// Accepts the hunk at the cursor with `text` (the reviewer's edit of
+    /// its proposed lines) in place of its base lines; its decision is
+    /// `edited`.
+    pub fn acceptHunkEdited(s: *ReviewSession, text: []const u8) !?Failure {
+        const h = s.cursor.hunk orelse return error.NothingHere;
+        return s.decide(&.{.{ .file = s.files_.items[s.cursor.file].idx, .input = .{ .edited = &.{.{ .hunk = h, .text = text }} } }}, 1, null);
+    }
+
+    /// The proposed text of hunk `h` of file `i`: its new lines with their
+    /// line ends (in `arena`).
+    pub fn proposedText(s: *const ReviewSession, arena: Allocator, i: u32, h: u32) !?[]const u8 {
+        const fc = s.fileChange(i) orelse return null;
+        if (h >= fc.hunks.len) return null;
+        const tx = try s.texts(arena, i) orelse return null;
+        const r = fc.hunks[h].new_lines;
+        return tx.new[lineOffset(tx.new, r.start)..lineOffset(tx.new, r.start + r.count)];
+    }
+
     pub fn rejectHunk(s: *ReviewSession) !?Failure {
         const h = s.cursor.hunk orelse return s.decideFile(.reject);
         return s.decide(&.{.{ .file = s.files_.items[s.cursor.file].idx, .input = .{ .reject = &.{h} } }}, 1, s.cursor.file);
@@ -515,4 +533,16 @@ pub const ReviewSession = struct {
 
 fn isOpen(st: model.FileState) bool {
     return st == .pending or st == .partially_applied;
+}
+
+/// The byte offset of line `line` (0-based) in `text`; its length past
+/// the last line.
+fn lineOffset(text: []const u8, line: u32) usize {
+    var n: u32 = 0;
+    var at: usize = 0;
+    while (n < line) : (n += 1) {
+        const nl = std.mem.indexOfScalarPos(u8, text, at, '\n') orelse return text.len;
+        at = nl + 1;
+    }
+    return at;
 }
