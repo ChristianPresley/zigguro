@@ -89,6 +89,31 @@ pub fn build(b: *std.Build) void {
     const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, f.optimize, tools_test_step);
     const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, f.optimize, tools_test_step);
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
+    const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
+    const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
+
+    // Generated protocol bindings: `zig build lspgen` / `dapgen` regenerate
+    // the checked-in files; `zig build test` fails when one is stale.
+    const check_gen_step = b.step("check-gen", "Fail if a generated protocol file is out of date");
+    test_step.dependOn(check_gen_step);
+    const generators = .{
+        .{ lspgen, "lspgen", "tools/lspgen/data/metaModel-3.18.json", "packages/lsp/src/gen/protocol.zig" },
+        .{ dapgen, "dapgen", "tools/dapgen/data/debugAdapterProtocol.json", "packages/dap/src/gen/protocol.zig" },
+    };
+    inline for (generators) |g| {
+        inline for (.{ false, true }) |check| {
+            const run = b.addRunArtifact(g[0]);
+            run.addFileArg(b.path(g[2]));
+            run.addArg(b.pathFromRoot(g[3]));
+            run.has_side_effects = true;
+            if (check) {
+                run.addArg("--check");
+                check_gen_step.dependOn(&run.step);
+            } else {
+                b.step(g[1], "Regenerate " ++ g[3]).dependOn(&run.step);
+            }
+        }
+    }
 
     const zig_pin = b.addRunArtifact(zig_verify);
     zig_pin.setCwd(b.path("."));
