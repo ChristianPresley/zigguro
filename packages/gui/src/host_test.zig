@@ -214,3 +214,35 @@ test "host: pacing follows the renderer" {
     try std.testing.expectEqual(zg_vulkan.present.FramePacer.Mode.immediate, q.mode);
     try std.testing.expect(q.waiter == null);
 }
+
+test "host sends the window's IME state when it changes" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+    var v: Counter = .{};
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 200, .h = 100 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    const pw = hl.windows.getPtr(@intFromEnum(hw.id)).?;
+    try std.testing.expect(!pw.ime_enabled);
+
+    // A text input asks for the IME; the next pump tells the platform.
+    const node = hw.win.root;
+    hw.win.setIme(node, .{ .caret = .{ .x = 10, .y = 20, .w = 2, .h = 16 }, .surrounding = .{ .text = "abc", .cursor_byte = 3, .anchor_byte = 3 } });
+    _ = try host.pump();
+    try std.testing.expect(pw.ime_enabled);
+    try std.testing.expectEqual(hw.win.ime.serial, hw.ime_sent);
+
+    // The same request again changes nothing.
+    const sent = hw.ime_sent;
+    hw.win.setIme(node, .{ .caret = .{ .x = 10, .y = 20, .w = 2, .h = 16 }, .surrounding = .{ .text = "abc", .cursor_byte = 3, .anchor_byte = 3 } });
+    try std.testing.expectEqual(sent, hw.win.ime.serial);
+
+    hw.win.setIme(node, null);
+    _ = try host.pump();
+    try std.testing.expect(!pw.ime_enabled);
+}

@@ -52,10 +52,38 @@ pub const InputEvent = union(enum) {
     key: KeyPress,
     /// Committed text (typing, IME commit, paste).
     text: []const u8,
+    /// The IME's composition changed (to the focused node).
+    ime_preedit: ImePreedit,
+    /// The IME asks to delete text around the caret (to the focused node).
+    ime_delete_surrounding: ImeDelete,
     focus_gained,
     focus_lost,
     /// Activation by keyboard (Enter/Space on a focused control).
     activate,
+};
+
+/// IME composition text, shown inline until committed.
+pub const ImePreedit = struct {
+    /// The composing text; empty ends the composition. Valid during the
+    /// event only.
+    text: []const u8,
+    /// The target clause as byte offsets into `text`; a begin of -1 hides
+    /// the caret.
+    cursor_begin: i32 = 0,
+    cursor_end: i32 = 0,
+};
+
+/// Bytes to delete before and after the caret (or selection).
+pub const ImeDelete = struct { before: u32, after: u32 };
+
+/// What a focused text input asks of the platform IME: the kind of text,
+/// where the caret is (window logical coordinates, for the candidate
+/// window) and the text around it.
+pub const ImeRequest = struct {
+    purpose: zg_platform.ime.ImePurpose = .normal,
+    caret: geom.Rect,
+    /// Borrowed for the call; the window copies it.
+    surrounding: ?zg_platform.ime.Surrounding = null,
 };
 
 /// Dispatch phase.
@@ -81,6 +109,8 @@ pub const Sink = struct {
         clipboardGet: *const fn (*anyopaque) []const u8,
         clipboardSet: *const fn (*anyopaque, []const u8) void,
         nowMs: *const fn (*anyopaque) u64,
+        setIme: *const fn (*anyopaque, ids.NodeId, ?ImeRequest) void,
+        allocator: *const fn (*anyopaque) std.mem.Allocator,
     };
 };
 
@@ -163,6 +193,17 @@ pub const EventCx = struct {
     /// Milliseconds on the app's monotonic clock.
     pub fn nowMs(ec: *EventCx) u64 {
         return ec.sink.vtable.nowMs(ec.sink.ptr);
+    }
+
+    /// Enables the platform IME for this node with `r` (or updates it),
+    /// or disables it (null). Unchanged requests are not resent.
+    pub fn setIme(ec: *EventCx, r: ?ImeRequest) void {
+        ec.sink.vtable.setIme(ec.sink.ptr, ec.node, r);
+    }
+
+    /// The window's allocator, for widget state that outlives the event.
+    pub fn allocator(ec: *EventCx) std.mem.Allocator {
+        return ec.sink.vtable.allocator(ec.sink.ptr);
     }
 
     /// `p` relative to the node's top-left corner.

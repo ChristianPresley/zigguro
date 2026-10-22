@@ -6,9 +6,12 @@
 //! ems from the edges. Multi-line fields wrap at the content width and grow
 //! from `min_rows` to `max_rows`, then scroll vertically.
 //!
+//! IME composition is built in (ime.zig): focus enables the platform IME
+//! with the caret rectangle and surrounding text, preedit shows inline.
+//!
 //! Not yet: bidi visual caret movement (waits on E03 `moveVisual`), caret
-//! blink (the caret is steady, so idle frames stay at zero), IME preedit
-//! input and PRIMARY selection (E04.F05.S02.T02 plugs into `ImeHooks`).
+//! blink (the caret is steady, so idle frames stay at zero), PRIMARY
+//! selection and the agent-prompt hooks (E04.F05.S02.T02 follow-ups).
 
 const std = @import("std");
 const zg_text = @import("zg_text");
@@ -27,6 +30,7 @@ const event_mod = @import("../../input/event.zig");
 const model = @import("model.zig");
 const undo_mod = @import("undo.zig");
 const commands = @import("commands.zig");
+const ime_mod = @import("ime.zig");
 
 const grapheme = zg_text.unicode.grapheme;
 const Size = geom.Size;
@@ -47,8 +51,8 @@ const Editor = commands.Editor;
 /// What an IME hook did with an event.
 pub const EventResult = enum { ignored, handled };
 
-/// The seam E04.F05.S02.T02 installs IME, PRIMARY selection and prompt
-/// behaviour through. Rects are window logical coordinates.
+/// The seam for behaviour on top of the field (PRIMARY selection, prompt
+/// triggers). Rects are window logical coordinates.
 pub const ImeHooks = struct {
     /// Focus gained (true) or lost (false).
     onFocus: ?*const fn (*TextField.State, *EventCx, bool) void = null,
@@ -111,6 +115,8 @@ pub const TextField = struct {
         rows: u16 = 1,
         /// Visual line breaks of the current text.
         lines: LineCache = .{},
+        /// The bytes of `preedit`.
+        ime_text: ime_mod.PreeditStore = .{},
 
         /// Selects the whole text.
         pub fn selectAll(s: *State, buf: *TextBuffer) void {
@@ -130,6 +136,7 @@ pub const TextField = struct {
     pub fn deinitState(s: *State) void {
         s.undo.deinit();
         s.lines.deinit();
+        s.ime_text.deinit();
     }
 
     fn padding(th: *const theme_mod.Theme) geom.Insets {
@@ -185,6 +192,8 @@ pub const TextField = struct {
         state.sel.clamp(@intCast(t.len));
         var sel = state.sel;
         var underline: ?[2]u32 = null;
+        // The IME's target clause, drawn with a thicker underline.
+        var clause: ?[2]u32 = null;
         if (state.preedit) |pe| if (pe.text.len > 0) {
             const sr = sel.range();
             if (std.mem.concat(pc.gpa, u8, &.{ t[0..sr[0]], pe.text, t[sr[1]..] })) |c| {
@@ -194,6 +203,8 @@ pub const TextField = struct {
                 const caret_at: u32 = sr[0] + @as(u32, @intCast(@max(0, @min(pe.cursor[1], @as(i32, @intCast(pe.text.len))))));
                 sel = .caret(caret_at);
                 underline = .{ sr[0], sr[0] + @as(u32, @intCast(pe.text.len)) };
+                if (pe.cursor[0] >= 0 and pe.cursor[1] > pe.cursor[0])
+                    clause = .{ sr[0] + @as(u32, @intCast(pe.cursor[0])), sr[0] + @as(u32, @intCast(pe.cursor[1])) };
             } else |_| {}
         };
         var g: Geo = .init(pc.text_sys, st, props, content.w, cache, t);
@@ -242,6 +253,13 @@ pub const TextField = struct {
                     const x1 = g.width(t, @intCast(ln.start), b);
                     pc.rect(.{ .x = origin.x + x0, .y = y + lh - 2, .w = x1 - x0, .h = 1 }, fg, .{});
                 };
+                if (clause) |u| if (u[0] <= ln.end and u[1] >= ln.start) {
+                    const a = @max(u[0], @as(u32, @intCast(ln.start)));
+                    const b = @min(u[1], @as(u32, @intCast(ln.end)));
+                    const x0 = g.width(t, @intCast(ln.start), a);
+                    const x1 = g.width(t, @intCast(ln.start), b);
+                    pc.rect(.{ .x = origin.x + x0, .y = y + lh - 3, .w = x1 - x0, .h = 2 }, fg, .{});
+                };
             }
         }
         if (focused and !props.read_only and !props.disabled and !g.hide_caret) {
@@ -279,11 +297,17 @@ pub const TextField = struct {
             .now_ms = ec.nowMs(),
         };
         state.sel.clamp(props.buffer.len());
+        // An open composition owns the keyboard.
+        if (state.preedit != null and ev.* == .key) return true;
         switch (ev.*) {
             .focus_gained, .focus_lost => {
                 const gained = ev.* == .focus_gained;
                 state.undo.breakGroup();
-                if (!gained) state.drag = .none;
+                if (!gained) {
+                    state.drag = .none;
+                    state.preedit = null;
+                    ec.setIme(null);
+                } else reportIme(ec, props, state, geoFor(ec, props, state));
                 if (props.hooks) |h| if (h.onFocus) |f| f(state, ec, gained);
                 ec.repaint();
                 return false;
@@ -345,7 +369,21 @@ pub const TextField = struct {
             },
             .text => |s| {
                 if (props.read_only) return true;
-                const changed = ed.insert(s) catch false;
+                // A commit replaces the composition.
+                const composing = state.preedit != null;
+                state.preedit = null;
+                const changed = (if (composing) ed.commitText(s) else ed.insert(s)) catch false;
+                after(ec, props, state, changed);
+                return true;
+            },
+            .ime_preedit => |pe| {
+                if (props.read_only) return true;
+                state.preedit = state.ime_text.set(ec.allocator(), pe, state.sel.range()) catch null;
+                ec.repaint();
+                return true;
+            },
+            .ime_delete_surrounding => |d| {
+                const changed = ed.deleteAround(d.before, d.after) catch false;
                 after(ec, props, state, changed);
                 return true;
             },
@@ -461,13 +499,25 @@ pub const TextField = struct {
             if (c.x - state.scroll.x > box.w - margin) state.scroll.x = c.x - box.w + margin;
         }
         ec.repaint();
+        reportIme(ec, props, state, g);
         if (props.hooks) |h| {
-            if (h.onCaretMoved) |f| {
-                const y0 = if (props.multiline) box.y else box.y + (box.h - g.m.line_h) / 2;
-                f(state, ec, .{ .x = box.x + c.x - state.scroll.x, .y = y0 + c.y - state.scroll.y, .w = caretWidth(ec.theme()), .h = g.m.line_h });
-            }
+            if (h.onCaretMoved) |f| f(state, ec, caretRect(ec, props, state, g));
             if (h.onSelectionChanged) |f| f(state, ec);
         }
+    }
+
+    /// The caret in window coordinates.
+    fn caretRect(ec: *EventCx, props: *const Props, state: *State, g: Geo) Rect {
+        const box = contentRect(ec);
+        const c = g.caret(props.buffer.slice(), state.sel.head);
+        const y0 = if (props.multiline) box.y else box.y + (box.h - g.m.line_h) / 2;
+        return .{ .x = box.x + c.x - state.scroll.x, .y = y0 + c.y - state.scroll.y, .w = caretWidth(ec.theme()), .h = g.m.line_h };
+    }
+
+    /// Tells the IME where the caret is (editable fields only).
+    fn reportIme(ec: *EventCx, props: *const Props, state: *State, g: Geo) void {
+        if (props.read_only) return;
+        ime_mod.report(ec, props.buffer.slice(), state.sel, props.password, caretRect(ec, props, state, g));
     }
 
     fn contentRect(ec: *EventCx) Rect {

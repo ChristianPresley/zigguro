@@ -197,9 +197,71 @@ pub const Window = struct {
     path_scratch: std.ArrayList(NodeId) = .empty,
     ctx_scratch: std.ArrayList([]const u8) = .empty,
 
+    /// What the focused text input asked of the platform IME
+    /// (`EventCx.setIme`); the Host sends it when `serial` changes.
+    ime: Ime = .{},
+
     /// The platform window this window presents to, if any.
     platform_win: ?zg_platform.types.WindowId = null,
     close_requested: bool = false,
+
+    /// The IME state to report to the platform.
+    pub const Ime = struct {
+        enabled: bool = false,
+        /// The node that enabled it (only it can disable it).
+        owner: NodeId = .none,
+        purpose: zg_platform.ime.ImePurpose = .normal,
+        /// The caret, window logical coordinates.
+        caret: Rect = .{},
+        has_surrounding: bool = false,
+        text: std.ArrayList(u8) = .empty,
+        cursor_byte: u32 = 0,
+        anchor_byte: u32 = 0,
+        /// Bumped on every change.
+        serial: u32 = 0,
+
+        /// The text around the caret, if the owner sent any.
+        pub fn surrounding(i: *const Ime) ?zg_platform.ime.Surrounding {
+            if (!i.has_surrounding) return null;
+            return .{ .text = i.text.items, .cursor_byte = i.cursor_byte, .anchor_byte = i.anchor_byte };
+        }
+
+        fn same(i: *const Ime, n: NodeId, r: event.ImeRequest) bool {
+            if (!i.enabled or !i.owner.eql(n) or i.purpose != r.purpose or !std.meta.eql(i.caret, r.caret)) return false;
+            const sr = r.surrounding orelse return !i.has_surrounding;
+            return i.has_surrounding and i.cursor_byte == sr.cursor_byte and i.anchor_byte == sr.anchor_byte and std.mem.eql(u8, i.text.items, sr.text);
+        }
+    };
+
+    /// Enables the IME for `n` with `r`, or (null) disables it if `n`
+    /// enabled it. Unchanged requests leave `ime.serial` alone.
+    pub fn setIme(w: *Window, n: NodeId, r: ?event.ImeRequest) void {
+        const i = &w.ime;
+        const req = r orelse {
+            if (!i.enabled or !i.owner.eql(n)) return;
+            i.enabled = false;
+            i.owner = .none;
+            i.has_surrounding = false;
+            i.text.clearRetainingCapacity();
+            i.serial +%= 1;
+            return;
+        };
+        if (i.same(n, req)) return;
+        i.enabled = true;
+        i.owner = n;
+        i.purpose = req.purpose;
+        i.caret = req.caret;
+        i.has_surrounding = false;
+        i.text.clearRetainingCapacity();
+        if (req.surrounding) |sr| {
+            if (i.text.appendSlice(w.gpa, sr.text)) {
+                i.has_surrounding = true;
+                i.cursor_byte = sr.cursor_byte;
+                i.anchor_byte = sr.anchor_byte;
+            } else |_| {}
+        }
+        i.serial +%= 1;
+    }
 
     /// How to open a window.
     pub const Options = struct {
@@ -253,6 +315,7 @@ pub const Window = struct {
         w.overlays.deinit(gpa);
         w.close_hooks.deinit(gpa);
         w.timers.deinit(gpa);
+        w.ime.text.deinit(gpa);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         for (w.after_frame.items) |t| t.f(t.ctx, w);
         w.after_frame_due.deinit(gpa);
@@ -1214,6 +1277,8 @@ pub const Window = struct {
         .clipboardGet = sinkClipGet,
         .clipboardSet = sinkClipSet,
         .nowMs = sinkNow,
+        .setIme = sinkIme,
+        .allocator = sinkGpa,
     };
 
     fn sinkRespond(p: *anyopaque, n: NodeId, r: Response) void {
@@ -1265,6 +1330,14 @@ pub const Window = struct {
     fn sinkClipSet(p: *anyopaque, s: []const u8) void {
         const w: *Window = @ptrCast(@alignCast(p));
         w.app.clipboard.set(w.gpa, s);
+    }
+    fn sinkIme(p: *anyopaque, n: NodeId, r: ?event.ImeRequest) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.setIme(n, r);
+    }
+    fn sinkGpa(p: *anyopaque) std.mem.Allocator {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.gpa;
     }
     fn sinkNow(p: *anyopaque) u64 {
         const w: *Window = @ptrCast(@alignCast(p));
@@ -1395,6 +1468,9 @@ pub const Window = struct {
             },
             .focus_gained, .focus_lost, .activate => {
                 if (!w.focus.isNone()) _ = w.deliver(w.focus, ev, false);
+            },
+            .ime_preedit, .ime_delete_surrounding => {
+                if (!w.focus.isNone()) _ = w.deliver(w.focus, ev, true);
             },
         }
     }
@@ -1534,6 +1610,8 @@ pub const Window = struct {
             .scroll => |s| w.dispatch(.{ .scroll = .{ .pos = w.pointer, .dx = s.dx, .dy = s.dy, .precise = s.unit == .pixels } }),
             .key => |k| w.dispatch(.{ .key = .{ .key = k.ev.key, .mods = k.ev.mods, .action = k.ev.action, .codepoint = k.ev.codepoint } }),
             .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
+            .ime_preedit => |t| w.dispatch(.{ .ime_preedit = .{ .text = payload.payload(t.text), .cursor_begin = t.cursor_begin, .cursor_end = t.cursor_end } }),
+            .ime_delete_surrounding => |d| w.dispatch(.{ .ime_delete_surrounding = .{ .before = d.before_bytes, .after = d.after_bytes } }),
             .window_focus => |f| if (!f.focused) {
                 w.setHot(.none);
                 w.dismissPopovers();

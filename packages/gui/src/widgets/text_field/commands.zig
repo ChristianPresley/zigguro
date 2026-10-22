@@ -198,6 +198,29 @@ pub const Editor = struct {
         return e.replaceRange(.{ h, to }, "", if (whole_word) .other else .delete_forward);
     }
 
+    /// Deletes `before` bytes before the selection and `after` bytes after
+    /// it (an IME's delete-surrounding), widened to whole graphemes and
+    /// clamped to the text. The selection stays on the same text.
+    pub fn deleteAround(e: Editor, before: u32, after: u32) !bool {
+        if (e.opts.read_only or (before == 0 and after == 0)) return false;
+        const t = e.text();
+        const r = e.sel.range();
+        const keep = e.sel.*;
+        var to: u32 = @intCast(@min(t.len, @as(usize, r[1]) + after));
+        const s = snap(t, to);
+        if (s < to) to = @intCast(grapheme.nextBoundary(t, s));
+        const from = snap(t, r[0] -| before);
+        var changed = false;
+        if (to > r[1]) changed = try e.replaceRange(.{ r[1], to }, "", .other);
+        e.sel.* = keep;
+        if (from < r[0]) {
+            changed = try e.replaceRange(.{ from, r[0] }, "", .other) or changed;
+            const n = r[0] - from;
+            e.sel.* = .{ .anchor = keep.anchor - n, .head = keep.head - n };
+        } else e.sel.* = keep;
+        return changed;
+    }
+
     /// Deletes the selected bytes.
     pub fn deleteSelection(e: Editor) !bool {
         if (e.sel.isEmpty()) return false;
