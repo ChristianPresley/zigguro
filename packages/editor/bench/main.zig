@@ -363,6 +363,7 @@ fn register(b: *bench.Bench) !void {
     try registerSmart(b, text);
     try registerLineOps(b, text);
     try registerEncoding(b, text);
+    try registerSave(b, text);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -575,6 +576,30 @@ fn decodeBench(c: *EncBench, s: *bench.State) void {
         var d: zg_editor.model.encoding.Decoder = .init(c.enc);
         d.decode(c.bytes, &c.out, c.gpa, true) catch unreachable;
     }
+}
+
+/// Saving 100 MB of UTF-8 through the atomic path (temp file, sync,
+/// rename) into `.zig-cache/bench-save`.
+fn registerSave(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.save.100mb_utf8", f) == null) return;
+    const save = buffer.save;
+    const big = try b.gpa.alloc(u8, 100 << 20);
+    defer b.gpa.free(big);
+    for (0..big.len) |k| big[k] = text[k % text.len];
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), big);
+    defer doc.deinit();
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(b.io, ".zig-cache/bench-save", .{});
+    defer dir.close(b.io);
+    var job: save.SaveJob = .{ .gpa = b.gpa, .snap = doc.snapshot(), .dir = dir, .path = "big.txt", .encoding = .utf8, .expect = null };
+    defer job.deinit();
+    try b.run("editor.save.100mb_utf8", &job, saveBench);
+    dir.deleteFile(b.io, "big.txt") catch {};
+}
+
+fn saveBench(job: *buffer.save.SaveJob, s: *bench.State) void {
+    s.setBytes(job.snap.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) _ = job.run(s.io) catch unreachable;
 }
 
 const AgentBench = struct {
