@@ -2,6 +2,7 @@
 //! item variation store used by GPOS VariationIndex tables.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const reader = @import("reader.zig");
 const GlyphId = reader.GlyphId;
 const readAt = reader.readAt;
@@ -41,6 +42,9 @@ pub const Gdef = struct {
     has_glyph_classes: bool = false,
     /// The LigCaretList table (empty when absent).
     lig_carets: []const u8 = &.{},
+    /// `glyphProps` of every glyph id below its length, when
+    /// `buildPropsTable` made one.
+    props_table: []const u16 = &.{},
 
     /// Parses GDEF 1.0–1.3. Broken sub-tables are treated as absent.
     pub fn init(bytes: []const u8) reader.Error!Gdef {
@@ -76,6 +80,25 @@ pub const Gdef = struct {
             } else |_| {};
         }
         return g;
+    }
+
+    /// Fills `props_table` for glyph ids below `num_glyphs` from `a`, so
+    /// `glyphProps` is one load. Left empty when a class definition
+    /// cannot be filled exactly (see `ClassDef.fill`).
+    pub fn buildPropsTable(g: *Gdef, a: Allocator, num_glyphs: usize) Allocator.Error!void {
+        const classes = try a.alloc(u16, num_glyphs);
+        defer a.free(classes);
+        const attach = try a.alloc(u16, num_glyphs);
+        defer a.free(attach);
+        if (!g.glyph_classes.fill(u16, classes) or !g.mark_attach.fill(u16, attach)) return;
+        const t = try a.alloc(u16, num_glyphs);
+        for (t, classes, attach) |*o, k, m| o.* = switch (k) {
+            1 => GlyphProps.base,
+            2 => GlyphProps.ligature,
+            3 => GlyphProps.mark | (@as(u16, @truncate(m)) << 8),
+            else => 0,
+        };
+        g.props_table = t;
     }
 
     /// The glyph's GDEF class.
@@ -132,6 +155,7 @@ pub const Gdef = struct {
 
     /// HarfBuzz-style glyph props for `gid` (see `GlyphProps`).
     pub fn glyphProps(g: *const Gdef, gid: GlyphId) u16 {
+        if (gid < g.props_table.len) return g.props_table[gid];
         return switch (g.glyphClass(gid)) {
             .base => GlyphProps.base,
             .ligature => GlyphProps.ligature,
