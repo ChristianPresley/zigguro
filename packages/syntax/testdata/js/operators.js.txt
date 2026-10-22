@@ -1,0 +1,8 @@
+a = b + c - d * e / f % g ** h;
+x += 1; y -= 2; z ||= w; q ??= r;
+const ok = a === b && c !== d || !e;
+const s = a << 2 >> 1 >>> 0 & 0xff | 1 ^ 2;
+const t = cond ? yes : no;
+const spread = [...items, ...more];
+const fn = (x) => x * 2;
+obj?.prop?.[key]?.(arg);
