@@ -1,0 +1,10 @@
+1| function:cat operator:<< label:EOF
+2| string:Hello  variable:$USER string:, today is  variable:$(date) string:.
+3| label:EOF
+4| function:cat operator:<<- label:'END'
+5| string:	indented $not_expanded
+6| label:END
+7| function:cat operator:<< label:"DONE" operator:| function:grep
+8| string:literal ${text}
+9| label:DONE
+10| function:tr operator:<<< string:"here string"
