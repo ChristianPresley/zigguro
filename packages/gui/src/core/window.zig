@@ -131,6 +131,9 @@ pub const Window = struct {
     /// Sees keys before the focused node while `node` is mounted (the
     /// menubar).
     key_filter: ?struct { node: NodeId, f: keys_mod.KeyFilter } = null,
+    /// Drops the text event that follows a character key the key handler
+    /// consumed.
+    eat_text: bool = false,
     /// Where the last context menu was asked for (window coordinates).
     context_at: Vec2 = .{},
     /// The last context menu was asked for from the keyboard.
@@ -1177,6 +1180,12 @@ pub const Window = struct {
             },
             .key => |k| w.dispatchKey(k),
             .text => {
+                // The text of a key the key handler consumed (a chord's
+                // second stroke) is not typed.
+                if (w.eat_text) {
+                    w.eat_text = false;
+                    return;
+                }
                 if (!w.focus.isNone()) _ = w.deliver(w.focus, ev, true);
             },
             .focus_gained, .focus_lost, .activate => {
@@ -1193,6 +1202,14 @@ pub const Window = struct {
         }
         if (k.action == .release) {
             if (!w.focus.isNone()) _ = w.deliver(w.focus, .{ .key = k }, true);
+            if (w.key_handler) |h| _ = h.call(k, w.keyContexts());
+            return;
+        }
+        w.eat_text = false;
+        // A chord in progress takes its next stroke before the focused node.
+        const chord = if (w.key_handler) |h| h.isPending() else false;
+        if (chord and w.key_handler.?.call(k, w.keyContexts())) {
+            w.eat_text = k.codepoint != 0;
             return;
         }
         if (!w.focus.isNone() and w.deliver(w.focus, .{ .key = k }, true)) return;
@@ -1207,10 +1224,12 @@ pub const Window = struct {
                 return;
             }
         }
-        if (w.key_handler) |h| {
-            const ctxs = w.keyContexts();
-            if (h.call(k, ctxs)) return;
-        }
+        if (w.key_handler) |h| if (!chord) {
+            if (h.call(k, w.keyContexts())) {
+                w.eat_text = k.codepoint != 0;
+                return;
+            }
+        };
         switch (k.key) {
             .tab => if (!k.mods.ctrl and !k.mods.alt) {
                 w.moveFocus(if (k.mods.shift) .prev else .next);
