@@ -15,15 +15,21 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",         "text.cache_hit",
-    "text.cache_screen",         "text.cells_row_200",
-    "text.fontdb_load_3k",       "text.gamma",
-    "text.hit_test",             "text.itemize_200col",
-    "text.layout_200col",        "text.lcd",
-    "text.measure_hit",          "text.raster_lcd_14px",
-    "text.registry_get",         "text.sdf_48px",
-    "text.shape_code_line_200",  "text.shape_latin_1k",
-    "text.shape_word_cache_hit", "text.wrap_10kb",
+    "text.atlas_insert",
+    "text.cache_hit",
+    "text.cache_screen",
+    "text.cells_row_200",
+    "text.fontdb_load_3k",
+    "text.hit_test",
+    "text.itemize_200col",
+    "text.layout_200col",
+    "text.measure_hit",
+    "text.registry_get",
+    "text.sdf_48px",
+    "text.shape_code_line_200",
+    "text.shape_latin_1k",
+    "text.shape_word_cache_hit",
+    "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -134,6 +140,9 @@ fn register(b: *bench.Bench) !void {
     defer jb_inst.deinit(b.gpa);
     try b.run("text.raster_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .gpa = b.gpa, .px = 14 }, rasterGlyph);
 
+    // LCD (3× raster plus FIR filter) of the same glyphs.
+    try b.run("text.raster_lcd_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .gpa = b.gpa, .px = 14, .mode = .lcd_rgb }, rasterGlyph);
+
     // The same for Source Han Sans JP (CFF, CJK) at 64 px.
     const han = try zg_text.ot.Face.init(fonts.data[4], 0);
     var han_inst = try vt.FaceInstance.init(b.gpa, &han, &.{});
@@ -148,15 +157,15 @@ fn register(b: *bench.Bench) !void {
 
 const han_cps = [12]u21{ '語', '漢', '字', '日', '本', 'あ', 'い', 'う', 'え', 'お', 'か', 'き' };
 
-const RasterCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator, px: f32 };
+const RasterCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator, px: f32, mode: zg_text.raster.RasterParams.Mode = .gray };
 
 fn rasterGlyph(ctx: RasterCtx, s: *State) void {
     var r: zg_text.raster.Rasterizer = .init(ctx.gpa);
     defer r.deinit();
-    for (ctx.gids) |gid| _ = r.rasterizeGlyph(ctx.inst, gid, .{ .px_per_em = ctx.px }) catch unreachable;
+    for (ctx.gids) |gid| _ = r.rasterizeGlyph(ctx.inst, gid, .{ .px_per_em = ctx.px, .mode = ctx.mode }) catch unreachable;
     var k: usize = 0;
     for (0..s.iterations()) |_| {
-        const bm = r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = ctx.px }) catch unreachable;
+        const bm = r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = ctx.px, .mode = ctx.mode }) catch unreachable;
         bench.doNotOptimizeAway(bm.pixels.len);
         k += 1;
         if (k == ctx.gids.len) k = 0;
