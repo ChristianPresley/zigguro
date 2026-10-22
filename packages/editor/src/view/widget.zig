@@ -3,7 +3,8 @@
 //!
 //! Paint order per visible row: current-line background, decoration
 //! highlights, selections, syntax-coloured text (lexical tokens with LSP
-//! semantic ones merged in), underlines, carets; then
+//! semantic ones merged in) with inline decoration texts spliced in,
+//! underlines, carets; block decorations (their `block_painter`); then
 //! the line-number gutter over the horizontally scrolled text. Only the
 //! visible rows are read, highlighted (`DocumentSyntax.ensure`) and drawn.
 //!
@@ -122,7 +123,8 @@ pub const Editor = struct {
     /// Any visible change repaints.
     pub fn paintHash(props: *const Props) u64 {
         const scm: u64 = if (props.view.scm) |s| s.version() else 0;
-        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f);
+        const blocks: u64 = if (props.view.decorations) |d| d.inline_generation else 0;
+        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f) ^ (blocks *% 0x1656_67b1_9e37_79f9);
     }
 
     /// Takes whatever room the parent offers (80x24 cells otherwise).
@@ -202,10 +204,13 @@ pub const Editor = struct {
         var line = vis[0];
         while (line <= vis[1]) : (line += 1) {
             const lr = v.lineRange(line);
+            var inl: [view_mod.max_row_inlays]view_mod.Inlay = undefined;
+            const ins = v.rowInlays(lr, &inl);
             // `text` reuses the view's scratch; copy the row for this loop.
             const row_text = pc.gpa.dupe(u8, v.text(lr)) catch break;
             defer pc.gpa.free(row_text);
-            const y = o.y + @as(f32, @floatFromInt(line)) * lh;
+            const y = o.y + v.lineTop(line);
+            const rx = RowX{ .v = v, .s = row_text, .ins = ins, .start = lr.start };
 
             // Current line (only with a single caret, like most editors).
             if (line == prim_line and prim.isCaret() and v.selections().len == 1 and focused) {
@@ -218,8 +223,8 @@ pub const Editor = struct {
                     else => continue,
                 };
                 if (rowSpan(lr, d.range)) |sp| {
-                    const x0 = v.xInLine(row_text, sp[0]);
-                    const x1 = v.xInLine(row_text, sp[1]);
+                    const x0 = rx.at(sp[0]);
+                    const x1 = rx.at(sp[1]);
                     pc.rect(.{ .x = o.x + x0, .y = y, .w = @max(x1 - x0, 1), .h = lh }, decoColor(v, hl_style, hl_default), .{});
                 }
             }
@@ -231,14 +236,15 @@ pub const Editor = struct {
                 if (sr.end == lr.start and line > 0) continue;
                 const a = @max(sr.start, lr.start) - lr.start;
                 const b = @min(sr.end, lr.end) - lr.start;
-                const x0 = v.xInLine(row_text, @intCast(a));
-                var x1 = v.xInLine(row_text, @intCast(b));
+                const x0 = rx.at(@intCast(a));
+                var x1 = rx.at(@intCast(b));
                 // A selected line break shows as a space-wide block.
                 if (sr.end > lr.end) x1 += pc.text_sys.advance(st, ' ');
                 pc.rect(.{ .x = o.x + x0, .y = y, .w = x1 - x0, .h = lh }, sel_color, .{});
             }
             // Text, in syntax-coloured runs.
-            drawRow(pc, v, row_text, rowTokens(state, v, line), palette, fg, .{ .x = o.x, .y = y + base });
+            drawRow(pc, v, row_text, rowTokens(state, v, line), palette, fg, .{ .x = o.x, .y = y + base }, ins, lr.start);
+            drawInlays(pc, v, rx, fg, .{ .x = o.x, .y = y + base });
             // Underlines and strikes.
             for (state.decos.items) |d| {
                 const c: Color, const yy: f32 = switch (d.deco.kind) {
@@ -247,8 +253,8 @@ pub const Editor = struct {
                     else => continue,
                 };
                 if (rowSpan(lr, d.range)) |sp| {
-                    const x0 = v.xInLine(row_text, sp[0]);
-                    const x1 = v.xInLine(row_text, sp[1]);
+                    const x0 = rx.at(sp[0]);
+                    const x1 = rx.at(sp[1]);
                     pc.rect(.{ .x = o.x + x0, .y = yy, .w = @max(x1 - x0, 2), .h = 1 }, c, .{});
                 }
             }
@@ -256,9 +262,9 @@ pub const Editor = struct {
             if (focused) for (v.selections()) |s| {
                 if (s.head < lr.start or s.head > lr.end) continue;
                 const col: usize = @intCast(s.head - lr.start);
-                const x = v.xInLine(row_text, col);
+                const x = rx.at(col);
                 // Block shapes cover the character under the caret.
-                const cw = if (col < row_text.len) @max(v.xInLine(row_text, col + (std.unicode.utf8ByteSequenceLength(row_text[col]) catch 1)) - x, 1) else pc.text_sys.advance(st, ' ');
+                const cw = if (col < row_text.len) @max(v.xInLine(row_text, col + (std.unicode.utf8ByteSequenceLength(row_text[col]) catch 1)) - v.xInLine(row_text, col), 1) else pc.text_sys.advance(st, ' ');
                 const cr: Rect = switch (shape) {
                     .bar => .{ .x = @round(o.x + x), .y = y, .w = caret_w, .h = lh },
                     .block => .{ .x = @round(o.x + x), .y = y, .w = cw, .h = lh },
@@ -267,6 +273,12 @@ pub const Editor = struct {
                 };
                 pc.rect(cr, if (shape == .block) fg.fade(0.6) else fg, .{});
             };
+        }
+        // Blocks: an empty band unless a painter fills it.
+        for (v.blockList(), 0..) |b, i| {
+            const br = v.blockRectAt(i);
+            if (br.y + br.h <= 0 or br.y >= r.h) continue;
+            if (v.block_painter) |bp| bp.paint(bp.ctx, pc, br, b) else pc.rect(br, bg, .{});
         }
         pc.popClip();
 
@@ -279,7 +291,7 @@ pub const Editor = struct {
                 const label = std.fmt.bufPrint(&buf, "{d}", .{line + 1}) catch continue;
                 var w: f32 = 0;
                 for (label) |ch| w += pc.text_sys.advance(st, ch);
-                const y = o.y + @as(f32, @floatFromInt(line)) * lh;
+                const y = o.y + v.lineTop(line);
                 const c = pc.color(if (line == prim_line) .fg else .fg_muted);
                 pc.textLine(label, st, c, .{ .x = v.gutter_w - text_pad - pc.text_sys.advance(st, '0') - w, .y = y + base });
             }
@@ -290,7 +302,7 @@ pub const Editor = struct {
 
     /// The SCM bar: added lines solid, modified lines striped, deletions
     /// a triangle on the boundary where the lines were.
-    fn paintScm(pc: *PaintCx, v: *const EditorView, src: *const gutter.ScmGutterSource, vis: [2]u64, oy: f32, lh: f32) void {
+    fn paintScm(pc: *PaintCx, v: *EditorView, src: *const gutter.ScmGutterSource, vis: [2]u64, oy: f32, lh: f32) void {
         if (vis[1] < vis[0]) return;
         if (!v.opts.line_numbers) pc.rect(.{ .x = 0, .y = 0, .w = v.gutter_w - text_pad / 2, .h = pc.bounds().h }, pc.color(.bg_base), .{});
         var rows: [256]gutter.ScmRow = undefined;
@@ -303,7 +315,7 @@ pub const Editor = struct {
             const n: usize = @intCast(@min(rows.len, vis[1] - first + 1));
             gutter.scmRows(src.hunks(), first, v.lineCount(), rows[0..n]);
             for (rows[0..n], 0..) |row, i| {
-                const y = oy + @as(f32, @floatFromInt(first + i)) * lh;
+                const y = oy + v.lineTop(first + i);
                 switch (row.bar) {
                     .none => {},
                     .added => pc.rect(.{ .x = x, .y = y, .w = scm_bar_w, .h = lh }, added, .{}),
@@ -342,26 +354,27 @@ pub const Editor = struct {
 
     /// Draws a row's text in runs of one colour, expanding tabs; GFM
     /// `~~strikethrough~~` gets a line through it.
-    fn drawRow(pc: *PaintCx, v: *const EditorView, s: []const u8, toks: []const zg_syntax.Token, palette: *const colors.Palette, fg: Color, pen: Vec2) void {
+    fn drawRow(pc: *PaintCx, v: *const EditorView, s: []const u8, toks: []const zg_syntax.Token, palette: *const colors.Palette, fg: Color, pen: Vec2, ins: []const view_mod.Inlay, row_start: u64) void {
         const st = v.textStyle();
+        const rx = RowX{ .v = v, .s = s, .ins = ins, .start = row_start };
         var ti: usize = 0;
         var i: usize = 0;
         while (i < s.len) {
-            // The run: up to the next token start or tab.
+            // The run: up to the next token start, inlay or tab.
             while (ti + 1 < toks.len and toks[ti + 1].start <= i) ti += 1;
             const in_tok = ti < toks.len and toks[ti].start <= i;
             const color = if (in_tok) colors.colorOfNamed(palette, v.hl_names, toks[ti].hl, fg) else fg;
             var j = i;
-            const next_tok: usize = if (ti + 1 < toks.len) toks[ti + 1].start else s.len;
+            const next_tok: usize = @min(if (ti + 1 < toks.len) toks[ti + 1].start else s.len, nextInlay(ins, row_start, i, s.len));
             if (s[i] == '\t') {
                 i += 1;
                 continue;
             }
             while (j < s.len and j < @max(next_tok, i + 1) and s[j] != '\t') j += 1;
-            const x0 = pen.x + v.xInLine(s, i);
+            const x0 = pen.x + rx.at(i);
             pc.textLine(s[i..j], st, color, .{ .x = x0, .y = pen.y });
             if (in_tok and toks[ti].hl == .markup_strikethrough) {
-                const x1 = pen.x + v.xInLine(s, j);
+                const x1 = x0 + v.xInLine(s, j) - v.xInLine(s, i);
                 // Through the middle of the lowercase letters.
                 const m = pc.text_sys.metrics(st);
                 pc.rect(.{ .x = x0, .y = @floor(pen.y - m.ascent * 0.3), .w = x1 - x0, .h = 1 }, color, .{});
@@ -369,6 +382,50 @@ pub const Editor = struct {
             i = j;
         }
     }
+
+    /// The first inlay column after `i` in a row starting at `row_start`
+    /// (`len` when none).
+    fn nextInlay(ins: []const view_mod.Inlay, row_start: u64, i: usize, len: usize) usize {
+        var best = len;
+        for (ins) |x| {
+            const c: usize = @intCast(x.offset - row_start);
+            if (c > i and c < best) best = c;
+        }
+        return best;
+    }
+
+    /// Draws a row's inline decoration texts where they sit: at their
+    /// offset, after-inlays first, then before-inlays, each after the
+    /// earlier ones at the same offset.
+    fn drawInlays(pc: *PaintCx, v: *const EditorView, rx: RowX, fg: Color, pen: Vec2) void {
+        const st = v.textStyle();
+        for (rx.ins, 0..) |x, k| {
+            var dx = rx.at(@intCast(x.offset - rx.start)) - EditorView.inlayShift(rx.ins, x.offset);
+            for (rx.ins) |o| if (o.offset < x.offset) {
+                dx += o.w;
+            };
+            for (rx.ins[0..k]) |o| if (o.offset == x.offset and o.after == x.after) {
+                dx += o.w;
+            };
+            if (!x.after) for (rx.ins) |o| if (o.offset == x.offset and o.after) {
+                dx += o.w;
+            };
+            pc.textLine(x.text, st, decoColor(v, x.style, fg.fade(0.55)), .{ .x = pen.x + dx, .y = pen.y });
+        }
+    }
+
+    /// X positions in one row with its inlays.
+    const RowX = struct {
+        v: *const EditorView,
+        s: []const u8,
+        ins: []const view_mod.Inlay,
+        start: u64,
+
+        /// The x of byte column `col` from the text origin.
+        fn at(rx: RowX, col: usize) f32 {
+            return rx.v.xInLine(rx.s, col) + EditorView.inlayShift(rx.ins, rx.start + col);
+        }
+    };
 
     /// A multi-line text box for assistive technology.
     pub fn a11y(props: *const Props, _: *State) A11y {
@@ -693,7 +750,11 @@ pub const Editor = struct {
 
 /// Adds an editor for `view` to the tree.
 pub fn editor(ui: *Ui, props: Editor.Props) zg_gui.Response {
-    return ui.leaf(Editor, props);
+    const r = ui.leaf(Editor, props);
+    // For `EditorView.focusEditor`.
+    props.view.ui_window = ui.window();
+    props.view.ui_node = ui.lastNode();
+    return r;
 }
 
 test "editor: rows draw semantic tokens over lexical ones" {
