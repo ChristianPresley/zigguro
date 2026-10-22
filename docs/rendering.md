@@ -146,6 +146,20 @@ of the corpus through these pipelines on lavapipe and compares it with
 the software goldens (`Tolerance.gpu`; observed max channel difference
 2).
 
+## Vulkan backend
+
+`zg_vulkan.VkRenderer` implements `Renderer` on Vulkan. Each frame:
+1. Wait for the frame slot.
+2. Compute the repaint region (image age plus damage, at most 16 rects).
+3. Copy prims and clips into the upload ring, and record pending texture uploads.
+4. Run one dynamic-rendering pass. Each repaint rect is cleared to transparent, scissored, and drawn with the batches culled to it.
+5. Copy the repainted rects out through the target.
+
+With no damage, nothing is submitted. Targets today are headless and
+in-memory readback. Layers are not drawn yet. The whole scene corpus apart
+from layers, multi-frame damage scenes included, matches the software
+goldens on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
+
 ## Golden images
 
 `zg_vulkan.testing.expectImage(io, @src(), name, &img, tolerance)` compares
