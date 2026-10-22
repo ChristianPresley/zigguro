@@ -21,6 +21,8 @@ pub const theme = @import("theme/root.zig");
 pub const dock = @import("dock/root.zig");
 /// Headless test driver.
 pub const testing = @import("testing/root.zig");
+/// Markdown parsing (CommonMark, GFM, zigguro extensions).
+pub const markdown = @import("markdown/root.zig");
 /// Runs windows on a platform and renderer.
 pub const host = @import("host.zig");
 
