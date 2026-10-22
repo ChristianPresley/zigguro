@@ -76,4 +76,5 @@ test {
     _ = @import("virtual/tree_view_test.zig");
     _ = @import("virtual/table_test.zig");
     _ = @import("a11y/tree_test.zig");
+    _ = @import("a11y/uia_test.zig");
 }
