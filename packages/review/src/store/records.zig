@@ -123,6 +123,74 @@ pub fn readApply(arena: Allocator, v: Value) Error!model.Apply {
 }
 
 /// Writes a checkpoint record.
+pub fn writeDecided(w: *std.Io.Writer, d: *const model.Decided) Stringify.Error!void {
+    var s: Stringify = .{ .writer = w };
+    try s.beginObject();
+    try field(&s, "cs", @intFromEnum(d.cs));
+    if (d.apply) |x| try field(&s, "apply", x);
+    try s.objectField("files");
+    try s.beginArray();
+    for (d.files) |f| {
+        try s.beginObject();
+        try field(&s, "path", f.path);
+        try s.objectField("hunks");
+        try s.beginArray();
+        for (f.hunks) |h| {
+            try s.beginArray();
+            try s.write(h.hunk);
+            try s.write(@tagName(h.decision));
+            try s.endArray();
+        }
+        try s.endArray();
+        if (f.edits.len > 0) {
+            try s.objectField("edits");
+            try s.beginArray();
+            for (f.edits) |e| {
+                try s.beginObject();
+                try field(&s, "hunk", e.hunk);
+                try field(&s, "proposed", e.proposed);
+                try field(&s, "user", e.user);
+                try s.endObject();
+            }
+            try s.endArray();
+        }
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.endObject();
+}
+
+pub fn readDecided(arena: Allocator, v: Value) Error!model.Decided {
+    const o = try obj(v);
+    const fs = try arr(get(o, "files") orelse return error.InvalidRecord);
+    const files = try arena.alloc(model.FileDecisions, fs.items.len);
+    for (fs.items, files) |fv, *f| {
+        const fo = try obj(fv);
+        const hs = try arr(get(fo, "hunks") orelse return error.InvalidRecord);
+        const hunks = try arena.alloc(model.HunkDecision, hs.items.len);
+        for (hs.items, hunks) |hv, *h| {
+            const pair = try arr(hv);
+            if (pair.items.len != 2) return error.InvalidRecord;
+            h.* = .{ .hunk = try int(u32, pair.items[0]), .decision = try enumOf(model.Decision, pair.items[1]) };
+        }
+        var edits: []model.HunkEdit = &.{};
+        if (get(fo, "edits")) |ev| {
+            const es = try arr(ev);
+            edits = try arena.alloc(model.HunkEdit, es.items.len);
+            for (es.items, edits) |x, *e| {
+                const eo = try obj(x);
+                e.* = .{ .hunk = try int(u32, get(eo, "hunk")), .proposed = try dupe(arena, get(eo, "proposed")), .user = try dupe(arena, get(eo, "user")) };
+            }
+        }
+        f.* = .{ .path = try dupe(arena, get(fo, "path")), .hunks = hunks, .edits = edits };
+    }
+    return .{
+        .cs = @enumFromInt(try int(u64, get(o, "cs"))),
+        .apply = if (get(o, "apply")) |x| try int(u64, x) else null,
+        .files = files,
+    };
+}
+
 pub fn writeCheckpoint(w: *std.Io.Writer, c: *const model.Checkpoint) Stringify.Error!void {
     var s: Stringify = .{ .writer = w };
     try s.beginObject();

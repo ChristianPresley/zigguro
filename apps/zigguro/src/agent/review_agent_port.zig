@@ -8,6 +8,9 @@
 //! - Sessions are not saved yet, so resuming fails (`error.Unsupported`);
 //!   "new session" sends the request to the workbench agent and names
 //!   its session.
+//!
+//! `outcomeSink` queues review outcomes as reminders for the workbench
+//! agent's next request; outcomes for other sessions are dropped.
 
 const std = @import("std");
 const zg_ai = @import("zg_ai");
@@ -18,9 +21,30 @@ const fb = zg_review.feedback;
 
 pub const ReviewAgentPort = struct {
     agent: *Agent,
+    /// The agent's reminders (its context stack).
+    reminders: ?*zg_ai.context.reminders.ReminderQueue = null,
 
     pub fn port(p: *ReviewAgentPort) fb.AgentPort {
         return .{ .ctx = p, .status = status, .submit = submit, .resumeSession = resumeSession, .newSession = newSession };
+    }
+
+    pub fn outcomeSink(p: *ReviewAgentPort) fb.OutcomeSink {
+        return .{ .ctx = p, .deliver = deliverOutcome };
+    }
+
+    fn deliverOutcome(ctx: *anyopaque, o: *const fb.Outcome) void {
+        const p = cast(ctx);
+        const q = p.reminders orelse return;
+        if (o.session != p.agent.ref.session) return;
+        queueOutcome(q, o);
+    }
+
+    /// Renders `o` into `q`.
+    pub fn queueOutcome(q: *zg_ai.context.reminders.ReminderQueue, o: *const fb.Outcome) void {
+        var aw: std.Io.Writer.Allocating = .init(q.gpa);
+        defer aw.deinit();
+        fb.outcome.render(o, &aw.writer, 2000) catch return;
+        q.push(.other, aw.written());
     }
 
     fn cast(ctx: *anyopaque) *ReviewAgentPort {
@@ -54,6 +78,20 @@ pub const ReviewAgentPort = struct {
         return a.ref.session;
     }
 };
+
+test "review agent port: outcomes become reminders" {
+    const T = std.testing;
+    var q: zg_ai.context.reminders.ReminderQueue = .init(T.allocator, T.io);
+    defer q.deinit();
+    const files = [_]fb.FileOutcome{.{ .path = "a.zig", .accepted = 0, .rejected = 1, .edited = 0, .pending = 0 }};
+    const o: fb.Outcome = .{ .cs = @enumFromInt(4), .session = 1, .label = "Turn 1", .files = &files, .comments = &.{}, .final = true };
+    ReviewAgentPort.queueOutcome(&q, &o);
+    try T.expectEqual(@as(usize, 1), q.len());
+    var arena: std.heap.ArenaAllocator = .init(T.allocator);
+    defer arena.deinit();
+    const got = try q.drain(arena.allocator());
+    try T.expect(std.mem.indexOf(u8, got[0], "Review outcome #4 (\"Turn 1\"):\n- a.zig: rejected (1/1)") != null);
+}
 
 test "review agent port: statuses" {
     const T = std.testing;

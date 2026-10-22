@@ -322,6 +322,7 @@ pub const ConflictIndex = struct {
                     std.log.scoped(.zg_review).warn("conflict index: out of memory; {f} siblings not rebased", .{a.cs});
                 return;
             },
+            .decided => return,
         };
         ci.refresh(id) catch std.log.scoped(.zg_review).warn("conflict index: out of memory while indexing {f}", .{id});
     }

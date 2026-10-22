@@ -99,7 +99,13 @@ pub const TerminalPanel = struct {
             return;
         };
         p.note_len = 0;
-        p.app.spawn(readLoop, .{p});
+        p.app.spawnLoop(readLoop, .{p}) catch |e| {
+            p.setNote("no reader thread: {t}", .{e});
+            p.pty.?.kill(.hangup);
+            _ = p.pty.?.tryWait() catch {};
+            p.pty.?.close();
+            p.pty = null;
+        };
     }
 
     fn readLoop(p: *TerminalPanel) void {

@@ -493,7 +493,7 @@ pub const ReviewSession = struct {
         const s: *ReviewSession = @ptrCast(@alignCast(ctx));
         if (s.busy) return;
         switch (ev.*) {
-            .applied => return,
+            .applied, .decided => return,
             else => {},
         }
         s.collect(true) catch {};

@@ -43,6 +43,9 @@ const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
 const ApprovalsInbox = @import("review/approvals_view.zig").ApprovalsInbox;
+const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
+const file_sync = @import("file_sync.zig");
+const FileSync = file_sync.FileSync;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -71,6 +74,8 @@ pub const Workbench = struct {
     env: *const std.process.Environ.Map,
     /// The file being edited, or null for an untitled buffer.
     path: ?[]u8 = null,
+    /// The window had focus at the last build (a regain checks files).
+    was_focused: bool = false,
     /// The open documents (owns `doc`).
     docs: DocumentRegistry,
     doc: *Document,
@@ -161,6 +166,8 @@ pub const Workbench = struct {
         doc: *Document,
         view: *EditorView,
         syntax: ?*DocumentSyntax,
+        /// The document's file on disk (null: untitled).
+        sync: ?*FileSync = null,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -221,12 +228,18 @@ pub const Workbench = struct {
         defer gpa.free(bytes);
         var f: OpenFile = .{ .path = null, .doc = undefined, .view = undefined, .syntax = null };
         errdefer if (f.path) |p| gpa.free(p);
+        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
         if (path) |p| {
             f.path = try gpa.dupe(u8, p);
-            bytes = std.Io.Dir.cwd().readFileAlloc(wb.io, p, gpa, .limited(256 << 20)) catch |e| switch (e) {
-                error.FileNotFound => try gpa.alloc(u8, 0),
+            // Decoded (encoding, BOM and line ends detected); a missing
+            // file opens empty.
+            if (zg_editor.model.buffer.external.load(gpa, wb.io, std.Io.Dir.cwd(), p, null, .utf8)) |l| {
+                loaded = l;
+                bytes = l.text;
+            } else |e| switch (e) {
+                error.FileNotFound => bytes = try gpa.alloc(u8, 0),
                 else => return e,
-            };
+            }
         }
         const h = if (f.path) |p| blk: {
             const abs = try std.fs.path.resolve(gpa, &.{ wb.cwd, p });
@@ -236,6 +249,12 @@ pub const Workbench = struct {
         f.doc = wb.docs.get(h).?;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
+        if (f.path) |p| {
+            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
+            sync.on_done = .{ .ctx = wb, .f = onFileSync };
+            f.sync = sync;
+        }
+        errdefer if (f.sync) |x| x.destroy();
         if (wb.langs.detect(f.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
             const sx = try gpa.create(DocumentSyntax);
             errdefer gpa.destroy(sx);
@@ -247,6 +266,7 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (f.sync) |x| x.destroy();
         f.view.deinit();
         if (f.syntax) |sx| {
             sx.deinit();
@@ -627,6 +647,9 @@ pub const Workbench = struct {
     /// Hooks the keymap and the palette into `win` and focuses the editor.
     pub fn attach(wb: *Workbench, win: *Window) !void {
         wb.win = win;
+        for (wb.files.items) |f| if (f.sync) |x| {
+            x.app = win.app;
+        };
         wb.adapter = .init(wb.gpa, wb.reg, wb.resolver, win);
         wb.adapter.install();
         wb.adapter.on_status = .{ .ctx = wb, .f = onStatus };
@@ -674,6 +697,8 @@ pub const Workbench = struct {
 
     const commands = [_]Cmd{
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
+        .{ .id = "file.saveOverwrite", .title = "Save, Overwriting Changes on Disk", .category = "File", .run = saveOverwrite },
+        .{ .id = "file.revert", .title = "Revert File (Reload from Disk)", .category = "File", .run = revert },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
@@ -705,25 +730,76 @@ pub const Workbench = struct {
     }
 
     fn notify(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, comptime fmt: []const u8, args: anytype) void {
-        const w = wb.win orelse return;
-        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch return;
-        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = s, .source = "Files" });
+        wb.notifyActions(severity, &.{}, fmt, args);
     }
 
-    /// Writes the document to its file.
+    fn notifyActions(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, actions: []const zg_gui.w.notification_center.ToastAction, comptime fmt: []const u8, args: anytype) void {
+        const w = wb.win orelse return;
+        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch return;
+        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = s, .source = "Files", .actions = actions, .sticky = actions.len > 0 });
+    }
+
+    /// The current file's disk binding, or a notice for an untitled one.
+    fn currentSync(wb: *Workbench) ?*FileSync {
+        const f = if (wb.cur_panel) |cp| wb.fileOf(cp) else null;
+        if (f) |x| if (x.sync) |fs| return fs;
+        wb.notify(.warning, "Untitled: start zigguro with a file path to save", .{});
+        return null;
+    }
+
+    /// Starts writing the document to its file (on a worker; the outcome
+    /// is a toast).
     pub fn save(wb: *Workbench) !void {
-        const p = wb.path orelse {
-            wb.notify(.warning, "Untitled: start zigguro with a file path to save", .{});
-            return;
+        wb.startSave(.{});
+    }
+
+    /// Saves even though the file changed on disk.
+    fn saveOverwrite(wb: *Workbench) !void {
+        wb.startSave(.{ .overwrite = true });
+    }
+
+    fn startSave(wb: *Workbench, o: file_sync.SaveOptions) void {
+        const fs = wb.currentSync() orelse return;
+        fs.save(o) catch |e| switch (e) {
+            error.Busy => wb.notify(.info, "{s} is still being saved", .{std.fs.path.basename(fs.path)}),
+            else => wb.notify(.error_, "Save failed: {t}", .{e}),
         };
-        const bytes = try wb.view.allText(wb.gpa);
-        defer wb.gpa.free(bytes);
-        std.Io.Dir.cwd().writeFile(wb.io, .{ .sub_path = p, .data = bytes }) catch |e| {
-            wb.notify(.error_, "Save failed: {t}", .{e});
-            return e;
+    }
+
+    /// Reloads the current file from disk, dropping unsaved edits (one
+    /// undo step brings them back).
+    fn revert(wb: *Workbench) !void {
+        const fs = wb.currentSync() orelse return;
+        fs.revert() catch |e| wb.notify(.error_, "Revert failed: {t}", .{e});
+    }
+
+    /// Looks for changes on disk to every open file (when the window
+    /// gains focus, and with the review poll while the agent runs).
+    fn checkFiles(wb: *Workbench) void {
+        for (wb.files.items) |f| if (f.sync) |fs| fs.check() catch {};
+    }
+
+    fn onFileSync(ctx: *anyopaque, fs: *FileSync, o: file_sync.Outcome) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const name = std.fs.path.basename(fs.path);
+        const keep_or_reload = &[_]zg_gui.w.notification_center.ToastAction{
+            .{ .label = "Overwrite", .action = "file.saveOverwrite" },
+            .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
-        wb.doc.saved_version = wb.doc.version;
-        wb.notify(.success, "Saved {s} ({d} bytes)", .{ std.fs.path.basename(p), bytes.len });
+        switch (o) {
+            .saved => |s| wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes }),
+            .save_failed => |e| switch (e) {
+                error.ExternalChangeConflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk; not saved", .{name}),
+                error.Unrepresentable => wb.notify(.error_, "{s}: a character has no encoding in {t}; not saved", .{ name, fs.file.encoding }),
+                else => wb.notify(.error_, "Saving {s} failed: {t}", .{ name, e }),
+            },
+            .unchanged => {},
+            .reloaded => wb.notify(.info, "Reloaded {s} from disk", .{name}),
+            .conflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk and has unsaved edits", .{name}),
+            .deleted => wb.notify(.warning, "{s} was deleted on disk", .{name}),
+            .check_failed => |e| log.warn("checking {s}: {t}", .{ name, e }),
+        }
+        if (wb.win) |w| w.markAllDirty();
     }
 
     fn undo(wb: *Workbench) !void {
@@ -811,6 +887,11 @@ pub const Workbench = struct {
         } else |_| {}
         p.plans = &host.plans;
         p.plan_mode = &host.plan_mode;
+        // The session's approvals also show in the pane.
+        p.approvals = PaneApprovals.create(wb.gpa, w.app, &wb.approvals, host.agent.ref.session) catch |e| blk: {
+            log.err("agent pane approvals: {t}", .{e});
+            break :blk null;
+        };
         p.attachChildren(&host.children);
         // Rewinding code goes through E12's checkpoints.
         p.restore = host.review.restore();
@@ -874,6 +955,9 @@ pub const Workbench = struct {
         wb.review_timer = .none;
         const host = wb.agent orelse return;
         if (host.review.refresh()) w.markAllDirty();
+        // Accepted review changes land on disk: open files pick them up
+        // (a stat per file when nothing changed).
+        wb.checkFiles();
         wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
     }
 
@@ -947,6 +1031,10 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
+        // Back in the window: files may have changed on disk.
+        const focused = ui.win.chrome.focused;
+        if (focused and !wb.was_focused) wb.checkFiles();
+        wb.was_focused = focused;
         if (wb.pending_open) |p| {
             wb.pending_open = null;
             defer wb.gpa.free(p);

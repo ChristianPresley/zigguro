@@ -15,7 +15,8 @@
 //! 4. Record: each text file is rebased on what landed (its base becomes
 //!    the new text, its edits the remainder, its hunks are derived again),
 //!    file and changeset states follow, the queue journals the changeset,
-//!    `History` gets an `Apply` record, and listeners get `applied` and
+//!    `History` gets an `Apply` record, and listeners get `decided`
+//!    (each hunk's decision, the reviewer's rewrites), `applied` and
 //!    `state`.
 //!
 //! A rename is a write of the new path and a delete of the old one; it
@@ -135,6 +136,8 @@ pub const Applier = struct {
         new_text: []const u8 = "",
         /// Something of this file reaches the disk.
         lands: bool = false,
+        /// What the agent proposed for each edited hunk.
+        edits: []const model.HunkEdit = &.{},
     };
 
     pub fn init(gpa: Allocator, io: Io, q: *model.Queue, files: Files, history: *model.History) Applier {
@@ -200,6 +203,7 @@ pub const Applier = struct {
             try model.transition(cs, to);
             if (to == .applied or to == .rejected) cs.decided_ms = nowMs(a.io);
         }
+        const decided = try decisions(arena, cs, plans);
         var apply_id: ?u64 = null;
         if (t.ops.items.len > 0) {
             const recs = try t.records();
@@ -213,6 +217,7 @@ pub const Applier = struct {
         }
         a.q.persist(cs.id);
         a.q.emit(.{ .updated = cs.id });
+        a.q.emit(.{ .decided = .{ .cs = cs.id, .apply = apply_id, .files = decided } });
         if (apply_id) |id| a.q.emit(.{ .applied = .{ .cs = cs.id, .apply = id } });
         if (to != from) a.q.emit(.{ .state = .{ .cs = cs.id, .from = from, .to = to } });
         return .{ .ok = .{ .apply = apply_id, .files = @intCast(plans.len), .hunks = hunk_count } };
@@ -329,6 +334,7 @@ pub const Applier = struct {
                 var lines: zg_core.LineIndex = try .build(a.gpa, p.base);
                 defer lines.deinit(a.gpa);
                 p.sel = try selection.select(a.gpa, p.base, &lines, fc, in);
+                if (in.edited.len > 0) p.edits = try proposedEdits(arena, p.base, t.edits, fc.hunks, in.edited);
                 const takes = p.sel.?.takes();
                 p.lands = takes or (fc.op == .rename and it.whole_file == .accept);
                 if (p.lands) p.new_text = try p.sel.?.selected.applyToSlice(arena, p.base);
@@ -415,6 +421,35 @@ pub const Applier = struct {
         return decided;
     }
 };
+
+/// Each plan's decisions, for the `decided` event (in `arena`).
+fn decisions(arena: Allocator, cs: *const Changeset, plans: []const Applier.Plan) ![]const model.FileDecisions {
+    const out = try arena.alloc(model.FileDecisions, plans.len);
+    for (plans, out) |*p, *o| {
+        const hunks: []const model.HunkDecision = if (p.sel) |*s| blk: {
+            const hs = try arena.alloc(model.HunkDecision, s.decided.len);
+            for (s.decided, hs) |d, *h| h.* = .{ .hunk = d.hunk, .decision = d.decision };
+            break :blk hs;
+        } else try arena.dupe(model.HunkDecision, &.{.{ .hunk = 0, .decision = if (p.lands) .accepted else .rejected }});
+        o.* = .{ .path = cs.files[p.idx].path, .hunks = hunks, .edits = p.edits };
+    }
+    return out;
+}
+
+/// The proposed lines of each edited hunk, beside the reviewer's text.
+fn proposedEdits(arena: Allocator, base: []const u8, edits: model.changeset.ChangeSet, hunks: []const model.Hunk, edited: []const selection.EditedHunk) ![]const model.HunkEdit {
+    const proposed = try edits.applyToSlice(arena, base);
+    var lines: zg_core.LineIndex = try .build(arena, proposed);
+    const out = try arena.alloc(model.HunkEdit, edited.len);
+    for (edited, out) |e, *o| {
+        const r = hunks[e.hunk].new_lines;
+        const n = lines.lineCount();
+        const s: usize = if (r.start < n) @intCast(lines.lineStart(r.start)) else proposed.len;
+        const end: usize = if (r.end() < n) @intCast(lines.lineStart(r.end())) else proposed.len;
+        o.* = .{ .hunk = e.hunk, .proposed = proposed[s..@max(s, end)], .user = e.text };
+    }
+    return out;
+}
 
 fn findFile(rec: *const model.Apply, path: []const u8) ?model.ApplyFile {
     for (rec.files) |f| if (std.mem.eql(u8, f.path, path)) return f;

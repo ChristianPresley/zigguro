@@ -39,3 +39,39 @@ E06 and E10 put `cwd`, `terminal` (an integer id) and `shell` in
 `ApprovalRequest.detail_json` for command requests; `commandView` reads
 them. When an edited input still needs approval, the caller presents the
 new request with `presentChained(req, previous)`. See `approvals.md`.
+
+## E10 review outcomes as reminders (E12.F03.S04.T01)
+
+Agents learn what review did with their changes through
+`zg_review.feedback.OutcomeReporter`. E10's glue (the app, which owns
+both the queue and the agent) creates one with an `OutcomeSink` and
+does three things:
+
+| Seam | Call |
+| --- | --- |
+| `OutcomeSink.deliver(outcome)` | Render it with `outcome.render(o, w, max_chars)` (2,000 by default) and queue the text as a reminder for `o.session` (`ReminderQueue.push(.other, text)`). The assembler adds it to the next user message after that message's tool results, so a stream is never interrupted. |
+| Before each request of a session | `flush(session)`: any outcomes still waiting are delivered first. |
+| On the owner thread, after queue changes and on a timer (about 1 s) | `pump(now_ms)`: delivers the outcomes of closed changesets, and partial ones 2 s after the last decision. |
+
+Rules:
+
+- Each batch of decisions is delivered once. A later outcome for the
+  same changeset carries only the decisions made after the previous one.
+- Only changesets made by an agent (`Origin.agentRef()`) are reported.
+- The text ends with "Re-read files before editing them again." when a
+  hunk was rejected or edited. A rejected change is gone from the
+  agent's view, and the text says so.
+- The reviewer's rewrites are shown as a unified diff from the proposal,
+  at most 30 lines per file. A longer rewrite is reported as "The user
+  rewrote N lines".
+- E09 provenance: with `Options.records` set, `pump` checks that every
+  hunk an apply took has a review reference (`ReviewRecords.has`), and
+  writes the missing ones (`record`), logging each repair. The
+  reference is `{apply, cs, path, hunk, decision, reviewer}`.
+
+The decisions come from the queue's `decided` event, which the
+`Applier` emits for every apply, before `applied` and `state`. Decisions made in another process
+(`zg review accept` while `zg agent` runs) are journaled as `decided`
+records and re-emitted by the store's `tail`. `zg agent` takes them in
+when a turn ends and queues the outcomes of its own changesets for its
+next request.
