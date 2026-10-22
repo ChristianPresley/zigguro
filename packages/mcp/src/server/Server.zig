@@ -104,6 +104,8 @@ pub const Conn = struct {
     /// Legacy server-to-client requests awaiting answers.
     out_pending: std.ArrayList(*legacy_requests.OutRequest) = .empty,
     out_next: u64 = 1,
+    /// `Server.disconnect` was called: the last request frees the connection.
+    release: bool = false,
 
     /// Handles one complete JSON-RPC message from the client.
     pub fn receive(c: *Conn, body: []const u8) void {
@@ -239,6 +241,30 @@ pub fn connect(s: *Server, sink: Sink, principal: ?[]const u8) error{OutOfMemory
         return err;
     };
     return c;
+}
+
+/// Closes `c` and frees it once its requests have finished (for
+/// short-lived connections such as one HTTP request). `c` must not be used
+/// afterwards.
+pub fn disconnect(s: *Server, c: *Conn) void {
+    c.close();
+    c.mutex.lockUncancelable(s.io);
+    c.release = true;
+    const idle = c.inflight.items.len == 0;
+    c.mutex.unlock(s.io);
+    if (idle) s.destroyConn(c);
+}
+
+/// Removes and frees `c` (closed, released and idle).
+pub fn destroyConn(s: *Server, c: *Conn) void {
+    s.conns_mutex.lockUncancelable(s.io);
+    for (s.conns.items, 0..) |x, i| if (x == c) {
+        _ = s.conns.swapRemove(i);
+        break;
+    };
+    s.conns_mutex.unlock(s.io);
+    c.deinit();
+    s.gpa.destroy(c);
 }
 
 /// Serves the server side of `pair`. Close the connection before
