@@ -47,7 +47,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
 
     const review_flag = review_hooks.parseFlag(arena, argv) catch |e| switch (e) {
         error.Usage => {
-            try err.print("zg agent: --review is defer, interactive or apply\nRun 'zg agent --help' for usage.\n", .{});
+            try err.print("zg agent: --review is defer, interactive, apply or policy\nRun 'zg agent --help' for usage.\n", .{});
             try err.flush();
             return headless.ExitCode.usage.code();
         },
@@ -129,7 +129,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     try tool_registry.addSource(run_tools.source());
     var read_tracker: zg_ai.tools.read_tracker.ReadTracker = .init(gpa, io);
     defer read_tracker.deinit();
-    var review: review_hooks.Review = try .init(gpa, io, cwd, review_flag.mode);
+    var review: review_hooks.Review = try .init(gpa, io, cwd, review_flag.mode, @tagName(opts.permission_mode));
     defer review.deinit();
     var file_tools: zg_ai.tools.builtin.files.FileTools = .{ .files = review.glue.files(), .tracker = &read_tracker };
     try tool_registry.addSource(file_tools.source());

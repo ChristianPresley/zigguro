@@ -11,7 +11,9 @@ By default everything waits for review.
 
 ## Settings
 
-The `review` section, in ZON:
+The `review` section of the workspace settings,
+`.zigguro/settings.zon` (`rules.loadWorkspace`, nested form only, until
+the app reads settings through E15's store), in ZON:
 
 ```zon
 .{
@@ -74,3 +76,12 @@ reverts one.
 `editorPolicy` answers E05's `ApplyPolicy` for an edit to an open
 document. Such an edit is a `modify` with an unknown line count. `pending`
 means review.
+
+## In the app
+
+`ReviewGlue` (the IDE, and `zg agent --review policy`) has a `policy`
+mode. A turn's edits are held until the turn ends. They are then
+submitted as one changeset and `autoApply` runs on it. The probe asks E16
+nothing, because the agent's tool permissions have already run. It
+reports the permission mode the session runs in. `zg review policy
+explain` prints a verdict and its reason.
