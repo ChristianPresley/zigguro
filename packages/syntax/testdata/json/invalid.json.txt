@@ -1,0 +1,6 @@
+{
+  'single': 1,
+  bare: 2,
+  "trailing": 3,
+}
+@ # ;
