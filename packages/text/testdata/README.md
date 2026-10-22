@@ -164,3 +164,11 @@ in fontconfig's format (fonts-conf(5)) to cover dir prefixes, `conf.d`
 ordering, include cycles, aliases, the match-prepend pattern and a
 malformed file. The `.ttf`/`.otf`/`.ttc`/`.otc` files there are one-line
 placeholders, not fonts: discovery only looks at names.
+
+## Last-resort glyph golden
+
+`golden/last_resort/boxes.pgm` holds the last-resort boxes of U+E0001,
+U+10FFFD and U+0378 at 12, 16, 24 and 48 px, side by side, written by
+`sheet()` in `src/fonts/fallback_db_test.zig` and checked by eye. A
+missing golden is written by the test (which then skips); delete it to
+regenerate after a deliberate change.
