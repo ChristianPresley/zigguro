@@ -6,6 +6,8 @@ const std = @import("std");
 pub const test_app = @import("test_app.zig");
 /// The `script.zig` module.
 pub const script = @import("script.zig");
+/// The example views scripts can open.
+pub const examples = @import("examples.zig");
 
 /// See `test_app.TestApp`.
 pub const TestApp = test_app.TestApp;
