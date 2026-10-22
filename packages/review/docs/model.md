@@ -136,4 +136,35 @@ shared by every process working on it:
 
 Bind a queue to a store with `.blobs = store.blobs()` and
 `.journal = store.journalPort()`, then call
-`store.load(store.queueSink(q).sink())`.
+`store.load(store.queueSink(q, &history).sink())`.
+
+## Apply
+
+`Applier.apply` lands the decisions for some files of one changeset as one
+transaction (`apply/applier.zig`):
+
+1. `select` turns each text file's decisions into `selected` (lands now,
+   against the base) and `remainder` (stays pending, against
+   `base ∘ selected`). Edited hunks replace their base lines with the
+   reviewer's text. Rejected hunks are dropped.
+2. Every touched path is read once. A file that no longer hashes to the
+   change's base fails the apply with `error.BaseMoved`, and a create or
+   rename target that exists with `error.TargetExists`, before anything
+   is written. Preimages and postimages go to `Blobs`.
+3. Writes and deletes go through the `Files` port. If one fails, the ones
+   already done are reverted from the preimages, newest first, and the
+   result is `failed`.
+4. A text file that landed is rebased: its base becomes the new text, its
+   edits the remainder, and its hunks are derived again. Its state becomes
+   `applied`, `partially_applied`, `pending` or `rejected`, and the
+   changeset's follows. The queue journals the changeset, `History`
+   records an `Apply` (path, pre and post hash, executable bits), and
+   listeners get `updated`, `applied` and `state`.
+
+Files without hunks (delete, rename, mode change, binary) need
+`whole_file`. A rename is a write of the new path plus a delete of the
+old one.
+
+`model.merge3.merge(base, ours, theirs)` is the line-level three-way merge
+that undo accept and checkpoint restore use: `merge(post, current, pre)`
+reverts an apply while keeping later edits.

@@ -7,6 +7,8 @@
 pub const model = @import("model/root.zig");
 /// The journal and blob store under `.zigguro/review/`.
 pub const store = @import("store/root.zig");
+/// Hunk selection and the transactional applier.
+pub const apply = @import("apply/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
