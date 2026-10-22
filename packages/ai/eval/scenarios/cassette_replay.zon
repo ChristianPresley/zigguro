@@ -1,0 +1,14 @@
+.{
+    .name = "cassette_replay",
+    .fixture = "notes",
+    .prompt = "Say hello.",
+    .model = "sonnet",
+    .permission_mode = "default",
+    .cassette = "cassettes/cassette_replay.jsonl",
+    .graders = .{
+        .{ .final_text_matches = "^Hello from the cassette\\.$" },
+        .{ .max_turns = 1 },
+        .{ .tool_not_used = "read_file" },
+        .no_permission_denials,
+    },
+}

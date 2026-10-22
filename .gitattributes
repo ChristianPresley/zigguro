@@ -15,3 +15,4 @@ packages/ai/testdata/tools/read/crlf.txt -text
 packages/ai/testdata/tools/read/utf16le_bom.txt binary
 packages/ai/testdata/tools/read/binary.bin binary
 packages/ai/testdata/tools/read/image.png binary
+packages/ai/eval/fixtures/notes/data.bin binary

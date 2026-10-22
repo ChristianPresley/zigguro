@@ -1,0 +1,33 @@
+.{
+    .name = "write_new_file",
+    .fixture = "notes",
+    .prompt = "Create hello.txt saying hello.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"hello.txt\",\"content\":\"hello\\n\"}",
+                },
+            },
+        },
+        .{
+            .text = "Created hello.txt.",
+            .expect = .{
+                "Created hello.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "hello.txt",
+                .needle = "hello",
+            },
+        },
+        .{
+            .tool_used = "write_file",
+        },
+        .no_permission_denials,
+    },
+}

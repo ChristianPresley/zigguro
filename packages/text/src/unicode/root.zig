@@ -49,6 +49,8 @@ pub const grapheme = @import("grapheme.zig");
 pub const word = @import("word.zig");
 /// UAX #14 line-break opportunities.
 pub const line_break = @import("line_break.zig");
+/// Script runs (Script_Extensions, brackets) for shaping.
+pub const script = @import("script.zig");
 /// UAX #9 bidirectional algorithm.
 pub const bidi = @import("bidi.zig");
 /// Display width in terminal cells.

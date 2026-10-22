@@ -22,6 +22,7 @@ pub const startup = [_][]const u8{
     "SYNC",
     "RENDER",
     "XFIXES",
+    "XTEST",
 };
 
 /// Index of `name` in `startup`.

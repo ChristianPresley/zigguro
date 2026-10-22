@@ -1,0 +1,55 @@
+.{
+    .name = "edit_not_unique",
+    .fixture = "notes",
+    .prompt = "Replace the first foo with qux in repeat.txt.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"repeat.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"repeat.txt\",\"old_string\":\"foo\",\"new_string\":\"qux\"}",
+                },
+            },
+            .expect = .{
+                "foo bar foo",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"repeat.txt\",\"old_string\":\"foo bar\",\"new_string\":\"qux bar\"}",
+                },
+            },
+            .expect = .{
+                "foo",
+            },
+        },
+        .{
+            .text = "Replaced the first foo.",
+            .expect = .{
+                "repeat.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "repeat.txt",
+                .needle = "qux bar foo baz foo",
+            },
+        },
+        .{
+            .max_turns = 4,
+        },
+        .no_permission_denials,
+    },
+}

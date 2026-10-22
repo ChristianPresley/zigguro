@@ -1,0 +1,30 @@
+.{
+    .name = "qa_directory_read",
+    .fixture = "notes",
+    .prompt = "Read sub.",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"sub\"}",
+                },
+            },
+        },
+        .{
+            .text = "sub is a directory.",
+            .expect = .{
+                "sub is a directory",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .final_text_matches = "directory",
+        },
+        .{
+            .max_turns = 2,
+        },
+    },
+}

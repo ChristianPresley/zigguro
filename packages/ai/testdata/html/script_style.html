@@ -1,0 +1,12 @@
+<html><head><style>p { display: none }</style></head>
+<body>
+<p>Visible text.</p>
+<script type="text/javascript">
+  document.write("<p>Injected</p>");
+  if (a < b && c > d) {}
+</script>
+<noscript><p>Enable JavaScript</p></noscript>
+<p>More visible <SCRIPT>alert(1)</SCRIPT>text.</p>
+<template><p>Template content</p></template>
+<p>End.</p>
+</body></html>

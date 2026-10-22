@@ -1,0 +1,21 @@
+> Simplicity is prerequisite for reliability.
+>
+> — Edsger W. Dijkstra
+
+Run `zig build test` and inline `a < b`.
+
+```
+plain pre
+  keeps   spacing
+```
+
+> ```
+> quoted
+> code
+> ```
+
+---
+
+Line one
+Line two
+Line three

@@ -1,0 +1,92 @@
+.{
+    .name = "refactor_rename_function",
+    .fixture = "project",
+    .prompt = "Rename countWords to wordCount everywhere.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"src/util.zig\"}",
+                },
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"src/parse.zig\"}",
+                },
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"src/report.zig\"}",
+                },
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"README.md\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"src/util.zig\",\"old_string\":\"pub fn countWords\",\"new_string\":\"pub fn wordCount\"}",
+                },
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"src/parse.zig\",\"old_string\":\"util.countWords\",\"new_string\":\"util.wordCount\"}",
+                },
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"src/report.zig\",\"old_string\":\"util.countWords\",\"new_string\":\"util.wordCount\"}",
+                },
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"README.md\",\"old_string\":\"`countWords`\",\"new_string\":\"`wordCount`\"}",
+                },
+            },
+            .expect = .{
+                "pub fn countWords",
+                "return util.countWords(text);",
+                "return util.countWords(text) * 2;",
+                "Call `countWords`",
+            },
+        },
+        .{
+            .text = "Renamed countWords to wordCount in four files.",
+            .expect = .{
+                "src/util.zig",
+                "src/parse.zig",
+                "src/report.zig",
+                "README.md",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "src/util.zig",
+                .needle = "pub fn wordCount",
+            },
+        },
+        .{
+            .file_contains = .{
+                .path = "src/parse.zig",
+                .needle = "util.wordCount(text)",
+            },
+        },
+        .{
+            .file_contains = .{
+                .path = "src/report.zig",
+                .needle = "util.wordCount(text) * 2",
+            },
+        },
+        .{
+            .file_contains = .{
+                .path = "README.md",
+                .needle = "`wordCount`",
+            },
+        },
+        .{
+            .max_turns = 3,
+        },
+        .no_permission_denials,
+    },
+}

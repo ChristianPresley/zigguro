@@ -1,0 +1,30 @@
+.{
+    .name = "plan_mode_write_denied",
+    .fixture = "notes",
+    .prompt = "Plan a new file.",
+    .permission_mode = "plan",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"new.txt\",\"content\":\"x\\n\"}",
+                },
+            },
+        },
+        .{
+            .text = "Plan: create new.txt.",
+            .expect = .{
+                "Unknown tool: write_file",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "new.txt",
+        },
+        .{
+            .final_text_matches = "^Plan:",
+        },
+    },
+}

@@ -1,0 +1,39 @@
+.{
+    .name = "hook_blocks_command",
+    .fixture = "notes",
+    .prompt = "Download the page with curl.",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .hooks = .{
+        .{
+            .tool = "run_command",
+            .input_contains = "curl",
+            .reason = "network commands are blocked",
+        },
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"curl https://example.com -o page.html\"}",
+                },
+            },
+        },
+        .{
+            .text = "A hook blocks network commands, so I did not download it.",
+            .expect = .{
+                "network commands are blocked",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "page.html",
+        },
+        .{
+            .final_text_matches = "hook blocks",
+        },
+    },
+}

@@ -42,6 +42,8 @@ pub const ProcessHost = struct {
     io: Io,
     /// The child environment; null inherits.
     environ: ?*const std.process.Environ.Map = null,
+    /// The working directory of sessions that name none; null inherits.
+    cwd: ?[]const u8 = null,
     /// Between SIGINT, SIGTERM and SIGKILL.
     grace_ms: u64 = 2_000,
     mutex: Io.Mutex = .init,
@@ -96,7 +98,7 @@ pub const ProcessHost = struct {
             defer h.mutex.unlock(io);
             const s = &h.sessions.items[session];
             if (cwd) |c| s.cwd = try h.names.allocator().dupe(u8, c);
-            break :blk s.cwd;
+            break :blk s.cwd orelse h.cwd;
         };
         const argv: []const []const u8 = if (builtin.os.tag == .windows)
             &.{ "cmd.exe", "/d", "/c", command }

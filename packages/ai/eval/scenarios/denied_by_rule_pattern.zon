@@ -1,0 +1,35 @@
+.{
+    .name = "denied_by_rule_pattern",
+    .fixture = "notes",
+    .prompt = "Remove the sub folder.",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .disallowed_tools = .{
+        "run_command(rm *)",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"rm -rf sub\"}",
+                },
+            },
+        },
+        .{
+            .text = "That command is blocked by a rule.",
+            .expect = .{
+                "denied by --disallowed-tools rule",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "sub/b.txt",
+        },
+        .{
+            .final_text_matches = "blocked",
+        },
+    },
+}

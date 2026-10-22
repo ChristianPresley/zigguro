@@ -1,0 +1,32 @@
+.{
+    .name = "denied_tool_removed",
+    .fixture = "notes",
+    .prompt = "Create made.txt.",
+    .disallowed_tools = .{
+        "write_file",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "write_file",
+                    .input = "{\"path\":\"made.txt\",\"content\":\"x\\n\"}",
+                },
+            },
+        },
+        .{
+            .text = "I cannot create files here.",
+            .expect = .{
+                "Unknown tool: write_file",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_unchanged = "made.txt",
+        },
+        .{
+            .final_text_matches = "cannot create",
+        },
+    },
+}

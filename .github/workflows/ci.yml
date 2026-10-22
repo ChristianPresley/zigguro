@@ -1,5 +1,5 @@
 # PR gate for main. Required checks: lint, test (8 cells), cross,
-# bench-smoke, fuzz-smoke (see docs/ci.md). Only GitHub-maintained actions.
+# bench-smoke, fuzz-smoke, eval, vulkan (see docs/ci.md). Only GitHub-maintained actions.
 name: ci
 
 on:
@@ -156,6 +156,31 @@ jobs:
           key: zig-cache-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
       # ReleaseSafe: Debug --fuzz fails to compile the 0.16.0 test runner.
       - run: zig build test -Doptimize=ReleaseSafe --fuzz=10K --summary line
+
+  eval:
+    # The agent evaluation suite (packages/ai/eval), offline from scripts and
+    # cassettes; fails on a regression against eval/baseline.json.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-eval-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
+      - run: zig build eval --summary line
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-${{ github.sha }}
+          path: zig-out/eval/report.json
 
   vulkan:
     # The zg_vulkan GPU tests on Mesa lavapipe with the Khronos validation

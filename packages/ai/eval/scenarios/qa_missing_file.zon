@@ -1,0 +1,33 @@
+.{
+    .name = "qa_missing_file",
+    .fixture = "notes",
+    .prompt = "Read missing.txt.",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"missing.txt\"}",
+                },
+            },
+        },
+        .{
+            .text = "missing.txt does not exist.",
+            .expect = .{
+                "File not found: missing.txt",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .final_text_matches = "does not exist",
+        },
+        .{
+            .max_turns = 2,
+        },
+    },
+}

@@ -1,0 +1,33 @@
+.{
+    .name = "qa_read_range",
+    .fixture = "notes",
+    .prompt = "What is on line 30 of long.txt?",
+    .permission_mode = "default",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"long.txt\",\"offset\":28,\"limit\":5}",
+                },
+            },
+        },
+        .{
+            .text = "Line 30 says: line 30.",
+            .expect = .{
+                "line 30",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "read_file",
+        },
+        .{
+            .final_text_matches = "line 30",
+        },
+        .{
+            .max_turns = 2,
+        },
+    },
+}

@@ -15,8 +15,18 @@
 //! PRIMARY with TARGETS, MULTIPLE, TIMESTAMP and INCR, on a hidden window.
 //! Large answers become large payloads (`Platform.release`).
 //!
-//! Not yet here (later E01.F05 tasks): XInput2 and XKB keymaps (#245),
-//! RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
+//! Keyboard (E01.F05.S02.T02): with XKB the server's keymap becomes the
+//! shared `xkb.Keymap` (`keymap_from_server.zig`), modifier and group
+//! state follow StateNotify, detectable autorepeat marks repeats, and
+//! keys go through the Wayland seat's keyboard logic for text, compose
+//! and chords. Without XKB, the core keymap in `keymap.zig`.
+//!
+//! Pointer (E01.F05.S02.T02): with XInput 2.2+, `xinput2.zig` events
+//! replace core pointer events: subpixel positions, smooth scrolling from
+//! scroll valuators (emulated wheel buttons are dropped) and touch.
+//! Without XI2, core events and wheel buttons.
+//!
+//! Not yet here (later E01.F05 tasks): RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
 //! XDND (#253).
 
 const std = @import("std");
@@ -25,6 +35,7 @@ const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 
 const types = @import("../api/types.zig");
+const keys_api = @import("../api/keys.zig");
 const event_api = @import("../api/event.zig");
 const window_api = @import("../api/window.zig");
 const surface = @import("../api/surface.zig");
@@ -44,6 +55,10 @@ const present_mod = @import("present.zig");
 const Presenter = present_mod.Presenter;
 const dri3 = @import("dri3.zig");
 const selection = @import("selection.zig");
+const xkb_ext = @import("xkb.zig");
+const xinput2 = @import("xinput2.zig");
+const seat_mod = @import("../wayland/seat.zig");
+const compose = @import("../xkb/compose.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -116,6 +131,21 @@ const Window = struct {
     clicks: u8 = 0,
 };
 
+/// Where the seat's keyboard logic puts events. Mutex held.
+const Sink = struct {
+    b: *X11Backend,
+
+    /// Stages an event.
+    pub fn stage(s: Sink, ev: Event) !void {
+        s.b.stage(ev);
+    }
+
+    /// Copies key text into the payload arena.
+    pub fn text(s: Sink, t: []const u8) types.PayloadSlice {
+        return s.b.arena.put(t) catch .empty;
+    }
+};
+
 /// The X11 backend.
 pub const X11Backend = struct {
     gpa: Allocator,
@@ -123,7 +153,21 @@ pub const X11Backend = struct {
     opts: InitOptions,
     conn: *Conn,
     atoms: Atoms,
+    /// The core keymap, when the server has no XKB.
     keymap: Keymap = .{},
+    /// The XKB event base, or null without XKB.
+    xkb_event: ?u8 = null,
+    /// Keyboard state and logic (XKB path). Guarded by the mutex.
+    seat: seat_mod.Seat = .{},
+    compose_table: ?compose.ComposeTable = null,
+    /// Loads compose rules off the UI thread at startup.
+    compose_thread: ?std.Thread = null,
+    /// XInput2's major opcode, or null without XI 2.2.
+    xi_opcode: ?u8 = null,
+    /// Scroll valuators. Guarded by the mutex.
+    scrolling: xinput2.Scrolling = .{},
+    /// The last pointer position, to tell scroll-only motion apart.
+    ptr_pos: [2]f32 = .{ -1, -1 },
     scale: f32 = 1.0,
     path: present_mod.Path,
     /// The MIT-SHM event base, for ShmCompletion.
@@ -182,8 +226,18 @@ pub const X11Backend = struct {
                 .windowHandle = windowHandle,
             },
         };
-        try b.loadKeymap();
+        b.xkb_event = xkb_ext.enable(conn);
+        if (b.xkb_event != null) {
+            b.loadXkbKeymap() catch |err| {
+                log.warn("XKB keymap unavailable ({t}); using the core keymap", .{err});
+                b.xkb_event = null;
+            };
+        }
+        if (b.xkb_event == null) try b.loadKeymap();
         errdefer b.keymap.deinit(gpa);
+        errdefer b.seat.deinit(gpa);
+        b.enableXi2();
+        errdefer b.scrolling.deinit(gpa);
         b.sel = try .init(gpa, conn);
         errdefer b.sel.deinit();
         b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
@@ -194,6 +248,7 @@ pub const X11Backend = struct {
         const cpu_forced = opts.present != null or env.get("ZG_X11_PRESENT") != null and !std.mem.eql(u8, env.get("ZG_X11_PRESENT").?, "dri3");
         if (!cpu_forced) b.gpu = b.probeGpu();
         errdefer if (b.gpu) |*g| g.deinit(gpa);
+        if (b.xkb_event != null) b.startCompose(env);
         log.info("X11 display ready: {d}x{d}, scale {d}, presenting with {t}{s}", .{ conn.screen().width_px, conn.screen().height_px, b.scale, b.path, if (b.gpu != null) " and DRI3/Present" else "" });
         return b;
     }
@@ -205,6 +260,63 @@ pub const X11Backend = struct {
         const km = try Keymap.init(b.gpa, s.min_keycode, r.keysyms_per_keycode, r.keysyms);
         b.keymap.deinit(b.gpa);
         b.keymap = km;
+    }
+
+    /// Fetches the server's XKB keymap and state into the seat.
+    fn loadXkbKeymap(b: *X11Backend) !void {
+        const km = try xkb_ext.fetchKeymap(b.gpa, b.conn);
+        b.seat.setKeymap(b.gpa, km);
+        const st = (try b.conn.reply(try b.conn.request(xkb_ext.GetState, .{}, &.{}))).state;
+        b.seat.modifiers(0, st.base, st.latched, st.locked, st.group);
+    }
+
+    /// Turns on XInput 2.2+ pointer and touch events, when the server
+    /// has them, and reads the scroll valuators.
+    fn enableXi2(b: *X11Backend) void {
+        const info = b.conn.extension("XInputExtension") orelse return;
+        const v = b.conn.reply(b.conn.request(xinput2.QueryVersion, .{}, &.{}) catch return) catch return;
+        if (!v.atLeast(2, 2)) return;
+        b.loadScrollValuators() catch |err| {
+            log.warn("XIQueryDevice failed: {t}", .{err});
+            return;
+        };
+        _ = b.conn.request(xinput2.SelectEvents, .{ .window = b.conn.screen().root, .device_id = xinput2.Device.all, .mask = 1 << xinput2.EventType.hierarchy_changed }, &.{}) catch return;
+        b.xi_opcode = info.major_opcode;
+    }
+
+    fn loadScrollValuators(b: *X11Backend) !void {
+        const r = try b.conn.reply(try b.conn.request(xinput2.QueryDevice, .{}, &.{}));
+        try b.scrolling.load(b.gpa, r.bytes);
+    }
+
+    /// Starts loading compose rules (XCOMPOSEFILE, ~/.XCompose, the
+    /// locale's file) on a helper thread; keys compose once it is done.
+    fn startCompose(b: *X11Backend, env: *const std.process.Environ.Map) void {
+        var copy: std.process.Environ.Map = .init(b.gpa);
+        for ([_][]const u8{ "XCOMPOSEFILE", "HOME", "LC_ALL", "LC_CTYPE", "LANG" }) |k| if (env.get(k)) |v| {
+            copy.put(k, v) catch {
+                copy.deinit();
+                return;
+            };
+        };
+        b.compose_thread = std.Thread.spawn(.{}, loadCompose, .{ b, copy }) catch |err| {
+            log.warn("compose loader thread: {t}", .{err});
+            copy.deinit();
+            return;
+        };
+    }
+
+    fn loadCompose(b: *X11Backend, env_in: std.process.Environ.Map) void {
+        var env = env_in;
+        defer env.deinit();
+        const t = compose.ComposeTable.loadDefault(b.gpa, b.io, &env) catch |err| {
+            log.warn("loading compose rules: {t}", .{err});
+            return;
+        };
+        b.lock();
+        defer b.unlock();
+        b.compose_table = t;
+        b.seat.compose = .init(&b.compose_table.?);
     }
 
     fn readXftScale(b: *X11Backend) f32 {
@@ -317,6 +429,7 @@ pub const X11Backend = struct {
         }, &.{});
         _ = try c.request(proto.CreateGC, .{ .cid = w.gc, .drawable = w.xid, .values = .{ .values = .{ .graphics_exposures = 0 } } }, &.{});
         if (b.gpu != null) _ = try c.request(dri3.PresentSelectInput, .{ .eid = try c.newXid(), .window = w.xid, .event_mask = dri3.EventMask.complete | dri3.EventMask.idle }, &.{});
+        if (b.xi_opcode != null) _ = try c.request(xinput2.SelectEvents, .{ .window = w.xid, .device_id = xinput2.Device.all_master, .mask = xinput2.windowMask(true) }, &.{});
         const a = &b.atoms;
         try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
         try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
@@ -615,7 +728,11 @@ pub const X11Backend = struct {
         var it = b.large.valueIterator();
         while (it.next()) |v| b.gpa.free(v.*);
         b.large.deinit(b.gpa);
+        if (b.compose_thread) |t| t.join();
         b.keymap.deinit(b.gpa);
+        b.seat.deinit(b.gpa);
+        b.scrolling.deinit(b.gpa);
+        if (b.compose_table) |*t| t.deinit(b.gpa);
         if (b.gpu) |*g| g.deinit(b.gpa);
         b.conn.deinit();
         b.arena.deinit(b.gpa);
@@ -657,6 +774,14 @@ pub const X11Backend = struct {
             return;
         };
         if (b.gpu) |g| if (code == proto.generic_event and ev[1] == g.present_opcode) return b.onPresentEvent(ev);
+        if (b.xkb_event) |base| if (code == base) return b.onXkbEvent(ev);
+        if (b.xi_opcode) |op| if (code == proto.generic_event and ev[1] == op) return b.onXiEvent(ev);
+        // With XI2 the server sends XI2 pointer events instead of core
+        // ones; ignore any core stragglers.
+        if (b.xi_opcode != null) switch (code) {
+            proto.EventCode.button_press, proto.EventCode.button_release, proto.EventCode.motion_notify, proto.EventCode.enter_notify, proto.EventCode.leave_notify => return,
+            else => {},
+        };
         switch (code) {
             proto.EventCode.key_press, proto.EventCode.key_release => b.onKey(ev, code == proto.EventCode.key_press),
             proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
@@ -675,6 +800,17 @@ pub const X11Backend = struct {
                 const focused = code == proto.EventCode.focus_in;
                 if (w.focused == focused) return;
                 w.focused = focused;
+                if (b.xkb_event != null) {
+                    // The seat stages the focus change; leaving releases
+                    // held keys and resets compose.
+                    const sink: Sink = .{ .b = b };
+                    if (focused) {
+                        b.seat.kbEnter(sink, w.id, 0, &.{}) catch {};
+                    } else if (b.seat.kb_focus == w.id) {
+                        _ = b.seat.kbLeave(sink, b.nowNs()) catch {};
+                    } else b.stage(.{ .window_focus = .{ .win = w.id, .focused = false } });
+                    return;
+                }
                 b.stage(.{ .window_focus = .{ .win = w.id, .focused = focused } });
             },
             proto.EventCode.expose => {
@@ -704,7 +840,7 @@ pub const X11Backend = struct {
                     b.stage(.{ .window_close_requested = w.id });
                 }
             },
-            proto.EventCode.mapping_notify => if (ev[4] == 1) {
+            proto.EventCode.mapping_notify => if (ev[4] == 1 and b.xkb_event == null) {
                 // MappingKeyboard: refetch. The reply may queue more events;
                 // the dispatch loop picks them up.
                 b.loadKeymap() catch |err| log.warn("keyboard mapping refresh failed: {t}", .{err});
@@ -742,9 +878,31 @@ pub const X11Backend = struct {
         b.stage(.{ .window_occluded = .{ .win = w.id, .occluded = occluded } });
     }
 
+    /// An XKB event: state changes feed the seat; map changes refetch the
+    /// keymap (the replies may queue more events; the dispatch loop picks
+    /// them up). Mutex held.
+    fn onXkbEvent(b: *X11Backend, ev: []const u8) void {
+        switch (xkb_ext.decodeEvent(ev)) {
+            .state => |s| b.seat.modifiers(0, s.base, s.latched, s.locked, s.group),
+            .keymap_changed => b.loadXkbKeymap() catch |err| log.warn("XKB keymap refresh failed: {t}", .{err}),
+            .other => {},
+        }
+    }
+
     fn onKey(b: *X11Backend, ev: []const u8, pressed: bool) void {
         const w = b.byXid(u32At(ev, 12)) orelse return;
         const keycode = ev[1];
+        if (b.xkb_event != null) {
+            if (keycode < 8) return;
+            const evdev: u32 = keycode - 8;
+            const sink: Sink = .{ .b = b };
+            const now = b.nowNs();
+            // Events can reach a window before its FocusIn.
+            b.seat.kb_focus = w.id;
+            if (pressed and (b.seat.serverRepeat(sink, evdev, now) catch false)) return;
+            _ = b.seat.key(sink, 0, evdev, pressed, now) catch {};
+            return;
+        }
         const state = u16At(ev, 28);
         const r = b.keymap.resolve(keycode, state);
         var text: types.PayloadSlice = .empty;
@@ -765,11 +923,71 @@ pub const X11Backend = struct {
         } } });
     }
 
+    /// An XInput2 event. Mutex held.
+    fn onXiEvent(b: *X11Backend, ev: []const u8) void {
+        if (ev.len < 12) return;
+        switch (u16At(ev, 8)) {
+            xinput2.EventType.hierarchy_changed, xinput2.EventType.device_changed => {
+                // Replies may queue more events; the dispatch loop picks
+                // them up.
+                b.loadScrollValuators() catch |err| log.warn("XIQueryDevice failed: {t}", .{err});
+                b.scrolling.reset();
+            },
+            xinput2.EventType.enter, xinput2.EventType.leave => {
+                const cr = xinput2.decodeCrossing(ev) orelse return;
+                const w = b.byXid(cr.window) orelse return;
+                b.stage(.{ .pointer_enter_leave = .{ .win = w.id, .entered = cr.entered } });
+                if (cr.entered) {
+                    // As on Wayland, entering also reports the position.
+                    b.scrolling.reset();
+                    b.ptr_pos = cr.pos;
+                    b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = cr.pos, .mods = .{}, .time_ns = b.nowNs() } });
+                }
+            },
+            else => {
+                const e = xinput2.decodeDeviceEvent(ev) orelse return;
+                const w = b.byXid(e.window) orelse return;
+                const mods = modsFromState(e.mods);
+                switch (e.evtype) {
+                    xinput2.EventType.motion => {
+                        // Emulated motion comes from touches we already get.
+                        if (e.flags & xinput2.pointer_emulated != 0) return;
+                        const d = b.scrolling.delta(&e);
+                        if (d[0] != 0 or d[1] != 0) {
+                            const whole = @floor(d[0]) == d[0] and @floor(d[1]) == d[1];
+                            b.stage(.{ .scroll = .{ .win = w.id, .dx = @floatCast(d[0]), .dy = @floatCast(d[1]), .unit = .lines, .source = if (whole) .wheel else .continuous, .phase = .none } });
+                        }
+                        if (e.pos[0] == b.ptr_pos[0] and e.pos[1] == b.ptr_pos[1]) return;
+                        b.ptr_pos = e.pos;
+                        b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = e.pos, .mods = mods, .time_ns = b.nowNs() } });
+                    },
+                    xinput2.EventType.button_press, xinput2.EventType.button_release => {
+                        // Wheel buttons emulated from scroll valuators: the
+                        // valuators already scrolled.
+                        if (e.flags & xinput2.pointer_emulated != 0) return;
+                        b.pointerButton(w, @intCast(@min(e.detail, 255)), e.evtype == xinput2.EventType.button_press, e.pos, mods);
+                    },
+                    xinput2.EventType.touch_begin, xinput2.EventType.touch_update, xinput2.EventType.touch_end => {
+                        const phase: types.Phase = switch (e.evtype) {
+                            xinput2.EventType.touch_begin => .begin,
+                            xinput2.EventType.touch_update => .update,
+                            else => .end,
+                        };
+                        b.stage(.{ .touch = .{ .win = w.id, .id = @bitCast(e.detail), .phase = phase, .pos_px = e.pos } });
+                    },
+                    else => {},
+                }
+            },
+        }
+    }
+
     fn onButton(b: *X11Backend, ev: []const u8, pressed: bool) void {
         const w = b.byXid(u32At(ev, 12)) orelse return;
-        const detail = ev[1];
-        const pos = eventPos(ev);
-        const mods = modsFromState(u16At(ev, 28));
+        b.pointerButton(w, ev[1], pressed, eventPos(ev), modsFromState(u16At(ev, 28)));
+    }
+
+    /// A button press or release; 4–7 are wheel notches. Mutex held.
+    fn pointerButton(b: *X11Backend, w: *Window, detail: u8, pressed: bool, pos: [2]f32, mods: keys_api.Mods) void {
         const now = b.nowNs();
         switch (detail) {
             4, 5, 6, 7 => {
@@ -1129,4 +1347,150 @@ test "Xvfb: TARGETS lists the required atoms; MULTIPLE converts pairs and marks 
     try testing.expectEqual(@as(u32, 0), u32At(mp.value, 12));
     const p1 = try r.reply(try r.request(proto.GetProperty, .{ .window = rw, .property = at.get("_P1") }, &.{}));
     try testing.expectEqualStrings("multi", p1.value);
+}
+
+/// XTEST FakeInput: a key or button event as if from the device.
+const XTestFakeInput = struct {
+    /// The extension that owns this request.
+    pub const extension = "XTEST";
+    /// The minor opcode.
+    pub const minor = 2;
+    /// 2 KeyPress, 3 KeyRelease.
+    type: u8,
+    detail: u8,
+    _pad0: u16 = 0,
+    time: u32 = 0,
+    root: u32 = 0,
+    _pad1: [8]u8 = @splat(0),
+    root_x: i16 = 0,
+    root_y: i16 = 0,
+    _pad2: [7]u8 = @splat(0),
+    device_id: u8 = 0,
+};
+
+const KeySeen = struct { keysym: u32, action: keys_api.KeyAction, text: [8]u8 = @splat(0), text_len: usize = 0, mods: keys_api.Mods };
+
+/// Collects `want` key events from `p`.
+fn collectKeys(p: Platform, out: []KeySeen) !void {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var n: usize = 0;
+    var evs: [64]Event = undefined;
+    while (n < out.len) {
+        const got = p.pollEvents(&evs);
+        for (evs[0..got]) |e| if (e == .key and n < out.len) {
+            const t = p.payload(e.key.ev.text);
+            out[n] = .{ .keysym = e.key.ev.keysym, .action = e.key.ev.action, .mods = e.key.ev.mods, .text_len = @min(t.len, 8) };
+            @memcpy(out[n].text[0..out[n].text_len], t[0..out[n].text_len]);
+            n += 1;
+        };
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+}
+
+// XTEST drops a press of a key that is already down, so server
+// autorepeat is covered by the seat's `serverRepeat` test instead.
+test "Xvfb: XKB keys via XTEST (Shift, Caps Lock)" {
+    var x = XvfbForTest.start(6) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (b.xkb_event == null or b.conn.extension("XTEST") == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg keys", .size = .{ .w = 32, .h = 32 } });
+    _ = try waitFor(p, .window_configure, win);
+    try b.conn.checked(proto.SetInputFocus, .{ .focus = b.xidOf(win).? }, &.{});
+    _ = try waitFor(p, .window_focus, win);
+
+    const kc_a = 38; // <AC01>
+    const kc_shift = 50; // <LFSH>
+    const steps = [_]struct { u8, bool }{
+        .{ kc_a, true },     .{ kc_a, false },
+        .{ kc_shift, true }, .{ kc_a, true },
+        .{ kc_a, false },    .{ kc_shift, false },
+    };
+    for (steps) |s| try b.conn.checked(XTestFakeInput, .{ .type = if (s[1]) 2 else 3, .detail = s[0] }, &.{});
+    try b.conn.flush();
+    var seen: [6]KeySeen = undefined;
+    try collectKeys(p, &seen);
+    try testing.expectEqual(@as(u32, 'a'), seen[0].keysym);
+    try testing.expectEqualStrings("a", seen[0].text[0..seen[0].text_len]);
+    try testing.expectEqual(keys_api.KeyAction.release, seen[1].action);
+    try testing.expectEqual(@as(u32, 0xffe1), seen[2].keysym); // Shift_L
+    try testing.expectEqual(@as(u32, 'A'), seen[3].keysym);
+    try testing.expect(seen[3].mods.shift);
+    try testing.expectEqualStrings("A", seen[3].text[0..seen[3].text_len]);
+    try testing.expectEqual(keys_api.KeyAction.release, seen[5].action);
+    try testing.expect(!seen[5].mods.shift or seen[5].keysym == 0xffe1);
+
+    // Caps Lock locked from another client: StateNotify updates the seat.
+    _ = try b.conn.request(xkb_ext.LatchLockState, .{ .affect_mod_locks = 2, .mod_locks = 2 }, &.{});
+    _ = try b.conn.request(XTestFakeInput, .{ .type = 2, .detail = kc_a }, &.{});
+    _ = try b.conn.request(XTestFakeInput, .{ .type = 3, .detail = kc_a }, &.{});
+    try b.conn.flush();
+    var caps: [2]KeySeen = undefined;
+    try collectKeys(p, &caps);
+    try testing.expectEqual(@as(u32, 'A'), caps[0].keysym);
+    try testing.expect(caps[0].mods.caps_lock and !caps[0].mods.shift);
+}
+
+test "Xvfb: XInput2 pointer via XTEST (motion, buttons, wheel)" {
+    var x = XvfbForTest.start(7) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (b.xi_opcode == null or b.conn.extension("XTEST") == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg pointer", .size = .{ .w = 64, .h = 48 } });
+    _ = try waitFor(p, .window_configure, win);
+    const root = b.conn.screen().root;
+    _ = try b.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 10, .root_y = 12 }, &.{});
+    for ([_]struct { u8, u8 }{ .{ 4, 1 }, .{ 5, 1 }, .{ 4, 4 }, .{ 5, 4 } }) |s| {
+        _ = try b.conn.request(XTestFakeInput, .{ .type = s[0], .detail = s[1] }, &.{});
+    }
+    try b.conn.sync();
+
+    var moved = false;
+    var presses: usize = 0;
+    var releases: usize = 0;
+    var scrolls: usize = 0;
+    var dy: f32 = 0;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| switch (e) {
+            .pointer_move => |m| if (m.pos_px[0] == 10 and m.pos_px[1] == 12) {
+                moved = true;
+            },
+            .pointer_button => |pb| {
+                try testing.expectEqual(types.Button.left, pb.button);
+                if (pb.pressed) {
+                    presses += 1;
+                    try testing.expectEqual(@as(u8, 1), pb.clicks);
+                } else releases += 1;
+            },
+            .scroll => |sc| {
+                scrolls += 1;
+                dy += sc.dy;
+                try testing.expectEqual(event_api.ScrollUnit.lines, sc.unit);
+            },
+            else => {},
+        };
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (moved and presses == 1 and releases == 1 and dy <= -1) {
+            // Let duplicates arrive, if any.
+            try b.conn.sync();
+            const m = p.pollEvents(&evs);
+            for (evs[0..m]) |e| if (e == .scroll) {
+                scrolls += 1;
+            };
+            break;
+        }
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+    try testing.expectEqual(@as(usize, 1), scrolls);
+    try testing.expectEqual(@as(f32, -1), dy);
 }

@@ -26,6 +26,8 @@ pub const HttpRequest = struct {
     body: []const u8 = "",
     timeout_connect_ms: u32 = 10_000,
     idle_timeout_ms: u32 = 120_000,
+    /// False returns redirects to the caller instead of following them.
+    follow_redirects: bool = true,
 };
 
 /// Status and headers of a completed response.
@@ -124,10 +126,13 @@ pub const ZgNet = struct {
             .body = if (req.method == .POST) req.body else null,
             // Model requests are not idempotent; retries are the RetryPolicy's job.
             .retry = .never,
+            .follow_redirects = req.follow_redirects,
         }, .{ .ctx = &fwd, .onChunk = Fwd.onChunk }) catch |e| return switch (e) {
             error.Canceled => error.Canceled,
             error.OutOfMemory => error.OutOfMemory,
             error.Timeout => error.Timeout,
+            // The sink refused more bytes (a size cap).
+            error.Aborted => error.Aborted,
             else => error.Network,
         };
         defer head.deinit(self.client.gpa);

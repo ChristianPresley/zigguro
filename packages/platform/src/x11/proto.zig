@@ -228,6 +228,35 @@ pub const InternAtom = struct {
     };
 };
 
+/// GetAtomName (17).
+pub const GetAtomName = struct {
+    /// The major opcode.
+    pub const opcode = 17;
+    atom: u32,
+
+    /// The atom's name.
+    pub const Reply = struct {
+        name: []const u8,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            const len = u16At(b, 8);
+            if (b.len < 32 + @as(usize, len)) return error.Malformed;
+            return .{ .name = b[32..][0..len] };
+        }
+    };
+};
+
+/// SetInputFocus (42).
+pub const SetInputFocus = struct {
+    /// The major opcode.
+    pub const opcode = 42;
+    /// Revert-to: 0 None, 1 PointerRoot, 2 Parent.
+    data: u8 = 2,
+    focus: u32,
+    time: u32 = 0,
+};
+
 /// ChangeProperty modes.
 pub const PropMode = enum(u8) { replace = 0, prepend = 1, append = 2 };
 

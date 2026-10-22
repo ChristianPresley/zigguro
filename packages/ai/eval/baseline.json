@@ -1,0 +1,220 @@
+{
+  "scenarios": [
+    {
+      "name": "background_command",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "cassette_replay",
+      "passed": true,
+      "turns": 1,
+      "cost_usd": 0.000074
+    },
+    {
+      "name": "compaction_mid_task",
+      "passed": true,
+      "turns": 4,
+      "cost_usd": 0.015
+    },
+    {
+      "name": "denied_by_rule_pattern",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "denied_command_without_prompt",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "denied_tool_removed",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "edit_multi",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "edit_not_unique",
+      "passed": true,
+      "turns": 4,
+      "cost_usd": 0.015
+    },
+    {
+      "name": "edit_replace_all",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "edit_requires_read",
+      "passed": true,
+      "turns": 4,
+      "cost_usd": 0.015
+    },
+    {
+      "name": "edit_single",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "edit_stale_old_string",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "edit_then_verify",
+      "passed": true,
+      "turns": 4,
+      "cost_usd": 0.015
+    },
+    {
+      "name": "fix_failing_zig_test",
+      "passed": true,
+      "turns": 5,
+      "cost_usd": 0.01875
+    },
+    {
+      "name": "hook_allows_command",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "hook_blocks_command",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "hook_blocks_protected_file",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "max_turns_stops",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "parallel_read_and_run",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "plan_mode_command_denied",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "plan_mode_edit_denied",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "plan_mode_write_denied",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_binary_file",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_directory_read",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_missing_file",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_no_tools",
+      "passed": true,
+      "turns": 1,
+      "cost_usd": 0.00375
+    },
+    {
+      "name": "qa_parallel_reads",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_read_file",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_read_range",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "qa_shell_echo",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "refactor_extract_file",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "refactor_rename_function",
+      "passed": true,
+      "turns": 3,
+      "cost_usd": 0.01125
+    },
+    {
+      "name": "resume_continues",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "write_existing_needs_read",
+      "passed": true,
+      "turns": 4,
+      "cost_usd": 0.015
+    },
+    {
+      "name": "write_nested_file",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
+      "name": "write_new_file",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    }
+  ]
+}

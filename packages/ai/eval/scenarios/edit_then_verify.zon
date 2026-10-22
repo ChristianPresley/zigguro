@@ -1,0 +1,54 @@
+.{
+    .name = "edit_then_verify",
+    .fixture = "notes",
+    .prompt = "Rename beta to BETA and check the result.",
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "edit_file",
+                    .input = "{\"path\":\"a.txt\",\"old_string\":\"beta\",\"new_string\":\"BETA\"}",
+                },
+            },
+            .expect = .{
+                "beta",
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "read_file",
+                    .input = "{\"path\":\"a.txt\"}",
+                },
+            },
+            .expect = .{
+                "a.txt",
+            },
+        },
+        .{
+            .text = "a.txt now reads alpha, BETA.",
+            .expect = .{
+                "BETA",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .file_contains = .{
+                .path = "a.txt",
+                .needle = "BETA",
+            },
+        },
+        .{
+            .max_turns = 4,
+        },
+    },
+}

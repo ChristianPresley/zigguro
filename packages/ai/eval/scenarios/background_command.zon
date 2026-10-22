@@ -1,0 +1,44 @@
+.{
+    .name = "background_command",
+    .fixture = "notes",
+    .prompt = "Start echo bg-done in the background and read its output.",
+    .allowed_tools = .{
+        "run_command",
+    },
+    .script = .{
+        .{
+            .tools = .{
+                .{
+                    .name = "run_command",
+                    .input = "{\"command\":\"echo bg-done\",\"background\":true}",
+                },
+            },
+        },
+        .{
+            .tools = .{
+                .{
+                    .name = "command_output",
+                    .input = "{\"handle\":\"cmd_1\",\"wait_ms\":5000}",
+                },
+            },
+            .expect = .{
+                "Handle: cmd_1",
+            },
+        },
+        .{
+            .text = "It printed bg-done.",
+            .expect = .{
+                "bg-done",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .tool_used = "command_output",
+        },
+        .{
+            .final_text_matches = "bg-done",
+        },
+        .no_permission_denials,
+    },
+}

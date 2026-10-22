@@ -9,7 +9,7 @@ external binary it runs is the official Zig release named in
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `.github/workflows/ci.yml` | pull requests to `main`, pushes to `main`, manual | `lint`, `test` (4 runners × Debug/ReleaseSafe), `cross`, `bench-smoke`, `fuzz-smoke`, `vulkan` |
+| `.github/workflows/ci.yml` | pull requests to `main`, pushes to `main`, manual | `lint`, `test` (4 runners × Debug/ReleaseSafe), `cross`, `bench-smoke`, `fuzz-smoke`, `eval`, `vulkan` |
 | `.github/workflows/nightly.yml` | 03:17 UTC daily, manual | `fuzz` (35 min per target on x86_64 and aarch64 Linux), `bench` (full, Linux and Windows), `toolchain-selftest` (cold cache, all 4 runners) |
 
 `ci.yml` cancels the previous run of the same pull request when a new push
@@ -47,6 +47,7 @@ A maintainer sets branch protection on `main` to require these checks:
 - `cross`
 - `bench-smoke`
 - `fuzz-smoke`
+- `eval`
 - `vulkan`
 
 ## Toolchain setup

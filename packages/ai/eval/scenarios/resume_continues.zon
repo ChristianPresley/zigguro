@@ -1,0 +1,26 @@
+.{
+    .name = "resume_continues",
+    .fixture = "notes",
+    .prompt = "Remember the word mango.",
+    .followup = "Which word did I ask you to remember?",
+    .script = .{
+        .{
+            .text = "Noted: mango.",
+        },
+        .{
+            .text = "You asked me to remember mango.",
+            .expect = .{
+                "Remember the word mango.",
+                "Noted: mango.",
+            },
+        },
+    },
+    .graders = .{
+        .{
+            .final_text_matches = "mango",
+        },
+        .{
+            .max_turns = 2,
+        },
+    },
+}
