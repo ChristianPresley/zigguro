@@ -1,0 +1,6 @@
+:root {
+  --main-color: #06c;
+  --spacing: 4px;
+  --font-stack: "Inter", system-ui, sans-serif;
+}
+.a { color: var(--main-color); padding: calc(var(--spacing) * 2); }

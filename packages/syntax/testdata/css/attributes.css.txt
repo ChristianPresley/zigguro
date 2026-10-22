@@ -1,0 +1,4 @@
+a[href^="https"] { color: green; }
+input[type="checkbox"]:checked + label { font-weight: bold; }
+[data-state=open] { display: block; }
+abbr[title] { text-decoration: underline dotted; }

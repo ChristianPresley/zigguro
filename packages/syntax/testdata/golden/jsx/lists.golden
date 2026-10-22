@@ -1,0 +1,7 @@
+1| keyword.storage:const variable:list operator:= punctuation.bracket:(
+2| punctuation:< tag:ul punctuation:>
+3| string:     punctuation.bracket:{ variable:items punctuation.delimiter:. function:map punctuation.bracket:( punctuation.bracket:( variable:item punctuation.bracket:) operator:=> punctuation.bracket:(
+4| punctuation:< tag:li attribute:key operator:= punctuation.bracket:{ variable:item punctuation.delimiter:. property:id punctuation.bracket:} punctuation:> punctuation.bracket:{ variable:item punctuation.delimiter:. property:name punctuation.bracket:} punctuation:</ tag:li punctuation:>
+5| punctuation.bracket:) punctuation.bracket:) punctuation.bracket:}
+6| string:   punctuation:</ tag:ul punctuation:>
+7| punctuation.bracket:) punctuation.delimiter:;

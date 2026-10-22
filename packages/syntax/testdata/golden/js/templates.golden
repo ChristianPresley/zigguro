@@ -1,0 +1,8 @@
+1| keyword.storage:const variable:s operator:= string:`plain text` punctuation.delimiter:;
+2| keyword.storage:const variable:t operator:= string:`Hello,  punctuation:$ punctuation.bracket:{ variable:name punctuation.bracket:} string:! You have  punctuation:$ punctuation.bracket:{ variable:count operator:+ number:1 punctuation.bracket:} string: messages.` punctuation.delimiter:;
+3| keyword.storage:const variable:u operator:= string:`outer  punctuation:$ punctuation.bracket:{ string:`inner  punctuation:$ punctuation.bracket:{ variable:deep punctuation.bracket:} string:` punctuation.bracket:} string: done` punctuation.delimiter:;
+4| keyword.storage:const variable:v operator:= string:`multi
+5| string:line  punctuation:$ punctuation.bracket:{ variable:value punctuation.bracket:}
+6| string:end` punctuation.delimiter:;
+7| keyword.storage:const variable:w operator:= variable:tag string:`raw  punctuation:$ punctuation.bracket:{ variable:x punctuation.bracket:} string:` punctuation.delimiter:;
+8| keyword.storage:const variable:o operator:= string:` punctuation:$ punctuation.bracket:{ punctuation.bracket:{ variable:a operator:: number:1 punctuation.bracket:} punctuation.delimiter:. property:a punctuation.bracket:} string:` punctuation.delimiter:;

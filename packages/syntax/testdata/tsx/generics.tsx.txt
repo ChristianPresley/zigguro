@@ -1,0 +1,4 @@
+function List<T>({ items }: { items: T[] }) {
+  return <ul>{items.map((i, n) => <li key={n}>{String(i)}</li>)}</ul>;
+}
+const el = <List<string> items={["a"]} />;

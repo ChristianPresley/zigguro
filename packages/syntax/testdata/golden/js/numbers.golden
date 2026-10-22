@@ -1,0 +1,5 @@
+1| keyword.storage:const variable:ints operator:= punctuation.bracket:[ number:0 punctuation.delimiter:, number:42 punctuation.delimiter:, number:1_000_000 punctuation.bracket:] punctuation.delimiter:;
+2| keyword.storage:const variable:floats operator:= punctuation.bracket:[ number:3.14 punctuation.delimiter:, number:.5 punctuation.delimiter:, number:1e10 punctuation.delimiter:, number:2.5E-3 punctuation.bracket:] punctuation.delimiter:;
+3| keyword.storage:const variable:radix operator:= punctuation.bracket:[ number:0xff punctuation.delimiter:, number:0o17 punctuation.delimiter:, number:0b1010 punctuation.bracket:] punctuation.delimiter:;
+4| keyword.storage:const variable:big operator:= number:9007199254740993n punctuation.delimiter:;
+5| keyword.storage:const variable:neg operator:= operator:- number:1 punctuation.delimiter:;

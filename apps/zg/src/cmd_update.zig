@@ -1,7 +1,8 @@
 //! `zg update` (E17.F04.S01.T02): check for, download and inspect updates
-//! with the same pipeline the GUI runs in the background. Applying a
-//! staged update is E17.F04.S02.T01; switching channels waits for E15's
-//! settings editor (set `update.channel` in the settings file).
+//! with the same pipeline the GUI runs in the background, and apply a
+//! staged update now (E17.F04.S02.T01; zigguro also applies it at its
+//! next start). Switching channels waits for E15's settings editor (set
+//! `update.channel` in the settings file).
 //!
 //! Exit 0 on success, 1 when the check failed, 2 on a usage error.
 
@@ -20,6 +21,7 @@ pub const usage =
     \\Usage: zg update check [--json]      look for an update (no download)
     \\       zg update download [--json]   check, download and stage it
     \\       zg update status [--json]     what is staged, without network
+    \\       zg update apply               swap in the staged update (Linux)
     \\
     \\The feed is the product's update feed for this build's channel;
     \\ZIGGURO_UPDATE_FEED overrides it (a URL template with {channel}).
@@ -63,6 +65,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const []
     const layout = zg_update.layout.detect(exe_dir, builtin.os.tag);
 
     if (std.mem.eql(u8, sub, "status")) return status(arena, io, out, layout, state_dir, json);
+    if (std.mem.eql(u8, sub, "apply")) return apply(arena, io, out, layout);
     const download = if (std.mem.eql(u8, sub, "download")) true else if (std.mem.eql(u8, sub, "check")) false else {
         try out.print("zg update: unknown command {s}\n{s}", .{ sub, usage });
         return 2;
@@ -128,6 +131,30 @@ fn status(arena: std.mem.Allocator, io: Io, out: *Io.Writer, layout: zg_update.l
     try out.print("current: {s} ({t} install)\n", .{ cur, layout.kind });
     if (st.last_check_unix == 0) try out.writeAll("last check: never\n") else try out.print("last check: {d} (unix)\n", .{st.last_check_unix});
     if (staged) |s| try out.print("staged: {s}, applies on restart\n", .{s.version}) else try out.writeAll("staged: none\n");
+    return 0;
+}
+
+fn apply(arena: std.mem.Allocator, io: Io, out: *Io.Writer, layout: zg_update.layout.Layout) !u8 {
+    if (!layout.kind.managed()) {
+        try out.print("zg update: not a managed install ({t}); nothing to apply\n", .{layout.kind});
+        return 1;
+    }
+    if (builtin.os.tag == .windows) {
+        // The running binaries live inside `app/`: the setup helper swaps
+        // after they exit (E17.F02).
+        try out.writeAll("zg update: on Windows the update applies when zigguro restarts\n");
+        return 1;
+    }
+    var root = try Io.Dir.cwd().openDir(io, layout.root, .{});
+    defer root.close(io);
+    const now: i64 = @intCast(@divFloor(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
+    const outcome = try zg_update.swap.applyStaged(arena, io, root, zg_release.current.version_string, now);
+    try out.print("{s}\n", .{switch (outcome) {
+        .applied => "update applied; restart zigguro to use it",
+        .nothing_staged => "no update is staged",
+        .recovered_forward => "finished an interrupted update; restart zigguro to use it",
+        .recovered_backward => "undid an interrupted update",
+    }});
     return 0;
 }
 

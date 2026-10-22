@@ -6,7 +6,8 @@
 //! `zigguro FILE` opens FILE in the editor workbench instead (a missing
 //! file starts empty and is created on save); `--terminal` opens the
 //! workbench with its terminal panel showing (Ctrl+` toggles it), and
-//! `--agent` with the agent pane open (Ctrl+L toggles it).
+//! `--agent` with the agent pane open (Ctrl+L toggles it); `--review`
+//! opens it with the review queue showing.
 //!
 //! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
 //! or when no display can be reached, it renders `--frames N` frames
@@ -26,12 +27,14 @@ const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
+const zg_update = @import("zg_update");
 const zg_platform = @import("zg_platform");
 const zg_gui = @import("zg_gui");
 const zg_vulkan = @import("zg_vulkan");
 const Welcome = @import("welcome.zig").Welcome;
 const Workbench = @import("workbench.zig").Workbench;
 const fonts = @import("fonts.zig");
+const early_update = @import("startup/early_update_check.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -54,6 +57,10 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var rt: zg_core.Runtime = undefined;
     try rt.init(min, .{});
     defer _ = rt.deinit();
+    // Before GPU and window init: apply a staged update or roll back one
+    // that cannot start (may re-execute the process).
+    var boot = early_update.run(&rt, min);
+    defer boot.deinit(rt.io);
 
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
@@ -84,7 +91,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (file_arg) |p| rt.gpa.free(p);
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
     const want_agent = hasFlag(min, rt.gpa, "--agent");
-    const use_wb = file_arg != null or want_terminal or want_agent;
+    const want_review = hasFlag(min, rt.gpa, "--review");
+    const use_wb = file_arg != null or want_terminal or want_agent or want_review;
     var wb: Workbench = undefined;
     if (use_wb) try wb.init(&rt, &env, file_arg);
     defer if (use_wb) wb.deinit();
@@ -105,11 +113,12 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (use_wb) wb.enableFloating(host.windowOpener());
         if (want_terminal) try wb.toggleTerminal();
         if (want_agent) try wb.toggleAgent();
+        if (want_review) try wb.toggleReview();
         defer if (use_wb) wb.detach();
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
         const frames = frames_arg orelse {
-            try host.run();
+            try runInteractive(&rt, &host, &boot);
             return 0;
         };
         var seen: u64 = 0;
@@ -138,6 +147,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (use_wb) try wb.attach(hw.win);
     if (want_terminal) try wb.toggleTerminal();
     if (want_agent) try wb.toggleAgent();
+    if (want_review) try wb.toggleReview();
     defer if (use_wb) wb.detach();
     var drawn: u64 = 0;
     var i: u32 = 0;
@@ -159,6 +169,22 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     }
     try w.flush();
     return 0;
+}
+
+/// Runs until the window closes. In a managed install the version counts
+/// as healthy 30 s after the window opened, or at a clean quit.
+fn runInteractive(rt: *zg_core.Runtime, host: *zg_gui.Host, boot: *early_update.Boot) !void {
+    const h = if (boot.health) |*h| h else return host.run();
+    h.markFirstFrame(0);
+    var timer = rt.io.concurrent(healthTimer, .{ rt.io, h }) catch null;
+    try host.run();
+    if (timer) |*t| t.cancel(rt.io) catch {};
+    h.onCleanQuit();
+}
+
+fn healthTimer(io: std.Io, h: *zg_update.boot_health.BootHealth) std.Io.Cancelable!void {
+    try io.sleep(.fromMilliseconds(zg_update.boot_health.healthy_after_ms), .awake);
+    h.markHealthy();
 }
 
 /// The value after flag `name`, if given (owned).

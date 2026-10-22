@@ -1,0 +1,9 @@
+.box {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 auto 10px;
+  font: italic bold 12px/30px Georgia, serif;
+  color: #ff0000;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 10 !important;
+}

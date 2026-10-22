@@ -1,0 +1,2 @@
+const el = <input type="text" value={value} onChange={e => set(e.target.value)} disabled />;
+const d = <div data-id="1" aria-label="close" style={{ color: "red" }} />;

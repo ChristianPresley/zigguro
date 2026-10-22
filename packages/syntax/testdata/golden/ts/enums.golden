@@ -1,0 +1,4 @@
+1| keyword.storage:enum type:Color punctuation.bracket:{ type:Red punctuation.delimiter:, type:Green operator:= string:"green" punctuation.delimiter:, type:Blue operator:= number:4 punctuation.bracket:}
+2| keyword.storage:const keyword.storage:enum type:Flags punctuation.bracket:{ type:None operator:= number:0 punctuation.delimiter:, type:A operator:= number:1 operator:<< number:0 punctuation.delimiter:, type:B operator:= number:1 operator:<< number:1 punctuation.bracket:}
+3| keyword.storage:declare keyword.storage:enum type:Ambient punctuation.bracket:{ type:X punctuation.bracket:}
+4| keyword.storage:const variable:c operator:: type:Color operator:= type:Color punctuation.delimiter:. property:Red punctuation.delimiter:;

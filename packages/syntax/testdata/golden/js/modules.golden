@@ -1,0 +1,7 @@
+1| keyword:import variable:fs keyword:from string:"node:fs" punctuation.delimiter:;
+2| keyword:import punctuation.bracket:{ variable:readFile punctuation.delimiter:, variable:writeFile keyword:as variable:write punctuation.bracket:} keyword:from string:"fs/promises" punctuation.delimiter:;
+3| keyword:import operator:* keyword:as variable:path keyword:from string:"path" punctuation.delimiter:;
+4| keyword:export keyword.control:default keyword.storage:function function:main punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}
+5| keyword:export keyword.storage:const constant:VERSION operator:= string:"1.0" punctuation.delimiter:;
+6| keyword:export punctuation.bracket:{ variable:a punctuation.delimiter:, variable:b keyword:as variable:c punctuation.bracket:} keyword:from string:"./mod.js" punctuation.delimiter:;
+7| keyword.storage:const variable:lazy operator:= keyword.control:await keyword:import punctuation.bracket:( string:"./lazy.js" punctuation.bracket:) punctuation.delimiter:;

@@ -1,0 +1,8 @@
+1| type:.card punctuation.bracket:{
+2| property:padding punctuation.delimiter:: number:1rem punctuation.delimiter:;
+3| operator:& attribute::hover punctuation.bracket:{ property:background punctuation.delimiter:: constant:#eee punctuation.delimiter:; punctuation.bracket:}
+4| type:.title punctuation.bracket:{
+5| property:font-weight punctuation.delimiter:: number:600 punctuation.delimiter:;
+6| punctuation.bracket:}
+7| operator:& operator:+ operator:& punctuation.bracket:{ property:margin-top punctuation.delimiter:: number:1rem punctuation.delimiter:; punctuation.bracket:}
+8| punctuation.bracket:}

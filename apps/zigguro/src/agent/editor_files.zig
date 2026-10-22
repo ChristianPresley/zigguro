@@ -55,7 +55,13 @@ pub const EditorFiles = struct {
 
     /// The `Files` for zg_ai's `FileTools`.
     pub fn files(self: *EditorFiles) zfiles.Files {
-        return .{ .ctx = self, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose } };
+        return .{ .ctx = self, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn } };
+    }
+
+    /// The turn's changes are `outside`'s to close (E12's review queue).
+    fn endTurn(ctx: *anyopaque, io: Io, agent: zg_ai.proto.AgentRef, turn: u32) anyerror!?u64 {
+        const o = cast(ctx).outside orelse return null;
+        return o.endTurn(io, agent, turn);
     }
 
     fn applyAll(_: *anyopaque, _: u64, _: DocHandle, _: agent_edit.ProposalSummary) agent_edit.Decision {

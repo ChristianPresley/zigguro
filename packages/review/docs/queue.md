@@ -27,7 +27,9 @@ Groups:
 
 Groups are ordered newest first, and so are the changesets inside them.
 Changesets applied without review in the last 24 hours are pinned at the
-bottom, under "Recently auto-applied (last 24 h)", whatever the filter.
+bottom, under "Recently auto-applied (last 24 h)", whatever the state
+filter says; the filter's other terms (text, path, agent, origin,
+conflicts) apply to them as usual.
 
 ## Filters
 

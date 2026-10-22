@@ -359,9 +359,11 @@ pub const QueueModel = struct {
         return n;
     }
 
-    fn passes(m: *const QueueModel, e: *const Entry) bool {
+    /// The filter's other terms apply to the pinned group too; only its
+    /// states do not.
+    fn passes(m: *const QueueModel, e: *const Entry, states: bool) bool {
         const f = &m.filter;
-        if (!f.states.contains(e.state)) return false;
+        if (states and !f.states.contains(e.state)) return false;
         if (f.origins) |o| if (!o.contains(e.origin)) return false;
         if (f.agent) |s| if (std.mem.indexOf(u8, e.agent_lower, s) == null) return false;
         if (f.has_conflicts) |want| if ((m.conflictsOf(e) > 0) != want) return false;
@@ -407,10 +409,11 @@ pub const QueueModel = struct {
         for (m.entries.values()) |e| {
             const recent_auto = e.auto_applied and e.state == .applied and now - (e.decided_ms orelse e.created_ms) <= auto_applied_window_ms;
             if (recent_auto) {
+                if (!m.passes(e, false)) continue;
                 try list.append(a, .{ .e = e, .key = "Recently auto-applied (last 24 h)", .pinned = true });
                 continue;
             }
-            if (!m.passes(e)) continue;
+            if (!m.passes(e, true)) continue;
             try list.append(a, .{ .e = e, .key = try m.groupKey(a, e), .pinned = false });
         }
         // Newest group first (by its newest changeset), newest first within.
