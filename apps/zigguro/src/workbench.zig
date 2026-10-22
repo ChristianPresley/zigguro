@@ -43,6 +43,7 @@ const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
 const ApprovalsInbox = @import("review/approvals_view.zig").ApprovalsInbox;
+const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -811,6 +812,11 @@ pub const Workbench = struct {
         } else |_| {}
         p.plans = &host.plans;
         p.plan_mode = &host.plan_mode;
+        // The session's approvals also show in the pane.
+        p.approvals = PaneApprovals.create(wb.gpa, w.app, &wb.approvals, host.agent.ref.session) catch |e| blk: {
+            log.err("agent pane approvals: {t}", .{e});
+            break :blk null;
+        };
         p.attachChildren(&host.children);
         // Rewinding code goes through E12's checkpoints.
         p.restore = host.review.restore();
