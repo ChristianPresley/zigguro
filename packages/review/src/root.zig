@@ -18,6 +18,8 @@ pub const rebase = @import("rebase/root.zig");
 pub const overlay = @import("overlay/root.zig");
 /// The review queue's rows, filters and counts.
 pub const queue_view = @import("queue_view/root.zig");
+/// Reviewing hunk by hunk: cursor, decisions and their undo.
+pub const session = @import("session/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
