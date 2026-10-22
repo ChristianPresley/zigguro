@@ -16,6 +16,12 @@ pub const discovery_linux = @import("discovery_linux.zig");
 pub const fontconfig_xml = @import("fontconfig_xml.zig");
 /// A minimal XML tokenizer.
 pub const xml = @import("xml.zig");
+/// The font database: scanned face metadata and coverage, persisted.
+pub const db = @import("db.zig");
+/// The database's binary (cache) format.
+pub const db_cache = @import("db_cache.zig");
+/// CSS Fonts 4 style matching and generic families.
+pub const matcher = @import("matcher.zig");
 
 pub const InstanceId = registry.InstanceId;
 pub const FontRegistry = registry.FontRegistry;
@@ -26,9 +32,18 @@ pub const Discovery = discovery.Discovery;
 pub const FileEntry = discovery.FileEntry;
 pub const listFontFiles = discovery.listFontFiles;
 pub const discoverLinux = discovery_linux.discoverLinux;
+pub const FontDb = db.FontDb;
+pub const FaceInfo = db.FaceInfo;
+pub const FaceRef = db.FaceRef;
+pub const ScanStats = db.ScanStats;
+pub const Query = matcher.Query;
+pub const Match = matcher.Match;
+pub const Synth = matcher.Synth;
+pub const Generics = matcher.Generics;
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("fallback_test.zig");
     _ = @import("discovery_test.zig");
+    _ = @import("db_test.zig");
 }
