@@ -484,3 +484,41 @@ test "view: smart typing indents with the unit the file uses" {
     f.t.typeText("(");
     try f.expectText("(a {\n\t\n\tb\n}\n");
 }
+
+test "view: a Vim mode gets keys first" {
+    var f: Fx = undefined;
+    try f.init("hello world");
+    defer f.deinit();
+    const modes = @import("../modes.zig");
+    var vs: modes.VimState = .init(gpa);
+    defer vs.deinit();
+    f.view.mode = vs.handler();
+    defer f.view.mode = null;
+    try testing.expectEqual(modes.mode.CaretShape.block, f.view.caretShape());
+
+    // Normal mode: `x` deletes, `w` moves a word, `dw` deletes one.
+    f.t.typeText("x");
+    try f.expectText("ello world");
+    f.t.typeText("w");
+    try testing.expectEqual(@as(u64, 5), f.head());
+    f.t.typeText("d");
+    try testing.expectEqual(modes.mode.CaretShape.half_block, f.view.caretShape());
+    f.t.typeText("w");
+    try f.expectText("ello ");
+    // Insert mode types; Escape leaves it.
+    f.t.typeText("I");
+    try testing.expectEqualStrings("-- INSERT --", f.view.modeStatus());
+    try testing.expectEqual(modes.mode.CaretShape.bar, f.view.caretShape());
+    f.t.typeText("h");
+    try f.expectText("hello ");
+    f.press(.{ .key = .escape });
+    try testing.expectEqualStrings("", f.view.modeStatus());
+    // `u` undoes the insert as one step.
+    f.t.typeText("u");
+    try f.expectText("ello ");
+    // Without the mode, typing inserts again.
+    f.view.mode = null;
+    f.view.setSelection(.caret(0));
+    f.t.typeText("x");
+    try f.expectText("xello ");
+}
