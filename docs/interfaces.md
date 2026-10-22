@@ -1242,3 +1242,87 @@ offsets into the haystack.
 Experimental until the E05.F03 pull request merges. Semantics follow Rust
 `regex` (Unicode by default, leftmost-first, no backreferences or
 look-around); see `docs/regex.md`.
+
+## zg_editor.model (PieceTree, ChangeSet, Document, Snapshot)
+
+### Defined in
+`packages/editor/src/model/buffer/piece_tree.zig`,
+`packages/editor/src/model/edit/change_set.zig`,
+`packages/editor/src/model/document.zig`, `packages/editor/src/model/snapshot.zig`,
+`packages/editor/src/model/change_log.zig`, `packages/editor/src/model/edit/anchor.zig`
+(E05.F01, E05.F02).
+
+### Implemented by
+E05.F01.S01.T01, E05.F01.S03.T01, E05.F02.S01.T01.
+
+### Consumed by
+E05.F04–F08 (syntax, views, find, diff, registry), E07 (position conversion,
+document sync via `toLspChanges`), E12 (ChangeSet, Document).
+
+### Signature
+```zig
+pub const Range = struct { start: u64, end: u64 };
+pub const Point = struct { line: u64, col: u32 };       // col in bytes
+pub const PointUtf16 = struct { line: u64, col: u32 };  // col in UTF-16 units
+pub const Edit = struct { range: Range, text: []const u8 };
+pub const EditError = error{ OutOfMemory, BufferFull, OutOfBounds, Overlap };
+pub const PieceTree = struct {   // persistent; every edit returns a new version
+    pub fn fromOriginal(pool: *NodePool, bt: *BufferTable) Allocator.Error!PieceTree;
+    pub fn clone(t) PieceTree;                       // O(1)
+    pub fn deinit(t: *PieceTree, pool: *NodePool) void;
+    pub fn len(t) u64; pub fn lineCount(t) u64;
+    pub fn insert(t, pool, at: u64, text) EditError!PieceTree;
+    pub fn delete(t, pool, range: Range) EditError!PieceTree;
+    pub fn replace(t, pool, edits: []const Edit) EditError!PieceTree; // sorted, disjoint, old coords
+    pub fn lineOf(t, off) u64; pub fn lineStart(t, line) u64;
+    pub fn lineRange(t, line) struct { start: u64, end: u64, eol_len: u2 };
+    pub fn offsetToPoint(t, off) Point; pub fn pointToOffset(t, p: Point) u64;
+    pub fn offsetToUtf16(t, off) PointUtf16; pub fn utf16ToOffset(t, p: PointUtf16) u64;
+    pub fn slice(t, range) ChunkIterator; pub fn chunks(t, from) ChunkIterator;
+    pub fn chunksRev(t, from) RevChunkIterator;
+    pub fn copyRange(t, gpa, range) Allocator.Error![]u8;
+};
+pub const Bias = enum { left, right };
+pub const MapMode = enum { expand, shrink, delete_if_touched };
+pub const ChangeSet = struct {   // sorted replacements in old coordinates
+    pub fn identity(gpa, base_len: u64) ChangeSet;
+    pub fn fromEdits(gpa, base_len: u64, edits: []const Edit) error{ Overlap, OutOfBounds, OutOfMemory }!ChangeSet;
+    pub fn deinit(cs) void; pub fn clone(cs, gpa) !ChangeSet;
+    pub fn newLen(cs) u64; pub fn isIdentity(cs) bool;
+    pub fn apply(cs, t: PieceTree, pool) EditError!PieceTree;
+    pub fn applyToSlice(cs, gpa, text) ![]u8;
+    pub fn invert(cs, before: PieceTree, gpa) !ChangeSet;
+    pub fn compose(a, b, gpa) !ChangeSet;                    // a then b
+    pub fn transform(a, b, a_wins_ties: bool, gpa) !ChangeSet; // a' such that b·a' == a·b' (TP1); sets .conflicted
+    pub fn mapPos(cs, pos, bias) u64;
+    pub fn mapPosDetail(cs, pos, bias) struct { pos: u64, deleted: bool };
+    pub fn mapRange(cs, r: Range, mode: MapMode) ?Range;
+    pub fn toLspChanges(cs, before: PieceTree, enc: zg_core.utf8.Encoding, out: *ArrayList(LspChange), gpa) !void; // descending, old coords
+};
+pub const Snapshot = struct { tree: PieceTree, version: u64, doc_id: DocId, store: *Store,
+    pub fn retain(s) Snapshot; pub fn release(s: *Snapshot) void; pub fn len(s) u64 };
+pub const Document = struct {
+    pub fn initBytes(gpa, id: DocId, bytes) !*Document; pub fn deinit(d) void;
+    pub fn snapshot(d) Snapshot; pub fn len(d) u64; pub fn isDirty(d) bool;
+    pub fn applyChangeSet(d, cs: *const ChangeSet, origin: EditOrigin) !void;
+    pub fn mapForward(d, from_version: u64, range: Range, bias: Bias) ?Range; // null: evicted or deleted
+    pub fn subscribe(d, l: Listener) !ListenerId; pub fn unsubscribe(d, id) void;
+    pub fn endFrame(d) void;                         // frees nodes released on workers
+};
+pub const Anchor = struct { offset: u64, version: u64, bias: Bias,
+    pub fn at(doc, offset, bias) Anchor };
+pub fn resolve(doc, a: Anchor) ?u64; pub fn refresh(doc, a: *Anchor) bool;
+```
+
+### Threading
+A Document and its edits live on the owner (UI) thread. Snapshots are
+immutable and may be retained, read and released on any thread; nodes
+released off the owner thread are freed at `endFrame`.
+
+### Ownership/lifetime
+The Store (node pool and buffer table) is refcounted; snapshots keep it alive
+after the Document is deinitialized. ChangeSets own their inserted text.
+Line semantics match `zg_core.LineIndex`.
+
+### Stability
+Unstable until E05.F05 views and E12 land.
