@@ -1,16 +1,18 @@
 //! The workbench until the docking shell (E04.F07) lands: one editor on a
-//! file (or an empty buffer) above a status line, driven by the E15 keymap
-//! (VS Code preset) and command palette.
+//! file (or an empty buffer), a terminal panel below it, and a status
+//! line, driven by the E15 keymap (VS Code preset) and command palette.
 //!
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
-//! (Ctrl+Shift+P, F1), `editor.undo`, `editor.redo`, `editor.selectAll`
-//! and `workbench.toggleTheme`.
+//! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `editor.undo`,
+//! `editor.redo`, `editor.selectAll` and `workbench.toggleTheme`.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
 const zg_syntax = @import("zg_syntax");
+const zg_terminal_view = @import("zg_terminal_view");
+const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -24,6 +26,7 @@ const themes = zg_gui.theme.theme;
 pub const Workbench = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
+    env: *const std.process.Environ.Map,
     /// The file being edited, or null for an untitled buffer.
     path: ?[]u8 = null,
     doc: *Document,
@@ -45,13 +48,20 @@ pub const Workbench = struct {
     dark: bool = true,
     editor_node: zg_gui.core.NodeId = .none,
     focused: bool = false,
+    /// Created on first show.
+    terminal: ?*TerminalPanel = null,
+    show_terminal: bool = false,
+    terminal_node: zg_gui.core.NodeId = .none,
+    /// Focus the terminal once it is in the tree.
+    focus_terminal: bool = false,
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
-    pub fn init(wb: *Workbench, gpa: std.mem.Allocator, io: std.Io, path: ?[]const u8) !void {
+    pub fn init(wb: *Workbench, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, path: ?[]const u8) !void {
         wb.* = .{
             .gpa = gpa,
             .io = io,
+            .env = env,
             .doc = undefined,
             .view = undefined,
             .langs = try zg_syntax.defaultRegistry(gpa),
@@ -85,6 +95,8 @@ pub const Workbench = struct {
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        if (wb.terminal) |t| t.destroy();
+        wb.terminal = null;
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
@@ -136,6 +148,7 @@ pub const Workbench = struct {
 
     const commands = [_]Cmd{
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
+        .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
@@ -200,6 +213,38 @@ pub const Workbench = struct {
         w.app.setTheme(if (wb.dark) &themes.zigguro_dark else &themes.zigguro_light);
     }
 
+    /// Shows the terminal panel (starting its shell) and focuses it, or
+    /// hides it and focuses the editor.
+    pub fn toggleTerminal(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        if (wb.show_terminal) {
+            wb.show_terminal = false;
+            if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
+            return;
+        }
+        if (wb.terminal == null) {
+            const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
+            t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
+            wb.terminal = t;
+            t.start();
+        }
+        wb.show_terminal = true;
+        wb.focus_terminal = true;
+        w.markAllDirty();
+        w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
+    }
+
+    fn focusTerminal(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.focus_terminal and !wb.terminal_node.isNone()) w.setFocus(wb.terminal_node, false);
+        wb.focus_terminal = false;
+    }
+
+    fn onTerminalOutput(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     fn onStatus(ctx: *anyopaque, _: ?[]const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.win) |w| w.markAllDirty();
@@ -218,6 +263,8 @@ pub const Workbench = struct {
         wb.editor_node = ui.lastNode();
         ui.close();
         if (r.changed) wb.message_len = 0;
+        wb.terminal_node = .none;
+        if (wb.show_terminal) if (wb.terminal) |t| wb.terminalPanel(ui, t);
         // Focus the editor once it exists.
         if (!wb.focused) {
             wb.focused = true;
@@ -229,6 +276,19 @@ pub const Workbench = struct {
     fn focusEditor(ctx: *anyopaque, w: *Window) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (w.focus.isNone() and !wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
+    }
+
+    fn terminalPanel(wb: *Workbench, ui: *Ui, t: *TerminalPanel) void {
+        ui.open(.{ .style = .{ .dir = .column, .h = .{ .pct = 38 }, .shrink = 0, .bg = .{ .token = .bg_elevated } } });
+        defer ui.close();
+        ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
+        ui.text("TERMINAL", .{ .color = .fg_muted, .wrap = false });
+        const title = t.term.title.items;
+        if (title.len > 0) ui.text(title, .{ .color = .fg_muted, .wrap = false });
+        if (t.noteText().len > 0) ui.text(t.noteText(), .{ .color = .warning, .wrap = false });
+        ui.close();
+        _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
+        wb.terminal_node = t.view.node;
     }
 
     fn statusLine(wb: *Workbench, ui: *Ui) void {
