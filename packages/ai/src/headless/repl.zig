@@ -1,14 +1,14 @@
 //! `zg agent` without `-p` on a terminal (E10.F10.S01.T01): a line REPL.
 //! The terminal provides line editing; Ctrl-D exits. SIGINT cancels the
-//! running turn and keeps the REPL; SIGTERM ends it. Slash commands come
-//! with E10.F09.S04.T01; until then only `/exit`, `/quit` and `/plan`
-//! (plan mode until a plan is approved) are known.
+//! running turn and keeps the REPL; SIGTERM ends it. `/name args` runs a
+//! skill or a built-in command (`slash.zig`); `/exit` and `/quit` leave.
 
 const std = @import("std");
 const AgentManager = @import("../loop/Manager.zig");
 const args_mod = @import("args.zig");
 const exit_codes = @import("exit_codes.zig");
 const runner = @import("runner.zig");
+const slash = @import("slash.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -40,18 +40,16 @@ pub fn runRepl(io: Io, gpa: Allocator, mgr: *AgentManager, opts: args_mod.Headle
         } orelse break;
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
-        if (line[0] == '/') {
-            const cmd = line[1 .. std.mem.indexOfAny(u8, line, " \t") orelse line.len];
-            if (std.mem.eql(u8, cmd, "exit") or std.mem.eql(u8, cmd, "quit")) break;
-            if (std.mem.eql(u8, cmd, "plan")) {
-                if (r.enterPlanMode()) r.note("plan mode: read-only until you approve a plan", .{}) else r.note("plan mode needs exit_plan_mode, which this run does not have", .{});
-                continue;
-            }
-            r.note("unknown command /{s}", .{cmd});
-            continue;
-        }
+        var scratch: std.heap.ArenaAllocator = .init(gpa);
+        defer scratch.deinit();
+        const text = switch (try slash.run(&r, scratch.allocator(), line, true)) {
+            .not_command => line,
+            .prompt => |p| p,
+            .handled, .failed => continue,
+            .exit => break,
+        };
         // The line lives in `in`'s buffer; the agent copies it on submit.
-        try r.runTurn(line);
+        try r.runTurn(text);
         const o = r.outcome();
         if (o.finish) |f| switch (f) {
             .end_turn, .max_tokens => {},
