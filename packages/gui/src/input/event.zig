@@ -65,6 +65,14 @@ pub const InputEvent = union(enum) {
     drag_files_over: geom.Vec2,
     /// Files were dropped here (after an accepted `drag_files_over`).
     drop_files: DropFiles,
+    /// The answer to `EventCx.readClipboard` (to the node that asked).
+    clipboard_data: ClipboardData,
+};
+
+/// Clipboard bytes in one format, valid during the event only.
+pub const ClipboardData = struct {
+    mime: zg_platform.clipboard.MimeId,
+    bytes: []const u8,
 };
 
 /// Dropped files: local paths, valid during the event only.
@@ -121,6 +129,7 @@ pub const Sink = struct {
         clipboardSet: *const fn (*anyopaque, []const u8) void,
         primaryGet: *const fn (*anyopaque) ?[]const u8,
         primarySet: *const fn (*anyopaque, []const u8) void,
+        readClipboard: *const fn (*anyopaque, ids.NodeId, zg_platform.clipboard.MimeId) void,
         nowMs: *const fn (*anyopaque) u64,
         setIme: *const fn (*anyopaque, ids.NodeId, ?ImeRequest) void,
         allocator: *const fn (*anyopaque) std.mem.Allocator,
@@ -212,6 +221,14 @@ pub const EventCx = struct {
     /// Makes `s` the PRIMARY selection (ignored where there is none).
     pub fn setPrimary(ec: *EventCx, s: []const u8) void {
         ec.sink.vtable.primarySet(ec.sink.ptr, s);
+    }
+
+    /// Asks for the clipboard in format `mime` (an image, say); it arrives
+    /// later as `InputEvent.clipboard_data` at this node, with empty bytes
+    /// when the clipboard has no such format. A later request from the
+    /// same window replaces one not yet answered.
+    pub fn readClipboard(ec: *EventCx, mime: zg_platform.clipboard.MimeId) void {
+        ec.sink.vtable.readClipboard(ec.sink.ptr, ec.node, mime);
     }
 
     /// Milliseconds on the app's monotonic clock.

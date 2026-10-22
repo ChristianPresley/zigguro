@@ -489,6 +489,11 @@ pub const Workbench = struct {
             host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
             const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            // Pasted images go to the project's .zigguro/attachments.
+            if (std.fs.path.join(wb.gpa, &.{ wb.cwd, ".zigguro", "attachments" })) |dir| {
+                defer wb.gpa.free(dir);
+                p.enableImagePaste(dir) catch {};
+            } else |_| {}
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
             p.attachChildren(&host.children);

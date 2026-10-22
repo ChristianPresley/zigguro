@@ -10,8 +10,10 @@
 //! Files dragged from another app are accepted when `on_drop_files` is
 //! set, and handed over as local paths on drop (input/drop.zig).
 //!
-//! Not yet: rich (image) paste; it waits on clipboard formats reaching
-//! the GUI from the platform.
+//!
+//! Rich paste: with `on_paste_rich` set, Ctrl+V on a clipboard without
+//! text asks the platform for an image (`image/png`) and hands the bytes
+//! over when they arrive; text pastes stay instant.
 
 const std = @import("std");
 const geom = @import("../../core/geom.zig");
@@ -25,6 +27,9 @@ pub const PromptHooks = struct {
     on_trigger: ?*const fn (ctx: *anyopaque, ch: u8, byte_offset: u32, caret_rect: Rect) void = null,
     /// Local paths dropped on the field (valid during the call only).
     on_drop_files: ?*const fn (ctx: *anyopaque, paths: []const []const u8) void = null,
+    /// Pasted non-text data (`mime` such as "image/png"; bytes valid
+    /// during the call only). Returns whether it was consumed.
+    on_paste_rich: ?*const fn (ctx: *anyopaque, mime: []const u8, bytes: []const u8) bool = null,
 };
 
 /// The trigger character `typed` at `offset` in `t` (after insertion),

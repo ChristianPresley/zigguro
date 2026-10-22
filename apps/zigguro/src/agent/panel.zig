@@ -52,6 +52,9 @@ pub const AgentPanel = struct {
     input: zg_gui.w.TextBuffer,
     /// Files dropped on the prompt become `@path` mentions.
     prompt_hooks: zg_gui.w.PromptHooks = undefined,
+    /// Where pasted images are saved (`enableImagePaste`); null: off.
+    attach_dir: ?[]u8 = null,
+    pastes: u32 = 0,
     /// A cancel running off the UI thread.
     stopping: ?Io.Future(void) = null,
     /// `stopping` has finished.
@@ -166,6 +169,7 @@ pub const AgentPanel = struct {
         for (p.items.items) |*it| it.deinit(p.gpa);
         p.items.deinit(p.gpa);
         p.input.deinit();
+        if (p.attach_dir) |d| p.gpa.free(d);
         p.gpa.destroy(p);
     }
 
@@ -430,6 +434,39 @@ pub const AgentPanel = struct {
     fn dropFiles(ctx: *anyopaque, paths: []const []const u8) void {
         const p: *AgentPanel = @ptrCast(@alignCast(ctx));
         p.mentionFiles(paths) catch {};
+    }
+
+    /// Saves images pasted into the prompt as PNG files in `dir` (created
+    /// when needed) and mentions them.
+    pub fn enableImagePaste(p: *AgentPanel, dir: []const u8) !void {
+        const d = try p.gpa.dupe(u8, dir);
+        if (p.attach_dir) |old| p.gpa.free(old);
+        p.attach_dir = d;
+        p.prompt_hooks.on_paste_rich = pasteRich;
+    }
+
+    fn pasteRich(ctx: *anyopaque, mime: []const u8, bytes: []const u8) bool {
+        const p: *AgentPanel = @ptrCast(@alignCast(ctx));
+        if (!std.mem.eql(u8, mime, "image/png")) return false;
+        const dir = p.attach_dir orelse return false;
+        p.saveImage(dir, bytes) catch |e| {
+            var buf: [96]u8 = undefined;
+            p.addItem(.failure, std.fmt.bufPrint(&buf, "Could not save the pasted image: {t}", .{e}) catch "Could not save the pasted image") catch {};
+            if (p.on_change) |c| c.f(c.ctx);
+        };
+        return true;
+    }
+
+    fn saveImage(p: *AgentPanel, dir: []const u8, bytes: []const u8) !void {
+        p.pastes += 1;
+        var name: [64]u8 = undefined;
+        const base = try std.fmt.bufPrint(&name, "paste-{d}-{d}.png", .{ p.app.now_ms, p.pastes });
+        const path = try std.fs.path.join(p.gpa, &.{ dir, base });
+        defer p.gpa.free(path);
+        const cwd = Io.Dir.cwd();
+        try cwd.createDirPath(p.io, dir);
+        try cwd.writeFile(p.io, .{ .sub_path = path, .data = bytes });
+        try p.mentionFiles(&.{path});
     }
 
     /// Appends an `@path` mention per path to the prompt (quoted when the
@@ -906,4 +943,40 @@ test "agent panel: dropped files become mentions in the prompt" {
     try p.input.setText("look at");
     p.prompt_hooks.on_drop_files.?(p.prompt_hooks.ctx, &.{ "/tmp/a b.txt", "/src/x.zig" });
     try testing.expectEqualStrings("look at @\"/tmp/a b.txt\" @/src/x.zig ", p.input.slice());
+}
+
+test "agent panel: a pasted image is saved and mentioned" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &.{}, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var tools: zg_ai.loop.deps.StaticTools = .{ .specs = &.{} };
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &models, .providers = .fixed(&provider), .tools = tools.tools() });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+    const t = try zg_gui.testing.TestApp.init(gpa, .{});
+    defer t.deinit();
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+
+    // Off until enabled.
+    try testing.expect(p.prompt_hooks.on_paste_rich == null);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/attachments", .{tmp.sub_path});
+    defer gpa.free(dir);
+    try p.enableImagePaste(dir);
+    const f = p.prompt_hooks.on_paste_rich.?;
+    try testing.expect(!f(p.prompt_hooks.ctx, "text/html", "<b>"));
+    try testing.expect(f(p.prompt_hooks.ctx, "image/png", "png-bytes"));
+
+    const got = p.input.slice();
+    try testing.expect(std.mem.startsWith(u8, got, "@"));
+    const path = std.mem.trimEnd(u8, got[1..], " ");
+    var buf: [32]u8 = undefined;
+    const saved = try Io.Dir.cwd().readFile(io, path, &buf);
+    try testing.expectEqualStrings("png-bytes", saved);
 }

@@ -382,3 +382,53 @@ test "host: files dragged from another app reach a prompt field" {
     try std.testing.expectEqualStrings("/tmp/a b.txt|/tmp/c|", rec.got.items);
     try std.testing.expectEqual(@as(?bool, null), hw.win.drop.sent);
 }
+
+test "host: an image paste reaches a prompt field's on_paste_rich" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+
+    const Rec = struct {
+        mime: []const u8 = "",
+        len: usize = 0,
+        fn on(ctx: *anyopaque, mime: []const u8, bytes: []const u8) bool {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            r.mime = mime;
+            r.len = bytes.len;
+            return true;
+        }
+    };
+    var rec: Rec = .{};
+    var buf = try @import("widgets/text_field/model.zig").TextBuffer.init(gpa, "");
+    defer buf.deinit();
+    const hooks: @import("widgets/text_field/prompt_hooks.zig").PromptHooks = .{ .ctx = &rec, .on_paste_rich = Rec.on };
+    var v: DropPage = .{ .buf = &buf, .hooks = &hooks };
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 300, .h = 200 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    hw.win.dispatch(.{ .pointer_down = .{ .pos = .{ .x = 20, .y = 10 } } });
+    hw.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = 20, .y = 10 } } });
+
+    // No PNG on the clipboard: nothing is handed over.
+    hw.win.dispatch(.{ .key = .{ .key = .key_v, .mods = .{ .ctrl = true } } });
+    _ = try host.pump();
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(usize, 0), rec.len);
+    try std.testing.expect(hw.win.clip_read.wait == null);
+
+    const png = "\x89PNG\r\n\x1a\n-fake-image";
+    try hl.setClipboard(.clipboard, .png, png);
+    _ = try host.pump();
+    hw.win.dispatch(.{ .key = .{ .key = .key_v, .mods = .{ .ctrl = true } } });
+    _ = try host.pump();
+    _ = try host.pump();
+    try std.testing.expectEqualStrings("image/png", rec.mime);
+    try std.testing.expectEqual(png.len, rec.len);
+    try std.testing.expectEqualStrings("", buf.slice());
+}
