@@ -189,6 +189,29 @@ pub fn createTexture(self: *SwRenderer, desc: r2d.TextureDesc) RenderError!r2d.T
     return @enumFromInt(self.textures.items.len - 1);
 }
 
+/// `createTexture` under a chosen id (a renderer taking over after a
+/// device loss keeps the ids the draw lists use). `InvalidArgument` when
+/// the id is taken.
+pub fn createTextureAt(self: *SwRenderer, desc: r2d.TextureDesc, id: r2d.TextureId) RenderError!void {
+    const i = @intFromEnum(id);
+    if (i == 0 or i > std.math.maxInt(u16)) return error.InvalidArgument;
+    if (i < self.textures.items.len) {
+        if (self.textures.items[i] != null) return error.InvalidArgument;
+    }
+    if (desc.width == 0 or desc.height == 0 or desc.width > 16384 or desc.height > 16384) return error.InvalidArgument;
+    // Ids skipped over become free.
+    while (self.textures.items.len <= i) {
+        self.free_ids.append(self.gpa, @intCast(self.textures.items.len)) catch return error.OutOfMemory;
+        self.textures.append(self.gpa, null) catch return error.OutOfMemory;
+    }
+    const k = std.mem.indexOfScalar(u16, self.free_ids.items, @intCast(i)).?;
+    const t = self.gpa.create(CpuTexture) catch return error.OutOfMemory;
+    errdefer self.gpa.destroy(t);
+    t.* = CpuTexture.init(self.gpa, desc) catch return error.OutOfMemory;
+    _ = self.free_ids.orderedRemove(k);
+    self.textures.items[i] = t;
+}
+
 /// Copies texels into a texture.
 pub fn updateTexture(self: *SwRenderer, id: r2d.TextureId, rect: PxRect, data: []const u8, pitch: u32) RenderError!void {
     const i = @intFromEnum(id);
@@ -618,6 +641,22 @@ test "sw: textures, glyphs and layers render" {
     }
     r.destroyTexture(atlas);
     try testing.expectEqual(atlas, try r.createTexture(.{ .width = 1, .height = 1, .format = .rgba8 }));
+}
+
+test "sw: textures created under chosen ids" {
+    const gpa = testing.allocator;
+    var sink: platform.surface.HeadlessSink = .{ .ptr = undefined, .write = undefined };
+    const sw = try SwRenderer.create(gpa, testing.io, .{ .target = .{ .headless = &sink }, .sw_threads = 1 });
+    defer sw.destroy();
+    const desc: r2d.TextureDesc = .{ .width = 2, .height = 2, .format = .r8 };
+    try sw.createTextureAt(desc, @enumFromInt(3));
+    try testing.expectError(error.InvalidArgument, sw.createTextureAt(desc, @enumFromInt(3)));
+    try testing.expectError(error.InvalidArgument, sw.createTextureAt(desc, @enumFromInt(0)));
+    // Ids 1 and 2 were skipped over and are handed out next.
+    var got = [_]u32{ @intFromEnum(try sw.createTexture(desc)), @intFromEnum(try sw.createTexture(desc)) };
+    std.mem.sort(u32, &got, {}, std.sort.asc(u32));
+    try testing.expectEqualSlices(u32, &.{ 1, 2 }, &got);
+    try testing.expectEqual(@as(u32, 4), @intFromEnum(try sw.createTexture(desc)));
 }
 
 test "sw: headless target passes damage to the sink" {
