@@ -17,6 +17,7 @@ const measure_mod = @import("measure.zig");
 
 const NodeId = ids.NodeId;
 const NodeStore = node_store.NodeStore;
+const CacheEntry = node_store.CacheEntry;
 const Style = style_mod.Style;
 const Size = geom.Size;
 const Insets = geom.Insets;
@@ -52,8 +53,17 @@ const Item = struct {
     shrink: f32,
     @"align": style_mod.Align,
     line: u32,
+    /// The cross-axis known size and available space of the item's last
+    /// size query, reused for its final layout.
+    fk: ?f32 = null,
+    fa: ?f32 = null,
     main_pos: f32 = 0,
 };
+
+/// What a `layoutNode` call needs. `size` calls only compute the border-box
+/// size (flex asks several of these per child); `layout` calls also
+/// position the node's children and write its rect.
+pub const Mode = enum { size, layout };
 
 const LineInfo = struct { start: u32, end: u32, cross: f32 = 0, pos: f32 = 0 };
 
@@ -78,7 +88,7 @@ pub const Engine = struct {
     pub fn run(e: *Engine, root: NodeId, size: Size) void {
         e.stats = .{};
         e.mc.calls = 0;
-        _ = e.layoutNode(root, size.w, size.h, size.w, size.h);
+        _ = e.layoutNode(root, .layout, size.w, size.h, size.w, size.h);
         const r = &e.store.hot.items(.rect)[root.index];
         r[0] = 0;
         r[1] = 0;
@@ -103,7 +113,7 @@ pub const Engine = struct {
     }
 
     /// Lays out `id` and returns its border-box size.
-    pub fn layoutNode(e: *Engine, id: NodeId, known_w: ?f32, known_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
+    pub fn layoutNode(e: *Engine, id: NodeId, mode: Mode, known_w: ?f32, known_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
         const s = e.store;
         const i = id.index;
         e.stats.visited += 1;
@@ -111,19 +121,32 @@ pub const Engine = struct {
         const cold = &s.cold.items[i];
         const st = &cold.style;
         if (st.display == .none) {
+            if (mode == .size) return .{};
             fl.hidden = true;
             s.hot.items(.rect)[i] = .{ 0, 0, 0, 0 };
             fl.layout_dirty = false;
             fl.subtree_dirty = false;
             return .{};
         }
-        fl.hidden = false;
+        if (mode == .layout) fl.hidden = false;
         const c = &cold.cache;
-        if (!fl.layout_dirty and !fl.subtree_dirty and c.valid and c.known_w == enc(known_w) and c.known_h == enc(known_h) and
-            c.avail_w == enc(avail_w) and c.avail_h == enc(avail_h))
-        {
+        if (fl.layout_dirty or fl.subtree_dirty) {
+            c.clear();
+            fl.layout_dirty = false;
+            fl.subtree_dirty = false;
+        }
+        const kw_e = enc(known_w);
+        const kh_e = enc(known_h);
+        const aw_e = enc(avail_w);
+        const ah_e = enc(avail_h);
+        if (mode == .layout) {
+            if (c.valid and c.final_ok and c.final.matches(kw_e, kh_e, aw_e, ah_e)) {
+                e.stats.cache_hits += 1;
+                return c.final.size;
+            }
+        } else if (c.lookup(kw_e, kh_e, aw_e, ah_e)) |sz| {
             e.stats.cache_hits += 1;
-            return c.size;
+            return sz;
         }
 
         const pad = edges(st);
@@ -134,13 +157,21 @@ pub const Engine = struct {
         };
         if (w) |v| w = clamp(sane(v), st.min_w, st.max_w);
         if (h) |v| h = clamp(sane(v), st.min_h, st.max_h);
+        // Both sizes definite: a size query needs no content at all, and a
+        // leaf's layout needs no measuring.
+        const definite = w != null and h != null;
+        if (definite and mode == .size) return .{ .w = w.?, .h = h.? };
+        const leaf = s.hot.items(.first_child)[i].isNone();
 
         const inner_w: ?f32 = if (w) |v| @max(0, v - pad.horizontal()) else null;
         const inner_h: ?f32 = if (h) |v| @max(0, v - pad.vertical()) else null;
         const avail_inner_w: ?f32 = inner_w orelse if (avail_w) |a| @max(0, @min(a, st.max_w) - pad.horizontal()) else null;
         const avail_inner_h: ?f32 = inner_h orelse if (avail_h) |a| @max(0, @min(a, st.max_h) - pad.vertical()) else null;
 
-        var content = e.layoutContent(id, inner_w, inner_h, avail_inner_w, avail_inner_h);
+        var content: Size = if (definite and leaf)
+            .{ .w = inner_w.?, .h = inner_h.? }
+        else
+            e.layoutContent(id, mode, inner_w, inner_h, avail_inner_w, avail_inner_h);
         // An automatic width is fit-content: never wider than the space
         // available (the content is laid out again below if it shrank).
         const fit_w = if (avail_w) |a| @min(content.w + pad.horizontal(), @max(a, 0)) else content.w + pad.horizontal();
@@ -151,40 +182,36 @@ pub const Engine = struct {
         // Clamping (min/max, fit-content) changed an automatic size: lay the
         // children out again with that axis definite; the other axis stays
         // automatic and is re-derived from the new content.
-        const has_children = !s.hot.items(.first_child)[i].isNone();
         const w_clamped = w == null and out.w != content.w + pad.horizontal();
         const h_clamped = h == null and out.h != content.h + pad.vertical();
-        if (has_children and (w_clamped or h_clamped)) {
+        if (!leaf and (w_clamped or h_clamped)) {
             const iw: ?f32 = if (w != null or w_clamped) @max(0, out.w - pad.horizontal()) else null;
             const ih: ?f32 = if (h != null or h_clamped) @max(0, out.h - pad.vertical()) else null;
-            content = e.layoutContent(id, iw, ih, iw orelse avail_inner_w, ih orelse avail_inner_h);
+            content = e.layoutContent(id, mode, iw, ih, iw orelse avail_inner_w, ih orelse avail_inner_h);
             if (h == null and !h_clamped) out.h = clamp(content.h + pad.vertical(), st.min_h, st.max_h);
             if (w == null and !w_clamped) out.w = clamp(content.w + pad.horizontal(), st.min_w, st.max_w);
         }
         out.w = sane(out.w);
         out.h = sane(out.h);
+        const entry: CacheEntry = .{ .known_w = kw_e, .known_h = kh_e, .avail_w = aw_e, .avail_h = ah_e, .size = out };
+        const c2 = &s.cold.items[i].cache;
+        if (mode == .size) {
+            c2.putSize(entry);
+            return out;
+        }
         e.layoutAbsolute(id, out);
-
         const r = &s.hot.items(.rect)[i];
         if (r[2] != out.w or r[3] != out.h) s.hot.items(.flags)[i].paint_dirty = true;
         r[2] = out.w;
         r[3] = out.h;
-        const fl2 = &s.hot.items(.flags)[i];
-        fl2.layout_dirty = false;
-        fl2.subtree_dirty = false;
-        s.cold.items[i].cache = .{
-            .valid = true,
-            .known_w = enc(known_w),
-            .known_h = enc(known_h),
-            .avail_w = enc(avail_w),
-            .avail_h = enc(avail_h),
-            .size = out,
-        };
+        c2.valid = true;
+        c2.final = entry;
+        c2.final_ok = true;
         return out;
     }
 
     /// The content-box size of `id`'s children (or its measured content).
-    fn layoutContent(e: *Engine, id: NodeId, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
+    fn layoutContent(e: *Engine, id: NodeId, mode: Mode, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
         const s = e.store;
         const i = id.index;
         const first = s.hot.items(.first_child)[i];
@@ -200,8 +227,8 @@ pub const Engine = struct {
             return .{};
         }
         return switch (s.cold.items[i].style.display) {
-            .flex => e.flex(id, inner_w, inner_h, avail_w, avail_h),
-            .stack => e.stack(id, inner_w, inner_h, avail_w, avail_h),
+            .flex => e.flex(id, mode, inner_w, inner_h, avail_w, avail_h),
+            .stack => e.stack(id, mode, inner_w, inner_h, avail_w, avail_h),
             .none => .{},
         };
     }
@@ -222,10 +249,10 @@ pub const Engine = struct {
         return if (row) sz.h else sz.w;
     }
 
-    fn flex(e: *Engine, id: NodeId, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
+    fn flex(e: *Engine, id: NodeId, mode: Mode, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
         const s = e.store;
-        const st = s.cold.items[id.index].style;
-        const pad = edges(&st);
+        const st = &s.cold.items[id.index].style;
+        const pad = edges(st);
         const row = st.isRow();
         const inner_main = if (row) inner_w else inner_h;
         const inner_cross = if (row) inner_h else inner_w;
@@ -238,9 +265,9 @@ pub const Engine = struct {
         // §9.2 steps 1–3: flex items, base sizes and hypothetical main sizes.
         var it = s.children(id);
         while (it.next()) |c| {
-            const cst = s.cold.items[c.index].style;
+            const cst = &s.cold.items[c.index].style;
             if (cst.display == .none) {
-                _ = e.layoutNode(c, 0, 0, 0, 0);
+                _ = e.layoutNode(c, mode, 0, 0, 0, 0);
                 continue;
             }
             if (cst.position == .absolute) continue;
@@ -255,9 +282,9 @@ pub const Engine = struct {
             if (basis == null) {
                 const cross_avail: ?f32 = if (avail_cross) |a| @max(0, a - (if (row) m.vertical() else m.horizontal())) else null;
                 const sz = if (row)
-                    e.layoutNode(c, null, stretch_cross, null, cross_avail)
+                    e.layoutNode(c, .size, null, stretch_cross, null, cross_avail)
                 else
-                    e.layoutNode(c, stretch_cross, null, cross_avail, null);
+                    e.layoutNode(c, .size, stretch_cross, null, cross_avail, null);
                 basis = mainOf(row, sz);
             }
             const mn = if (row) cst.min_w else cst.min_h;
@@ -324,7 +351,7 @@ pub const Engine = struct {
             var k = ln.start;
             while (k < ln.end) : (k += 1) {
                 const item = e.items.items[start + k];
-                const cst = s.cold.items[item.id.index].style;
+                const cst = &s.cold.items[item.id.index].style;
                 const cross_dim = if (row) cst.h else cst.w;
                 const cm = item.cs + item.ce;
                 var kc: ?f32 = cross_dim.resolve(inner_cross);
@@ -332,10 +359,12 @@ pub const Engine = struct {
                     kc = @max(0, inner_cross.? - cm);
                 const cross_avail: ?f32 = if (avail_cross) |a| @max(0, a - cm) else null;
                 const sz = if (row)
-                    e.layoutNode(item.id, item.target, kc, item.target, cross_avail)
+                    e.layoutNode(item.id, .size, item.target, kc, item.target, cross_avail)
                 else
-                    e.layoutNode(item.id, kc, item.target, cross_avail, item.target);
+                    e.layoutNode(item.id, .size, kc, item.target, cross_avail, item.target);
                 e.items.items[start + k].cross = crossOf(row, sz);
+                e.items.items[start + k].fk = kc;
+                e.items.items[start + k].fa = cross_avail;
                 cross = @max(cross, crossOf(row, sz) + cm);
             }
             e.lines.items[lines_start + li].cross = cross;
@@ -348,36 +377,54 @@ pub const Engine = struct {
             var k = ln.start;
             while (k < ln.end) : (k += 1) {
                 const item = e.items.items[start + k];
-                const cst = s.cold.items[item.id.index].style;
+                const cst = &s.cold.items[item.id.index].style;
                 const cross_dim = if (row) cst.h else cst.w;
                 if (item.@"align" != .stretch or cross_dim != .auto) continue;
                 const want = clamp(@max(0, ln.cross - item.cs - item.ce), if (row) cst.min_h else cst.min_w, if (row) cst.max_h else cst.max_w);
                 if (want == item.cross) continue;
                 const sz = if (row)
-                    e.layoutNode(item.id, item.target, want, item.target, want)
+                    e.layoutNode(item.id, .size, item.target, want, item.target, want)
                 else
-                    e.layoutNode(item.id, want, item.target, want, item.target);
+                    e.layoutNode(item.id, .size, want, item.target, want, item.target);
                 e.items.items[start + k].cross = crossOf(row, sz);
+                e.items.items[start + k].fk = want;
+                e.items.items[start + k].fa = want;
+            }
+        }
+        // The final layout of each item, at the constraints of its last
+        // size query (a cache hit for the size; it positions the item's
+        // own children).
+        if (mode == .layout) {
+            var k: usize = 0;
+            while (k < e.items.items.len - start) : (k += 1) {
+                const item = e.items.items[start + k];
+                _ = if (row)
+                    e.layoutNode(item.id, .layout, item.target, item.fk, item.target, item.fa)
+                else
+                    e.layoutNode(item.id, .layout, item.fk, item.target, item.fa, item.target);
             }
         }
         const items_final = e.items.items[start..];
         const lines_final = e.lines.items[lines_start..];
-
-        // Content size.
-        var used_main: f32 = 0;
-        var total_cross: f32 = 0;
-        for (lines_final, 0..) |ln, li| {
-            var lm: f32 = 0;
-            for (items_final[ln.start..ln.end], 0..) |item, k| {
-                lm += item.target + item.ms + item.me;
-                if (k > 0) lm += st.gap;
+        const content: Size = blk: {
+            var used_main: f32 = 0;
+            var total_cross: f32 = 0;
+            for (lines_final, 0..) |ln, li| {
+                var lm: f32 = 0;
+                for (items_final[ln.start..ln.end], 0..) |item, k| {
+                    lm += item.target + item.ms + item.me;
+                    if (k > 0) lm += st.gap;
+                }
+                used_main = @max(used_main, lm);
+                total_cross += ln.cross;
+                if (li > 0) total_cross += st.gap;
             }
-            used_main = @max(used_main, lm);
-            total_cross += ln.cross;
-            if (li > 0) total_cross += st.gap;
-        }
-        const main_size = inner_main orelse used_main;
-        const cross_size = inner_cross orelse total_cross;
+            break :blk if (row) .{ .w = used_main, .h = total_cross } else .{ .w = total_cross, .h = used_main };
+        };
+        if (mode == .size) return content;
+
+        const main_size = inner_main orelse mainOf(row, content);
+        const cross_size = inner_cross orelse crossOf(row, content);
 
         // §9.5 / §9.6: main-axis justification, per line.
         for (lines_final) |ln| {
@@ -457,7 +504,7 @@ pub const Engine = struct {
             if (row) e.setPos(item.id, pad.l + item.main_pos, pad.t + cpos) else e.setPos(item.id, pad.l + cpos, pad.t + item.main_pos);
         }
 
-        return if (row) .{ .w = used_main, .h = total_cross } else .{ .w = total_cross, .h = used_main };
+        return content;
     }
 
     /// §9.7 Resolving Flexible Lengths for one line.
@@ -519,16 +566,16 @@ pub const Engine = struct {
         for (items) |*item| item.cross = 0;
     }
 
-    fn stack(e: *Engine, id: NodeId, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
+    fn stack(e: *Engine, id: NodeId, mode: Mode, inner_w: ?f32, inner_h: ?f32, avail_w: ?f32, avail_h: ?f32) Size {
         const s = e.store;
-        const st = s.cold.items[id.index].style;
-        const pad = edges(&st);
+        const st = &s.cold.items[id.index].style;
+        const pad = edges(st);
         var content: Size = .{};
         var it = s.children(id);
         while (it.next()) |c| {
-            const cst = s.cold.items[c.index].style;
+            const cst = &s.cold.items[c.index].style;
             if (cst.display == .none) {
-                _ = e.layoutNode(c, 0, 0, 0, 0);
+                _ = e.layoutNode(c, mode, 0, 0, 0, 0);
                 continue;
             }
             if (cst.position == .absolute) continue;
@@ -538,15 +585,16 @@ pub const Engine = struct {
             const kh: ?f32 = if (al == .stretch and cst.h == .auto and inner_h != null) @max(0, inner_h.? - m.vertical()) else null;
             const aw: ?f32 = if (inner_w orelse avail_w) |a| @max(0, a - m.horizontal()) else null;
             const ah: ?f32 = if (inner_h orelse avail_h) |a| @max(0, a - m.vertical()) else null;
-            const sz = e.layoutNode(c, kw, kh, aw, ah);
+            const sz = e.layoutNode(c, mode, kw, kh, aw, ah);
             content.w = @max(content.w, sz.w + m.horizontal());
             content.h = @max(content.h, sz.h + m.vertical());
         }
+        if (mode == .size) return content;
         const box_w = inner_w orelse content.w;
         const box_h = inner_h orelse content.h;
         it = s.children(id);
         while (it.next()) |c| {
-            const cst = s.cold.items[c.index].style;
+            const cst = &s.cold.items[c.index].style;
             if (cst.display == .none or cst.position == .absolute) continue;
             const m = cst.margin;
             const al = cst.align_self orelse st.align_items;
@@ -569,13 +617,13 @@ pub const Engine = struct {
     /// Places `position = absolute` children against the padding box.
     fn layoutAbsolute(e: *Engine, id: NodeId, size: Size) void {
         const s = e.store;
-        const st = s.cold.items[id.index].style;
+        const st = &s.cold.items[id.index].style;
         const bw = st.border_w;
         const pw = @max(0, size.w - 2 * bw);
         const ph = @max(0, size.h - 2 * bw);
         var it = s.children(id);
         while (it.next()) |c| {
-            const cst = s.cold.items[c.index].style;
+            const cst = &s.cold.items[c.index].style;
             if (cst.position != .absolute or cst.display == .none) continue;
             const in = cst.inset;
             const m = cst.margin;
@@ -583,7 +631,7 @@ pub const Engine = struct {
             var kh: ?f32 = cst.h.resolve(ph);
             if (kw == null and in.l != null and in.r != null) kw = @max(0, pw - in.l.? - in.r.? - m.horizontal());
             if (kh == null and in.t != null and in.b != null) kh = @max(0, ph - in.t.? - in.b.? - m.vertical());
-            const sz = e.layoutNode(c, kw, kh, pw, ph);
+            const sz = e.layoutNode(c, .layout, kw, kh, pw, ph);
             const x = if (in.l) |l| bw + l + m.l else if (in.r) |r| bw + pw - r - m.r - sz.w else bw + st.padding.l + m.l;
             const y = if (in.t) |t| bw + t + m.t else if (in.b) |b| bw + ph - b - m.b - sz.h else bw + st.padding.t + m.t;
             e.setPos(c, x, y);
