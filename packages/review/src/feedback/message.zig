@@ -194,10 +194,10 @@ fn cut(arena: Allocator, text: []const u8) ![]const u8 {
 fn fenceLang(path: []const u8) []const u8 {
     const ext = std.fs.path.extension(path);
     const map = [_][2][]const u8{
-        .{ ".zig", "zig" }, .{ ".rs", "rust" },  .{ ".go", "go" },     .{ ".py", "python" },
-        .{ ".ts", "ts" },   .{ ".tsx", "tsx" },  .{ ".js", "js" },     .{ ".c", "c" },
-        .{ ".h", "c" },     .{ ".cpp", "cpp" },  .{ ".md", "markdown" }, .{ ".json", "json" },
-        .{ ".toml", "toml" }, .{ ".yaml", "yaml" }, .{ ".yml", "yaml" }, .{ ".sh", "sh" },
+        .{ ".zig", "zig" },   .{ ".rs", "rust" },   .{ ".go", "go" },       .{ ".py", "python" },
+        .{ ".ts", "ts" },     .{ ".tsx", "tsx" },   .{ ".js", "js" },       .{ ".c", "c" },
+        .{ ".h", "c" },       .{ ".cpp", "cpp" },   .{ ".md", "markdown" }, .{ ".json", "json" },
+        .{ ".toml", "toml" }, .{ ".yaml", "yaml" }, .{ ".yml", "yaml" },    .{ ".sh", "sh" },
     };
     for (map) |m| if (std.mem.eql(u8, ext, m[0])) return m[1];
     return "";
