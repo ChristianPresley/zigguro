@@ -153,11 +153,13 @@ pub fn print(s: *Screen, cps: []const u21) void {
 }
 
 /// Writes the longest prefix of `cps` that needs none of the general
-/// path's work: legacy width mode, no insert mode or single shift, non-ASCII
-/// code points (no charset maps them) of width 1 or 2 that fit before the
-/// right edge. Returns how many code points were written (0 to fall back).
+/// path's work: legacy width mode, no insert mode or single shift, code
+/// points of width 1 or 2 that fit before the right edge, and ASCII only
+/// while GL holds ASCII (no charset maps it). Returns how many code points
+/// were written (0 to fall back).
 fn fastRun(s: *Screen, cps: []const u21) usize {
     if (s.modes.grapheme or s.modes.insert or s.charsets.single != null) return 0;
+    const ascii_ok = s.charsets.g[s.charsets.gl] == .ascii;
     applyPendingWrap(s);
     const right = rightEdge(s);
     const wo = s.widthOptions();
@@ -166,7 +168,7 @@ fn fastRun(s: *Screen, cps: []const u21) usize {
     var cells: u16 = 0;
     while (n < cps.len) : (n += 1) {
         const cp = cps[n];
-        if (cp < 0x80) break;
+        if (cp < 0x80 and !ascii_ok) break;
         const w = unicode.wcwidth(cp, wo);
         if (w != 1 and w != 2) break;
         const wu: u16 = @intCast(w);
