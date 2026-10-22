@@ -19,6 +19,12 @@ pub const langs = struct {
 pub const structure = struct {
     pub const structure = @import("structure/structure.zig");
     pub const zig_ast_adapter = @import("structure/zig_ast_adapter.zig");
+    pub const fallback = @import("structure/fallback.zig");
+    pub const query = @import("structure/query.zig");
+};
+pub const brackets = struct {
+    pub const bracket_tree = @import("brackets/bracket_tree.zig");
+    pub const highlight_source = @import("brackets/highlight_source.zig");
 };
 pub const highlight = struct {
     pub const token_store = @import("highlight/token_store.zig");
@@ -47,6 +53,9 @@ pub const ByteRange = structure.structure.ByteRange;
 pub const FoldRange = structure.structure.FoldRange;
 pub const Symbol = structure.structure.Symbol;
 pub const Scope = structure.structure.Scope;
+pub const BracketTree = brackets.bracket_tree.BracketTree;
+pub const BracketSource = brackets.bracket_tree.BracketSource;
+pub const fallbackStructure = structure.fallback.fallbackStructure;
 
 /// Every built-in language, in registration order.
 pub const builtin_languages = [_]*const Language{&langs.zig.zig_language};
@@ -65,6 +74,9 @@ test {
     std.testing.refAllDecls(highlight);
     std.testing.refAllDecls(langs);
     std.testing.refAllDecls(structure);
+    std.testing.refAllDecls(brackets);
+    _ = @import("brackets/bracket_tree_test.zig");
+    _ = @import("structure/fallback_test.zig");
     _ = @import("highlight/highlighter_test.zig");
     _ = @import("langs/zig_test.zig");
 }
