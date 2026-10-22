@@ -10,6 +10,7 @@ const style_mod = @import("style.zig");
 const cellmap = @import("cellmap.zig");
 const graph = @import("grapheme.zig");
 const hyperlink = @import("hyperlink.zig");
+const fill = @import("fill.zig");
 
 pub const Cell = cell_mod.Cell;
 pub const Row = cell_mod.Row;
@@ -181,7 +182,7 @@ pub fn addRow(p: *Page) u16 {
     h.rows += 1;
     const r = p.row(y);
     r.* = .{ .cells_off = r.cells_off, .dirty = true };
-    @memset(std.mem.sliceAsBytes(p.cells(r)), 0);
+    fill.fill(Cell, p.cells(r), .blank);
     return y;
 }
 
@@ -369,9 +370,7 @@ pub fn clearCells(p: *Page, r: *Row, cs: []Cell, with: Cell) void {
     if (r.styled or r.has_grapheme or r.has_hyperlink) {
         for (cs) |*c| p.clearCell(c, with);
     } else {
-        // Memset as u64 words: a packed-struct memset does not vectorize.
-        const words: []u64 = @ptrCast(cs);
-        @memset(words, @bitCast(with));
+        fill.fill(Cell, cs, with);
     }
 }
 
