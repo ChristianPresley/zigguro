@@ -220,7 +220,7 @@ fn reorderConsonantSyllable(b: *Buffer, start: usize, end: usize) void {
 }
 
 fn reorder(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
-    _ = try dotted.insertDottedCircles(b, p.inst.face, @intFromEnum(SyllableType.broken), @intFromEnum(C.DOTTEDCIRCLE), null);
+    _ = try dotted.insertDottedCircles(b, p.inst.face, @intFromEnum(SyllableType.broken), @intFromEnum(C.DOTTEDCIRCLE), null, 0);
     const infos = b.infos.items;
     var s: usize = 0;
     while (s < infos.len) {
