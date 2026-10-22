@@ -22,8 +22,7 @@ pub const pending = [_][]const u8{
     "text.gvar_apply",           "text.hit_test",
     "text.integrate_gpix",       "text.itemize_200col",
     "text.layout_200col",        "text.lcd",
-    "text.measure_hit",          "text.nfc_quickcheck",
-    "text.nfc_slow_mixed",       "text.raster_14px",
+    "text.measure_hit",          "text.raster_14px",
     "text.raster_64px_cjk",      "text.raster_lcd_14px",
     "text.registry_get",         "text.sdf_48px",
     "text.shape_code_line_200",  "text.shape_latin_1k",
@@ -92,6 +91,13 @@ fn register(b: *bench.Bench) !void {
 
     // Case folding over 1 MiB of ASCII source.
     try b.run("text.casefold_ascii", FoldCtx{ .text = ascii, .gpa = b.gpa }, foldAscii);
+    // NFC: quick check over already-NFC mixed text, and the full algorithm
+    // over text that needs composition.
+    try b.run("text.nfc_quickcheck", @as([]const u8, mixed), nfcQuick);
+    const decomposed = try zg_text.unicode.normalize.normalize(b.gpa, mixed[0 .. 64 * 1024], .nfd);
+    defer b.gpa.free(decomposed);
+    try b.run("text.nfc_slow_mixed", FoldCtx{ .text = decomposed, .gpa = b.gpa }, nfcSlow);
+
     // Cell width of a 200-column mixed row, per grapheme.
     var row: [400]u8 = undefined;
     fill(&row, &.{ "ls -la ", "\u{4E2D}\u{6587} ", "\u{1F44D}\u{1F3FD} ", "caf\u{E9} ", "\u{1F1FA}\u{1F1F8} " });
@@ -155,6 +161,22 @@ fn foldAscii(ctx: FoldCtx, s: *State) void {
     for (0..s.iterations()) |_| {
         out.clearRetainingCapacity();
         zg_text.unicode.casefold.foldAppend(&out, ctx.gpa, ctx.text, .full) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
+    }
+}
+
+fn nfcQuick(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_text.unicode.normalize.isNormalizedQuick(text, .nfc));
+}
+
+fn nfcSlow(ctx: FoldCtx, s: *State) void {
+    s.setBytes(ctx.text.len);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(ctx.gpa);
+    for (0..s.iterations()) |_| {
+        out.clearRetainingCapacity();
+        zg_text.unicode.normalize.normalizeAppend(&out, ctx.gpa, ctx.text, .nfc) catch unreachable;
         bench.doNotOptimizeAway(out.items.len);
     }
 }
