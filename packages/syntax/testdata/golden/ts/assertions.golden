@@ -1,0 +1,5 @@
+1| keyword.storage:const variable:el operator:= variable:document punctuation.delimiter:. function:getElementById punctuation.bracket:( string:"x" punctuation.bracket:) keyword:as type:HTMLInputElement punctuation.delimiter:;
+2| keyword.storage:const variable:n operator:= operator:< type.builtin:number operator:> variable:value punctuation.delimiter:;
+3| keyword.storage:const variable:sure operator:= variable:maybe operator:! punctuation.delimiter:;
+4| keyword.storage:function function:assert punctuation.bracket:( variable:v operator:: type.builtin:unknown punctuation.bracket:) operator:: keyword.operator:asserts variable:v keyword.operator:is type.builtin:string punctuation.bracket:{ punctuation.bracket:}
+5| keyword.storage:let variable:u operator:: keyword.operator:unique type.builtin:symbol punctuation.delimiter:;
