@@ -1,0 +1,43 @@
+// Extensions vkgen selects besides core Vulkan 1.0-1.4 (E02.F01.S01.T02).
+// Their dependencies are added automatically. Video, ray tracing and
+// Vulkan SC stay out until something needs them.
+.{
+    // Surface and swapchain (Windows; Linux presents through E01).
+    "VK_KHR_surface",
+    "VK_KHR_win32_surface",
+    "VK_KHR_swapchain",
+    "VK_KHR_get_surface_capabilities2",
+    "VK_KHR_surface_maintenance1",
+    "VK_EXT_surface_maintenance1",
+    "VK_KHR_swapchain_maintenance1",
+    "VK_EXT_swapchain_maintenance1",
+    "VK_KHR_incremental_present",
+    // Present timing.
+    "VK_KHR_present_id",
+    "VK_KHR_present_wait",
+    "VK_KHR_present_id2",
+    "VK_KHR_present_wait2",
+    "VK_KHR_present_mode_fifo_latest_ready",
+    "VK_EXT_present_mode_fifo_latest_ready",
+    // Debugging.
+    "VK_EXT_debug_utils",
+    "VK_EXT_layer_settings",
+    // Memory.
+    "VK_EXT_memory_budget",
+    "VK_EXT_memory_priority",
+    // dmabuf and sync_file export.
+    "VK_KHR_external_memory_fd",
+    "VK_EXT_external_memory_dma_buf",
+    "VK_EXT_image_drm_format_modifier",
+    "VK_KHR_external_semaphore_fd",
+    "VK_EXT_physical_device_drm",
+    "VK_EXT_queue_family_foreign",
+    // Vulkan 1.2 fallbacks.
+    "VK_KHR_dynamic_rendering",
+    "VK_KHR_synchronization2",
+    // Miscellaneous.
+    "VK_KHR_portability_enumeration",
+    "VK_EXT_calibrated_timestamps",
+    "VK_KHR_calibrated_timestamps",
+    "VK_EXT_swapchain_colorspace",
+}
