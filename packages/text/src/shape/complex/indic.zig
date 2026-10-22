@@ -25,8 +25,8 @@
 //! the base, and would-substitute checks allow context. Fonts with `xxx3`
 //! tags go to USE (see `default.select`).
 //!
-//! Not yet done: HarfBuzz's vowel constraints (dotted circles for
-//! discouraged independent-vowel spellings).
+//! Before normalization, discouraged vowel spellings get a dotted circle
+//! (`vowel_constraints.zig`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -52,6 +52,7 @@ const category = tables.category;
 const position = tables.position;
 const dfa = @import("syllable_dfa.zig");
 const dotted = @import("dotted_circle.zig");
+const vowel_constraints = @import("vowel_constraints.zig");
 
 /// The shaper.
 pub const shaper: ComplexShaper = .{
@@ -60,6 +61,7 @@ pub const shaper: ComplexShaper = .{
     .overrideFeatures = overrideFeatures,
     .dataInit = dataInit,
     .setupMasks = setupMasks,
+    .preprocessText = vowel_constraints.preprocess,
     .normalize_short_circuit = false,
     .decompose = decompose,
     .compose = compose,
