@@ -36,6 +36,7 @@ jobs:
           key: zig-cache-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
       - run: zig build fmt-check
       - run: zig build check-layers
+      - run: zig build check-supply-chain
       - run: zig build prlint -- --docs
       - name: prlint (pull request title, branch and commits)
         if: github.event_name == 'pull_request'

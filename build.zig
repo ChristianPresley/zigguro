@@ -89,6 +89,14 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run.step);
     }
 
+    // INV-01: every consumer against a deny-all engine (E16.F02.S01.T04).
+    inline for (packages.all, 0..) |p, i| {
+        if (comptime std.mem.eql(u8, p.name, "zg_security")) {
+            const t = b.addTest(.{ .name = "enforcement", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"INV-01 enforcement"} });
+            b.step("test-enforcement", "Prove every consumer denies under a deny-all engine (INV-01)").dependOn(&b.addRunArtifact(t).step);
+        }
+    }
+
     // Repository tools (std-only Zig programs under tools/).
     const tools_test_step = b.step("test-tools", "Run the tests of tools/*");
     test_step.dependOn(tools_test_step);
@@ -130,6 +138,7 @@ pub fn build(b: *std.Build) void {
             }
         }
     }
+    const supply_chain = addTool(b, "check-supply-chain", "tools/check-supply-chain/main.zig", test_filters, f.optimize, tools_test_step);
 
     const zig_pin = b.addRunArtifact(zig_verify);
     zig_pin.setCwd(b.path("."));
@@ -157,6 +166,12 @@ pub fn build(b: *std.Build) void {
     check_layers.addDirectoryArg(b.path("."));
     check_layers.has_side_effects = true;
     b.step("check-layers", "Check the package graph against tools/pkgtool/layers.zon").dependOn(&check_layers.step);
+
+    const supply_chain_run = b.addRunArtifact(supply_chain);
+    supply_chain_run.addArgs(&.{"--root"});
+    supply_chain_run.addDirectoryArg(b.path("."));
+    supply_chain_run.has_side_effects = true;
+    b.step("check-supply-chain", "Fail on any third-party code: URL deps, @cImport, libc, C sources (E16.F01.S02.T01)").dependOn(&supply_chain_run.step);
 
     const new_pkg = b.addRunArtifact(pkgtool);
     new_pkg.addArgs(&.{ "new", "--root" });
