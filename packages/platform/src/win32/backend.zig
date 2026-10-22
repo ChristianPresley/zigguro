@@ -26,7 +26,10 @@
 //! from the resize band and the app's hit map, and the caption buttons are
 //! non-client (so Windows 11 shows snap layouts) but pressed by us.
 //! Cursors come from `cursor.zig`. Every window gets the DWM dark mode
-//! that matches the system theme.
+//! that matches the system theme; the appearance (`theme.zig`) is
+//! reported at start and after each `WM_SETTINGCHANGE` that changes it.
+//! File dialogs (`dialogs.zig`) run on threads of their own and
+//! `open_uri` goes to `ShellExecuteW` (`shell.zig`).
 //!
 //! IME composition (`ime.zig`) runs in the window procedure: preedit and
 //! commits become `ime_preedit` and `text_input`, and `set_ime_state`
@@ -66,6 +69,9 @@ const ime_mod = @import("ime.zig");
 const ImePurpose = @import("../api/ime.zig").ImePurpose;
 const cursor_mod = @import("cursor.zig");
 const pointer = @import("pointer.zig");
+const theme = @import("theme.zig");
+const dialogs = @import("dialogs.zig");
+const shell = @import("shell.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
 const Event = event_api.Event;
@@ -208,6 +214,10 @@ pub const Win32Backend = struct {
     /// The Windows build (for DWM attributes) and the system theme.
     build: u32 = 0,
     dark: bool = false,
+    /// The last appearance reported. Platform thread only.
+    appearance: event_api.Appearance = .{},
+    /// Dialog threads, joined by `deinit`. Guarded by the mutex.
+    dialog_threads: std.ArrayList(std.Thread) = .empty,
     /// Platform thread only.
     cursors: cursor_mod.Cache = .{},
     /// Platform thread only: each scancode's unshifted codepoint under the
@@ -411,7 +421,23 @@ pub const Win32Backend = struct {
                 // stalls the UI thread.
                 if (user32.PostMessageW(b.msg_hwnd, WM_APP_CLIP_READ, @intFromEnum(c.mime), @bitCast(@as(usize, c.request))) == 0) return error.SystemResources;
             },
-            .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .open_dialog => |d| {
+                const job = try dialogs.Job.create(b.gpa, d);
+                if (d.parent) |p| job.owner = b.hwndOf(p) catch null;
+                b.lock();
+                defer b.unlock();
+                b.dialog_threads.ensureUnusedCapacity(b.gpa, 1) catch {
+                    job.destroy(b.gpa);
+                    return error.OutOfMemory;
+                };
+                const th = std.Thread.spawn(.{}, dialogThread, .{ b, job }) catch {
+                    job.destroy(b.gpa);
+                    return error.SystemResources;
+                };
+                b.dialog_threads.appendAssumeCapacity(th);
+            },
+            .open_uri => |uri| try shell.open(b.gpa, uri),
+            .start_drag, .set_drop_effect, .activate, .request_attention => return error.Unsupported,
         }
     }
 
@@ -593,6 +619,9 @@ pub const Win32Backend = struct {
     pub fn deinit(b: *Win32Backend) void {
         _ = user32.PostMessageW(b.msg_hwnd, WM_APP_QUIT, 0, 0);
         if (b.thread) |th| th.join();
+        // Their owner windows are gone, which closes owned dialogs.
+        for (b.dialog_threads.items) |th| th.join();
+        b.dialog_threads.deinit(b.gpa);
         b.staged.deinit(b.gpa);
         var it = b.large.valueIterator();
         while (it.next()) |v| b.gpa.free(v.*);
@@ -613,7 +642,13 @@ pub const Win32Backend = struct {
         }
         b.readRefresh();
         b.build = frame.windowsBuild();
-        b.dark = frame.systemDark();
+        b.appearance = theme.read();
+        b.dark = b.appearance.scheme == .dark;
+        {
+            b.lock();
+            defer b.unlock();
+            b.stage(.{ .appearance_changed = b.appearance });
+        }
         const wc: t.WNDCLASSEXW = .{
             .lpfnWndProc = wndProc,
             .hInstance = b.hinstance,
@@ -1075,6 +1110,10 @@ pub const Win32Backend = struct {
                 if ((msg == WM.SYSKEYDOWN or msg == WM.SYSKEYUP) and wkeys.systemKey(vk, alt)) return user32.DefWindowProcW(hwnd, msg, wp, lp);
                 return 0;
             },
+            msgs.WM_SETTINGCHANGE => {
+                b.onSettingChange();
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
+            },
             WM.INPUTLANGCHANGE => {
                 b.unshifted = @splat(no_cp);
                 return user32.DefWindowProcW(hwnd, msg, wp, lp);
@@ -1264,6 +1303,33 @@ pub const Win32Backend = struct {
         b.onButtonAt(w, hwnd, button, pressed, posOf(lp));
     }
 
+    /// Re-reads the appearance after a `WM_SETTINGCHANGE` (each top-level
+    /// window gets one) and reports it once when it changed; a dark-mode
+    /// switch re-applies every window's DWM attributes.
+    fn onSettingChange(b: *Win32Backend) void {
+        const a = theme.read();
+        if (!theme.differs(a, b.appearance)) return;
+        b.appearance = a;
+        const dark = a.scheme == .dark;
+        b.lock();
+        defer b.unlock();
+        if (dark != b.dark) {
+            b.dark = dark;
+            for (b.windows.items) |w| if (w.hwnd) |h| frame.applyDwm(h, b.build, dark, .auto, w.custom);
+        }
+        b.stage(.{ .appearance_changed = a });
+    }
+
+    /// Shows a file dialog and stages its answer. Its own thread.
+    fn dialogThread(b: *Win32Backend, job: *dialogs.Job) void {
+        defer job.destroy(b.gpa);
+        const res = dialogs.show(b.gpa, job);
+        b.lock();
+        defer b.unlock();
+        const paths = if (res.paths.len > 0) b.putOwned(res.paths) else types.PayloadSlice.empty;
+        b.stage(.{ .dialog_result = .{ .request = job.req.request, .paths = paths, .cancelled = res.cancelled } });
+    }
+
     /// Stages touch or pen events for a `WM_POINTER*` message; false when
     /// the message is left to `DefWindowProcW` (mice, touchpads, touch).
     fn onPointer(b: *Win32Backend, w: *Window, hwnd: t.HWND, msg: u32, id: u32) bool {
@@ -1429,7 +1495,7 @@ test "win32 conformance" {
     try conformance.runConformance(Harness, &h);
 }
 
-fn waitFor(p: Platform, comptime kind: Event.Tag, win: WindowId) !Event {
+fn waitFor(p: Platform, comptime kind: Event.Tag, win: ?WindowId) !Event {
     const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
     var evs: [64]Event = undefined;
     while (true) {
@@ -1775,5 +1841,20 @@ test "win32 pointer: raw_mouse registers; unknown pointers and empty reports pas
     var evs: [64]Event = undefined;
     const n = p.pollEvents(&evs);
     for (evs[0..n]) |e| try testing.expect(e != .touch and e != .pointer_relative and e != .pointer_button);
+    p.destroyWindow(win);
+}
+
+test "win32 shell: appearance at start, settings changes, dialogs and URIs" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    _ = try waitFor(p, .appearance_changed, null);
+    const win = try p.createWindow(.{ .title = "zg shell", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    // Nothing changed: no second report.
+    _ = user32.SendMessageW(hwnd, msgs.WM_SETTINGCHANGE, 0, 0);
+    var evs: [64]Event = undefined;
+    for (evs[0..p.pollEvents(&evs)]) |e| try testing.expect(e != .appearance_changed);
+    try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "file:///C:/windows/notepad.exe" }));
     p.destroyWindow(win);
 }
