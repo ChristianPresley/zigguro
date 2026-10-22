@@ -1,0 +1,9 @@
+1| keyword.storage:namespace variable:a punctuation.delimiter::: variable:b punctuation.delimiter::: variable:c punctuation.bracket:{
+2| keyword.storage:using keyword.storage:namespace variable:std punctuation.delimiter:;
+3| keyword.storage:using type:Alias operator:= variable:std punctuation.delimiter::: variable:map operator:< type.builtin:int punctuation.delimiter:, type.builtin:int operator:> punctuation.delimiter:;
+4| punctuation.bracket:}
+5| punctuation.delimiter::: function:global_func punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+6| variable:std punctuation.delimiter::: variable:cout operator:<< string:"hi" operator:<< variable:std punctuation.delimiter::: variable:endl punctuation.delimiter:;
+7| keyword.storage:namespace punctuation.bracket:{
+8| type.builtin:int variable:hidden punctuation.delimiter:;
+9| punctuation.bracket:}
