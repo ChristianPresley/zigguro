@@ -2287,6 +2287,18 @@ pub const Readback = struct {
     pub fn present(self, fs: *const FrameSlot) void;          // after submit
     pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
 };
+pub const ExternalRing = struct {                             // present/ExternalRing.zig (E02.F04.S02.T01)
+    pub fn init(gpu, mem, sched, presenter: *Presenter) InitError!ExternalRing;   // error.ExportUnsupported -> use Readback(.shm)
+    pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) AcquireError!Acquired;   // { image: *Texture, age, index }; error.NoFreeBuffer skips the frame
+    pub fn beginRendering(self, cb, a: Acquired) void;           // UNDEFINED or acquire from FOREIGN -> COLOR_ATTACHMENT
+    pub fn endRendering(self, cb, a: Acquired) void;             // release to FOREIGN in GENERAL
+    pub fn signalFor(self, fs) ?vk.SemaphoreSubmitInfo;          // SYNC_FD semaphore for the submit
+    pub fn present(self, fs, a: Acquired, damage: []const PxRect) AcquireError!void;
+    pub fn abandon(self, a: Acquired) void;  pub fn onFeedbackChanged(self) void;
+};
+pub fn drm_formats.vkFormatToFourcc(f: vk.Format, opaque_alpha: bool) ?u32;
+pub fn drm_formats.negotiate(fourcc: u32, compositor: []const FormatModifier, device: []const DeviceModifier, out: []u64) usize;
 pub const ShmRing = struct {                                  // present/ShmRing.zig
     pub fn init(presenter: *Presenter) ShmRing;  pub fn deinit(self) void;
     pub fn submit(self, back: *const CpuImage, damage: []const PxRect, full: bool) void;
@@ -2297,7 +2309,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
-- Until the dmabuf ring lands, `VkRenderer` serves every `.external` target through the shm sink.
+- `ExternalRing` exists but `VkRenderer` does not use it yet: every `.external` target goes through the shm sink. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
