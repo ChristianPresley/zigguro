@@ -12,6 +12,8 @@ pub const json = @import("proto/json.zig");
 pub const glob = @import("proto/glob.zig");
 /// `file:` URI <-> path mapping and URI comparison.
 pub const uri = @import("proto/uri.zig");
+/// Position encodings and their negotiation.
+pub const position = @import("proto/position.zig");
 /// Fuzzy scoring for completion, symbol pickers and REPL completions.
 pub const fuzzy = @import("features/fuzzy.zig");
 /// Byte transports (stdio pipes, TCP) shared with zg_dap.
@@ -26,6 +28,9 @@ pub const client = struct {
     pub const caps = @import("client/caps.zig");
     pub const client_capabilities = @import("client/client_capabilities.zig");
     pub const doc_selector = @import("client/doc_selector.zig");
+    pub const Client = @import("client/Client.zig");
+    pub const restart = @import("client/restart.zig");
+    pub const trace = @import("client/trace.zig");
 };
 /// Test support shared with zg_dap: the scripted-peer engine behind the
 /// fake language server and debug adapter.
@@ -42,4 +47,5 @@ test {
     _ = @import("client/ServerProcess_test.zig");
     _ = @import("client/caps_test.zig");
     _ = @import("proto/uri_test.zig");
+    _ = @import("client/client_test.zig");
 }
