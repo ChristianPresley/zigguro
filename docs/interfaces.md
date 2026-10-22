@@ -526,9 +526,15 @@ feedback's pairs in tranche order (preferred first), and `syncMode()` is
 dmabuf with `DMA_BUF_IOCTL_IMPORT_SYNC_FILE`; without the ioctl the
 presenter waits on it on the calling thread. A `.syncobj` acquire is
 `error.Unsupported` until the contract carries a release point. Shm
-`importBuffer` (an E02 memfd) works on Wayland too. Without the global,
-and on X11 until DRI3 (E01.F05.S03.T02), presenters are CPU-only
-(`.cpu_only`, `importBuffer` → `error.Unsupported`). Per-surface feedback
+`importBuffer` (an E02 memfd) works on Wayland too. The X11 presenter
+imports dmabufs as DRI3 pixmaps when the server has DRI3 1.2 and
+Present 1.2 and DRI3 `Open` succeeds: `drmDevice()` is the device behind
+that fd, `formats()` pairs XRGB8888 and ARGB8888 with each modifier from
+`GetSupportedModifiers` (depth 24, 32 bpp), sync is the same
+`.implicit_sync_file` import, and a pixmap is released on `IdleNotify`.
+Shm imports are `error.Unsupported` on X11 (use `allocCpuBuffer`).
+Without dmabuf support presenters are CPU-only (`.cpu_only`,
+`importBuffer` → `error.Unsupported`). Per-surface feedback
 is not requested yet; a later change of the default feedback is logged
 and applies to the next ring E02 builds.
 
@@ -918,11 +924,13 @@ resize, window menu, drag, activation, dialogs and URIs return
 ## zg_platform.x11.X11Backend
 
 ### Defined in
-`packages/platform/src/x11/backend.zig`, with `present.zig` (the CPU
-presenter: MIT-SHM `AttachFd` memfds or core `PutImage`), `keymap.zig`
+`packages/platform/src/x11/backend.zig`, with `present.zig` (the
+presenter: DRI3 pixmaps shown with `PresentPixmap`, MIT-SHM `AttachFd`
+memfds or core `PutImage`), `dri3.zig` (DRI3/Present requests, events
+and the startup probe), `keymap.zig`
 (core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
 requests and event codes are in `proto.zig` (E01.F05.S02.T01, first
-part, and the SHM/PutImage half of E01.F05.S03.T02).
+part, and E01.F05.S03.T02).
 
 ### Implemented by
 E01.F05.S02.T01 / E01.F05.S03.T02.
@@ -935,9 +943,9 @@ unreachable Wayland display); E02's software renderer through
 ### Signature
 ```zig
 pub const InitOptions = struct {
-    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=putimage
+    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=dri3|shm|putimage
     display: ?[]const u8 = null,
-    present: ?present.Path = null,                        // .shm or .put_image; null picks MIT-SHM 1.2 when present
+    present: ?present.Path = null,                        // .shm or .put_image (also turns DRI3 off); null picks MIT-SHM 1.2 when present
     refresh_ns: u32 = 16_666_667,                         // frame timer while frames are requested
 };
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*X11Backend;
@@ -950,7 +958,11 @@ zigguro/Zigguro`, `_NET_WM_NAME`, `_NET_WM_PID`, `_NET_WM_WINDOW_TYPE_NORMAL`
 and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
 `_NET_ACTIVE_WINDOW` and `WM_CHANGE_STATE` client messages. The first
 `window_configure` (serial 0) is staged by `createWindow`. Wheel buttons
-4–7 become `scroll` in lines.
+4–7 become `scroll` in lines. With DRI3, each window selects Present
+`CompleteNotify` and `IdleNotify`; `CompleteNotify` becomes
+`Event.present_feedback` (UST in the `Io.Clock.awake` timebase, `seq` =
+MSC, flip → `zero_copy`, skip → `discarded`). Frame pacing stays on the
+timer.
 
 ### Threading
 No platform thread: the UI thread reads and translates X events in
@@ -966,7 +978,9 @@ Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
 use the core mapping, and auto-repeat arrives as release/press pairs),
 RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
-our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
+our own `clipboard_write`), explicit sync (`PresentPixmapSynced`), XFIXES
+update regions (presents update the whole window), MSC-based pacing and
+XDND. Move, resize, window
 menu, drag, activation, dialogs and URIs return `error.Unsupported`.
 
 ## zg_platform.win32.Win32Backend
