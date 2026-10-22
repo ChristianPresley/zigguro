@@ -77,10 +77,13 @@ pub const Cache = struct {
 
     fn fwdCache(c: *Cache, e: *const Engines) ?*lazy_dfa.Cache {
         if (c.dfa_disabled) return null;
-        if (c.fwd == null) c.fwd = lazy_dfa.Cache.init(c.gpa, &e.fwd, e.dfa_cache_bytes) catch {
-            c.dfa_disabled = true;
-            return null;
-        };
+        if (c.fwd == null) {
+            c.fwd = lazy_dfa.Cache.init(c.gpa, &e.fwd, e.dfa_cache_bytes) catch {
+                c.dfa_disabled = true;
+                return null;
+            };
+            c.fwd.?.tag_starts = if (e.prefilter) |*p| p.isFast() else false;
+        }
         return &c.fwd.?;
     }
 
@@ -174,10 +177,12 @@ fn findDfa(e: *const Engines, c: *Cache, in: *const Input) DfaError!?Match {
     const fwd = lazy_dfa.Dfa.init(&e.fwd, .leftmost_first);
     var start_at = in.span.start;
     const pf: ?*const prefilter_mod.Prefilter = if (in.anchored or e.prefilter == null) null else &e.prefilter.?;
+    // A slow prefilter only skips to the first candidate.
+    const pf_jump = if (pf) |p| (if (p.isFast()) p else null) else null;
     // Skip to the first prefilter candidate (no match can start earlier).
     if (pf) |p| start_at = p.find(in, start_at) orelse return null;
     const sub = in.withSpan(.{ .start = start_at, .end = in.span.end });
-    const end = (fwd.findFwdPrefilter(fc, &sub, pf) catch return error.Fallback) orelse return null;
+    const end = (fwd.findFwdPrefilter(fc, &sub, pf_jump) catch return error.Fallback) orelse return null;
     if (in.anchored) return .{ .start = in.span.start, .end = end };
     const rc = c.revCache(e) orelse return error.Fallback;
     const rev = lazy_dfa.Dfa.init(&e.rev, .all);
