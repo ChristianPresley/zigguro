@@ -1,0 +1,5 @@
+[inline](https://example.com "Title") and [ref][id] and [collapsed][]
+![image](img.png) and <https://auto.link> and <me@example.com>
+bare https://example.com/path, and www.zigguro.dev.
+
+[id]: https://example.com/ref "Ref title"

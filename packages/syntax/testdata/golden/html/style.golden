@@ -1,0 +1,6 @@
+1| punctuation:< tag:style punctuation:>
+2| tag:body punctuation.bracket:{ property:margin punctuation.delimiter:: number:0 punctuation.delimiter:; property:color punctuation.delimiter:: constant:#333 punctuation.delimiter:; punctuation.bracket:}
+3| type:.card operator:> tag:a attribute::hover punctuation.bracket:{ property:text-decoration punctuation.delimiter:: constant:underline punctuation.delimiter:; punctuation.bracket:}
+4| punctuation:</ tag:style punctuation:>
+5| punctuation:< tag:style attribute:media operator:= string:"print" punctuation:> keyword:@page punctuation.bracket:{ property:size punctuation.delimiter:: constant:A4 punctuation.delimiter:; punctuation.bracket:} punctuation:</ tag:style punctuation:>
+6| punctuation:< tag:p attribute:style operator:= string:"color: red" punctuation:> punctuation:</ tag:p punctuation:>

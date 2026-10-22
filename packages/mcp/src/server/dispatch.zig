@@ -24,6 +24,8 @@ const schema = @import("../schema/root.zig");
 const Server = @import("Server.zig");
 const Registry = @import("registry.zig");
 const pagination = @import("pagination.zig");
+const mrtr_seal = @import("mrtr_seal.zig");
+const legacy_requests = @import("legacy_requests.zig");
 
 const messages = protocol.messages;
 const codec = protocol.codec;
@@ -60,6 +62,7 @@ const Ctx = struct {
     revision: Revision,
     meta: protocol.RequestMeta,
     log_level: ?messages.LoggingLevel,
+    client_caps: protocol.ClientCapabilities = .empty,
 };
 
 const Failure = struct { code: i32, msg: []const u8, data: ?Value = null };
@@ -76,7 +79,7 @@ pub fn receive(conn: *Conn, body: []const u8) void {
         .invalid => |e| return conn.sendError(.null, e.code, e.message, null),
     };
     switch (msg) {
-        .response => {},
+        .response => |r| legacy_requests.onResponse(conn, r),
         .notification => |n| notification(conn, a, n),
         .request => |r| handed_off = request(conn, &arena, r),
     }
@@ -166,13 +169,13 @@ fn classify(conn: *Conn, a: Allocator, params: Value) error{OutOfMemory}!Classif
         conn.mutex.lockUncancelable(s.io);
         conn.state.era = .modern;
         conn.mutex.unlock(s.io);
-        return .{ .ok = .{ .era = .modern, .revision = rev.?, .meta = meta, .log_level = meta.log_level } };
+        return .{ .ok = .{ .era = .modern, .revision = rev.?, .meta = meta, .log_level = meta.log_level, .client_caps = meta.client_capabilities.? } };
     }
     conn.mutex.lockUncancelable(s.io);
     defer conn.mutex.unlock(s.io);
     if (conn.state.legacy) |l| {
         conn.state.era = .legacy;
-        return .{ .ok = .{ .era = .legacy, .revision = l.revision, .meta = meta, .log_level = l.log_level } };
+        return .{ .ok = .{ .era = .legacy, .revision = l.revision, .meta = meta, .log_level = l.log_level, .client_caps = l.caps } };
     }
     return .{ .refused = .{ .code = errors.invalid_params, .msg = try std.fmt.allocPrint(
         a,
@@ -398,6 +401,7 @@ fn spawn(conn: *Conn, arena: *std.heap.ArenaAllocator, id: RequestId, m: message
             .id = id,
             .era = ctx.era,
             .revision = ctx.revision,
+            .client_caps = ctx.client_caps,
             .progress_token = ctx.meta.progress_token,
             .log_level = ctx.log_level,
         },
@@ -472,7 +476,15 @@ fn callTool(cc: *CallCtx, params: Value, ctx: Ctx) void {
         s.call_slots.wait(s.io) catch return;
         defer s.call_slots.post(s.io);
         if (cc.isCanceled()) return;
-        break :run tool.handler.call(tool.handler.ctx, cc, args) catch |err| switch (err) {
+        const Inv = struct {
+            h: Registry.DynHandler,
+            args: Value,
+            fn call(i: @This(), c: *CallCtx) anyerror!messages.CallToolResult {
+                return i.h.call(i.h.ctx, c, i.args);
+            }
+        };
+        const outcome = withInput(messages.CallToolResult, cc, ctx, .tools_call, params, Inv{ .h = tool.handler, .args = args }, Inv.call) orelse return;
+        break :run outcome catch |err| switch (err) {
             error.OutOfMemory => Server.toolError(a, "out of memory", .{}),
             else => Server.toolError(a, "tool failed: {t}", .{err}),
         };
@@ -491,7 +503,15 @@ fn readResource(cc: *CallCtx, params: Value, ctx: Ctx) void {
         const code = if (ctx.era == .modern) errors.invalid_params else errors.legacy_resource_not_found;
         return conn.sendError(cc.id, code, "Resource not found", null);
     };
-    const contents = res.handler.read(res.handler.ctx, cc, p.uri) catch |err|
+    const Inv = struct {
+        h: Registry.ReadHandler,
+        uri: []const u8,
+        fn call(i: @This(), c: *CallCtx) anyerror![]const protocol.content.ResourceContents {
+            return i.h.read(i.h.ctx, c, i.uri);
+        }
+    };
+    const outcome = withInput([]const protocol.content.ResourceContents, cc, ctx, .resources_read, params, Inv{ .h = res.handler, .uri = p.uri }, Inv.call) orelse return;
+    const contents = outcome catch |err|
         return conn.sendError(cc.id, errors.internal_error, @errorName(err), null);
     if (cc.isCanceled()) return;
     const modern = ctx.era == .modern;
@@ -509,8 +529,144 @@ fn getPrompt(cc: *CallCtx, params: Value, ctx: Ctx) void {
         return conn.sendError(cc.id, errors.invalid_params, "invalid prompts/get params", null);
     const prompt = s.registry.snapshot().prompt(p.name) orelse
         return conn.sendError(cc.id, errors.invalid_params, "Unknown prompt", null);
-    const result = prompt.handler.get(prompt.handler.ctx, cc, p.arguments) catch |err|
+    const Inv = struct {
+        h: Registry.GetHandler,
+        args: ?Value,
+        fn call(i: @This(), c: *CallCtx) anyerror!messages.GetPromptResult {
+            return i.h.get(i.h.ctx, c, i.args);
+        }
+    };
+    const outcome = withInput(messages.GetPromptResult, cc, ctx, .prompts_get, params, Inv{ .h = prompt.handler, .args = p.arguments }, Inv.call) orelse return;
+    const result = outcome catch |err|
         return conn.sendError(cc.id, errors.internal_error, @errorName(err), null);
     if (cc.isCanceled()) return;
     sendOk(conn, cc.id, ctx, result);
+}
+
+// ---------------------------------------------------------------- input (MRTR)
+
+/// Runs `f` until it stops asking for input (`CallCtx.elicit` and co.).
+/// Modern: an input request ends the call with `input_required` and a
+/// sealed `requestState`; the retry comes back here with the answers.
+/// Legacy: the requests go to the client on the session and `f` runs
+/// again. Null means a reply (or, once canceled, nothing) was sent.
+fn withInput(comptime R: type, cc: *CallCtx, ctx: Ctx, m: messages.Method, params: Value, inv: anytype, comptime f: fn (@TypeOf(inv), *CallCtx) anyerror!R) ?(anyerror!R) {
+    const s = cc.server;
+    const conn = cc.conn;
+    if (ctx.era == .modern) prepareModern(cc, m, params) catch |err| {
+        if (err == error.OutOfMemory) {
+            conn.sendError(cc.id, errors.internal_error, "out of memory", null);
+        } else conn.sendError(cc.id, errors.invalid_params, "invalid or expired requestState", null);
+        return null;
+    };
+    while (true) {
+        cc.input_requests.clearRetainingCapacity();
+        cc.missing_capability = null;
+        const r = f(inv, cc);
+        if (r) |_| return r else |err| switch (err) {
+            error.InputRequired => {
+                if (cc.isCanceled()) return null;
+                if (cc.input_requests.items.len == 0) return r;
+                if (cc.round >= s.opts.max_input_rounds) {
+                    conn.sendError(cc.id, errors.invalid_params, "too many input rounds", null);
+                    return null;
+                }
+                if (ctx.era == .modern) {
+                    sendInputRequired(cc, m, params) catch conn.sendError(cc.id, errors.internal_error, "out of memory", null);
+                    return null;
+                }
+                legacy_requests.roundTrip(cc) catch |e| switch (e) {
+                    error.Canceled => return null,
+                    else => {
+                        conn.sendError(cc.id, errors.internal_error, "out of memory", null);
+                        return null;
+                    },
+                };
+                cc.round += 1;
+                if (cc.next_state) |st| cc.prev_state = st;
+            },
+            error.CapabilityMissing => {
+                sendMissing(cc);
+                return null;
+            },
+            error.Canceled => if (cc.isCanceled()) return null else return r,
+            else => return r,
+        }
+    }
+}
+
+const PrepareError = mrtr_seal.OpenError || error{InvalidResponses};
+
+/// Takes a modern retry's `inputResponses` and opens its `requestState`.
+fn prepareModern(cc: *CallCtx, m: messages.Method, params: Value) PrepareError!void {
+    const s = cc.server;
+    var fresh: messages.InputResponses = .{};
+    if (params.object.get("inputResponses")) |ir| {
+        if (ir != .null) fresh = codec.decodeFromValue(messages.InputResponses, cc.arena, ir, .{}) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidResponses,
+        };
+    }
+    cc.input_responses = fresh;
+    const token_v = params.object.get("requestState") orelse return;
+    if (token_v != .string) return error.Invalid;
+    const digest = try mrtr_seal.paramsDigest(cc.arena, params);
+    var ad: [mrtr_seal.ad_len]u8 = undefined;
+    const p = try s.sealer.open(cc.arena, token_v.string, mrtr_seal.associatedData(&ad, m, digest));
+    try mrtr_seal.check(p, nowMs(s.io), mrtr_seal.principalHash(cc.conn.principal, ""), m, digest);
+    cc.round = p.round;
+    // The sealed state: the handler's own and the earlier rounds' answers
+    // (a retry carries only the last round's).
+    const sealed = codec.decodeBytes(SealedState, cc.arena, p.handler_state, .{}) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Invalid,
+    };
+    cc.prev_state = sealed.state;
+    var all: std.ArrayList(messages.InputResponses.Entry) = .empty;
+    try all.appendSlice(cc.arena, fresh.entries);
+    if (sealed.answers) |old| for (old.entries) |e| if (fresh.get(e.key) == null) try all.append(cc.arena, e);
+    cc.input_responses = .{ .entries = all.items };
+}
+
+/// What `requestState` carries for the dispatcher.
+const SealedState = struct {
+    state: ?[]const u8 = null,
+    answers: ?messages.InputResponses = null,
+};
+
+fn nowMs(io: Io) i64 {
+    return @intCast(@divTrunc(Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms));
+}
+
+fn sendInputRequired(cc: *CallCtx, m: messages.Method, params: Value) error{OutOfMemory}!void {
+    const s = cc.server;
+    const digest = try mrtr_seal.paramsDigest(cc.arena, params);
+    const state = try codec.encodeAlloc(cc.arena, SealedState{
+        .state = cc.next_state orelse cc.prev_state,
+        .answers = if (cc.input_responses.entries.len > 0) cc.input_responses else null,
+    });
+    const token = try s.sealer.seal(s.io, cc.arena, .{
+        .principal_hash = mrtr_seal.principalHash(cc.conn.principal, ""),
+        .expires_at_ms = nowMs(s.io) + s.opts.request_state_ttl_ms,
+        .method = m,
+        .params_digest = digest,
+        .handler_state = state,
+        .round = cc.round + 1,
+    });
+    if (cc.isCanceled()) return;
+    cc.conn.sendResult(cc.id, codec.withResultType(.input_required, messages.InputRequiredResult{
+        .input_requests = .{ .entries = cc.input_requests.items },
+        .request_state = token,
+        .meta = .{ .server_info = s.opts.info },
+    }));
+}
+
+/// `-32021` naming the capability the handler needed.
+fn sendMissing(cc: *CallCtx) void {
+    const cap = cc.missing_capability orelse "elicitation";
+    var b: protocol.capabilities.Builder = .init(cc.arena);
+    b.set(cap, null) catch return cc.conn.sendError(cc.id, errors.internal_error, "out of memory", null);
+    const data = codec.toValue(cc.arena, errors.MissingRequiredClientCapabilityData{ .required_capabilities = b.finish() }) catch
+        return cc.conn.sendError(cc.id, errors.internal_error, "out of memory", null);
+    cc.conn.sendError(cc.id, errors.missing_required_client_capability, "Missing required client capability", data);
 }

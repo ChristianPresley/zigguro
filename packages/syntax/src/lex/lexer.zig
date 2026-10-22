@@ -6,6 +6,7 @@ const std = @import("std");
 const state_mod = @import("state.zig");
 const scanner_mod = @import("scanner.zig");
 const Registry = @import("../registry.zig").Registry;
+const LanguageId = @import("../language.zig").LanguageId;
 
 const LexState = state_mod.LexState;
 const Scanner = scanner_mod.Scanner;
@@ -31,11 +32,13 @@ pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *Tok
     while (true) {
         const lang = reg.getOrPlain(st.top());
         var view_end: usize = line.len;
+        var at_end = false;
         if (st.injected()) {
             const host_frame = st.stack[st.stack_len - 2];
             const host = reg.getOrPlain(host_frame.lang);
             if (host.injection_end) |f| if (f(host_frame.mode, line, pos)) |e| {
                 view_end = @max(e, pos);
+                at_end = true;
             };
         }
         sink.kind_or = if (st.injected()) Token.injected_bit else 0;
@@ -43,6 +46,7 @@ pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *Tok
         const depth = st.stack_len;
         const top = st.top();
         lang.lexer.lexLineFn(st, &s, sink);
+        if (st.top() == LanguageId.unresolved) resolve(reg, st);
         pos = s.pos;
         const switched = st.stack_len != depth or st.top() != top;
         if (!switched and pos < view_end) {
@@ -50,12 +54,12 @@ pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *Tok
             sink.push(.{ .start = pos, .kind = 0, .hl = .none });
             pos = @intCast(view_end);
         }
-        if (!switched and view_end == line.len) break;
+        if (!switched and !at_end) break;
         if (!switched) {
-            // The host's end delimiter: the guest is done.
+            // The host's end delimiter: the guest is done, and the host
+            // lexes the rest even when it is empty, to leave its block.
             st.pop();
-        }
-        if (pos >= line.len) break;
+        } else if (pos >= line.len) break;
         handoffs += 1;
         if (handoffs >= max_handoffs) {
             sink.kind_or = 0;
@@ -64,4 +68,15 @@ pub fn lexLine(reg: *const Registry, st: *LexState, line: []const u8, sink: *Tok
         }
     }
     sink.kind_or = 0;
+}
+
+/// Looks up a guest pushed by name: starts it, or pops back to the host
+/// when the registry has no such language.
+fn resolve(reg: *const Registry, st: *LexState) void {
+    const id = reg.byName(st.auxBytes()) orelse {
+        st.pop();
+        return;
+    };
+    st.stack[st.stack_len - 1].lang = id;
+    st.clearAux();
 }

@@ -1,0 +1,6 @@
+1| punctuation:< tag:form attribute:action operator:= string:"/submit" attribute:method operator:= string:"post" punctuation:>
+2| punctuation:< tag:label attribute:for operator:= string:"name" punctuation:> punctuation:</ tag:label punctuation:>
+3| punctuation:< tag:input attribute:id operator:= string:"name" attribute:name operator:= string:"name" attribute:required attribute:minlength operator:= string:"2" punctuation:>
+4| punctuation:< tag:select attribute:name operator:= string:"pick" punctuation:> punctuation:< tag:option attribute:value operator:= string:"1" attribute:selected punctuation:> punctuation:</ tag:option punctuation:> punctuation:</ tag:select punctuation:>
+5| punctuation:< tag:button attribute:type operator:= string:"submit" punctuation:> punctuation:</ tag:button punctuation:>
+6| punctuation:</ tag:form punctuation:>

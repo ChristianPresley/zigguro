@@ -590,6 +590,12 @@ fn appModule(
     // Extra modules packages export next to their root module.
     imports.append(b.allocator, .{ .name = "zg_terminal_view", .module = mods[comptime packages.indexOf("zg_terminal")].owner.modules.get("zg_terminal_view").? }) catch @panic("OOM");
     imports.append(b.allocator, .{ .name = "zg_security_ui", .module = mods[comptime packages.indexOf("zg_security")].owner.modules.get("zg_security_ui").? }) catch @panic("OOM");
+    // The IDE connects MCP servers the way `zg agent --mcp-config` does.
+    if (std.mem.startsWith(u8, root, "apps/zigguro/")) {
+        const servers = b.createModule(.{ .root_source_file = b.path("apps/zg/src/mcp_servers.zig"), .target = target, .optimize = optimize });
+        inline for (.{ "zg_core", "zg_net", "zg_mcp", "zg_ai" }) |n| servers.addImport(n, mods[comptime packages.indexOf(n)]);
+        imports.append(b.allocator, .{ .name = "zg_mcp_servers", .module = servers }) catch @panic("OOM");
+    }
     // Crash reports (E17.F05) need frame pointers and a GNU build id, and
     // the self-hosted aarch64 backend traps before the segfault hook runs.
     return b.createModule(.{

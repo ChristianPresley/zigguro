@@ -1,0 +1,16 @@
+1| markup.heading.1:# zigguro
+2|
+3| markup.bold:**Zig** markup.link:[the docs] string.special:(docs/README.md)
+4|
+5| markup.heading.2:## Build
+6|
+7| punctuation.delimiter:``` label:sh
+8| function:zig
+9| punctuation.delimiter:```
+10|
+11| punctuation.delimiter:| punctuation.delimiter:| punctuation.delimiter:|
+12| punctuation.delimiter:| ---- | ------- |
+13| punctuation.delimiter:| punctuation.delimiter:| markup.code:`zig build test` punctuation.delimiter:|
+14|
+15| punctuation:> markup.bold:**Note**
+16| punctuation:>

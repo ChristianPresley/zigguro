@@ -371,6 +371,9 @@ pub const SettingsStore = struct {
     current_ptr: std.atomic.Value(*Snapshot),
     pending: std.atomic.Value(?*Snapshot) = .init(null),
     retired: std.ArrayList(*Snapshot) = .empty,
+    /// Threads inside `acquire` (between loading the pointer and pinning
+    /// it); `collect` frees nothing while any are.
+    acquiring: std.atomic.Value(u32) = .init(0),
     subs: std.ArrayList(Sub) = .empty,
     next_sub: u32 = 0,
     change_ids: std.ArrayList(SettingId) = .empty,
@@ -408,11 +411,13 @@ pub const SettingsStore = struct {
 
     /// Pins the published snapshot for use on another thread.
     pub fn acquire(s: *SettingsStore) *const Snapshot {
+        _ = s.acquiring.fetchAdd(1, .seq_cst);
+        defer _ = s.acquiring.fetchSub(1, .seq_cst);
         while (true) {
-            const p = s.current_ptr.load(.acquire);
-            _ = p.pins.fetchAdd(1, .acq_rel);
-            if (s.current_ptr.load(.acquire) == p) return p;
-            _ = p.pins.fetchSub(1, .acq_rel);
+            const p = s.current_ptr.load(.seq_cst);
+            _ = p.pins.fetchAdd(1, .seq_cst);
+            if (s.current_ptr.load(.seq_cst) == p) return p;
+            _ = p.pins.fetchSub(1, .seq_cst);
         }
     }
 
@@ -489,7 +494,7 @@ pub const SettingsStore = struct {
             s.collect();
             return null;
         };
-        const prev = s.current_ptr.swap(next, .acq_rel);
+        const prev = s.current_ptr.swap(next, .seq_cst);
         const ids = try s.diff(prev, next);
         try s.retired.append(s.gpa, prev);
         const change: Change = .{ .gen = next.gen, .ids = ids };
@@ -500,6 +505,9 @@ pub const SettingsStore = struct {
 
     /// Frees superseded snapshots that are no longer pinned.
     pub fn collect(s: *SettingsStore) void {
+        // A thread in `acquire` may hold a retired pointer it has not
+        // pinned yet; free on a later call.
+        if (s.acquiring.load(.seq_cst) != 0) return;
         var i: usize = 0;
         while (i < s.retired.items.len) {
             const r = s.retired.items[i];

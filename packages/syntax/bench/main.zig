@@ -221,6 +221,40 @@ const css_template =
     \\
 ;
 
+const html_template =
+    \\<div class="card card-{d}" data-id="{x}">
+    \\  <h2 id="title-{d}">Item {d} &amp; friends</h2>
+    \\  <p>Some <em>inline</em> text with a <a href="/items/7?ref=list">link</a>.</p>
+    \\  <img src="img/7.png" alt="" width="64" height="64">
+    \\  <!-- weighted entry 7 -->
+    \\  <input type="checkbox" name="pick-7" checked>
+    \\</div>
+    \\<script>
+    \\  const el = document.getElementById("title-7");
+    \\  if (el && el.textContent.length > 0) el.classList.add("ready");
+    \\</script>
+    \\<style>.card-7 {{ margin: 0 auto; color: #ab; }}</style>
+    \\
+    \\
+;
+
+const markdown_template =
+    \\## Section {d}
+    \\
+    \\Some *emphasis*, **strong** text and `code {d}` with a [link](https://example.com/{d}).
+    \\- item one with ![image](img/{d}.png)
+    \\- [x] done item ab
+    \\> a quoted line with <kbd>Ctrl</kbd> &amp; more
+    \\
+    \\```zig
+    \\const value_7: u32 = 0xab; // comment
+    \\```
+    \\| Name | Value |
+    \\| ---- | ----: |
+    \\| a7 | **7** |
+    \\
+;
+
 /// A corpus of about `lines` lines from a 14-line template.
 fn genFrom(gpa: std.mem.Allocator, comptime tmpl: []const u8, lines: usize) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -502,6 +536,8 @@ fn register(b: *bench.Bench) !void {
         .{ "shell", shell_template, &syntax.langs.shell.shell_language, false },
         .{ "ts", ts_template, &syntax.langs.js.typescript_language, true },
         .{ "css", css_template, &syntax.langs.css.css_language, false },
+        .{ "html", html_template, &syntax.langs.html.html_language, false },
+        .{ "markdown", markdown_template, &syntax.langs.markdown.markdown_language, true },
     }) |l| {
         const spaced = try genFrom(gpa, l[1], n_lines);
         defer gpa.free(spaced);

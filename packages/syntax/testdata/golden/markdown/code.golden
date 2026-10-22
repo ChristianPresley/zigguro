@@ -1,0 +1,6 @@
+1| markup.code:`code` markup.code:``code with ` tick``
+2|
+3| markup.code:    indented code block
+4| markup.code:    second line
+5|
+6|

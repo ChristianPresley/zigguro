@@ -1,0 +1,5 @@
+1| markup.italic:*em* markup.italic:_em_ markup.bold:**strong** markup.bold:__strong__
+2| markup.bold:***both***
+3|
+4|
+5| string.escape:\* string.escape:\* string.escape:\_ string.escape:\_

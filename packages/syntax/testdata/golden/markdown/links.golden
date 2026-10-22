@@ -1,0 +1,5 @@
+1| markup.link:[inline] string.special:(https://example.com "Title") markup.link:[ref][id] markup.link:[collapsed][]
+2| markup.link:![image] string.special:(img.png) markup.link:<https://auto.link> markup.link:<me@example.com>
+3| markup.link:https://example.com/path markup.link:www.zigguro.dev
+4|
+5| markup.link:[id] string.special:https://example.com/ref "Ref title"

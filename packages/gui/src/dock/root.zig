@@ -12,6 +12,8 @@ pub const splitter = @import("splitter.zig");
 pub const area_sash = @import("area_sash.zig");
 /// The `floating.zig` module.
 pub const floating = @import("floating.zig");
+/// The `persist.zig` module.
+pub const persist = @import("persist.zig");
 /// The `tab_strip.zig` module.
 pub const tab_strip = @import("tab_strip.zig");
 /// The `drop_zones.zig` module.

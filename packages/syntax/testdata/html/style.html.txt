@@ -1,0 +1,6 @@
+<style>
+  body { margin: 0; color: #333; }
+  .card > a:hover { text-decoration: underline; }
+</style>
+<style media="print">@page { size: A4; }</style>
+<p style="color: red">inline style attribute</p>
