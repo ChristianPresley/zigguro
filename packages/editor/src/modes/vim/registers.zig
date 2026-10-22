@@ -13,14 +13,7 @@ pub const RegKind = ops.RegKind;
 
 /// The system clipboard (`+`) and primary selection (`*`), supplied by
 /// the platform (E01). Without one, `+` and `*` are ordinary registers.
-pub const ClipboardPort = struct {
-    pub const Which = enum { clipboard, primary };
-
-    ctx: *anyopaque,
-    /// The current text (caller frees), or null when empty.
-    getFn: *const fn (ctx: *anyopaque, which: Which, gpa: Allocator) anyerror!?[]u8,
-    setFn: *const fn (ctx: *anyopaque, which: Which, text: []const u8) anyerror!void,
-};
+pub const ClipboardPort = @import("../mode.zig").ClipboardPort;
 
 /// What wrote a register, for Vim's choice of numbered registers.
 pub const Op = enum { yank, delete };

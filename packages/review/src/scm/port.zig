@@ -25,22 +25,23 @@ const ReviewStatus = zg_scm.ReviewStatus;
 const LandingState = zg_scm.ai.landing.LandingState;
 const LandingQueue = zg_scm.ai.landing.LandingQueue;
 
-/// One path of a proposal: its text in the current view (`base`, null
-/// when the proposal creates it) and in the preview (`new`, null when it
-/// deletes it). Paths are workspace paths (normalized like any other). A
-/// `describe` proposal has one, `.zigguro/scm/description/<change>`, with
-/// the old and new description.
-pub const PreviewFile = struct {
-    path: []const u8,
-    base: ?[]const u8 = null,
-    new: ?[]const u8 = null,
-};
+/// One path of a proposal: its text before (`base`, null when the
+/// proposal creates it) and after (`new`, null when it deletes it). Paths
+/// are workspace paths (normalized like any other). A `describe` proposal
+/// has one per described commit, `.zigguro/scm/description/<change>`,
+/// with the old and new description. E09's `proposal_files.FileChange`.
+pub const PreviewFile = zg_scm.ai.proposal_files.FileChange;
 
-/// E09's read model: the per-path difference between the current view
-/// and a proposal's preview, in `arena`.
+/// E09's read model: the per-path difference a proposal makes, in
+/// `arena`.
 pub const PreviewFiles = struct {
     ctx: *anyopaque,
     files: *const fn (ctx: *anyopaque, arena: Allocator, proposal: *const Proposal) anyerror![]const PreviewFile,
+
+    /// Reads a repository's proposals (`zg_scm.ai.proposal_files`).
+    pub fn ofRepo(pf: *zg_scm.ai.proposal_files.ProposalFiles) PreviewFiles {
+        return .{ .ctx = pf, .files = zg_scm.ai.proposal_files.ProposalFiles.filesFn };
+    }
 };
 
 /// A reviewer's decision on a whole proposal, per kind.
@@ -67,6 +68,9 @@ pub const Item = struct {
     review: ReviewId,
     kind: zg_scm.ai.ports.ProposalKind,
     preview_op: zg_scm.DetachedOp,
+    /// The proposal's first commit (in the preview): the one a `describe`
+    /// proposal describes. Null when it has none.
+    commit: ?zg_scm.ObjectId,
     /// For `land`; owned.
     lane: []const u8,
     /// The lane's landing state once it is approved; `reason` owned.
@@ -152,7 +156,7 @@ pub const ScmReviewPort = struct {
             cs.prov.origin.scm_proposal.review = review;
             p.q.persist(id);
         }
-        p.items.putAssumeCapacity(id, .{ .review = review, .kind = proposal.kind, .preview_op = proposal.preview_op, .lane = lane });
+        p.items.putAssumeCapacity(id, .{ .review = review, .kind = proposal.kind, .preview_op = proposal.preview_op, .commit = if (proposal.changes.len > 0) proposal.changes[0] else null, .lane = lane });
         return review;
     }
 
@@ -250,8 +254,9 @@ fn freeItem(gpa: Allocator, it: *Item) void {
 
 /// `ScmActions` on a zg_scm repository: an approval adopts the preview
 /// operation, a rejection discards it, and a landing decision goes to the
-/// landing queue (which adopts its own landing operation). An edited
-/// description needs E09's describe operation, so it is refused here.
+/// landing queue (which adopts its own landing operation). An approved
+/// description the reviewer edited is adopted with the edited text
+/// (`zg_scm.ai.describe.redescribe`).
 pub const RepoActions = struct {
     repo: *zg_scm.Repo,
     landing: ?*LandingQueue = null,
@@ -270,7 +275,15 @@ pub const RepoActions = struct {
                 try lq.onReviewDecision(it.review, rd);
                 return .done;
             },
-            .describe => |x| if (x == .approve and x.approve != null) return error.EditedDescriptionUnsupported,
+            .describe => |x| if (x == .approve) if (x.approve) |text| {
+                const target = it.commit orelse return error.NoDescribedCommit;
+                var res = try zg_scm.ai.describe.redescribe(r.repo, it.preview_op, target, text, r.meta);
+                defer res.deinit();
+                return switch (res) {
+                    .adopted => .done,
+                    .conflicted => .conflicted,
+                };
+            },
             else => {},
         }
         if (!d.approves()) {

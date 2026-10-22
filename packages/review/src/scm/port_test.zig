@@ -189,3 +189,88 @@ test "scm_port: status mapping table" {
     try testing.expectEqual(zg_scm.ReviewStatus.unknown, fx.port.status(@intFromEnum(other)));
     try testing.expectError(error.NotScmProposal, fx.port.decide(other, .{ .resolve = .approve }));
 }
+
+fn scmMeta(description: []const u8) zg_scm.OpMeta {
+    return .{ .start_ms = 0, .end_ms = 0, .description = description, .user = "tester", .host = "host", .workspace = "default", .actor = .human, .tags = &.{} };
+}
+
+fn scmCommit(m: *zg_scm.mutable_repo.MutableRepo, parents: []const zg_scm.ObjectId, description: []const u8, files: []const [2][]const u8) !zg_scm.ObjectId {
+    var tm = zg_scm.tree_merge.TreeMerger.init(gpa, m.batch.store, m.batch);
+    defer tm.deinit();
+    const tree = try zg_scm.tree_merge.testTree(&tm, files);
+    const sig: zg_scm.Signature = .{ .name = "t", .email = "t@example.com", .time_ms = 1_700_000_000_000, .tz_offset_min = 0 };
+    var cid: zg_scm.ChangeId = undefined;
+    const h = std.hash.Wyhash.hash(11, description);
+    std.mem.writeInt(u64, cid.bytes[0..8], h, .little);
+    std.mem.writeInt(u64, cid.bytes[8..16], std.hash.int(h), .little);
+    return m.writeChange(.{
+        .parents = try m.arena.dupe(zg_scm.ObjectId, parents),
+        .tree_terms = try m.arena.dupe(zg_scm.ObjectId, &.{tree}),
+        .change_id = cid,
+        .predecessors = &.{},
+        .author = sig,
+        .committer = sig,
+        .description = try m.arena.dupe(u8, description),
+        .provenance = null,
+        .extra = &.{},
+        .sig = null,
+    });
+}
+
+test "scm_port: a repository's describe proposal, edited and approved, is adopted with the edit" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const store = try zg_scm.Store.open(gpa, testing.io, tmp.dir, .{ .fsync = false, .rescan_interval_ms = 0 });
+    defer store.close();
+    const r0 = try zg_scm.Repo.init(gpa, testing.io, tmp.dir, store, .{}, scmMeta("init"));
+    defer r0.close();
+    var tx = try r0.startTransaction(scmMeta("setup"));
+    var m = tx.mutRepo();
+    const root = try scmCommit(m, &.{}, "root", &.{.{ "a", "1" }});
+    const c1 = try scmCommit(m, &.{root}, "wip", &.{.{ "a", "2" }});
+    try m.setWcCommit("default", c1);
+    const r1 = try tx.commit();
+    defer r1.close();
+
+    // The AI proposes a description for c1, as a preview.
+    tx = try r1.startTransaction(scmMeta("propose"));
+    m = tx.mutRepo();
+    var ch = try m.readChange(tx.arena(), c1);
+    ch.description = "Add two\n";
+    const proposed = try m.rewriteChange(c1, ch);
+    _ = try m.rebaseDescendants(zg_scm.rebase.reparent, null);
+    const d = try zg_scm.preview.commitDetached(tx, .proposal);
+
+    var blobs: model.MemBlobs = .init(gpa);
+    defer blobs.deinit();
+    const q = try model.Queue.init(gpa, testing.io, .{ .root = "/w", .blobs = blobs.blobs() });
+    defer q.deinit();
+    var pf: zg_scm.ai.proposal_files.ProposalFiles = .{ .store = store };
+    var actions: port_mod.RepoActions = .{ .repo = r1, .meta = scmMeta("approve") };
+    var port: ScmReviewPort = .init(gpa, q, .ofRepo(&pf), actions.actions(), .{ .workspace = "/w" });
+    defer port.deinit();
+    const proposal: zg_scm.Proposal = .{
+        .kind = .describe,
+        .preview_op = d,
+        .summary = "Describe wip",
+        .changes = &.{proposed},
+        .provenance = .{ .actor = .agent("s1", "3", ""), .model = "m" },
+        .rationale = "",
+        .lane = "",
+    };
+    const id: ChangesetId = @enumFromInt(try port.port().submitProposal(&proposal));
+
+    // The item shows the description change.
+    const cs = q.get(id).?;
+    try testing.expectEqual(@as(usize, 1), cs.files.len);
+    try testing.expect(std.mem.startsWith(u8, cs.files[0].path, ".zigguro/scm/description/"));
+    try testing.expectEqual(proposed, port.item(id).?.commit.?);
+
+    // Edited and approved: the repo adopts the edited text.
+    try testing.expectEqual(.done, try port.decide(id, .{ .describe = .{ .approve = "Add two, edited\n" } }));
+    try testing.expectEqual(zg_scm.ReviewStatus.approved, port.status(@intFromEnum(id)));
+    const r2 = try zg_scm.Repo.load(gpa, testing.io, tmp.dir, store, .{}, .head);
+    defer r2.close();
+    const wc = try zg_scm.operation.read(zg_scm.Change, store, r2.arena_state.allocator(), r2.view().wcCommit("default").?);
+    try testing.expectEqualStrings("Add two, edited\n", wc.description);
+}

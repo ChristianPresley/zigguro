@@ -1,0 +1,22 @@
+// Emacs isearch cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "C-s simple", .before = "¦foo bar baz", .keys = "<C-s>ba<CR>", .after = "foo ba¦r baz" },
+    .{ .name = "C-s grows in place", .before = "¦foo bar baz", .keys = "<C-s>baz<CR>", .after = "foo bar baz¦" },
+    .{ .name = "C-s repeat", .before = "¦ab ab ab", .keys = "<C-s>ab<C-s><CR>", .after = "ab ab¦ ab" },
+    .{ .name = "C-s repeat twice", .before = "¦ab ab ab", .keys = "<C-s>ab<C-s><C-s><CR>", .after = "ab ab ab¦" },
+    .{ .name = "C-s failing then wrap", .before = "ab ¦ab", .keys = "<C-s>ab<C-s><C-s><CR>", .after = "ab¦ ab" },
+    .{ .name = "C-s BS", .before = "¦xa xab", .keys = "<C-s>ab<BS><CR>", .after = "xa¦ xab" },
+    .{ .name = "C-s case insensitive", .before = "¦x FOO", .keys = "<C-s>foo<CR>", .after = "x FOO¦" },
+    .{ .name = "C-s uppercase sensitive", .before = "¦Foo foo FOO", .keys = "<C-s>FOO<CR>", .after = "Foo foo FOO¦" },
+    .{ .name = "C-r", .before = "foo bar foo¦", .keys = "<C-r>foo<CR>", .after = "foo bar ¦foo" },
+    .{ .name = "C-r repeat", .before = "ab ab ab¦", .keys = "<C-r>ab<C-r><CR>", .after = "ab ¦ab ab" },
+    .{ .name = "C-s then C-r turns", .before = "¦ab ab", .keys = "<C-s>ab<C-r><CR>", .after = "¦ab ab" },
+    .{ .name = "C-s C-s last search", .before = "¦ab ab ab", .keys = "<C-s>ab<CR><C-s><C-s><CR>", .after = "ab ab¦ ab" },
+    .{ .name = "C-g aborts", .before = "¦foo bar", .keys = "<C-s>bar<C-g>x", .after = "¦foo bar" },
+    .{ .name = "C-g drops failing", .before = "¦foo bar", .keys = "<C-s>barx<C-g><CR>", .after = "foo bar¦" },
+    .{ .name = "other key exits", .before = "¦foo bar", .keys = "<C-s>ba<C-a>X", .after = "X¦foo bar" },
+    .{ .name = "C-M-s regexp", .before = "¦x1 y22 z", .keys = "<C-M-s>[0-9]+<CR>", .after = "x1¦ y22 z" },
+    .{ .name = "C-M-s group", .before = "¦abab cd", .keys = "<C-M-s>\\(ab\\)+<CR>", .after = "abab¦ cd" },
+    .{ .name = "C-u C-s regexp", .before = "¦a.c abc", .keys = "<C-u><C-s>a.c<C-s><CR>", .after = "a.c abc¦" },
+    .{ .name = "C-s newline", .before = "¦ab\ncd", .keys = "<C-s>b<C-j><CR>", .after = "ab\n¦cd" },
+}
