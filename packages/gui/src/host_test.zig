@@ -153,6 +153,29 @@ test "host keeps the app clipboard in sync with the platform" {
     try std.testing.expect(app.now_ms > 0);
 }
 
+test "host syncs the PRIMARY selection separately from the clipboard" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    app.has_primary = true;
+    var mono: text.MonoText = .{};
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{});
+    defer host.deinit();
+
+    app.primary.set(gpa, "selected");
+    _ = try host.pump();
+    try std.testing.expectEqualStrings("selected", hl.clip[@intFromEnum(zg_platform.clipboard.Selection.primary)][0].data);
+    try std.testing.expectEqual(@as(usize, 0), hl.clip[@intFromEnum(zg_platform.clipboard.Selection.clipboard)].len);
+
+    try hl.setClipboard(.primary, .text_utf8, "selected elsewhere");
+    _ = try host.pump();
+    _ = try host.pump();
+    try std.testing.expectEqualStrings("selected elsewhere", app.primary.get());
+    try std.testing.expectEqualStrings("", app.clipboard.get());
+}
+
 const Label = struct {
     pub fn build(_: *Label, ui: *ui_mod.Ui) void {
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .bg = .{ .token = .bg_base }, .padding = .all(10) } });
