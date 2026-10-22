@@ -15,19 +15,18 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",         "text.cache_hit",
-    "text.cache_screen",         "text.cells_row_200",
-    "text.cff_outline",          "text.fontdb_load_3k",
-    "text.gamma",                "text.glyf_outline",
-    "text.gvar_apply",           "text.hit_test",
-    "text.integrate_gpix",       "text.itemize_200col",
-    "text.layout_200col",        "text.lcd",
-    "text.measure_hit",          "text.raster_14px",
-    "text.raster_64px_cjk",      "text.raster_lcd_14px",
-    "text.registry_get",         "text.sdf_48px",
-    "text.shape_code_line_200",  "text.shape_latin_1k",
-    "text.shape_word_cache_hit", "text.var_advance",
-    "text.wrap_10kb",
+    "text.atlas_insert",    "text.cache_hit",
+    "text.cache_screen",    "text.cells_row_200",
+    "text.cff_outline",     "text.fontdb_load_3k",
+    "text.gamma",           "text.gvar_apply",
+    "text.hit_test",        "text.integrate_gpix",
+    "text.itemize_200col",  "text.layout_200col",
+    "text.lcd",             "text.measure_hit",
+    "text.raster_14px",     "text.raster_64px_cjk",
+    "text.raster_lcd_14px", "text.registry_get",
+    "text.sdf_48px",        "text.shape_code_line_200",
+    "text.shape_latin_1k",  "text.shape_word_cache_hit",
+    "text.var_advance",     "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -110,6 +109,30 @@ fn register(b: *bench.Bench) !void {
     var rtl_line: [400]u8 = undefined;
     fill(&rtl_line, &.{ "\u{05E9}\u{05DC}\u{05D5}\u{05DD} ", "(\u{05D0} 12) ", "abc ", "\u{0627}\u{0644}\u{0639}\u{0627}\u{0644}\u{0645} " });
     try b.run("text.bidi_200col_rtl", @as([]const u8, &rtl_line), bidiRtl);
+
+    // One JetBrains Mono ASCII glyph per iteration, with warm buffers.
+    var ascii_gids: [94]u16 = undefined;
+    for (&ascii_gids, 0..) |*g, i| g.* = jb.glyphIndex(@intCast(0x21 + i));
+    try b.run("text.glyf_outline", OutlineCtx{ .face = &jb, .gids = &ascii_gids, .gpa = b.gpa }, glyfOutline);
+}
+
+const OutlineCtx = struct { face: *const zg_text.ot.Face, gids: []const u16, gpa: std.mem.Allocator };
+
+fn glyfOutline(ctx: OutlineCtx, s: *State) void {
+    const g = ctx.face.glyf().?;
+    var scratch: zg_text.ot.glyf.Scratch = .{};
+    defer scratch.deinit(ctx.gpa);
+    var path: zg_text.outline.Path = .{};
+    defer path.deinit(ctx.gpa);
+    for (ctx.gids) |gid| _ = g.outline(ctx.gpa, gid, &scratch, null, &path) catch unreachable;
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
+        path.reset();
+        _ = g.outline(ctx.gpa, ctx.gids[k], &scratch, null, &path) catch unreachable;
+        bench.doNotOptimizeAway(path.points.items.len);
+        k += 1;
+        if (k == ctx.gids.len) k = 0;
+    }
 }
 
 fn fill(buf: []u8, pieces: []const []const u8) void {
