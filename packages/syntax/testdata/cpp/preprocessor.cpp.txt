@@ -1,0 +1,10 @@
+#include <iostream>
+#include "app.hpp"
+#define DECLARE(T) \
+    T value_##T;
+#pragma once
+#if __cplusplus >= 202002L
+import std;
+#endif
+module;
+export module app;
