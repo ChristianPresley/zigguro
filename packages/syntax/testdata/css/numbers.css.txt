@@ -1,0 +1,8 @@
+.n {
+  width: 100%;
+  height: 50vh;
+  line-height: 1.5;
+  margin: -2px .5em +3rem;
+  transform: rotate(45deg) scale(1.2e1);
+  transition: opacity 0.3s ease-in-out;
+}
