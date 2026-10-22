@@ -33,3 +33,11 @@ pub extern "ole32" fn ReleaseStgMedium(*t.STGMEDIUM) callconv(.winapi) void;
 pub extern "ole32" fn CoCreateInstance(clsid: *const t.GUID, outer: ?*anyopaque, ctx: t.DWORD, iid: *const t.GUID, out: *?*anyopaque) callconv(.winapi) t.HRESULT;
 /// Frees COM task memory (strings from `GetDisplayName`).
 pub extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(.winapi) void;
+/// `COINIT_APARTMENTTHREADED`.
+pub const COINIT_APARTMENTTHREADED: t.DWORD = 0x2;
+/// `COINIT_DISABLE_OLE1DDE`.
+pub const COINIT_DISABLE_OLE1DDE: t.DWORD = 0x4;
+/// Initializes COM on the calling thread.
+pub extern "ole32" fn CoInitializeEx(reserved: ?*anyopaque, flags: t.DWORD) callconv(.winapi) t.HRESULT;
+/// Ends COM on the calling thread.
+pub extern "ole32" fn CoUninitialize() callconv(.winapi) void;

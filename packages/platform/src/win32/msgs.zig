@@ -137,6 +137,8 @@ pub const modal_timer_id: usize = 0x7a67;
 /// `USER_TIMER_MINIMUM` (ms).
 pub const USER_TIMER_MINIMUM: u32 = 0x0A;
 
+/// `WM_SETTINGCHANGE` (broadcast to top-level windows only).
+pub const WM_SETTINGCHANGE: u32 = 0x001A;
 /// `SW_SHOWNORMAL`.
 pub const SW_SHOWNORMAL: i32 = 1;
 /// `SW_SHOWMINIMIZED`.

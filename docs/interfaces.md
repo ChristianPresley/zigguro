@@ -1027,7 +1027,13 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`source = .continuous`. `open_dialog` shows `IFileOpenDialog`/`IFileSaveDialog`
+on a thread of its own (modal to `parent`) and answers with
+`dialog_result`; `deinit` joins open dialogs. `open_uri` passes `http`,
+`https` and `mailto` URIs to `ShellExecuteW` and refuses others with
+`error.Unsupported`. `appearance_changed` is staged at start and after a
+`WM_SETTINGCHANGE` that changes the theme, accent, high contrast or
+animation setting (dark-mode switches re-apply the title bars). Touch (`WM_POINTER*`, `pointer.zig`) stages
 `touch` events and still reaches `DefWindowProcW`, so Windows promotes the
 primary touch to mouse messages; pens stage `pointer_pressure` then
 `pointer_move`, with contact as the left button (right with the barrel
