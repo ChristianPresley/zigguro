@@ -65,6 +65,8 @@ pub const A11y = struct {
     checked: ?bool = null,
     disabled: bool = false,
     value: ?f32 = null,
+    /// The text of an editable node (text boxes; empty for passwords).
+    text: []const u8 = "",
 };
 
 /// Type-erased widget operations; one static instance per widget type.
