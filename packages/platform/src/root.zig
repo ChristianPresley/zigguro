@@ -46,8 +46,8 @@ pub const headless = struct {
 /// Starts the backend chosen by `platform.selectBackend`, falling back
 /// along Wayland → X11 when the backend was detected rather than forced
 /// (by `opts.backend` or `ZG_PLATFORM`) and it cannot connect. The app
-/// falls back to headless itself. Win32 (E01.F02) and Cocoa (E01.F08)
-/// return `error.BackendUnavailable` until they land.
+/// falls back to headless itself. Cocoa (E01.F08) returns
+/// `error.BackendUnavailable` until it lands.
 pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform {
     const first = platform.selectBackend(opts);
     if (initBackend(gpa, io, first, opts)) |p| return p else |err| {
@@ -85,7 +85,14 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, backend: Backend, opts: I
             };
             return b.platform();
         },
-        .win32, .cocoa => {},
+        .win32 => if (is_windows) {
+            const b = win32.Win32Backend.init(gpa, io, .{}) catch |err| {
+                log.info("Win32 backend unavailable: {t}", .{err});
+                return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
+            };
+            return b.platform();
+        },
+        .cocoa => {},
     }
     return error.BackendUnavailable;
 }
@@ -292,6 +299,18 @@ pub const win32 = struct {
     pub const dwmapi = if (is_windows) @import("win32/bindings/dwmapi.zig") else struct {};
     /// See `win32/bindings/advapi32.zig`.
     pub const advapi32 = if (is_windows) @import("win32/bindings/advapi32.zig") else struct {};
+    /// See `win32/msgs.zig`.
+    pub const msgs = @import("win32/msgs.zig");
+    /// See `win32/keys.zig`.
+    pub const keys = @import("win32/keys.zig");
+    /// See `win32/dpi.zig`.
+    pub const dpi = @import("win32/dpi.zig");
+    /// See `win32/cpu_present.zig`.
+    pub const cpu_present = @import("win32/cpu_present.zig");
+    /// See `win32/backend.zig`.
+    pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
+    /// See `win32/backend.zig`.
+    pub const InitOptions = if (is_windows) @import("win32/backend.zig").InitOptions else void;
 };
 
 /// The transport between the platform and UI threads, used by backends.
@@ -374,7 +393,11 @@ test {
     if (is_windows) {
         inline for (.{ "user32", "kernel32", "gdi32", "imm32", "ole32", "shell32", "dwmapi", "advapi32" }) |n| std.testing.refAllDecls(@field(win32, n));
         _ = @import("win32/bindings/windows_test.zig");
+        _ = @import("win32/backend.zig");
     }
+    _ = win32.keys;
+    _ = win32.dpi;
+    _ = win32.cpu_present;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -473,13 +496,18 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/bindings/advapi32.zig", .src = @embedFile("win32/bindings/advapi32.zig") },
     .{ .path = "win32/com.zig", .src = @embedFile("win32/com.zig") },
     .{ .path = "win32/wide.zig", .src = @embedFile("win32/wide.zig") },
+    .{ .path = "win32/msgs.zig", .src = @embedFile("win32/msgs.zig") },
+    .{ .path = "win32/keys.zig", .src = @embedFile("win32/keys.zig") },
+    .{ .path = "win32/dpi.zig", .src = @embedFile("win32/dpi.zig") },
+    .{ .path = "win32/cpu_present.zig", .src = @embedFile("win32/cpu_present.zig") },
+    .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 
 test "init starts the headless backend" {
     const p = try init(std.testing.allocator, std.testing.io, .{ .backend = .headless });
     defer p.deinit();
     try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .wayland }));
-    try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .win32 }));
+    if (!is_windows) try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .win32 }));
 }
 
 test "init falls back from an unreachable Wayland display to X11" {
