@@ -435,6 +435,7 @@ test {
         _ = @import("x11/dri3.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
+    _ = @import("fswatch/windows_rdcw.zig");
 }
 
 const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
@@ -462,6 +463,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "fswatch/ignore.zig", .src = @embedFile("fswatch/ignore.zig") },
     .{ .path = "fswatch/coalesce.zig", .src = @embedFile("fswatch/coalesce.zig") },
     .{ .path = "fswatch/linux_inotify.zig", .src = @embedFile("fswatch/linux_inotify.zig") },
+    .{ .path = "fswatch/windows_rdcw.zig", .src = @embedFile("fswatch/windows_rdcw.zig") },
+    .{ .path = "fswatch/test_util.zig", .src = @embedFile("fswatch/test_util.zig") },
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
