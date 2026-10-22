@@ -355,6 +355,88 @@ fn register(b: *bench.Bench) !void {
     try registerFind(b);
     try registerLspSync(b, text);
     try registerDecorations(b, text);
+    try registerAiOverlays(b, text);
+}
+
+const AiBench = struct {
+    doc: *zg_editor.model.document.Document,
+    store: *deco.DecorationStore,
+    owner: deco.OwnerId,
+    pending: ?*zg_editor.model.decorations.pending.PendingChange = null,
+    ghost: ?*zg_editor.model.decorations.ghost.GhostText = null,
+
+    fn onChange(ctx: *anyopaque, ev: *const zg_editor.model.document.ChangeEvent) void {
+        const a: *AiBench = @ptrCast(@alignCast(ctx));
+        if (a.pending) |p| p.onChange(ev) catch unreachable;
+        if (a.ghost) |g| _ = g.onType(ev) catch unreachable;
+    }
+};
+
+fn registerAiOverlays(b: *bench.Bench, text: []const u8) !void {
+    const Document = zg_editor.model.document.Document;
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var store: deco.DecorationStore = .init(b.gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    var ab: AiBench = .{ .doc = doc, .store = &store, .owner = try store.registerOwner("ai", 0) };
+    _ = try doc.subscribe(.{ .ctx = &ab, .onChange = AiBench.onChange });
+    {
+        // 50 hunks spread over the second half of the document.
+        var edits: [50]buffer.piece_tree.Edit = undefined;
+        for (&edits, 0..) |*e, i| {
+            const st = doc.tree.lineStart(50_000 + i * 900);
+            e.* = .{ .range = .{ .start = st, .end = st + 10 }, .text = "agent text" };
+        }
+        var cs = try ChangeSet.fromEdits(b.gpa, doc.len(), &edits);
+        defer cs.deinit();
+        ab.pending = try zg_editor.model.decorations.pending.PendingChange.create(b.gpa, doc, &store, ab.owner, &cs, doc.version, "bench", .{ .agent = 1 }, .{});
+        defer {
+            ab.pending.?.destroy();
+            ab.pending = null;
+        }
+        try b.run("editor.pending.rebase_50_hunks", &ab, typeAtTop);
+    }
+    {
+        const ghost_owner = try store.registerOwner("ai.ghost", 0);
+        const at = doc.tree.lineStart(1000);
+        const g_text = "a" ** 4096;
+        var g = try zg_editor.model.decorations.ghost.GhostText.show(b.gpa, doc, &store, at, g_text, .{ .request_id = 1, .source = ghost_owner });
+        defer g.deinit();
+        ab.ghost = &g;
+        defer ab.ghost = null;
+        try b.run("editor.ghost.type_through", &ab, typeThrough);
+    }
+}
+
+/// A typed character at the top of the document; the pending change
+/// rebases its 50 hunks.
+fn typeAtTop(a: *AiBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, a.doc.len(), &.{.{ .range = .{ .start = 3, .end = 3 }, .text = "x" }}) catch unreachable;
+        a.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        a.doc.endFrame();
+    }
+}
+
+/// Typing the next character of a ghost (re-shown when it runs out).
+fn typeThrough(a: *AiBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const g = a.ghost.?;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        if (g.remaining().len < 2) {
+            g.text.appendNTimes(std.heap.smp_allocator, 'a', 4096) catch unreachable;
+        }
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, a.doc.len(), &.{.{ .range = .{ .start = g.at, .end = g.at }, .text = "a" }}) catch unreachable;
+        a.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        a.doc.endFrame();
+    }
 }
 
 const deco = zg_editor.model.decorations.store;

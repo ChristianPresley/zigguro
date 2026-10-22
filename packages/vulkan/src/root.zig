@@ -25,14 +25,27 @@ pub const shader_interface = @import("shaders/interface.zig");
 pub const pipeline = @import("pipeline/root.zig");
 /// Frames in flight, deferred destruction and damage tracking.
 pub const present = @import("present/root.zig");
+/// The Vulkan 2D backend.
+pub const VkRenderer = @import("r2d/vk/VkRenderer.zig");
+/// Draw batching of the Vulkan backend.
+pub const vk_batch = @import("r2d/vk/batch.zig");
 
-/// Creates the renderer for `opts`: Vulkan when chosen (or `auto`) and
-/// available, otherwise the software renderer. The Vulkan backend lands
-/// with E02.F06.S01.T02; until then `.vulkan` fails with
-/// `error.VulkanUnavailable` and `.auto` falls back to software.
+/// Creates the renderer for `opts`: `.vulkan` uses the Vulkan backend
+/// (headless targets for now; `error.VulkanUnavailable` without a usable
+/// driver or for other targets); `.auto` and `.software` use the software
+/// renderer until the Vulkan presentation targets land (E02.F04).
 pub fn createRenderer(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !r2d.Renderer {
     switch (opts.backend) {
-        .vulkan => return error.VulkanUnavailable,
+        .vulkan => {
+            const v = VkRenderer.create(gpa, io, opts) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    std.log.scoped(.zg_vulkan).info("Vulkan backend unavailable: {t}", .{err});
+                    return error.VulkanUnavailable;
+                },
+            };
+            return v.renderer();
+        },
         .auto, .software => {},
     }
     const s = try sw.SwRenderer.create(gpa, io, opts);
@@ -44,7 +57,11 @@ test "renderer: auto falls back to software" {
     const r = try createRenderer(std.testing.allocator, std.testing.io, .{ .target = .{ .headless = &sink } });
     defer r.deinit();
     try std.testing.expectEqual(r2d.Backend.software, r.backend());
-    try std.testing.expectError(error.VulkanUnavailable, createRenderer(std.testing.allocator, std.testing.io, .{ .target = .{ .headless = &sink }, .backend = .vulkan }));
+    // Vulkan either works (a driver is installed) or reports it is unavailable.
+    if (createRenderer(std.testing.allocator, std.testing.io, .{ .target = .{ .headless = &sink }, .backend = .vulkan })) |v| {
+        defer v.deinit();
+        try std.testing.expectEqual(r2d.Backend.vulkan, v.backend());
+    } else |err| try std.testing.expectEqual(error.VulkanUnavailable, err);
 }
 
 test {
@@ -59,6 +76,8 @@ test {
     _ = @import("shaders/gpu_test.zig");
     _ = pipeline;
     _ = present;
+    _ = vk_batch;
+    _ = @import("r2d/vk/gpu_test.zig");
     _ = shader_interface;
 }
 

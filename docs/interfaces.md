@@ -2354,3 +2354,101 @@ Unstable until the display map (E05.F05.S02) consumes it. Positions inside a
 replaced span collapse to its start; a left-biased edge then stays before the
 inserted text and a right-biased edge moves after it (`shrink`: start right,
 end left; `grow_both`: start left, end right).
+
+## zg_editor.model.decorations.ghost and .pending (GhostText, PendingChange)
+
+### Defined in
+`packages/editor/src/model/decorations/ghost.zig`, `pending.zig` (E05.F05).
+
+### Implemented by
+E05.F05.S01.T02 (headless part; `view/ai_overlays.zig` waits on the display map and E04).
+
+### Consumed by
+E12 (inline completions, agent edit review), E05.F08.S01.T02 (AgentEditSession pending policy).
+
+### Signature
+```zig
+pub const GhostMeta = struct { request_id: u64, source: OwnerId, replace_range: ?Range = null, style: StyleRef, origin: EditOrigin };
+pub const GhostText = struct {
+    at: u64,
+    pub fn show(gpa, doc: *Document, store: *DecorationStore, at: u64, text: []const u8, meta: GhostMeta) !GhostText;
+    pub fn onType(g, ev: *const ChangeEvent) !enum { kept, kept_shrunk, dismissed };  // typing-through, auto-closed pairs
+    pub fn accept(g, part: enum { all, word, line }) !u64;  // one edit (undo group); returns the caret
+    pub fn dismiss(g) void; pub fn remaining(g) []const u8; pub fn lines(g) SplitIterator; pub fn deinit(g) void;
+};
+pub const PendingHunk = struct { id: u32, old_range: Range, new_text: []const u8, intraline: []const DiffRange,
+    state: enum { pending, accepted, rejected, conflicted } };
+pub const PendingChange = struct {
+    pub fn create(gpa, doc, store, owner: OwnerId, cs: *const ChangeSet, base_version: u64, label, origin, styles) !*PendingChange;
+    pub fn hunks(p) []const PendingHunk; pub fn resolved(p) bool;
+    pub fn acceptHunk(p, id) !void; pub fn rejectHunk(p, id) void;   // error.Conflicted for conflicted hunks
+    pub fn acceptAll(p) !void; pub fn rejectAll(p) void;              // acceptAll: one edit of every pending hunk
+    pub fn onChange(p, ev: *const ChangeEvent) !void;                 // rebase via transform, user wins ties
+    pub fn destroy(p) void;
+};
+```
+
+### Threading
+UI thread only. Route the document's change events to `onType`/`onChange`
+after the decoration store's listener.
+
+### Ownership/lifetime
+Each ghost or pending change uses its own decoration owner and replaces that
+owner's decorations atomically. Hunk texts and intraline ranges live as long
+as the `PendingChange`.
+
+### Stability
+Unstable until E12 integrates them. A pending hunk whose old text the user
+edits becomes `conflicted` and is skipped by `acceptAll`.
+
+## zg_vulkan.VkRenderer and present.Readback (Vulkan 2D backend)
+
+### Defined in
+`packages/vulkan/src/r2d/vk/VkRenderer.zig`, `r2d/vk/batch.zig`
+(E02.F06.S01.T02); `packages/vulkan/src/present/Readback.zig`
+(E02.F04.S02.T02).
+
+### Implemented by
+E02.
+
+### Consumed by
+E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
+`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+
+### Signature
+```zig
+pub const VkRenderer = struct {
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless targets for now
+    pub fn createWithGpu(gpa, io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer;
+    pub fn destroy(self: *VkRenderer) void;
+    pub fn renderer(self: *VkRenderer) r2d.Renderer;
+    pub fn render(self, dl: *const DrawList) RenderError!FrameStats;              // no submit without damage
+    pub fn renderToImage(self, dl: *const DrawList, out: *CpuImage) RenderError!FrameStats;   // waits for the pixels
+};
+pub const Batch = struct { pipeline: enum(u1) { prim, text_subpixel }, first: u32, count: u32 };
+pub fn buildBatches(gpa, prims: []const Prim, clips: []const ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void;
+pub const Readback = struct {
+    pub const Sink = union(enum) { headless: *HeadlessSink, memory: *CpuImage };
+    pub fn init(gpu, mem, sched, sink, window) Readback;  pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) !Acquired;             // { image: *Texture, age: u32 }
+    pub fn recordCopy(self, fs: *FrameSlot, rects: []const PxRect) !void;   // before submit
+    pub fn present(self, fs: *const FrameSlot) void;          // after submit
+    pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
+};
+```
+Deviations from the spec text:
+- Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
+- The copy is split into `recordCopy` (before submit) and `present` (after submit).
+- The shm presenter sink, async delivery of copies over 1 MiB, layers (E02.F06.S03), the swapchain and dmabuf targets, GPU timing and async device creation are not implemented yet.
+- `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
+
+### Threading
+Render thread only.
+
+### Ownership/lifetime
+The renderer owns its device when made by `create`, not with
+`createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
+retires the slot with the next frame.
+
+### Stability
+Internal to E02 behind `r2d.Renderer`.
