@@ -61,6 +61,10 @@ pub const Options = struct {
     /// Refresh interval for timer pacing.
     refresh_ns: u64 = 16_666_667,
     notify: ?Notify = null,
+    /// The swapchain's present waiter (`VkRenderer.presentWaiter`) for
+    /// the present-wait modes; frames presented by the renderer must carry
+    /// present ids 1, 2, ... in `FrameStats.present_id`.
+    waiter: ?FramePacer.PresentWaiter = null,
 };
 
 const Slot = struct {
@@ -135,7 +139,11 @@ pub fn spawn(gpa: std.mem.Allocator, io: Io, renderer: Renderer, opts: Options) 
         .notify = opts.notify,
         .slots = .{ .{ .dl = .init(gpa) }, .{ .dl = .init(gpa) }, .{ .dl = .init(gpa) } },
         .ui = undefined,
-        .pacer = .init(opts.pacing, opts.refresh_ns),
+        .pacer = blk: {
+            var p: FramePacer = .init(opts.pacing, opts.refresh_ns);
+            p.waiter = opts.waiter;
+            break :blk p;
+        },
     };
     for (&self.slots) |*s| s.dl.layer_query = .{ .ctx = self, .isValid = queryValid };
     self.ui = &self.slots[0];
@@ -408,6 +416,8 @@ fn renderOne(self: *RenderThread, slot: *Slot) bool {
     };
     if (s.skipped) return true;
     self.frames += 1;
+    // Keep the pacer's ids in step with the presents (present-wait modes).
+    if (s.present_id != 0) _ = self.pacer.nextPresentId();
     self.pacer.frameDone(start, s.present_id != 0);
 
     var wake_ui = failed;
