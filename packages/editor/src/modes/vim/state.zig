@@ -28,6 +28,7 @@ const marks_mod = @import("marks.zig");
 const macros = @import("macros.zig");
 const search_mod = @import("search.zig");
 const repeat_mod = @import("repeat.zig");
+const confirm_mod = @import("confirm.zig");
 const ex = @import("ex.zig");
 
 const Allocator = std.mem.Allocator;
@@ -150,6 +151,8 @@ pub const VimState = struct {
     /// The command waiting for a `/` or `?` pattern (`d/foo<CR>`).
     cmd_saved: ?VimCommand = null,
     cmd_return: Mode = .normal,
+    /// `:s` with the `c` flag waiting for an answer; it takes every key.
+    confirm: ?*confirm_mod.Confirm = null,
     /// A message for the status line (`:s` counts, errors), until the next key.
     message: [160]u8 = undefined,
     message_len: usize = 0,
@@ -280,6 +283,7 @@ pub const VimState = struct {
         if (vs.doc) |d| if (vs.listener) |l| d.unsubscribe(l);
         vs.doc = null;
         vs.listener = null;
+        confirm_mod.cancel(vs);
         vs.group.cancel();
     }
 
@@ -409,6 +413,11 @@ pub const VimState = struct {
         vs.pending.recording = vs.recording != null;
         const inserting = vs.mode == .insert or vs.mode == .replace;
         if (inserting and vs.rep.capturing and !vs.rep.replaying) try vs.rep.addKey(vs.gpa, k);
+        if (vs.confirm != null) {
+            try confirm_mod.key(vs, k, host);
+            try vs.syncOut(host);
+            return .consumed;
+        }
         const r: mode_mod.KeyResult = switch (vs.mode) {
             .insert => try vs.insertKey(k, host),
             .replace => try vs.replaceKey(k, host),
