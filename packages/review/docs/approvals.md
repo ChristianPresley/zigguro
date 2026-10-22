@@ -53,7 +53,13 @@ whole item. A load restores them through `QueueSink.approvals`
 still pending comes back `expired`, since its waiter died with its
 process. A compaction does not keep approval records.
 
-Approvals are answered in the process that asked. Processes sharing a
+Approvals are answered in the process that asked, or from another one:
+`zg review approve`/`deny` reads the records as they are (`mirrorSink`)
+and appends the answer; the asking process, reading the journal with
+`remoteSink`, takes an answer to one of its own pending requests
+(`applyRemote`) and wakes the waiter. After a load,
+`journalRestored` records the requests it expired, so viewers stop
+showing them as waiting. Processes sharing a
 store use distinct `Options.id_base` values (the glue uses the store's
 process tag) so their ids do not collide.
 
