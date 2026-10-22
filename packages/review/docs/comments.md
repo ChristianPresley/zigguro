@@ -70,6 +70,14 @@ map })` moves each thread of that file and side:
    revision that brings the text back brings the thread back too.
 
 Threads on the base side change only when the base is rebased.
+
+`Follow` (`feedback/follow.zig`) calls `reanchor` for you. Its queue
+listener notes each changeset with threads that gets `updated`: after a
+rebase onto another changeset's apply, a partial apply, an undo, or a
+record from another process. `pump` then re-anchors that changeset's
+threads to its current proposed text (`new` side) and base (`base`
+side). In the IDE the review glue pumps it after each action, turn end
+and refresh.
 Re-anchoring 200 threads takes about 0.12 ms
 (`review.comments.reanchor_200`; the budget is 5 ms).
 
