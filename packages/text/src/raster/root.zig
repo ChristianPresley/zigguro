@@ -15,6 +15,10 @@ pub const embolden = @import("embolden.zig");
 pub const lcd = @import("lcd.zig");
 /// Signed distance fields.
 pub const sdf = @import("sdf.zig");
+/// PNG decoding for bitmap strikes.
+pub const png = @import("png.zig");
+/// Bitmap-strike (CBDT, sbix) glyph rendering.
+pub const bitmap_strikes = @import("bitmap_strikes.zig");
 /// `Rasterizer`, `Bitmap`, `RasterParams` and pixel placement.
 pub const rasterizer = @import("rasterizer.zig");
 
@@ -32,4 +36,6 @@ test {
     _ = @import("coverage_test.zig");
     _ = @import("style_test.zig");
     _ = @import("sdf_test.zig");
+    _ = @import("png_test.zig");
+    _ = @import("strike_test.zig");
 }
