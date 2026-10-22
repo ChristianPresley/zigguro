@@ -91,6 +91,80 @@ pub const Finder = struct {
     }
 };
 
+/// An ASCII case-insensitive needle: the same packed-pair filter, with
+/// letters compared after folding (`b | 0x20`), which maps exactly `A`/`a`
+/// to `a` for every letter.
+pub const FoldFinder = struct {
+    /// Lower-cased needle (borrowed; must outlive the finder).
+    needle: []const u8,
+    off1: usize,
+    off2: usize,
+
+    /// Prepares `needle`, which must already be ASCII lower-case.
+    pub fn init(needle: []const u8) FoldFinder {
+        const f = Finder.init(needle);
+        return .{ .needle = needle, .off1 = f.off1, .off2 = f.off2 };
+    }
+
+    fn foldMask(b: u8) u8 {
+        return if (std.ascii.isLower(b)) 0x20 else 0;
+    }
+
+    /// The first case-insensitive occurrence starting at `>= from`, or null.
+    pub fn find(f: *const FoldFinder, hay: []const u8, from: usize) ?usize {
+        const n = f.needle;
+        if (n.len == 0) return if (from <= hay.len) from else null;
+        if (n.len > hay.len) return null;
+        const last_start = hay.len - n.len;
+        var p = from;
+        const v1: Vec = @splat(n[f.off1]);
+        const v2: Vec = @splat(n[f.off2]);
+        const o1: Vec = @splat(foldMask(n[f.off1]));
+        const o2: Vec = @splat(foldMask(n[f.off2]));
+        while (p + V - 1 <= last_start) : (p += V) {
+            const a: Vec = hay[p + f.off1 ..][0..V].*;
+            const b: Vec = hay[p + f.off2 ..][0..V].*;
+            var m: Mask = @as(Mask, @bitCast((a | o1) == v1)) & @as(Mask, @bitCast((b | o2) == v2));
+            while (m != 0) {
+                const k = @ctz(m);
+                const s = p + k;
+                if (std.ascii.eqlIgnoreCase(hay[s..][0..n.len], n)) return s;
+                m &= m - 1;
+            }
+        }
+        while (p <= last_start) : (p += 1) {
+            if (std.ascii.eqlIgnoreCase(hay[p..][0..n.len], n)) return p;
+        }
+        return null;
+    }
+};
+
+test "memmem: fold finder agrees with a naive search" {
+    var prng: std.Random.DefaultPrng = .init(12);
+    const rnd = prng.random();
+    const alpha = "aAbB-_[{";
+    var hay_buf: [400]u8 = undefined;
+    var needle_buf: [12]u8 = undefined;
+    for (0..2000) |_| {
+        const hn = rnd.intRangeAtMost(usize, 0, hay_buf.len);
+        for (hay_buf[0..hn]) |*b| b.* = alpha[rnd.uintLessThan(usize, alpha.len)];
+        const nn = rnd.intRangeAtMost(usize, 0, needle_buf.len);
+        for (needle_buf[0..nn]) |*b| b.* = std.ascii.toLower(alpha[rnd.uintLessThan(usize, alpha.len)]);
+        const hay = hay_buf[0..hn];
+        const needle = needle_buf[0..nn];
+        const from = rnd.intRangeAtMost(usize, 0, hn);
+        var want: ?usize = null;
+        var i = from;
+        while (i + nn <= hn) : (i += 1) if (std.ascii.eqlIgnoreCase(hay[i..][0..nn], needle)) {
+            want = i;
+            break;
+        };
+        if (nn == 0) want = from;
+        const f = FoldFinder.init(needle);
+        try std.testing.expectEqual(want, f.find(hay, from));
+    }
+}
+
 test "memmem: agrees with std.mem.indexOfPos" {
     var prng: std.Random.DefaultPrng = .init(11);
     const rnd = prng.random();
