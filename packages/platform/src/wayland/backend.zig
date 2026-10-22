@@ -852,6 +852,9 @@ pub const WaylandBackend = struct {
                 const y: i32 = @intCast(@divFloor(@as(i64, t.at.y) * scale.unit, s120));
                 try wl.xdg_toplevel.showWindowMenu(c, w.toplevel, b.seat_id orelse return error.Unsupported, b.seat.last_button_serial, x, y);
             },
+            // Only the compositor places Wayland windows, and no protocol
+            // keeps one above others.
+            .set_position, .set_always_on_top => return error.Unsupported,
             .set_min_size => |t| {
                 const w = try b.lookup(t.win);
                 const m = scale.logicalSize(t.size, w.effectiveScale120());
@@ -3144,6 +3147,16 @@ test "portal: without a session bus, dialogs and URIs are unsupported" {
     const p = rig.b.platform();
     try testing.expectError(error.Unsupported, p.submit(.{ .open_dialog = .{ .request = 1, .kind = .open_file } }));
     try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "https://ziglang.org" }));
+}
+
+test "placement: set_position and set_always_on_top are unsupported" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{}, &.{}, &all_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    try testing.expectError(error.Unsupported, p.submit(.{ .set_position = .{ .win = win, .pos = .{ .x = 1, .y = 2 } } }));
+    try testing.expectError(error.Unsupported, p.submit(.{ .set_always_on_top = .{ .win = win, .on = true } }));
 }
 
 test "xdg-activation: activate with and without a token; request_attention" {

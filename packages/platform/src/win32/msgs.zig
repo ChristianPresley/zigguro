@@ -105,7 +105,15 @@ pub const WS = struct {
     pub const CLIPCHILDREN: u32 = 0x02000000;
     /// WS_EX_APPWINDOW.
     pub const EX_APPWINDOW: u32 = 0x00040000;
+    /// WS_EX_TOPMOST.
+    pub const EX_TOPMOST: u32 = 0x00000008;
 };
+
+/// `HWND_TOPMOST`: the `SetWindowPos` z-order target that keeps a
+/// window above others.
+pub const HWND_TOPMOST: isize = -1;
+/// `HWND_NOTOPMOST`: the target that ends always-on-top.
+pub const HWND_NOTOPMOST: isize = -2;
 
 /// `CW_USEDEFAULT`.
 pub const CW_USEDEFAULT: i32 = @bitCast(@as(u32, 0x80000000));
