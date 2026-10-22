@@ -404,3 +404,84 @@ fields are not surfaced (`error.IssuerMismatch`).
 
 ### Stability
 Experimental until PR #1199 merges.
+
+## zg_platform.Platform and Event
+
+### Defined in
+`packages/platform/src/api/platform.zig` and `api/event.zig` (E01.F01.S01.T01).
+
+### Implemented by
+The headless backend (E01.F01.S02.T01), Win32 (E01.F02), Wayland (E01.F04)
+and X11 (E01.F05). Each runs `zg_platform.conformance`.
+
+### Consumed by
+E04 (GUI toolkit), E02 (renderer, through `surfaceTarget`/`cpuPresenter`),
+E05, E06, E12, E13.
+
+### Signature
+```zig
+pub const Platform = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable, // createWindow, destroyWindow, submit, surfaceTarget, cpuPresenter,
+                           // native, release, monitors, pollEvents, waitEvents, wake, deinit
+    pub fn pollEvents(self: Platform, out: []Event) usize;      // UI thread; never blocks
+    pub fn waitEvents(self: Platform, deadline_ns: ?u64) void; // UI thread; blocks on Wake
+    pub fn wake(self: Platform) void;                           // any thread
+    pub fn submit(self: Platform, cmd: Command) Error!void;     // any thread; non-blocking
+    pub fn fromImpl(comptime T: type, impl: *T) Platform;
+};
+pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;
+pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
+pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
+```
+
+### Threading
+`pollEvents` and `waitEvents` are UI-thread only. `submit` and `wake` may
+be called from any thread. Backends own a platform thread that produces
+events and runs commands.
+
+### Ownership/lifetime
+A `PayloadSlice` in an event stays valid until the next `pollEvents`; one
+with `large` set stays valid until passed to `Platform.release`. `submit`
+copies every slice in a `Command` before returning.
+
+### Stability
+Experimental until the headless backend (E01.F01.S02.T01) merges.
+
+## zg_platform.surface.Presenter
+
+### Defined in
+`packages/platform/src/api/surface.zig` (types from the E01.F04 design,
+declared in E01.F01.S01.T01).
+
+### Implemented by
+Wayland (E01.F04.S04), X11 (E01.F05.S03.T02), the Win32 CPU presenter
+(E01.F02.S05.T01) and headless (E01.F01.S02.T01).
+
+### Consumed by
+E02 (exportable image ring, software renderer).
+
+### Signature
+```zig
+pub const PresenterVTable = struct {
+    drmDevice: *const fn (*anyopaque) ?DrmDevice,
+    formats: *const fn (*anyopaque, out: []FormatModifier) usize,
+    syncMode: *const fn (*anyopaque) SyncMode,
+    importBuffer: *const fn (*anyopaque, desc: *const BufferDesc) anyerror!BufferHandle,
+    present: *const fn (*anyopaque, buf: BufferHandle, damage: []const PxRect, acquire: SyncPoint, ack: ?ConfigureAck) anyerror!void,
+    releaseBuffer: *const fn (*anyopaque, buf: BufferHandle) void,
+    pollReleased: *const fn (*anyopaque, out: []BufferHandle) usize, // any thread
+    allocCpuBuffer: *const fn (*anyopaque, w: u32, h: u32, fourcc: u32) anyerror!CpuBuffer,
+};
+```
+
+### Threading
+`pollReleased` may be called from any thread; the rest from E02's render
+thread for that window.
+
+### Ownership/lifetime
+`importBuffer` does not take ownership of plane fds. A `CpuBuffer` from
+`allocCpuBuffer` is owned by the presenter until `releaseBuffer`.
+
+### Stability
+Experimental until the first OS presenter merges.
