@@ -1,0 +1,8 @@
+1| variable:now operator:= punctuation:$ punctuation.bracket:( function:date punctuation.bracket:)
+2| variable:files operator:= punctuation:` function:ls punctuation:`
+3| function.builtin:echo string:" punctuation:$ punctuation.bracket:( function:basename string:" punctuation:$ punctuation.bracket:( function.builtin:pwd punctuation.bracket:) string:" punctuation.bracket:) string:"
+4| variable:result operator:= punctuation:$ punctuation.bracket:(
+5| function.builtin:cd operator:&&
+6| function:ls
+7| punctuation.bracket:)
+8| function:diff operator:<( function:sort punctuation.bracket:) operator:<( function:sort punctuation.bracket:)

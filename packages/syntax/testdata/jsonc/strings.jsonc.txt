@@ -1,0 +1,5 @@
+{
+  "url": "https://example.com/a//b",
+  "glob": "/*.ts",
+  "esc": "line\nnext \"q\""
+}

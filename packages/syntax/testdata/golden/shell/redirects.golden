@@ -1,0 +1,6 @@
+1| function:cmd operator:> number:2 operator:>& number:1
+2| function:cmd operator:>> number:2 operator:>
+3| function:cmd operator:&>
+4| function:cmd operator:< operator:>
+5| function.builtin:exec number:3 operator:<>
+6| function:cmd operator:>|

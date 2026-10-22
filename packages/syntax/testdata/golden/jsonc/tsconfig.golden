@@ -1,0 +1,9 @@
+1| punctuation.bracket:{
+2| property:"compilerOptions" punctuation.delimiter:: punctuation.bracket:{
+3| property:"target" punctuation.delimiter:: string:"ES2022" punctuation.delimiter:,
+4| property:"strict" punctuation.delimiter:: constant.builtin:true punctuation.delimiter:,
+5| comment:/* "sourceMap": true, */
+6| property:"paths" punctuation.delimiter:: punctuation.bracket:{ property:"@/*" punctuation.delimiter:: punctuation.bracket:[ string:"src/*" punctuation.bracket:] punctuation.bracket:}
+7| punctuation.bracket:} punctuation.delimiter:,
+8| property:"include" punctuation.delimiter:: punctuation.bracket:[ string:"src" punctuation.bracket:]
+9| punctuation.bracket:}

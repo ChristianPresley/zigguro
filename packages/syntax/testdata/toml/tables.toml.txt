@@ -1,0 +1,8 @@
+[package]
+name = "zigguro"
+
+[dependencies.serde]
+version = "1"
+
+[ spaced . "quoted.part" ]
+x = 1

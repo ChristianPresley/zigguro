@@ -1,0 +1,7 @@
+1| punctuation.bracket:{
+2| property:"quote" punctuation.delimiter:: string:"say  string.escape:\" string:hi string.escape:\" string:" punctuation.delimiter:,
+3| property:"path" punctuation.delimiter:: string:"C: string.escape:\\ string:temp string.escape:\\ string:file" punctuation.delimiter:,
+4| property:"unicode" punctuation.delimiter:: string:"caf string.escape:\u00e9 string:  string.escape:\ud83d\ude00 string:" punctuation.delimiter:,
+5| property:"controls" punctuation.delimiter:: string:"tab string.escape:\t string:here string.escape:\n string:newline" punctuation.delimiter:,
+6| property:"key \"escaped\"" punctuation.delimiter:: number:1
+7| punctuation.bracket:}

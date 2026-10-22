@@ -1,0 +1,11 @@
+1| keyword.control:case string:" variable.builtin:$1 string:" keyword.control:in
+2| operator:| operator:)
+3| function.builtin:echo
+4| punctuation.delimiter:;;
+5| operator:)
+6| function.builtin:echo punctuation.delimiter:;;
+7| operator:)
+8| function.builtin:echo string:"usage" operator:>& number:2
+9| keyword.control:exit number:1
+10| punctuation.delimiter:;;
+11| keyword.control:esac

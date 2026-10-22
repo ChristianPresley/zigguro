@@ -1,0 +1,5 @@
+1| punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.delimiter:, number:3 punctuation.bracket:]
+2| punctuation.bracket:[ string:"a" punctuation.delimiter:, string:"b" punctuation.delimiter:, string:"c" punctuation.bracket:]
+3| punctuation.bracket:[ punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.bracket:] punctuation.delimiter:, punctuation.bracket:[ number:3 punctuation.delimiter:, number:4 punctuation.bracket:] punctuation.bracket:]
+4| punctuation.bracket:[ punctuation.bracket:]
+5| punctuation.bracket:[ punctuation.bracket:{ property:"k" punctuation.delimiter:: number:1 punctuation.bracket:} punctuation.delimiter:, punctuation.bracket:{ property:"k" punctuation.delimiter:: number:2 punctuation.bracket:} punctuation.bracket:]

@@ -1,0 +1,6 @@
+cmd > out.txt 2>&1
+cmd >> log 2> err
+cmd &> all.log
+cmd < in > out
+exec 3<> /dev/tcp/host/80
+cmd >| forced

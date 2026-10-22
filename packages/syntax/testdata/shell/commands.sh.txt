@@ -1,0 +1,5 @@
+ls -la /tmp
+grep -rn "pattern" src/ | sort | uniq -c
+make -j 4 && make install || echo failed
+cd "$HOME" ; pwd &
+./configure --prefix=/usr

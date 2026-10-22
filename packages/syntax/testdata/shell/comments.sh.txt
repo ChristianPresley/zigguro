@@ -1,0 +1,6 @@
+#!/bin/bash
+# full line comment
+echo hi # trailing comment
+echo a#b c# d
+echo "# not a comment" '# nor this'
+x=1 #comment

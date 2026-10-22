@@ -1,0 +1,6 @@
+1| punctuation.bracket:{
+2| property:"a" punctuation.delimiter:: punctuation.bracket:{
+3| comment:// inner
+4| property:"b" punctuation.delimiter:: punctuation.bracket:[ punctuation.bracket:{ property:"c" punctuation.delimiter:: punctuation.bracket:[ number:1 punctuation.delimiter:, comment:/* x */ number:2 punctuation.bracket:] punctuation.bracket:} punctuation.bracket:] punctuation.delimiter:,
+5| punctuation.bracket:} punctuation.delimiter:,
+6| punctuation.bracket:}

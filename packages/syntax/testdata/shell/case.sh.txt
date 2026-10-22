@@ -1,0 +1,11 @@
+case "$1" in
+  start|run)
+    echo starting
+    ;;
+  stop)
+    echo stopping ;;
+  *)
+    echo "usage" >&2
+    exit 1
+    ;;
+esac

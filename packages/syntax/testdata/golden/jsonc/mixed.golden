@@ -1,0 +1,2 @@
+1| comment:// leading comment
+2| punctuation.bracket:[ number:1 punctuation.delimiter:, string:"two" punctuation.delimiter:, constant.builtin:true punctuation.delimiter:, constant.builtin:null punctuation.delimiter:, punctuation.bracket:{ property:"k" punctuation.delimiter:: number:-3.5e2 punctuation.bracket:} punctuation.delimiter:, comment:/* end */ punctuation.bracket:]

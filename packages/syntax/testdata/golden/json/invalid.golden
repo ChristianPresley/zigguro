@@ -1,0 +1,6 @@
+1| punctuation.bracket:{
+2| invalid:'single' punctuation.delimiter:: number:1 punctuation.delimiter:,
+3| invalid:bare punctuation.delimiter:: number:2 punctuation.delimiter:,
+4| property:"trailing" punctuation.delimiter:: number:3 punctuation.delimiter:,
+5| punctuation.bracket:}
+6| invalid:@ invalid:# invalid:;
