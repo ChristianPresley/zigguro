@@ -1,0 +1,442 @@
+[
+  {
+    "name": "blob-empty",
+    "kind": "blob",
+    "id": "e6609ec0ac29d59d7500e0382b77183ff1ab84b77cc651c2df7032fbfab73a3b",
+    "value": {
+      "bytes": ""
+    }
+  },
+  {
+    "name": "blob-hello",
+    "kind": "blob",
+    "id": "f3315b96b4eda040f07a9d384a5c00724667a3ca54328a14f217d50bb8f4a717",
+    "value": {
+      "bytes": "hello, world\n"
+    }
+  },
+  {
+    "name": "blob-binary",
+    "kind": "blob",
+    "id": "69c8031af44805789df732746fa48268e23159fe63245a74c1b7ece1fe1b612b",
+    "value": {
+      "bytes": [
+        0,
+        1,
+        2,
+        255,
+        254
+      ]
+    }
+  },
+  {
+    "name": "text-utf8",
+    "kind": "text",
+    "id": "19ff67e118fff56706b3f9cbed6c5c0a446764ad4e7fcfff8579a2ceb9c3edff",
+    "value": {
+      "bytes": "zigguro — ziggurat\n"
+    }
+  },
+  {
+    "name": "tree-empty",
+    "kind": "tree",
+    "id": "5085588309f702aa50a04790dd26bd3b26288d2befcff402918e5119c4ff7f1f",
+    "value": {
+      "tree": {
+        "entries": []
+      }
+    }
+  },
+  {
+    "name": "tree-files",
+    "kind": "tree",
+    "id": "ee4b84fdfe22fc90624747653b84869df4fa934bfcaa4e5b4813d81cd5517d99",
+    "value": {
+      "tree": {
+        "entries": [
+          {
+            "name": "README.md",
+            "kind": "file",
+            "id": "45ec60eeee7a16d4689de2557b5d180120cbc2111a5e5d50fc16af2efc76f0a3"
+          },
+          {
+            "name": "build.zig",
+            "kind": "file",
+            "id": "b8f0aee4493c132f2977f379881823645e22b5e1f5e2f445eb75791d9947065c"
+          },
+          {
+            "name": "run.sh",
+            "kind": "executable",
+            "id": "8f9a3a9d50354d0033e3f57b617197a71a7642046bf0220c7caca75845222227"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tree-git-order",
+    "kind": "tree",
+    "id": "17f75a285425392d2a8623dc97a4ec9aa8ed5e5eb54599c96499cb096bbfe948",
+    "value": {
+      "tree": {
+        "entries": [
+          {
+            "name": "a-b",
+            "kind": "file",
+            "id": "33f69ceb5b08b893f8800501fdbd682d7e5b85bbf570c60e2fd9ac7a5342a61a"
+          },
+          {
+            "name": "a.b",
+            "kind": "file",
+            "id": "77be64e924eb41fb3a23741b354e5e08a1b937502282a45ae798003876167d21"
+          },
+          {
+            "name": "a",
+            "kind": "tree",
+            "id": "b85919d001832f6e5918af1567b6eafc59a02fb1d7c9432f43a0928bf991b3cd"
+          },
+          {
+            "name": "a0",
+            "kind": "file",
+            "id": "7702b31b134c3f3c2aa3826199891edc38a7870343df3df0cde7e2f7c2c08681"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tree-all-kinds",
+    "kind": "tree",
+    "id": "6aec1e56dad949840bae6b70102a232f01703d71d060a1c66b63c835265635ef",
+    "value": {
+      "tree": {
+        "entries": [
+          {
+            "name": "conflicted.txt",
+            "kind": "conflict_marker_file",
+            "id": "88120228084fddaa8bdbe1fe5c5f0d96d5f154380d1a3bd0ca0cac5ee4f1a4de"
+          },
+          {
+            "name": "exe",
+            "kind": "executable",
+            "id": "842824bc091d066531cfb275c125db53305f3356358ea7f2cfccac5644385672"
+          },
+          {
+            "name": "file",
+            "kind": "file",
+            "id": "555a07b68ed5f8face9dd91e5779254992baa7e1c9209f6cc0b34b6fdd996b46"
+          },
+          {
+            "name": "link",
+            "kind": "symlink",
+            "id": "0081edf2d37df9223eb108b76fd41da249aa621c08e0931e9f2942290c2ab53b"
+          },
+          {
+            "name": "sub",
+            "kind": "tree",
+            "id": "982f9f14540bbfc008a4d9d56cf8ae2bb54b46e2aeaabb442a151c1e96a314b6"
+          },
+          {
+            "name": "vendor",
+            "kind": "gitlink",
+            "id": "82adb763ba2d3a4819b5d79d44a0b7ec283682efa039fca49dc2483d47ce3339"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tree-unicode-names",
+    "kind": "tree",
+    "id": "913823b51cb4ec7bea49d574980452ac5c732884bc352ccabebe02686ae14f17",
+    "value": {
+      "tree": {
+        "entries": [
+          {
+            "name": "CON",
+            "kind": "file",
+            "id": "889273c1d235384bc03f0917468187c94e4a0d444e042d3137307d772acbaa5d"
+          },
+          {
+            "name": "café",
+            "kind": "file",
+            "id": "fa1c97cb279bb393770f9d765dc0c524a021777074d389892af6290f72ee26da"
+          },
+          {
+            "name": "日本",
+            "kind": "tree",
+            "id": "1f20b2be8fad807e0d6a9e8c5991e06d766ac38cf0b423a657ea7379630e9ee3"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "change-root",
+    "kind": "change",
+    "id": "fb8ca38c098ac5350229eaa38d94713ba4191cb6920156255938033ff9c6019b",
+    "value": {
+      "change": {
+        "parents": [],
+        "tree_terms": [
+          "65a2737cb6be164be998b5c877a4bafa0a67840cacdaba33fbad5983ebc43882"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "description": "",
+        "provenance": null,
+        "extra": [],
+        "sig": null
+      }
+    }
+  },
+  {
+    "name": "change-described",
+    "kind": "change",
+    "id": "8d7958b6eefdd950dce2a15dfbd5caf29724d143cfe3d1fd464679b44ff58be6",
+    "value": {
+      "change": {
+        "parents": [
+          "43a7255aba00f0677ef8d8fd50bda67eaf49014d23c74ca69a73911def320470"
+        ],
+        "tree_terms": [
+          "65a2737cb6be164be998b5c877a4bafa0a67840cacdaba33fbad5983ebc43882"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Bob",
+          "email": "bob@example.org",
+          "time_ms": 1761094800123,
+          "tz_offset_min": -300
+        },
+        "description": "feat: add the store\n\nWith a body.\n",
+        "provenance": null,
+        "extra": [],
+        "sig": null
+      }
+    }
+  },
+  {
+    "name": "change-octopus",
+    "kind": "change",
+    "id": "189676e1ba003b03b4d593f3734c2d375b89b8c6eb615fb5894fa8cddbc75040",
+    "value": {
+      "change": {
+        "parents": [
+          "86a5de7bfc32aad23260500eebd83e95b1c644f7a3f42cb067a905f03822e341",
+          "3cd82d1e80bc4615c0fd11f073d658a727a30e866cc6e7f9d7c4f4acbd9d18c2",
+          "2df5f297e0e8bc4ce37bfc1362fc2a94b9b15918efe35c1bb13e0f677f29254b"
+        ],
+        "tree_terms": [
+          "65a2737cb6be164be998b5c877a4bafa0a67840cacdaba33fbad5983ebc43882"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Bob",
+          "email": "bob@example.org",
+          "time_ms": 1761094800123,
+          "tz_offset_min": -300
+        },
+        "description": "feat: add the store\n\nWith a body.\n",
+        "provenance": null,
+        "extra": [],
+        "sig": null
+      }
+    }
+  },
+  {
+    "name": "change-conflicted",
+    "kind": "change",
+    "id": "70143c290dca68e28f385328da810f500b76e201bedd2b2858d17b0e58024993",
+    "value": {
+      "change": {
+        "parents": [
+          "461524ece9b4d91dc92922ad1f4a6b95f7c701ffd6c0bb0b35b8bdf81c11fc46",
+          "e380dbe827f10a7a9589d69f5e49a9f4255d26f970871970aafc2c4c110754aa"
+        ],
+        "tree_terms": [
+          "a326014e283c245225b253e61db1274c05fd64b406c20e9f8d200f97cbfb9c9a",
+          "8b11d02699e4f0bce2e9bb8e64391b6c1b3142a8975850ac201af7cceca01283",
+          "1a426a18ba0ebef6e6d3b124621f1376f5e14afbd25947ae3abebe6f421050a9"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "description": "",
+        "provenance": null,
+        "extra": [],
+        "sig": null
+      }
+    }
+  },
+  {
+    "name": "change-rewritten-with-provenance",
+    "kind": "change",
+    "id": "8bad208bd893edf22ab584cb19e4b4273e4abd9a056932e372b514483ce7add7",
+    "value": {
+      "change": {
+        "parents": [
+          "43a7255aba00f0677ef8d8fd50bda67eaf49014d23c74ca69a73911def320470"
+        ],
+        "tree_terms": [
+          "65a2737cb6be164be998b5c877a4bafa0a67840cacdaba33fbad5983ebc43882"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [
+          "5cb300d6686a711f320f21e586eb5b278e7a08c126a0dce681e34c82124e9a83",
+          "c62ca5ab03f6c292f1588acbd49fc115047ef425f182ffbb0a61c5f7c396f9b0"
+        ],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "description": "",
+        "provenance": "8e76806af9c3f0c4c831909afb86f5597eea34fc34ee314ff8bd9dfa6f6b95da",
+        "extra": [],
+        "sig": null
+      }
+    }
+  },
+  {
+    "name": "change-extra-and-sig",
+    "kind": "change",
+    "id": "04d9f99477764f0cbafd8f2cbac8961bbcd8ac982b8f0265abf7d91922d8d2e8",
+    "value": {
+      "change": {
+        "parents": [
+          "43a7255aba00f0677ef8d8fd50bda67eaf49014d23c74ca69a73911def320470"
+        ],
+        "tree_terms": [
+          "65a2737cb6be164be998b5c877a4bafa0a67840cacdaba33fbad5983ebc43882"
+        ],
+        "change_id": "zzyyxxwwvvuuttssrrqqppoonnmmllkk",
+        "predecessors": [],
+        "author": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "committer": {
+          "name": "Alice Example",
+          "email": "alice@example.com",
+          "time_ms": 1761091200000,
+          "tz_offset_min": 120
+        },
+        "description": "",
+        "provenance": null,
+        "extra": [
+          {
+            "key": "gpgsig-mode",
+            "value": "none"
+          },
+          {
+            "key": "x-lane",
+            "value": "agent-3"
+          }
+        ],
+        "sig": {
+          "format": "sshsig",
+          "data": "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"
+        }
+      }
+    }
+  },
+  {
+    "name": "chunked-two",
+    "kind": "chunked_blob",
+    "id": "6b93f83a7b9f2b9ae56b2793aa7751a2a06f7115122fc5a39cfbbb47e21ecaac",
+    "value": {
+      "chunked_blob": {
+        "total_size": 1748576,
+        "chunks": [
+          {
+            "id": "64aa8ef2687a982983363eb1c1d181bcf0a5f4e0551fbe3930b9632aaa5c4440",
+            "size": 1048576
+          },
+          {
+            "id": "ed0d76eadc0cd283dde5e7d5a4128acba46e45128c9ca42f0f797f0b75809f40",
+            "size": 700000
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "operation-opaque",
+    "kind": "operation",
+    "id": "b99f9a2c339fd0b9bfe94db25a87abbab93238c6c328309d1435adb2136032b0",
+    "value": {
+      "bytes": "\u0001op"
+    }
+  },
+  {
+    "name": "view-opaque",
+    "kind": "view",
+    "id": "f2cea583812042072b8decb88b610e9486628c17f117f4b1bd78233e223a9529",
+    "value": {
+      "bytes": "\u0001view"
+    }
+  },
+  {
+    "name": "attribution-opaque",
+    "kind": "attribution",
+    "id": "0c3b18e15a705664f13ab5eabb9d636281b3268ae9b5e94a6ae1b34c54ed0363",
+    "value": {
+      "bytes": "\u0001attr"
+    }
+  },
+  {
+    "name": "prov-record-opaque",
+    "kind": "prov_record",
+    "id": "8043375f0db48c0e070d0e2711a2bfcde50c9ecf152b07507fb94705299e5875",
+    "value": {
+      "bytes": "\u0001prov"
+    }
+  }
+]
