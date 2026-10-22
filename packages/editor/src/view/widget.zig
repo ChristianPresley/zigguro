@@ -340,7 +340,8 @@ pub const Editor = struct {
         return .{ @intCast(a), @intCast(b) };
     }
 
-    /// Draws a row's text in runs of one colour, expanding tabs.
+    /// Draws a row's text in runs of one colour, expanding tabs; GFM
+    /// `~~strikethrough~~` gets a line through it.
     fn drawRow(pc: *PaintCx, v: *const EditorView, s: []const u8, toks: []const zg_syntax.Token, palette: *const colors.Palette, fg: Color, pen: Vec2) void {
         const st = v.textStyle();
         var ti: usize = 0;
@@ -348,7 +349,8 @@ pub const Editor = struct {
         while (i < s.len) {
             // The run: up to the next token start or tab.
             while (ti + 1 < toks.len and toks[ti + 1].start <= i) ti += 1;
-            const color = if (ti < toks.len and toks[ti].start <= i) colors.colorOfNamed(palette, v.hl_names, toks[ti].hl, fg) else fg;
+            const in_tok = ti < toks.len and toks[ti].start <= i;
+            const color = if (in_tok) colors.colorOfNamed(palette, v.hl_names, toks[ti].hl, fg) else fg;
             var j = i;
             const next_tok: usize = if (ti + 1 < toks.len) toks[ti + 1].start else s.len;
             if (s[i] == '\t') {
@@ -356,7 +358,14 @@ pub const Editor = struct {
                 continue;
             }
             while (j < s.len and j < @max(next_tok, i + 1) and s[j] != '\t') j += 1;
-            pc.textLine(s[i..j], st, color, .{ .x = pen.x + v.xInLine(s, i), .y = pen.y });
+            const x0 = pen.x + v.xInLine(s, i);
+            pc.textLine(s[i..j], st, color, .{ .x = x0, .y = pen.y });
+            if (in_tok and toks[ti].hl == .markup_strikethrough) {
+                const x1 = pen.x + v.xInLine(s, j);
+                // Through the middle of the lowercase letters.
+                const m = pc.text_sys.metrics(st);
+                pc.rect(.{ .x = x0, .y = @floor(pen.y - m.ascent * 0.3), .w = x1 - x0, .h = 1 }, color, .{});
+            }
             i = j;
         }
     }
