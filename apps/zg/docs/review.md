@@ -90,7 +90,24 @@ described in [review-json.md](review-json.md).
 
 - `comment`, `threads`, `fix`, `approvals`, `approve` and `deny` arrive
   with review comments and approvals (E12.F05); today they exit 1.
-- `zg agent --review interactive|defer|policy` and the `review` events of
-  `zg.stream/1`.
+- `zg agent --review policy` and the `review` events of `zg.stream/1`.
 - Refusing hunks of a file zigguro has open with unsaved edits needs the
   IDE's `doc_open` records.
+
+## zg agent --review
+
+`zg agent` sends its file edits through the same review glue as the IDE:
+
+- `--review defer` (the default): each turn's edits become one pending
+  changeset; nothing is written. The agent reads its own pending changes
+  back. At the end of the run the ids are printed on stderr, for
+  `zg review show ID --patch` and `zg review accept ID --all`.
+- `--review interactive`: on a terminal, each pending changeset of the
+  run is offered at the end: `a` accept, `r` reject, `v` view (through
+  `$PAGER` when set), `s` skip. Without a terminal it behaves as `defer`.
+- `--review apply`: edits are written at once and recorded as
+  auto-applied changesets (undoable from the IDE's review panel).
+
+The store is created by the first edit, so a run that edits nothing
+leaves no `.zigguro/review/` behind. The IDE takes in what the CLI decided
+while its review panel is open.
