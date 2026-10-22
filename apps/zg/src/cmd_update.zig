@@ -57,12 +57,12 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const []
     defer env.deinit();
 
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const state_dir = zg_crash.paths.stateDir(min.environ, &state_buf) orelse {
+    const state_dir = zg_crash.paths.stateDirAt(io, min.environ, &state_buf) orelse {
         try out.writeAll("zg update: no state directory (set ZIGGURO_STATE_DIR)\n");
         return 1;
     };
     const exe_dir = try std.process.executableDirPathAlloc(io, arena);
-    const layout = zg_update.layout.detect(exe_dir, builtin.os.tag);
+    const layout = zg_update.layout.detectInstall(io, exe_dir, builtin.os.tag, zg_release.current.distro);
 
     if (std.mem.eql(u8, sub, "status")) return status(arena, io, out, layout, state_dir, json);
     if (std.mem.eql(u8, sub, "apply")) return apply(arena, io, out, layout);

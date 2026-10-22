@@ -20,5 +20,6 @@ test {
     _ = @import("review/approval_card.zig");
     _ = @import("review/approvals_view.zig");
     _ = @import("startup/early_update_check.zig");
+    _ = @import("startup/install_kind.zig");
     _ = @import("workbench.zig");
 }
