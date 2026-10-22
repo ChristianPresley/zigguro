@@ -532,3 +532,54 @@ OS; see the format comment in `trace.zig`.
 ### Stability
 Experimental until PR #1199 merges. The trace `version` changes whenever
 `Event` changes.
+
+## zg_platform.dbus.Bus
+
+### Defined in
+`packages/platform/src/dbus/conn.zig`, with `marshal.zig`, `variant.zig`,
+`message.zig`, `signature.zig` and `auth.zig` (E01.F07.S01.T01).
+
+### Implemented by
+E01.F07.S01.T01.
+
+### Consumed by
+E01 portals (FileChooser, OpenURI, Settings), E13 notifications, E16
+Secret Service and E04 AT-SPI discovery. One session `Bus` per process,
+shared by all of them.
+
+### Signature
+```zig
+pub fn connectSession(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, opts: Options) !*Bus;
+pub fn connectAddress(gpa: Allocator, io: std.Io, address: []const u8, opts: Options) !*Bus;
+pub fn call(self: *Bus, dest, path, iface, member: []const u8, comptime sig: []const u8, args: anytype) !Pending;
+pub fn callAsync(self: *Bus, dest, path, iface, member: []const u8, comptime sig: []const u8, args: anytype, handler: ReplyHandler) !void;
+pub fn emit(self: *Bus, path, iface, member: []const u8, comptime sig: []const u8, args: anytype) !void;
+pub fn addMatch(self: *Bus, rule: []const u8, handler: SignalHandler) !MatchId;
+pub fn removeMatch(self: *Bus, id: MatchId) void;
+pub fn pollFd(self: *const Bus) i32;  // with Options.own_thread = false
+pub fn pump(self: *Bus) !void;
+// Pending
+pub fn wait(self: *Pending, timeout_ns: ?u64) !Reply;  // error replies are Replies; check isError()
+// marshal.zig / variant.zig
+pub fn encode(e: *Encoder, comptime sig: []const u8, args: anytype) !void;
+pub fn decode(d: *Decoder, sig: []const u8) !Value;
+```
+`connectSession` takes the environment map because zigguro code never reads
+the process environment directly; the spec's two-argument form gains `env`
+and `opts`. `addMatch` returns a `MatchId` so that each subscriber can
+remove its own match.
+
+### Threading
+Any thread may call, emit, add or remove matches. Sends are serialised by a
+lock. Replies and signals are dispatched on the bus's reader thread (or by
+whoever calls `pump`). Handlers run on that reader and must not wait on a
+`Pending`.
+
+### Ownership/lifetime
+A `Reply` owns its bytes and fds; `deinit` frees them, `takeFd` moves an fd
+out. Values decoded from a reply are views into it plus containers in the
+caller's arena. An `Incoming` signal is valid only during the handler call.
+fds passed to `call`/`emit` stay owned by the caller.
+
+### Stability
+Experimental until the E01 PR merges.
