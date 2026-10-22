@@ -102,6 +102,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         defer host.deinit();
         const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 1280, .h = 800 }, .root = root });
         if (use_wb) try wb.attach(hw.win);
+        if (use_wb) wb.enableFloating(host.windowOpener());
         if (want_terminal) try wb.toggleTerminal();
         if (want_agent) try wb.toggleAgent();
         defer if (use_wb) wb.detach();
