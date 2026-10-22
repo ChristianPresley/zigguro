@@ -33,7 +33,40 @@ pub const Scratch = struct {
     b: [tile_px]f32 align(32),
     /// Alpha plane.
     a: [tile_px]f32 align(32),
+    /// Text coverage lookup tables, one per recent text luminance.
+    luts: LutCache = .{},
 };
+
+/// `textCoverageT` precomputed for the 256 exact unorm8 inputs of a few
+/// text luminances. Table entries are the function's own results, so a
+/// lookup equals the direct evaluation bit for bit.
+pub const LutCache = struct {
+    keys: [4]u32 = .{ 0, 0, 0, 0 },
+    used: u8 = 0,
+    next: u8 = 0,
+    tables: [4][256]f32 = undefined,
+
+    /// The table for luminance `l` under `p`.
+    pub fn get(c: *LutCache, l: f32, p: sh.TextParams) *const [256]f32 {
+        const key: u32 = @bitCast(l);
+        for (c.keys[0..c.used], 0..) |k, i| if (k == key) return &c.tables[i];
+        const i = c.next;
+        c.next = (c.next + 1) % 4;
+        c.used = @max(c.used, i + 1);
+        c.keys[i] = key;
+        for (&c.tables[i], 0..) |*e, v| e.* = sh.textCoverageT(f32, r2d.color.unorm(@intCast(v)), l, p);
+        return &c.tables[i];
+    }
+};
+
+/// Looks up `lut` for exact unorm8 coverage values `c`.
+fn lutLookup(comptime T: type, lut: *const [256]f32, c: T) T {
+    const idx = c * sh.splat(T, 255.0) + sh.splat(T, 0.5);
+    if (T == f32) return lut[@intFromFloat(idx)];
+    var out: T = undefined;
+    inline for (0..@typeInfo(T).vector.len) |i| out[i] = lut[@intFromFloat(idx[i])];
+    return out;
+}
 
 /// Everything shading needs besides the prims.
 pub const ShadeCtx = struct {
@@ -288,7 +321,13 @@ fn shadeGroup(comptime T: type, p: *const Prim, ctx: *const ShadeCtx, px: T, py:
                 },
                 .glyph_gray => {
                     var c = if (p.flags.rgb_avg) (tx[0] + tx[1] + tx[2]) / sh.splat(T, 3) else tx[0];
-                    if (p.flags.aa_none) c = sh.sel(T, c >= sh.splat(T, 0.5), one, zero) else c = sh.textCoverageT(T, c, l, ctx.text);
+                    if (p.flags.aa_none) {
+                        c = sh.sel(T, c >= sh.splat(T, 0.5), one, zero);
+                    } else if (p.flags.rgb_avg) {
+                        c = sh.textCoverageT(T, c, l, ctx.text);
+                    } else {
+                        c = lutLookup(T, s.luts.get(l, ctx.text), c);
+                    }
                     cov = c;
                     src = splat4(T, c0);
                 },
@@ -297,7 +336,8 @@ fn shadeGroup(comptime T: type, p: *const Prim, ctx: *const ShadeCtx, px: T, py:
                     var bc = tx[2];
                     if (p.flags.bgr) std.mem.swap(T, &rc, &bc);
                     if (ctx.dual_src) {
-                        sub_cov = .{ sh.textCoverageT(T, rc, l, ctx.text), sh.textCoverageT(T, tx[1], l, ctx.text), sh.textCoverageT(T, bc, l, ctx.text) };
+                        const lut = s.luts.get(l, ctx.text);
+                        sub_cov = .{ lutLookup(T, lut, rc), lutLookup(T, lut, tx[1]), lutLookup(T, lut, bc) };
                     } else {
                         cov = sh.textCoverageT(T, (rc + tx[1] + bc) / sh.splat(T, 3), l, ctx.text);
                     }
