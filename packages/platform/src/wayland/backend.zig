@@ -44,6 +44,7 @@ const win_mod = @import("window.zig");
 const Window = win_mod.Window;
 const scale = @import("scale.zig");
 const ShmPresenter = @import("shm.zig").ShmPresenter;
+const dmabuf = @import("dmabuf.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -68,13 +69,19 @@ pub const InitOptions = struct {
     /// Event ring wake-ups are coalesced to this; refresh assumed when
     /// no output reports a mode.
     default_refresh_ns: u32 = 16_666_667,
+    /// Ask wp_presentation for feedback on every present
+    /// (`Event.present_feedback`).
+    presentation_feedback: bool = true,
 };
 
 /// Ring capacity.
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback };
+
+/// A wp_presentation_feedback waiting for its result.
+const PresPending = struct { obj: u32, win: WindowId };
 
 /// A window and its presenter, allocated together so pointers stay put.
 const Slot = struct {
@@ -97,6 +104,15 @@ pub const WaylandBackend = struct {
     /// Optional globals.
     viewporter: ?wl.wp_viewporter.Id = null,
     frac_manager: ?wl.wp_fractional_scale_manager_v1.Id = null,
+    dmabuf: ?wl.zwp_linux_dmabuf_v1.Id = null,
+    presentation: ?wl.wp_presentation.Id = null,
+    /// dmabuf formats and device (default feedback, or v3 modifiers).
+    /// Guarded by the mutex.
+    feedback: dmabuf.Feedback = .{},
+    /// The clock wp_presentation timestamps use.
+    pres_clock: u32 = @intFromEnum(linux.CLOCK.MONOTONIC),
+    /// Outstanding presentation feedback objects. Guarded by the mutex.
+    pres_pending: std.ArrayList(PresPending) = .empty,
 
     mutex: Io.Mutex = .init,
     slots: std.ArrayList(*Slot) = .empty,
@@ -174,6 +190,14 @@ pub const WaylandBackend = struct {
         b.shm = (try registry.bind(wl.wl_shm, 1, 2, null)) orelse return error.MissingGlobal;
         b.viewporter = try registry.bind(wl.wp_viewporter, 1, 1, null);
         b.frac_manager = try registry.bind(wl.wp_fractional_scale_manager_v1, 1, 1, null);
+        b.dmabuf = try registry.bind(wl.zwp_linux_dmabuf_v1, 3, 5, b.handler(.dmabuf));
+        if (b.dmabuf) |dm| if (conn.version(@intFromEnum(dm)) >= 4) {
+            // The default feedback describes the formats before any surface
+            // exists; it arrives with the roundtrip below.
+            const fb = try conn.newIdVersion(wl.zwp_linux_dmabuf_feedback_v1, conn.version(@intFromEnum(dm)), b.handler(.dmabuf_feedback));
+            try wl.zwp_linux_dmabuf_v1.getDefaultFeedback(conn, dm, fb);
+        };
+        b.presentation = try registry.bind(wl.wp_presentation, 1, 2, b.handler(.presentation));
         for (registry.globals.items) |g| if (std.mem.eql(u8, g.interface, wl.wl_output.name)) try b.addOutput(g);
         registry.onGlobalAdd(.{ .ctx = b, .on_add = onGlobalAdd });
         registry.onGlobalRemove(.{ .ctx = b, .on_remove = onGlobalRemove });
@@ -285,6 +309,16 @@ pub const WaylandBackend = struct {
         const c = b.conn;
         const w = &s.win;
         if (w.frame_cb) |cb| c.setHandler(@intFromEnum(cb), null);
+        var i: usize = 0;
+        while (i < b.pres_pending.items.len) {
+            const pp = b.pres_pending.items[i];
+            if (pp.win != w.id) {
+                i += 1;
+                continue;
+            }
+            c.setHandler(pp.obj, null);
+            _ = b.pres_pending.swapRemove(i);
+        }
         if (w.frac) |f| wl.wp_fractional_scale_v1.destroy(c, f) catch {};
         if (w.viewport) |v| wl.wp_viewport.destroy(c, v) catch {};
         wl.xdg_toplevel.destroy(c, w.toplevel) catch {};
@@ -418,6 +452,8 @@ pub const WaylandBackend = struct {
         for (b.outputs.items) |o| gpa.destroy(o);
         b.outputs.deinit(gpa);
         b.staged.deinit(gpa);
+        b.feedback.deinit(gpa);
+        b.pres_pending.deinit(gpa);
         for (&b.clip) |items| freeClip(gpa, items);
     }
 
@@ -442,6 +478,12 @@ pub const WaylandBackend = struct {
             try wl.wl_surface.damageBuffer(c, w.surface, d.x, d.y, @intCast(d.w), @intCast(d.h));
         }
         try b.requestFrameLocked(w);
+        if (b.presentation) |pres| if (b.opts.presentation_feedback) {
+            try b.pres_pending.ensureUnusedCapacity(b.gpa, 1);
+            const fb = try c.newIdVersion(wl.wp_presentation_feedback, 1, b.handler(.pres_feedback));
+            try wl.wp_presentation.feedback(c, pres, w.surface, fb);
+            b.pres_pending.appendAssumeCapacity(.{ .obj = @intFromEnum(fb), .win = w.id });
+        };
         try wl.wl_surface.commit(c, w.surface);
         try c.flush();
     }
@@ -723,6 +765,68 @@ pub const WaylandBackend = struct {
                     return;
                 };
             },
+            .dmabuf => {
+                const ev = try wl.zwp_linux_dmabuf_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                switch (ev) {
+                    .format => {},
+                    .modifier => |m| try b.feedback.onModifier(b.gpa, m.format, m.modifier_hi, m.modifier_lo),
+                }
+            },
+            .dmabuf_feedback => {
+                const ev = try wl.zwp_linux_dmabuf_feedback_v1.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const f = &b.feedback;
+                switch (ev) {
+                    .format_table => |t| try f.onFormatTable(b.gpa, t.fd, t.size),
+                    .main_device => |d| f.onMainDevice(d.device),
+                    .tranche_target_device => |d| f.onTrancheDevice(d.device),
+                    .tranche_formats => |t| try f.onTrancheFormats(b.gpa, t.indices),
+                    .tranche_flags => {},
+                    .tranche_done => f.onTrancheDone(),
+                    .done => if (f.onDone() and f.rounds > 1) {
+                        // E02 reads `formats`/`drmDevice` when it builds a
+                        // ring; a later change applies to the next one.
+                        log.info("dmabuf feedback changed: {d} formats", .{f.formats.items.len});
+                    },
+                }
+            },
+            .presentation => switch (try wl.wp_presentation.decodeEvent(opcode, body, fds)) {
+                .clock_id => |cl| {
+                    b.lock();
+                    defer b.unlock();
+                    b.pres_clock = cl.clk_id;
+                },
+            },
+            .pres_feedback => {
+                const ev = try wl.wp_presentation_feedback.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const idx = for (b.pres_pending.items, 0..) |pp, i| {
+                    if (pp.obj == obj) break i;
+                } else return;
+                const win = b.pres_pending.items[idx].win;
+                switch (ev) {
+                    .sync_output => return,
+                    .presented => |pr| {
+                        _ = b.pres_pending.swapRemove(idx);
+                        const ours = b.nowNs();
+                        const theirs = if (b.pres_clock == @intFromEnum(linux.CLOCK.MONOTONIC)) ours else dmabuf.clockNow(b.pres_clock);
+                        try b.stage(.{ .present_feedback = .{
+                            .win = win,
+                            .presented_ns = dmabuf.presentedNs(pr.tv_sec_hi, pr.tv_sec_lo, pr.tv_nsec, b.pres_clock, ours, theirs),
+                            .seq = @as(u64, pr.seq_hi) << 32 | pr.seq_lo,
+                            .flags = @truncate(@as(u32, @bitCast(pr.flags))),
+                        } });
+                    },
+                    .discarded => {
+                        _ = b.pres_pending.swapRemove(idx);
+                        try b.stage(.{ .present_feedback = .{ .win = win, .presented_ns = 0, .seq = 0, .flags = event_api.PresentFlags.discarded } });
+                    },
+                }
+            },
             .output => {
                 const ev = try wl.wl_output.decodeEvent(opcode, body, fds);
                 b.lock();
@@ -878,6 +982,10 @@ const Peer = struct {
     outputs: []const OutputSpec = &.{},
     serial: u32 = 100,
     last_bound: ?[]const u8 = null,
+    /// Sent in answer to `get_default_feedback`, if set.
+    feedback: ?FeedbackScript = null,
+
+    const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
     const Seen = struct { iface: []const u8, obj: u32, opcode: u16 };
     const OutputSpec = struct { w: i32, h: i32, refresh: i32, scale: i32, name: [:0]const u8 };
@@ -963,6 +1071,17 @@ const Peer = struct {
         while (answered < syncs) {
             const s = (try p.next(null)).?;
             if (s.obj != 1) {
+                if (p.feedback) |fs| if (std.mem.eql(u8, s.iface, wl.zwp_linux_dmabuf_v1.name) and s.opcode == @intFromEnum(wl.zwp_linux_dmabuf_v1.Request.get_default_feedback)) {
+                    const fb = p.id(wl.zwp_linux_dmabuf_feedback_v1);
+                    const S = wl.zwp_linux_dmabuf_feedback_v1.server;
+                    try S.formatTable(p.fc, fb, fs.table_fd, fs.size);
+                    try S.mainDevice(p.fc, fb, &fs.dev);
+                    try S.trancheTargetDevice(p.fc, fb, &fs.dev);
+                    try S.trancheFormats(p.fc, fb, fs.indices);
+                    try S.trancheFlags(p.fc, fb, .{});
+                    try S.trancheDone(p.fc, fb);
+                    try S.done(p.fc, fb);
+                };
                 if (std.mem.eql(u8, s.iface, wl.wl_registry.name) and s.opcode == 0) {
                     // bind: describe a new output before the next sync
                     if (p.last_bound != null and p.last_bound.?.ptr == wl.wl_output.name.ptr and p.outputs.len > 0) {
@@ -1032,10 +1151,15 @@ const Rig = struct {
     b: *WaylandBackend,
 
     fn start(rig: *Rig, opts: InitOptions, outputs: []const Peer.OutputSpec) !void {
+        return rig.startWith(opts, outputs, &all_globals, null);
+    }
+
+    fn startWith(rig: *Rig, opts: InitOptions, outputs: []const Peer.OutputSpec, globals: []const fake.Global, feedback: ?Peer.FeedbackScript) !void {
         rig.peer = try Peer.init();
         errdefer rig.peer.deinit();
         rig.peer.outputs = outputs;
-        const t = try std.Thread.spawn(.{}, Peer.serveInitThread, .{ &rig.peer, &all_globals, 2 });
+        rig.peer.feedback = feedback;
+        const t = try std.Thread.spawn(.{}, Peer.serveInitThread, .{ &rig.peer, globals, 2 });
         var o = opts;
         o.fd = rig.peer.fc.client_fd;
         rig.b = WaylandBackend.init(testing.allocator, testing.io, o) catch |err| {
@@ -1222,6 +1346,123 @@ test "outputs, integer output scale, close and destroy" {
     p.destroyWindow(win);
     _ = try rig.peer.waitFor(wl.wl_surface, .destroy, std.time.ns_per_s);
     try testing.expectError(error.InvalidWindow, p.submit(.{ .set_title = .{ .win = win, .title = "gone" } }));
+}
+
+const dmabuf_globals = all_globals ++ [_]fake.Global{
+    .{ .name = 7, .interface = "zwp_linux_dmabuf_v1", .version = 4 },
+    .{ .name = 8, .interface = "wp_presentation", .version = 1 },
+};
+
+test "dmabuf default feedback → formats, drmDevice, syncMode" {
+    const xr24: u32 = 0x34325258;
+    const table = [_]dmabuf.TableEntry{
+        .{ .format = xr24, .pad = 0, .modifier = 0 },
+        .{ .format = xr24, .pad = 0, .modifier = 0x0100_0000_0000_0002 },
+    };
+    const fd: i32 = @intCast(linux.memfd_create("zg-test-table", linux.MFD.CLOEXEC));
+    defer _ = linux.close(fd);
+    const bytes = std.mem.sliceAsBytes(&table);
+    _ = linux.ftruncate(fd, @intCast(bytes.len));
+    _ = linux.pwrite(fd, bytes.ptr, bytes.len, 0);
+    var dev: [8]u8 = undefined;
+    std.mem.writeInt(u64, &dev, (226 << 8) | 128, @import("builtin").cpu.arch.endian());
+    var idx: [4]u8 = undefined;
+    std.mem.writeInt(u16, idx[0..2], 1, @import("builtin").cpu.arch.endian());
+    std.mem.writeInt(u16, idx[2..4], 0, @import("builtin").cpu.arch.endian());
+
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &dmabuf_globals, .{ .table_fd = fd, .size = @intCast(bytes.len), .dev = dev, .indices = &idx });
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 64, .h = 32 });
+    const pr = (try p.surfaceTarget(win)).external;
+    try testing.expectEqual(surface.SyncMode.implicit_sync_file, pr.syncMode());
+    try testing.expectEqual(surface.DrmDevice{ .major = 226, .minor = 128 }, pr.drmDevice().?);
+    var out: [4]surface.FormatModifier = undefined;
+    try testing.expectEqual(@as(usize, 2), pr.formats(&out));
+    try testing.expectEqual(@as(u64, 0x0100_0000_0000_0002), out[0].modifier);
+    try testing.expectEqual(@as(u64, 0), out[1].modifier);
+}
+
+test "dmabuf import, implicit sync, present order, feedback and release" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &dmabuf_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 64, .h = 32 });
+    const serial = try rig.peer.configure(64, 32, &.{});
+    _ = try expectEvent(p, .window_configure, win);
+    const pr = (try p.surfaceTarget(win)).external;
+    // Stand-ins: a memfd for the dmabuf, a signalled eventfd for the
+    // sync_file (the import ioctl fails, so the presenter waits on it).
+    const buf_fd: i32 = @intCast(linux.memfd_create("zg-test-dmabuf", linux.MFD.CLOEXEC));
+    defer _ = linux.close(buf_fd);
+    const planes = [_]surface.Plane{.{ .fd = buf_fd, .offset = 0, .stride = 256 }};
+    const h = try pr.importBuffer(&.{ .width = 64, .height = 32, .fourcc = 0x34325258, .modifier = 0, .planes = &planes, .kind = .dmabuf });
+    _ = try rig.peer.waitFor(wl.zwp_linux_buffer_params_v1, .add, std.time.ns_per_s);
+    _ = try rig.peer.waitFor(wl.zwp_linux_buffer_params_v1, .create_immed, std.time.ns_per_s);
+    _ = try rig.peer.waitFor(wl.zwp_linux_buffer_params_v1, .destroy, std.time.ns_per_s);
+    const wl_buf = rig.peer.id(wl.wl_buffer);
+
+    rig.peer.log.clearRetainingCapacity();
+    const sync_fd: i32 = @intCast(linux.eventfd(1, linux.EFD.CLOEXEC));
+    try pr.present(h, &.{.{ .x = 0, .y = 0, .w = 8, .h = 8 }}, .{ .sync_file = sync_fd }, .{ .win = win, .serial = serial });
+    _ = try rig.peer.waitFor(wl.wl_surface, .commit, std.time.ns_per_s);
+    // The presenter closed the sync_file.
+    try testing.expectEqual(linux.E.BADF, linux.errno(linux.fcntl(sync_fd, linux.F.GETFD, 0)));
+    const want = [_]struct { []const u8, u16 }{
+        .{ "xdg_surface", @intFromEnum(wl.xdg_surface.Request.ack_configure) },
+        .{ "wl_surface", @intFromEnum(wl.wl_surface.Request.attach) },
+        .{ "wl_surface", @intFromEnum(wl.wl_surface.Request.damage_buffer) },
+        .{ "wl_surface", @intFromEnum(wl.wl_surface.Request.frame) },
+        .{ "wp_presentation", @intFromEnum(wl.wp_presentation.Request.feedback) },
+        .{ "wl_surface", @intFromEnum(wl.wl_surface.Request.commit) },
+    };
+    var at: usize = 0;
+    for (rig.peer.log.items) |s| {
+        if (at < want.len and std.mem.eql(u8, s.iface, want[at][0]) and s.opcode == want[at][1]) at += 1;
+    }
+    try testing.expectEqual(want.len, at);
+    try testing.expectError(error.Unsupported, pr.present(h, &.{}, .{ .syncobj = .{ .timeline_fd = -1, .point = 1 } }, null));
+
+    // presented → Event.present_feedback in our monotonic clock.
+    const fb = rig.peer.id(wl.wp_presentation_feedback);
+    try wl.wp_presentation_feedback.server.presented(rig.peer.fc, fb, 0, 12, 345, 16_666_667, 0, 77, .{ .vsync = true, .hw_clock = true });
+    const pf = try expectEvent(p, .present_feedback, win);
+    try testing.expectEqual(@as(u64, 12 * std.time.ns_per_s + 345), pf.presented_ns);
+    try testing.expectEqual(@as(u64, 77), pf.seq);
+    try testing.expectEqual(event_api.PresentFlags.vsync | event_api.PresentFlags.hw_clock, pf.flags);
+
+    // The compositor releases the buffer.
+    try wl.wl_buffer.server.release(rig.peer.fc, wl_buf);
+    var rel: [4]surface.BufferHandle = undefined;
+    const deadline = rig.b.nowNs() + 2 * std.time.ns_per_s;
+    var n: usize = 0;
+    while (n == 0 and rig.b.nowNs() < deadline) {
+        n = pr.pollReleased(&rel);
+        if (n == 0) try Io.sleep(testing.io, .fromMilliseconds(5), .awake);
+    }
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqual(h, rel[0]);
+    pr.releaseBuffer(h);
+}
+
+test "importBuffer without zwp_linux_dmabuf_v1 is Unsupported; shm imports work" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 16, .h = 16 });
+    const pr = (try p.surfaceTarget(win)).external;
+    try testing.expectEqual(surface.SyncMode.cpu_only, pr.syncMode());
+    const fd: i32 = @intCast(linux.memfd_create("zg-test-shm", linux.MFD.CLOEXEC));
+    defer _ = linux.close(fd);
+    _ = linux.ftruncate(fd, 16 * 16 * 4);
+    const planes = [_]surface.Plane{.{ .fd = fd, .offset = 0, .stride = 64 }};
+    try testing.expectError(error.Unsupported, pr.importBuffer(&.{ .width = 16, .height = 16, .fourcc = 0x34325258, .modifier = 0, .planes = &planes, .kind = .dmabuf }));
+    const h = try pr.importBuffer(&.{ .width = 16, .height = 16, .fourcc = 0x34325258, .modifier = 0, .planes = &planes, .kind = .shm });
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    pr.releaseBuffer(h);
 }
 
 const WestonHarness = struct {
