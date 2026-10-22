@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
+const socket = @import("../wire/socket.zig");
 
 /// A running weston.
 pub const WestonForTest = struct {
@@ -15,7 +16,7 @@ pub const WestonForTest = struct {
     /// The socket name inside `dirPath()`.
     pub const socket_name = "zg-test";
 
-    /// Starts weston and waits up to 2 s for its socket.
+    /// Starts weston and waits up to 2 s for its socket to accept.
     pub fn start() !WestonForTest {
         var w: WestonForTest = undefined;
         w.tmp = testing.tmpDir(.{});
@@ -32,9 +33,16 @@ pub const WestonForTest = struct {
             .stderr = .ignore,
         });
         errdefer w.child.kill(testing.io);
+        // Ready once the socket accepts a connection: the file exists
+        // from bind(), before weston listens.
+        var sock_buf: [Io.Dir.max_path_bytes + 16]u8 = undefined;
+        const sock_path = try std.fmt.bufPrint(&sock_buf, "{s}/{s}", .{ w.path_buf[0..w.path_len], socket_name });
         var tries: usize = 0;
         while (tries < 200) : (tries += 1) {
-            if (w.tmp.dir.access(testing.io, socket_name, .{})) |_| return w else |_| {}
+            if (socket.connectPath(sock_path)) |fd| {
+                _ = std.os.linux.close(fd);
+                return w;
+            } else |_| {}
             try testing.io.sleep(.fromMilliseconds(10), .awake);
         }
         return error.WestonDidNotStart;
