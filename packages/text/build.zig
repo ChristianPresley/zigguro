@@ -47,6 +47,22 @@ pub fn build(b: *std.Build) void {
     if (b.args) |a| run.addArgs(a);
     b.step("text-dump", "Dump metrics/outlines/shaping/raster goldens (args after --)").dependOn(&run.step);
 
+    // `zig build text-gamma-sheet -- <out.ppm> [...]`: a gamma/contrast
+    // contact sheet for review (run from packages/text).
+    const sheet = b.addExecutable(.{
+        .name = "text-gamma-sheet",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("dev/gamma_sheet.zig"),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{.{ .name = "zg_text", .module = text }},
+        }),
+    });
+    const sheet_run = b.addRunArtifact(sheet);
+    sheet_run.setCwd(b.path("."));
+    if (b.args) |a| sheet_run.addArgs(a);
+    b.step("text-gamma-sheet", "Render a text gamma/contrast contact sheet (args after --)").dependOn(&sheet_run.step);
+
     // Maintainer-only: `zig build fetch-ucd -Ducd-version=<v>
     // [-Dupdate-manifest=true]` (run from packages/text) downloads
     // ucd/<v>/ and checks it against ucd/<v>/manifest.zon. Nothing else
