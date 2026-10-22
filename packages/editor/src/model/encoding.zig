@@ -208,6 +208,12 @@ pub fn decodeAll(e: Encoding, bytes: []const u8, gpa: Allocator) ![]u8 {
 /// `firstUnrepresentable` gives its offset.
 pub fn encode(e: Encoding, utf8: []const u8, out: *std.ArrayList(u8), gpa: Allocator) error{ Unrepresentable, OutOfMemory }!void {
     try out.appendSlice(gpa, e.bom());
+    try encodeBody(e, utf8, out, gpa);
+}
+
+/// `encode` without the BOM, for streaming a text in pieces that each end
+/// on a character boundary.
+pub fn encodeBody(e: Encoding, utf8: []const u8, out: *std.ArrayList(u8), gpa: Allocator) error{ Unrepresentable, OutOfMemory }!void {
     switch (e) {
         .utf8, .utf8_bom => try out.appendSlice(gpa, utf8),
         .utf16le, .utf16le_bom => try utf16.encode16(utf8, .little, out, gpa),
