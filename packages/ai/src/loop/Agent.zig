@@ -71,6 +71,8 @@ pub const Deps = struct {
     checkpoints: ?dp.Checkpoints = null,
     /// Transcript compaction (F07.S03).
     compaction: ?dp.Compaction = null,
+    /// Told when each turn ends (the app commits the turn's changeset).
+    turn_end: ?dp.TurnEnd = null,
     /// E16's audit log of tool decisions.
     audit: ?dp.Audit = null,
     /// Validates tool inputs (the E11 validator in the app); the
