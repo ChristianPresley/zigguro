@@ -28,6 +28,7 @@ const reports = @import("reports.zig");
 const dcs = @import("dcs.zig");
 const osc = @import("osc.zig");
 const mark = @import("../shell/mark.zig");
+const input = @import("../input/key_encode.zig");
 
 const log = std.log.scoped(.terminal);
 
@@ -102,6 +103,8 @@ effects: EffectQueue,
 cursor_shape: CursorShape = .blinking_block,
 /// DECKPAM (application keypad), consulted by key encoding (F04).
 keypad_application: bool = false,
+/// xterm modifyOtherKeys level (`CSI > 4 ; n m`), consulted by key encoding.
+modify_other_keys: u2 = 0,
 title: std.ArrayList(u8) = .empty,
 icon: std.ArrayList(u8) = .empty,
 title_stack: std.ArrayList(TitleEntry) = .empty,
@@ -497,11 +500,35 @@ pub fn fullReset(t: *Terminal) void {
     t.tabs.reset();
     t.cursor_shape = .blinking_block;
     t.keypad_application = false;
+    t.modify_other_keys = 0;
     t.title.clearRetainingCapacity();
     t.icon.clearRetainingCapacity();
     t.effects.push(.title_changed);
     t.dcs_state.reset();
     t.clip_read = null;
+}
+
+/// The modes the input encoders need (keys, mouse, paste, focus), as a
+/// snapshot the view can take under the terminal lock.
+pub fn encoderState(t: *const Terminal) input.EncoderState {
+    const m = &t.modes;
+    const s = if (t.alt_active) &t.alternate else &t.primary;
+    return .{
+        .decckm = m.get(.cursor_keys),
+        .deckpam = t.keypad_application,
+        .kitty_flags = s.kitty_kb.current(),
+        .win32_input = m.get(.win32_input),
+        .meta_sends_esc = m.get(.meta_sends_escape) or m.get(.alt_sends_escape),
+        .backarrow_bs = m.get(.backarrow_bs),
+        .linefeed = m.get(.linefeed),
+        .modify_other_keys = t.modify_other_keys,
+        .mouse = if (m.get(.mouse_any)) .any else if (m.get(.mouse_button)) .button else if (m.get(.mouse_normal)) .normal else if (m.get(.mouse_x10)) .x10 else .none,
+        .mouse_enc = if (m.get(.mouse_sgr_pixels)) .sgr_pixels else if (m.get(.mouse_sgr)) .sgr else if (m.get(.mouse_urxvt)) .urxvt else if (m.get(.mouse_utf8)) .utf8 else .default,
+        .bracketed_paste = m.get(.bracketed_paste),
+        .focus_events = m.get(.focus_events),
+        .alt_scroll = m.get(.alternate_scroll),
+        .alt_screen = t.alt_active,
+    };
 }
 
 /// The active screen as text (tests and captures).
