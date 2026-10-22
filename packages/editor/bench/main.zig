@@ -362,6 +362,7 @@ fn register(b: *bench.Bench) !void {
     try registerMoves(b, text);
     try registerSmart(b, text);
     try registerLineOps(b, text);
+    try registerEncoding(b, text);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -542,6 +543,37 @@ fn pasteReindent(c: *PasteBench, s: *bench.State) void {
         var sels = edit.selection.SelectionSet.init(c.gpa, .caret(4)) catch unreachable;
         defer sels.deinit();
         _ = edit.clipboard.paste(doc, &sels, c.cb, .{ .reindent_on_paste = true }) catch unreachable;
+    }
+}
+
+const EncBench = struct { bytes: []const u8, enc: zg_editor.model.encoding.Encoding, out: std.ArrayList(u8) = .empty, gpa: std.mem.Allocator };
+
+/// Decoding the 3.5 MB corpus re-encoded as UTF-16LE (ASCII fast path)
+/// and as windows-1252.
+fn registerEncoding(b: *bench.Bench, text: []const u8) !void {
+    const encoding = zg_editor.model.encoding;
+    inline for (.{ .{ "editor.encoding.utf16le_decode", encoding.Encoding.utf16le }, .{ "editor.encoding.windows1252_decode", encoding.Encoding.windows_1252 } }) |c| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(b.gpa);
+        // The corpus is ASCII Zig; any byte a legacy encoding lacks would
+        // fail, so encode only what it can hold.
+        encoding.encode(c[1], text, &bytes, b.gpa) catch {
+            bytes.clearRetainingCapacity();
+            for (text) |ch| if (ch < 0x80) try bytes.append(b.gpa, ch);
+        };
+        var eb: EncBench = .{ .bytes = bytes.items, .enc = c[1], .gpa = b.gpa };
+        defer eb.out.deinit(b.gpa);
+        try b.run(c[0], &eb, decodeBench);
+    }
+}
+
+fn decodeBench(c: *EncBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.out.clearRetainingCapacity();
+        var d: zg_editor.model.encoding.Decoder = .init(c.enc);
+        d.decode(c.bytes, &c.out, c.gpa, true) catch unreachable;
     }
 }
 
