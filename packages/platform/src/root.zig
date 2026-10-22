@@ -228,6 +228,8 @@ const is_linux = @import("builtin").os.tag == .linux;
 pub const linux_util = struct {
     /// See `linux/pipe_transfer.zig`.
     pub const pipe_transfer = if (is_linux) @import("linux/pipe_transfer.zig") else struct {};
+    /// See `linux/memfd.zig`.
+    pub const memfd = if (is_linux) @import("linux/memfd.zig") else struct {};
     /// See `linux/uri_list.zig`.
     pub const uri_list = @import("linux/uri_list.zig");
     /// See `linux/xcursor.zig`.
@@ -484,6 +486,7 @@ test {
         _ = @import("wayland/shm.zig");
         _ = @import("wayland/dmabuf.zig");
         _ = linux_util.pipe_transfer;
+        _ = linux_util.memfd;
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
@@ -565,6 +568,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/dnd.zig", .src = @embedFile("wayland/dnd.zig") },
     .{ .path = "linux/pipe_transfer.zig", .src = @embedFile("linux/pipe_transfer.zig") },
     .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
+    .{ .path = "linux/memfd.zig", .src = @embedFile("linux/memfd.zig") },
     .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
     .{ .path = "wayland/cursor.zig", .src = @embedFile("wayland/cursor.zig") },
     .{ .path = "wayland/text_input.zig", .src = @embedFile("wayland/text_input.zig") },
