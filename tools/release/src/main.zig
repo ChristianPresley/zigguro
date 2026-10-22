@@ -19,12 +19,34 @@ pub const sign = @import("sign.zig");
 pub const verify = @import("verify.zig");
 /// Shared argument parsing.
 pub const args = @import("args.zig");
+/// Deterministic zip writer.
+pub const zip_writer = @import("zip_writer.zig");
+/// Deterministic tar.gz writer.
+pub const targz = @import("targz.zig");
+/// Release archive layouts.
+pub const layout = @import("layout.zig");
+/// Generated Linux desktop files.
+pub const linux_files = @import("linux_files.zig");
+/// `package` subcommand.
+pub const package = @import("package.zig");
+/// `sums` subcommand.
+pub const sums = @import("sums.zig");
+/// `notices` subcommand.
+pub const notices = @import("notices.zig");
+/// `repro-compare` subcommand.
+pub const repro_compare = @import("repro_compare.zig");
+/// Authenticode stripping for repro-compare.
+pub const pe_strip_sig = @import("pe_strip_sig.zig");
 
 const usage =
     \\usage: zg-release <command> [--option value]...
     \\  keygen  --out <dir> [--channel stable|insiders]
     \\  sign    --file <f> [--seed-env NAME] [--key-id-env NAME] [--trusted <comment>] [--out <f.minisig>]
     \\  verify  --pub <RW...|file> --file <f> [--sig <f.minisig>]
+    \\  package --dist <d> --target <t> --version <v> --epoch <s> --out <d> [--portable true] [--symbols <d>]
+    \\  sums    --dir <d> [--out <d>/SHA256SUMS]
+    \\  notices --check true | --generate true [--root .] [--out THIRD_PARTY_NOTICES.md]
+    \\  repro-compare <dirA> <dirB>
     \\
 ;
 
@@ -35,6 +57,9 @@ const commands = [_]struct { []const u8, Command }{
     .{ "keygen", keygen.run },
     .{ "sign", sign.run },
     .{ "verify", verify.run },
+    .{ "package", package.run },
+    .{ "sums", sums.run },
+    .{ "notices", notices.run },
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -43,6 +68,12 @@ pub fn main(init: std.process.Init) !u8 {
     if (argv.len < 2) {
         std.debug.print(usage, .{});
         return 2;
+    }
+    if (std.mem.eql(u8, argv[1], "repro-compare")) {
+        const rest: []const []const u8 = @ptrCast(argv[2..]);
+        const code = try repro_compare.main(gpa, init.io, rest);
+        if (code == 2) std.debug.print(usage, .{});
+        return code;
     }
     const opts = args.parse(gpa, argv[2..]) catch {
         std.debug.print(usage, .{});
@@ -70,4 +101,13 @@ test {
     _ = sign;
     _ = verify;
     _ = args;
+    _ = zip_writer;
+    _ = targz;
+    _ = layout;
+    _ = linux_files;
+    _ = package;
+    _ = sums;
+    _ = notices;
+    _ = repro_compare;
+    _ = pe_strip_sig;
 }
