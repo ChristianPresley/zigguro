@@ -1,0 +1,3 @@
+1| keyword.storage:const variable:el operator:= variable:document punctuation.delimiter:. function:querySelector punctuation.bracket:( string:"#root" punctuation.bracket:) keyword:as type:HTMLElement punctuation.delimiter:;
+2| keyword.storage:const variable:v operator:= variable:value operator:! punctuation.delimiter:;
+3| keyword.storage:const variable:n operator:= punctuation.bracket:( variable:x keyword:as type.builtin:number punctuation.bracket:) operator:/ number:2 punctuation.delimiter:;

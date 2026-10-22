@@ -1,0 +1,7 @@
+1| keyword.storage:const variable:tree operator:= punctuation.bracket:(
+2| punctuation:< tag:ul punctuation:>
+3| string:     punctuation:< tag:li punctuation:>
+4| string:       punctuation:< tag:a attribute:href operator:= string:"#" punctuation:> string:Link punctuation:</ tag:a punctuation:>
+5| string:     punctuation:</ tag:li punctuation:>
+6| string:   punctuation:</ tag:ul punctuation:>
+7| punctuation.bracket:) punctuation.delimiter:;

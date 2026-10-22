@@ -1,0 +1,4 @@
+1| keyword.storage:function function:App punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{
+2| keyword.control:return punctuation:< type:Layout attribute:title operator:= string:"Home" punctuation:> punctuation:< type:Header.Nav attribute:active punctuation:/> punctuation:< type:Main punctuation:/> punctuation:</ type:Layout punctuation:> punctuation.delimiter:;
+3| punctuation.bracket:}
+4| keyword:export keyword.control:default type:App punctuation.delimiter:;

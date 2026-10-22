@@ -1,0 +1,8 @@
+const page = (
+  <Layout>
+    <Sidebar>
+      <Nav items={nav} />
+    </Sidebar>
+    <Main>{content}</Main>
+  </Layout>
+);

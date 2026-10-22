@@ -1,0 +1,4 @@
+const [count, setCount] = useState<number>(0);
+const ref = useRef<HTMLDivElement>(null);
+useEffect(() => { document.title = `${count}`; }, [count]);
+return <div ref={ref} onClick={() => setCount(count + 1)}>{count}</div>;

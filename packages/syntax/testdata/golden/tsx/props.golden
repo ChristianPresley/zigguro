@@ -1,0 +1,4 @@
+1| keyword.storage:type type:ButtonProps operator:= type:React punctuation.delimiter:. property:ButtonHTMLAttributes operator:< type:HTMLButtonElement operator:> operator:& punctuation.bracket:{
+2| variable:variant operator:: string:"primary" operator:| string:"secondary" punctuation.delimiter:;
+3| punctuation.bracket:} punctuation.delimiter:;
+4| keyword.storage:const type:Button operator:= punctuation.bracket:( punctuation.bracket:{ variable:variant punctuation.delimiter:, operator:... variable:rest punctuation.bracket:} operator:: type:ButtonProps punctuation.bracket:) operator:=> punctuation:< tag:button attribute:data-variant operator:= punctuation.bracket:{ variable:variant punctuation.bracket:} punctuation.bracket:{ operator:... variable:rest punctuation.bracket:} punctuation:/> punctuation.delimiter:;

@@ -1,0 +1,5 @@
+function pick(x: string): string;
+function pick(x: number): number;
+function pick(x: any) { return x; }
+const ratio = total / count / 2;
+const re = /ab+c/g;

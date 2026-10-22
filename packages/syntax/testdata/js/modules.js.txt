@@ -1,0 +1,7 @@
+import fs from "node:fs";
+import { readFile, writeFile as write } from "fs/promises";
+import * as path from "path";
+export default function main() {}
+export const VERSION = "1.0";
+export { a, b as c } from "./mod.js";
+const lazy = await import("./lazy.js");

@@ -1,0 +1,3 @@
+const a = <div>Hello</div>;
+const b = <span className="x">text</span>;
+const c = <img src="a.png" alt='pic' />;

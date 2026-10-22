@@ -1,0 +1,5 @@
+type Result = { ok: true; value: number } | { ok: false; error: string };
+type Dir = "up" | "down" | "left" | "right";
+type Both = A & B;
+type Opt<T> = { [K in keyof T]?: T[K] };
+type Tpl = `prefix-${string}`;

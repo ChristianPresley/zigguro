@@ -1,0 +1,8 @@
+const s = `plain text`;
+const t = `Hello, ${name}! You have ${count + 1} messages.`;
+const u = `outer ${`inner ${deep}`} done`;
+const v = `multi
+line ${value}
+end`;
+const w = tag`raw ${x}`;
+const o = `${ {a: 1}.a }`;

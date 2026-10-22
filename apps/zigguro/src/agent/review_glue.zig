@@ -12,9 +12,13 @@
 //!   user's edits on other lines. Files where they overlap are skipped,
 //!   with the reason.
 //!
+//! - Each turn's writes become one changeset in the review queue when the
+//!   turn ends (`end_turn`), already applied and marked auto-applied, so
+//!   the review panel lists what every turn changed (`model`).
+//!
 //! Proposals are still applied as soon as the tool's approval passed;
-//! holding them in the review queue (`Outcome.pending`) waits for E12.F03's
-//! review UI. Contents live in memory for the app's run, like the agent
+//! holding them in the review queue (`Outcome.pending`) waits for a review
+//! mode setting. Contents live in memory for the app's run, like the agent
 //! sessions; the durable store comes with saved sessions.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
@@ -47,7 +51,22 @@ pub const ReviewGlue = struct {
     history: model.History,
     q: *model.Queue,
     cps: Checkpoints,
+    /// The review panel's rows (read under `mutex`).
+    model: *zg_review.queue_view.QueueModel,
+    /// What each running turn wrote: the content before its first write.
+    turns: std.ArrayList(Turn) = .empty,
+    /// Called after a turn's changeset is in the queue, on the agent's
+    /// task (the panel posts a repaint).
+    on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     mutex: Io.Mutex = .init,
+
+    const Turn = struct {
+        agent: zg_ai_proto.AgentRef,
+        turn: u32,
+        /// Path → content before the turn's first write (null: none).
+        before: std.StringArrayHashMapUnmanaged(?zg_review.apply.files.Entry) = .empty,
+        arena: std.heap.ArenaAllocator,
+    };
 
     /// Review of the workspace at `root` (absolute, normalized).
     pub fn create(gpa: Allocator, io: Io, root: []const u8) !*ReviewGlue {
@@ -64,17 +83,22 @@ pub const ReviewGlue = struct {
             .history = .init(gpa, null),
             .q = undefined,
             .cps = undefined,
+            .model = undefined,
         };
         errdefer g.dir.close(io);
         g.workspace = .{ .dir = g.dir, .io = io };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
         g.cps = .init(gpa, io, g.q, &g.history, g.workspace.files(), null);
+        g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{});
         return g;
     }
 
     /// No agent may still be running.
     pub fn destroy(g: *ReviewGlue) void {
         const gpa = g.gpa;
+        for (g.turns.items) |*t| t.arena.deinit();
+        g.turns.deinit(gpa);
+        g.model.deinit();
         g.cps.deinit();
         g.q.deinit();
         g.history.deinit();
@@ -85,7 +109,7 @@ pub const ReviewGlue = struct {
 
     /// The `Files` for paths not open in the editor (`EditorFiles.outside`).
     pub fn files(g: *ReviewGlue) zfiles.Files {
-        return .{ .ctx = g, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose } };
+        return .{ .ctx = g, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn } };
     }
 
     /// E10's `deps.Checkpoints`.
@@ -134,7 +158,87 @@ pub const ReviewGlue = struct {
         if (out != .applied) return out;
         // The write landed: a failure to record it must not fail the tool.
         g.record(arena, rel, before, origin.agent) catch |e| log.warn("{s}: agent write not recorded for restore: {t}", .{ rel, e });
+        g.noteTurn(rel, before, origin) catch |e| log.warn("{s}: agent write not recorded for review: {t}", .{ rel, e });
         return out;
+    }
+
+    /// Remembers what `rel` held before the turn's first write. Locked.
+    fn noteTurn(g: *ReviewGlue, rel: []const u8, before: ?zg_review.apply.files.Entry, origin: zfiles.Origin) !void {
+        const t = for (g.turns.items) |*t| {
+            if (std.meta.eql(t.agent.session, origin.agent.session) and t.agent.agent == origin.agent.agent and t.turn == origin.turn) break t;
+        } else blk: {
+            try g.turns.append(g.gpa, .{ .agent = .{ .session = origin.agent.session, .agent = origin.agent.agent }, .turn = origin.turn, .arena = .init(g.gpa) });
+            break :blk &g.turns.items[g.turns.items.len - 1];
+        };
+        const a = t.arena.allocator();
+        if (t.before.contains(rel)) return;
+        const copy: ?zg_review.apply.files.Entry = if (before) |b| .{ .bytes = try a.dupe(u8, b.bytes), .executable = b.executable } else null;
+        try t.before.put(a, try a.dupe(u8, rel), copy);
+    }
+
+    /// E10's `Files.end_turn`: the turn's writes become one changeset,
+    /// applied and marked auto-applied. Null when the turn wrote nothing.
+    fn endTurn(ctx: *anyopaque, io: Io, agent: zg_ai_proto.AgentRef, turn: u32) anyerror!?u64 {
+        const g = cast(ctx);
+        const id = blk: {
+            g.mutex.lockUncancelable(io);
+            defer g.mutex.unlock(io);
+            const i = for (g.turns.items, 0..) |t, i| {
+                if (t.agent.session == agent.session and t.agent.agent == agent.agent and t.turn == turn) break i;
+            } else return null;
+            var t = g.turns.swapRemove(i);
+            defer t.arena.deinit();
+            break :blk try g.submitTurn(&t) orelse return null;
+        };
+        if (g.on_change) |h| h.f(h.ctx);
+        return @intFromEnum(id);
+    }
+
+    /// Queues `t`'s changes as an applied changeset. Locked.
+    fn submitTurn(g: *ReviewGlue, t: *Turn) !?model.ChangesetId {
+        var arena_state: std.heap.ArenaAllocator = .init(g.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const label = try std.fmt.allocPrint(arena, "Turn {d}", .{t.turn});
+        const b = try g.q.beginBatch(.{
+            .origin = .{ .agent = .{ .ref = t.agent, .turn = t.turn, .model = "" } },
+            .label = label,
+            .workspace = g.root,
+            .created_ms = nowMs(g.io),
+        });
+        var n: usize = 0;
+        for (t.before.keys(), t.before.values()) |path, before| {
+            const after = try g.workspace.files().read(arena, path);
+            if (before == null and after == null) continue;
+            if (before != null and after != null and std.mem.eql(u8, before.?.bytes, after.?.bytes)) continue;
+            if (before == null) {
+                try g.q.addCreate(b, path, after.?.bytes);
+            } else if (after == null) {
+                try g.q.addDelete(b, path, before.?.bytes);
+            } else {
+                var e = try model.merge3.lineChangeSet(g.gpa, before.?.bytes, after.?.bytes);
+                defer e.deinit();
+                try g.q.addEdit(b, path, before.?.bytes, null, &e);
+            }
+            n += 1;
+        }
+        if (n == 0) {
+            g.q.abortBatch(b);
+            return null;
+        }
+        const id = try g.q.commitBatch(b, .{});
+        const cs = g.q.getMut(id) orelse return id;
+        for (cs.files) |*f| {
+            for (f.hunks) |*h| h.decision = .accepted;
+            if (f.state == .pending) try model.fileTransition(f, .applied);
+        }
+        const from = cs.state;
+        if (from == .pending) try model.transition(cs, .applied);
+        cs.auto_applied = true;
+        cs.decided_ms = nowMs(g.io);
+        g.q.persist(id);
+        g.q.emit(.{ .state = .{ .cs = id, .from = from, .to = cs.state } });
+        return id;
     }
 
     /// Records the write of `rel` (whose content was `before`). Locked.
@@ -151,11 +255,10 @@ pub const ReviewGlue = struct {
             .post_exec = if (after) |x| x.executable else false,
         };
         if (std.meta.eql(f.pre, f.post) and f.pre_exec == f.post_exec) return;
-        const now = Io.Clock.real.now(g.io);
         _ = try g.history.record(.{
             .cs = null,
             .session = agent.session,
-            .created_ms = @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms)),
+            .created_ms = nowMs(g.io),
             .files = &.{f},
         });
     }
@@ -186,6 +289,11 @@ pub const ReviewGlue = struct {
         return .{ .restored_files = r.restored, .skipped = skipped };
     }
 };
+
+fn nowMs(io: Io) i64 {
+    const now = Io.Clock.real.now(io);
+    return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
+}
 
 // ---------------------------------------------------------------- tests
 
@@ -246,4 +354,43 @@ test "review glue: agent writes are recorded and a checkpoint restore keeps the 
     const out2 = try rs.restore_to(rs.ctx, testing.io, arena, cp2);
     try testing.expectEqual(@as(usize, 0), out2.restored_files.len);
     try testing.expectError(error.UnknownCheckpoint, rs.restore_to(rs.ctx, testing.io, arena, 99));
+}
+
+test "review glue: a turn's writes become one auto-applied changeset" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    defer g.destroy();
+    const fs = g.files();
+    const in_turn = struct {
+        fn edit(f: zfiles.Files, ar: Allocator, path: []const u8, turn: u32, p: zfiles.Proposal) !zfiles.Outcome {
+            const abs = (try f.resolve(testing.io, ar, path)).abs;
+            return f.propose(testing.io, ar, abs, p, .{ .agent = s1, .turn = turn, .tool = "edit_file", .tool_call_id = "t" });
+        }
+    };
+    try testing.expect(try in_turn.edit(fs, arena, "a.txt", 3, .{ .str_replace = .{ .old = "one", .new = "ONE" } }) == .applied);
+    try testing.expect(try in_turn.edit(fs, arena, "a.txt", 3, .{ .str_replace = .{ .old = "two", .new = "TWO" } }) == .applied);
+    try testing.expect(try in_turn.edit(fs, arena, "new.txt", 3, .{ .create = .{ .text = "hi\n" } }) == .applied);
+
+    const id = (try fs.endTurn(testing.io, s1, 3)).?;
+    try testing.expectEqual(@as(?u64, null), try fs.endTurn(testing.io, s1, 3));
+    const cs = g.q.get(@enumFromInt(id)).?;
+    try testing.expectEqual(model.State.applied, cs.state);
+    try testing.expect(cs.auto_applied);
+    try testing.expectEqual(@as(usize, 2), cs.files.len);
+    try testing.expectEqualStrings("a.txt", cs.files[0].path);
+    try testing.expectEqual(@as(u32, 2), cs.files[0].countLines().added);
+    try testing.expect(cs.files[1].op == .create);
+    const rows = g.model.rows();
+    try testing.expectEqualStrings("Recently auto-applied (last 24 h)", rows[0].label);
+    try testing.expectEqualStrings("Turn 3", rows[1].label);
+    // A turn that wrote nothing has no changeset.
+    try testing.expectEqual(@as(?u64, null), try fs.endTurn(testing.io, s1, 4));
 }

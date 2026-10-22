@@ -557,8 +557,9 @@ pub fn equal(a: Value, b: Value) bool {
     };
 }
 
-/// A hash consistent with `equal`.
-fn hash(v: Value) u64 {
+/// A hash consistent with `equal`: object member order and number
+/// spelling (`1`, `1.0`) do not change it.
+pub fn hash(v: Value) u64 {
     var h = std.hash.Wyhash.init(0);
     hashInto(&h, v);
     return h.final();

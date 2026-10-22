@@ -1,0 +1,8 @@
+1| type:.n punctuation.bracket:{
+2| property:width punctuation.delimiter:: number:100% punctuation.delimiter:;
+3| property:height punctuation.delimiter:: number:50vh punctuation.delimiter:;
+4| property:line-height punctuation.delimiter:: number:1.5 punctuation.delimiter:;
+5| property:margin punctuation.delimiter:: number:-2px number:.5em number:+3rem punctuation.delimiter:;
+6| property:transform punctuation.delimiter:: function.builtin:rotate punctuation.bracket:( number:45deg punctuation.bracket:) function.builtin:scale punctuation.bracket:( number:1.2e1 punctuation.bracket:) punctuation.delimiter:;
+7| property:transition punctuation.delimiter:: constant:opacity number:0.3s constant:ease-in-out punctuation.delimiter:;
+8| punctuation.bracket:}

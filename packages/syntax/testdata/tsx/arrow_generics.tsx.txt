@@ -1,0 +1,4 @@
+const id = <T,>(x: T) => x;
+const first = <T extends unknown[]>(xs: T) => xs[0];
+const pair = <A, B>(a: A, b: B) => [a, b] as const;
+const tag = <Tag>text</Tag>;

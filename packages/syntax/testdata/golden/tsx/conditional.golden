@@ -1,0 +1,6 @@
+1| keyword.control:return punctuation.bracket:(
+2| punctuation:< tag:div punctuation:>
+3| string:     punctuation.bracket:{ variable:user operator:? punctuation:< type:Welcome attribute:name operator:= punctuation.bracket:{ variable:user punctuation.delimiter:. property:name punctuation.bracket:} punctuation:/> operator:: punctuation:< type:Login punctuation:/> punctuation.bracket:}
+4| string:     punctuation.bracket:{ variable:items punctuation.delimiter:. property:length operator:> number:0 operator:&& punctuation:< type:Badge attribute:count operator:= punctuation.bracket:{ variable:items punctuation.delimiter:. property:length punctuation.bracket:} punctuation:/> punctuation.bracket:}
+5| string:   punctuation:</ tag:div punctuation:>
+6| punctuation.bracket:) punctuation.delimiter:;

@@ -1,0 +1,5 @@
+1| keyword:import type:React keyword:from string:"react" punctuation.delimiter:;
+2| keyword.storage:interface type:Props punctuation.bracket:{ variable:title operator:: type.builtin:string punctuation.delimiter:; variable:count operator:? operator:: type.builtin:number punctuation.bracket:}
+3| keyword:export keyword.storage:function function:Card punctuation.bracket:( punctuation.bracket:{ variable:title punctuation.delimiter:, variable:count operator:= number:0 punctuation.bracket:} operator:: type:Props punctuation.bracket:) operator:: constant:JSX punctuation.delimiter:. property:Element punctuation.bracket:{
+4| keyword.control:return punctuation:< tag:div attribute:className operator:= string:"card" punctuation:> punctuation:< tag:h2 punctuation:> punctuation.bracket:{ variable:title punctuation.bracket:} punctuation:</ tag:h2 punctuation:> punctuation:< tag:span punctuation:> punctuation.bracket:{ variable:count punctuation.bracket:} punctuation:</ tag:span punctuation:> punctuation:</ tag:div punctuation:> punctuation.delimiter:;
+5| punctuation.bracket:}

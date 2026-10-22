@@ -1,0 +1,5 @@
+1| keyword.storage:type type:Result operator:= punctuation.bracket:{ variable:ok operator:: constant.builtin:true punctuation.delimiter:; variable:value operator:: type.builtin:number punctuation.bracket:} operator:| punctuation.bracket:{ variable:ok operator:: constant.builtin:false punctuation.delimiter:; variable:error operator:: type.builtin:string punctuation.bracket:} punctuation.delimiter:;
+2| keyword.storage:type type:Dir operator:= string:"up" operator:| string:"down" operator:| string:"left" operator:| string:"right" punctuation.delimiter:;
+3| keyword.storage:type type:Both operator:= type:A operator:& type:B punctuation.delimiter:;
+4| keyword.storage:type type:Opt operator:< type:T operator:> operator:= punctuation.bracket:{ punctuation.bracket:[ type:K keyword.operator:in keyword.operator:keyof type:T punctuation.bracket:] operator:? operator:: type:T punctuation.bracket:[ type:K punctuation.bracket:] punctuation.bracket:} punctuation.delimiter:;
+5| keyword.storage:type type:Tpl operator:= string:`prefix- punctuation:$ punctuation.bracket:{ type.builtin:string punctuation.bracket:} string:` punctuation.delimiter:;

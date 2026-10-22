@@ -1,0 +1,6 @@
+const v = (
+  <div>
+    {loading ? <Spinner /> : <Content data={data} />}
+    {error && <p className="err">{error.message}</p>}
+  </div>
+);

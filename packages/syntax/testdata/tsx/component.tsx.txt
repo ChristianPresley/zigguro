@@ -1,0 +1,5 @@
+import React from "react";
+interface Props { title: string; count?: number }
+export function Card({ title, count = 0 }: Props): JSX.Element {
+  return <div className="card"><h2>{title}</h2><span>{count}</span></div>;
+}

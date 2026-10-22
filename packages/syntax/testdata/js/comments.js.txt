@@ -1,0 +1,7 @@
+// line comment
+/* block comment */
+/**
+ * JSDoc block
+ * @param {string} name
+ */
+function f(/* inline */ a) { return a; } // trailing

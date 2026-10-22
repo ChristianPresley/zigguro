@@ -1,0 +1,7 @@
+@Component({ selector: "app-root" })
+export class AppComponent {
+  @Input() name: string = "";
+  @Output() changed = new EventEmitter<string>();
+  @HostListener("click", ["$event"])
+  onClick(e: MouseEvent) {}
+}

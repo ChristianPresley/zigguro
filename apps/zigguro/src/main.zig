@@ -6,7 +6,8 @@
 //! `zigguro FILE` opens FILE in the editor workbench instead (a missing
 //! file starts empty and is created on save); `--terminal` opens the
 //! workbench with its terminal panel showing (Ctrl+` toggles it), and
-//! `--agent` with the agent pane open (Ctrl+L toggles it).
+//! `--agent` with the agent pane open (Ctrl+L toggles it); `--review`
+//! opens it with the review queue showing.
 //!
 //! `--frames N` exits after N presented frames. With `ZG_PLATFORM=headless`,
 //! or when no display can be reached, it renders `--frames N` frames
@@ -90,7 +91,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (file_arg) |p| rt.gpa.free(p);
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
     const want_agent = hasFlag(min, rt.gpa, "--agent");
-    const use_wb = file_arg != null or want_terminal or want_agent;
+    const want_review = hasFlag(min, rt.gpa, "--review");
+    const use_wb = file_arg != null or want_terminal or want_agent or want_review;
     var wb: Workbench = undefined;
     if (use_wb) try wb.init(&rt, &env, file_arg);
     defer if (use_wb) wb.deinit();
@@ -110,6 +112,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (use_wb) try wb.attach(hw.win);
         if (want_terminal) try wb.toggleTerminal();
         if (want_agent) try wb.toggleAgent();
+        if (want_review) try wb.toggleReview();
         defer if (use_wb) wb.detach();
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
@@ -143,6 +146,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (use_wb) try wb.attach(hw.win);
     if (want_terminal) try wb.toggleTerminal();
     if (want_agent) try wb.toggleAgent();
+    if (want_review) try wb.toggleReview();
     defer if (use_wb) wb.detach();
     var drawn: u64 = 0;
     var i: u32 = 0;
