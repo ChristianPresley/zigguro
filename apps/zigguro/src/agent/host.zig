@@ -129,6 +129,8 @@ pub const AgentHost = struct {
             .tools = h.agent_tools.tools(),
             .permission = h.approvals.permission(),
             .checkpoints = h.review.checkpoints(),
+            // Each turn's writes become a changeset in the review queue.
+            .turn_end = h.file_tools.turnEnd(),
             // Tool inputs are checked by E11's JSON Schema validator, as
             // in `zg agent`.
             .validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate),
