@@ -95,6 +95,8 @@ pub const Highlighter = struct {
     pending: std.ArrayList(Range) = .empty,
     sink: TokenSink = .{},
     scratch: std.ArrayList(u8) = .empty,
+    /// The next line's text, for `Language.lookahead`.
+    scratch_next: std.ArrayList(u8) = .empty,
     /// Lines relexed since the last `takeRelexed`, in current lines.
     relexed: ?Range = null,
     /// Counters for tests and benches.
@@ -113,6 +115,7 @@ pub const Highlighter = struct {
         h.pending.deinit(h.gpa);
         h.sink.deinit(h.gpa);
         h.scratch.deinit(h.gpa);
+        h.scratch_next.deinit(h.gpa);
     }
 
     /// Forgets all tokens and marks every line of `src` for relexing.
@@ -233,10 +236,12 @@ pub const Highlighter = struct {
                 r.end = if (r.end > old_end) r.end - e.removed + e.inserted else e.first + e.inserted;
             }
         }
-        // The edited lines, or the line after a pure deletion.
+        // The edited lines, or the line after a pure deletion; with
+        // lookahead also the line above, whose next line changed.
         const n = h.store.lineCount();
         const mark_end = @min(n, e.first + @max(e.inserted, 1));
-        if (e.first < mark_end) try h.addPending(e.first, mark_end);
+        const mark_start = if (h.lang.lookahead) e.first -| 1 else e.first;
+        if (mark_start < mark_end) try h.addPending(mark_start, mark_end);
     }
 
     /// Makes lines `[first, last]` exact, or approximate when the nearest
@@ -315,9 +320,10 @@ pub const Highlighter = struct {
     /// table overflowed and everything was marked for relexing.
     fn relex(h: *Highlighter, src: LineSource, line: u64, start: StateId, approx: bool) Allocator.Error!Relexed {
         const text = try src.get(line, &h.scratch, h.gpa);
+        const next = if (h.lang.lookahead and line + 1 < src.lines) try src.get(line + 1, &h.scratch_next, h.gpa) else null;
         var st = h.states.get(start).*;
         try h.sink.begin(h.gpa, text.len);
-        lexer.lexLine(h.reg, &st, text, &h.sink);
+        lexer.lexLineAhead(h.reg, &st, text, next, &h.sink);
         h.stats.lines_lexed += 1;
         const end = h.states.intern(h.gpa, &st) catch |e| switch (e) {
             error.OutOfMemory => |x| return x,

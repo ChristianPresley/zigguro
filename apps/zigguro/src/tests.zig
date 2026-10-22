@@ -14,6 +14,7 @@ test {
     _ = @import("file_sync.zig");
     _ = @import("agent/commands.zig");
     _ = @import("agent/host.zig");
+    _ = @import("agent/inline_model.zig");
     _ = @import("agent/mcp_input.zig");
     _ = @import("path_crumbs.zig");
     _ = @import("review/queue_panel.zig");

@@ -283,9 +283,11 @@ fn lexAll(ctx: LexCtx, s: *bench.State) void {
     var it: u64 = 0;
     while (it < s.iterations()) : (it += 1) {
         var st = syntax.LexState.init(ctx.id);
-        for (ctx.lines) |l| {
+        const ahead = ctx.reg.getOrPlain(ctx.id).lookahead;
+        for (ctx.lines, 0..) |l, i| {
             sink.begin(std.heap.smp_allocator, l.len) catch unreachable;
-            syntax.lex.lexer.lexLine(ctx.reg, &st, l, &sink);
+            const next = if (ahead and i + 1 < ctx.lines.len) ctx.lines[i + 1] else null;
+            syntax.lex.lexer.lexLineAhead(ctx.reg, &st, l, next, &sink);
         }
         bench.doNotOptimizeAway(sink.tokens().len);
     }
