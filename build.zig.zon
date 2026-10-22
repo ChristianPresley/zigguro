@@ -20,6 +20,7 @@
         .zg_ai = .{ .path = "packages/ai" },
         .zg_release = .{ .path = "packages/release" },
         .zg_update = .{ .path = "packages/update" },
+        .zg_crash = .{ .path = "packages/crash" },
         // pkgtool:insert
     },
     .paths = .{
