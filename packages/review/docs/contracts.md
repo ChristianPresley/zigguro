@@ -85,8 +85,8 @@ carrying the rationale and lane. The review id is the changeset id.
 
 | E09 provides | What E12 does with it |
 | --- | --- |
-| `PreviewFiles.files(arena, proposal)` | One `PreviewFile{path, base, new}` per path that the preview changes against the current view. A describe proposal sends `.zigguro/scm/description/<change>` with the old and new text. The files show the preview and are never written: `Applier.apply` returns `error.ScmProposal` for these changesets. |
-| `ScmActions.decide(item, decision)` | Carries out `ScmReviewPort.decide(cs, ScmDecision)`: describe approve (optionally with edited text) or reject, split and resolve approve or reject, and land with a `ReviewDecision`. `.conflicted` keeps the item open, because the preview no longer adopts cleanly. Otherwise the item is marked approved (applied) or rejected. `RepoActions` adopts or discards the preview on a `zg_scm.Repo` and forwards landing decisions to `LandingQueue.onReviewDecision`. It refuses edited descriptions, which need E09's describe operation. |
+| `PreviewFiles.files(arena, proposal)` | One `PreviewFile{path, base, new}` (zg_scm's `proposal_files.FileChange`) per path the proposal changes. A describe proposal sends `.zigguro/scm/description/<change>` with the old and new text. `PreviewFiles.ofRepo(&proposal_files)` reads them from a repository. The files show the preview and are never written: `Applier.apply` returns `error.ScmProposal` for these changesets. |
+| `ScmActions.decide(item, decision)` | Carries out `ScmReviewPort.decide(cs, ScmDecision)`: describe approve (optionally with edited text) or reject, split and resolve approve or reject, and land with a `ReviewDecision`. `.conflicted` keeps the item open, because the preview no longer adopts cleanly. Otherwise the item is marked approved (applied) or rejected. `RepoActions` adopts or discards the preview on a `zg_scm.Repo` and forwards landing decisions to `LandingQueue.onReviewDecision`. An approved description that the reviewer edited goes through `zg_scm.ai.describe.redescribe` on the proposal's first commit (`Item.commit`). |
 | `LandingQueue.events()` | `bindLanding(lq)` mirrors each lane state onto `Item.landing`. `returned_conflict` and `returned_checks_failed` reopen the item with the reason. `rejected` and `cancelled` close it. |
 
 `status` maps changeset states as follows:
@@ -104,4 +104,3 @@ Still open:
 - per-region resolve decisions, which wait for E09's `RegionDecision`
 - persisting `Item` (preview op, lane) across restarts
 - the proposal view in the IDE
-- a zg_scm read model behind `PreviewFiles`
