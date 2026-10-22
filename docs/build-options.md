@@ -14,10 +14,16 @@ Every package's `build.zig` calls `zg_build.flags(b)` exactly once and passes `f
 | `-Dvk_validation` | bool | false | yes | `vk_validation` | E02 | Enable Vulkan validation layers when present. |
 | `-Dassert_ui_thread` | bool | true in Debug | yes | `assert_ui_thread` | E00 | `Runtime.assertNotUi()` panics on blocking calls from the UI thread. |
 | `-Dgpa` | auto, debug, smp | auto | yes | `gpa` | E00 | Process allocator; auto = DebugAllocator in Debug/ReleaseSafe, smp_allocator otherwise. |
-| `-Dversion` | string | 0.0.0-dev | yes | `version` | E00 / E17 | Version string; CI passes `git describe` output (the build never runs git). |
+| `-Dversion` | string | 0.0.0-dev | yes | `version` | E00 / E17 | SemVer version; `zg_release.current.version_string` adds `+g<commit>` or `+local`. Read it through `zg_release`, not `zg_options`. |
 | `-Dupdate-golden` | bool | false | yes | `update_golden` | E00 | Rewrite golden files instead of comparing. |
 | `-Dnetwork-tests` | bool | false | yes | `network_tests` | E00 | Enable tests that reach the internet. |
 | `-Dslow-tests` | bool | false | yes | `slow_tests` | E00 | Enable slow integration tests (e.g. ones that spawn `zig build`). |
+| `-Dchannel` | dev, insiders, rc, stable | dev | yes | `channel` | E17 | Release channel baked into `zg_release.current`. |
+| `-Dcommit` | string | unknown | yes | `commit` | E17 | Commit hash; CI passes it. Feeds the `+g<12 hex>` build metadata. |
+| `-Dsource-date-epoch` | i64 | 0 | yes | `source_date_epoch` | E17 | Reproducible-build timestamp (commit time); archive mtimes and the update freeze check use it. |
+| `-Dupdate-mode` | managed_or_notify, notify_only, disabled | managed_or_notify | yes | `update_mode` | E17 | Update behavior baked into the binary. |
+| `-Ddistro` | bool | false | yes | `distro` | E17 | Distro packaging build; forces `update-mode=disabled`. |
+| (computed) | string | target | per package | `release_target` | E17 | `{arch}-{os}-{abi}[.glibc]`, e.g. `x86_64-linux-gnu.2.28` (`zg_build.releaseTarget`). Not a `-D` option. |
 | (computed) | string | package dir | per package | `package_root` | E00 | Absolute path of the package directory, used by golden tests. Not a `-D` option. |
 | `-Dbench-quick` | bool | false | no (root only) | (none) | E00 | Quick benchmark mode. |
 | `-Dbench-filter` | string | none | no (root only) | (none) | E00 | Only run benchmarks whose name contains this. |
