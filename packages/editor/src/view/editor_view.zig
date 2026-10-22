@@ -84,6 +84,12 @@ pub const EditorView = struct {
     decorations: ?*const deco_store.DecorationStore = null,
     styles: ?StyleResolver = null,
     on_change: ?ChangeHook = null,
+    /// Called when the primary caret moved or the number of selections
+    /// changed (a status bar's position).
+    on_caret: ?ChangeHook = null,
+    /// The caret `on_caret` last reported.
+    seen_head: u64 = 0,
+    seen_sels: usize = 1,
     opts: Options,
     /// Content scroll offset in pixels.
     scroll: Vec2 = .{},
@@ -99,6 +105,10 @@ pub const EditorView = struct {
     now_ms: u64 = 0,
     scratch: std.ArrayList(u8) = .empty,
     in_edit: bool = false,
+    /// The document changed outside this view's undo history (an agent
+    /// or LSP edit) since it was last seen clean, so the undo tree's saved
+    /// marker no longer says whether the text matches the disk.
+    foreign: bool = false,
 
     /// A view on `doc` with a caret at the start.
     pub fn init(gpa: Allocator, doc: *Document, opts: Options) !*EditorView {
@@ -172,12 +182,19 @@ pub const EditorView = struct {
 
     fn touch(v: *EditorView) void {
         v.generation +%= 1;
+        const head = v.primarySel().head;
+        const n = v.sels.items.items.len;
+        if (head == v.seen_head and n == v.seen_sels) return;
+        v.seen_head = head;
+        v.seen_sels = n;
+        if (v.on_caret) |h| h.f(h.ctx, v);
     }
 
     fn onDocChange(ctx: *anyopaque, ev: *const document.ChangeEvent) void {
         const v: *EditorView = @ptrCast(@alignCast(ctx));
         if (v.syntax) |ds| ds.onChange(ev, &v.doc.tree, null) catch {};
         if (v.in_edit) return;
+        if (ev.origin != .reload) v.foreign = true;
         for (v.sels.items.items) |*s| s.* = s.map(ev.changes);
         v.normalize();
         v.touch();
@@ -798,15 +815,25 @@ pub const EditorView = struct {
 
     /// Undoes the last group; false when there is nothing to undo.
     pub fn undoStep(v: *EditorView) !bool {
+        if (!v.doc.isDirty()) v.foreign = false;
         const step = v.undo.undo() orelse return false;
         try v.applyStep(step, .undo);
+        v.syncSaved();
         return true;
     }
 
     /// Redoes the next group; false when there is nothing to redo.
     pub fn redoStep(v: *EditorView) !bool {
+        if (!v.doc.isDirty()) v.foreign = false;
         const step = v.undo.redo() orelse return false;
         try v.applyStep(step, .redo);
+        v.syncSaved();
         return true;
+    }
+
+    /// Undoing or redoing back to the saved state makes the document
+    /// clean again (when only this view's history changed it).
+    fn syncSaved(v: *EditorView) void {
+        if (v.undo.isAtSaved() and !v.foreign) v.doc.saved_version = v.doc.version;
     }
 };

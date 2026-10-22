@@ -56,7 +56,14 @@ pub const Role = enum(u8) {
     toolbar,
     img,
     window,
+    grid,
+    row,
+    gridcell,
+    columnheader,
 };
+
+/// A column header's sort state.
+pub const SortState = enum(u8) { none, ascending, descending };
 
 /// What a node exposes to assistive technology and test queries.
 pub const A11y = struct {
@@ -71,6 +78,14 @@ pub const A11y = struct {
     selected: ?bool = null,
     /// Tree items: depth from 1 (0: none).
     level: u16 = 0,
+    /// Grids: rows and columns (0: unknown).
+    row_count: u64 = 0,
+    col_count: u32 = 0,
+    /// Grid rows and cells: position from 1 (0: none).
+    row_index: u64 = 0,
+    col_index: u32 = 0,
+    /// Column headers.
+    sort: SortState = .none,
     /// The text of an editable node (text boxes; empty for passwords).
     text: []const u8 = "",
 };

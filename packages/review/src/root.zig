@@ -22,6 +22,8 @@ pub const queue_view = @import("queue_view/root.zig");
 pub const approvals = @import("approvals/root.zig");
 /// Reviewing hunk by hunk: cursor, decisions and their undo.
 pub const session = @import("session/root.zig");
+/// Comment threads on changesets, labels and re-anchoring.
+pub const feedback = @import("feedback/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

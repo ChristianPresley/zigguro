@@ -362,6 +362,10 @@ fn register(b: *bench.Bench) !void {
     try registerMoves(b, text);
     try registerSmart(b, text);
     try registerLineOps(b, text);
+    try registerEncoding(b, text);
+    try registerSave(b, text);
+    try registerUndoFile(b, text);
+    try registerDiffModel(b);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -542,6 +546,133 @@ fn pasteReindent(c: *PasteBench, s: *bench.State) void {
         var sels = edit.selection.SelectionSet.init(c.gpa, .caret(4)) catch unreachable;
         defer sels.deinit();
         _ = edit.clipboard.paste(doc, &sels, c.cb, .{ .reindent_on_paste = true }) catch unreachable;
+    }
+}
+
+const EncBench = struct { bytes: []const u8, enc: zg_editor.model.encoding.Encoding, out: std.ArrayList(u8) = .empty, gpa: std.mem.Allocator };
+
+/// Decoding the 3.5 MB corpus re-encoded as UTF-16LE (ASCII fast path)
+/// and as windows-1252.
+fn registerEncoding(b: *bench.Bench, text: []const u8) !void {
+    const encoding = zg_editor.model.encoding;
+    inline for (.{ .{ "editor.encoding.utf16le_decode", encoding.Encoding.utf16le }, .{ "editor.encoding.windows1252_decode", encoding.Encoding.windows_1252 } }) |c| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(b.gpa);
+        // The corpus is ASCII Zig; any byte a legacy encoding lacks would
+        // fail, so encode only what it can hold.
+        encoding.encode(c[1], text, &bytes, b.gpa) catch {
+            bytes.clearRetainingCapacity();
+            for (text) |ch| if (ch < 0x80) try bytes.append(b.gpa, ch);
+        };
+        var eb: EncBench = .{ .bytes = bytes.items, .enc = c[1], .gpa = b.gpa };
+        defer eb.out.deinit(b.gpa);
+        try b.run(c[0], &eb, decodeBench);
+    }
+}
+
+fn decodeBench(c: *EncBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.out.clearRetainingCapacity();
+        var d: zg_editor.model.encoding.Decoder = .init(c.enc);
+        d.decode(c.bytes, &c.out, c.gpa, true) catch unreachable;
+    }
+}
+
+/// Saving 100 MB of UTF-8 through the atomic path (temp file, sync,
+/// rename) into `.zig-cache/bench-save`.
+fn registerSave(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.save.100mb_utf8", f) == null) return;
+    const save = buffer.save;
+    const big = try b.gpa.alloc(u8, 100 << 20);
+    defer b.gpa.free(big);
+    for (0..big.len) |k| big[k] = text[k % text.len];
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), big);
+    defer doc.deinit();
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(b.io, ".zig-cache/bench-save", .{});
+    defer dir.close(b.io);
+    var job: save.SaveJob = .{ .gpa = b.gpa, .snap = doc.snapshot(), .dir = dir, .path = "big.txt", .encoding = .utf8, .expect = null };
+    defer job.deinit();
+    try b.run("editor.save.100mb_utf8", &job, saveBench);
+    dir.deleteFile(b.io, "big.txt") catch {};
+}
+
+fn saveBench(job: *buffer.save.SaveJob, s: *bench.State) void {
+    s.setBytes(job.snap.len());
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) _ = job.run(s.io) catch unreachable;
+}
+
+const UndoFileBench = struct { bytes: []const u8, hash: [32]u8, len: u64, gpa: std.mem.Allocator };
+
+/// Restoring a 10 MB undo history (2,500 groups of 4 KB inserts with
+/// their inverses) from bytes already read.
+fn registerUndoFile(b: *bench.Bench, text: []const u8) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.undo_file.restore_10mb", f) == null) return;
+    const edit = zg_editor.model.edit;
+    const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), "");
+    defer doc.deinit();
+    var tree: edit.undo.UndoTree = .init(b.gpa, .{ .max_bytes = 1 << 30 });
+    defer tree.deinit();
+    for (0..2500) |k| {
+        const piece = text[(k * 4096) % (text.len - 4096) ..][0..4096];
+        var cs = try edit.change_set.ChangeSet.fromEdits(b.gpa, doc.len(), &.{.{ .range = .{ .start = doc.len(), .end = doc.len() }, .text = piece }});
+        const inv = try cs.invert(doc.tree, b.gpa);
+        try doc.applyChangeSet(&cs, .{ .user = 0 });
+        try tree.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .{ .nanoseconds = @intCast(k) } });
+        tree.breakGroup();
+    }
+    const hash = edit.undo_file.contentHash("bench");
+    const bytes = try edit.undo_file.encode(b.gpa, &tree, hash, 5, 64 << 20);
+    defer b.gpa.free(bytes);
+    var ub: UndoFileBench = .{ .bytes = bytes, .hash = hash, .len = 5, .gpa = b.gpa };
+    try b.run("editor.undo_file.restore_10mb", &ub, undoRestore);
+}
+
+fn undoRestore(c: *UndoFileBench, s: *bench.State) void {
+    s.setBytes(c.bytes.len);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var t = (zg_editor.model.edit.undo_file.decode(c.gpa, c.bytes, c.hash, c.len, .{ .max_bytes = 1 << 30 }) catch unreachable).?;
+        t.deinit();
+    }
+}
+
+const DiffModelBench = struct { doc: *zg_editor.model.document.Document, m: *zg_editor.model.diff.diff_model.DiffModel, at: u64 };
+
+/// One keystroke (insert, then delete) in the middle of a 10k-line file
+/// whose live diff has 100 hunks.
+fn registerDiffModel(b: *bench.Bench) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.diff_model.keystroke_10k", f) == null) return;
+    const Document = zg_editor.model.document.Document;
+    const base = try genLines(b.gpa, 10_000);
+    defer b.gpa.free(base);
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), base);
+    defer doc.deinit();
+    const snap = doc.snapshot();
+    // Change one line in every hundred: 100 hunks.
+    var k: u64 = 50;
+    while (k < 10_000) : (k += 100) try benchEdit(b.gpa, doc, doc.tree.lineStart(k), 2, "CHANGED");
+    const m = try zg_editor.model.diff.diff_model.DiffModel.init(b.gpa, null, snap, doc, .{});
+    defer m.deinit();
+    try m.completeFull();
+    std.debug.assert(m.hunks().len == 100);
+    var db: DiffModelBench = .{ .doc = doc, .m = m, .at = doc.tree.lineStart(5_020) + 3 };
+    try b.run("editor.diff_model.keystroke_10k", &db, diffKeystroke);
+}
+
+fn benchEdit(gpa: std.mem.Allocator, doc: *zg_editor.model.document.Document, at: u64, del: u64, text: []const u8) !void {
+    var cs = try zg_editor.model.edit.change_set.ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at + del }, .text = text }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+}
+
+fn diffKeystroke(c: *DiffModelBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        // Alternate typing and deleting a character.
+        if (i % 2 == 0) benchEdit(c.m.gpa, c.doc, c.at, 0, "x") catch unreachable else benchEdit(c.m.gpa, c.doc, c.at, 1, "") catch unreachable;
     }
 }
 

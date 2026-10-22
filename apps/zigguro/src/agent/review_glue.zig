@@ -40,8 +40,27 @@
 //!
 //! `Options.approvals` (the workbench's approvals inbox) is journaled to
 //! the same store: approval records are loaded when the store opens
-//! (requests a crash left pending show as expired) and written as they
-//! change.
+//! (requests a crash left pending show as expired, and are journaled so)
+//! and written as they change. `refresh` takes answers that `zg review
+//! approve` and `deny` appended for this window's pending requests.
+//!
+//! `comments` holds the review comment threads (zg_review.feedback),
+//! journaled to the same store and written at once; `refresh` takes the
+//! threads other processes wrote.
+//!
+//! `feedback` sends review threads to the agent (`bindAgent`, the
+//! workbench agent's port) and links its revision; the glue runs its
+//! `pump` after each turn's changeset and each refresh.
+//!
+//! `follow` moves comment threads with their lines when a changeset's
+//! texts change (a rebase onto another apply, a partial apply, another
+//! process's record); pumped after each action, turn and refresh.
+//!
+//! `outcomes` tells the agent what review did with its changes
+//! (`bindOutcomes`; the sink queues reminders): pumped on each refresh,
+//! and flushed for a session when its turn ends (after taking in other
+//! processes' records), so they reach its next request. Decisions are
+//! journaled, so `zg review accept` reaches `zg agent` the same way.
 //!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
@@ -77,6 +96,15 @@ pub const ReviewGlue = struct {
     /// Persisting, but the store is created on the first write.
     store_pending: bool = false,
     approvals: ?*zg_review.approvals.ApprovalBroker = null,
+    /// Review comment threads on the queue's changesets (under `mutex`).
+    comments: zg_review.feedback.CommentStore,
+    /// Fix requests to the agent and their revisions (`bindAgent`).
+    feedback: ?zg_review.feedback.Feedback = null,
+    /// Keeps comment threads on their lines when changesets change
+    /// (rebase, partial apply, other processes); pumped with `feedback`.
+    follow: zg_review.feedback.Follow = undefined,
+    /// Review outcomes for the agent (`bindOutcomes`).
+    outcomes: ?*zg_review.feedback.OutcomeReporter = null,
     history: model.History,
     q: *model.Queue,
     cps: Checkpoints,
@@ -150,12 +178,17 @@ pub const ReviewGlue = struct {
             .conflicts = undefined,
             .policy = undefined,
             .approvals = o.approvals,
+            .comments = .init(gpa, .{}),
         };
+        errdefer g.comments.deinit();
         errdefer g.dir.close(io);
         errdefer g.blobs.deinit();
         g.workspace = .{ .dir = g.dir, .io = io };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
         errdefer g.q.deinit();
+        g.follow = .init(gpa, g.q, &g.comments);
+        errdefer g.follow.deinit();
+        _ = try g.q.subscribe(g.follow.listener());
         g.cps = .init(gpa, io, g.q, &g.history, g.workspace.files(), null);
         errdefer g.cps.deinit();
         if (o.persist) {
@@ -185,12 +218,35 @@ pub const ReviewGlue = struct {
         // The broker outlives the glue (the workbench owns it).
         if (g.approvals) |b| if (g.store != null) b.bind(null, b.opts.id_base);
         if (g.store) |st| st.close();
+        if (g.feedback) |*f| f.deinit();
+        if (g.outcomes) |o| o.deinit();
+        g.follow.deinit();
+        g.comments.deinit();
         g.cps.deinit();
         g.q.deinit();
         g.history.deinit();
         g.blobs.deinit();
         g.dir.close(g.io);
         gpa.destroy(g);
+    }
+
+    /// Fix requests go to the agent behind `port` (the workbench agent).
+    /// Once, before agents run.
+    pub fn bindAgent(g: *ReviewGlue, port: zg_review.feedback.AgentPort) !void {
+        g.mutex.lockUncancelable(g.io);
+        defer g.mutex.unlock(g.io);
+        std.debug.assert(g.feedback == null);
+        g.feedback = .init(g.gpa, g.q, &g.comments, port, .{});
+        _ = try g.q.subscribe(g.feedback.?.listener());
+    }
+
+    /// Review outcomes go to `sink` (the workbench agent's reminders).
+    /// Once, before agents run.
+    pub fn bindOutcomes(g: *ReviewGlue, sink: zg_review.feedback.OutcomeSink) !void {
+        g.mutex.lockUncancelable(g.io);
+        defer g.mutex.unlock(g.io);
+        std.debug.assert(g.outcomes == null);
+        g.outcomes = try .init(g.gpa, g.q, &g.comments, sink, .{});
     }
 
     /// The `Files` for paths not open in the editor (`EditorFiles.outside`).
@@ -368,7 +424,17 @@ pub const ReviewGlue = struct {
             var t = g.turns.swapRemove(i);
             defer t.arena.deinit();
             defer g.flushLocked();
-            break :blk try g.submitTurn(&t) orelse return null;
+            // Outcomes of earlier changes, decided here or by `zg review`,
+            // reach the session's next request.
+            if (g.outcomes) |o| {
+                if (g.store) |st| _ = st.tail(g.sink.sink()) catch |e| log.warn("review store: reading other processes' records failed: {t}", .{e});
+                o.pump(nowMs(io));
+                _ = o.flush(agent.session);
+            }
+            const id = try g.submitTurn(&t) orelse return null;
+            if (g.feedback) |*f| f.pump();
+            g.follow.pump();
+            break :blk id;
         };
         if (g.on_change) |h| h.f(h.ctx);
         return @intFromEnum(id);
@@ -485,6 +551,8 @@ pub const ReviewGlue = struct {
     /// builds under it). UI thread.
     pub fn actLocked(g: *ReviewGlue, arena: Allocator, cs: model.ChangesetId, act: Action) anyerror!ActionResult {
         defer g.flushLocked();
+        // Comments follow the texts this changed (after any rebase).
+        defer g.follow.pump();
         const c = g.q.getMut(cs) orelse return .{ .refused = .{ .path = "", .reason = "it is gone" } };
         switch (act) {
             .accept, .reject => {
@@ -540,9 +608,22 @@ pub const ReviewGlue = struct {
             // Only the load: another process's live requests are its own.
             g.sink.approvals = b.restoreSink();
         }
+        g.comments.bind(.{ .ctx = st, .record = recordComment }, @as(u64, st.processTag()) << 32);
+        g.sink.comments = g.comments.restoreSink();
+        errdefer g.comments.bind(null, 0);
+        errdefer g.sink.comments = null;
         errdefer if (g.approvals) |b| b.bind(null, 0);
-        defer g.sink.approvals = null;
+        errdefer g.sink.approvals = null;
         const rep = try st.load(g.sink.sink());
+        // Decisions are journaled for other processes' outcome reporters,
+        // and theirs come back as events from now on.
+        _ = try g.q.subscribe(st.decidedListener());
+        g.sink.decided = true;
+        if (g.approvals) |b| {
+            b.journalRestored();
+            // From now on only answers from `zg review approve`.
+            g.sink.approvals = b.remoteSink();
+        }
         if (rep.truncated_bytes > 0 or rep.quarantined > 0)
             log.warn("review store: {d} torn bytes cut, {d} segments quarantined", .{ rep.truncated_bytes, rep.quarantined });
         g.cps.mutex.lockUncancelable(g.io);
@@ -563,6 +644,16 @@ pub const ReviewGlue = struct {
         st.flush() catch |e| log.warn("review store: approval not written: {t}", .{e});
     }
 
+    /// A comment changed: written at once, like approvals. Locked.
+    fn recordComment(ctx: *anyopaque, json: []const u8) void {
+        const st: *zg_review.store.ChangesetStore = @ptrCast(@alignCast(ctx));
+        st.append(.comment, json) catch |e| {
+            log.warn("review store: comment not recorded: {t}", .{e});
+            return;
+        };
+        st.flush() catch |e| log.warn("review store: comment not written: {t}", .{e});
+    }
+
     /// Before the first write of a persisting glue. Locked.
     fn ensureStoreLocked(g: *ReviewGlue) void {
         if (!g.store_pending) return;
@@ -574,6 +665,7 @@ pub const ReviewGlue = struct {
             g.store = null;
             g.q.journal = null;
             g.history.recorder = null;
+            g.comments.bind(null, 0);
             if (g.approvals) |b| b.bind(null, 0);
         };
     }
@@ -632,13 +724,16 @@ pub const ReviewGlue = struct {
     /// Takes in what other processes (`zg review`, another window)
     /// recorded since; whether anything changed. UI thread.
     pub fn refresh(g: *ReviewGlue) bool {
-        const st = g.store orelse return false;
         g.mutex.lockUncancelable(g.io);
         defer g.mutex.unlock(g.io);
+        if (g.outcomes) |o| o.pump(nowMs(g.io));
+        const st = g.store orelse return false;
         const n = st.tail(g.sink.sink()) catch |e| {
             log.warn("review store: reading other processes' records failed: {t}", .{e});
             return false;
         };
+        if (g.feedback) |*f| f.pump();
+        g.follow.pump();
         return n > 0;
     }
 
@@ -888,6 +983,91 @@ test "review glue: review mode holds a turn's changes as one pending changeset" 
     try testing.expectEqualStrings("b\n", try tmp.dir.readFileAlloc(testing.io, "b.txt", arena, .limited(64)));
 }
 
+test "review glue: review outcomes reach the agent on refresh or at its next turn's end" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    const Sink = struct {
+        got: std.ArrayList(struct { session: u128, final: bool }) = .empty,
+        fn deliver(ctx: *anyopaque, o: *const zg_review.feedback.Outcome) void {
+            const k: *@This() = @ptrCast(@alignCast(ctx));
+            k.got.append(testing.allocator, .{ .session = o.session, .final = o.final }) catch {};
+        }
+    };
+    var sink: Sink = .{};
+    defer sink.got.deinit(testing.allocator);
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
+    defer g.destroy();
+    try g.bindOutcomes(.{ .ctx = &sink, .deliver = Sink.deliver });
+    g.mode = .review;
+    const fs = g.files();
+    const a_txt = (try fs.resolve(testing.io, arena, "a.txt")).abs;
+
+    // Rejected: the next refresh tells the session.
+    _ = try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" });
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+    {
+        g.mutex.lockUncancelable(testing.io);
+        defer g.mutex.unlock(testing.io);
+        try testing.expect(try g.actLocked(arena, id, .reject) == .ok);
+    }
+    _ = g.refresh();
+    try testing.expectEqual(@as(usize, 1), sink.got.items.len);
+    try testing.expectEqual(s1.session, sink.got.items[0].session);
+    try testing.expect(sink.got.items[0].final);
+
+    // Accepted, then the session's next turn ends before any refresh:
+    // the outcome goes out then, once.
+    _ = try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "two", .new = "TWO" } }, .{ .agent = s1, .turn = 2, .tool = "edit_file", .tool_call_id = "u" });
+    const id2: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 2)).?);
+    {
+        g.mutex.lockUncancelable(testing.io);
+        defer g.mutex.unlock(testing.io);
+        try testing.expect(try g.actLocked(arena, id2, .accept) == .ok);
+    }
+    _ = try fs.propose(testing.io, arena, a_txt, .{ .str_replace = .{ .old = "TWO", .new = "2" } }, .{ .agent = s1, .turn = 3, .tool = "edit_file", .tool_call_id = "v" });
+    _ = try fs.endTurn(testing.io, s1, 3);
+    try testing.expectEqual(@as(usize, 2), sink.got.items.len);
+    _ = g.refresh();
+    try testing.expectEqual(@as(usize, 2), sink.got.items.len);
+}
+
+test "review glue: a comment follows its line when another changeset lands first" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+    const fs = g.files();
+    const abs = (try fs.resolve(testing.io, arena, "a.txt")).abs;
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "one", .new = "zero\none" } }, .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" });
+    const first: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "two", .new = "TWO" } }, .{ .agent = s2, .turn = 1, .tool = "edit_file", .tool_call_id = "u" });
+    const second: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s2, 1)).?);
+    const at: zg_review.feedback.CommentAnchor = try .at(testing.allocator, "a.txt", .new, "one\nTWO\n", .{ .start = 1, .count = 1 });
+    const tid = try g.comments.create(second, at, null, false, "why caps?", .{ .user = "dana" }, 1);
+
+    g.mutex.lockUncancelable(testing.io);
+    defer g.mutex.unlock(testing.io);
+    try testing.expect(try g.actLocked(arena, first, .accept) == .ok);
+    // `TWO` is line 2 of the rebased proposal.
+    try testing.expectEqual(@as(u32, 2), g.comments.get(tid).?.anchor.lines.start);
+    try testing.expect(!g.comments.get(tid).?.outdated);
+}
+
 test "review glue: the persisted queue is shared with another process and survives a restart" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1005,4 +1185,27 @@ test "review glue: approvals are journaled in the store; a crash leaves them exp
     try testing.expectEqualStrings("make", it.req.command.?);
     // New ids do not collide with the restored one.
     try testing.expect(try b.present(req) != asked);
+}
+
+test "review glue: comments are written at once and another window takes them on refresh" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    try tmp.dir.createDirPath(testing.io, ReviewGlue.store_path);
+    const a = try ReviewGlue.create(testing.allocator, testing.io, root, .{ .persist = true });
+    defer a.destroy();
+    const b = try ReviewGlue.create(testing.allocator, testing.io, root, .{ .persist = true });
+    defer b.destroy();
+    const cs: model.ChangesetId = @enumFromInt(3);
+    const at: zg_review.feedback.CommentAnchor = try .at(testing.allocator, "a.txt", .new, "x\n", .{ .start = 0, .count = 1 });
+    const t = try a.comments.create(cs, at, .question, false, "question: why x?", .{ .user = "dana" }, 1);
+    try testing.expect(b.refresh());
+    const got = b.comments.get(t).?;
+    try testing.expectEqualStrings("question: why x?", got.first().body);
+    // Ids from the two windows never collide.
+    const t2 = try b.comments.create(cs, at, null, false, "fine", .{ .user = "lee" }, 2);
+    try testing.expect(@intFromEnum(t2) >> 32 != @intFromEnum(t) >> 32);
+    try testing.expect(a.refresh());
+    try testing.expectEqual(@as(usize, 2), a.comments.threadsOf(cs).len);
 }

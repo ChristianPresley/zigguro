@@ -8,5 +8,8 @@ pub fn build(b: *std.Build) void {
         .name = "zg_scm",
         .imports = &.{.{ .name = "zg_core", .module = core }},
         .bench = "bench/main.zig",
+        .test_exes = &.{
+            .{ .name = "store_writer", .root = "test/store_writer.zig" },
+        },
     });
 }

@@ -1802,7 +1802,15 @@ pub const Window = struct {
             },
             .pointer_enter_leave => |p| if (!p.entered) w.dispatch(.pointer_leave),
             .scroll => |s| w.dispatch(.{ .scroll = .{ .pos = w.pointer, .dx = s.dx, .dy = s.dy, .precise = s.unit == .pixels } }),
-            .key => |k| w.dispatch(.{ .key = .{ .key = k.ev.key, .mods = k.ev.mods, .action = k.ev.action, .codepoint = k.ev.codepoint } }),
+            .key => |k| {
+                w.dispatch(.{ .key = .{ .key = k.ev.key, .mods = k.ev.mods, .action = k.ev.action, .codepoint = k.ev.codepoint } });
+                // The key's text follows it (`eat_text` drops it when the
+                // key handler consumed the key).
+                if (k.ev.action != .release) {
+                    const typed = payload.payload(k.ev.text);
+                    if (typed.len > 0) w.dispatch(.{ .text = typed });
+                }
+            },
             .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
             .ime_preedit => |t| w.dispatch(.{ .ime_preedit = .{ .text = payload.payload(t.text), .cursor_begin = t.cursor_begin, .cursor_end = t.cursor_end } }),
             .ime_delete_surrounding => |d| w.dispatch(.{ .ime_delete_surrounding = .{ .before = d.before_bytes, .after = d.after_bytes } }),

@@ -63,6 +63,19 @@ and `added_lines` (without terminators) are there with `--patch`.
  "turn":1,"label":"Turn 1: parser","created_ms":352800000,"pinned":false}
 ```
 
+## approval
+
+`approvals --json`: the store's approval record (`packages/review/src/
+approvals/broker.zig`). `detail` is the request's detail JSON as a
+string; `answer.t` is allow_once, allow_session, allow_always, deny or
+edit, with `text` for all but allow_once.
+
+```json
+{"id":330712481793,"state":"pending","kind":"command","actor":{"t":"agent","session":"s1","agent":"main"},
+ "title":"Run command","detail":"{\"command\":\"make\"}","command":"make","risk":["Runs a program on this machine."],
+ "rule":"run_command(make)","editable":true,"created_ms":359880000}
+```
+
 ## Coming
 
-`thread` (review comments) and `approval` objects arrive with E12.F05.
+`thread` objects (review comments) arrive with E12.F05.S01.

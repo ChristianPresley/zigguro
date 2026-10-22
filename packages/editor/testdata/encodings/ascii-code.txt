@@ -1,0 +1,16 @@
+fn main() void {
+    const x = 42;
+    std.debug.print("{d}\n", .{x});
+}
+fn main() void {
+    const x = 42;
+    std.debug.print("{d}\n", .{x});
+}
+fn main() void {
+    const x = 42;
+    std.debug.print("{d}\n", .{x});
+}
+fn main() void {
+    const x = 42;
+    std.debug.print("{d}\n", .{x});
+}

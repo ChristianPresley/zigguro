@@ -79,6 +79,19 @@ default, accept_edits, plan, dont_ask or bypass. `--lines` is the number
 of changed lines; leave it out when it is unknown. Invalid rules are
 reported on stderr. E16's own permission rules are not consulted.
 
+**approvals** lists the requests a process (the IDE) waits on for
+approval: id (`!N`), state, age, who asks, the title and command, and the
+risk hints. `--all` adds answered, cancelled and expired ones.
+
+**approve AID** allows a waiting request once; `--session` allows it for
+the session (with the suggested rule), `--always [RULE]` saves RULE (else
+the suggested one), `--edit TEXT` allows an edited input (commands, or
+JSON for tool inputs, only when the request is editable). **deny AID
+[--reason TEXT]** refuses it; the reason goes back to the agent. The
+answer is appended to the store; the waiting IDE takes it within a
+second (its review queue polls the journal). A request that is not
+waiting any more exits 3.
+
 ## Output
 
 Colour is used when stdout is a terminal and `NO_COLOR` is not set. With
@@ -92,14 +105,14 @@ described in [review-json.md](review-json.md).
 | 0 | ok |
 | 1 | usage error |
 | 2 | the store could not be read or written |
-| 3 | conflict: the base moved, the file or changeset is decided already, a restore would overwrite later edits |
-| 4 | not found: no store, changeset, file, hunk or checkpoint |
+| 3 | conflict: the base moved, the file, changeset or approval is decided already, a restore would overwrite later edits |
+| 4 | not found: no store, changeset, file, hunk, checkpoint or approval |
 | 5 | partially applied: a write failed after earlier files were written and could not be rolled back |
 
 ## Not yet
 
-- `comment`, `threads`, `fix`, `approvals`, `approve` and `deny` arrive
-  with review comments and approvals (E12.F05); today they exit 1.
+- `comment`, `threads` and `fix` arrive with review comments
+  (E12.F05.S01); today they exit 1.
 - The `review` events of `zg.stream/1`.
 - Refusing hunks of a file zigguro has open with unsaved edits needs the
   IDE's `doc_open` records.

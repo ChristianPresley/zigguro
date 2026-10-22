@@ -9,6 +9,8 @@ pub const Options = broker.Options;
 pub const Recorder = broker.Recorder;
 pub const RestoreSink = broker.RestoreSink;
 pub const AnswerError = broker.AnswerError;
+pub const Answer = inbox.Answer;
+pub const ApprovalRequest = inbox.ApprovalRequest;
 pub const writeRecord = broker.writeRecord;
 pub const readRecord = broker.readRecord;
 

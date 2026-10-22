@@ -299,3 +299,93 @@ test "approvals: journal record round trip" {
     try testing.expectEqual(item.previous, back.previous);
     try testing.expectError(error.InvalidRecord, broker_mod.readRecord(arena, .{ .integer = 1 }));
 }
+
+test "approvals: an answer appended by another process reaches the waiter" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // The window's broker, bound to its store.
+    const s = try store_mod.ChangesetStore.open(testing.allocator, io, tmp.dir, "review", .{ .process_tag = 7 });
+    defer s.close();
+    const q = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = s.blobs(), .journal = s.journalPort() });
+    defer q.deinit();
+    var b: ApprovalBroker = .init(testing.allocator, io, .{});
+    defer b.deinit();
+    b.bind(s.approvalRecorder(), 7 << 32);
+    var sink = s.queueSink(q, null, null);
+    sink.approvals = b.restoreSink();
+    _ = try s.load(sink.sink());
+    sink.approvals = b.remoteSink();
+    const id = try b.present(command("s1", "make", 1));
+    const other_id = try b.present(command("s1", "ls", 2));
+    try s.flush();
+    var fut = try io.concurrent(ApprovalBroker.await, .{ &b, id, io });
+
+    // `zg review approve`: mirrors the store, then appends the answer.
+    {
+        const cli = try store_mod.ChangesetStore.open(testing.allocator, io, tmp.dir, "review", .{ .process_tag = 9 });
+        defer cli.close();
+        const cq = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = cli.blobs(), .journal = cli.journalPort() });
+        defer cq.deinit();
+        var view: ApprovalBroker = .init(testing.allocator, io, .{});
+        defer view.deinit();
+        var vs = cli.queueSink(cq, null, null);
+        vs.approvals = view.mirrorSink();
+        _ = try cli.load(vs.sink());
+        var it = view.get(id).?;
+        try testing.expectEqual(ApprovalState.pending, it.state);
+        it.state = .allowed_session;
+        it.answer = .{ .allow_session = "run_command(make)" };
+        it.answered_by = "cli";
+        var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        try broker_mod.writeRecord(&aw.writer, &it);
+        try cli.append(.approval, aw.written());
+        // An answer for a request of another process's id range is ignored.
+        var foreign = it;
+        foreign.id = @enumFromInt((5 << 32) + 1);
+        aw.clearRetainingCapacity();
+        try broker_mod.writeRecord(&aw.writer, &foreign);
+        try cli.append(.approval, aw.written());
+    }
+    _ = try s.tail(sink.sink());
+    const a = try fut.await(io);
+    try testing.expectEqualStrings("run_command(make)", a.allow_session);
+    try testing.expectEqualStrings("cli", b.get(id).?.answered_by.?);
+    try testing.expectEqual(ApprovalState.pending, b.get(other_id).?.state);
+}
+
+test "approvals: a load journals the requests it expired" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var asked: ApprovalId = undefined;
+    {
+        const s = try store_mod.ChangesetStore.open(testing.allocator, io, tmp.dir, "review", .{ .process_tag = 7 });
+        defer s.close();
+        var b: ApprovalBroker = .init(testing.allocator, io, .{ .recorder = s.approvalRecorder(), .id_base = 7 << 32 });
+        defer b.deinit();
+        asked = try b.present(command("s1", "make", 1));
+    }
+    {
+        const s = try store_mod.ChangesetStore.open(testing.allocator, io, tmp.dir, "review", .{ .process_tag = 8 });
+        defer s.close();
+        const q = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = s.blobs(), .journal = s.journalPort() });
+        defer q.deinit();
+        var b: ApprovalBroker = .init(testing.allocator, io, .{ .recorder = s.approvalRecorder(), .id_base = 8 << 32 });
+        defer b.deinit();
+        var sink = s.queueSink(q, null, null);
+        sink.approvals = b.restoreSink();
+        _ = try s.load(sink.sink());
+        b.journalRestored();
+    }
+    // A viewer now sees it expired, not waiting.
+    const s = try store_mod.ChangesetStore.open(testing.allocator, io, tmp.dir, "review", .{ .process_tag = 9 });
+    defer s.close();
+    const q = try model.Queue.init(testing.allocator, io, .{ .root = "/w", .blobs = s.blobs(), .journal = s.journalPort() });
+    defer q.deinit();
+    var view: ApprovalBroker = .init(testing.allocator, io, .{});
+    defer view.deinit();
+    var sink = s.queueSink(q, null, null);
+    sink.approvals = view.mirrorSink();
+    _ = try s.load(sink.sink());
+    try testing.expectEqual(ApprovalState.expired, view.get(asked).?.state);
+}

@@ -8,6 +8,8 @@ pub const edit = @import("model/edit.zig");
 pub const diff = @import("model/diff.zig");
 /// Find and replace.
 pub const search = @import("model/search.zig");
+/// File encodings: detection, decoders and encoders.
+pub const encoding = @import("model/encoding.zig");
 /// Live documents.
 pub const document = @import("model/document.zig");
 /// Cross-thread snapshots.
