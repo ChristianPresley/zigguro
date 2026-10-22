@@ -1,0 +1,2 @@
+{"a": true, "b": false, "c": null}
+[true, false, null, True, nil, undefined]
