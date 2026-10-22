@@ -43,13 +43,15 @@ pub const Scale = struct {
 };
 
 /// Bytes carried by an event (key text, preedit, clipboard data, paths).
-/// Small payloads live in the platform's `PayloadArena` and stay valid until
-/// the next `Platform.pollEvents`. Payloads over 64 KiB are a separate
-/// `LargePayload` (`large == true`) that stays valid until the app passes the
-/// slice to `Platform.release`.
+/// Small payloads live in one of the platform's two `PayloadArena` slabs and
+/// stay valid until the next `Platform.pollEvents`. Payloads over 64 KiB are
+/// a separate `LargePayload` (`large == true`) that stays valid until the app
+/// passes the slice to `Platform.release`.
 pub const PayloadSlice = packed struct(u64) {
-    /// Byte offset into the current arena slab, or the large-payload id.
-    off: u31 = 0,
+    /// Byte offset into the slab, or the large-payload id.
+    off: u30 = 0,
+    /// Which arena slab holds the bytes.
+    slab: u1 = 0,
     /// The bytes are a `LargePayload` that must be released.
     large: bool = false,
     /// Length in bytes.
