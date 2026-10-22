@@ -7,7 +7,7 @@
 //! selection. Kills go to the kill ring with one piece per cursor and
 //! append when the previous command was also a kill. `C-x` chords and
 //! `M-x` ask the host for workbench commands (`Host.actions`), named as in
-//! `data/keymaps/emacs.zon`.
+//! `keymap.zon`.
 //!
 //! As in a keyboard macro, a command that signals an error (`C-f` at the
 //! end of the buffer, `C-g`) sets `failed`, and whoever feeds a sequence
