@@ -1,0 +1,7 @@
+# A request answered with ContentModified (-32801) because the document changed.
+> initialize
+< {"id": $1, "result": {"capabilities": {"semanticTokensProvider": {"legend": {"tokenTypes": [], "tokenModifiers": []}, "full": true}}}}
+> initialized
+> textDocument/semanticTokens/full
+~ 20ms
+< {"id": $1, "error": {"code": -32801, "message": "content modified"}}
