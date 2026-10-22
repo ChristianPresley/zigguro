@@ -73,7 +73,7 @@ pub const InLine = union(enum) {
     permission_response: struct {
         request_id: []const u8,
         behavior: Behavior,
-        /// JSON text; accepted but not applied yet.
+        /// JSON text: the input the user edited; validated again.
         updated_input: ?[]const u8 = null,
         message: ?[]const u8 = null,
     },
