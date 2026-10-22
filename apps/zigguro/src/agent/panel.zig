@@ -7,6 +7,15 @@
 //! switch in the header enters and leaves it, and a proposed plan shows
 //! as a card above the prompt (plan_card.zig).
 //!
+//! Rewind (E10.F08.S02.T01 in the IDE): while the agent is idle, each
+//! prompt it received has a Rewind button offering to restore the code
+//! and the conversation, only the conversation, or only the code to the
+//! moment before that prompt. The conversation part drops the prompt and
+//! everything after it from the agent and the transcript, and puts the
+//! prompt back in the composer; the code part goes through `restore`
+//! (E12's checkpoint restore), and a note lists the files restored and
+//! the ones left alone.
+//!
 //! Subagents: with a `ChildRelay` attached (the host subscribes it to
 //! every agent of the manager), a child's replies, tool calls and failures
 //! nest under the `task` call that spawned it (`AgentRef.tool_call`),
@@ -31,6 +40,7 @@ const ev = zg_ai.loop.events;
 const bus = zg_ai.loop.bus;
 const PlanCards = @import("plan_card.zig").PlanCards;
 const AgentCommands = @import("commands.zig").AgentCommands;
+const rewind_mod = zg_ai.session.rewind;
 
 /// See the module doc.
 pub const AgentPanel = struct {
@@ -73,6 +83,10 @@ pub const AgentPanel = struct {
     plan_mode: ?*zg_ai.plan.PlanMode = null,
     /// Called after the transcript changed (the workbench repaints).
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
+    /// Puts the files back for code rewinds (null: conversation only).
+    restore: ?rewind_mod.CheckpointRestore = null,
+    /// A rewind chosen during the build, run after it.
+    pending_rewind: ?struct { item: usize, action: rewind_mod.RewindAction } = null,
 
     pub const Kind = enum { user, assistant, tool, note, failure };
     pub const ToolState = enum { queued, running, ok, failed, skipped };
@@ -92,6 +106,10 @@ pub const AgentPanel = struct {
         expanded: ?bool = null,
         /// Assistant replies: the text as Markdown.
         reply: ?*Reply = null,
+        /// User prompts: the agent got it (the target of a rewind).
+        sent: bool = false,
+        /// The rewind choices show.
+        rewind_open: bool = false,
 
         fn deinit(it: *Item, gpa: Allocator) void {
             if (it.reply) |r| r.destroy(gpa);
@@ -216,6 +234,7 @@ pub const AgentPanel = struct {
         if (t.len == 0) return;
         endReply(&p.items, &p.streaming);
         try p.addItem(.user, t);
+        const at = p.items.items.len - 1;
         defer p.changed();
         if (p.commands) |c| {
             var arena: std.heap.ArenaAllocator = .init(p.gpa);
@@ -223,6 +242,7 @@ pub const AgentPanel = struct {
             if (try c.handle(arena.allocator(), t)) |out| switch (out) {
                 .prompt => |prompt| {
                     _ = try p.agent.submit(.{ .text = prompt, .source = .ui });
+                    p.items.items[at].sent = true;
                     return;
                 },
                 .note => |note| return p.addItem(.note, note),
@@ -230,6 +250,7 @@ pub const AgentPanel = struct {
             };
         }
         _ = try p.agent.submit(.{ .text = t, .source = .ui });
+        p.items.items[at].sent = true;
     }
 
     /// Starts a new conversation: the transcript and the agent's history
@@ -239,6 +260,56 @@ pub const AgentPanel = struct {
         for (p.items.items) |*it| it.deinit(p.gpa);
         p.items.clearRetainingCapacity();
         p.streaming = false;
+    }
+
+    /// The agent's transcript index of the prompt at item `i`: the user
+    /// messages the agent got, in order, match the sent prompts.
+    fn messageOf(p: *AgentPanel, i: usize) ?u32 {
+        var k: usize = 0;
+        for (p.items.items[0..i]) |it| {
+            if (it.kind == .user and it.sent) k += 1;
+        }
+        for (p.agent.messages(), 0..) |m, idx| {
+            if (m.role != .user or m.meta.synthetic or isToolResults(m)) continue;
+            if (k == 0) return @intCast(idx);
+            k -= 1;
+        }
+        return null;
+    }
+
+    /// Rewinds to the prompt at item `i` (the agent must be idle).
+    pub fn rewindTo(p: *AgentPanel, i: usize, action: rewind_mod.RewindAction) !void {
+        defer p.changed();
+        if (i >= p.items.items.len) return error.InvalidTarget;
+        p.items.items[i].rewind_open = false;
+        const idx = p.messageOf(i) orelse return p.addItem(.failure, "This prompt is no longer in the agent's history.");
+        var arena: std.heap.ArenaAllocator = .init(p.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const report = rewind_mod.rewind(p.agent, p.io, a, .{ .index = idx }, action, null, .{ .checkpoints = p.restore }) catch |e| {
+            const why: []const u8 = switch (e) {
+                error.Busy => "Stop the agent before rewinding.",
+                error.NoCheckpoint => "There is no checkpoint before this prompt, so the code cannot be restored.",
+                error.NoCheckpointStore => "Restoring code is not available.",
+                else => try std.fmt.allocPrint(a, "Rewind failed: {t}", .{e}),
+            };
+            return p.addItem(.failure, why);
+        };
+        if (action == .conversation or action == .code_and_conversation) {
+            for (p.items.items[i..]) |*it| it.deinit(p.gpa);
+            p.items.shrinkRetainingCapacity(i);
+            p.streaming = false;
+            if (report.prompt_text) |text| try p.input.setText(text);
+        }
+        if (action == .code or action == .code_and_conversation) {
+            var note: std.ArrayList(u8) = .empty;
+            const n = report.restored_files.len;
+            try note.print(a, "Restored {d} file{s}", .{ n, if (n == 1) "" else "s" });
+            for (report.restored_files) |f| try note.print(a, "\n  {s}", .{f});
+            for (report.skipped) |sk| try note.print(a, "\nLeft {s}: {s}", .{ sk.path, sk.reason });
+            for (report.untracked_changes) |f| try note.print(a, "\nChanged outside the agent: {s}", .{f});
+            try p.addItem(.note, note.items);
+        }
     }
 
     /// Cancels the running turn (queued prompts then run).
@@ -428,7 +499,8 @@ pub const AgentPanel = struct {
     // ── View ────────────────────────────────────────────────────────────
 
     pub fn build(p: *AgentPanel, ui: *Ui) void {
-        ui.open(.{ .style = .{ .dir = .column, .w = .{ .px = 380 }, .h = .{ .pct = 100 }, .shrink = 0, .bg = .{ .token = .bg_elevated } } });
+        // As wide as its dock area (resizable).
+        ui.open(.{ .style = .{ .dir = .column, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .shrink = 0, .bg = .{ .token = .bg_elevated } } });
         defer ui.close();
 
         ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
@@ -446,11 +518,17 @@ pub const AgentPanel = struct {
 
         p.area = zg_gui.w.scrollArea(ui, .{ .style = .{ .grow = 1, .basis = .{ .px = 0 }, .dir = .column, .gap = 8, .padding = .all(10) }, .test_id = "agent-transcript" });
         if (p.items.items.len == 0) ui.text("Ask the agent to do something in this workspace.", .{ .color = .fg_muted });
+        const idle = !busy(p.status);
         for (p.items.items, 0..) |*it, i| {
             ui.id(@as(u32, @intCast(i)));
-            p.item(ui, it);
+            p.item(ui, it, i, idle);
         }
         ui.close();
+        if (p.pending_rewind) |r| {
+            p.pending_rewind = null;
+            p.rewindTo(r.item, r.action) catch |e| p.addItem(.failure, @errorName(e)) catch {};
+            ui.window().markViewDirty(ui.currentView());
+        }
         if (p.follow) {
             p.follow = false;
             ui.win.afterNextFrame(.{ .ctx = p, .f = scrollToEnd });
@@ -528,12 +606,20 @@ pub const AgentPanel = struct {
         if (p.on_change) |c| c.f(c.ctx);
     }
 
-    fn item(p: *AgentPanel, ui: *Ui, it: *Item) void {
+    fn item(p: *AgentPanel, ui: *Ui, it: *Item, i: usize, idle: bool) void {
         switch (it.kind) {
             .user => {
-                ui.open(.{ .style = .{ .padding = .xy(8, 6), .bg = .{ .token = .bg_base } } });
+                ui.open(.{ .style = .{ .dir = .column, .gap = 4, .padding = .xy(8, 6), .bg = .{ .token = .bg_base } } });
+                defer ui.close();
+                ui.open(.{ .style = .{ .dir = .row, .gap = 6, .align_items = .start } });
+                ui.open(.{ .style = .{ .grow = 1, .basis = .{ .px = 0 } } });
                 ui.text(it.text.items, .{});
                 ui.close();
+                if (it.sent and idle) {
+                    if (zg_gui.w.button(ui, .{ .label = "Rewind", .variant = .ghost }).clicked) it.rewind_open = !it.rewind_open;
+                }
+                ui.close();
+                if (it.rewind_open and it.sent and idle) p.rewindChoices(ui, i);
             },
             .assistant => if (it.reply) |r| {
                 zg_gui.markdown.view(ui, &r.view, .{ .streaming = r.streaming, .compact = true, .virtualize = false, .max_width = std.math.inf(f32) });
@@ -548,6 +634,24 @@ pub const AgentPanel = struct {
             .note => ui.text(it.text.items, .{ .color = .warning }),
             .failure => ui.text(it.text.items, .{ .color = .danger }),
         }
+    }
+
+    /// The rewind actions under a prompt.
+    fn rewindChoices(p: *AgentPanel, ui: *Ui, i: usize) void {
+        ui.open(.{ .style = .{ .dir = .row, .gap = 4, .wrap = true }, .role = .group, .label = "Rewind" });
+        defer ui.close();
+        const Choice = struct { label: []const u8, action: rewind_mod.RewindAction, code: bool };
+        const choices = [_]Choice{
+            .{ .label = "Code and conversation", .action = .code_and_conversation, .code = true },
+            .{ .label = "Conversation", .action = .conversation, .code = false },
+            .{ .label = "Code", .action = .code, .code = true },
+        };
+        for (choices, 0..) |c, k| {
+            if (c.code and p.restore == null) continue;
+            ui.id(@as(u64, k));
+            if (zg_gui.w.button(ui, .{ .label = c.label }).clicked) p.pending_rewind = .{ .item = i, .action = c.action };
+        }
+        if (zg_gui.w.button(ui, .{ .label = "Cancel", .variant = .ghost }).clicked) p.items.items[i].rewind_open = false;
     }
 
     /// A `task` call with its subagent's transcript: the call line with a
@@ -572,7 +676,7 @@ pub const AgentPanel = struct {
         defer ui.close();
         for (it.children.items, 0..) |*c, i| {
             ui.id(@as(u32, @intCast(i)));
-            p.item(ui, c);
+            p.item(ui, c, 0, false);
         }
     }
 
@@ -737,6 +841,11 @@ const RunTool = struct {
         return proto.ToolOutput.text(c.arena, "ran", false) catch error.OutOfMemory;
     }
 };
+
+fn isToolResults(m: proto.Message) bool {
+    for (m.content) |b| if (b == .tool_result) return true;
+    return false;
+}
 
 fn find(p: *const AgentPanel, kind: AgentPanel.Kind, needle: []const u8) ?*const AgentPanel.Item {
     for (p.items.items) |*it| if (it.kind == kind and std.mem.indexOf(u8, it.text.items, needle) != null) return it;
@@ -1028,4 +1137,110 @@ test "agent panel: a pasted image is saved and mentioned" {
     var buf: [32]u8 = undefined;
     const saved = try Io.Dir.cwd().readFile(io, path, &buf);
     try testing.expectEqualStrings("png-bytes", saved);
+}
+
+/// E12's side of rewind, recorded.
+const FakeCheckpoints = struct {
+    next: u64 = 100,
+    restored_to: ?u64 = null,
+
+    fn create(ctx: *anyopaque, _: Io, _: proto.AgentRef, _: u32, _: []const u8) u64 {
+        const f: *FakeCheckpoints = @ptrCast(@alignCast(ctx));
+        f.next += 1;
+        return f.next;
+    }
+
+    fn restoreTo(ctx: *anyopaque, _: Io, arena: Allocator, checkpoint: u64) anyerror!rewind_mod.RestoreOutcome {
+        const f: *FakeCheckpoints = @ptrCast(@alignCast(ctx));
+        f.restored_to = checkpoint;
+        const skipped = try arena.dupe(rewind_mod.SkipReason, &.{.{ .path = "b.zig", .reason = "you changed the same lines" }});
+        return .{ .restored_files = try arena.dupe([]const u8, &.{"a.zig"}), .skipped = skipped };
+    }
+};
+
+test "agent panel: rewind the conversation and the code to a prompt" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    rt.bindUiThread(.noop);
+    defer _ = rt.deinit();
+
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &.{
+        scripted.script.text("One."),
+        scripted.script.text("Two."),
+    }, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var tools: zg_ai.loop.deps.StaticTools = .{ .specs = &.{} };
+    var fp: zg_security.testing.FakeApprovalPort = .{ .gpa = gpa };
+    defer fp.deinit();
+    var approvals: ToolApprovals = .init(gpa, fp.port());
+    defer approvals.deinit();
+    var cps: FakeCheckpoints = .{};
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{
+        .registry = &models,
+        .providers = .fixed(&provider),
+        .tools = tools.tools(),
+        .permission = approvals.permission(),
+        .checkpoints = .{ .ctx = &cps, .create = FakeCheckpoints.create },
+    });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+
+    const Root = struct {
+        p: ?*AgentPanel = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.p) |x| x.build(ui);
+        }
+    };
+    var root: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 400, .h = 700 }, .root = .of(&root) });
+    defer t.deinit();
+    t.app.attachRuntime(&rt);
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+    p.restore = .{ .ctx = &cps, .restore_to = FakeCheckpoints.restoreTo };
+    root.p = p;
+
+    for ([_][]const u8{ "first", "second" }, [_][]const u8{ "One.", "Two." }) |prompt, answer| {
+        try p.submit(prompt);
+        var spins: u32 = 0;
+        while (find(p, .assistant, answer) == null or busy(p.status)) : (spins += 1) {
+            try testing.expect(spins < 5000);
+            _ = t.settle();
+            io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
+    }
+    try testing.expectEqual(@as(usize, 4), agent.messages().len);
+    t.win.markAllDirty();
+    _ = t.settle();
+
+    // Each prompt has a Rewind button; the second one opens its choices.
+    try testing.expectEqual(@as(usize, 2), t.count(.{ .kind = "button", .name = "Rewind" }));
+    const second = t.findNth(.{ .kind = "button", .name = "Rewind" }, 1).?;
+    try t.click(.{ .within = t.win.store.parent(second), .name = "Rewind" });
+    _ = t.settle();
+    try t.click(.{ .name = "Code and conversation" });
+    _ = t.settle();
+
+    // The agent and the transcript are back before "second", which is in
+    // the composer again; the code went back to the checkpoint before it.
+    try testing.expectEqual(@as(usize, 2), agent.messages().len);
+    try testing.expectEqualStrings("second", p.input.slice());
+    try testing.expect(find(p, .user, "second") == null);
+    try testing.expect(find(p, .assistant, "One.") != null);
+    try testing.expectEqual(@as(?u64, 102), cps.restored_to);
+    const note = find(p, .note, "Restored 1 file").?;
+    try testing.expect(std.mem.indexOf(u8, note.text.items, "Left b.zig: you changed the same lines") != null);
+
+    // Conversation only: no restore, the first prompt goes back too.
+    cps.restored_to = null;
+    try p.rewindTo(0, .conversation);
+    try testing.expectEqual(@as(usize, 0), agent.messages().len);
+    try testing.expectEqualStrings("first", p.input.slice());
+    try testing.expectEqual(@as(?u64, null), cps.restored_to);
+    try testing.expectEqual(@as(usize, 0), p.items.items.len);
 }

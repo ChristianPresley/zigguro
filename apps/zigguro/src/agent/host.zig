@@ -8,6 +8,12 @@
 //! MCP, ...) come through zg_ai's adapters as each package exports them;
 //! none does yet.
 //!
+//! Context as in `zg agent` (zg_ai's `ContextStack`): the memory files
+//! (ZIGGURO.md, AGENTS.md, CLAUDE.md and rules from the home folder and
+//! the workspace) and the environment block go into the system prompt,
+//! and the conversation is compacted by the provider's compaction model
+//! near the window and on `/compact`.
+//!
 //! Providers and keys come from the environment (ANTHROPIC_API_KEY,
 //! OPENAI_API_KEY, GEMINI_API_KEY); ZG_MODEL picks the model (else
 //! "sonnet"). Sessions are not saved yet.
@@ -56,6 +62,10 @@ pub const AgentHost = struct {
     agent_tools: zg_ai.tools.AgentTools,
     approvals: ToolApprovals,
     mgr: *zg_ai.loop.AgentManager,
+    /// Memory files, reminders, the context assembler and compaction.
+    context: zg_ai.context.ContextStack,
+    /// The workspace roots the context reads (just `cwd`).
+    roots: [1][]const u8,
     /// The workbench's agent.
     agent: *Agent,
     /// Plan mode and its approval cards (in the agent panel).
@@ -136,7 +146,27 @@ pub const AgentHost = struct {
             .validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate),
         });
         errdefer h.mgr.deinit();
-        h.agent = try h.mgr.create(.{ .model = env.get("ZG_MODEL") orelse "sonnet", .cwd = h.cwd });
+        const model_name = env.get("ZG_MODEL") orelse "sonnet";
+        h.roots = .{h.cwd};
+        try h.context.init(gpa, io, .{
+            .sources = .{
+                .home_dir = env.get("HOME") orelse env.get("USERPROFILE"),
+                .workspace_roots = &h.roots,
+                .cwd = h.cwd,
+            },
+            .env = .{ .cwd = h.cwd, .now_ms = zg_ai.ratelimit.Clock.real.now(io), .workspace_roots = &h.roots, .shell = env.get("SHELL") },
+            .compaction = compaction: {
+                const main_model = h.models.resolve(model_name) orelse break :compaction null;
+                const m = h.models.modelForRole(main_model, .compaction);
+                const p = h.mgr.deps.providers.get(m) orelse break :compaction null;
+                break :compaction .{ .provider = p, .model = m };
+            },
+        });
+        errdefer h.context.deinit();
+        for (h.context.memorySet().notes) |n| log.info("{s}", .{n});
+        // Before the agent: it copies the manager's deps.
+        h.context.install(&h.mgr.deps);
+        h.agent = try h.mgr.create(.{ .model = model_name, .cwd = h.cwd });
         // Undo groups name the agent's session.
         h.files.edits.session = @truncate(h.agent.ref.session);
         // Plan mode: `exit_plan_mode` asks through the panel's plan card.
@@ -169,6 +199,7 @@ pub const AgentHost = struct {
         const gpa = h.gpa;
         h.subagents.deinit();
         h.mgr.deinit();
+        h.context.deinit();
         h.task.deinit();
         h.defs_arena.deinit();
         h.plan_mode.deinit();

@@ -55,7 +55,7 @@ pub const EditorFiles = struct {
 
     /// The `Files` for zg_ai's `FileTools`.
     pub fn files(self: *EditorFiles) zfiles.Files {
-        return .{ .ctx = self, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn } };
+        return .{ .ctx = self, .vtable = &.{ .resolve = resolve, .kind = kind, .read = read, .propose = propose, .end_turn = endTurn, .kind_as = kindAs, .read_as = readAs } };
     }
 
     /// The turn's changes are `outside`'s to close (E12's review queue).
@@ -131,6 +131,24 @@ pub const EditorFiles = struct {
         if (job.open) return job.read_out;
         const d = self.diskFiles();
         return d.vtable.read(d.ctx, io, arena, abs, max_bytes);
+    }
+
+    /// Open documents as in `kind`; other paths in `agent`'s view
+    /// (`outside` may hold changes for review).
+    fn kindAs(ctx: *anyopaque, io: Io, abs: []const u8, agent: zg_ai.proto.AgentRef) zfiles.Kind {
+        const self = cast(ctx);
+        var job: Job = .{ .self = self, .abs = abs, .arena = undefined, .op = .kind };
+        self.onUi(io, &job) catch {};
+        if (job.open) return job.kind_out;
+        return self.diskFiles().kindAs(io, abs, agent);
+    }
+
+    fn readAs(ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, max_bytes: usize, agent: zg_ai.proto.AgentRef) anyerror!zfiles.Read {
+        const self = cast(ctx);
+        var job: Job = .{ .self = self, .abs = abs, .arena = arena, .op = .{ .read = max_bytes } };
+        try self.onUi(io, &job);
+        if (job.open) return job.read_out;
+        return self.diskFiles().readAs(io, arena, abs, max_bytes, agent);
     }
 
     fn propose(ctx: *anyopaque, io: Io, arena: Allocator, abs: []const u8, p: zfiles.Proposal, origin: zfiles.Origin) anyerror!zfiles.Outcome {
