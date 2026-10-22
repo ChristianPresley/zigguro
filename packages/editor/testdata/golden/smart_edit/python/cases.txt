@@ -1,0 +1,103 @@
+=== indent after colon
+--- before
+def f():¦
+--- keys
+<enter>pass
+--- after
+def f():
+    pass¦
+
+=== indent after if
+--- before
+if x:¦
+--- keys
+<enter>
+--- after
+if x:
+    ¦
+
+=== dedent after return
+--- before
+def f():
+    return 1¦
+--- keys
+<enter>
+--- after
+def f():
+    return 1
+¦
+
+=== dedent after pass
+--- before
+class A:
+    pass¦
+--- keys
+<enter>
+--- after
+class A:
+    pass
+¦
+
+=== open bracket continues
+--- before
+x = [¦]
+--- keys
+<enter>
+--- after
+x = [
+    ¦
+]
+
+=== autoclose paren
+--- before
+print¦
+--- keys
+("hi
+--- after
+print("hi¦")
+
+=== no autoclose in comment
+--- before
+# see ¦
+--- keys
+(
+--- after
+# see (¦
+
+=== string prefix quote
+--- before
+x = f¦
+--- keys
+"a
+--- after
+x = f"a¦
+
+=== line comment
+--- before
+«a = 1
+b = 2»
+--- keys
+<lc>
+--- after
+«# a = 1
+# b = 2»
+
+=== surround
+--- before
+x = «a»
+--- keys
+'
+--- after
+x = '«a»'
+
+=== else dedents
+--- before
+if x:
+    a
+    ¦
+--- keys
+else:
+--- after
+if x:
+    a
+else:¦
