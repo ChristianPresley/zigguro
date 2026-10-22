@@ -33,7 +33,10 @@ pub const NodeFlags = packed struct(u32) {
     disabled: bool = false,
     /// The node was painted at least once (`abs` is meaningful).
     painted: bool = false,
-    _pad: u18 = 0,
+    /// A scroll container whose view rebuilds when it scrolls (virtual
+    /// lists build only the visible rows).
+    rebuild_on_scroll: bool = false,
+    _pad: u17 = 0,
 };
 
 /// The hot, per-frame fields of a node.
@@ -113,6 +116,12 @@ pub const NodeCold = struct {
     blob: widget.Blob = .{},
     cache: LayoutCache = .{},
     test_id: u64 = 0,
+    /// Scroll offset of a scroll container (content pixels hidden above
+    /// and to the left).
+    scroll: geom.Vec2 = .{},
+    /// Content-box size of the children from the last layout (the
+    /// scrollable extent of a scroll container).
+    content: geom.Size = .{},
 };
 
 /// Iterates a node's children in order.
@@ -139,6 +148,9 @@ pub const NodeStore = struct {
     /// Set by every mark and by `free`; the window clears it after a
     /// paint pass, and skips the pass while it stays clear.
     paint_pending: bool = false,
+    /// Views whose `rebuild_on_scroll` container changed size in the last
+    /// layout (they build from the viewport size); drained by the window.
+    resized_views: std.ArrayList(u16) = .empty,
     /// Called for every freed node (damage, focus fix-ups).
     on_free: ?struct { ctx: *anyopaque, f: *const fn (*anyopaque, NodeId) void } = null,
 
@@ -165,6 +177,7 @@ pub const NodeStore = struct {
         s.hot.deinit(s.gpa);
         s.cold.deinit(s.gpa);
         s.free_list.deinit(s.gpa);
+        s.resized_views.deinit(s.gpa);
     }
 
     fn blank(key: Key, kind: KindId) NodeHot {
@@ -216,6 +229,8 @@ pub const NodeStore = struct {
         c.cache = .{};
         c.style = .{};
         c.test_id = 0;
+        c.scroll = .{};
+        c.content = .{};
         s.live += 1;
         return .{ .index = index, .gen = c.gen };
     }

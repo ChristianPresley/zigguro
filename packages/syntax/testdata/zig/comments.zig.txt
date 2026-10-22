@@ -1,0 +1,6 @@
+// A comment with "quotes" and 'chars' and \\ backslashes.
+const a = 1; // trailing with // inside
+const b = "// not a comment";
+const c = '/';
+///
+//!

@@ -1,0 +1,4 @@
+// CI: lavapipe is the only device.
+.{
+    .{ .name = "llvmpipe (LLVM 15.0.7, 256 bits)", .kind = .cpu },
+}

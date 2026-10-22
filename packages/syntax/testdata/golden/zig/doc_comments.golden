@@ -1,0 +1,9 @@
+1| comment.doc://! Container doc comment.
+2| comment.doc://! Second line.
+3|
+4| comment.doc:/// A doc comment on a declaration.
+5| comment.doc:/// More docs.
+6| keyword.storage:pub keyword.storage:const variable:x operator:= number:1 punctuation.delimiter:;
+7| comment://// Four slashes: a plain comment.
+8| comment:// Plain comment.
+9| keyword.storage:const variable:y operator:= number:2 punctuation.delimiter:; comment:// Trailing comment.

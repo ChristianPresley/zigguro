@@ -11,6 +11,12 @@ pub const mem = @import("mem/root.zig");
 pub const sw = @import("sw/root.zig");
 /// Images, PNG, image diffs and golden-image tests.
 pub const testing = @import("testing/root.zig");
+/// Vulkan bindings generated from vk.xml by `tools/vkgen`.
+pub const vk = @import("vk/vk.zig");
+/// The runtime Vulkan loader and dispatch tables.
+pub const loader = @import("loader/root.zig");
+/// Device bring-up: instance, selection, device, lost-device handling.
+pub const gpu = @import("gpu/root.zig");
 
 /// Creates the renderer for `opts`: Vulkan when chosen (or `auto`) and
 /// available, otherwise the software renderer. The Vulkan backend lands
@@ -38,5 +44,8 @@ test {
     _ = r2d;
     _ = testing;
     _ = sw;
+    _ = loader;
+    _ = gpu;
+    _ = @import("vk/check.zig");
     _ = mem;
 }

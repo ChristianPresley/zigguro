@@ -1,0 +1,8 @@
+const a: u8 = 0;
+const b: i64 = -1;
+const c: usize = undefined;
+const d: ?*anyopaque = null;
+const e: comptime_int = 1;
+const f: type = bool;
+const g: c_int = 0;
+const h: u65535 = 0;

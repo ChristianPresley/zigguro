@@ -1,0 +1,6 @@
+const a = "plain";
+const b = "tab\there\n";
+const c = "hex \x41 and \u{263A} end";
+const d = "quote \" and \\ backslash";
+const e = "";
+const f = "unterminated

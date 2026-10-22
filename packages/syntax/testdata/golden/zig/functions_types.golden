@@ -1,0 +1,13 @@
+1| keyword.storage:const type:Point operator:= keyword:struct punctuation.bracket:{
+2| variable:x punctuation.delimiter:: type.builtin:f32 punctuation.delimiter:,
+3| variable:y punctuation.delimiter:: type.builtin:f32 punctuation.delimiter:,
+4|
+5| keyword.storage:pub keyword.storage:fn function:len punctuation.bracket:( variable:p punctuation.delimiter:: type:Point punctuation.bracket:) type.builtin:f32 punctuation.bracket:{
+6| keyword.control:return variable:std punctuation.delimiter:. variable:math punctuation.delimiter:. function:sqrt punctuation.bracket:( variable:p punctuation.delimiter:. variable:x operator:* variable:p punctuation.delimiter:. variable:x operator:+ variable:p punctuation.delimiter:. variable:y operator:* variable:p punctuation.delimiter:. variable:y punctuation.bracket:) punctuation.delimiter:;
+7| punctuation.bracket:}
+8| punctuation.bracket:} punctuation.delimiter:;
+9| keyword.storage:const type:List operator:= variable:std punctuation.delimiter:. function:ArrayList punctuation.bracket:( type:Point punctuation.bracket:) punctuation.delimiter:;
+10| keyword.storage:fn function:helper punctuation.bracket:( punctuation.bracket:) type.builtin:void punctuation.bracket:{
+11| keyword.storage:const variable:p punctuation.delimiter:: type:Point operator:= punctuation.delimiter:. punctuation.bracket:{ punctuation.delimiter:. variable:x operator:= number:1 punctuation.delimiter:, punctuation.delimiter:. variable:y operator:= number:2 punctuation.bracket:} punctuation.delimiter:;
+12| variable:_ operator:= variable:p punctuation.delimiter:. function:len punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;
+13| punctuation.bracket:}

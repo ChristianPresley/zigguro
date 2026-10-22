@@ -1,0 +1,6 @@
+1| comment:// A comment with "quotes" and 'chars' and \\ backslashes.
+2| keyword.storage:const variable:a operator:= number:1 punctuation.delimiter:; comment:// trailing with // inside
+3| keyword.storage:const variable:b operator:= string:"// not a comment" punctuation.delimiter:;
+4| keyword.storage:const variable:c operator:= character:'/' punctuation.delimiter:;
+5| comment.doc:///
+6| comment.doc://!

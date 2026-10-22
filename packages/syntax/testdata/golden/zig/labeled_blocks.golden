@@ -1,0 +1,13 @@
+1| keyword.storage:fn function:f punctuation.bracket:( variable:n punctuation.delimiter:: type.builtin:u32 punctuation.bracket:) type.builtin:u32 punctuation.bracket:{
+2| keyword.storage:const variable:v operator:= label:blk punctuation.delimiter:: punctuation.bracket:{
+3| keyword.control:if punctuation.bracket:( variable:n operator:== number:0 punctuation.bracket:) keyword.control:break punctuation.delimiter:: label:blk number:1 punctuation.delimiter:;
+4| keyword.control:break punctuation.delimiter:: label:blk variable:n punctuation.delimiter:;
+5| punctuation.bracket:} punctuation.delimiter:;
+6| label:outer punctuation.delimiter:: keyword.control:while punctuation.bracket:( constant.builtin:true punctuation.bracket:) punctuation.bracket:{
+7| label:inner punctuation.delimiter:: keyword.control:for punctuation.bracket:( number:0 operator:.. number:3 punctuation.bracket:) operator:| variable:i operator:| punctuation.bracket:{
+8| keyword.control:if punctuation.bracket:( variable:i operator:== number:1 punctuation.bracket:) keyword.control:continue punctuation.delimiter:: label:outer punctuation.delimiter:;
+9| keyword.control:if punctuation.bracket:( variable:i operator:== number:2 punctuation.bracket:) keyword.control:break punctuation.delimiter:: label:inner punctuation.delimiter:;
+10| punctuation.bracket:}
+11| punctuation.bracket:}
+12| keyword.control:return variable:v punctuation.delimiter:;
+13| punctuation.bracket:}

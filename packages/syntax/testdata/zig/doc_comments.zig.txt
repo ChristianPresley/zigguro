@@ -1,0 +1,9 @@
+//! Container doc comment.
+//! Second line.
+
+/// A doc comment on a declaration.
+/// More docs.
+pub const x = 1;
+//// Four slashes: a plain comment.
+// Plain comment.
+const y = 2; // Trailing comment.

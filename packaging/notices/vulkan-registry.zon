@@ -1,0 +1,15 @@
+// The Vulkan API registry (vk.xml) read by tools/vkgen (E02). The generated
+// bindings in packages/vulkan/src/vk/vk.zig are compiled into zigguro.
+// Details: tools/vkgen/data/SOURCES.md.
+.{
+    .name = "Vulkan API registry (vk.xml)",
+    .version = "1.4.330",
+    .license_spdx = "Apache-2.0 OR MIT",
+    .source_url = "https://github.com/KhronosGroup/Vulkan-Docs",
+    .shipped = true,
+    .paths = .{
+        "tools/vkgen/data/**",
+        "packages/vulkan/src/vk/vk.zig",
+    },
+    .license_text_files = .{"tools/vkgen/data/vk.xml"},
+}

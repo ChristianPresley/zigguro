@@ -1,0 +1,4 @@
+1| keyword.storage:const variable:a operator:= number:0x1p-3 punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= number:0x1.8p+1 punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= number:0xAB.CDp10 punctuation.delimiter:;
+4| keyword.storage:const variable:d operator:= number:0x10.0 punctuation.delimiter:;

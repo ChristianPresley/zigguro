@@ -432,15 +432,32 @@ pub const Platform = struct {
     pub fn payload(self: Platform, s: PayloadSlice) []const u8; // event payload bytes
     pub fn fromImpl(comptime T: type, impl: *T) Platform;
 };
-pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;
+pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;          // detected backend, Wayland → X11 fallback
+pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, b: Backend, opts: InitOptions) Error!Platform; // exactly `b`
 pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
+pub fn isForced(opts: InitOptions) bool; // opts.backend or a valid ZG_PLATFORM
+// InitOptions.environ_map is `?*std.process.Environ.Map` (mutable: Wayland consumes WAYLAND_SOCKET)
 pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
 ```
 
+Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
+forces a backend and disables fallback; otherwise Windows → win32, a
+non-empty `WAYLAND_DISPLAY` → wayland, a non-empty `DISPLAY` → x11, else
+headless. A detected Wayland backend that cannot connect falls back to
+X11 when `DISPLAY` is set. `init` never falls back to headless: the app
+does that (apps/zigguro renders `--frames N` headless frames and exits).
+Win32 and Cocoa return `error.BackendUnavailable` until they land.
+
+Frame pacing: request a frame with `Command.request_frame` and render on
+`Event.frame`. Until a window's first present, every backend answers the
+request at once (Wayland sends no frame callbacks for an unmapped
+surface), so frame 0 is what maps the window.
+
 ### Threading
 `pollEvents` and `waitEvents` are UI-thread only. `submit` and `wake` may
-be called from any thread. Backends own a platform thread that produces
-events and runs commands.
+be called from any thread. Wayland and headless own a platform thread
+that produces events; X11 dispatches on the UI thread inside
+`pollEvents`/`waitEvents` (its connection has one reader).
 
 ### Ownership/lifetime
 A `PayloadSlice` in an event stays valid until the next `pollEvents`; one
@@ -485,8 +502,16 @@ thread for that window.
 `importBuffer` does not take ownership of plane fds. A `CpuBuffer` from
 `allocCpuBuffer` is owned by the presenter until `releaseBuffer`.
 
+`present` with `ack = null` (E02's software path) answers the newest
+pending configure on Wayland. On X11 the newest presented buffer stays
+busy (it repaints `Expose` damage) until a newer one is presented, and
+MIT-SHM buffers also until their `ShmCompletion`.
+
 ### Stability
-Experimental until the first OS presenter merges.
+Experimental. Until DRI3/dmabuf (E01.F04.S04.T01, E01.F05.S03.T02) the
+Wayland and X11 presenters are CPU-only (`syncMode() == .cpu_only`,
+`importBuffer` → `error.Unsupported`), so E02 renders with the software
+renderer into `allocCpuBuffer` buffers.
 
 ## zg_platform.headless.Headless and .zgtrace
 
@@ -866,6 +891,60 @@ Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
 `clipboard_read` answers only from our own `clipboard_write`. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
+
+## zg_platform.x11.X11Backend
+
+### Defined in
+`packages/platform/src/x11/backend.zig`, with `present.zig` (the CPU
+presenter: MIT-SHM `AttachFd` memfds or core `PutImage`), `keymap.zig`
+(core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
+requests and event codes are in `proto.zig` (E01.F05.S02.T01, first
+part, and the SHM/PutImage half of E01.F05.S03.T02).
+
+### Implemented by
+E01.F05.S02.T01 / E01.F05.S03.T02.
+
+### Consumed by
+`zg_platform.init` on X11 sessions (and as the fallback from an
+unreachable Wayland display); E02's software renderer through
+`surfaceTarget` → `.external` presenter.
+
+### Signature
+```zig
+pub const InitOptions = struct {
+    environ_map: ?*const std.process.Environ.Map = null, // DISPLAY, XAUTHORITY, ZG_SCALE, ZG_X11_PRESENT=putimage
+    display: ?[]const u8 = null,
+    present: ?present.Path = null,                        // .shm or .put_image; null picks MIT-SHM 1.2 when present
+    refresh_ns: u32 = 16_666_667,                         // frame timer while frames are requested
+};
+pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*X11Backend;
+pub fn platform(b: *X11Backend) Platform;
+pub fn xidOf(b: *X11Backend, win: WindowId) ?u32; // tests
+pub const XvfbForTest = struct { pub fn start(seed: u32) !XvfbForTest; pub fn display(*const XvfbForTest) []const u8; pub fn stop(*XvfbForTest) void };
+```
+Windows map at creation and get `WM_DELETE_WINDOW`, `WM_CLASS =
+zigguro/Zigguro`, `_NET_WM_NAME`, `_NET_WM_PID`, `_NET_WM_WINDOW_TYPE_NORMAL`
+and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
+`_NET_ACTIVE_WINDOW` and `WM_CHANGE_STATE` client messages. The first
+`window_configure` (serial 0) is staged by `createWindow`. Wheel buttons
+4–7 become `scroll` in lines.
+
+### Threading
+No platform thread: the UI thread reads and translates X events in
+`pollEvents` and `waitEvents`. `submit`, `wake` and presenter calls may
+come from any thread (the connection's request queue locks).
+
+### Ownership/lifetime
+A window's presenter and its buffers die with `destroyWindow`; `deinit`
+destroys every window and closes the connection.
+
+### Stability
+Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
+use the core mapping, and auto-repeat arrives as release/press pairs),
+RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
+`_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
+our own `clipboard_write`), DRI3/Present and XDND. Move, resize, window
+menu, drag, activation, dialogs and URIs return `error.Unsupported`.
 
 ## zg_config.store.SettingsStore and Snapshot
 
@@ -1604,3 +1683,244 @@ UI thread only.
 
 ### Stability
 Experimental until the E15 adapter merges.
+
+## zg_vulkan.vk and zg_vulkan.loader (Vulkan bindings and loader)
+
+### Defined in
+`packages/vulkan/src/vk/vk.zig`, generated by `tools/vkgen` from
+`tools/vkgen/data/vk.xml` (E02.F01.S01); `packages/vulkan/src/loader/`
+(E02.F01.S02.T01).
+
+### Implemented by
+`tools/vkgen` (XML parser, registry, resolver, emitter); the hand-written
+helpers `vk/chain.zig` and `vk/enumerate.zig`; the loader opens
+`vulkan-1.dll` (System32 only) or `libvulkan.so.1`.
+
+### Consumed by
+E02 only (device bring-up, memory, presentation, the Vulkan 2D backend).
+Other packages draw through `zg_vulkan.r2d`.
+
+### Signature
+```zig
+// vk (generated): Instance, Image, ... handles; Format, ... enums;
+// ImageUsageFlags, ... packed structs; ImageCreateInfo, ... extern structs
+pub const Command = enum { create_instance, ..., cmd_begin_rendering, ... };
+pub fn Dispatch(comptime level: Level, comptime cmds: []const Command) type;
+pub fn info(comptime c: Command) CommandInfo; // name, level, aliases, Pfn, provided_by
+pub const Error = error{ OutOfHostMemory, ..., OutOfDateKHR, ..., Unknown };
+pub fn check(r: Result) Error!Result;
+pub fn chain(base: anytype, ext: anytype) void;
+pub fn enumerateAlloc(comptime T: type, gpa: Allocator, f: anytype, args: anytype) (Error || error{OutOfMemory})![]T;
+// loader
+pub const Loader = struct {
+    pub fn open(opts: OpenOptions) LoadError!Loader;
+    pub fn loadGlobal(self: *const Loader, diag: ?*Diagnostics) LoadError!tables.Global;
+    pub fn loadInstance(self: *const Loader, inst: vk.Instance, api: u32, enabled: ExtSet, diag: ?*Diagnostics) LoadError!tables.Instance;
+};
+pub fn loadDevice(inst: *const tables.Instance, dev: vk.Device, api: u32, enabled: ExtSet, diag: ?*Diagnostics) LoadError!tables.Device;
+```
+Deviations from the spec text: `vk.zig` is checked in and kept current by
+`zig build vkgen` / `check-gen` (as with lspgen) instead of being generated
+at build time, so `packages/vulkan` builds on its own; `api` is
+`major * 100 + minor`; a `Diagnostics` out-parameter names the missing
+command; `Dispatch` tables have no wrapper methods (call the fields:
+`dev.create_image(...)`); `Loader.open` needs a libc-linked binary on Linux
+(ADR-E02-001) and returns `error.Unsupported` otherwise.
+
+### Threading
+The generated code has no state. `Loader` and the tables are plain values:
+load once, then share read-only.
+
+### Ownership/lifetime
+`Loader.close` unloads the library; tables loaded from it must not be used
+afterwards. `enumerateAlloc` results belong to the caller.
+
+### Stability
+Internal to E02: regenerated when vk.xml or the allowlist changes.
+
+## zg_vulkan.gpu (device bring-up)
+
+### Defined in
+`packages/vulkan/src/gpu/` (E02.F02): `Gpu.zig`, `instance.zig`,
+`debug.zig`, `select.zig`, `features.zig`, `device.zig`, `info.zig`,
+`lost.zig`, `marker.zig`.
+
+### Implemented by
+E02. Selection policy in `select.zig` (pure `choose`/`score` over `Probe`).
+
+### Consumed by
+E02's Vulkan backend (memory, presentation, 2D renderer); `zg doctor gpu`
+(E10/E17 CLI) through `writeReport`; E17 crash reports through the same
+report; E01 supplies `Presenter.drmDevice()` for `CreateOptions.drm_device`.
+
+### Signature
+```zig
+pub const Gpu = struct {
+    loader: Loader, instance: InstanceBundle, pdev: vk.PhysicalDevice, dev: vk.Device, ddisp: tables.Device,
+    exts: ExtSet, info: GpuInfo, gfx: Queue, transfer: ?Queue, debug: ?Debug, sink: Sink,
+    probes: []Probe, chosen: usize, lost: std.atomic.Value(bool), ...
+    pub fn create(gpa: Allocator, io: std.Io, opts: CreateOptions) CreateError!*Gpu;
+    pub fn destroy(self: *Gpu) void;
+    pub fn name(self: *const Gpu, handle: anytype, label: [:0]const u8) void;
+    pub fn checkLost(self: *Gpu, r: vk.Result) error{DeviceLost}!void;
+    pub fn checkLostAt(self: *Gpu, r: vk.Result, at: ?Fault.At) error{DeviceLost}!void;
+    pub fn report(self: *const Gpu, losses: []const u64) Report;
+};
+pub const CreateOptions = struct { instance: InstanceOptions, prefer: Preference, drm_device: ?DrmDevice, forced: ?[]const u8,
+    need_dmabuf_export: bool, loader_path: ?[]const u8, marker_dir: ?std.Io.Dir, fault: ?[]const u8, log_emit: ?fn };
+pub fn choose(probes: []const Probe, opts: SelectOptions) ?usize; // pure
+pub fn score(p: *const Probe, opts: SelectOptions) i32;           // pure
+pub const Recovery = struct {
+    pub fn record(self: *Recovery, now_ns: u64) Outcome;          // pure policy
+    pub fn onLost(self: *Recovery, now_ns: u64, hooks: Hooks) anyerror!Outcome;
+    pub fn history(self: *const Recovery) []const u64;
+};
+pub fn writeReport(w: *std.Io.Writer, r: Report, fmt: enum { text, json }) !void;
+```
+Deviations from the spec text: `choose`/`score` take `SelectOptions` (the
+selection-relevant part of `CreateOptions`); `Probe.queues` holds
+`VkQueueFamilyProperties` (not the `2` variant) plus a `present_mask`;
+CPU devices are never rejected (`cpu_device_not_forced` does not exist),
+they score −10000 and are used when forced or alone; `createInstance`
+takes the `Sink` so the messenger chained into instance creation can
+count; `Recovery.onLost` takes renderer `Hooks` (teardown, recreate,
+switch to software) instead of a `*VkRenderer`, which lands with
+E02.F06; `writeReport` takes a `Report` value. Win32 presentation support
+is checked per family with `vkGetPhysicalDeviceWin32PresentationSupportKHR`,
+so no `HWND` is needed at selection. The crash marker
+(`~/.cache/zigguro/gpu-init.lock`) forces software for one start, then
+Vulkan is tried again. `ZG_VK_FAULT` is honoured only in Debug and test
+builds.
+
+### Threading
+`create` may run on a worker (it does not touch the UI). The result is
+immutable except `lost` (atomic) and the queue mutexes: lock
+`Queue.mutex` around submits and presents. The debug callback runs on any
+thread and only touches the `Sink` atomics.
+
+### Ownership/lifetime
+`Gpu` owns the loader, instance, messenger, device and probes; `destroy`
+frees them (waiting for the device only if it was not lost). Recovery
+destroys and recreates the whole `Gpu`.
+
+### Stability
+Internal to E02 except `writeReport`'s JSON schema (golden-tested) and
+`CreateOptions`, which the app fills from `EnvOverrides` and E15 settings.
+
+## zg_vulkan.mem (GPU memory, uploads, textures)
+
+### Defined in
+`packages/vulkan/src/mem/` (E02.F03): `tlsf.zig`, `types.zig`,
+`DeviceMemory.zig`, `UploadRing.zig`, `Uploader.zig`, `Texture.zig`,
+`barriers.zig`.
+
+### Implemented by
+E02. `findMemoryType`, `flushRange`, `blockSizeFor` and the ring's `Bump`
+are pure and unit-tested; the rest is tested on lavapipe.
+
+### Consumed by
+E02's Vulkan backend (instance data, layers, swapchain/dmabuf ring) and,
+through `Uploader.writeRegion`, the glyph atlas and image uploads that
+E03/E04/E08 feed via the renderer.
+
+### Signature
+```zig
+pub const DeviceMemory = struct {
+    pub fn init(gpu: *Gpu, gpa: Allocator, opts: Options) DeviceMemory;
+    pub fn deinit(self: *DeviceMemory) void;                     // logs leaks by name
+    pub fn allocFor(self, req: Request, usage: Usage, linear: bool, name: [:0]const u8) Error!Allocation;
+    pub fn createBuffer(self, info: vk.BufferCreateInfo, usage: Usage, name: [:0]const u8) Error!Buffer;
+    pub fn createImage(self, info: vk.ImageCreateInfo, usage: Usage, name: [:0]const u8, export_dmabuf: bool) Error!Image;
+    pub fn free(self, a: Allocation) void;
+    pub fn flush(self, a: Allocation, off: u64, len: u64) vk.Error!void;
+    pub fn invalidate(self, a: Allocation, off: u64, len: u64) vk.Error!void;
+    pub fn budget(self) []const HeapBudget;
+    pub fn stats(self) Stats;
+    pub fn nextFrame(self) void;                                 // releases blocks empty for 3 frames
+    pub fn reportLeaks(self, w: *std.Io.Writer) !usize;
+};
+pub const UploadRing = struct { init(mem, frames_in_flight: u8, bytes_per_frame: u64), beginFrame(slot: u8), alloc(len, alignment) !Slice,
+    endFrame(cb, dd) !void, gpuBuffer() vk.Buffer, resize(bytes_per_frame) !void };
+pub const Uploader = struct { init(gpa, mem, ring), writeRegion(tex, Rect16, pixels, row_pitch) !void, writeBuffer(dst, off, bytes) !void,
+    record(cb, dd) !void, retire() void, pendingBytes() u64 };
+pub const Texture = struct { image: Image, view: vk.ImageView, format: Format, width: u32, height: u32, slot: u32, access: barriers.Access,
+    pub fn create(mem, w, h, fmt: Format, use: enum { sampled, render_target }, name) !Texture; pub fn destroy(self, mem) void };
+```
+Deviations from the spec text: `DeviceMemory.init` cannot fail;
+`Allocation` also carries `block`, `linear` and `id`; frames in flight are
+`u8`; copies use `vkCmdCopyBufferToImage`/`vkCmdCopyBuffer` (core 1.0,
+no `VK_KHR_copy_commands2` needed on 1.2 devices) with all regions of a
+texture in one call; ring growth is `resize`, which the owner calls once
+every slot has retired (E02.F04 timeline); staging buffers are freed by
+`Uploader.retire` when the frame completes; `VK_EXT_memory_priority` is
+not used yet (it needs the `memoryPriority` feature); bands of uploads
+over 4 MiB and the async transfer queue are not implemented yet.
+
+### Threading
+`DeviceMemory` methods lock one `std.Io.Mutex` (render thread plus a
+texture worker). `UploadRing` and `Uploader` belong to the render thread.
+
+### Ownership/lifetime
+Every allocation is freed through `DeviceMemory.free` (or
+`destroyBuffer`/`destroyImage`/`Texture.destroy`) before `deinit`.
+Ring slices are valid until their slot is reused.
+
+### Stability
+Internal to E02.
+
+## zg_syntax (Language, Registry, Highlighter)
+
+### Defined in
+`packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
+`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig` (E05.F04).
+
+### Implemented by
+E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer).
+
+### Consumed by
+zg_editor (document highlighting and smart editing), E04 (rendering tokens),
+E15 (themes resolve `HighlightId` by longest dotted prefix), the language
+lexers of E05.F04.S02.
+
+### Signature
+```zig
+pub const HighlightId = enum(u16) { none, comment, comment_doc, string, ..., invalid, _,
+    pub fn name(id) []const u8; pub fn fromName(s) ?HighlightId; pub fn parent(id) ?HighlightId };
+pub fn resolve(comptime T: type, table: []const ?T, id: HighlightId) ?T;
+pub const Token = packed struct(u64) { start: u32, kind: u16, hl: HighlightId };
+pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: u16, aux: [32]u8, aux_len: u8,
+    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool };
+pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
+pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
+    lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
+    context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
+pub const Registry = struct { pub fn init(gpa) !Registry; pub fn register(r, gpa, l: *const Language) !void;
+    pub fn detect(r, path: ?[]const u8, head: []const u8) ?LanguageId; pub fn byName(r, name) ?LanguageId };
+pub fn defaultRegistry(gpa) !Registry;
+pub const LineSource = struct { ctx: *const anyopaque, lines: u64, getFn: ..., pub fn fromSlice(*const []const []const u8) LineSource };
+pub const LineEdit = struct { first: u64, removed: u64, inserted: u64 };
+pub const Highlighter = struct {
+    pub fn init(gpa, lang: *const Language, reg: *const Registry) !Highlighter;
+    pub fn reset(h, src: LineSource) !void;
+    pub fn onEdit(h, e: LineEdit, src: LineSource, deadline: ?Deadline) !void; // to convergence, 4096-line cap
+    pub fn ensure(h, src: LineSource, first: u64, last: u64) !void;          // viewport exact (or approximate after resync)
+    pub fn idle(h, src: LineSource, deadline: ?Deadline) !bool;              // true when done
+    pub fn tokens(h, line: u64) []const Token;
+    pub fn isExact(h, line: u64) bool; pub fn isApprox(h, line: u64) bool;
+    pub fn kindAt(h, line: u64, col: u32, line_len: u32) ContextKind;
+};
+```
+
+### Threading
+One `Highlighter` per document, used from one thread (the UI thread). A
+`Registry` is read-only after setup and can be shared.
+
+### Ownership/lifetime
+`Language` definitions and the `Registry` are borrowed and must outlive every
+`Highlighter` using them. `tokens(line)` slices are valid until the next
+call that mutates the highlighter. `LineSource` text is borrowed per call.
+
+### Stability
+Unstable while E05.F04 is in progress. The highlighter speaks lines, not
+documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
+text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
