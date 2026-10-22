@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
     // E16's contracts (ApprovalPort, ApprovalRequest, Answer) for the
     // approvals broker; never zg_security_ui.
     const security = b.dependency("zg_security", f.args()).module("zg_security");
+    // E09's review contract (ReviewPort, Proposal), previews and the lane
+    // landing queue, for the SCM proposal port.
+    const scm = b.dependency("zg_scm", f.args()).module("zg_scm");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_review",
         .imports = &.{
@@ -22,6 +25,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_ai_proto", .module = proto },
             .{ .name = "zg_ignore", .module = ignore },
             .{ .name = "zg_security", .module = security },
+            .{ .name = "zg_scm", .module = scm },
         },
         .bench = "bench/main.zig",
     });
