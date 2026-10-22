@@ -1,0 +1,65 @@
+# What the common modes do: autowrap, insert, origin, several modes per
+# sequence, XTSAVE/XTRESTORE and resets.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-?-Pm-h.1D0E
+
+@case DECAWM off overwrites the last column
+@size 5x2
+@send "\e[?7labcdefg"
+@expect-screen
+|abcdg|
+@expect-cursor 1,5
+
+@case DECAWM on wraps
+@size 5x2
+@send "abcdefg"
+@expect-screen
+|abcde|
+|fg···|
+
+@case IRM inserts and pushes text off the edge
+@size 5x2
+@send "abcde\e[1;1H\e[4hxy"
+@expect-screen
+|xyabc|
+
+@case IRM off overwrites again
+@size 5x2
+@send "abcde\e[1;1H\e[4h\e[4lxy"
+@expect-screen
+|xycde|
+
+@case One DECSET can set several modes
+@size 10x2
+@send "\e[?1;2004h\e[?1$p\e[?2004$p"
+@expect-reply "\e[?1;1$y\e[?2004;1$y"
+
+@case XTSAVE and XTRESTORE restore a mode
+@size 10x2
+@send "\e[?2004h\e[?2004s\e[?2004l\e[?2004r\e[?2004$p"
+@expect-reply "\e[?2004;1$y"
+
+@case RIS restores default modes
+@size 10x2
+@send "\e[?7l\e[?2004h\ec\e[?7$p\e[?2004$p"
+@expect-reply "\e[?7;1$y\e[?2004;2$y"
+
+@case DECSTR restores autowrap and resets origin
+@size 10x2
+@send "\e[?7l\e[?6h\e[!p\e[?7$p\e[?6$p"
+@expect-reply "\e[?7;1$y\e[?6;2$y"
+
+@case DECTCEM hides the cursor
+@size 10x2
+@send "\e[?25l\e[?25$p"
+@expect-reply "\e[?25;2$y"
+
+@case Mode 1049 switches to a blank alternate screen
+@size 5x2
+@send "main\e[?1049h"
+@expect-screen
+
+@case Leaving 1049 restores the main screen
+@size 5x2
+@send "main\e[?1049halt\e[?1049l"
+@expect-screen
+|main·|
