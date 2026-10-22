@@ -6,7 +6,8 @@
 //! A dock tab also closes on Delete, a middle click or its close button,
 //! and asks for its context menu on Shift+F10 or the Menu key; those come
 //! back through the tab's `Response` (`cancelled` = close,
-//! `context_menu`).
+//! `context_menu`). With a `drag` hook, pressing a tab and moving 8 px
+//! starts a drag that reports every move and the drop (Escape cancels).
 
 const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
@@ -29,6 +30,21 @@ const PaintCx = paint_cx.PaintCx;
 const MeasureCx = measure_mod.MeasureCx;
 const Theme = theme_mod.Theme;
 const Roving = roving.Roving;
+const Vec2 = geom.Vec2;
+
+/// A tab drag's progress.
+pub const DragPhase = enum { start, move, drop, cancel };
+
+/// Receives a tab's drag (window coordinates).
+pub const DragHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, id: u64, phase: DragPhase, pos: Vec2) void,
+    /// Passed back to `f`.
+    id: u64 = 0,
+};
+
+/// How far the pointer moves before a press becomes a drag.
+pub const drag_threshold: f32 = 8;
 
 /// One tab.
 pub const Tab = struct {
@@ -56,6 +72,14 @@ pub const Tab = struct {
         /// Dock tabs sit on a strip of this height; generic tabs use the
         /// control height.
         height: f32 = 0,
+        /// Makes the tab draggable.
+        drag: ?DragHook = null,
+    };
+
+    /// A press that may become a drag.
+    pub const State = struct {
+        press: ?Vec2 = null,
+        dragging: bool = false,
     };
 
     /// Padding; dock tabs get their strip height.
@@ -64,7 +88,7 @@ pub const Tab = struct {
     }
 
     /// Title, badge and close area, within the limits.
-    pub fn measure(mc: *MeasureCx, props: *const Props, _: *widget.NoState, _: ?f32) Size {
+    pub fn measure(mc: *MeasureCx, props: *const Props, _: *State, _: ?f32) Size {
         const st = titleStyle(mc.theme, props.preview);
         var w = mc.text.width(st, props.title);
         if (props.badge.len > 0) w += gap + mc.text.width(badgeStyle(mc.theme), props.badge);
@@ -74,7 +98,7 @@ pub const Tab = struct {
     }
 
     /// Background, accent, title, badge, close or dirty mark, focus ring.
-    pub fn paint(pc: *PaintCx, props: *const Props, _: *widget.NoState) void {
+    pub fn paint(pc: *PaintCx, props: *const Props, _: *State) void {
         const r = pc.bounds();
         const hovered = pc.state.hovered;
         pc.fill(r, if (props.active) .bg_base else if (hovered) .hover_bg else .bg_elevated, 0);
@@ -101,8 +125,8 @@ pub const Tab = struct {
         pc.focusRing(r, 0);
     }
 
-    /// Keys along the list, close and context requests.
-    pub fn event(ec: *event_mod.EventCx, props: *const Props, _: *widget.NoState, ev: *const event_mod.InputEvent) bool {
+    /// Keys along the list, close and context requests, drags.
+    pub fn event(ec: *event_mod.EventCx, props: *const Props, st: *State, ev: *const event_mod.InputEvent) bool {
         switch (ev.*) {
             .pointer_down => |p| {
                 if (p.button == .middle and props.closable) {
@@ -113,10 +137,35 @@ pub const Tab = struct {
                     ec.respond(.{ .cancelled = true });
                     return true;
                 }
+                if (p.button == .left and props.drag != null) st.press = p.pos;
                 return false;
+            },
+            .pointer_move => |p| {
+                const h = props.drag orelse return false;
+                const from = st.press orelse return false;
+                if (!st.dragging) {
+                    if (@abs(p.pos.x - from.x) < drag_threshold and @abs(p.pos.y - from.y) < drag_threshold) return false;
+                    st.dragging = true;
+                    h.f(h.ctx, h.id, .start, from);
+                }
+                h.f(h.ctx, h.id, .move, p.pos);
+                return true;
+            },
+            .pointer_up => |p| {
+                st.press = null;
+                if (!st.dragging) return false;
+                st.dragging = false;
+                if (props.drag) |h| h.f(h.ctx, h.id, .drop, p.pos);
+                return true;
             },
             .key => |k| {
                 if (k.action == .release) return false;
+                if (k.key == .escape and st.dragging) {
+                    st.dragging = false;
+                    st.press = null;
+                    if (props.drag) |h| h.f(h.ctx, h.id, .cancel, .{});
+                    return true;
+                }
                 if (k.key == .delete and props.closable and !k.mods.ctrl and !k.mods.alt) {
                     ec.respond(.{ .cancelled = true });
                     return true;
@@ -132,7 +181,7 @@ pub const Tab = struct {
     }
 
     /// A tab, selected when active.
-    pub fn a11y(props: *const Props, _: *widget.NoState) widget.A11y {
+    pub fn a11y(props: *const Props, _: *State) widget.A11y {
         return .{ .role = .tab, .name = props.title, .checked = props.active };
     }
 };
