@@ -66,8 +66,11 @@ fn prepare(p: Pin, x: u16, n: u16) void {
     const end = x + n; // exclusive
     if (cs[end - 1].wide == .wide and end < cs.len) page.clearCell(&cs[end], .blank);
     const r = p.row();
-    // Plain rows hold no references: the caller overwrites the cells anyway.
-    if (r.styled or r.has_grapheme or r.has_hyperlink) page.clearCells(r, cs[x..end], .blank);
+    // The caller overwrites the cells, so rows holding only style
+    // references just release them; plain rows hold nothing.
+    if (r.has_grapheme or r.has_hyperlink) {
+        page.clearCells(r, cs[x..end], .blank);
+    } else if (r.styled) page.releaseStyles(cs[x..end]);
 }
 
 fn writeRun(s: *Screen, run: []const u8) void {
