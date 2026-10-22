@@ -1,0 +1,11 @@
+<<<<<<< conflict 1 of 1
+%%%%%%% diff from base #1 to side #1
+ a
+-b
++B
+%%%%%%% diff
+-c
++C
++++++++ side #3
+A
+>>>>>>> conflict 1 of 1 ends
