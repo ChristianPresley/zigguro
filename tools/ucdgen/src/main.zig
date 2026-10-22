@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !u8 {
     var inputs: tables.Inputs = undefined;
     for (tables.files, 0..) |rel, i| {
         const path = args[5 + i];
-        if (!std.mem.endsWith(u8, path, rel)) {
+        if (!endsWithPath(path, rel)) {
             std.debug.print("ucdgen: argument {d} should be {s}, got {s}\n", .{ i + 1, rel, path });
             return 2;
         }
@@ -142,4 +142,21 @@ test {
     _ = @import("lib.zig");
     _ = @import("fetch.zig");
     _ = @import("file_list.zig");
+}
+
+/// Whether `path` ends with the `/`-separated `rel`, accepting `\` as a
+/// separator too (the build passes native paths on Windows).
+fn endsWithPath(path: []const u8, rel: []const u8) bool {
+    if (path.len < rel.len) return false;
+    for (path[path.len - rel.len ..], rel) |a, b| {
+        const na: u8 = if (a == '\\') '/' else a;
+        if (na != b) return false;
+    }
+    return true;
+}
+
+test endsWithPath {
+    try std.testing.expect(endsWithPath("D:\\a\\ucd\\extracted\\DerivedBidiClass.txt", "extracted/DerivedBidiClass.txt"));
+    try std.testing.expect(endsWithPath("/w/ucd/extracted/DerivedBidiClass.txt", "extracted/DerivedBidiClass.txt"));
+    try std.testing.expect(!endsWithPath("/w/ucd/DerivedBidiClass.txt", "extracted/DerivedBidiClass.txt"));
 }
