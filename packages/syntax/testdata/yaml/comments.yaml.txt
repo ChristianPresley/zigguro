@@ -1,0 +1,5 @@
+# full line comment
+key: value # trailing comment
+url: http://x#notcomment
+  # indented comment
+quoted: "a # b" # c

@@ -1,0 +1,25 @@
+1| keyword:import variable:os
+2| keyword:from variable:sys keyword:import variable:argv keyword:as variable:args
+3| keyword.storage:def function:main punctuation.bracket:( variable:n punctuation.delimiter:: type.builtin:int punctuation.bracket:) operator:-> constant.builtin:None punctuation.delimiter::
+4| keyword.storage:global variable:counter
+5| keyword.control:for variable:i keyword.operator:in function.builtin:range punctuation.bracket:( variable:n punctuation.bracket:) punctuation.delimiter::
+6| keyword.control:if variable:i operator:% number:2 operator:== number:0 keyword.operator:and keyword.operator:not variable:done punctuation.delimiter::
+7| keyword.control:continue
+8| keyword.control:elif variable:i keyword.operator:in variable:seen keyword.operator:or variable:i keyword.operator:is constant.builtin:None punctuation.delimiter::
+9| keyword.control:break
+10| keyword.control:else punctuation.delimiter::
+11| keyword.control:pass
+12| keyword.control:while constant.builtin:True punctuation.delimiter::
+13| keyword.control:try punctuation.delimiter::
+14| keyword.control:raise function:ValueError punctuation.bracket:( string:" string:x" punctuation.bracket:)
+15| keyword.control:except type:ValueError keyword:as variable:e punctuation.delimiter::
+16| keyword:del variable:e
+17| keyword.control:finally punctuation.delimiter::
+18| keyword.control:return
+19| keyword.control:with function.builtin:open punctuation.bracket:( string:" string:f" punctuation.bracket:) keyword:as variable:fh punctuation.delimiter::
+20| keyword.control:yield variable:fh
+21| keyword:assert variable:counter operator:> number:0
+22| variable:x operator:= keyword.storage:lambda variable:y punctuation.delimiter:: variable:y operator:+ number:1
+23| keyword.storage:async keyword.storage:def function:run punctuation.bracket:( punctuation.bracket:) punctuation.delimiter::
+24| keyword.control:await variable:task
+25| variable:nonlocal_value operator:= constant.builtin:False

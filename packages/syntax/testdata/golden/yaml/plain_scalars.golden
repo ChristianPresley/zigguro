@@ -1,0 +1,13 @@
+1| property:null1 punctuation.delimiter:: constant.builtin:null
+2| property:null2 punctuation.delimiter:: constant.builtin:~
+3| property:bool1 punctuation.delimiter:: constant.builtin:true
+4| property:bool2 punctuation.delimiter:: constant.builtin:False
+5| property:int punctuation.delimiter:: number:42
+6| property:neg punctuation.delimiter:: number:-17
+7| property:float punctuation.delimiter:: number:3.14
+8| property:exp punctuation.delimiter:: number:1e10
+9| property:hex punctuation.delimiter:: number:0x1F
+10| property:inf punctuation.delimiter:: constant.builtin:.inf
+11| property:nan punctuation.delimiter:: constant.builtin:.nan
+12| property:str punctuation.delimiter:: string:hello world
+13| property:version punctuation.delimiter:: string:1.2.3

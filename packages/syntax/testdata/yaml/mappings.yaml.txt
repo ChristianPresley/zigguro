@@ -1,0 +1,10 @@
+name: zigguro
+version: 1.0
+nested:
+  key: value
+  other key: with spaces
+  "quoted key": 1
+  'single key': 2
+empty:
+url: http://example.com:8080/path
+time: 12:30

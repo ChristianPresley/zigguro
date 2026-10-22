@@ -2346,7 +2346,7 @@ Internal to E02 behind `r2d.Renderer`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers),
+structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2429,11 +2429,12 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
-pub const zig_language, c_language, cpp_language, rust_language, go_language: Language;
+pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
-    dedent_on: []const []const u8 };             // e.g. "}"
+    dedent_on: []const []const u8,               // e.g. "}"
+    dedent_after: []const []const u8 };          // Python: "return", "pass", ...
 // langs/c.zig: state `mode` = construct | Mode.directive while a directive continues;
 // a C++ raw string's delimiter is in `aux`.
 pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_tokens: bool = false }, st, s, out) void;
@@ -2441,6 +2442,11 @@ pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_to
 pub fn rust.classifyQuote(line: []const u8, pos: usize) struct { enum { char, lifetime, invalid }, usize };
 // langs/go.zig: tier 2 turns on automatic semicolons (a `Kind.virtual_semicolon` token at the line end).
 pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, st, s, out) void;
+// langs/python.zig: every string is a frame (2 bytes in `aux`: flags, field bracket depth; count in `mode`'s
+// low byte), so f-strings nest per PEP 701. Tier 2: NEWLINE tokens at the line end, and the first token of a
+// line carries `Kind.indent_flag` or a DEDENT count in `Kind.dedent_mask`; the indent stack follows the frames.
+pub fn python.lexLineWith(comptime o: struct { virtual_tokens: bool = false }, st, s, out) void;
+// langs/yaml.zig: a block scalar keeps its parent indentation + 1 in `depth` and an explicit indentation in `aux[0]`.
 ```
 
 ### Threading

@@ -1,0 +1,5 @@
+1| property:list punctuation.delimiter:: punctuation.bracket:[ number:1 punctuation.delimiter:, string:two punctuation.delimiter:, string:"three" punctuation.delimiter:, punctuation.bracket:{ property:a punctuation.delimiter:: string:b punctuation.bracket:} punctuation.bracket:]
+2| property:map punctuation.delimiter:: punctuation.bracket:{ property:key punctuation.delimiter:: string:value punctuation.delimiter:, property:other punctuation.delimiter:: punctuation.bracket:[ string:x punctuation.delimiter:, string:y punctuation.bracket:] punctuation.bracket:}
+3| property:empty punctuation.delimiter:: punctuation.bracket:[ punctuation.bracket:]
+4| property:nested punctuation.delimiter:: punctuation.bracket:{ property:a punctuation.delimiter:: punctuation.bracket:{ property:b punctuation.delimiter:: punctuation.bracket:[ string:c punctuation.delimiter:, string:d punctuation.bracket:] punctuation.bracket:} punctuation.bracket:}
+5| property:urls punctuation.delimiter:: punctuation.bracket:[ string:http://a.com punctuation.delimiter:, string:b punctuation.bracket:]

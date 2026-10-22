@@ -1,0 +1,5 @@
+1| comment:# a comment
+2| variable:x operator:= number:1 comment:# trailing comment
+3| comment:# comment with "string" and 'quotes'
+4| comment:#!not a shebang here
+5| variable:y operator:= string:" string:#notcomment" comment:# real comment

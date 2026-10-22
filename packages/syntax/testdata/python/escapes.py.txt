@@ -1,0 +1,6 @@
+a = "\n\t\\\"\'"
+b = "\x41 \101 \u00e9 \U0001F600"
+c = "\N{LATIN SMALL LETTER E WITH ACUTE}"
+d = r"\n stays raw"
+e = b"\xff\x00"
+f = "\q unknown"

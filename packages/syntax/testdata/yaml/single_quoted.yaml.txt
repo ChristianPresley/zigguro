@@ -1,0 +1,5 @@
+a: 'simple'
+b: 'it''s quoted'
+c: 'spans
+  lines'
+d: '\n is literal'

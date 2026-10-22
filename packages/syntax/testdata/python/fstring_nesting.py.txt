@@ -1,0 +1,9 @@
+a = f"{x["k"]}"
+b = f"{f"{f"{deep}"}"}"
+c = f"{", ".join(parts)}"
+d = f"{'}'}"
+e = f"{d:{w}}" + tail
+f = f"{(lambda: 1)()}"
+g = f"{
+    multi_line_field
+}"

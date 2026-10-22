@@ -1,0 +1,11 @@
+1| attribute:@dataclass
+2| keyword.storage:class type:Point punctuation.delimiter::
+3| variable:x punctuation.delimiter:: type.builtin:int
+4| variable:y punctuation.delimiter:: type.builtin:int
+5|
+6| attribute:@functools.lru_cache punctuation.bracket:( variable:maxsize operator:= constant.builtin:None punctuation.bracket:)
+7| keyword.storage:def function:cached punctuation.bracket:( variable:n punctuation.bracket:) punctuation.delimiter::
+8| keyword.control:return variable:n
+9|
+10| variable:result operator:= variable:a operator:@ variable:b
+11| variable:m operator:@= variable:n

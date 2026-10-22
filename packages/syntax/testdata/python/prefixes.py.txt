@@ -1,0 +1,10 @@
+a = r"raw \d+"
+b = b"bytes\x00"
+c = rb'raw bytes \d'
+d = BR"upper"
+e = u"unicode"
+f = f"format {x}"
+g = Rf"{x}\d"
+h = t"template {x}"
+i = br"ok" + bf"not a prefix"
+j = ur"not valid"

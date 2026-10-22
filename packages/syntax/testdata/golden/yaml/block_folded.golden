@@ -1,0 +1,12 @@
+1| property:description punctuation.delimiter:: operator:>
+2| string:  Folded text
+3| string:  continues here.
+4| property:nested punctuation.delimiter::
+5| property:inner punctuation.delimiter:: operator:>-
+6| string:    more folded
+7| string:    text
+8| property:sibling punctuation.delimiter:: string:x
+9| property:seq punctuation.delimiter::
+10| punctuation.delimiter:- operator:>
+11| string:    item text
+12| punctuation.delimiter:- string:plain
