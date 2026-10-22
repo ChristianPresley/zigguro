@@ -1,0 +1,2 @@
+const onChange = (e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value);
+const field = <input value={value} onChange={onChange} onKeyDown={(e) => e.key === "Enter" && submit()} />;
