@@ -34,6 +34,23 @@ store. So a checkpoint only needs to know which applies came after it.
 
 `dry_run` returns the same report and writes nothing.
 
+## In the app
+
+`apps/zigguro/src/agent/review_glue.zig` binds this to the workbench
+agent:
+
+- `deps.Checkpoints` (E10) is `Checkpoints.createErased`, so the agent
+  loop takes a checkpoint at the start of every user turn.
+- Agent writes to files that are not open in the editor still go to disk
+  directly. Each one is recorded in `History` (an `apply` with no
+  changeset) under the agent's session, so restore can revert it.
+- E10 rewind's `CheckpointRestore` calls `restoreTo` with session scope.
+  Conflicts come back as skipped files with a reason.
+
+Until the review UI lands, proposals are applied at once rather than held
+in the queue. Edits to documents open in the editor are not recorded.
+Contents stay in memory for the app's run.
+
 ## Differences from Claude Code checkpointing
 
 | Claude Code limitation | zigguro |
