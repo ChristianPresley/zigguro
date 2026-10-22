@@ -142,6 +142,14 @@ shared by every process working on it:
   set `QueueSink.decided` after the load so that `tail` re-emits them as
   `decided` events (they are not journaled again). Compaction drops
   them.
+- A load decodes every snapshot, so it avoids `std.json`'s tree and its
+  byte-at-a-time CRC: the frame envelope is split without parsing, sinks
+  get each record's JSON text, `records.readChangeset` pulls tokens with
+  `model.pull.Pull`, and frames are checked with `store/crc32c.zig`
+  (SSE 4.2 `crc32` when the target has it). Other records are rare and
+  still parse as `std.json.Value`. `review.store_cold_load` (10,000
+  3-file changesets, 17 MB) takes about 140 ms against a 50 ms budget;
+  closing the gap needs lazy or parallel decoding of snapshots.
 
 Bind a queue to a store with `.blobs = store.blobs()` and
 `.journal = store.journalPort()`, then call

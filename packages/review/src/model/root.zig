@@ -77,4 +77,5 @@ pub const CheckpointList = checkpoint.CheckpointList;
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("queue_test.zig");
+    _ = @import("pull.zig");
 }

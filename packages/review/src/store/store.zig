@@ -49,10 +49,11 @@ pub const LoadReport = struct {
     quarantined: u32 = 0,
 };
 
-/// Receives the records of a load or tail, on the caller's thread.
+/// Receives the records of a load or tail, on the caller's thread, as
+/// JSON text valid during the call.
 pub const Sink = struct {
     ctx: *anyopaque,
-    on: *const fn (ctx: *anyopaque, kind: journal.Kind, record: std.json.Value) anyerror!void,
+    on: *const fn (ctx: *anyopaque, kind: journal.Kind, record: []const u8) anyerror!void,
 };
 
 pub const ChangesetStore = struct {
@@ -445,24 +446,18 @@ pub const ChangesetStore = struct {
                 .frame => |f| f,
                 else => return nx,
             };
-            var arena: std.heap.ArenaAllocator = .init(s.gpa);
-            defer arena.deinit();
-            const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), fr.payload, .{}) catch {
+            const env = envelope(fr.payload) orelse {
                 log.warn("review store: skipping an unreadable record", .{});
                 continue;
             };
-            if (v != .object) continue;
-            const p = intOf(u32, v.object.get("p")) orelse continue;
-            const sq = intOf(u64, v.object.get("s")) orelse continue;
-            const gop = try s.seen.getOrPut(s.gpa, p);
-            if (gop.found_existing and sq <= gop.value_ptr.*) continue;
-            gop.value_ptr.* = sq;
-            if (p == s.opts.process_tag) {
-                s.seq = @max(s.seq, sq);
+            const gop = try s.seen.getOrPut(s.gpa, env.p);
+            if (gop.found_existing and env.s <= gop.value_ptr.*) continue;
+            gop.value_ptr.* = env.s;
+            if (env.p == s.opts.process_tag) {
+                s.seq = @max(s.seq, env.s);
                 if (skip_own) continue;
             }
-            const rec = v.object.get("r") orelse continue;
-            sink.on(sink.ctx, fr.kind, rec) catch |e| {
+            sink.on(sink.ctx, fr.kind, env.r) catch |e| {
                 log.warn("review store: record skipped: {t}", .{e});
                 continue;
             };
@@ -496,24 +491,26 @@ pub const QueueSink = struct {
         return .{ .ctx = qs, .on = on };
     }
 
-    fn on(ctx: *anyopaque, kind: journal.Kind, rec: std.json.Value) anyerror!void {
+    fn on(ctx: *anyopaque, kind: journal.Kind, json: []const u8) anyerror!void {
         const qs: *QueueSink = @ptrCast(@alignCast(ctx));
+        if (kind == .changeset) {
+            const cs = try records.readChangeset(qs.q.gpa, json, qs.store.blobs());
+            qs.q.restore(cs) catch |e| {
+                cs.deinit(qs.q.gpa);
+                qs.q.gpa.destroy(cs);
+                return e;
+            };
+            return;
+        }
+        var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
+        defer arena.deinit();
+        const rec = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
         switch (kind) {
-            .changeset => {
-                const cs = try records.readChangeset(qs.q.gpa, rec, qs.store.blobs());
-                qs.q.restore(cs) catch |e| {
-                    cs.deinit(qs.q.gpa);
-                    qs.q.gpa.destroy(cs);
-                    return e;
-                };
-            },
             .remove => {
                 const id = intOf(u64, if (rec == .object) rec.object.get("id") else null) orelse return error.InvalidRecord;
                 qs.q.restoreRemoved(@enumFromInt(id));
             },
             .checkpoint => if (qs.checkpoints) |c| {
-                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
-                defer arena.deinit();
                 const cp = try records.readCheckpoint(arena.allocator(), rec);
                 try c.restore(c.ctx, &cp);
             },
@@ -523,16 +520,10 @@ pub const QueueSink = struct {
                 if (qs.history) |h| if (intOf(u64, o.get("apply"))) |n| h.reserve(n);
                 if (qs.checkpoints) |c| if (c.reserve) |r| if (intOf(u64, o.get("checkpoint"))) |n| r(c.ctx, n);
             },
-            .apply => if (qs.history) |h| {
-                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
-                defer arena.deinit();
-                try h.restore(try records.readApply(arena.allocator(), rec));
-            },
+            .apply => if (qs.history) |h| try h.restore(try records.readApply(arena.allocator(), rec)),
             .approval => if (qs.approvals) |a| try a.restore(a.ctx, rec),
             .comment => if (qs.comments) |c| try c.restore(c.ctx, rec),
             .decided => if (qs.decided) {
-                var arena: std.heap.ArenaAllocator = .init(qs.q.gpa);
-                defer arena.deinit();
                 const d = try records.readDecided(arena.allocator(), rec);
                 qs.store.replaying_decided = true;
                 defer qs.store.replaying_decided = false;
@@ -542,6 +533,27 @@ pub const QueueSink = struct {
         }
     }
 };
+
+const Envelope = struct { p: u32, s: u64, r: []const u8 };
+
+/// Splits a frame written by `frameLocked`, `{"p":N,"s":N,"r":RECORD}`,
+/// without parsing the record.
+fn envelope(payload: []const u8) ?Envelope {
+    var rest = payload;
+    const p = envInt(u32, &rest, "{\"p\":") orelse return null;
+    const sq = envInt(u64, &rest, ",\"s\":") orelse return null;
+    if (!std.mem.startsWith(u8, rest, ",\"r\":") or rest.len < 6 or rest[rest.len - 1] != '}') return null;
+    return .{ .p = p, .s = sq, .r = rest[5 .. rest.len - 1] };
+}
+
+fn envInt(comptime T: type, rest: *[]const u8, prefix: []const u8) ?T {
+    if (!std.mem.startsWith(u8, rest.*, prefix)) return null;
+    var i = prefix.len;
+    while (i < rest.len and std.ascii.isDigit(rest.*[i])) i += 1;
+    const n = std.fmt.parseInt(T, rest.*[prefix.len..i], 10) catch return null;
+    rest.* = rest.*[i..];
+    return n;
+}
 
 fn intOf(comptime T: type, v: ?std.json.Value) ?T {
     const x = v orelse return null;
