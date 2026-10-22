@@ -17,6 +17,7 @@
         .zg_scm = .{ .path = "packages/scm" },
         .zg_platform = .{ .path = "packages/platform" },
         .zg_security = .{ .path = "packages/security" },
+        .zg_ai = .{ .path = "packages/ai" },
         // pkgtool:insert
     },
     .paths = .{
