@@ -213,6 +213,8 @@ pub const SessionWriter = struct {
                 .error_ => |er| .{ .event = .{ .kind = "error", .data_json = jsonOf(a, er) } },
                 .budget => |b| .{ .event = .{ .kind = "budget", .data_json = jsonOf(a, b) } },
                 .recovery => |r| .{ .event = .{ .kind = "recovery", .data_json = jsonOf(a, r) } },
+                .plan_proposed => |p| .{ .event = .{ .kind = "plan_proposed", .data_json = jsonOf(a, .{ .plan = p }) } },
+                .plan_approved => |p| .{ .event = .{ .kind = "plan_approved", .data_json = jsonOf(a, p) } },
                 else => null,
             };
             if (rec) |r| w.append(e.seq, r) catch {};
