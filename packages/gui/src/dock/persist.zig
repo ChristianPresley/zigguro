@@ -87,7 +87,8 @@ pub const LayoutFile = struct {
 /// Panel kinds by name.
 pub const Kinds = struct {
     ctx: ?*anyopaque = null,
-    /// The name of an app kind (null: not saved).
+    /// The name of an app kind (null: not saved, and its tabs are left
+    /// out of their groups).
     name: *const fn (ctx: ?*anyopaque, kind: PanelKindId) ?[]const u8,
     /// The kind of a name (null: unknown, kept as a placeholder).
     id: *const fn (ctx: ?*anyopaque, name: []const u8) ?PanelKindId,
@@ -135,11 +136,23 @@ pub fn fromModel(arena: Allocator, m: *const DockModel, kinds: Kinds, windows: [
         }
         try panels.append(arena, .{ .ref = @intFromEnum(ref), .kind = kind, .state = state });
     }
+    // Tabs of panels not saved are left out of their groups.
+    var saved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (panels.items) |p| try saved.put(arena, p.ref, {});
     const groups = try arena.alloc(GroupRec, m.groups.count());
     for (m.groups.keys(), m.groups.values(), groups) |id, g, *o| {
-        const tabs = try arena.alloc(u32, g.tabs.items.len);
-        for (g.tabs.items, tabs) |t, *x| x.* = @intFromEnum(t);
-        o.* = .{ .id = @intFromEnum(id), .tabs = tabs, .active = g.active, .pinned = g.pinned, .preview = if (g.preview) |p| @intFromEnum(p) else null };
+        var tabs: std.ArrayList(u32) = .empty;
+        var active: u32 = 0;
+        var pinned: u32 = 0;
+        for (g.tabs.items, 0..) |t, i| {
+            const ref = @intFromEnum(t);
+            if (!saved.contains(ref)) continue;
+            if (i == g.active) active = @intCast(tabs.items.len);
+            if (i < g.pinned) pinned += 1;
+            try tabs.append(arena, ref);
+        }
+        const preview: ?u32 = if (g.preview) |p| if (saved.contains(@intFromEnum(p))) @intFromEnum(p) else null else null;
+        o.* = .{ .id = @intFromEnum(id), .tabs = tabs.items, .active = active, .pinned = pinned, .preview = preview };
     }
     const splits = try arena.alloc(SplitRec, m.splits.count());
     for (m.splits.keys(), m.splits.values(), splits) |id, s, *o| {
