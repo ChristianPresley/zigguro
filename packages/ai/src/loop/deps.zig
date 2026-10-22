@@ -114,12 +114,31 @@ fn single(arena: Allocator, r: scheduler.Resource) []const scheduler.Resource {
 pub const Decision = union(enum) {
     allow,
     deny: []const u8,
+    /// Allowed with the input the user edited in the approval (JSON).
+    allow_edited: []const u8,
+};
+
+/// What the `PreToolUse` hooks decided, for the permission check.
+pub const Hint = enum {
+    none,
+    /// Skip the prompt; deny rules still apply.
+    hook_allow,
+    /// Prompt even where the rules would allow.
+    hook_ask,
 };
 
 /// Decides whether a tool call may run; may block on an approval.
 pub const Permission = struct {
     ctx: *anyopaque,
     check: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8) Io.Cancelable!Decision,
+    /// `check` with the hooks' hint; null calls `check`, so a hook allow
+    /// still prompts where the rules say so and a hook ask does not force one.
+    check_hinted: ?*const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: Hint) Io.Cancelable!Decision = null,
+
+    pub fn decide(p: Permission, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: Hint) Io.Cancelable!Decision {
+        if (p.check_hinted) |f| return f(p.ctx, io, agent, spec, input_json, hint);
+        return p.check(p.ctx, io, agent, spec, input_json);
+    }
 
     pub const allow_all: Permission = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .check = struct {
         fn f(_: *anyopaque, _: Io, _: proto.AgentRef, _: *const proto.ToolSpec, _: []const u8) Io.Cancelable!Decision {
@@ -238,11 +257,46 @@ pub const StopDecision = union(enum) {
     block: []const u8,
 };
 
-/// `UserPromptSubmit` and `Stop` hooks (F09).
+/// A `PreToolUse` outcome.
+pub const PreToolDecision = struct {
+    decision: enum { none, allow, deny, ask } = .none,
+    reason: []const u8 = "",
+    /// Replaces the input (JSON); validated again.
+    updated_input_json: ?[]const u8 = null,
+};
+
+/// A `PostToolUse` / `PostToolUseFailure` outcome.
+pub const PostToolDecision = struct {
+    /// Appended to the output as a text part.
+    additional_context: ?[]const u8 = null,
+    /// Replaces the output.
+    updated_output: ?proto.ToolOutput = null,
+};
+
+/// `UserPromptSubmit`, `Stop`, `PreToolUse` and `PostToolUse` hooks (F09).
+/// A hook that fails is skipped: hooks never block on their own errors.
 pub const Hooks = struct {
     ctx: *anyopaque,
     prompt_submit: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, text: []const u8) anyerror!PromptDecision = null,
     stop: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, last: *const proto.Message) anyerror!StopDecision = null,
+    pre_tool_use: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8) anyerror!PreToolDecision = null,
+    /// `failed` selects `PostToolUseFailure` (the output is an error).
+    post_tool_use: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, output: *const proto.ToolOutput, failed: bool) anyerror!PostToolDecision = null,
+};
+
+/// One decision about a tool call, for the E16 audit log and the bus.
+pub const ToolDecision = struct {
+    id: []const u8,
+    tool: []const u8,
+    stage: enum { validation, pre_hook, permission, post_hook, bound },
+    outcome: enum { allow, deny, ask, edit, replace, context, truncate },
+    reason: []const u8 = "",
+};
+
+/// E16's audit sink: every tool decision, who made it and why.
+pub const Audit = struct {
+    ctx: *anyopaque,
+    record: *const fn (ctx: *anyopaque, io: Io, agent: proto.AgentRef, d: ToolDecision) void,
 };
 
 test "default resources" {

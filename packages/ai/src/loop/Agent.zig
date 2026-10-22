@@ -19,6 +19,8 @@ const turn = @import("turn.zig");
 const registry = @import("../models/registry.zig");
 const ledger = @import("../models/ledger.zig");
 const estimate = @import("../models/estimate.zig");
+const invoke = @import("../tools/invoke.zig");
+const validate = @import("../schema/validate.zig");
 
 const Agent = @This();
 const Allocator = std.mem.Allocator;
@@ -50,6 +52,8 @@ pub const Config = struct {
     /// The session id of a top-level agent (a resumed or forked session);
     /// generated when null. Ignored for subagents.
     session: ?proto.SessionId = null,
+    /// Bounds on tool output (`spill_dir` keeps the cut output).
+    tool_output: invoke.Bounds = .{},
 };
 
 pub const Deps = struct {
@@ -66,6 +70,11 @@ pub const Deps = struct {
     checkpoints: ?dp.Checkpoints = null,
     /// Transcript compaction (F07.S03).
     compaction: ?dp.Compaction = null,
+    /// E16's audit log of tool decisions.
+    audit: ?dp.Audit = null,
+    /// Validates tool inputs (the E11 validator in the app); the
+    /// permissive stub when null.
+    validator: ?validate.Validator = null,
 };
 
 /// A checkpoint and the sequence number of its event.
@@ -96,6 +105,8 @@ seqs: std.ArrayList(u64) = .empty,
 /// E12 checkpoints taken at the start of user turns, oldest first.
 checkpoints: std.ArrayList(CheckpointMark) = .empty,
 bus: busm.Bus,
+/// Compiled tool input schemas.
+schemas: invoke.Schemas,
 
 /// Guards the fields below.
 mutex: Io.Mutex = .init,
@@ -126,7 +137,8 @@ last_cache_read: u64 = 0,
 pub fn create(gpa: Allocator, io: Io, ref: proto.AgentRef, cfg: Config, d: Deps) Allocator.Error!*Agent {
     const a = try gpa.create(Agent);
     errdefer gpa.destroy(a);
-    a.* = .{ .gpa = gpa, .io = io, .ref = ref, .cfg = cfg, .deps = d, .arena = .init(gpa), .bus = .init(gpa, io), .wall = .start(io) };
+    a.* = .{ .gpa = gpa, .io = io, .ref = ref, .cfg = cfg, .deps = d, .arena = .init(gpa), .bus = .init(gpa, io), .schemas = .init(gpa, io, d.validator orelse validate.permissive()), .wall = .start(io) };
+    errdefer a.schemas.deinit();
     errdefer a.arena.deinit();
     const ar = a.arena.allocator();
     a.cfg.model = try ar.dupe(u8, cfg.model);
@@ -144,6 +156,7 @@ pub fn destroy(a: *Agent) void {
     a.queue.deinit(a.gpa);
     a.steer.deinit(a.gpa);
     a.children.deinit(a.gpa);
+    a.schemas.deinit();
     a.arena.deinit();
     a.gpa.destroy(a);
 }
