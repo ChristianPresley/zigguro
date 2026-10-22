@@ -1,0 +1,4 @@
+=== .git/info/exclude
+!README.md
+=== .gitignore
+README.md

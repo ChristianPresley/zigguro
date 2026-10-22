@@ -1,0 +1,4 @@
+=== .git/info/exclude
+*.md
+=== .gitignore
+!docs/api.md
