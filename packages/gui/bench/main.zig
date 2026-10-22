@@ -186,6 +186,24 @@ fn keystroke(t: *TestApp, s: *bench.State) void {
     }
 }
 
+/// Opens a 50-item menu and runs the frame that shows it, then closes it
+/// again (two frames per iteration; the open frame is the budgeted part).
+fn menuOpen(t: *TestApp, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const h = zg_gui.w.openMenu(t.win, &menu_items, .{ .pointer = .{ .x = 10, .y = 10 } }, .{}) catch return;
+        bench.doNotOptimizeAway(t.frame().nodes_painted);
+        h.close(t.win);
+        bench.doNotOptimizeAway(t.frame().nodes_painted);
+    }
+}
+
+const menu_items = blk: {
+    var items: [50]zg_gui.w.MenuItem = undefined;
+    for (&items) |*it| it.* = .{ .action = .{ .label = "&Menu item", .action = "bench.item", .shortcut = "Ctrl+K" } };
+    break :blk items;
+};
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -237,6 +255,12 @@ fn register(b: *bench.Bench) !void {
         t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 } } });
         _ = t.settle();
         try b.run("gui.text_field.keystroke_10k", t, keystroke);
+    }
+    {
+        var v: ListView = .{ .n = 100 };
+        const t = try scene(b.gpa, .of(&v), .{ .w = 1280, .h = 800 });
+        defer t.deinit();
+        try b.run("gui.menu.open_50", t, menuOpen);
     }
     {
         var h: zg_gui.w.HeightIndex = .init(b.gpa);

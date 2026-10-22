@@ -24,6 +24,7 @@ const engine_mod = @import("../layout/engine.zig");
 const event = @import("../input/event.zig");
 const hit_test = @import("../input/hit_test.zig");
 const keys_mod = @import("../input/keys.zig");
+const actions = @import("../input/actions.zig");
 const box = @import("../widgets/box.zig");
 const overlay = @import("../widgets/overlay.zig");
 const theme_mod = @import("../theme/theme.zig");
@@ -125,6 +126,23 @@ pub const Window = struct {
     responses: std.AutoHashMapUnmanaged(u32, Response) = .empty,
     cursor: zg_platform.cursor.CursorShape = .default,
     key_handler: ?keys_mod.KeyHandler = null,
+    /// Runs menu (and later palette) actions; see `dispatchAction`.
+    action_handler: ?actions.ActionHandler = null,
+    /// Sees keys before the focused node while `node` is mounted (the
+    /// menubar).
+    key_filter: ?struct { node: NodeId, f: keys_mod.KeyFilter } = null,
+    /// Where the last context menu was asked for (window coordinates).
+    context_at: Vec2 = .{},
+    /// The last context menu was asked for from the keyboard.
+    context_keyboard: bool = false,
+    /// Counts pointer presses (tells a press that dismissed a menu apart
+    /// from a later one).
+    press_serial: u32 = 0,
+    timers: std.ArrayList(TimerEntry) = .empty,
+    next_timer: u32 = 1,
+    /// Callbacks for the end of the next frame, and those due this frame.
+    after_frame: std.ArrayList(Timer) = .empty,
+    after_frame_due: std.ArrayList(Timer) = .empty,
     path_scratch: std.ArrayList(NodeId) = .empty,
     ctx_scratch: std.ArrayList([]const u8) = .empty,
 
@@ -181,6 +199,11 @@ pub const Window = struct {
         while (w.overlays.top()) |e| w.closeOverlay(e.id);
         w.overlays.deinit(gpa);
         w.close_hooks.deinit(gpa);
+        w.timers.deinit(gpa);
+        for (w.after_frame_due.items) |t| t.f(t.ctx, w);
+        for (w.after_frame.items) |t| t.f(t.ctx, w);
+        w.after_frame_due.deinit(gpa);
+        w.after_frame.deinit(gpa);
         w.store.on_free = null;
         w.ui.deinit();
         w.engine.deinit();
@@ -346,6 +369,7 @@ pub const Window = struct {
         w.needs_frame = false;
         w.frame_no += 1;
         w.stats.idle = false;
+        std.mem.swap(std.ArrayList(Timer), &w.after_frame, &w.after_frame_due);
         w.engine.mc.theme = w.app.theme;
 
         // BUILD: dirty views, shallowest first; a parent rebuild builds its
@@ -399,6 +423,8 @@ pub const Window = struct {
             w.engine.oom = false;
             w.markAllDirty();
         }
+        for (w.after_frame_due.items) |t| t.f(t.ctx, w);
+        w.after_frame_due.clearRetainingCapacity();
         return w.stats;
     }
 
@@ -690,6 +716,83 @@ pub const Window = struct {
         c.end();
     }
 
+    // -- timers and actions ---------------------------------------------------
+
+    /// A pending timer's handle.
+    pub const TimerId = enum(u32) { none = 0, _ };
+
+    /// What a timer runs.
+    pub const Timer = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, w: *Window) void,
+    };
+
+    const TimerEntry = struct { id: TimerId, at_ms: u64, t: Timer };
+
+    /// Runs `t` once `App.now_ms` reaches `at_ms` (from `tick`, outside
+    /// builds). The Host sleeps until the earliest timer.
+    pub fn setTimer(w: *Window, at_ms: u64, t: Timer) !TimerId {
+        const id: TimerId = @enumFromInt(w.next_timer);
+        w.next_timer +%= 1;
+        if (w.next_timer == 0) w.next_timer = 1;
+        try w.timers.append(w.gpa, .{ .id = id, .at_ms = at_ms, .t = t });
+        return id;
+    }
+
+    /// Cancels timer `id` (no-op when it already ran).
+    pub fn cancelTimer(w: *Window, id: TimerId) void {
+        for (w.timers.items, 0..) |e, i| if (e.id == id) {
+            _ = w.timers.orderedRemove(i);
+            return;
+        };
+    }
+
+    /// The earliest timer deadline, if any.
+    pub fn nextDeadline(w: *const Window) ?u64 {
+        var best: ?u64 = null;
+        for (w.timers.items) |e| best = if (best) |b| @min(b, e.at_ms) else e.at_ms;
+        return best;
+    }
+
+    /// Runs the timers due at `now_ms` (earliest first).
+    pub fn tick(w: *Window, now_ms: u64) void {
+        while (true) {
+            var due: ?usize = null;
+            for (w.timers.items, 0..) |e, i| {
+                if (e.at_ms > now_ms) continue;
+                if (due == null or e.at_ms < w.timers.items[due.?].at_ms) due = i;
+            }
+            const i = due orelse return;
+            const e = w.timers.orderedRemove(i);
+            w.needs_frame = true;
+            e.t.f(e.t.ctx, w);
+        }
+    }
+
+    /// Runs `t` at the end of the frame after the next one starts, once
+    /// nodes removed before now are out of the tree and the hit index (to
+    /// free what their props point at). Runs at once if out of memory.
+    pub fn afterNextFrame(w: *Window, t: Timer) void {
+        w.after_frame.append(w.gpa, t) catch return t.f(t.ctx, w);
+        w.needs_frame = true;
+    }
+
+    /// Runs `action` through the window's `ActionHandler`; false when there
+    /// is none or it did not handle the action.
+    pub fn dispatchAction(w: *Window, action: actions.ActionId, arg: ?[]const u8) bool {
+        const h = w.action_handler orelse return false;
+        return h.call(action, arg);
+    }
+
+    /// The nearest node at or above `n` with a context menu.
+    fn contextNode(w: *Window, n: NodeId) NodeId {
+        var p = n;
+        while (!p.isNone() and w.store.valid(p)) : (p = w.store.parent(p)) {
+            if (w.store.flags(p).context_menu) return p;
+        }
+        return .none;
+    }
+
     // -- overlays -------------------------------------------------------------
 
     /// Opens `view` as an overlay (see `zg_gui.w.overlay`). Opened during a
@@ -770,9 +873,9 @@ pub const Window = struct {
                 },
             } else overlay.center(size, vp);
             if (target.x != cur.x or target.y != cur.y) {
+                // Paint sees the move and damages the old and new bounds.
                 w.store.hot.items(.rect)[e.panel.index] = target.toArray();
                 w.store.markPaint(e.panel);
-                w.full_repaint = true;
             }
             if (e.wants_focus) {
                 e.wants_focus = false;
@@ -812,10 +915,24 @@ pub const Window = struct {
     fn dismissOutside(w: *Window, p: Vec2) bool {
         const top = w.overlays.top() orelse return false;
         const h = w.hitTest(p);
-        if (!top.panel.isNone() and w.store.valid(top.panel) and !h.isNone() and w.store.isAncestor(top.panel, h)) return false;
+        const group = top.opts.group;
+        for (w.overlays.items.items) |e| {
+            if (e.id != top.id and (group == 0 or e.opts.group != group)) continue;
+            if (!e.panel.isNone() and w.store.valid(e.panel) and !h.isNone() and w.store.isAncestor(e.panel, h)) return false;
+        }
         if (top.opts.light_dismiss) {
             const consume = top.opts.consume_outside_click;
             w.closeOverlay(top.id);
+            // The rest of its group (a menu's open submenus) goes too.
+            if (group != 0) {
+                var i = w.overlays.items.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (i >= w.overlays.items.items.len) continue;
+                    const e = w.overlays.items.items[i];
+                    if (e.opts.group == group) w.closeOverlay(e.id);
+                }
+            }
             return consume;
         }
         // The scrim under a modal overlay swallows the press.
@@ -1011,6 +1128,7 @@ pub const Window = struct {
             },
             .pointer_down => |pd| {
                 w.pointer = pd.pos;
+                w.press_serial +%= 1;
                 if (w.dismissOutside(pd.pos)) return;
                 const h = w.hitTest(pd.pos);
                 w.setHot(h);
@@ -1039,6 +1157,12 @@ pub const Window = struct {
                     }
                 } else if (pu.button == .right and !h.isNone()) {
                     w.respond(h, .{ .right_clicked = true });
+                    const c = w.contextNode(h);
+                    if (!c.isNone()) {
+                        w.context_at = pu.pos;
+                        w.context_keyboard = false;
+                        w.respond(c, .{ .context_menu = true });
+                    }
                 }
                 w.setHot(h);
             },
@@ -1061,11 +1185,27 @@ pub const Window = struct {
     }
 
     fn dispatchKey(w: *Window, k: event.KeyPress) void {
+        if (w.key_filter) |kf| {
+            if (w.store.valid(kf.node)) {
+                if (kf.f.filter(kf.f.ptr, k)) return;
+            } else w.key_filter = null;
+        }
         if (k.action == .release) {
             if (!w.focus.isNone()) _ = w.deliver(w.focus, .{ .key = k }, true);
             return;
         }
         if (!w.focus.isNone() and w.deliver(w.focus, .{ .key = k }, true)) return;
+        if ((k.key == .f10 and k.mods.shift and !k.mods.ctrl and !k.mods.alt) or k.key == .context_menu) {
+            const c = w.contextNode(w.focus);
+            if (!c.isNone()) {
+                // Keyboard invocation: at the focused node's bottom-left.
+                const r = w.layoutRect(w.focus);
+                w.context_at = .{ .x = r.x, .y = r.bottom() };
+                w.context_keyboard = true;
+                w.respond(c, .{ .context_menu = true });
+                return;
+            }
+        }
         if (w.key_handler) |h| {
             const ctxs = w.keyContexts();
             if (h.call(k, ctxs)) return;

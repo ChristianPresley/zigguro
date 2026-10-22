@@ -8,6 +8,8 @@ pub const event = @import("event.zig");
 pub const hit_test = @import("hit_test.zig");
 /// The `keys.zig` module.
 pub const keys = @import("keys.zig");
+/// The `actions.zig` module.
+pub const actions = @import("actions.zig");
 
 /// See `event.InputEvent`.
 pub const InputEvent = event.InputEvent;
@@ -15,6 +17,8 @@ pub const InputEvent = event.InputEvent;
 pub const EventCx = event.EventCx;
 /// See `keys.KeyHandler`.
 pub const KeyHandler = keys.KeyHandler;
+/// See `actions.ActionHandler`.
+pub const ActionHandler = actions.ActionHandler;
 
 test {
     std.testing.refAllDecls(@This());

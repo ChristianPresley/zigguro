@@ -1769,6 +1769,41 @@ UI thread only.
 ### Stability
 Experimental until the E15 adapter merges.
 
+## zg_gui.input.ActionHandler
+
+### Defined in
+`packages/gui/src/input/actions.zig` (E04.F05.S03.T02, ahead of the full
+dispatcher in E04.F03.S02.T01).
+
+### Implemented by
+E15's command registry adapter (#1077).
+
+### Consumed by
+`zg_gui.Window.dispatchAction`, which menus and the menubar call when an
+item is chosen (unless the menu was given its own `on_action`). Menus call
+`label_for` once per open to fill in shortcut labels for items without one.
+
+### Signature
+```zig
+pub const ActionId = []const u8; // command id, e.g. "file.open"
+pub const ActionHandler = struct {
+    ptr: *anyopaque,
+    run: *const fn (ptr: *anyopaque, action: ActionId, arg: ?[]const u8) bool, // true: handled
+    label_for: ?*const fn (ptr: *anyopaque, action: ActionId) ?[]const u8 = null,
+};
+```
+
+### Threading
+UI thread only.
+
+### Ownership/lifetime
+`action` and `arg` are valid only for the call. A `label_for` result must
+stay valid until the next call; menus copy it.
+
+### Stability
+Experimental: `ActionId` may become an interned id when the E15 registry
+lands.
+
 ## zg_vulkan.vk and zg_vulkan.loader (Vulkan bindings and loader)
 
 ### Defined in
