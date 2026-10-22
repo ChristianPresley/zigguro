@@ -801,6 +801,68 @@ A `ComObject` starts with one reference owned by its creator. The last
 ### Stability
 Experimental until the E01 PR merges. The DLL bindings exist only on
 Windows targets (`zg_platform.win32.user32` is an empty struct
-elsewhere); `types`, `com` and `wide` build everywhere. Zig links the
+elsewhere); `types`, `com` and `wide` build everywhere; callbacks and COM methods
+use `types.winapi`, which is `.winapi` on Windows and `.c` elsewhere
+(LLVM has no Windows ARM64 convention on aarch64-linux). Zig links the
 import libraries from `extern "dll"` itself, so `build.zig` needs no
 `linkSystemLibrary` calls.
+
+## zg_platform.wayland.WaylandBackend
+
+### Defined in
+`packages/platform/src/wayland/backend.zig`, with `window.zig`
+(configure, state and scale bookkeeping), `output.zig` (`wl_output` to
+`MonitorInfo`), `scale.zig` (1/120 scale arithmetic) and `shm.zig` (the
+interim CPU presenter); the weston launcher for integration tests is
+`wayland/testing/weston.zig` (E01.F04.S01.T01).
+
+### Implemented by
+E01.F04.S01.T01.
+
+### Consumed by
+`zg_platform.init` on Wayland sessions; E02 presents through the
+window's `Presenter`; E04 reads `window_configure` state and
+`WmCapabilities`. Input, cursors, data device, IME and decorations
+(E01.F04.S01.T02, E01.F04.S02, E01.F04.S03) extend this backend.
+
+### Signature
+```zig
+pub const InitOptions = struct {
+    environ_map: ?*std.process.Environ.Map = null, // WAYLAND_SOCKET / WAYLAND_DISPLAY / XDG_RUNTIME_DIR
+    fd: ?i32 = null,                                // a connected socket (tests)
+    ack_timeout_ns: u64 = 100 * std.time.ns_per_ms, // bufferless ack when no present arrives
+    default_refresh_ns: u32 = 16_666_667,
+};
+pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*WaylandBackend; // error.MissingGlobal without compositor, xdg_wm_base or shm
+pub fn platform(b: *WaylandBackend) Platform;
+// window.zig
+pub const WmCapabilities = packed struct(u8) { window_menu, maximize, fullscreen, minimize };
+// scale.zig
+pub fn bufferSize(logical: PxSize, scale120: u32) PxSize;          // round half away from zero
+// registry.zig (added)
+pub fn onGlobalAdd(r: *Registry, cb: ?AddCallback) void;
+```
+`window_configure.size` is the buffer size in pixels; pass its `serial`
+back in the present's `ConfigureAck`. The present acks that serial and
+then attaches and commits in the same flush. With a viewport the buffer
+is `round(logical * n / 120)` and the destination is the logical size,
+with buffer scale 1; without one the scale rounds up to an integer
+buffer scale. `suspended` also sends `window_occluded`.
+
+### Threading
+A platform thread reads, dispatches, answers `xdg_wm_base.ping` at once
+and acks overdue configures. `createWindow`, `submit` and `present` send
+on the calling thread (the connection locks); one backend mutex guards
+windows and outputs and is never held while pushing to the event ring.
+
+### Ownership/lifetime
+A window's presenter and its buffers die with `destroyWindow`.
+`deinit` stops the thread, destroys the windows and closes the
+connection.
+
+### Stability
+Experimental until the E01 PR merges. `importBuffer` (dmabuf) reports
+`Unsupported` until E01.F04.S04. Until the data device lands,
+`clipboard_read` answers only from our own `clipboard_write`. Move,
+resize, window menu, drag, activation, dialogs and URIs return
+`error.Unsupported`.
