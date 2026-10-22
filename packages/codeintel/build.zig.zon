@@ -1,0 +1,20 @@
+.{
+    .name = .zg_codeintel,
+    .version = "0.0.0",
+    .fingerprint = 0x8f10effc6a9185d4,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_lsp = .{ .path = "../lsp" },
+        .zg_editor = .{ .path = "../editor" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+    },
+}
