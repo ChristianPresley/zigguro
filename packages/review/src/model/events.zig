@@ -13,6 +13,8 @@ pub const Event = union(enum) {
     /// Its files, hunks or provenance changed (folding, derivation).
     updated: ChangesetId,
     state: struct { cs: ChangesetId, from: changeset.State, to: changeset.State },
+    /// Decisions landed on disk (the `History` record `apply`).
+    applied: struct { cs: ChangesetId, apply: u64 },
     /// Dropped from the queue (garbage collected).
     removed: ChangesetId,
 };
