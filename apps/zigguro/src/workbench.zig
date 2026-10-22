@@ -66,6 +66,8 @@ pub const Workbench = struct {
     /// The docking layout and its view.
     dock: zg_gui.dock.DockModel,
     dv: zg_gui.dock.DockView = undefined,
+    /// Torn-off panels' windows (`enableFloating`).
+    floater: ?zg_gui.dock.floating.Floater = null,
     /// The dock panels of the terminal and the agent, once created.
     terminal_ref: ?PanelRef = null,
     agent_ref: ?PanelRef = null,
@@ -146,7 +148,7 @@ pub const Workbench = struct {
             .crumbs = .init(gpa, io),
             .dock = try .init(gpa),
         };
-        wb.dv = .init(gpa, &wb.dock, .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose });
+        wb.dv = .init(gpa, &wb.dock, wb.panelHost());
         wb.cwd = try std.process.currentPathAlloc(io, gpa);
         const f = try wb.addFile(try wb.load(path));
         wb.setCurrent(f.*);
@@ -314,9 +316,23 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    fn panelHost(wb: *Workbench) zg_gui.dock.PanelHost {
+        return .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose };
+    }
+
+    /// Lets tabs tear off into their own windows, opened by `opener`
+    /// (after `attach`).
+    pub fn enableFloating(wb: *Workbench, opener: zg_gui.dock.floating.WindowOpener) void {
+        const w = wb.win orelse return;
+        wb.floater = .init(wb.gpa, &wb.dock, wb.panelHost(), opener, .{});
+        wb.floater.?.attachMain(w, &wb.dv);
+    }
+
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        // Floating panels come home before their windows close.
+        if (wb.floater) |*fl| fl.closeAll();
         // The panel stops the agent first: its tools may be waiting on
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
@@ -348,6 +364,7 @@ pub const Workbench = struct {
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
+        if (wb.floater) |*fl| fl.deinit();
         wb.dv.deinit();
         wb.dock.deinit();
         if (wb.pending_open) |p| wb.gpa.free(p);
@@ -700,7 +717,8 @@ pub const Workbench = struct {
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
             defer ui.close();
             _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
-            f.node = ui.lastNode();
+            // Focus helpers act on the main window's nodes only.
+            f.node = if (ui.window() == wb.win) ui.lastNode() else .none;
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
@@ -780,7 +798,7 @@ pub const Workbench = struct {
             ui.close();
         }
         _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
-        wb.terminal_node = t.view.node;
+        if (ui.window() == wb.win) wb.terminal_node = t.view.node;
     }
 
     fn statusBar(wb: *Workbench, ui: *Ui) void {
