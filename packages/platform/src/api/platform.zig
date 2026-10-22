@@ -1,6 +1,6 @@
 //! The `Platform` interface: one per process, owning the platform thread,
 //! every window and the event and command queues. Backends implement it;
-//! the app picks one with `init`.
+//! the app starts one with `zg_platform.init`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -78,6 +78,9 @@ pub const Platform = struct {
         cpuPresenter: *const fn (*anyopaque, WindowId) Error!*surface.Presenter,
         /// Native integration hooks.
         native: *const fn (*anyopaque) *const native_mod.NativeHooks,
+        /// The bytes of a payload from an event. Arena slices stay valid until
+        /// the next `pollEvents`; large ones until `release`.
+        payload: *const fn (*anyopaque, PayloadSlice) []const u8,
         /// Frees a large payload (`PayloadSlice.large`).
         release: *const fn (*anyopaque, PayloadSlice) void,
         /// Writes up to `out.len` monitors and returns the total count.
@@ -117,6 +120,10 @@ pub const Platform = struct {
     /// See `VTable.native`.
     pub fn native(p: Platform) *const native_mod.NativeHooks {
         return p.vtable.native(p.ptr);
+    }
+    /// See `VTable.payload`.
+    pub fn payload(p: Platform, s: PayloadSlice) []const u8 {
+        return p.vtable.payload(p.ptr, s);
     }
     /// See `VTable.release`.
     pub fn release(p: Platform, s: PayloadSlice) void {
@@ -215,15 +222,6 @@ pub fn selectBackend(opts: InitOptions) Backend {
     return detectBackend(env);
 }
 
-/// Starts the selected backend. Until the backends land (headless in
-/// E01.F01.S02.T01, #215) every selection returns `error.BackendUnavailable`.
-pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform {
-    _ = gpa;
-    _ = io;
-    _ = selectBackend(opts);
-    return error.BackendUnavailable;
-}
-
 test "detectBackend table" {
     const a = std.testing.allocator;
     const Case = struct {
@@ -284,6 +282,9 @@ test "fromImpl dispatches to the concrete type" {
         fn native(self: *@This()) *const native_mod.NativeHooks {
             return &self.hooks;
         }
+        fn payload(_: *@This(), _: PayloadSlice) []const u8 {
+            return "";
+        }
         fn release(_: *@This(), _: PayloadSlice) void {}
         fn monitors(_: *@This(), _: []types.MonitorInfo) usize {
             return 0;
@@ -310,8 +311,4 @@ test "fromImpl dispatches to the concrete type" {
     p.wake();
     try std.testing.expectEqual(1, p.pollEvents(&evs));
     try std.testing.expect(evs[0] == .wake);
-}
-
-test "init reports BackendUnavailable until a backend exists" {
-    try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .headless }));
 }
