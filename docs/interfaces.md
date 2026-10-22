@@ -408,7 +408,8 @@ Experimental until PR #1199 merges.
 ## zg_platform.Platform and Event
 
 ### Defined in
-`packages/platform/src/api/platform.zig` and `api/event.zig` (E01.F01.S01.T01).
+`packages/platform/src/api/platform.zig` and `api/event.zig` (E01.F01.S01.T01);
+`init` is in `packages/platform/src/root.zig`.
 
 ### Implemented by
 The headless backend (E01.F01.S02.T01), Win32 (E01.F02), Wayland (E01.F04)
@@ -422,12 +423,13 @@ E05, E06, E12, E13.
 ```zig
 pub const Platform = struct {
     ptr: *anyopaque,
-    vtable: *const VTable, // createWindow, destroyWindow, submit, surfaceTarget, cpuPresenter,
+    vtable: *const VTable, // createWindow, destroyWindow, submit, surfaceTarget, cpuPresenter, payload,
                            // native, release, monitors, pollEvents, waitEvents, wake, deinit
     pub fn pollEvents(self: Platform, out: []Event) usize;      // UI thread; never blocks
     pub fn waitEvents(self: Platform, deadline_ns: ?u64) void; // UI thread; blocks on Wake
     pub fn wake(self: Platform) void;                           // any thread
     pub fn submit(self: Platform, cmd: Command) Error!void;     // any thread; non-blocking
+    pub fn payload(self: Platform, s: PayloadSlice) []const u8; // event payload bytes
     pub fn fromImpl(comptime T: type, impl: *T) Platform;
 };
 pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform;
@@ -446,7 +448,7 @@ with `large` set stays valid until passed to `Platform.release`. `submit`
 copies every slice in a `Command` before returning.
 
 ### Stability
-Experimental until the headless backend (E01.F01.S02.T01) merges.
+Experimental until PR #1199 merges.
 
 ## zg_platform.surface.Presenter
 
@@ -485,3 +487,48 @@ thread for that window.
 
 ### Stability
 Experimental until the first OS presenter merges.
+
+## zg_platform.headless.Headless and .zgtrace
+
+### Defined in
+`packages/platform/src/headless/backend.zig` and `headless/trace.zig`
+(E01.F01.S02.T01).
+
+### Implemented by
+E01.F01.S02.T01.
+
+### Consumed by
+E04 and E14 UI tests, E02 software-renderer tests, the `zg` CLI (E10),
+and every OS backend's conformance run (`zg_platform.conformance`).
+
+### Signature
+```zig
+pub fn init(gpa: Allocator, io: std.Io, opts: HeadlessOptions) !*Headless;
+pub fn platform(self: *Headless) Platform;
+pub fn inject(self: *Headless, ev: Event) !void;
+pub fn injectPayload(self: *Headless, ev: Event, bytes: []const u8) !void;
+pub fn injectText(self: *Headless, win: WindowId, utf8: []const u8) !void;
+pub fn setClipboard(self: *Headless, which: Selection, mime: MimeId, bytes: []const u8) !void;
+pub fn lastFrame(self: *Headless, win: WindowId) ?FrameImage; // RGBA8
+pub fn tick(self: *Headless, ns: u64) !void;                  // virtual clock, 60 Hz vsync
+pub fn replay(self: *Headless, r: *std.Io.Reader) !void;      // .zgtrace
+// trace.zig
+pub fn writeHeader(w: *std.Io.Writer) !void;
+pub fn record(w: *std.Io.Writer, t_ns_rel: u64, ev: Event, payloads: []const []const u8) !void;
+pub fn next(r: *std.Io.Reader, gpa: Allocator) !?Record;
+// testing/conformance.zig
+pub fn runConformance(comptime B: type, harness: *B) !void;
+```
+
+### Threading
+All methods lock one mutex; `wake` may be called from any thread. Commands
+run synchronously inside `submit`.
+
+### Ownership/lifetime
+`lastFrame` pixels stay valid until the next present to that window.
+`.zgtrace` is little-endian and field-wise, so traces are identical on every
+OS; see the format comment in `trace.zig`.
+
+### Stability
+Experimental until PR #1199 merges. The trace `version` changes whenever
+`Event` changes.
