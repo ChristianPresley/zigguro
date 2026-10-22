@@ -2,6 +2,7 @@
 //! read into an owned buffer with `readPositionalAll`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 /// Errors opening a mapped file.
@@ -28,7 +29,9 @@ pub const MappedFile = struct {
             if (std.Io.File.MemoryMap.create(io, file, .{
                 .len = len,
                 .protection = .{ .read = true },
-                .populate = false,
+                // Zig 0.16 creates the Windows section with SEC_COMMIT only when
+                // populating; without it NtCreateSection fails.
+                .populate = builtin.os.tag == .windows,
             })) |mm| {
                 return .{ .bytes = mm.memory[0..len], .mtime = st.mtime, .map = mm };
             } else |_| {}
