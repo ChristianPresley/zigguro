@@ -120,7 +120,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             break :native;
         };
         defer platform.deinit();
-        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{ .fonts = font_text });
+        // Screen readers on Linux reach the app through AT-SPI2 on the
+        // session bus.
+        var bus_buf: [256]u8 = undefined;
+        const session_bus: ?[]const u8 = if (builtin.os.tag == .linux) zg_platform.portal.desktop.sessionAddress(&bus_buf, &env) else null;
+        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{
+            .fonts = font_text,
+            .a11y = .{ .session_address = session_bus, .version = zg_release.current.version_string },
+        });
         defer host.deinit();
         // Interactive sessions get the working folder's saved layout back
         // (runs with --frames are reproducible: they neither read nor
