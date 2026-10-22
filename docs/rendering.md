@@ -185,6 +185,14 @@ the software goldens (`Tolerance.gpu`; observed max channel difference
 5. Run one dynamic-rendering pass on the target. Each repaint rect is cleared to transparent, scissored, and drawn with the batches culled to it. Layer composites sample the layer's descriptor slot.
 6. Copy the repainted rects out through the target.
 
+Timestamps bracket the frame, uploads, layer passes and window pass
+(`GpuTimer`, one query pool of 8 queries per frame slot). They are read
+without waiting when the slot is reused, so `FrameStats.gpu_ns` trails by up to
+frames_in_flight frames. Zone durations are also recorded as `zg_core.trace`
+counters (`gpu.frame_ns`, `gpu.uploads_ns`, `gpu.layers_ns`, `gpu.main_ns`).
+On Linux devices with calibrated timestamps, `gpu_start_ns` places the frame
+on the CPU monotonic clock.
+
 With no window damage and no layer redrawn, nothing is submitted. Targets
 today are headless and in-memory readback. The whole scene corpus,
 multi-frame damage and layer scenes included, matches the software goldens
