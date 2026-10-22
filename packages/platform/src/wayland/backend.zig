@@ -11,10 +11,15 @@
 //!
 //! Lock order: backend mutex, then the connection's.
 //!
-//! Input, cursors, clipboard and drag-and-drop, IME, decorations and
-//! activation come with their own tasks (E01.F04.S01.T02, E01.F04.S02,
-//! E01.F04.S03); until then the related commands are accepted and ignored
-//! (cursor, IME, hit test) or return `error.Unsupported`.
+//! Input: the first wl_seat (v5+) gives keyboard, pointer and touch;
+//! `seat.zig` turns their events into api events. The keymap is parsed on
+//! the platform thread outside the mutex, compose rules load when the
+//! thread starts, and key repeat runs on a timerfd in the thread's epoll.
+//!
+//! Cursors, clipboard and drag-and-drop, IME, decorations and activation
+//! come with their own tasks (E01.F04.S02, E01.F04.S03); until then the
+//! related commands are accepted and ignored (cursor, IME, hit test) or
+//! return `error.Unsupported`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -45,6 +50,9 @@ const Window = win_mod.Window;
 const scale = @import("scale.zig");
 const ShmPresenter = @import("shm.zig").ShmPresenter;
 const dmabuf = @import("dmabuf.zig");
+const seat_mod = @import("seat.zig");
+const Keymap = @import("../xkb/keymap.zig").Keymap;
+const compose = @import("../xkb/compose.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -78,7 +86,13 @@ pub const InitOptions = struct {
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch };
+
+/// Keymaps larger than this are refused.
+const max_keymap_bytes = 16 * 1024 * 1024;
+
+/// The environment variables compose loading reads.
+const compose_env_keys = [_][]const u8{ "XCOMPOSEFILE", "HOME", "LC_ALL", "LC_CTYPE", "LANG" };
 
 /// A wp_presentation_feedback waiting for its result.
 const PresPending = struct { obj: u32, win: WindowId };
@@ -113,6 +127,20 @@ pub const WaylandBackend = struct {
     pres_clock: u32 = @intFromEnum(linux.CLOCK.MONOTONIC),
     /// Outstanding presentation feedback objects. Guarded by the mutex.
     pres_pending: std.ArrayList(PresPending) = .empty,
+    /// The first wl_seat and the devices it offers.
+    seat_id: ?wl.wl_seat.Id = null,
+    keyboard: ?wl.wl_keyboard.Id = null,
+    pointer: ?wl.wl_pointer.Id = null,
+    touch: ?wl.wl_touch.Id = null,
+    /// Keyboard, pointer and touch state. Guarded by the mutex.
+    seat: seat_mod.Seat = .{},
+    /// Compose rules; `seat.compose` points here once loaded.
+    compose_table: ?compose.ComposeTable = null,
+    /// The variables compose loading needs, copied at init and freed by
+    /// the platform thread once it has loaded the rules.
+    compose_env: ?std.process.Environ.Map = null,
+    /// Key repeat timer (timerfd), or -1.
+    repeat_fd: i32 = -1,
 
     mutex: Io.Mutex = .init,
     slots: std.ArrayList(*Slot) = .empty,
@@ -198,6 +226,13 @@ pub const WaylandBackend = struct {
             try wl.zwp_linux_dmabuf_v1.getDefaultFeedback(conn, dm, fb);
         };
         b.presentation = try registry.bind(wl.wp_presentation, 1, 2, b.handler(.presentation));
+        // Capabilities arrive with the roundtrip below.
+        b.seat_id = try registry.bind(wl.wl_seat, 5, 9, b.handler(.seat));
+        if (opts.environ_map) |env| {
+            var copy: std.process.Environ.Map = .init(gpa);
+            for (compose_env_keys) |k| if (env.get(k)) |v| try copy.put(k, v);
+            b.compose_env = copy;
+        }
         for (registry.globals.items) |g| if (std.mem.eql(u8, g.interface, wl.wl_output.name)) try b.addOutput(g);
         registry.onGlobalAdd(.{ .ctx = b, .on_add = onGlobalAdd });
         registry.onGlobalRemove(.{ .ctx = b, .on_remove = onGlobalRemove });
@@ -210,6 +245,11 @@ pub const WaylandBackend = struct {
         errdefer _ = linux.close(b.epfd);
         try b.watch(conn.pollFd(), 0);
         try b.watch(b.thread_wake.handle().fd, 1);
+        const tfd = linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true, .NONBLOCK = true });
+        if (linux.errno(tfd) == .SUCCESS) {
+            b.repeat_fd = @intCast(tfd);
+            try b.watch(b.repeat_fd, 2);
+        } else log.warn("timerfd_create failed; no key repeat", .{});
         b.thread = try std.Thread.spawn(.{}, threadMain, .{b});
         return b;
     }
@@ -308,6 +348,8 @@ pub const WaylandBackend = struct {
     fn destroySlot(b: *WaylandBackend, s: *Slot) void {
         const c = b.conn;
         const w = &s.win;
+        if (b.seat.kb_focus == w.id) b.armRepeat(.disarm);
+        b.seat.forget(w.id);
         if (w.frame_cb) |cb| c.setHandler(@intFromEnum(cb), null);
         var i: usize = 0;
         while (i < b.pres_pending.items.len) {
@@ -433,6 +475,7 @@ pub const WaylandBackend = struct {
         b.conn.flush() catch {};
         b.unlock();
         if (b.epfd >= 0) _ = linux.close(b.epfd);
+        if (b.repeat_fd >= 0) _ = linux.close(b.repeat_fd);
         b.freeState();
         b.gpa.destroy(b);
     }
@@ -455,6 +498,12 @@ pub const WaylandBackend = struct {
         b.feedback.deinit(gpa);
         b.pres_pending.deinit(gpa);
         for (&b.clip) |items| freeClip(gpa, items);
+        b.seat.deinit(gpa);
+        b.seat.compose = null;
+        if (b.compose_table) |*t| t.deinit(gpa);
+        b.compose_table = null;
+        if (b.compose_env) |*e| e.deinit();
+        b.compose_env = null;
     }
 
     // ---- presentation (from shm.zig, mutex held) ----
@@ -606,6 +655,7 @@ pub const WaylandBackend = struct {
     // ---- the platform thread ----
 
     fn threadMain(b: *WaylandBackend) void {
+        b.loadCompose();
         var moving: std.ArrayList(Event) = .empty;
         defer moving.deinit(b.gpa);
         var evs: [4]linux.epoll_event = undefined;
@@ -623,7 +673,11 @@ pub const WaylandBackend = struct {
             }
             const rc = linux.epoll_wait(b.epfd, &evs, evs.len, timeout);
             if (linux.errno(rc) != .SUCCESS) continue;
-            for (evs[0..rc]) |e| if (e.data.u64 == 1) b.thread_wake.consume();
+            for (evs[0..rc]) |e| switch (e.data.u64) {
+                1 => b.thread_wake.consume(),
+                2 => b.onRepeatTimer(),
+                else => {},
+            };
         }
     }
 
@@ -841,7 +895,182 @@ pub const WaylandBackend = struct {
                     return;
                 };
             },
+            .seat => switch (try wl.wl_seat.decodeEvent(opcode, body, fds)) {
+                .capabilities => |cap| {
+                    b.lock();
+                    defer b.unlock();
+                    try b.onCapabilities(cap.capabilities);
+                    try c.flush();
+                },
+                .name => {},
+            },
+            .keyboard => {
+                const ev = try wl.wl_keyboard.decodeEvent(opcode, body, fds);
+                if (ev == .keymap) return b.onKeymap(ev.keymap.format, ev.keymap.fd, ev.keymap.size);
+                b.lock();
+                defer b.unlock();
+                const out: Sink = .{ .b = b };
+                const st = &b.seat;
+                switch (ev) {
+                    .keymap => unreachable,
+                    .enter => |e| {
+                        const w = b.byObject("surface", @intFromEnum(e.surface)) orelse return;
+                        var held: [32]u32 = undefined;
+                        const n = @min(e.keys.len / 4, held.len);
+                        for (held[0..n], 0..) |*h, i| h.* = std.mem.readInt(u32, e.keys[i * 4 ..][0..4], native_endian);
+                        try st.kbEnter(out, w.id, e.serial, held[0..n]);
+                    },
+                    .leave => b.armRepeat(try st.kbLeave(out, b.nowNs())),
+                    .key => |ky| b.armRepeat(try st.key(out, ky.serial, ky.key, ky.state == .pressed, b.nowNs())),
+                    .modifiers => |m| st.modifiers(m.serial, m.mods_depressed, m.mods_latched, m.mods_locked, m.group),
+                    .repeat_info => |r| b.armRepeat(st.repeatInfo(r.rate, r.delay)),
+                }
+            },
+            .pointer => {
+                const ev = try wl.wl_pointer.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const out: Sink = .{ .b = b };
+                const st = &b.seat;
+                switch (ev) {
+                    .enter => |e| {
+                        const w = b.byObject("surface", @intFromEnum(e.surface)) orelse return;
+                        try st.ptrEnter(out, w.id, e.serial, toPx(w, e.surface_x, e.surface_y));
+                    },
+                    .leave => try st.ptrLeave(out),
+                    .motion => |m| if (b.focusWindow(st.ptr_focus)) |w| st.ptrMotion(toPx(w, m.surface_x, m.surface_y)),
+                    .button => |bt| st.ptrButton(bt.serial, bt.button, bt.state == .pressed),
+                    .axis => |a| st.ptrAxis(axisOf(a.axis), a.value.toF64()),
+                    .frame => {
+                        const s120 = if (b.focusWindow(st.ptr_focus)) |w| w.effectiveScale120() else scale.unit;
+                        try st.ptrFrame(out, b.nowNs(), s120);
+                    },
+                    .axis_source => |a| st.ptrAxisSource(@enumFromInt(@intFromEnum(a.axis_source))),
+                    .axis_stop => |a| st.ptrAxisStop(axisOf(a.axis)),
+                    .axis_discrete => |a| st.ptrAxisDiscrete(axisOf(a.axis), a.discrete),
+                    .axis_value120 => |a| st.ptrAxis120(axisOf(a.axis), a.value120),
+                    .axis_relative_direction => {},
+                }
+            },
+            .touch => {
+                const ev = try wl.wl_touch.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const out: Sink = .{ .b = b };
+                const st = &b.seat;
+                switch (ev) {
+                    .down => |d| {
+                        const w = b.byObject("surface", @intFromEnum(d.surface)) orelse return;
+                        st.touchDown(d.serial, w.id, d.id, toPx(w, d.x, d.y), w.effectiveScale120());
+                    },
+                    .up => |u| st.touchUp(u.serial, u.id),
+                    .motion => |m| st.touchMotion(m.id, .{ m.x.toF64(), m.y.toF64() }),
+                    .frame => try st.touchFrame(out),
+                    .cancel => try st.touchCancel(out),
+                    .shape, .orientation => {},
+                }
+            },
         }
+    }
+
+    // ---- input (E01.F04.S02.T02) ----
+
+    /// Gets or releases the seat's devices to match `caps`. Mutex held.
+    fn onCapabilities(b: *WaylandBackend, caps: wl.wl_seat.Capability) !void {
+        const c = b.conn;
+        const sid = b.seat_id orelse return;
+        const ver = c.version(@intFromEnum(sid));
+        const out: Sink = .{ .b = b };
+        if (caps.keyboard and b.keyboard == null) {
+            const k = try c.newIdVersion(wl.wl_keyboard, ver, b.handler(.keyboard));
+            try wl.wl_seat.getKeyboard(c, sid, k);
+            b.keyboard = k;
+        } else if (!caps.keyboard) if (b.keyboard) |k| {
+            b.armRepeat(try b.seat.kbLeave(out, b.nowNs()));
+            try wl.wl_keyboard.release(c, k);
+            b.keyboard = null;
+        };
+        if (caps.pointer and b.pointer == null) {
+            const p = try c.newIdVersion(wl.wl_pointer, ver, b.handler(.pointer));
+            try wl.wl_seat.getPointer(c, sid, p);
+            b.pointer = p;
+        } else if (!caps.pointer) if (b.pointer) |p| {
+            try b.seat.ptrLeave(out);
+            try wl.wl_pointer.release(c, p);
+            b.pointer = null;
+        };
+        if (caps.touch and b.touch == null) {
+            const t = try c.newIdVersion(wl.wl_touch, ver, b.handler(.touch));
+            try wl.wl_seat.getTouch(c, sid, t);
+            b.touch = t;
+        } else if (!caps.touch) if (b.touch) |t| {
+            try b.seat.touchCancel(out);
+            try wl.wl_touch.release(c, t);
+            b.touch = null;
+        };
+    }
+
+    /// `wl_keyboard.keymap`: maps and parses the keymap without the mutex
+    /// (it takes a few milliseconds), then installs it. Owns `fd`.
+    fn onKeymap(b: *WaylandBackend, format: wl.wl_keyboard.KeymapFormat, fd: i32, size: u32) !void {
+        defer _ = linux.close(fd);
+        if (format != .xkb_v1 or size == 0 or size > max_keymap_bytes) {
+            log.warn("ignoring keymap (format {d}, {d} bytes)", .{ @intFromEnum(format), size });
+            return;
+        }
+        const mem = std.posix.mmap(null, size, .{ .READ = true }, .{ .TYPE = .PRIVATE }, fd, 0) catch |err| {
+            log.warn("mapping the keymap: {t}", .{err});
+            return;
+        };
+        defer std.posix.munmap(mem);
+        // The text is NUL-terminated within `size`.
+        const text = mem[0 .. std.mem.indexOfScalar(u8, mem, 0) orelse mem.len];
+        const km = Keymap.parse(b.gpa, text) catch |err| {
+            log.warn("parsing the keymap: {t}", .{err});
+            return;
+        };
+        b.lock();
+        defer b.unlock();
+        b.seat.setKeymap(b.gpa, km);
+    }
+
+    /// Loads the user's compose rules (platform thread, at start).
+    fn loadCompose(b: *WaylandBackend) void {
+        var env = b.compose_env orelse return;
+        b.compose_env = null;
+        defer env.deinit();
+        const t = compose.ComposeTable.loadDefault(b.gpa, b.io, &env) catch |err| {
+            log.warn("loading compose rules: {t}", .{err});
+            return;
+        };
+        b.lock();
+        defer b.unlock();
+        b.compose_table = t;
+        b.seat.compose = .init(&b.compose_table.?);
+    }
+
+    /// Arms or disarms the repeat timer. Mutex held.
+    fn armRepeat(b: *WaylandBackend, r: seat_mod.Repeat) void {
+        if (b.repeat_fd < 0) return;
+        const spec: linux.itimerspec = switch (r) {
+            .keep => return,
+            .disarm => .{ .it_interval = .{ .sec = 0, .nsec = 0 }, .it_value = .{ .sec = 0, .nsec = 0 } },
+            .arm => |a| .{ .it_interval = msSpec(a.interval_ms), .it_value = msSpec(a.delay_ms) },
+        };
+        _ = linux.timerfd_settime(b.repeat_fd, .{}, &spec, null);
+    }
+
+    fn onRepeatTimer(b: *WaylandBackend) void {
+        var n: u64 = 0;
+        const rc = linux.read(b.repeat_fd, std.mem.asBytes(&n), @sizeOf(u64));
+        if (linux.errno(rc) != .SUCCESS or n == 0) return;
+        b.lock();
+        defer b.unlock();
+        b.seat.repeatFired(Sink{ .b = b }, n, b.nowNs()) catch |err| log.warn("key repeat: {t}", .{err});
+    }
+
+    fn focusWindow(b: *WaylandBackend, id: ?WindowId) ?*Window {
+        return if (b.find(id orelse return null)) |s| &s.win else null;
     }
 
     fn byObject(b: *WaylandBackend, comptime field: []const u8, obj: u32) ?*Window {
@@ -955,6 +1184,38 @@ pub const WaylandBackend = struct {
 };
 
 const ClipItemOwned = struct { mime: clipboard.MimeId, data: []u8 };
+
+const native_endian = @import("builtin").cpu.arch.endian();
+
+/// Where `Seat` sends events: the staged list and the payload arena.
+/// Used with the mutex held.
+const Sink = struct {
+    b: *WaylandBackend,
+
+    /// Stages `ev`.
+    pub fn stage(s: Sink, ev: Event) !void {
+        return s.b.stage(ev);
+    }
+
+    /// Copies `bytes` into the payload arena.
+    pub fn text(s: Sink, bytes: []const u8) types.PayloadSlice {
+        return s.b.arena.put(bytes) catch .empty;
+    }
+};
+
+/// Surface coordinates to the window's physical pixels.
+fn toPx(w: *const Window, x: wl.Fixed, y: wl.Fixed) [2]f32 {
+    const k = @as(f64, @floatFromInt(w.effectiveScale120())) / @as(f64, @floatFromInt(scale.unit));
+    return .{ @floatCast(x.toF64() * k), @floatCast(y.toF64() * k) };
+}
+
+fn axisOf(a: wl.wl_pointer.Axis) seat_mod.Axis {
+    return if (@intFromEnum(a) == 1) .horizontal else .vertical;
+}
+
+fn msSpec(ms: u32) linux.timespec {
+    return .{ .sec = @intCast(ms / 1000), .nsec = @intCast(@as(u64, ms % 1000) * std.time.ns_per_ms) };
+}
 
 fn freeClip(gpa: Allocator, items: []ClipItemOwned) void {
     for (items) |it| gpa.free(it.data);
@@ -1083,6 +1344,8 @@ const Peer = struct {
                     try S.done(p.fc, fb);
                 };
                 if (std.mem.eql(u8, s.iface, wl.wl_registry.name) and s.opcode == 0) {
+                    if (p.last_bound != null and p.last_bound.?.ptr == wl.wl_seat.name.ptr)
+                        try wl.wl_seat.server.capabilities(p.fc, p.id(wl.wl_seat), .{ .pointer = true, .keyboard = true, .touch = true });
                     // bind: describe a new output before the next sync
                     if (p.last_bound != null and p.last_bound.?.ptr == wl.wl_output.name.ptr and p.outputs.len > 0) {
                         const out_id = p.id(wl.wl_output);
@@ -1144,6 +1407,9 @@ const all_globals = [_]fake.Global{
     .{ .name = 5, .interface = "wp_fractional_scale_manager_v1", .version = 1 },
     .{ .name = 6, .interface = "wl_output", .version = 4 },
 };
+
+/// `all_globals` and a seat.
+const seat_globals = all_globals ++ [_]fake.Global{.{ .name = 7, .interface = "wl_seat", .version = 9 }};
 
 /// A backend connected to a fresh `Peer`.
 const Rig = struct {
@@ -1485,4 +1751,85 @@ test "weston conformance" {
     try w.environ(&env);
     var h: WestonHarness = .{ .io = testing.io, .weston = &w, .env = &env };
     try conformance.runConformance(WestonHarness, &h);
+}
+
+/// The next `key` event with `action`, skipping others.
+fn expectKey(p: Platform, action: @import("../api/keys.zig").KeyAction) !event_api.KeyEvent {
+    while (true) {
+        const k = try expectEvent(p, .key, null);
+        if (k.ev.action == action) return k.ev;
+    }
+}
+
+test "seat: keymap, focus, text, shift, repeat, pointer frame and touch" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &seat_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const kb = rig.peer.id(wl.wl_keyboard);
+    const ptr = rig.peer.id(wl.wl_pointer);
+    const tch = rig.peer.id(wl.wl_touch);
+    const surf = rig.peer.id(wl.wl_surface);
+
+    const text = @embedFile("../xkb/testdata/us.xkb");
+    const fd: i32 = @intCast(linux.memfd_create("zg-test-keymap", linux.MFD.CLOEXEC));
+    defer _ = linux.close(fd);
+    _ = linux.pwrite(fd, text.ptr, text.len, 0);
+    _ = linux.pwrite(fd, "\x00", 1, text.len);
+    const K = wl.wl_keyboard.server;
+    try K.keymap(fc, kb, .xkb_v1, fd, @intCast(text.len + 1));
+    try K.repeatInfo(fc, kb, 100, 20);
+    try K.enter(fc, kb, 1, surf, &.{});
+    try testing.expect((try expectEvent(p, .window_focus, win)).focused);
+
+    const key_a = 30; // evdev KEY_A
+    try K.key(fc, kb, 2, 0, key_a, .pressed);
+    const press = try expectKey(p, .press);
+    try testing.expectEqual(@import("../api/keys.zig").Key.key_a, press.key);
+    try testing.expectEqualStrings("a", p.payload(press.text));
+    // Held past the delay: the timer repeats it.
+    const rep = try expectKey(p, .repeat);
+    try testing.expectEqual(@as(u21, 'a'), rep.codepoint);
+    try K.key(fc, kb, 3, 0, key_a, .released);
+    _ = try expectKey(p, .release);
+
+    try K.modifiers(fc, kb, 4, 1, 0, 0, 0); // Shift
+    try K.key(fc, kb, 5, 0, key_a, .pressed);
+    const shifted = try expectKey(p, .press);
+    try testing.expectEqual(@as(u21, 'A'), shifted.codepoint);
+    try testing.expect(shifted.mods.shift);
+    try testing.expectEqualStrings("A", p.payload(shifted.text));
+    try K.key(fc, kb, 6, 0, key_a, .released);
+    try K.modifiers(fc, kb, 7, 0, 0, 0, 0);
+
+    const P = wl.wl_pointer.server;
+    try P.enter(fc, ptr, 8, surf, .fromInt(10), .fromInt(20));
+    try P.frame(fc, ptr);
+    // `expectEvent` drops the rest of a batch, so only the move (which
+    // needs the enter's focus) is checked.
+    const mv = try expectEvent(p, .pointer_move, win);
+    try testing.expectEqual([2]f32{ 10, 20 }, mv.pos_px);
+    try P.button(fc, ptr, 9, 0, seat_mod.BTN.left, .pressed);
+    try P.frame(fc, ptr);
+    const bt = try expectEvent(p, .pointer_button, win);
+    try testing.expect(bt.pressed and bt.button == .left and bt.clicks == 1);
+    try P.axisSource(fc, ptr, .wheel);
+    try P.axisValue120(fc, ptr, .vertical_scroll, 120);
+    try P.axis(fc, ptr, 0, .vertical_scroll, .fromInt(10));
+    try P.frame(fc, ptr);
+    const sc = try expectEvent(p, .scroll, win);
+    try testing.expectEqual(@as(f32, 1), sc.dy);
+
+    const T = wl.wl_touch.server;
+    try T.down(fc, tch, 10, 0, surf, 3, .fromInt(5), .fromInt(6));
+    try T.frame(fc, tch);
+    const td = try expectEvent(p, .touch, win);
+    try testing.expectEqual(types.Phase.begin, td.phase);
+    try testing.expectEqual([2]f32{ 5, 6 }, td.pos_px);
+
+    // Losing focus releases nothing that is not held, and stops repeat.
+    try K.leave(fc, kb, 11, surf);
+    try testing.expect(!(try expectEvent(p, .window_focus, win)).focused);
 }
