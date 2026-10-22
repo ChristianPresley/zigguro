@@ -1,9 +1,9 @@
 //! `AgentPanel`: one zg_ai agent in the workbench (E10 ↔ E04), the IDE's
 //! side of `zg agent`. It shows the transcript (the user's prompts, the
-//! streamed replies, tool calls with their outcome, and the permission,
-//! hook and validation decisions about them), the agent's status and a
-//! prompt field: Enter sends, Shift+Enter breaks the line, Stop cancels
-//! the turn. With plan mode wired (`plans`, `plan_mode`), a "Plan mode"
+//! streamed replies rendered as Markdown, tool calls with their outcome,
+//! and the permission, hook and validation decisions about them), the
+//! agent's status and a prompt field: Enter sends, Shift+Enter breaks the
+//! line, Stop cancels the turn. With plan mode wired (`plans`, `plan_mode`), a "Plan mode"
 //! switch in the header enters and leaves it, and a proposed plan shows
 //! as a card above the prompt (plan_card.zig).
 //!
@@ -90,8 +90,11 @@ pub const AgentPanel = struct {
         child_streaming: bool = false,
         /// Children shown; null follows the state (open while running).
         expanded: ?bool = null,
+        /// Assistant replies: the text as Markdown.
+        reply: ?*Reply = null,
 
         fn deinit(it: *Item, gpa: Allocator) void {
+            if (it.reply) |r| r.destroy(gpa);
             it.text.deinit(gpa);
             gpa.free(it.id);
             for (it.children.items) |*c| c.deinit(gpa);
@@ -101,6 +104,34 @@ pub const AgentPanel = struct {
         /// Whether its children show.
         pub fn open(it: *const Item) bool {
             return it.expanded orelse (it.state == .queued or it.state == .running);
+        }
+    };
+
+    /// An assistant reply parsed as Markdown while it streams (on the heap:
+    /// items move, and the view state points at the document).
+    pub const Reply = struct {
+        doc: zg_gui.markdown.Doc,
+        view: zg_gui.markdown.MdViewState,
+        streaming: bool = true,
+
+        fn create(gpa: Allocator) !*Reply {
+            const r = try gpa.create(Reply);
+            r.* = .{ .doc = zg_gui.markdown.stream.init(gpa, .{}), .view = undefined };
+            r.view = .init(gpa, &r.doc);
+            return r;
+        }
+
+        fn destroy(r: *Reply, gpa: Allocator) void {
+            r.view.deinit();
+            r.doc.deinit();
+            gpa.destroy(r);
+        }
+
+        /// The reply is complete: close every block.
+        fn finish(r: *Reply) void {
+            if (!r.streaming) return;
+            r.streaming = false;
+            _ = r.view.finish() catch {};
         }
     };
 
@@ -183,8 +214,8 @@ pub const AgentPanel = struct {
     pub fn submit(p: *AgentPanel, text: []const u8) !void {
         const t = std.mem.trim(u8, text, " \t\r\n");
         if (t.len == 0) return;
+        endReply(&p.items, &p.streaming);
         try p.addItem(.user, t);
-        p.streaming = false;
         defer p.changed();
         if (p.commands) |c| {
             var arena: std.heap.ArenaAllocator = .init(p.gpa);
@@ -354,13 +385,16 @@ pub const AgentPanel = struct {
             .delta => |s| {
                 if (!streaming.*) {
                     try p.addTo(list, .assistant, "");
+                    list.items[list.items.len - 1].reply = Reply.create(p.gpa) catch null;
                     streaming.* = true;
                 }
-                try list.items[list.items.len - 1].text.appendSlice(p.gpa, s);
+                const it = &list.items[list.items.len - 1];
+                try it.text.appendSlice(p.gpa, s);
+                if (it.reply) |r| _ = r.view.append(s) catch {};
             },
-            .committed => streaming.* = false,
+            .committed => endReply(list, streaming),
             .tool_queued => |t| {
-                streaming.* = false;
+                endReply(list, streaming);
                 try p.addTo(list, .tool, t.text);
                 const it = &list.items[list.items.len - 1];
                 it.id = try p.gpa.dupe(u8, t.id);
@@ -372,15 +406,23 @@ pub const AgentPanel = struct {
                 it.state = t.state;
             },
             .note => |s| {
-                streaming.* = false;
+                endReply(list, streaming);
                 try p.addTo(list, .note, s);
             },
             .failure => |s| {
-                streaming.* = false;
+                endReply(list, streaming);
                 try p.addTo(list, .failure, s);
             },
             .status => |s| p.status = s,
         }
+    }
+
+    /// The streamed reply (if any) is complete.
+    fn endReply(list: *std.ArrayList(Item), streaming: *bool) void {
+        if (streaming.* and list.items.len > 0) {
+            if (list.items[list.items.len - 1].reply) |r| r.finish();
+        }
+        streaming.* = false;
     }
 
     // ── View ────────────────────────────────────────────────────────────
@@ -493,7 +535,9 @@ pub const AgentPanel = struct {
                 ui.text(it.text.items, .{});
                 ui.close();
             },
-            .assistant => ui.text(it.text.items, .{}),
+            .assistant => if (it.reply) |r| {
+                zg_gui.markdown.view(ui, &r.view, .{ .streaming = r.streaming, .compact = true, .virtualize = false, .max_width = std.math.inf(f32) });
+            } else ui.text(it.text.items, .{}),
             .tool => {
                 if (it.children.items.len > 0) return p.taskItem(ui, it);
                 ui.open(.{ .style = .{ .dir = .row, .gap = 6 } });
@@ -711,7 +755,7 @@ test "agent panel: a prompt, a denied tool call and the reply" {
     defer models.deinit();
     const sp = try scripted.ScriptedProvider.init(gpa, &.{
         scripted.script.tools(&.{.{ "t1", "run", "{\"command\":\"rm -rf build\"}" }}),
-        scripted.script.text("Understood, I left it."),
+        scripted.script.text("Understood, I **left** it."),
     }, .all);
     var provider = sp.provider();
     defer provider.deinit();
@@ -766,8 +810,13 @@ test "agent panel: a prompt, a denied tool call and the reply" {
     _ = find(p, .note, "You denied run: not on main").?;
     try testing.expectEqual(@as(u32, 0), tool.calls.load(.acquire));
     try testing.expectEqualStrings("rm -rf build", fp.presented.items[0].command.?);
-    // The transcript is on screen.
+    // The transcript is on screen, the reply rendered as Markdown.
     try testing.expect(t.count(.{ .test_id = "agent-transcript" }) == 1);
+    const reply = find(p, .assistant, "Understood").?;
+    try testing.expect(!reply.reply.?.streaming);
+    t.win.markAllDirty();
+    _ = t.settle();
+    try testing.expect(t.find(.{ .kind = "md_text", .name = "Understood, I left it." }) != null);
 }
 
 /// `read_file` (read-only, so no approval) for the subagent test.
