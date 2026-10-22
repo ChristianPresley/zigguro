@@ -15,6 +15,7 @@ const embolden = @import("embolden.zig");
 const lcd = @import("lcd.zig");
 const sdf = @import("sdf.zig");
 const bitmap_strikes = @import("bitmap_strikes.zig");
+const colr_render = @import("colr_render.zig");
 
 /// Largest bitmap side in pixels. Bigger requests fail with `TooLarge`;
 /// callers use SDF or tiles instead.
@@ -62,10 +63,16 @@ pub const RasterParams = struct {
     synth_oblique: bool = false,
     stem_darkening: bool = false,
     sdf_spread_px: f32 = 4,
-    /// Use the face's colour data for this glyph when it has some (bitmap
-    /// strikes; output `rgba8_premul`). A corrupt image falls back to the
-    /// outline. `mode` and the synthetic styles apply only to outlines.
+    /// Use the face's colour data for this glyph when it has some (COLR,
+    /// else bitmap strikes; output `rgba8_premul`). Colour data that cannot
+    /// be drawn falls back to the outline. `mode` and the synthetic styles
+    /// apply only to outlines.
     color: bool = false,
+    /// COLR: requested CPAL palette, text colour (linear premultiplied
+    /// RGBA) and whether to prefer a palette for dark backgrounds.
+    palette: u16 = 0,
+    fg: [4]f32 = .{ 0, 0, 0, 1 },
+    dark_bg: bool = false,
 
     /// Output kind.
     pub const Mode = enum { gray, lcd_rgb, lcd_bgr, sdf };
@@ -176,6 +183,16 @@ pub fn walk(path: *const Path, m: Affine, origin: [2]f32, tol: f32, sink: anytyp
     if (open) sink.segment(cur, start);
 }
 
+/// Outline units to font units: the identity for TrueType, FontMatrix
+/// times the em for CFF (the usual 0.001 matrix with a 1000-unit em is
+/// the identity too).
+pub fn outlineMatrix(inst: *const variation.FaceInstance) Affine {
+    const c = inst.cff orelse return .identity;
+    const upem: f32 = @floatFromInt(inst.face.units_per_em);
+    const fm = c.fontMatrix();
+    return .{ .xx = fm.xx * upem, .xy = fm.xy * upem, .yx = fm.yx * upem, .yy = fm.yy * upem, .dx = fm.dx * upem, .dy = fm.dy * upem };
+}
+
 /// One per worker thread.
 pub const Rasterizer = struct {
     gpa: Allocator,
@@ -195,6 +212,8 @@ pub const Rasterizer = struct {
     fbuf: std.ArrayList(f32) = .empty,
     /// Decoded bitmap-strike PNGs.
     strikes: bitmap_strikes.StrikeCache = .{},
+    /// COLR layers, clip masks and colour stops.
+    colr: colr_render.Scratch = .{},
 
     /// A rasterizer with empty buffers.
     pub fn init(gpa: Allocator) Rasterizer {
@@ -214,6 +233,7 @@ pub const Rasterizer = struct {
         r.cell_items.deinit(r.gpa);
         r.fbuf.deinit(r.gpa);
         r.strikes.deinit(r.gpa);
+        r.colr.deinit(r.gpa);
     }
 
     /// Rasterizes `path` (font units, y up) at `p`. An empty or non-finite
@@ -227,6 +247,14 @@ pub const Rasterizer = struct {
     /// set and the face has one for the glyph, else from its outline.
     pub fn rasterizeGlyph(r: *Rasterizer, inst: *const variation.FaceInstance, gid: ot.GlyphId, p: RasterParams) Error!Bitmap {
         if (p.color) {
+            if (ot.colr.Colr.fromFace(inst.face)) |colr| if (colr.hasGlyph(gid)) {
+                if (colr_render.renderColorGlyph(r, inst, &colr, gid, .{ .px_per_em = p.px_per_em, .subpixel_x = p.subpixel_x, .palette = p.palette, .fg = p.fg, .dark_bg = p.dark_bg })) |bm| {
+                    return bm;
+                } else |e| switch (e) {
+                    error.Malformed, error.Unsupported, error.LimitExceeded => {}, // outline fallback
+                    else => return e,
+                }
+            };
             const strike = ot.cbdt.cbdtGlyph(inst.face, gid, p.px_per_em) orelse ot.sbix.sbixGlyph(inst.face, gid, p.px_per_em);
             if (strike) |g| {
                 if (bitmap_strikes.renderStrike(r, g, p.px_per_em, &r.strikes)) |bm| {
@@ -241,14 +269,7 @@ pub const Rasterizer = struct {
         try inst.outline(r.gpa, gid, &r.scratch, &r.path);
         const upem: f32 = @floatFromInt(inst.face.units_per_em);
         if (upem == 0) return error.Malformed;
-        var m = pixelTransform(upem, p);
-        if (inst.cff) |*c| {
-            // Charstring units to font units through FontMatrix (the usual
-            // 0.001 matrix with a 1000-unit em is the identity).
-            const fm = c.fontMatrix();
-            m = m.mul(.{ .xx = fm.xx * upem, .xy = fm.xy * upem, .yx = fm.yx * upem, .yy = fm.yy * upem, .dx = fm.dx * upem, .dy = fm.dy * upem });
-        }
-        return r.rasterizeMapped(&r.path, m, p);
+        return r.rasterizeMapped(&r.path, pixelTransform(upem, p).mul(outlineMatrix(inst)), p);
     }
 
     fn rasterizeMapped(r: *Rasterizer, path_in: *const Path, m: Affine, p: RasterParams) Error!Bitmap {
