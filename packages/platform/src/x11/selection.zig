@@ -8,8 +8,9 @@
 //! from any thread is safe. Event handling reads properties with
 //! `GetProperty` round trips on the dispatching thread.
 //!
-//! The requestor path (`read`) is what XDND (E01.F05.S03.T03) uses to
-//! fetch dropped data.
+//! XDND (E01.F05.S03.T03) uses a third selection, `XdndSelection`:
+//! `ownXdnd` while we drag, `readXdnd` to fetch a drop (its `Done` has
+//! `xdnd` set).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -38,6 +39,7 @@ pub const atom_names = [_][]const u8{
     "image/png",
     "application/x-zigguro-internal",
     "_ZG_SEL",
+    "XdndSelection",
 };
 /// The interned `atom_names`.
 pub const Atoms = @import("atoms.zig").AtomTable(&atom_names);
@@ -53,6 +55,19 @@ pub const Done = struct {
     /// The bytes (owned by the receiver); empty on failure.
     data: []u8,
     ok: bool,
+    /// A `readXdnd` answer.
+    xdnd: bool = false,
+};
+
+/// The selections we handle: the api's two and XDND's.
+const Slot = enum(u2) {
+    clipboard,
+    primary,
+    xdnd,
+
+    fn of(which: Selection) Slot {
+        return @enumFromInt(@intFromEnum(which));
+    }
 };
 
 const Item = struct { mime: MimeId, data: []u8 };
@@ -61,7 +76,7 @@ const Item = struct { mime: MimeId, data: []u8 };
 const Read = struct {
     request: u32,
     mime: MimeId,
-    which: Selection,
+    which: Slot,
     time: u32,
     stage: enum { queued, targets, data, incr } = .queued,
     target: u32 = 0,
@@ -88,9 +103,9 @@ pub const Selections = struct {
     win: u32,
     /// The XFIXES event base, when the extension is usable.
     xfixes_event: ?u8 = null,
-    items: [2][]Item = .{ &.{}, &.{} },
-    owned: [2]bool = .{ false, false },
-    own_time: [2]u32 = .{ 0, 0 },
+    items: [3][]Item = .{ &.{}, &.{}, &.{} },
+    owned: [3]bool = .{ false, false, false },
+    own_time: [3]u32 = .{ 0, 0, 0 },
     /// Reads in order; the first one is in progress.
     reads: std.ArrayList(Read) = .empty,
     sends: std.ArrayList(Send) = .empty,
@@ -158,21 +173,32 @@ pub const Selections = struct {
         items.* = &.{};
     }
 
-    fn selAtom(s: *const Selections, which: Selection) u32 {
+    fn selAtom(s: *const Selections, which: Slot) u32 {
         return switch (which) {
             .clipboard => s.atoms.get("CLIPBOARD"),
             .primary => proto.Atom.primary,
+            .xdnd => s.atoms.get("XdndSelection"),
         };
     }
 
-    fn whichOf(s: *const Selections, atom: u32) ?Selection {
+    fn whichOf(s: *const Selections, atom: u32) ?Slot {
         if (atom == s.atoms.get("CLIPBOARD")) return .clipboard;
         if (atom == proto.Atom.primary) return .primary;
+        if (atom == s.atoms.get("XdndSelection")) return .xdnd;
         return null;
     }
 
     /// Takes `which` with copies of `items` (none gives it up).
     pub fn own(s: *Selections, which: Selection, items: []const clipboard.ClipItem, time: u32) !void {
+        return s.ownSlot(.of(which), items, time);
+    }
+
+    /// Takes `XdndSelection` for a drag (no items gives it up).
+    pub fn ownXdnd(s: *Selections, items: []const clipboard.ClipItem, time: u32) !void {
+        return s.ownSlot(.xdnd, items, time);
+    }
+
+    fn ownSlot(s: *Selections, which: Slot, items: []const clipboard.ClipItem, time: u32) !void {
         const copy = try s.gpa.alloc(Item, items.len);
         var n: usize = 0;
         errdefer {
@@ -197,14 +223,25 @@ pub const Selections = struct {
     /// Reads `which` as `mime`; the answer arrives in `done`. While we own
     /// the selection it is answered from our copy at once.
     pub fn read(s: *Selections, which: Selection, mime: MimeId, request: u32, time: u32, now_ns: u64) !void {
+        return s.readSlot(.of(which), mime, request, time, now_ns);
+    }
+
+    /// Reads a drop from `XdndSelection` as `mime` at the drop's `time`;
+    /// the answer arrives in `done` with `xdnd` set.
+    pub fn readXdnd(s: *Selections, mime: MimeId, time: u32, now_ns: u64) !void {
+        return s.readSlot(.xdnd, mime, 0, time, now_ns);
+    }
+
+    fn readSlot(s: *Selections, which: Slot, mime: MimeId, request: u32, time: u32, now_ns: u64) !void {
         const i = @intFromEnum(which);
+        const xdnd = which == .xdnd;
         if (s.owned[i]) {
             try s.done.ensureUnusedCapacity(s.gpa, 1);
             for (s.items[i]) |it| if (it.mime == mime) {
-                s.done.appendAssumeCapacity(.{ .request = request, .mime = mime, .data = try s.gpa.dupe(u8, it.data), .ok = true });
+                s.done.appendAssumeCapacity(.{ .request = request, .mime = mime, .data = try s.gpa.dupe(u8, it.data), .ok = true, .xdnd = xdnd });
                 return;
             };
-            s.done.appendAssumeCapacity(.{ .request = request, .mime = mime, .data = &.{}, .ok = false });
+            s.done.appendAssumeCapacity(.{ .request = request, .mime = mime, .data = &.{}, .ok = false, .xdnd = xdnd });
             return;
         }
         try s.reads.append(s.gpa, .{ .request = request, .mime = mime, .which = which, .time = time, .deadline_ns = now_ns + s.timeout_ns });
@@ -240,7 +277,7 @@ pub const Selections = struct {
             };
         }
         r.buf.deinit(s.gpa);
-        s.done.append(s.gpa, .{ .request = r.request, .mime = r.mime, .data = data, .ok = good }) catch {
+        s.done.append(s.gpa, .{ .request = r.request, .mime = r.mime, .data = data, .ok = good, .xdnd = r.which == .xdnd }) catch {
             s.gpa.free(data);
             log.warn("selection answer dropped: out of memory", .{});
         };
@@ -248,7 +285,7 @@ pub const Selections = struct {
             s.startRead(now_ns) catch {
                 var x = s.reads.orderedRemove(0);
                 x.buf.deinit(s.gpa);
-                s.done.append(s.gpa, .{ .request = x.request, .mime = x.mime, .data = &.{}, .ok = false }) catch {};
+                s.done.append(s.gpa, .{ .request = x.request, .mime = x.mime, .data = &.{}, .ok = false, .xdnd = x.which == .xdnd }) catch {};
                 continue;
             };
             break;
@@ -261,7 +298,7 @@ pub const Selections = struct {
         if (s.xfixes_event) |base| if (code == base) {
             // XFixesSelectionNotify: subtype, window, owner, selection.
             const owner = u32At(ev, 8);
-            if (s.whichOf(u32At(ev, 12))) |w| if (owner != s.win) {
+            if (s.whichOf(u32At(ev, 12))) |w| if (owner != s.win and w != .xdnd) {
                 s.changed[@intFromEnum(w)] = true;
             };
             return true;
@@ -362,8 +399,16 @@ pub const Selections = struct {
         r.deadline_ns = now_ns + s.timeout_ns;
     }
 
+    /// The format target `atom` carries, if we know it.
+    pub fn mimeOfTarget(s: *const Selections, atom: u32) ?MimeId {
+        inline for (.{ MimeId.text_utf8, .uri_list, .html, .png, .zigguro_internal }) |m| {
+            if (s.targetsFor(m).has(atom)) return m;
+        }
+        return null;
+    }
+
     /// Target atoms for `mime`, best first.
-    fn targetsFor(s: *const Selections, mime: MimeId) Targets {
+    pub fn targetsFor(s: *const Selections, mime: MimeId) Targets {
         var t: Targets = .{};
         const a = &s.atoms;
         switch (mime) {
@@ -424,7 +469,7 @@ pub const Selections = struct {
 
     /// MULTIPLE: converts each (target, property) pair in order and
     /// writes the list back with failed properties set to None.
-    fn convertMultiple(s: *Selections, which: Selection, requestor: u32, property: u32, now_ns: u64) !bool {
+    fn convertMultiple(s: *Selections, which: Slot, requestor: u32, property: u32, now_ns: u64) !bool {
         const p = try s.conn.reply(try s.conn.request(proto.GetProperty, .{ .window = requestor, .property = property }, &.{}));
         if (p.format != 32 or p.value.len % 8 != 0) return false;
         const pairs = try s.gpa.dupe(u8, p.value);
@@ -441,7 +486,7 @@ pub const Selections = struct {
     }
 
     /// Stores `target` in `property` on `requestor`; false if we cannot.
-    fn convertInto(s: *Selections, which: Selection, requestor: u32, target: u32, property: u32, now_ns: u64) !bool {
+    fn convertInto(s: *Selections, which: Slot, requestor: u32, target: u32, property: u32, now_ns: u64) !bool {
         const a = &s.atoms;
         const items = s.items[@intFromEnum(which)];
         if (target == a.get("TARGETS")) {
@@ -535,8 +580,8 @@ pub const Selections = struct {
     }
 };
 
-/// A short list of target atoms.
-const Targets = struct {
+/// Target atoms for one format, best first.
+pub const Targets = struct {
     atoms: [5]u32 = undefined,
     len: usize = 0,
 
@@ -544,7 +589,8 @@ const Targets = struct {
         t.atoms[t.len] = a;
         t.len += 1;
     }
-    fn slice(t: *const Targets) []const u32 {
+    /// The atoms.
+    pub fn slice(t: *const Targets) []const u32 {
         return t.atoms[0..t.len];
     }
     fn get(t: *const Targets, i: usize) u32 {
