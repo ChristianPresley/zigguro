@@ -111,7 +111,12 @@ pub fn newPackage(
 
     try patch(gpa, io, repo_root, "build/packages.zig", try std.fmt.allocPrint(gpa, ".{{ .name = \"{s}\", .dir = \"{s}\", .has_bench = true }},", .{ name, pkg_dir }));
     try patch(gpa, io, repo_root, "build.zig.zon", try std.fmt.allocPrint(gpa, ".{s} = .{{ .path = \"{s}\" }},", .{ name, pkg_dir }));
-    try patch(gpa, io, repo_root, "tools/pkgtool/layers.zon", try std.fmt.allocPrint(gpa, ".{s} = {d},", .{ name, layer }));
+    // layers.zon pre-assigns layers to planned packages; keep an existing entry.
+    const layers_src = try repo_root.readFileAlloc(io, "tools/pkgtool/layers.zon", gpa, .limited(4 << 20));
+    defer gpa.free(layers_src);
+    if (!hasLayerEntry(layers_src, name)) {
+        try patch(gpa, io, repo_root, "tools/pkgtool/layers.zon", try std.fmt.allocPrint(gpa, ".{s} = {d},", .{ name, layer }));
+    }
 
     if (zig_exe) |zig| {
         const argv = [_][]const u8{ zig, "fmt", "build/packages.zig", "build.zig.zon", "tools/pkgtool/layers.zon", pkg_dir };
@@ -119,6 +124,19 @@ pub fn newPackage(
         gpa.free(r.stdout);
         gpa.free(r.stderr);
     }
+}
+
+/// True when `layers.zon` source already has a `.<name> = ` line.
+pub fn hasLayerEntry(src: []const u8, name: []const u8) bool {
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimStart(u8, raw, " \t");
+        if (line.len > name.len + 1 and line[0] == '.' and std.mem.startsWith(u8, line[1..], name)) {
+            const rest = std.mem.trimStart(u8, line[1 + name.len ..], " ");
+            if (rest.len > 0 and rest[0] == '=') return true;
+        }
+    }
+    return false;
 }
 
 fn tmpPath(gpa: std.mem.Allocator, a: []const u8, b: []const u8) ![]const u8 {
@@ -140,6 +158,14 @@ test "scaffold: fingerprint upper bits are crc32(name)" {
     const fp = fingerprint(std.testing.io, "zg_core");
     try std.testing.expectEqual(@as(u64, 0x300f6db0), fp >> 32);
     try std.testing.expect(@as(u32, @truncate(fp)) != 0);
+}
+
+test "scaffold: existing layer entries are detected" {
+    const src = ".{\n    .layers = .{\n        .zg_core = 0,\n        .zg_platform = 2,\n        // pkgtool:insert\n    },\n}\n";
+    try std.testing.expect(hasLayerEntry(src, "zg_platform"));
+    try std.testing.expect(hasLayerEntry(src, "zg_core"));
+    try std.testing.expect(!hasLayerEntry(src, "zg_plat"));
+    try std.testing.expect(!hasLayerEntry(src, "zg_demo"));
 }
 
 test "scaffold: render substitutes placeholders" {
