@@ -4,7 +4,13 @@
 //! headers. Bit flags stay plain integers with named constants.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
+
+/// The calling convention of Win32 callbacks and COM methods: `.winapi`
+/// on Windows, C elsewhere, where the types are only compiled and tested
+/// (LLVM has no Windows ARM64 convention for aarch64-linux).
+pub const winapi: std.builtin.CallingConvention = if (builtin.os.tag == .windows) .winapi else .c;
 
 /// A window.
 pub const HWND = *opaque {};
@@ -130,11 +136,11 @@ pub const MSG = extern struct {
 };
 
 /// A window procedure.
-pub const WNDPROC = *const fn (HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub const WNDPROC = *const fn (HWND, UINT, WPARAM, LPARAM) callconv(winapi) LRESULT;
 /// A `SetTimer` callback.
-pub const TIMERPROC = *const fn (?HWND, UINT, usize, DWORD) callconv(.winapi) void;
+pub const TIMERPROC = *const fn (?HWND, UINT, usize, DWORD) callconv(winapi) void;
 /// An `EnumDisplayMonitors` callback.
-pub const MONITORENUMPROC = *const fn (HMONITOR, ?HDC, *RECT, LPARAM) callconv(.winapi) BOOL;
+pub const MONITORENUMPROC = *const fn (HMONITOR, ?HDC, *RECT, LPARAM) callconv(winapi) BOOL;
 
 /// `WNDCLASSEXW`.
 pub const WNDCLASSEXW = extern struct {
