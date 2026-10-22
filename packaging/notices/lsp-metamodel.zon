@@ -1,0 +1,12 @@
+// LSP meta models read by tools/lspgen (E07). The generated protocol
+// bindings are compiled into zigguro. License to be confirmed by E07: see
+// tools/lspgen/data/SOURCES.md.
+.{
+    .name = "Language Server Protocol meta model",
+    .version = "3.17.0, 3.18.0",
+    .license_spdx = "NOASSERTION",
+    .source_url = "https://github.com/microsoft/language-server-protocol",
+    .shipped = true,
+    .paths = .{"tools/lspgen/data/**"},
+    .license_text_files = .{},
+}

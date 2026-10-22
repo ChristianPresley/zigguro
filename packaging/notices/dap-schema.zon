@@ -1,0 +1,12 @@
+// Debug Adapter Protocol JSON schema read by tools/dapgen (E07). The
+// generated protocol bindings are compiled into zigguro. License to be
+// confirmed by E07: see tools/dapgen/data/SOURCES.md.
+.{
+    .name = "Debug Adapter Protocol schema",
+    .version = "main 2026-10-22",
+    .license_spdx = "NOASSERTION",
+    .source_url = "https://github.com/microsoft/debug-adapter-protocol",
+    .shipped = true,
+    .paths = .{"tools/dapgen/data/**"},
+    .license_text_files = .{},
+}
