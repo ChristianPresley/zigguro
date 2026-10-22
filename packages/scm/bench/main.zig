@@ -1,9 +1,11 @@
 //! zg_scm benchmarks (`zig build bench`): the E09.F01 budgets for hashing
-//! and the canonical encoding.
+//! and the canonical encoding, the store, and (graph_bench.zig) the commit
+//! index.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
 const scm = @import("zg_scm");
+const graph_bench = @import("graph_bench.zig");
 const bench = zg_core.bench;
 const State = bench.State;
 
@@ -48,6 +50,7 @@ fn register(b: *bench.Bench) !void {
     try b.run("scm.chunker_throughput: FastCDC cut points over 16 MiB (one core)", @as([]const u8, big), chunkBlob);
 
     try storeBenches(b, r);
+    try graph_bench.register(b);
 }
 
 fn chunkBlob(data: []const u8, s: *State) void {
