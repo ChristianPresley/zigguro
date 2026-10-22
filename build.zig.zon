@@ -15,6 +15,7 @@
         .zg_text = .{ .path = "packages/text" },
         .zg_git = .{ .path = "packages/git" },
         .zg_scm = .{ .path = "packages/scm" },
+        .zg_platform = .{ .path = "packages/platform" },
         // pkgtool:insert
     },
     .paths = .{
