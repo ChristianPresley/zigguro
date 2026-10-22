@@ -65,6 +65,7 @@ const frame = @import("frame.zig");
 const ime_mod = @import("ime.zig");
 const ImePurpose = @import("../api/ime.zig").ImePurpose;
 const cursor_mod = @import("cursor.zig");
+const pointer = @import("pointer.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 
 const Event = event_api.Event;
@@ -81,6 +82,8 @@ pub const InitOptions = struct {
     /// Frame interval while frames are requested; null reads it from DWM
     /// (60 Hz when DWM cannot tell).
     refresh_ns: ?u32 = null,
+    /// Register for raw mouse input and stage `Event.pointer_relative`.
+    raw_mouse: bool = false,
 };
 
 /// shcore's `GetDpiForMonitor`, loaded at runtime (Windows 8.1+).
@@ -132,6 +135,8 @@ const Window = struct {
     last_click_pos: [2]f32 = .{ -100, -100 },
     last_click_button: types.Button = .left,
     clicks: u8 = 0,
+    /// The button a pen's contact pressed, until it lifts.
+    pen_button: ?types.Button = null,
     /// Client-decorated: the custom frame.
     custom: bool = false,
     /// The app's hit map (custom frame only). Guarded by the mutex.
@@ -626,6 +631,11 @@ pub const Win32Backend = struct {
             b.ready.set(b.io);
             return;
         }
+        if (b.opts.raw_mouse) {
+            // No target window: reports go to the focused window.
+            const dev = [_]t.RAWINPUTDEVICE{.{ .usUsagePage = pointer.RAW.usage_page_generic, .usUsage = pointer.RAW.usage_mouse, .dwFlags = 0, .hwndTarget = null }};
+            if (user32.RegisterRawInputDevices(&dev, dev.len, @sizeOf(t.RAWINPUTDEVICE)) == 0) log.warn("raw mouse input unavailable (error {d})", .{kernel32.GetLastError()});
+        }
         b.clip = .init(b.gpa, b.msg_hwnd.?);
         b.clip_ready = true;
         b.ready.set(b.io);
@@ -1112,6 +1122,17 @@ pub const Win32Backend = struct {
                 b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else notches, .dy = if (vertical) -notches else 0, .unit = .lines, .source = source, .phase = .none } });
                 return 0;
             },
+            pointer.WM.POINTERDOWN, pointer.WM.POINTERUPDATE, pointer.WM.POINTERUP => {
+                if (b.onPointer(w, hwnd, msg, @intCast(wp & 0xffff))) return 0;
+                // Mice, touchpads and touch (after its touch events) go on
+                // to become mouse messages.
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
+            },
+            pointer.WM.INPUT => {
+                b.onRawInput(w, lp);
+                // DefWindowProc frees the report (RIM_INPUT).
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
+            },
             else => return user32.DefWindowProcW(hwnd, msg, wp, lp),
         }
         return 0;
@@ -1240,7 +1261,59 @@ pub const Win32Backend = struct {
     }
 
     fn onButton(b: *Win32Backend, w: *Window, hwnd: t.HWND, button: types.Button, pressed: bool, lp: t.LPARAM) void {
-        const pos = posOf(lp);
+        b.onButtonAt(w, hwnd, button, pressed, posOf(lp));
+    }
+
+    /// Stages touch or pen events for a `WM_POINTER*` message; false when
+    /// the message is left to `DefWindowProcW` (mice, touchpads, touch).
+    fn onPointer(b: *Win32Backend, w: *Window, hwnd: t.HWND, msg: u32, id: u32) bool {
+        var pen: t.POINTER_PEN_INFO = undefined;
+        if (user32.GetPointerInfo(id, &pen.pointerInfo) == 0) return false;
+        const info = &pen.pointerInfo;
+        var pt = info.ptPixelLocation;
+        _ = user32.ScreenToClient(hwnd, &pt);
+        const pos: [2]f32 = .{ @floatFromInt(pt.x), @floatFromInt(pt.y) };
+        switch (pointer.kindOf(info.pointerType)) {
+            .other => return false,
+            .touch => {
+                if (pointer.touchPhase(msg, info.pointerFlags)) |phase| {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .touch = .{ .win = w.id, .id = @bitCast(id), .phase = phase, .pos_px = pos } });
+                }
+                return false;
+            },
+            .pen => {
+                if (user32.GetPointerPenInfo(id, &pen) == 0) return false;
+                {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .pointer_pressure = .{ .win = w.id, .pressure = pointer.pressureOf(pen.pressure, info.pointerFlags) } });
+                    b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = pos, .mods = modsNow(), .time_ns = b.nowNs() } });
+                }
+                if (pointer.penButton(msg, info.pointerFlags, pen.penFlags, w.pen_button)) |change| {
+                    w.pen_button = if (change.pressed) change.button else null;
+                    b.onButtonAt(w, hwnd, change.button, change.pressed, pos);
+                }
+                return true;
+            },
+        }
+    }
+
+    /// Stages relative motion from a raw mouse report.
+    fn onRawInput(b: *Win32Backend, w: *Window, lp: t.LPARAM) void {
+        const addr: usize = @bitCast(lp);
+        if (addr == 0) return;
+        var ri: t.RAWINPUT = undefined;
+        var size: u32 = @sizeOf(t.RAWINPUT);
+        if (user32.GetRawInputData(@ptrFromInt(addr), pointer.RAW.RID_INPUT, &ri, &size, @sizeOf(t.RAWINPUTHEADER)) == std.math.maxInt(u32)) return;
+        const d = pointer.relativeMotion(&ri) orelse return;
+        b.lock();
+        defer b.unlock();
+        b.stage(.{ .pointer_relative = .{ .win = w.id, .dx = d[0], .dy = d[1], .time_ns = b.nowNs() } });
+    }
+
+    fn onButtonAt(b: *Win32Backend, w: *Window, hwnd: t.HWND, button: types.Button, pressed: bool, pos: [2]f32) void {
         const now = b.nowNs();
         // Keep receiving the release when it happens outside the window.
         if (pressed) _ = user32.SetCapture(hwnd) else _ = user32.ReleaseCapture();
@@ -1687,5 +1760,20 @@ test "win32 keys: coalesced repeats, focus-loss releases, ctrl state" {
         releases += 1;
     };
     try testing.expectEqual(@as(usize, 2), releases);
+    p.destroyWindow(win);
+}
+
+test "win32 pointer: raw_mouse registers; unknown pointers and empty reports pass through" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{ .raw_mouse = true });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg pointer", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    // No such pointer id: GetPointerInfo fails and the message goes on.
+    _ = user32.SendMessageW(hwnd, pointer.WM.POINTERDOWN, 0xfff0, 0);
+    _ = user32.SendMessageW(hwnd, pointer.WM.INPUT, 0, 0);
+    var evs: [64]Event = undefined;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .touch and e != .pointer_relative and e != .pointer_button);
     p.destroyWindow(win);
 }
