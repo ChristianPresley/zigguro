@@ -106,6 +106,7 @@ fn writeRun(s: *Screen, run: []const u8) void {
         }
     }
     r.dirty = true;
+    if (x <= 1) s.releaseSpacerHead(p);
 }
 
 /// Prints `run` (bytes 0x20..0x7E) at the cursor.
@@ -339,6 +340,7 @@ fn writeCell(s: *Screen, cp: u21, w: u2) void {
             const p = s.rowPin(s.cursor.y);
             prepare(p, s.cursor.x, 1);
             p.cells()[s.cursor.x] = .{ .wide = .spacer_head };
+            if (s.cursor.x <= 1) s.releaseSpacerHead(p);
             wrap(s);
             right = rightEdge(s);
         } else if (right == 0 or right <= s.region.left) {
@@ -363,6 +365,7 @@ fn writeCell(s: *Screen, cp: u21, w: u2) void {
         if (page.internLink(.{ .uri = l.uri, .id = l.id })) |lid| page.attachLink(&cs[x], lid) else |_| {}
     }
     r.dirty = true;
+    if (x <= 1) s.releaseSpacerHead(p);
     const nx = x + w;
     if (nx > right) {
         s.cursor.x = right;

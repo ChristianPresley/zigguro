@@ -498,11 +498,13 @@ const VimBench = struct {
 };
 
 /// One Vim key at a time in a 100k-line document (budget: under 20 µs a
-/// key): `w`/`b` motions, and `dd` then `u` so the text stays the same.
+/// key): `w`/`b` motions, and `dd` then `u` so the text stays the same;
+/// and `:%s/^/#/` over every line then `u` (the time is per key, of the
+/// ten keys).
 fn registerVim(b: *bench.Bench, text: []const u8) !void {
     const edit = zg_editor.model.edit;
     const modes = zg_editor.modes;
-    inline for (.{ .{ "editor.vim.key_motion", "wwwbbb" }, .{ "editor.vim.key_dd_undo", "ddu" } }) |c| {
+    inline for (.{ .{ "editor.vim.key_motion", "wwwbbb" }, .{ "editor.vim.key_dd_undo", "ddu" }, .{ "editor.vim.ex_substitute_all_undo", ":%s/^/#/<CR>u" } }) |c| {
         const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
         defer doc.deinit();
         var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(doc.tree.lineStart(doc.tree.lineCount() / 2)));
@@ -512,7 +514,7 @@ fn registerVim(b: *bench.Bench, text: []const u8) !void {
         var vs: modes.vim.state.VimState = .init(b.gpa);
         defer vs.deinit();
         var host: modes.mode.Host = .{ .doc = doc, .sels = &sels, .undo = &undo, .edit = .{} };
-        var keys: [8]modes.key.Key = undefined;
+        var keys: [16]modes.key.Key = undefined;
         const n = try modes.key.parse(c[1], &keys);
         var vb: VimBench = .{ .vs = &vs, .host = &host, .keys = keys[0..n] };
         try b.run(c[0], &vb, vimKeys);

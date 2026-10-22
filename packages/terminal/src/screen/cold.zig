@@ -327,6 +327,9 @@ fn encodeLine(e: *Enc, lines: *std.ArrayList(u8), start: Pin, n: u64) !struct { 
         var end = cs.len;
         if (ri + 1 == n) {
             while (end > 0 and @as(u64, @bitCast(cs[end - 1])) == 0) end -= 1;
+            // A blank continuation row (its text was erased after the wrap)
+            // still belongs to the line: one blank cell keeps its row.
+            if (end == 0 and n > 1) end = 1;
         }
         for (cs[0..end]) |*c| {
             if (c.wide == .spacer_head) continue;

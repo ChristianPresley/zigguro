@@ -24,6 +24,8 @@ pub const approvals = @import("approvals/root.zig");
 pub const session = @import("session/root.zig");
 /// Comment threads on changesets, labels and re-anchoring.
 pub const feedback = @import("feedback/root.zig");
+/// E09's review port: AI SCM proposals and lane landings as review items.
+pub const scm = @import("scm/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

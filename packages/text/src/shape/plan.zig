@@ -303,6 +303,9 @@ pub const ShapePlan = struct {
         };
         errdefer plan.arena.deinit();
         const a = plan.arena.allocator();
+        // Glyph props are read for every glyph of every run.
+        if (plan.gdef.has_glyph_classes and face.num_glyphs <= digest.dense_class_limit)
+            try plan.gdef.buildPropsTable(a, face.num_glyphs);
 
         var b: PlanBuilder = .{ .gpa = gpa, .script = script, .dir = dir };
         defer b.deinit();

@@ -8,7 +8,7 @@
 
 const std = @import("std");
 
-const Crc = std.hash.crc.Crc32Iscsi;
+const Crc = @import("crc32c.zig").Crc32c;
 
 pub const header_len = 9;
 /// Larger frames are corruption (content goes to blobs).
@@ -41,7 +41,7 @@ pub const Kind = enum(u8) {
 /// Appends one frame to `out`.
 pub fn encode(gpa: std.mem.Allocator, out: *std.ArrayList(u8), kind: Kind, payload: []const u8) std.mem.Allocator.Error!void {
     std.debug.assert(payload.len + 1 <= max_frame);
-    var crc: Crc = .init();
+    var crc: Crc = .{};
     const k = [1]u8{@intFromEnum(kind)};
     crc.update(&k);
     crc.update(payload);

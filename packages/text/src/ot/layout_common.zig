@@ -141,6 +141,35 @@ pub const ClassDef = struct {
             else => return 0,
         }
     }
+
+    /// Writes the class of every glyph id below `out.len` into `out`, as
+    /// `class` gives it. False (and `out` unspecified) when a class does
+    /// not fit a `T` or format 2 ranges are unsorted or overlap, where
+    /// the binary search in `class` may disagree with a plain fill.
+    pub fn fill(c: ClassDef, comptime T: type, out: []T) bool {
+        @memset(out, 0);
+        switch (c.format) {
+            1 => for (0..c.count) |i| {
+                const g = @as(usize, c.start) + i;
+                if (g >= out.len) break;
+                out[g] = std.math.cast(T, be16(c.data, 6 + i * 2)) orelse return false;
+            },
+            2 => {
+                var next: usize = 0;
+                for (0..c.count) |r| {
+                    const rec = 4 + r * 6;
+                    const first: usize = be16(c.data, rec);
+                    const last: usize = be16(c.data, rec + 2);
+                    if (first < next or last < first) return false;
+                    next = last + 1;
+                    const k = std.math.cast(T, be16(c.data, rec + 4)) orelse return false;
+                    if (first < out.len) @memset(out[first..@min(last + 1, out.len)], k);
+                }
+            },
+            else => {},
+        }
+        return true;
+    }
 };
 
 /// LookupFlag bits.

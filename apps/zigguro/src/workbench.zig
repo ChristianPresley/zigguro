@@ -148,6 +148,8 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
+    /// Editors use Vim keys (`editor.toggleVim`).
+    vim: bool = false,
     /// Polls the review store for other processes' records (`zg review`)
     /// while the review panel exists.
     review_timer: Window.TimerId = .none,
@@ -172,6 +174,8 @@ pub const Workbench = struct {
         syntax: ?*DocumentSyntax,
         /// The document's file on disk (null: untitled).
         sync: ?*FileSync = null,
+        /// The editor's Vim state while Vim keys are on.
+        vim_state: ?*zg_editor.modes.VimState = null,
         /// The document against the file's text, for the gutter's SCM
         /// bar (null: not read from disk).
         diff: ?*diff_model.DiffModel = null,
@@ -256,6 +260,8 @@ pub const Workbench = struct {
         f.doc = wb.docs.get(h).?;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
+        if (wb.vim) wb.setVim(&f, true);
+        errdefer wb.setVim(&f, false);
         if (f.path) |p| {
             const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
@@ -303,6 +309,8 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        var fm = f;
+        wb.setVim(&fm, false);
         if (f.sync) |x| x.destroy();
         if (f.diff) |m| m.deinit();
         f.view.deinit();
@@ -796,6 +804,7 @@ pub const Workbench = struct {
         .{ .id = "editor.addCursorBelow", .title = "Add Cursor Below", .category = "Selection", .run = addCursorBelow },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
+        .{ .id = "editor.toggleVim", .title = "Toggle Vim Mode", .category = "Preferences", .run = toggleVim },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
     };
 
@@ -918,6 +927,29 @@ pub const Workbench = struct {
 
     fn addCursorBelow(wb: *Workbench) !void {
         _ = try wb.view.cursorCommand(.add_below);
+    }
+
+    /// Vim keys on or off in every editor.
+    fn toggleVim(wb: *Workbench) !void {
+        wb.vim = !wb.vim;
+        for (wb.files.items) |*f| wb.setVim(f, wb.vim);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Gives `f`'s editor a Vim state (or takes it away).
+    fn setVim(wb: *Workbench, f: *OpenFile, on: bool) void {
+        if (on == (f.vim_state != null)) return;
+        if (f.vim_state) |vs| {
+            f.view.mode = null;
+            vs.deinit();
+            wb.gpa.destroy(vs);
+            f.vim_state = null;
+            return;
+        }
+        const vs = wb.gpa.create(zg_editor.modes.VimState) catch return;
+        vs.* = .init(wb.gpa);
+        f.vim_state = vs;
+        f.view.mode = vs.handler();
     }
 
     fn selectAll(wb: *Workbench) !void {
@@ -1372,12 +1404,17 @@ pub const Workbench = struct {
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [8]zg_gui.w.StatusItem = undefined;
+        var items: [10]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
         items[n] = .{ .id = "position", .text = pos, .priority = 100 };
         n += 1;
+        if (wb.view.mode != null) {
+            const ms = wb.view.modeStatus();
+            items[n] = .{ .id = "mode", .text = if (ms.len > 0) ms else "Vim", .priority = 200, .tooltip = "Vim keys are on: Toggle Vim Mode turns them off", .action = "editor.toggleVim" };
+            n += 1;
+        }
         if (wb.trust != .trusted) {
             items[n] = .{ .id = "trust", .text = "Restricted Mode", .side = .right, .priority = 900, .tone = .warning, .tooltip = "This folder is not trusted: click to manage workspace trust", .action = "workspace.manageTrust" };
             n += 1;
@@ -1560,4 +1597,47 @@ test "workbench: the saved window size leaves out decoration margins" {
     const file = try Workbench.layoutSnapshot(&wb, arena.allocator());
     try std.testing.expectEqual(@as(i32, 876), file.windows[0].rect[2]);
     try std.testing.expectEqual(@as(i32, 576), file.windows[0].rect[3]);
+}
+
+test "workbench: Vim mode toggles for every editor and shows its mode" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "abc\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.txt" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+    try Workbench.toggleVim(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.view.mode != null);
+    try std.testing.expect(t.find(.{ .name = "Vim" }) != null);
+    try t.click(.{ .role = .textbox });
+    wb.view.setSelection(.caret(0));
+    t.typeText("i");
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "-- INSERT --" }) != null);
+    t.typeText("z");
+    _ = t.settle();
+    const text = try wb.view.allText(gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("zabc\n", text);
+    try Workbench.toggleVim(&wb);
+    try std.testing.expect(wb.view.mode == null);
+    try std.testing.expect(wb.files.items[0].vim_state == null);
 }

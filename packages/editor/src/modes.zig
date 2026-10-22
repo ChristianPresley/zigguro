@@ -16,4 +16,5 @@ pub const VimState = vim.VimState;
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("modes/vim/vim_core_test.zig");
+    _ = @import("modes/vim/vim_ext_test.zig");
 }

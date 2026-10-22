@@ -1,0 +1,316 @@
+=== yw to 0 +reg:0
+--- before
+¦foo bar
+--- keys
+yw
+--- after
+¦foo bar
+[reg:0 v] "foo "
+
+=== yw named +reg:a0
+--- before
+¦foo bar
+--- keys
+"ayw
+--- after
+¦foo bar
+[reg:a v] "foo "
+[reg:0 -] ""
+
+=== named then put
+--- before
+¦foo bar
+--- keys
+"aywww"aP
+--- after
+foo bafoo¦ r
+
+=== dw small delete +reg:-1
+--- before
+¦foo bar
+--- keys
+dw
+--- after
+¦bar
+[reg:- v] "foo "
+[reg:1 -] ""
+
+=== dd numbered +reg:12-
+--- before
+¦l1
+l2
+l3
+--- keys
+dddd
+--- after
+¦l3
+[reg:1 V] "l2\n"
+[reg:2 V] "l1\n"
+[reg:- -] ""
+
+=== dd shift three +reg:123
+--- before
+¦l1
+l2
+l3
+l4
+--- keys
+dddddd
+--- after
+¦l4
+[reg:1 V] "l3\n"
+[reg:2 V] "l2\n"
+[reg:3 V] "l1\n"
+
+=== put numbered 2
+--- before
+¦l1
+l2
+l3
+end
+--- keys
+dddd"2p
+--- after
+l3
+¦l1
+end
+
+=== dw keeps 0 +reg:0-
+--- before
+¦foo bar baz
+--- keys
+yewdw
+--- after
+foo ¦baz
+[reg:0 v] "foo"
+[reg:- v] "bar "
+
+=== yank then delete put 0
+--- before
+¦foo bar baz
+--- keys
+yewdw"0P
+--- after
+foo fo¦obaz
+
+=== named delete +reg:a1-
+--- before
+¦foo bar
+--- keys
+"adw
+--- after
+¦bar
+[reg:a v] "foo "
+[reg:1 -] ""
+[reg:- -] ""
+
+=== named dd +reg:a1
+--- before
+¦l1
+l2
+--- keys
+"add
+--- after
+¦l2
+[reg:a V] "l1\n"
+[reg:1 V] "l1\n"
+
+=== append charwise +reg:a
+--- before
+¦foo bar
+--- keys
+"ayww"Ayw
+--- after
+foo ¦bar
+[reg:a v] "foo bar"
+
+=== append linewise +reg:a
+--- before
+¦foo
+bar
+--- keys
+"ayyj"Ayy
+--- after
+foo
+¦bar
+[reg:a V] "foo\nbar\n"
+
+=== append char to line +reg:a
+--- before
+¦foo
+bar
+--- keys
+"ayyj"Ayw
+--- after
+foo
+¦bar
+[reg:a V] "foo\nbar\n"
+
+=== append line to char +reg:a
+--- before
+¦foo
+bar
+--- keys
+"aywj"Ayy
+--- after
+foo
+¦bar
+[reg:a V] "foo\nbar\n"
+
+=== black hole keeps unnamed +reg
+--- before
+¦foo bar baz
+--- keys
+yw"_dw
+--- after
+¦bar baz
+[reg v] "foo "
+
+=== black hole put
+--- before
+¦foo bar baz
+--- keys
+yw"_dwP
+--- after
+foo¦ bar baz
+
+=== d% to 1 +reg:1-
+--- before
+¦(a) b
+--- keys
+d%
+--- after
+¦ b
+[reg:1 v] "(a)"
+[reg:- v] "(a)"
+
+=== d) to 1 +reg:1-
+--- before
+¦One. Two.
+--- keys
+d)
+--- after
+¦Two.
+[reg:1 v] "One. "
+[reg:- v] "One. "
+
+=== dfx small +reg:1-
+--- before
+¦abcxd
+--- keys
+dfx
+--- after
+¦d
+[reg:1 -] ""
+[reg:- v] "abcx"
+
+=== x small +reg:-
+--- before
+a¦bc
+--- keys
+x
+--- after
+a¦c
+[reg:- v] "b"
+
+=== cw small +reg:-
+--- before
+¦foo bar
+--- keys
+cwX<Esc>
+--- after
+¦X bar
+[reg:- v] "foo"
+
+=== visual d +reg:-
+--- before
+a¦bcd
+--- keys
+vld
+--- after
+a¦d
+[reg:- v] "bc"
+
+=== visual line d +reg:1
+--- before
+¦ab
+cd
+--- keys
+Vd
+--- after
+¦cd
+[reg:1 V] "ab\n"
+
+=== visual p swaps +reg
+--- before
+¦foo bar
+--- keys
+yiwwviwp
+--- after
+foo fo¦o
+[reg v] "bar"
+
+=== visual p named
+--- before
+¦foo bar
+--- keys
+"ayiwwviw"ap
+--- after
+foo fo¦o
+
+=== dot register +reg:.
+--- before
+¦x
+--- keys
+ifoo<Esc>
+--- after
+fo¦ox
+[reg:. v] "foo"
+
+=== put dot register
+--- before
+¦x
+--- keys
+ifoo<Esc>".p
+--- after
+foofo¦ox
+
+=== colon register +reg::
+--- before
+¦x
+--- keys
+:s/x/y/<CR>
+--- after
+¦y
+[reg:: v] "s/x/y/"
+
+=== search register +reg:/
+--- before
+¦foo bar
+--- keys
+/bar<CR>
+--- after
+foo ¦bar
+[reg:/ v] "bar"
+
+=== multiline charwise d to 1 +reg:1-
+--- before
+a¦b
+cd
+--- keys
+dj
+--- after
+¦
+[reg:1 V] "ab\ncd\n"
+[reg:- -] ""
+
+=== dj dl +reg:1-
+--- before
+a¦b
+cd
+--- keys
+vjd
+--- after
+¦a
+[reg:1 v] "b\ncd"
+[reg:- -] ""

@@ -16,14 +16,14 @@ const Document = document.Document;
 const VimState = state_mod.VimState;
 
 /// A document, its selections and undo tree, and Vim driving them.
-const Harness = struct {
+pub const Harness = struct {
     doc: *Document,
     sels: sel_mod.SelectionSet,
     undo: undo_mod.UndoTree,
     vs: VimState,
     host: mode_mod.Host,
 
-    fn init(h: *Harness, marked: []const u8) !void {
+    pub fn init(h: *Harness, marked: []const u8) !void {
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(gpa);
         var sels: std.ArrayList(sel_mod.Selection) = .empty;
@@ -37,21 +37,23 @@ const Harness = struct {
         h.host = .{ .doc = h.doc, .sels = &h.sels, .undo = &h.undo, .edit = .{ .auto_close = .never, .tab_size = 4, .insert_spaces = true } };
     }
 
-    fn deinit(h: *Harness) void {
+    pub fn deinit(h: *Harness) void {
         h.vs.deinit();
         h.undo.deinit();
         h.sels.deinit();
         h.doc.deinit();
     }
 
-    fn keys(h: *Harness, notation: []const u8) !void {
+    pub fn keys(h: *Harness, notation: []const u8) !void {
         var buf: [256]key_mod.Key = undefined;
         const n = try key_mod.parse(notation, &buf);
         for (buf[0..n]) |k| _ = try h.vs.handleKey(k, &h.host);
     }
 
-    /// The text with the cursors or Visual area marked, then the mode.
-    fn render(h: *Harness, with_reg: bool) ![]u8 {
+    /// The text with the cursors or Visual area marked, then the mode,
+    /// then the registers the scenario `name` asks for: the unnamed one
+    /// for a name ending in `+reg`, each of X, Y, Z for `+reg:XYZ`.
+    pub fn render(h: *Harness, name: []const u8) ![]u8 {
         const text = try h.doc.tree.copyRange(gpa, .{ .start = 0, .end = h.doc.len() });
         defer gpa.free(text);
         var out: std.ArrayList(u8) = .empty;
@@ -64,43 +66,63 @@ const Harness = struct {
             .visual => "visual",
             .visual_line => "visual_line",
             .visual_block => "visual_block",
+            .cmdline => "cmdline",
         };
-        if (m) |name| try out.print(gpa, "\n[{s}]", .{name});
-        if (with_reg) {
-            const r = &h.vs.reg;
-            const kind = switch (r.kind) {
-                .charwise => "v",
-                .linewise => "V",
-                .blockwise => "b",
-            };
-            const joined = try r.joined(gpa);
-            defer gpa.free(joined);
-            try out.print(gpa, "\n[reg {s}] ", .{kind});
-            try writeJson(&out, joined);
+        if (m) |mode_name| try out.print(gpa, "\n[{s}]", .{mode_name});
+        if (std.mem.endsWith(u8, name, "+reg")) {
+            try out.appendSlice(gpa, "\n[reg ");
+            try h.renderReg(&out, '"');
+        } else if (std.mem.lastIndexOf(u8, name, "+reg:")) |i| {
+            for (name[i + 5 ..]) |r| {
+                try out.print(gpa, "\n[reg:{c} ", .{r});
+                try h.renderReg(&out, r);
+            }
         }
         return out.toOwnedSlice(gpa);
     }
+
+    /// `TYPE] "TEXT"` for register `name`; TYPE is `-` when it is empty.
+    fn renderReg(h: *Harness, out: *std.ArrayList(u8), name: u8) !void {
+        const r = h.vs.sh().regs.get(name) orelse {
+            if (name == '"') return out.appendSlice(gpa, "v] \"\"");
+            return out.appendSlice(gpa, "-] \"\"");
+        };
+        const kind = switch (r.kind) {
+            .charwise => "v",
+            .linewise => "V",
+            .blockwise => "b",
+        };
+        const joined = try r.joined(gpa);
+        defer gpa.free(joined);
+        try out.print(gpa, "{s}] ", .{kind});
+        try writeJson(out, joined);
+    }
 };
 
-fn writeJson(out: *std.ArrayList(u8), s: []const u8) !void {
+/// `s` as Python's `json.dumps(s, ensure_ascii=False)` writes it.
+pub fn writeJson(out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(gpa, '"');
     for (s) |c| switch (c) {
         '\n' => try out.appendSlice(gpa, "\\n"),
         '"' => try out.appendSlice(gpa, "\\\""),
         '\\' => try out.appendSlice(gpa, "\\\\"),
         '\t' => try out.appendSlice(gpa, "\\t"),
+        '\r' => try out.appendSlice(gpa, "\\r"),
+        0x08 => try out.appendSlice(gpa, "\\b"),
+        0x0C => try out.appendSlice(gpa, "\\f"),
+        0...0x07, 0x0B, 0x0E...0x1F => try out.print(gpa, "\\u{x:0>4}", .{c}),
         else => try out.append(gpa, c),
     };
     try out.append(gpa, '"');
 }
 
-fn runScenario(_: void, sc: golden.Scenario) anyerror![]u8 {
+pub fn runScenario(_: void, sc: golden.Scenario) anyerror![]u8 {
     var h: Harness = undefined;
     try h.init(sc.before);
     defer h.deinit();
     // An error shows as the scenario's result, naming the scenario.
     h.keys(sc.keys) catch |e| return std.fmt.allocPrint(gpa, "error: {t}", .{e});
-    return h.render(std.mem.endsWith(u8, sc.name, "+reg"));
+    return h.render(sc.name);
 }
 
 test "vim: core conformance table" {
@@ -114,12 +136,12 @@ test "vim: core conformance table" {
     try std.testing.expect(!failed);
 }
 
-fn expectAfter(before: []const u8, keys: []const u8, after: []const u8) !void {
+pub fn expectAfter(before: []const u8, keys: []const u8, after: []const u8) !void {
     var h: Harness = undefined;
     try h.init(before);
     defer h.deinit();
     try h.keys(keys);
-    const got = try h.render(false);
+    const got = try h.render("");
     defer gpa.free(got);
     try std.testing.expectEqualStrings(after, got);
 }
@@ -157,7 +179,7 @@ test "vim: one undo group per change incl. insert session" {
     // Three changes, three steps.
     try std.testing.expectEqual(@as(usize, 3), h.undo.nodes().len - 1);
     try h.keys("uuu");
-    const got = try h.render(false);
+    const got = try h.render("");
     defer gpa.free(got);
     try std.testing.expectEqualStrings("a¦bc", got);
 }

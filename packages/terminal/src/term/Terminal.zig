@@ -40,6 +40,13 @@ pub const Options = struct {
     rows: u16 = 24,
     /// Byte cap of the primary screen's pages (scrollback included).
     max_scrollback_bytes: usize = 64 << 20,
+    /// Scrollback rows kept as cells; older lines are compacted into cold
+    /// pages (about a byte per character) and decoded when scrolled to.
+    hot_scrollback_rows: u32 = 10_000,
+    /// Also deflate compacted lines: about half the memory again, but
+    /// compaction then runs at half the speed on the feeding thread, so it
+    /// stays off until compaction moves off that thread.
+    deflate_scrollback: bool = false,
     /// `terminal.risClearsScrollback`: RIS also erases scrollback.
     ris_clears_scrollback: bool = false,
     /// `terminal.clearPushesToScrollback`: ED 2 on the primary screen moves
@@ -124,7 +131,7 @@ stats: Stats = .{},
 
 /// Creates a blank terminal.
 pub fn init(gpa: Allocator, o: Options) !Terminal {
-    var primary: Screen = try .init(gpa, o.cols, o.rows, .{ .max_bytes = o.max_scrollback_bytes });
+    var primary: Screen = try .init(gpa, o.cols, o.rows, .{ .max_bytes = o.max_scrollback_bytes, .hot_rows = o.hot_scrollback_rows, .deflate = o.deflate_scrollback });
     errdefer primary.deinit();
     var alternate: Screen = try .init(gpa, o.cols, o.rows, .{ .scrollback = false, .max_bytes = 0 });
     errdefer alternate.deinit();

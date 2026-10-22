@@ -1,0 +1,539 @@
+=== s
+--- before
+¦foo foo
+foo
+--- keys
+:s/foo/bar/<CR>
+--- after
+¦bar foo
+foo
+
+=== s g
+--- before
+¦foo foo
+foo
+--- keys
+:s/foo/bar/g<CR>
+--- after
+¦bar bar
+foo
+
+=== percent s
+--- before
+¦foo foo
+foo
+x
+--- keys
+:%s/foo/bar/<CR>
+--- after
+bar foo
+¦bar
+x
+
+=== percent s g
+--- before
+¦foo foo
+foo
+x
+--- keys
+:%s/foo/bar/g<CR>
+--- after
+bar bar
+¦bar
+x
+
+=== s range
+--- before
+¦a
+a
+a
+a
+--- keys
+:2,3s/a/b/<CR>
+--- after
+a
+b
+¦b
+a
+
+=== s dot plus
+--- before
+¦a
+a
+a
+a
+--- keys
+:.,.+1s/a/b/<CR>
+--- after
+b
+¦b
+a
+a
+
+=== s dollar
+--- before
+¦a
+a
+a
+--- keys
+:$s/a/b/<CR>
+--- after
+a
+a
+¦b
+
+=== s groups
+--- before
+¦john smith
+--- keys
+:s/\(\w\+\) \(\w\+\)/\2 \1/<CR>
+--- after
+¦smith john
+
+=== s ampersand
+--- before
+¦abc
+--- keys
+:s/b/[&]/<CR>
+--- after
+¦a[b]c
+
+=== s case u
+--- before
+¦foo bar
+--- keys
+:s/\w\+/\u&/g<CR>
+--- after
+¦Foo Bar
+
+=== s case U
+--- before
+¦foo bar
+--- keys
+:s/foo/\U&/<CR>
+--- after
+¦FOO bar
+
+=== s newline
+--- before
+¦a,b
+--- keys
+:s/,/\r/<CR>
+--- after
+a
+¦b
+
+=== s join lines
+--- before
+¦a
+b
+c
+--- keys
+:%s/\n//<CR>
+--- after
+ab¦c
+
+=== s delete
+--- before
+¦a b c
+--- keys
+:s/ //g<CR>
+--- after
+¦abc
+
+=== s other delim
+--- before
+¦a/b
+--- keys
+:s#/#-#<CR>
+--- after
+¦a-b
+
+=== s empty pattern
+--- before
+¦foo bar
+--- keys
+/bar<CR>:s//X/<CR>
+--- after
+¦foo X
+
+=== s repeat
+--- before
+¦a a
+a a
+--- keys
+:s/a/b/<CR>j:s<CR>
+--- after
+b a
+¦b a
+
+=== s repeat flags
+--- before
+¦a a
+a a
+--- keys
+:s/a/b/g<CR>j:&&<CR>
+--- after
+b b
+¦b b
+
+=== s i flag
+--- before
+¦Foo foo
+--- keys
+:s/foo/x/gi<CR>
+--- after
+¦x x
+
+=== s not found
+--- before
+¦abc
+--- keys
+:s/z/y/<CR>
+--- after
+¦abc
+
+=== s e flag
+--- before
+¦abc
+--- keys
+:s/z/y/e<CR>
+--- after
+¦abc
+
+=== s undo one step
+--- before
+¦a
+a
+a
+--- keys
+:%s/a/b/<CR>u
+--- after
+¦a
+a
+a
+
+=== s cursor last line
+--- before
+x
+¦a
+b
+  a
+--- keys
+:%s/a/c/<CR>
+--- after
+x
+c
+b
+  ¦c
+
+=== s tilde
+--- before
+¦a b
+--- keys
+:s/a/x/<CR>:s/b/~y/<CR>
+--- after
+¦x xy
+
+=== s dot star
+--- before
+¦abc
+--- keys
+:s/.*/[&]/<CR>
+--- after
+¦[abc]
+
+=== s caret
+--- before
+¦a
+b
+--- keys
+:%s/^/> /<CR>
+--- after
+> a
+¦> b
+
+=== s dollar end
+--- before
+¦a
+b
+--- keys
+:%s/$/;/<CR>
+--- after
+a;
+¦b;
+
+=== s visual range
+--- before
+¦a
+a
+a
+--- keys
+Vj:s/a/b/<CR>
+--- after
+b
+¦b
+a
+
+=== s mark range
+--- before
+¦a
+a
+a
+a
+--- keys
+majjmb:'a,'bs/a/b/<CR>
+--- after
+b
+b
+¦b
+a
+
+=== s count prefix
+--- before
+¦a
+a
+a
+a
+--- keys
+2:s/a/b/<CR>
+--- after
+b
+¦b
+a
+a
+
+=== s n flag
+--- before
+¦a a
+a
+--- keys
+:%s/a/b/gn<CR>
+--- after
+¦a a
+a
+
+=== g d
+--- before
+¦a1
+b
+a2
+c
+--- keys
+:g/a/d<CR>
+--- after
+b
+¦c
+
+=== g d adjacent
+--- before
+¦a1
+a2
+b
+a3
+--- keys
+:g/a/d<CR>
+--- after
+¦b
+
+=== v d
+--- before
+¦a1
+b
+a2
+c
+--- keys
+:v/a/d<CR>
+--- after
+a1
+¦a2
+
+=== g bang d
+--- before
+¦a1
+b
+a2
+c
+--- keys
+:g!/a/d<CR>
+--- after
+a1
+¦a2
+
+=== g d last lines
+--- before
+x
+¦y
+a
+a
+--- keys
+:g/a/d<CR>
+--- after
+x
+¦y
+
+=== g d undo
+--- before
+¦a
+b
+a
+--- keys
+:g/a/d<CR>u
+--- after
+¦a
+b
+a
+
+=== g d +reg:12
+--- before
+¦a1
+b
+a2
+--- keys
+:g/a/d<CR>
+--- after
+¦b
+[reg:1 V] "a2\n"
+[reg:2 V] "a1\n"
+
+=== d range
+--- before
+¦1
+2
+3
+4
+--- keys
+:2,3d<CR>
+--- after
+1
+¦4
+
+=== d range register +reg:a
+--- before
+¦1
+2
+3
+--- keys
+:2d a<CR>
+--- after
+1
+¦3
+[reg:a V] "2\n"
+
+=== goto line
+--- before
+¦1
+  2
+3
+--- keys
+:2<CR>
+--- after
+1
+  ¦2
+3
+
+=== goto last
+--- before
+¦1
+2
+3
+--- keys
+:$<CR>
+--- after
+1
+2
+¦3
+
+=== goto then ctrl-o
+--- before
+¦1
+2
+3
+--- keys
+:3<CR><C-o>
+--- after
+¦1
+2
+3
+
+=== goto offset
+--- before
+¦1
+2
+3
+4
+--- keys
+:+2<CR>
+--- after
+1
+2
+¦3
+4
+
+=== goto search address
+--- before
+¦a
+b
+c
+--- keys
+:/c/<CR>
+--- after
+a
+b
+¦c
+
+=== set ic search
+--- before
+¦x FOO
+--- keys
+:set ic<CR>/foo<CR>
+--- after
+x ¦FOO
+
+=== set scs
+--- before
+¦x foo FOO
+--- keys
+:set ic scs<CR>/FOO<CR>
+--- after
+x foo ¦FOO
+
+=== set noic
+--- before
+¦x FOO foo
+--- keys
+:set ic<CR>:set noic<CR>/foo<CR>
+--- after
+x FOO ¦foo
+
+=== set invic
+--- before
+¦x FOO
+--- keys
+:set invic<CR>/foo<CR>
+--- after
+x ¦FOO
+
+=== noh
+--- before
+¦foo
+--- keys
+/foo<CR>:noh<CR>
+--- after
+¦foo
+
+=== escape cancels ex
+--- before
+¦abc
+--- keys
+:s/a/b/<Esc>
+--- after
+¦abc
+
+=== backspace leaves ex
+--- before
+¦abc
+--- keys
+:<BS>
+--- after
+¦abc

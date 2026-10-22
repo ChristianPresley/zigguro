@@ -1,0 +1,305 @@
+=== dot dw
+--- before
+¦a b c d
+--- keys
+dw.
+--- after
+¦c d
+
+=== dot dw count
+--- before
+¦a b c d e
+--- keys
+dw2.
+--- after
+¦d e
+
+=== dot count replaces
+--- before
+¦a b c d e f
+--- keys
+2dw.
+--- after
+¦e f
+
+=== dot dd
+--- before
+¦1
+2
+3
+4
+--- keys
+dd.
+--- after
+¦3
+4
+
+=== dot x
+--- before
+¦abcd
+--- keys
+x..
+--- after
+¦d
+
+=== dot insert
+--- before
+¦x
+--- keys
+ifoo<Esc>.
+--- after
+fofo¦oox
+
+=== dot append
+--- before
+¦x
+--- keys
+afoo<Esc>j.
+--- after
+xfoofo¦o
+
+=== dot A
+--- before
+a¦b
+cd
+--- keys
+AX<Esc>j.
+--- after
+abX
+cd¦X
+
+=== dot o
+--- before
+¦a
+b
+--- keys
+onew<Esc>.
+--- after
+a
+new
+ne¦w
+b
+
+=== dot count insert
+--- before
+¦x
+--- keys
+3ia<Esc>.
+--- after
+aaaa¦aax
+
+=== dot cw
+--- before
+¦foo bar baz
+--- keys
+cwX<Esc>w.
+--- after
+X ¦X baz
+
+=== dot ciw
+--- before
+¦foo bar baz
+--- keys
+ciwX<Esc>ww.
+--- after
+X bar ¦X
+
+=== dot r
+--- before
+¦abcd
+--- keys
+rXl.
+--- after
+X¦Xcd
+
+=== dot ~
+--- before
+¦abcd
+--- keys
+~.
+--- after
+AB¦cd
+
+=== dot >>
+--- before
+¦a
+b
+--- keys
+>>j.
+--- after
+    a
+    ¦b
+
+=== dot J
+--- before
+¦a
+b
+c
+d
+--- keys
+J.
+--- after
+a b¦ c
+d
+
+=== dot p
+--- before
+¦a
+b
+--- keys
+yyp.
+--- after
+a
+a
+¦a
+b
+
+=== dot visual d
+--- before
+¦abcdefgh
+--- keys
+vld.
+--- after
+¦efgh
+
+=== dot visual line
+--- before
+¦1
+2
+3
+4
+5
+--- keys
+Vjd.
+--- after
+¦5
+
+=== dot visual U
+--- before
+¦abcdef
+--- keys
+vlUw.
+--- after
+ABcde¦F
+
+=== dot backspace in insert
+--- before
+¦x
+--- keys
+iabc<BS>d<Esc>.
+--- after
+abab¦ddx
+
+=== dot newline in insert
+--- before
+¦x
+--- keys
+ia<CR>b<Esc>.
+--- after
+a
+a
+¦bbx
+
+=== dot not yank
+--- before
+¦a b c
+--- keys
+dwyw.
+--- after
+¦c
+
+=== dot after undo
+--- before
+¦a b c d
+--- keys
+dwu.
+--- after
+¦b c d
+
+=== dot s
+--- before
+¦abcd
+--- keys
+sX<Esc>l.
+--- after
+X¦Xcd
+
+=== dot S
+--- before
+¦ab
+cd
+--- keys
+SX<Esc>j.
+--- after
+X
+¦X
+
+=== dot C
+--- before
+a¦bc
+def
+--- keys
+CX<Esc>j.
+--- after
+aX
+d¦X
+
+=== dot dot dot
+--- before
+¦a b c d e
+--- keys
+dw...
+--- after
+¦e
+
+=== dot numbered put
+--- before
+¦1
+2
+3
+x
+--- keys
+dddddd"1p..
+--- after
+x
+3
+2
+¦1
+
+=== dot R
+--- before
+¦abcdef
+--- keys
+RXY<Esc>l.
+--- after
+XYX¦Yef
+
+=== dot block insert
+--- before
+¦abc
+def
+ghi
+jkl
+--- keys
+<C-v>jIX<Esc>jj.
+--- after
+Xabc
+Xdef
+¦Xghi
+Xjkl
+
+=== dot gUiw
+--- before
+¦foo bar
+--- keys
+gUiww.
+--- after
+FOO ¦BAR
+
+=== dot d search
+--- before
+¦a x b x c
+--- keys
+d/x<CR>.
+--- after
+¦x c

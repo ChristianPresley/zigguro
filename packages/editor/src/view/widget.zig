@@ -33,6 +33,7 @@ const colors = @import("syntax_colors.zig");
 const deco_store = @import("../model/decorations/store.zig");
 const cs_mod = @import("../model/edit/change_set.zig");
 const gutter = @import("gutter.zig");
+const modes = @import("../modes.zig");
 
 const EditorView = view_mod.EditorView;
 const Ui = zg_gui.Ui;
@@ -194,6 +195,7 @@ pub const Editor = struct {
         pc.pushClip(text_clip, 0);
         const prim = v.primarySel();
         const prim_line = v.lineOf(prim.head);
+        const shape = v.caretShape();
         const sel_color = pc.color(.selection_bg).fade(if (focused) 1 else 0.6);
         const hl_default = pc.color(.warning).fade(0.35);
         const ul_default = pc.color(.danger);
@@ -253,8 +255,17 @@ pub const Editor = struct {
             // Carets.
             if (focused) for (v.selections()) |s| {
                 if (s.head < lr.start or s.head > lr.end) continue;
-                const x = v.xInLine(row_text, @intCast(s.head - lr.start));
-                pc.rect(.{ .x = @round(o.x + x), .y = y, .w = caret_w, .h = lh }, fg, .{});
+                const col: usize = @intCast(s.head - lr.start);
+                const x = v.xInLine(row_text, col);
+                // Block shapes cover the character under the caret.
+                const cw = if (col < row_text.len) @max(v.xInLine(row_text, col + (std.unicode.utf8ByteSequenceLength(row_text[col]) catch 1)) - x, 1) else pc.text_sys.advance(st, ' ');
+                const cr: Rect = switch (shape) {
+                    .bar => .{ .x = @round(o.x + x), .y = y, .w = caret_w, .h = lh },
+                    .block => .{ .x = @round(o.x + x), .y = y, .w = cw, .h = lh },
+                    .underline => .{ .x = @round(o.x + x), .y = y + lh - 2, .w = cw, .h = 2 },
+                    .half_block => .{ .x = @round(o.x + x), .y = y + lh / 2, .w = cw, .h = lh / 2 },
+                };
+                pc.rect(cr, if (shape == .block) fg.fade(0.6) else fg, .{});
             };
         }
         pc.popClip();
@@ -520,6 +531,27 @@ pub const Editor = struct {
             },
             .text => |t| {
                 if (v.opts.read_only) return false;
+                if (v.mode != null) {
+                    // Each character goes to the mode (Vim commands and
+                    // insert-mode typing).
+                    var took = false;
+                    var it = (std.unicode.Utf8View.init(t) catch return false).iterator();
+                    while (it.nextCodepoint()) |cp| {
+                        if (try v.modeKey(.char(cp))) {
+                            took = true;
+                            continue;
+                        }
+                        var b: [4]u8 = undefined;
+                        const n = std.unicode.utf8Encode(cp, &b) catch continue;
+                        try v.typeText(b[0..n]);
+                        took = true;
+                    }
+                    if (took) {
+                        ec.respond(.{ .changed = true });
+                        ec.repaint();
+                    }
+                    return true;
+                }
                 try v.typeText(t);
                 ec.respond(.{ .changed = true });
                 ec.repaint();
@@ -527,12 +559,51 @@ pub const Editor = struct {
             },
             .key => |k| {
                 if (k.action == .release) return false;
+                if (modeKeyOf(k)) |mk| if (try v.modeKey(mk)) {
+                    ec.respond(.{ .changed = true });
+                    ec.repaint();
+                    return true;
+                };
                 const done = try key(ec, v, k);
                 if (done) ec.repaint();
                 return done;
             },
             else => return false,
         }
+    }
+
+    /// The mode's view of a key press: named keys, and letters or `[`
+    /// with Ctrl or Alt. Plain characters arrive as text instead.
+    fn modeKeyOf(k: zg_gui.input.event.KeyPress) ?modes.Key {
+        const ctrl = k.mods.ctrl;
+        const named: ?modes.key.Special = switch (k.key) {
+            .escape => .esc,
+            .enter, .numpad_enter => .enter,
+            .tab => .tab,
+            .backspace => .backspace,
+            .delete => .delete,
+            .arrow_left => .left,
+            .arrow_right => .right,
+            .arrow_up => .up,
+            .arrow_down => .down,
+            .home => .home,
+            .end => .end,
+            .page_up => .page_up,
+            .page_down => .page_down,
+            .insert => .insert,
+            else => null,
+        };
+        if (named) |n| return .{ .code = @intFromEnum(n), .ctrl = ctrl, .alt = k.mods.alt, .shift = k.mods.shift };
+        if (!ctrl and !k.mods.alt) return null;
+        if (k.mods.super) return null;
+        const tag = @tagName(k.key);
+        const cp: u21 = if (tag.len == 5 and std.mem.startsWith(u8, tag, "key_"))
+            tag[4]
+        else if (k.key == .bracket_left)
+            '['
+        else
+            return null;
+        return .{ .code = cp, .ctrl = ctrl, .alt = k.mods.alt, .shift = k.mods.shift };
     }
 
     fn key(ec: *EventCx, v: *EditorView, k: zg_gui.input.event.KeyPress) !bool {
