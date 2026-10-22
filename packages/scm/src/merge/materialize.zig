@@ -263,12 +263,20 @@ pub fn diffLines(arena: Allocator, a: []const []const u8, b: []const []const u8)
     const m: isize = @intCast(b.len - pre - suf);
     const max: isize = n + m;
     const off: isize = max + 1;
+    // Each step keeps only the diagonals it can reach, [-d-1, d+1]: the
+    // trace is O(D^2), not O((N+M)D).
     var trace: std.ArrayList([]isize) = .empty;
     var v = try arena.alloc(isize, @intCast(2 * max + 3));
-    @memset(v, 0);
+    v[@intCast(off + 1)] = 0;
     var d: isize = 0;
     const final_d: isize = outer: while (d <= max) : (d += 1) {
-        try trace.append(arena, try arena.dupe(isize, v));
+        const lo: usize = @intCast(off - d - 1);
+        const hi: usize = @intCast(off + d + 2);
+        if (d > 0) {
+            v[lo] = 0;
+            v[hi - 1] = 0;
+        }
+        try trace.append(arena, try arena.dupe(isize, v[lo..hi]));
         var k: isize = -d;
         while (k <= d) : (k += 2) {
             const ki: usize = @intCast(k + off);
@@ -283,7 +291,7 @@ pub fn diffLines(arena: Allocator, a: []const []const u8, b: []const []const u8)
         }
     } else unreachable;
 
-    // Walk back through the trace.
+    // Walk back through the trace. `trace[d][j]` is diagonal j - d - 1.
     var rev: std.ArrayList(DiffOp) = .empty;
     var x = n;
     var y = m;
@@ -291,9 +299,13 @@ pub fn diffLines(arena: Allocator, a: []const []const u8, b: []const []const u8)
     while (d > 0) : (d -= 1) {
         const vd = trace.items[@intCast(d)];
         const k = x - y;
-        const ki: usize = @intCast(k + off);
-        const prev_k = if (k == -d or (k != d and vd[ki - 1] < vd[ki + 1])) k + 1 else k - 1;
-        const prev_x = vd[@intCast(prev_k + off)];
+        const at = struct {
+            fn f(t: []const isize, dd: isize, kk: isize) isize {
+                return t[@intCast(kk + dd + 1)];
+            }
+        }.f;
+        const prev_k = if (k == -d or (k != d and at(vd, d, k - 1) < at(vd, d, k + 1))) k + 1 else k - 1;
+        const prev_x = at(vd, d, prev_k);
         const prev_y = prev_x - prev_k;
         while (x > prev_x and y > prev_y) {
             x -= 1;
