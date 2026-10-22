@@ -1,0 +1,809 @@
+pattern:
+empty 0..0
+
+pattern: a
+literal U+0061 verbatim 0..1
+
+pattern: abc
+concat 0..3
+  literal U+0061 verbatim 0..1
+  literal U+0062 verbatim 1..2
+  literal U+0063 verbatim 2..3
+
+pattern: a|b
+alternation 0..3
+  literal U+0061 verbatim 0..1
+  literal U+0062 verbatim 2..3
+
+pattern: a|b|c
+alternation 0..5
+  literal U+0061 verbatim 0..1
+  literal U+0062 verbatim 2..3
+  literal U+0063 verbatim 4..5
+
+pattern: |
+alternation 0..1
+  empty 0..0
+  empty 1..1
+
+pattern: a|
+alternation 0..2
+  literal U+0061 verbatim 0..1
+  empty 2..2
+
+pattern: |a
+alternation 0..2
+  empty 0..0
+  literal U+0061 verbatim 1..2
+
+pattern: ab|cd
+alternation 0..5
+  concat 0..2
+    literal U+0061 verbatim 0..1
+    literal U+0062 verbatim 1..2
+  concat 3..5
+    literal U+0063 verbatim 3..4
+    literal U+0064 verbatim 4..5
+
+pattern: (a)
+group capture 1 0..3
+  literal U+0061 verbatim 1..2
+
+pattern: (a)(b)
+concat 0..6
+  group capture 1 0..3
+    literal U+0061 verbatim 1..2
+  group capture 2 3..6
+    literal U+0062 verbatim 4..5
+
+pattern: ((a))
+group capture 1 0..5
+  group capture 2 1..4
+    literal U+0061 verbatim 2..3
+
+pattern: (?:a)
+group non_capture - 0..5
+  literal U+0061 verbatim 3..4
+
+pattern: (?:a|b)c
+concat 0..8
+  group non_capture - 0..7
+    alternation 3..6
+      literal U+0061 verbatim 3..4
+      literal U+0062 verbatim 5..6
+  literal U+0063 verbatim 7..8
+
+pattern: (?P<name>a)
+group capture 1 name 0..11
+  literal U+0061 verbatim 9..10
+
+pattern: (?<name>a)
+group capture 1 name 0..10
+  literal U+0061 verbatim 8..9
+
+pattern: (?P<a1_b.c[0]>x)
+group capture 1 a1_b.c[0] 0..16
+  literal U+0078 verbatim 14..15
+
+pattern: (?i)a
+concat 0..5
+  flags i- 0..4
+  literal U+0061 verbatim 4..5
+
+pattern: (?i:a)b
+concat 0..7
+  group non_capture i- 0..6
+    literal U+0061 verbatim 4..5
+  literal U+0062 verbatim 6..7
+
+pattern: (?-i:a)
+group non_capture -i 0..7
+  literal U+0061 verbatim 5..6
+
+pattern: (?im-sx:a)
+group non_capture im-sx 0..10
+  literal U+0061 verbatim 8..9
+
+pattern: (?ims)
+flags ims- 0..6
+
+pattern: (?U)a*
+concat 0..6
+  flags U- 0..4
+  repetition {0,} 4..6
+    literal U+0061 verbatim 4..5
+
+pattern: (?u)a
+concat 0..5
+  flags u- 0..4
+  literal U+0061 verbatim 4..5
+
+pattern: (?R)^$
+concat 0..6
+  flags R- 0..4
+  assertion start_line 4..5
+  assertion end_line 5..6
+
+pattern: (?x) a b # c\n d
+concat 0..15
+  flags x- 0..4
+  literal U+0061 verbatim 5..6
+  literal U+0062 verbatim 7..8
+  literal U+0064 verbatim 14..15
+
+pattern: (?x)a\\ b
+concat 0..8
+  flags x- 0..4
+  literal U+0061 verbatim 4..5
+  literal U+0020 meta 5..7
+  literal U+0062 verbatim 7..8
+
+pattern: (?x)\\#
+concat 0..6
+  flags x- 0..4
+  literal U+0023 meta 4..6
+
+pattern: .
+dot 0..1
+
+pattern: ^
+assertion start_line 0..1
+
+pattern: $
+assertion end_line 0..1
+
+pattern: \\A
+assertion start_text 0..2
+
+pattern: \\z
+assertion end_text 0..2
+
+pattern: \\b
+assertion word_boundary 0..2
+
+pattern: \\B
+assertion not_word_boundary 0..2
+
+pattern: \\b{start}
+assertion word_start 0..9
+
+pattern: \\b{end}
+assertion word_end 0..7
+
+pattern: \\b{start-half}
+assertion word_start_half 0..14
+
+pattern: \\b{end-half}
+assertion word_end_half 0..12
+
+pattern: \\<
+assertion word_start 0..2
+
+pattern: \\>
+assertion word_end 0..2
+
+pattern: \\b{2}
+repetition {2,2} 0..5
+  assertion word_boundary 0..2
+
+pattern: a*
+repetition {0,} 0..2
+  literal U+0061 verbatim 0..1
+
+pattern: a+
+repetition {1,} 0..2
+  literal U+0061 verbatim 0..1
+
+pattern: a?
+repetition {0,1} 0..2
+  literal U+0061 verbatim 0..1
+
+pattern: a*?
+repetition {0,} lazy 0..3
+  literal U+0061 verbatim 0..1
+
+pattern: a+?
+repetition {1,} lazy 0..3
+  literal U+0061 verbatim 0..1
+
+pattern: a??
+repetition {0,1} lazy 0..3
+  literal U+0061 verbatim 0..1
+
+pattern: a{2}
+repetition {2,2} 0..4
+  literal U+0061 verbatim 0..1
+
+pattern: a{2,}
+repetition {2,} 0..5
+  literal U+0061 verbatim 0..1
+
+pattern: a{2,5}
+repetition {2,5} 0..6
+  literal U+0061 verbatim 0..1
+
+pattern: a{,5}
+repetition {0,5} 0..5
+  literal U+0061 verbatim 0..1
+
+pattern: a{2}?
+repetition {2,2} lazy 0..5
+  literal U+0061 verbatim 0..1
+
+pattern: a{0}
+repetition {0,0} 0..4
+  literal U+0061 verbatim 0..1
+
+pattern: a{1000}
+repetition {1000,1000} 0..7
+  literal U+0061 verbatim 0..1
+
+pattern: a**
+repetition {0,} 0..3
+  repetition {0,} 0..2
+    literal U+0061 verbatim 0..1
+
+pattern: (ab)*
+repetition {0,} 0..5
+  group capture 1 0..4
+    concat 1..3
+      literal U+0061 verbatim 1..2
+      literal U+0062 verbatim 2..3
+
+pattern: (?:ab)+
+repetition {1,} 0..7
+  group non_capture - 0..6
+    concat 3..5
+      literal U+0061 verbatim 3..4
+      literal U+0062 verbatim 4..5
+
+pattern: ^a*$
+concat 0..4
+  assertion start_line 0..1
+  repetition {0,} 1..3
+    literal U+0061 verbatim 1..2
+  assertion end_line 3..4
+
+pattern: (?x)a{ 2 , 3 }
+concat 0..14
+  flags x- 0..4
+  repetition {2,3} 4..14
+    literal U+0061 verbatim 4..5
+
+pattern: \\d
+perl digit 0..2
+
+pattern: \\D
+perl !digit 0..2
+
+pattern: \\s
+perl space 0..2
+
+pattern: \\S
+perl !space 0..2
+
+pattern: \\w
+perl word 0..2
+
+pattern: \\W
+perl !word 0..2
+
+pattern: \\pL
+unicode L 0..3
+
+pattern: \\PL
+unicode !L 0..3
+
+pattern: \\p{L}
+unicode L 0..5
+
+pattern: \\p{Greek}
+unicode Greek 0..9
+
+pattern: \\p{Script=Greek}
+unicode Script=Greek 0..16
+
+pattern: \\p{sc=Grek}
+unicode sc=Grek 0..11
+
+pattern: \\p{sc:Grek}
+unicode sc=Grek 0..11
+
+pattern: \\p{gc=Lu}
+unicode gc=Lu 0..9
+
+pattern: \\p{^Greek}
+unicode !Greek 0..10
+
+pattern: \\P{^Greek}
+unicode Greek 0..10
+
+pattern: \\p{sc!=Grek}
+unicode !sc=Grek 0..12
+
+pattern: \\p{Alphabetic}
+unicode Alphabetic 0..14
+
+pattern: \\p{ Greek }
+unicode Greek 0..11
+
+pattern: \\pN
+unicode N 0..3
+
+pattern: \\x7F
+literal U+007F hex 0..4
+
+pattern: \\x{10FFFF}
+literal U+10FFFF hex 0..10
+
+pattern: \\x{0}
+literal U+0000 hex 0..5
+
+pattern: \\u0041
+literal U+0041 hex 0..6
+
+pattern: \\u{41}
+literal U+0041 hex 0..6
+
+pattern: \\U00000041
+literal U+0041 hex 0..10
+
+pattern: \\U{1F600}
+literal U+1F600 hex 0..9
+
+pattern: \\n\\t\\r\\f\\v\\a
+concat 0..12
+  literal U+000A special 0..2
+  literal U+0009 special 2..4
+  literal U+000D special 4..6
+  literal U+000C special 6..8
+  literal U+000B special 8..10
+  literal U+0007 special 10..12
+
+pattern: \\0
+literal U+0000 special 0..2
+
+pattern: \\.
+literal U+002E meta 0..2
+
+pattern: \\*
+literal U+002A meta 0..2
+
+pattern: \\\\
+literal U+005C meta 0..2
+
+pattern: \\-
+literal U+002D meta 0..2
+
+pattern: \\~
+literal U+007E meta 0..2
+
+pattern: \\&
+literal U+0026 meta 0..2
+
+pattern: \\#
+literal U+0023 meta 0..2
+
+pattern: \\
+literal U+0020 meta 0..2
+
+pattern: \\{
+literal U+007B meta 0..2
+
+pattern: \\}
+literal U+007D meta 0..2
+
+pattern: \\[
+literal U+005B meta 0..2
+
+pattern: \\]
+literal U+005D meta 0..2
+
+pattern: \\(
+literal U+0028 meta 0..2
+
+pattern: \\)
+literal U+0029 meta 0..2
+
+pattern: \\|
+literal U+007C meta 0..2
+
+pattern: \\^
+literal U+005E meta 0..2
+
+pattern: \\$
+literal U+0024 meta 0..2
+
+pattern: \\?
+literal U+003F meta 0..2
+
+pattern: \\+
+literal U+002B meta 0..2
+
+pattern: [a]
+class 0..3
+  literal U+0061 1..2
+
+pattern: [abc]
+class 0..5
+  union 1..4
+    literal U+0061 1..2
+    literal U+0062 2..3
+    literal U+0063 3..4
+
+pattern: [a-z]
+class 0..5
+  range U+0061-U+007A 1..4
+
+pattern: [a-zA-Z0-9_]
+class 0..12
+  union 1..11
+    range U+0061-U+007A 1..4
+    range U+0041-U+005A 4..7
+    range U+0030-U+0039 7..10
+    literal U+005F 10..11
+
+pattern: [^a]
+class negated 0..4
+  literal U+0061 2..3
+
+pattern: [^a-z]
+class negated 0..6
+  range U+0061-U+007A 2..5
+
+pattern: []]
+class 0..3
+  literal U+005D 1..2
+
+pattern: []a]
+class 0..4
+  union 1..3
+    literal U+005D 1..2
+    literal U+0061 2..3
+
+pattern: [^]]
+class negated 0..4
+  literal U+005D 2..3
+
+pattern: [-a]
+class 0..4
+  union 1..3
+    literal U+002D 1..2
+    literal U+0061 2..3
+
+pattern: [a-]
+class 0..4
+  union 1..3
+    literal U+0061 1..2
+    literal U+002D 2..3
+
+pattern: [a\\-z]
+class 0..6
+  union 1..5
+    literal U+0061 1..2
+    literal U+002D 2..4
+    literal U+007A 4..5
+
+pattern: [\\d]
+class 0..4
+  perl digit 1..3
+
+pattern: [\\D\\s]
+class 0..6
+  union 1..5
+    perl !digit 1..3
+    perl space 3..5
+
+pattern: [\\pL]
+class 0..5
+  unicode L 1..4
+
+pattern: [\\p{Greek}\\d]
+class 0..13
+  union 1..12
+    unicode Greek 1..10
+    perl digit 10..12
+
+pattern: [[:alpha:]]
+class 0..11
+  ascii alpha 1..10
+
+pattern: [[:^alpha:]]
+class 0..12
+  ascii !alpha 1..11
+
+pattern: [[:alnum:][:punct:]]
+class 0..20
+  union 1..19
+    ascii alnum 1..10
+    ascii punct 10..19
+
+pattern: [x[:digit:]y]
+class 0..13
+  union 1..12
+    literal U+0078 1..2
+    ascii digit 2..11
+    literal U+0079 11..12
+
+pattern: [[a-z]]
+class 0..7
+  class 1..6
+    range U+0061-U+007A 2..5
+
+pattern: [a[bc]d]
+class 0..8
+  union 1..7
+    literal U+0061 1..2
+    class 2..6
+      union 3..5
+        literal U+0062 3..4
+        literal U+0063 4..5
+    literal U+0064 6..7
+
+pattern: [[^a]]
+class 0..6
+  class negated 1..5
+    literal U+0061 3..4
+
+pattern: [a&&b]
+class 0..6
+  intersection
+    literal U+0061 1..2
+    literal U+0062 4..5
+
+pattern: [a--b]
+class 0..6
+  difference
+    literal U+0061 1..2
+    literal U+0062 4..5
+
+pattern: [a~~b]
+class 0..6
+  symmetric_difference
+    literal U+0061 1..2
+    literal U+0062 4..5
+
+pattern: [a-z&&[^aeiou]]
+class 0..15
+  intersection
+    range U+0061-U+007A 1..4
+    class negated 6..14
+      union 8..13
+        literal U+0061 8..9
+        literal U+0065 9..10
+        literal U+0069 10..11
+        literal U+006F 11..12
+        literal U+0075 12..13
+
+pattern: [\\w--\\d]
+class 0..8
+  difference
+    perl word 1..3
+    perl digit 5..7
+
+pattern: [a&&b--c]
+class 0..9
+  difference
+    intersection
+      literal U+0061 1..2
+      literal U+0062 4..5
+    literal U+0063 7..8
+
+pattern: [a--b&&c]
+class 0..9
+  difference
+    literal U+0061 1..2
+    intersection
+      literal U+0062 4..5
+      literal U+0063 7..8
+
+pattern: [a~~b--c&&d]
+class 0..12
+  symmetric_difference
+    literal U+0061 1..2
+    difference
+      literal U+0062 4..5
+      intersection
+        literal U+0063 7..8
+        literal U+0064 10..11
+
+pattern: [[a&&b]--c]
+class 0..11
+  difference
+    class 1..7
+      intersection
+        literal U+0061 2..3
+        literal U+0062 5..6
+    literal U+0063 9..10
+
+pattern: [\\x00-\\x{10FFFF}]
+class 0..17
+  range U+0000-U+10FFFF 1..16
+
+pattern: [\\n]
+class 0..4
+  literal U+000A 1..3
+
+pattern: [.]
+class 0..3
+  literal U+002E 1..2
+
+pattern: [*+?]
+class 0..5
+  union 1..4
+    literal U+002A 1..2
+    literal U+002B 2..3
+    literal U+003F 3..4
+
+pattern: [(]
+class 0..3
+  literal U+0028 1..2
+
+pattern: [|]
+class 0..3
+  literal U+007C 1..2
+
+pattern: [{}]
+class 0..4
+  union 1..3
+    literal U+007B 1..2
+    literal U+007D 2..3
+
+pattern: [$^]
+class 0..4
+  union 1..3
+    literal U+0024 1..2
+    literal U+005E 2..3
+
+pattern: [a&b]
+class 0..5
+  union 1..4
+    literal U+0061 1..2
+    literal U+0026 2..3
+    literal U+0062 3..4
+
+pattern: [a~b]
+class 0..5
+  union 1..4
+    literal U+0061 1..2
+    literal U+007E 2..3
+    literal U+0062 3..4
+
+pattern: [&]
+class 0..3
+  literal U+0026 1..2
+
+pattern: [~]
+class 0..3
+  literal U+007E 1..2
+
+pattern: [\\[\\]]
+class 0..6
+  union 1..5
+    literal U+005B 1..3
+    literal U+005D 3..5
+
+pattern: [\\^a]
+class 0..5
+  union 1..4
+    literal U+005E 1..3
+    literal U+0061 3..4
+
+pattern: [[:]]
+class 0..5
+  class 1..4
+    literal U+003A 2..3
+
+pattern: [[:foo:]]
+class 0..9
+  class 1..8
+    union 2..7
+      literal U+003A 2..3
+      literal U+0066 3..4
+      literal U+006F 4..5
+      literal U+006F 5..6
+      literal U+003A 6..7
+
+pattern: \xc3\xa9
+literal U+00E9 verbatim 0..2
+
+pattern: \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e
+concat 0..9
+  literal U+65E5 verbatim 0..3
+  literal U+672C verbatim 3..6
+  literal U+8A9E verbatim 6..9
+
+pattern: [\xce\xb1-\xcf\x89]
+class 0..7
+  range U+03B1-U+03C9 1..6
+
+pattern: \xf0\x9f\x98\x80+
+repetition {1,} 0..5
+  literal U+1F600 verbatim 0..4
+
+pattern: (?i)[a-z]
+concat 0..9
+  flags i- 0..4
+  class 4..9
+    range U+0061-U+007A 5..8
+
+pattern: a(?i)b|c
+alternation 0..8
+  concat 0..6
+    literal U+0061 verbatim 0..1
+    flags i- 1..5
+    literal U+0062 verbatim 5..6
+  literal U+0063 verbatim 7..8
+
+pattern: (?i)(?-i)a
+concat 0..10
+  flags i- 0..4
+  flags -i 4..9
+  literal U+0061 verbatim 9..10
+
+pattern: (a(b(c)))
+group capture 1 0..9
+  concat 1..8
+    literal U+0061 verbatim 1..2
+    group capture 2 2..8
+      concat 3..7
+        literal U+0062 verbatim 3..4
+        group capture 3 4..7
+          literal U+0063 verbatim 5..6
+
+pattern: (?P<x>a)|(?P<y>b)
+alternation 0..17
+  group capture 1 x 0..8
+    literal U+0061 verbatim 6..7
+  group capture 2 y 9..17
+    literal U+0062 verbatim 15..16
+
+pattern: a|(b|c)|d
+alternation 0..9
+  literal U+0061 verbatim 0..1
+  group capture 1 2..7
+    alternation 3..6
+      literal U+0062 verbatim 3..4
+      literal U+0063 verbatim 5..6
+  literal U+0064 verbatim 8..9
+
+pattern: ((a|b)*c)+
+repetition {1,} 0..10
+  group capture 1 0..9
+    concat 1..8
+      repetition {0,} 1..7
+        group capture 2 1..6
+          alternation 2..5
+            literal U+0061 verbatim 2..3
+            literal U+0062 verbatim 4..5
+      literal U+0063 verbatim 7..8
+
+pattern: (?s).
+concat 0..5
+  flags s- 0..4
+  dot 4..5
+
+pattern: (?m)^a$
+concat 0..7
+  flags m- 0..4
+  assertion start_line 4..5
+  literal U+0061 verbatim 5..6
+  assertion end_line 6..7
+
+pattern: (?-u)\\xFF
+concat 0..9
+  flags -u 0..5
+  literal U+00FF hex 5..9
+
+pattern: \\b\\w+\\b
+concat 0..7
+  assertion word_boundary 0..2
+  repetition {1,} 2..5
+    perl word 2..4
+  assertion word_boundary 5..7
+
+pattern: [\\p{L}--\\p{Lu}]
+class 0..15
+  difference
+    unicode L 1..6
+    unicode Lu 8..14
