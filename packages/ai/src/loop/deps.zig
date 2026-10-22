@@ -53,6 +53,8 @@ pub const Tools = struct {
         list: *const fn (ctx: *anyopaque) []const proto.ToolSpec,
         /// Resources a call touches (for scheduling); null uses defaults.
         resources: ?*const fn (ctx: *anyopaque, spec: *const proto.ToolSpec, input: std.json.Value, arena: Allocator) []const scheduler.Resource = null,
+        /// Looks a tool up without rebuilding the list; null searches `list`.
+        find: ?*const fn (ctx: *anyopaque, name: []const u8) ?*const proto.ToolSpec = null,
     };
 
     pub fn list(t: Tools) []const proto.ToolSpec {
@@ -60,6 +62,7 @@ pub const Tools = struct {
     }
 
     pub fn find(t: Tools, name: []const u8) ?*const proto.ToolSpec {
+        if (t.vtable.find) |f| return f(t.ctx, name);
         for (t.list()) |*s| if (std.mem.eql(u8, s.name, name)) return s;
         return null;
     }

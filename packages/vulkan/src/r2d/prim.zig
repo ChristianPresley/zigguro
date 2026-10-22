@@ -12,7 +12,7 @@
 //! | linear_gradient | shape | p0.x,p0.y,p1.x,p1.y | start | end | – |
 //! | glyph_* | quad | u0,v0,u1,v1 | text | – | – |
 //! | image | shape | u0,v0,u1,v1 | tint | – | – |
-//! | layer | shape | scroll x,y, 0, 0 | opacity (white) | – | layer index |
+//! | layer | shape | scroll x,y (plus the wrap origin), 0, 0 | opacity (white) | – | layer index |
 //!
 //! `radii` holds tl,tr | br,bl as f16 pairs (see `f16.zig`), already clamped
 //! to half the shape's smaller side. `color0`/`color1` are premultiplied
@@ -62,7 +62,9 @@ pub const Flags = packed struct(u8) {
     aa_none: bool = false,
     /// Grayscale glyph from an `rgb_subpixel` page: average r, g and b.
     rgb_avg: bool = false,
-    _: u4 = 0,
+    /// Layer composite of a scroll layer: sample with wraparound.
+    wrap: bool = false,
+    _: u3 = 0,
 };
 
 /// One instance. See the file comment for per-kind field use.

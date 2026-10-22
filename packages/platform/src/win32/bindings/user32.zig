@@ -167,6 +167,14 @@ pub extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi) BOOL;
 /// Subscribes a window to WM_CLIPBOARDUPDATE.
 pub extern "user32" fn AddClipboardFormatListener(HWND) callconv(.winapi) BOOL;
+/// The window's system (window) menu.
+pub extern "user32" fn GetSystemMenu(HWND, revert: BOOL) callconv(.winapi) ?t.HMENU;
+/// Shows a popup menu; with `TPM_RETURNCMD` it returns the chosen command.
+pub extern "user32" fn TrackPopupMenu(t.HMENU, flags: UINT, x: i32, y: i32, reserved: i32, HWND, ?*const RECT) callconv(.winapi) BOOL;
+/// Whether the window is maximized.
+pub extern "user32" fn IsZoomed(HWND) callconv(.winapi) BOOL;
+/// Whether the window is minimized.
+pub extern "user32" fn IsIconic(HWND) callconv(.winapi) BOOL;
 /// Unsubscribes a window from WM_CLIPBOARDUPDATE.
 pub extern "user32" fn RemoveClipboardFormatListener(HWND) callconv(.winapi) BOOL;
 /// The window that owns the clipboard.

@@ -25,6 +25,10 @@ pub const sbix = @import("sbix.zig");
 pub const colr = @import("colr.zig");
 /// CPAL colour palettes.
 pub const cpal = @import("cpal.zig");
+/// Shared GSUB/GPOS structures: coverage, class defs, scripts, features, lookups.
+pub const layout_common = @import("layout_common.zig");
+/// Glyph definition table.
+pub const gdef = @import("gdef.zig");
 
 /// A glyph index; 0 is `.notdef`.
 pub const GlyphId = reader.GlyphId;
