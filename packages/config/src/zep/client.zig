@@ -55,6 +55,7 @@ pub const Extension = struct {
     mutex: Io.Mutex = .init,
     commands: std.StringHashMapUnmanaged(CommandFn) = .empty,
     notifications: std.StringHashMapUnmanaged(NotificationFn) = .empty,
+    requests: std.StringHashMapUnmanaged(CommandFn) = .empty,
     /// Copy of the host's `initialize` params (valid after `initialized`).
     host: ?protocol.InitializeParams = null,
     host_arena: std.heap.ArenaAllocator,
@@ -113,6 +114,7 @@ pub const Extension = struct {
         e.ep.deinit();
         e.commands.deinit(e.gpa);
         e.notifications.deinit(e.gpa);
+        e.requests.deinit(e.gpa);
         e.host_arena.deinit();
         if (e.stdio) |s| e.gpa.destroy(s);
         e.gpa.destroy(e);
@@ -130,6 +132,14 @@ pub const Extension = struct {
     pub fn onNotification(e: *Extension, method: []const u8, h: NotificationFn) !void {
         try e.notifications.put(e.gpa, method, h);
         try e.ep.onNotification(method, .{ .ctx = e, .func = onOther });
+    }
+
+    /// Registers a handler for another host request (`view/resolve`,
+    /// `view/resolveChildren`, `decorations/provide`). It runs like a command
+    /// handler; `params` is the request's params. Call before `run`/`start`.
+    pub fn onRequest(e: *Extension, method: []const u8, h: CommandFn) !void {
+        try e.requests.put(e.gpa, method, h);
+        try e.ep.onRequest(method, .{ .ctx = e, .func = onGeneric });
     }
 
     /// Starts the message loops without blocking.
@@ -262,25 +272,38 @@ pub const Extension = struct {
         const h = e.commands.get(p.id);
         e.mutex.unlock(e.rt.io);
         const handler = h orelse return err(.method_not_found, "unknown command");
-        // Handlers may call blocking host methods, whose responses arrive on
-        // the reader loop: run them on their own unit of concurrency (the
-        // request arena lives until the deferred reply is sent).
-        e.workers.concurrent(e.rt.io, runCommand, .{ e, req.id, handler, p, arena }) catch {
-            return runOnce(e, handler, p, arena);
+        const what = std.fmt.allocPrint(arena, "command '{s}'", .{p.id}) catch p.id;
+        return e.dispatch(req.id, handler, p.args, what, arena);
+    }
+
+    fn onGeneric(ctx: ?*anyopaque, _: *Endpoint, req: message.Request, arena: Allocator) Endpoint.HandlerResult {
+        const e = self(ctx);
+        if (!e.initialized.isSet()) return err(.not_activated, "request before initialized");
+        const handler = e.requests.get(req.method) orelse return err(.method_not_found, "no handler");
+        const params: ?std.json.Value = if (req.params) |p| p.parseLeaky(std.json.Value, arena, .{}) catch return err(.invalid_params, "malformed params") else null;
+        return e.dispatch(req.id, handler, params, req.method, arena);
+    }
+
+    /// Runs `handler` on its own unit of concurrency: handlers may call
+    /// blocking host methods, whose responses arrive on the reader loop. The
+    /// request arena lives until the deferred reply is sent.
+    fn dispatch(e: *Extension, id: message.Id, handler: CommandFn, args: ?std.json.Value, what: []const u8, arena: Allocator) Endpoint.HandlerResult {
+        e.workers.concurrent(e.rt.io, runDeferred, .{ e, id, handler, args, what, arena }) catch {
+            return runOnce(e, handler, args, what, arena);
         };
         return .deferred;
     }
 
-    fn runOnce(e: *Extension, handler: CommandFn, p: protocol.ExecuteCommandParams, arena: Allocator) Endpoint.HandlerResult {
-        const out = handler(e, p.args, arena) catch |x| {
-            const msg = std.fmt.allocPrint(arena, "command '{s}' failed: {t}", .{ p.id, x }) catch "command failed";
+    fn runOnce(e: *Extension, handler: CommandFn, args: ?std.json.Value, what: []const u8, arena: Allocator) Endpoint.HandlerResult {
+        const out = handler(e, args, arena) catch |x| {
+            const msg = std.fmt.allocPrint(arena, "{s} failed: {t}", .{ what, x }) catch "request failed";
             return err(.internal, msg);
         };
         return .{ .result = Endpoint.raw(arena, out) catch return err(.internal, "out of memory") };
     }
 
-    fn runCommand(e: *Extension, id: message.Id, handler: CommandFn, p: protocol.ExecuteCommandParams, arena: Allocator) Io.Cancelable!void {
-        switch (runOnce(e, handler, p, arena)) {
+    fn runDeferred(e: *Extension, id: message.Id, handler: CommandFn, args: ?std.json.Value, what: []const u8, arena: Allocator) Io.Cancelable!void {
+        switch (runOnce(e, handler, args, what, arena)) {
             .result => |r| e.ep.respond(id, r) catch {},
             .err => |x| e.ep.respondError(id, x.code, x.message) catch {},
             .deferred => unreachable,
