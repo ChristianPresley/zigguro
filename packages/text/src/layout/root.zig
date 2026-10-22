@@ -13,6 +13,8 @@ pub const line = @import("line.zig");
 pub const wrap = @import("wrap.zig");
 /// Hit testing, carets and selection.
 pub const hit_test = @import("hit_test.zig");
+/// Terminal cell grids and procedural glyphs.
+pub const cells = @import("cells.zig");
 /// Measured-width cache.
 pub const width_cache = @import("width_cache.zig");
 
@@ -27,8 +29,16 @@ pub const Hit = style.Hit;
 pub const CaretPos = style.CaretPos;
 pub const Item = itemize.Item;
 pub const TextLayout = line.TextLayout;
+pub const Cell = cells.Cell;
+pub const CellStyle = cells.CellStyle;
+pub const CellGrid = cells.CellGrid;
+pub const CellOptions = cells.CellOptions;
+pub const CellGlyph = cells.CellGlyph;
+pub const cellMetrics = cells.cellMetrics;
+pub const layoutCells = cells.layoutCells;
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("layout_test.zig");
+    _ = @import("cells_test.zig");
 }
