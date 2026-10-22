@@ -2,8 +2,10 @@
 //! next position where a match can start. The meta engine skips to it while
 //! the DFA is in a start state.
 //!
-//! Selection: one byte -> `memchr`; one literal -> `memmem`; up to three
-//! distinct first bytes -> `memchr2/3` on first bytes; otherwise
+//! Selection: one byte -> `memchr`; one literal -> `memmem`; the ASCII case
+//! variants of at most four literals (what `(?i)word` yields) -> one
+//! case-folding `memmem` per literal;
+//! up to three distinct first bytes -> `memchr2/3` on first bytes; otherwise
 //! Aho-Corasick. Searches over chunked inputs handle literals that straddle
 //! a chunk boundary by stitching a small window across it.
 
@@ -27,6 +29,8 @@ pub const Prefilter = struct {
         bytes2: [2]u8,
         bytes3: [3]u8,
         substring: memmem.Finder,
+        /// Owned; each needle is one of `lits`, lower-cased.
+        folds: []memmem.FoldFinder,
         ac: aho_corasick.AhoCorasick,
     },
     /// Owned copies of the literals.
@@ -55,6 +59,14 @@ pub const Prefilter = struct {
             pf.kind = if (lits[0].len == 1) .{ .byte1 = lits[0][0] } else .{ .substring = .init(lits[0]) };
             return pf;
         }
+        if (try foldGroups(gpa, lits)) |n| {
+            // Searching for every ASCII case variant of the group leaders
+            // finds a superset of the literals, which is all a prefilter needs.
+            const folds = try gpa.alloc(memmem.FoldFinder, n);
+            for (folds, lits[0..n]) |*f, l| f.* = .init(l);
+            pf.kind = .{ .folds = folds };
+            return pf;
+        }
         // Distinct first bytes.
         var firsts: [3]u8 = undefined;
         var nf: usize = 0;
@@ -76,10 +88,41 @@ pub const Prefilter = struct {
         return pf;
     }
 
+    /// Max case-folding finders; each one is a separate scan.
+    const max_folds = 4;
+
+    /// When the literals fall into at most `max_folds` groups of ASCII case
+    /// variants, with fewer groups than literals and every literal at least
+    /// two bytes long: moves one lower-cased leader per group to the front
+    /// of `lits` and returns the group count. Otherwise null.
+    fn foldGroups(gpa: Allocator, lits: [][]const u8) Allocator.Error!?usize {
+        if (lits.len < 2) return null;
+        for (lits) |l| if (l.len < 2) return null;
+        var n: usize = 0;
+        for (lits, 0..) |l, i| {
+            for (lits[0..n]) |g| {
+                if (std.ascii.eqlIgnoreCase(g, l)) break;
+            } else {
+                if (n == max_folds) return null;
+                std.mem.swap([]const u8, &lits[n], &lits[i]);
+                n += 1;
+            }
+        }
+        if (n == lits.len) return null;
+        for (lits[0..n]) |*l| {
+            const low = try gpa.alloc(u8, l.len);
+            _ = std.ascii.lowerString(low, l.*);
+            gpa.free(l.*);
+            l.* = low;
+        }
+        return n;
+    }
+
     /// Frees the prefilter.
     pub fn deinit(pf: *Prefilter, gpa: Allocator) void {
         switch (pf.kind) {
             .ac => |*ac| ac.deinit(gpa),
+            .folds => |f| gpa.free(f),
             else => {},
         }
         for (pf.lits) |l| gpa.free(l);
@@ -100,8 +143,20 @@ pub const Prefilter = struct {
             .bytes2 => |bs| memchr.memchr2(bs[0], bs[1], hay, from),
             .bytes3 => |bs| memchr.memchr3(bs[0], bs[1], bs[2], hay, from),
             .substring => |*f| f.find(hay, from),
+            .folds => |fs| findFolds(fs, hay, from),
             .ac => |*ac| ac.find(hay, from),
         };
+    }
+
+    /// The earliest hit of any finder; each later scan stops at the best
+    /// start so far, so the total work is about one pass per finder.
+    fn findFolds(fs: []const memmem.FoldFinder, hay: []const u8, from: usize) ?usize {
+        var best: ?usize = null;
+        for (fs) |*f| {
+            const lim = if (best) |b| @min(hay.len, b + f.needle.len - 1) else hay.len;
+            if (f.find(hay[0..lim], from)) |i| best = i;
+        }
+        return best;
     }
 
     /// Next candidate start in `in` at `>= from` and `< in.span.end`
@@ -168,6 +223,7 @@ pub const Prefilter = struct {
         return switch (pf.kind) {
             .byte1, .bytes2, .bytes3 => 1,
             .substring => |f| f.needle.len,
+            .folds => pf.max_len,
             .ac => 1,
         };
     }
@@ -183,6 +239,9 @@ test "prefilter: chunked search matches the slice search" {
         &.{ "ab", "cd" },
         &.{ "ab", "ba", "ca" },
         &.{ "abc", "bcd", "cda", "dab" },
+        &.{ "aB", "AB", "ab", "Ab" },
+        &.{ "dAc", "Dac" },
+        &.{ "ab", "AB", "cd", "Cd", "c\xc5" },
     };
     for (sets) |lits| {
         var pf = (try Prefilter.init(gpa, lits)).?;
@@ -190,7 +249,7 @@ test "prefilter: chunked search matches the slice search" {
         for (0..200) |_| {
             var buf: [40]u8 = undefined;
             const n = rnd.intRangeAtMost(usize, 0, buf.len);
-            for (buf[0..n]) |*b| b.* = rnd.intRangeAtMost(u8, 'a', 'd');
+            for (buf[0..n]) |*b| b.* = "abcdABCD"[rnd.uintLessThan(usize, 8)];
             const hay = buf[0..n];
             // Split into up to 4 chunks.
             var parts: [4][]const u8 = undefined;
