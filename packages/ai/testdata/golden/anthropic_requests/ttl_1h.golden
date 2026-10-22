@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"Hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}],"tools":[{"name":"read_file","description":"Read","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]},"cache_control":{"type":"ephemeral","ttl":"1h"}}],"stream":true}

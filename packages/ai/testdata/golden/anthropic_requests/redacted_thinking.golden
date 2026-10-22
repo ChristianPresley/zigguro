@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig1"},{"type":"redacted_thinking","data":"EmwKAhgB"},{"type":"text","text":"Hi!"}]},{"role":"user","content":[{"type":"text","text":"again"}]}],"thinking":{"type":"adaptive"},"stream":true}

@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"tools":[{"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],"tool_choice":{"type":"tool","name":"read_file"},"stream":true}
