@@ -16,6 +16,7 @@ const GlyphProps = gdef_mod.GlyphProps;
 const buffer = @import("buffer.zig");
 const Buffer = buffer.Buffer;
 const GlyphInfo = buffer.GlyphInfo;
+const UFlags = buffer.UFlags;
 const VarCoords = @import("../ot/var/ivs.zig").VarCoords;
 const digest = @import("digest.zig");
 
@@ -59,6 +60,11 @@ pub const Ctx = struct {
     budget: *OpBudget,
     /// Normalized variation coordinates (GPOS VariationIndex deltas).
     coords: VarCoords = &.{},
+    /// Region scalars of GDEF's ItemVariationStore at `coords` (empty:
+    /// computed per delta).
+    var_scalars: []const f32 = &.{},
+    /// A top-level MultipleSubst pass writes its output to `buf.out`.
+    multi_out: bool = false,
     lookup_index: u16 = 0,
     lookup_mask: u32 = 1,
     lookup_props: u32 = 0,
@@ -193,7 +199,7 @@ pub const Skippy = struct {
 
     /// `may_skip`: yes, no, or maybe (default-ignorables).
     pub fn maySkip(s: *const Skippy, g: GlyphInfo) enum { yes, no, maybe } {
-        if (!s.c.checkGlyphProperty(g, s.props)) return .yes;
+        if (g.uflags & UFlags.deleted != 0 or !s.c.checkGlyphProperty(g, s.props)) return .yes;
         if (g.isDefaultIgnorable() and (s.ignore_zwnj or !g.isZwnj()) and (s.ignore_zwj or !g.isZwj()) and (s.ignore_hidden or !g.isHidden())) return .maybe;
         return .no;
     }
