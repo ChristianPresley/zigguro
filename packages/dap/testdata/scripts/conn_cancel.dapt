@@ -1,0 +1,9 @@
+# DapConnection: `cancel` for a slow evaluate; the evaluate still answers.
+> initialize
+< {"body": {"supportsCancelRequest": true}}
+> evaluate {"expression": "slow()"}
+> cancel {"requestId": 2}
+< {"type": "response", "request_seq": 2, "command": "evaluate", "success": false, "message": "cancelled"}
+< {}
+> disconnect
+< {}

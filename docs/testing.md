@@ -43,3 +43,19 @@ Rules:
 - Fuzz in ReleaseSafe: `zig build test -Doptimize=ReleaseSafe --fuzz=10K`. In Zig 0.16 `--fuzz` works on Linux only.
 - Use `std.testing.allocator` so leaks fail; never do network or file I/O in a fuzz body; bound every size; feed streaming parsers through `chunked` so chunk boundaries are fuzzed too.
 - Reproduce a crash with `zig build test -Dtest-filter="fuzz: <name>"` after adding the crashing input to the corpus, and commit the minimised input with the fix.
+
+## Test helper executables
+
+Some tests need a real child process: a fake language server, a fake debug adapter. Declare such programs in the package's `build.zig`; they are built only when the package's tests are, and never ship.
+
+```zig
+_ = zg_build.addPackage(b, f, .{
+    .name = "zg_lsp",
+    .imports = ...,
+    .test_exes = &.{.{ .name = "fake_lsp_server", .root = "testdata/fake_server.zig" }},
+});
+```
+
+- The executable imports the package itself under its name (`@import("zg_lsp")`) plus any `imports` listed on the entry.
+- The package's tests read the built paths from `@import("zg_test_exes")`, e.g. `@import("zg_test_exes").fake_lsp_server`, and spawn them with `std.process.spawn`. Both `zig build test` at the root and `zig build test` inside the package wire this up (`zg_build.addTestExes`).
+- Keep helpers deterministic and offline. Scripted peers belong on `zg_lsp.testing.script` (see `packages/lsp/testdata/transcripts/` for examples).

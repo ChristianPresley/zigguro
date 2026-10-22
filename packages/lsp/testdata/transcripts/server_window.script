@@ -1,0 +1,34 @@
+# Window messages, deferred host answers, refresh requests, telemetry and
+# an unknown request.
+> initialize
+< {"id": $1, "result": {"capabilities": {}}}
+> initialized
+< {"method": "window/showMessage", "params": {"type": 1, "message": "e1"}}
+< {"method": "window/showMessage", "params": {"type": 1, "message": "e2"}}
+< {"method": "window/showMessage", "params": {"type": 3, "message": "i1"}}
+< {"method": "window/logMessage", "params": {"type": 4, "message": "l1"}}
+< {"method": "telemetry/event", "params": {"secret": 1}}
+< {"id": 1, "method": "window/showMessageRequest", "params": {"type": 2, "message": "pick", "actions": [{"title": "A"}, {"title": "B", "extra": 7}]}}
+> response {"id": 1, "result": {"title": "B", "extra": 7}}
+< {"id": 2, "method": "window/showMessageRequest", "params": {"type": 2, "message": "ignored", "actions": [{"title": "A"}]}}
+> response {"id": 2, "result": null}
+< {"id": 3, "method": "window/showDocument", "params": {"uri": "file:///w/a.zig", "takeFocus": false}}
+> response {"id": 3, "result": {"success": true}}
+< {"id": 4, "method": "workspace/semanticTokens/refresh"}
+> response {"id": 4, "result": null}
+< {"id": 5, "method": "workspace/inlayHint/refresh"}
+> response {"id": 5, "result": null}
+< {"id": 6, "method": "workspace/inlineValue/refresh"}
+> response {"id": 6, "result": null}
+< {"id": 7, "method": "workspace/diagnostic/refresh"}
+> response {"id": 7, "result": null}
+< {"id": 8, "method": "workspace/codeLens/refresh"}
+> response {"id": 8, "result": null}
+< {"id": 9, "method": "workspace/foldingRange/refresh"}
+> response {"id": 9, "result": null}
+< {"id": 10, "method": "bogus/request"}
+> response {"id": 10, "error": {"code": -32601}}
+< {"method": "test/ready"}
+> shutdown
+< {"id": $1, "result": null}
+> exit

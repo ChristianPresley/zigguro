@@ -1,0 +1,1 @@
+{"category":"stdout","output":"hello\n","group":"start","variablesReference":0,"source":{"name":"main.zig","path":"/home/dev/proj/src/main.zig"},"line":12,"column":5,"data":{"anything":[1,"two"]}}

@@ -1,0 +1,1 @@
+[{"position":{"line":4,"character":13},"label":": u32","kind":1,"paddingLeft":true},{"position":{"line":6,"character":8},"label":[{"value":"count","location":{"uri":"file:///home/dev/proj/a.rs","range":{"start":{"line":1,"character":7},"end":{"line":1,"character":12}}}},{"value":":"}],"kind":2,"paddingRight":true}]

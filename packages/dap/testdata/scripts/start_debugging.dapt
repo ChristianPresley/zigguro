@@ -1,0 +1,14 @@
+# A parent session asks the client to start a child session (js-debug and
+# debugpy subprocess style).
+> initialize {"adapterID": "fake", "supportsStartDebuggingRequest": true}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< reverse startDebugging {"request": "attach", "configuration": {"type": "fake", "name": "child", "__pendingTargetId": "child-1"}}
+> response startDebugging {"success": true}
+< event output {"category": "console", "output": "child started\n"}
+> disconnect
+< {}

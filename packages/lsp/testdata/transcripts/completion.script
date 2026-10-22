@@ -1,0 +1,8 @@
+# Completion returning an incomplete CompletionList.
+> initialize
+< {"id": $1, "result": {"capabilities": {"completionProvider": {"triggerCharacters": ["."], "resolveProvider": true}}}}
+> initialized
+> textDocument/completion {"position": {"line": 3, "character": 8}, "context": {"triggerKind": 2, "triggerCharacter": "."}}
+< {"id": $1, "result": {"isIncomplete": true, "items": [{"label": "print", "kind": 3, "detail": "fn print(comptime fmt: []const u8, args: anytype) void"}, {"label": "panic", "kind": 3}]}}
+> completionItem/resolve {"label": "print"}
+< {"id": $1, "result": {"label": "print", "kind": 3, "documentation": {"kind": "markdown", "value": "Prints to stderr."}}}

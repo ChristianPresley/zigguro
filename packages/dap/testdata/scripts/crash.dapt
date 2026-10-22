@@ -1,0 +1,10 @@
+# The adapter dies while the debuggee is running, with status 3.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event output {"category": "stderr", "output": "adapter: fatal error\n"}
+! exit 3

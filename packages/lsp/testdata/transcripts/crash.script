@@ -1,0 +1,5 @@
+# The server dies after the handshake with status 3.
+> initialize
+< {"id": $1, "result": {"capabilities": {}}}
+> initialized
+! exit 3

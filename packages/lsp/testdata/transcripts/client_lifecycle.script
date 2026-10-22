@@ -1,0 +1,13 @@
+# Client lifecycle: a request queued during the handshake is sent only after
+# `initialized`; unsupported requests never reach the wire; then shutdown.
+> initialize {"rootUri": "file://${workspace}", "clientInfo": {"name": "zigguro"}, "capabilities": {"general": {"positionEncodings": ["utf-8", "utf-16"]}}}
+~ 50ms
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "hoverProvider": true, "textDocumentSync": 2}, "serverInfo": {"name": "fake", "version": "1.0"}}}
+> initialized
+> textDocument/hover {"position": {"line": 0, "character": 6}}
+< {"id": $1, "result": {"contents": {"kind": "markdown", "value": "hover text"}}}
+> textDocument/hover {"position": {"line": 1, "character": 0}}
+< {"id": $1, "result": null}
+> shutdown
+< {"id": $1, "result": null}
+> exit

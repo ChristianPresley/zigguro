@@ -1,0 +1,14 @@
+# `console: integratedTerminal`: the adapter asks the client to start the
+# debuggee in a terminal and reports the process id back.
+> initialize {"adapterID": "fake", "supportsRunInTerminalRequest": true}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"console": "integratedTerminal"}
+< reverse runInTerminal {"kind": "integrated", "title": "app", "cwd": "${workspace}", "args": ["${workspace}/zig-out/bin/app"], "env": {"ZG_TEST": "1"}}
+> response runInTerminal {"success": true, "body": {"processId": 4242}}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event initialized
+> configurationDone
+< {}
+< event process {"name": "app", "systemProcessId": 4242, "startMethod": "launch"}
+> disconnect
+< {}

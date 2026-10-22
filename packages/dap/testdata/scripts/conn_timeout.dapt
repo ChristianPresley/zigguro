@@ -1,0 +1,9 @@
+# DapConnection: `threads` answered after the client's timeout; the late
+# response is dropped and the connection keeps working.
+> initialize
+< {"body": {}}
+> threads
+~ 300ms
+< {"body": {"threads": []}}
+> disconnect
+< {}

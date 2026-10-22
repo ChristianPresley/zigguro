@@ -1,0 +1,20 @@
+.{
+    .name = .zg_dap,
+    .version = "0.0.0",
+    .fingerprint = 0xc03a738b2df361f5,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_jsonrpc = .{ .path = "../jsonrpc" },
+        .zg_lsp = .{ .path = "../lsp" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+    },
+}

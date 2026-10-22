@@ -1,0 +1,11 @@
+# DapConnection: a reverse request the client does not handle, answered
+# before the launch fails with a formatted error body (so the test cannot
+# send `disconnect` before that answer).
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< reverse startDebugging {"request": "launch", "configuration": {}}
+> response startDebugging {"success": false, "message": "not supported"}
+< {"success": false, "message": "failed", "body": {"error": {"id": 3, "format": "cannot open {path}: {_err}", "variables": {"path": "${workspace}/app", "_err": "ENOENT"}, "showUser": true}}}
+> disconnect
+< {}

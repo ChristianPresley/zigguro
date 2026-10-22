@@ -1,0 +1,1 @@
+{"variables":[{"name":"items","value":"len=3","type":"[]u32","variablesReference":12,"indexedVariables":3,"evaluateName":"items","presentationHint":{"kind":"data","attributes":["readOnly"],"visibility":"public"}},{"name":"x","value":"42","type":"u32","variablesReference":0,"memoryReference":"0x7fffffffd9cc"}]}

@@ -1,0 +1,1 @@
+{"kind":"integrated","title":"app","cwd":"/home/dev/proj","args":["/home/dev/proj/zig-out/bin/app","--flag"],"env":{"RUST_LOG":"debug","UNSET_ME":null},"argsCanBeInterpretedByShell":false}

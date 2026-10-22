@@ -1,0 +1,11 @@
+# A rescheduled hover cancels the one in flight with $/cancelRequest.
+> initialize
+< {"id": $1, "result": {"capabilities": {"hoverProvider": true}}}
+> initialized
+> textDocument/hover {"position": {"line": 0, "character": 1}}
+> $/cancelRequest {"id": 2}
+> textDocument/hover {"position": {"line": 0, "character": 2}}
+< {"id": $1, "result": null}
+> shutdown
+< {"id": $1, "result": null}
+> exit

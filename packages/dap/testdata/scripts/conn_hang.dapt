@@ -1,0 +1,4 @@
+# DapConnection: `threads` is never answered; the client closes.
+> initialize
+< {"body": {}}
+> threads
