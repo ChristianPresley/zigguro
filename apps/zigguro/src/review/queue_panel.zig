@@ -299,7 +299,7 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
     defer gpa.free(root);
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
-    const g = try ReviewGlue.create(gpa, testing.io, root);
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
     defer g.destroy();
 
     const Root = struct {
