@@ -13,7 +13,14 @@ pub const sync = struct {
     pub const Sink = sink.Sink;
 };
 
+/// Language server definitions, PATH discovery, roots and routing.
+pub const registry = struct {
+    pub const Registry = @import("registry/Registry.zig");
+    pub const routing = @import("registry/routing.zig");
+};
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("sync/sink_test.zig");
+    _ = @import("registry/registry_test.zig");
 }
