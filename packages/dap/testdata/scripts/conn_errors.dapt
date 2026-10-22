@@ -1,0 +1,10 @@
+# DapConnection: a failed launch with a formatted error body, then a
+# reverse request the client does not handle.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {"success": false, "message": "failed", "body": {"error": {"id": 3, "format": "cannot open {path}: {_err}", "variables": {"path": "${workspace}/app", "_err": "ENOENT"}, "showUser": true}}}
+< reverse startDebugging {"request": "launch", "configuration": {}}
+> response startDebugging {"success": false, "message": "not supported"}
+> disconnect
+< {}
