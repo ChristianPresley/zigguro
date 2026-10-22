@@ -8,11 +8,15 @@
 //!
 //! ```
 //! strict                               unscripted notifications become errors
+//! seq-check off                        DAP: allow non-increasing client seq
 //! > initialize {"processId": null}     expect a message; JSON is a params subset
 //! > response {"id": 7, "result": []}   expect a response to a peer request (subset)
+//! > response runInTerminal {"success": true}
+//!                                      DAP: expect the response to a reverse request
 //! < {"id": $1, "result": {}}           send a message ($1 = last matched id)
 //! < event stopped {"reason": "step"}   send a DAP event (an LSP notification
 //!                                      `{"method": "stopped", "params": ...}`)
+//! < reverse runInTerminal {"args": []} DAP: send a reverse request (`arguments`)
 //! ~ 50ms                               sleep
 //! ! exit 3                             stop and exit with status 3
 //! ```
@@ -24,9 +28,19 @@
 //!
 //! In the DAP framing a client message `{"type": "request", "command": c,
 //! "arguments": a, "seq": n}` is matched as method `c` with params `a`, and
-//! `$1` is `n`. Every DAP client message is a request, so nothing is skipped.
+//! `$1` is `n`. A DAP client response is matched as method `response`, with
+//! an optional command name; it must answer the last reverse request (its
+//! `request_seq`), and the JSON is a subset of the whole message. Clients
+//! send no events, so nothing is skipped in DAP.
 //!
-//! An LSP script stops with status 0 once it has matched `> exit`. When the
+//! DAP shortcuts: a sent message without `"type"` is a response to the last
+//! matched request (`type`, `request_seq`, `command` and `"success": true`
+//! are filled in), so `< {"body": {...}}` is enough. The client's `seq` must
+//! increase strictly (the check is off with `seq-check off`); a regression
+//! is reported like a mismatch.
+//!
+//! An LSP script stops with status 0 once it has matched `> exit`, and a
+//! DAP script once it ends after answering `disconnect`. When the
 //! script runs out the peer keeps serving until end of input: LSP
 //! `shutdown` gets a `null` result and `exit` ends with status 0; DAP
 //! `disconnect` gets a success response and ends with status 0. Other
@@ -53,6 +67,8 @@ pub const Step = union(enum) {
     reply: Template,
     /// `< event name [json]`.
     event: Event,
+    /// `< reverse command [json]` (DAP).
+    reverse: Event,
     /// `~ <n>ms`.
     delay_ms: u32,
     /// `! exit <n>`.
@@ -60,6 +76,8 @@ pub const Step = union(enum) {
 
     pub const Expect = struct {
         method: []const u8,
+        /// For `> response <command>`: the command the response must name.
+        command: ?[]const u8 = null,
         /// Parsed with `${workspace}` empty; `runPeer` re-parses `params_text`
         /// with the real value.
         params_subset: ?Value,
@@ -80,6 +98,8 @@ pub const ParseDiag = struct {
 pub const Script = struct {
     steps: []const Step,
     strict: bool,
+    /// DAP: client `seq` values must increase strictly.
+    seq_check: bool = true,
     arena: *std.heap.ArenaAllocator,
 
     pub const ParseError = error{ InvalidScript, OutOfMemory };
@@ -96,6 +116,7 @@ pub const Script = struct {
         const a = arena.allocator();
         var steps: std.ArrayList(Step) = .empty;
         var strict = false;
+        var seq_check = true;
         var lines = std.mem.splitScalar(u8, text, '\n');
         var line_no: u32 = 0;
         while (lines.next()) |raw| {
@@ -112,6 +133,10 @@ pub const Script = struct {
                 strict = true;
                 continue;
             }
+            if (std.mem.eql(u8, line, "seq-check off") or std.mem.eql(u8, line, "< seq-check off")) {
+                seq_check = false;
+                continue;
+            }
             if (line.len < 2 or line[1] != ' ') return fail(diag, line_no, "unknown directive");
             const rest = std.mem.trim(u8, line[2..], " \t");
             switch (line[0]) {
@@ -119,7 +144,13 @@ pub const Script = struct {
                     const sp = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
                     const method = rest[0..sp];
                     if (method.len == 0) return fail(diag, line_no, "expect needs a method");
-                    const json = std.mem.trim(u8, rest[sp..], " \t");
+                    var json = std.mem.trim(u8, rest[sp..], " \t");
+                    var command: ?[]const u8 = null;
+                    if (std.mem.eql(u8, method, "response") and json.len > 0 and json[0] != '{') {
+                        const csp = std.mem.indexOfAny(u8, json, " \t") orelse json.len;
+                        command = try a.dupe(u8, json[0..csp]);
+                        json = std.mem.trim(u8, json[csp..], " \t");
+                    }
                     var subset: ?Value = null;
                     var params_text: ?[]const u8 = null;
                     if (json.len > 0) {
@@ -131,24 +162,28 @@ pub const Script = struct {
                     }
                     try steps.append(a, .{ .expect = .{
                         .method = try a.dupe(u8, method),
+                        .command = command,
                         .params_subset = subset,
                         .params_text = params_text,
                         .line = line_no,
                     } });
                 },
                 '<' => {
-                    if (std.mem.startsWith(u8, rest, "event ")) {
-                        const ev = std.mem.trim(u8, rest["event ".len..], " \t");
+                    const is_event = std.mem.startsWith(u8, rest, "event ");
+                    if (is_event or std.mem.startsWith(u8, rest, "reverse ")) {
+                        const kw = if (is_event) "event " else "reverse ";
+                        const ev = std.mem.trim(u8, rest[kw.len..], " \t");
                         const sp = std.mem.indexOfAny(u8, ev, " \t") orelse ev.len;
                         const name = ev[0..sp];
-                        if (name.len == 0) return fail(diag, line_no, "event needs a name");
+                        if (name.len == 0) return fail(diag, line_no, if (is_event) "event needs a name" else "reverse needs a command");
                         const body = std.mem.trim(u8, ev[sp..], " \t");
                         var tmpl: ?Step.Template = null;
                         if (body.len > 0) {
                             if (!validTemplate(a, body)) return fail(diag, line_no, "invalid JSON in event body");
                             tmpl = .{ .text = try a.dupe(u8, body), .line = line_no };
                         }
-                        try steps.append(a, .{ .event = .{ .name = try a.dupe(u8, name), .body = tmpl, .line = line_no } });
+                        const e: Step.Event = .{ .name = try a.dupe(u8, name), .body = tmpl, .line = line_no };
+                        try steps.append(a, if (is_event) .{ .event = e } else .{ .reverse = e });
                     } else {
                         if (!validTemplate(a, rest)) return fail(diag, line_no, "invalid JSON in reply");
                         try steps.append(a, .{ .reply = .{ .text = try a.dupe(u8, rest), .line = line_no } });
@@ -169,7 +204,7 @@ pub const Script = struct {
                 else => return fail(diag, line_no, "unknown directive"),
             }
         }
-        return .{ .steps = try steps.toOwnedSlice(a), .strict = strict, .arena = arena };
+        return .{ .steps = try steps.toOwnedSlice(a), .strict = strict, .seq_check = seq_check, .arena = arena };
     }
 
     pub fn deinit(s: *Script) void {
@@ -311,6 +346,9 @@ const Incoming = struct {
     /// JSON text of the id (or DAP seq) of a request.
     id_json: []const u8,
     whole: Value,
+    /// DAP responses: the command and `request_seq`.
+    command: []const u8 = "",
+    request_seq: ?i64 = null,
 };
 
 fn classify(arena: Allocator, framing: Framing, v: Value) !Incoming {
@@ -346,8 +384,19 @@ fn classify(arena: Allocator, framing: Framing, v: Value) !Incoming {
                     .whole = v,
                 };
             }
-            if (std.mem.eql(u8, t.string, "response"))
-                return .{ .kind = .response, .method = "response", .params = v, .id_json = "", .whole = v };
+            if (std.mem.eql(u8, t.string, "response")) {
+                const c = o.get("command") orelse Value{ .string = "" };
+                const rs = o.get("request_seq") orelse Value.null;
+                return .{
+                    .kind = .response,
+                    .method = "response",
+                    .params = v,
+                    .id_json = "",
+                    .whole = v,
+                    .command = if (c == .string) c.string else "",
+                    .request_seq = if (rs == .integer) rs.integer else null,
+                };
+            }
             return error.InvalidMessage;
         },
     }
@@ -362,6 +411,12 @@ const Peer = struct {
     opts: PeerOptions,
     arena: std.heap.ArenaAllocator,
     last_id: []u8 = &.{},
+    /// DAP: command of the last matched request.
+    last_command: []u8 = &.{},
+    /// DAP: seq of the last reverse request sent.
+    last_reverse_seq: ?i64 = null,
+    /// DAP: the highest client seq seen.
+    client_seq: i64 = 0,
     seq: i64 = 1,
 
     fn report(p: *Peer, comptime fmt: []const u8, args: anytype) void {
@@ -387,13 +442,26 @@ const Peer = struct {
         };
         const a = p.arena.allocator();
         const v = try std.json.parseFromSliceLeaky(Value, a, body, .{});
-        return try classify(a, p.opts.framing, v);
+        const m = try classify(a, p.opts.framing, v);
+        if (p.opts.framing == .dap and p.script.seq_check) {
+            const seq = v.object.get("seq") orelse Value.null;
+            if (seq != .integer or seq.integer <= p.client_seq) {
+                p.report("client seq regression: got {f} after {d}", .{ std.json.fmt(seq, .{}), p.client_seq });
+                p.reportValue("message", v);
+                return error.SeqRegression;
+            }
+            p.client_seq = seq.integer;
+        }
+        return m;
     }
 
-    fn rememberId(p: *Peer, id_json: []const u8) !void {
+    fn rememberId(p: *Peer, id_json: []const u8, command: []const u8) !void {
         p.gpa.free(p.last_id);
         p.last_id = &.{};
         p.last_id = try p.gpa.dupe(u8, id_json);
+        p.gpa.free(p.last_command);
+        p.last_command = &.{};
+        p.last_command = try p.gpa.dupe(u8, command);
     }
 
     fn send(p: *Peer, v: Value) !void {
@@ -401,9 +469,19 @@ const Peer = struct {
         var msg = v;
         if (msg == .object) switch (p.opts.framing) {
             .lsp => if (msg.object.get("jsonrpc") == null) try msg.object.put(a, "jsonrpc", .{ .string = "2.0" }),
-            .dap => if (msg.object.get("seq") == null) {
-                try msg.object.put(a, "seq", .{ .integer = p.seq });
-                p.seq += 1;
+            .dap => {
+                if (msg.object.get("type") == null) {
+                    // Shortcut: a response to the last matched request.
+                    try msg.object.put(a, "type", .{ .string = "response" });
+                    const rs = std.fmt.parseInt(i64, p.last_id, 10) catch 0;
+                    if (msg.object.get("request_seq") == null) try msg.object.put(a, "request_seq", .{ .integer = rs });
+                    if (msg.object.get("command") == null) try msg.object.put(a, "command", .{ .string = p.last_command });
+                    if (msg.object.get("success") == null) try msg.object.put(a, "success", .{ .bool = true });
+                }
+                if (msg.object.get("seq") == null) {
+                    try msg.object.put(a, "seq", .{ .integer = p.seq });
+                    p.seq += 1;
+                }
             },
         };
         const body = try std.json.Stringify.valueAlloc(a, msg, .{});
@@ -441,6 +519,20 @@ const Peer = struct {
         try p.send(.{ .object = o });
     }
 
+    fn sendReverse(p: *Peer, e: Step.Event) !void {
+        _ = p.arena.reset(.retain_capacity);
+        const a = p.arena.allocator();
+        var o: std.json.ObjectMap = .empty;
+        try o.put(a, "type", .{ .string = "request" });
+        try o.put(a, "command", .{ .string = e.name });
+        if (e.body) |t| {
+            const id = if (p.last_id.len > 0) p.last_id else "null";
+            try o.put(a, "arguments", try std.json.parseFromSliceLeaky(Value, a, try substitute(a, t.text, id, p.opts.workspace), .{}));
+        }
+        p.last_reverse_seq = p.seq;
+        try p.send(.{ .object = o });
+    }
+
     /// Returns null once `e` matched, or an exit status.
     fn expect(p: *Peer, e: Step.Expect) !?u8 {
         while (true) {
@@ -456,6 +548,17 @@ const Peer = struct {
                 p.reportValue("message", m.whole);
                 return mismatch_status;
             }
+            if (m.kind == .response and p.opts.framing == .dap) {
+                if (e.command) |cmd| if (!std.mem.eql(u8, cmd, m.command)) {
+                    p.report("script line {d}: expected a `{s}` response, got `{s}`", .{ e.line, cmd, m.command });
+                    p.reportValue("message", m.whole);
+                    return mismatch_status;
+                };
+                if (p.last_reverse_seq) |want| if (m.request_seq != want) {
+                    p.report("script line {d}: response request_seq {?d} does not answer reverse request {d}", .{ e.line, m.request_seq, want });
+                    return mismatch_status;
+                };
+            }
             if (e.params_text) |text| {
                 const a = p.arena.allocator();
                 const want = try std.json.parseFromSliceLeaky(Value, a, try substitute(a, text, "null", p.opts.workspace), .{});
@@ -467,7 +570,7 @@ const Peer = struct {
                     return mismatch_status;
                 }
             }
-            if (m.kind == .request) try p.rememberId(m.id_json);
+            if (m.kind == .request) try p.rememberId(m.id_json, m.method);
             return null;
         }
     }
@@ -537,7 +640,18 @@ pub fn runPeer(io: std.Io, gpa: Allocator, script: *const Script, in: *std.Io.Re
         p.frames.deinit(gpa);
         p.arena.deinit();
         gpa.free(p.last_id);
+        gpa.free(p.last_command);
     }
+    return runSteps(&p) catch |err| switch (err) {
+        error.SeqRegression => mismatch_status,
+        else => err,
+    };
+}
+
+fn runSteps(p: *Peer) !u8 {
+    const script = p.script;
+    const opts = p.opts;
+    const io = p.io;
     for (script.steps) |step| switch (step) {
         .expect => |e| {
             if (try p.expect(e)) |status| return status;
@@ -546,8 +660,11 @@ pub fn runPeer(io: std.Io, gpa: Allocator, script: *const Script, in: *std.Io.Re
         },
         .reply => |t| try p.sendTemplate(t),
         .event => |e| try p.sendEvent(e),
+        .reverse => |e| try p.sendReverse(e),
         .delay_ms => |ms| try io.sleep(.fromMilliseconds(ms), .awake),
         .exit => |code| return code,
     };
+    // Like a real adapter, stop once a scripted `disconnect` was answered.
+    if (opts.framing == .dap and std.mem.eql(u8, p.last_command, "disconnect")) return 0;
     return p.epilogue();
 }
