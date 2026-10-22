@@ -25,13 +25,68 @@ pub const ByteRange = struct {
     }
 };
 
-pub const FoldKind = enum { block, comment, imports, string };
+pub const FoldKind = enum {
+    block,
+    comment,
+    imports,
+    string,
+    /// `#region` ... `#endregion` markers.
+    region,
+
+    /// The LSP `FoldingRangeKind`, if the kind has one.
+    pub fn lspKind(k: FoldKind) ?[]const u8 {
+        return switch (k) {
+            .comment => "comment",
+            .imports => "imports",
+            .region => "region",
+            .block, .string => null,
+        };
+    }
+};
 
 /// A foldable region: lines `start_line` to `end_line` (inclusive; the
 /// closing line usually stays visible).
 pub const FoldRange = struct { start_line: u32, end_line: u32, kind: FoldKind };
 
-pub const SymbolKind = enum { function, test_decl, @"struct", @"enum", @"union", @"opaque", error_set, field, constant, variable };
+pub const SymbolKind = enum {
+    function,
+    test_decl,
+    @"struct",
+    @"enum",
+    @"union",
+    @"opaque",
+    error_set,
+    field,
+    constant,
+    variable,
+    class,
+    interface,
+    module,
+    namespace,
+    method,
+    type_alias,
+    /// A document heading (Markdown).
+    heading,
+
+    /// The LSP `SymbolKind` number.
+    pub fn lspKind(k: SymbolKind) u8 {
+        return switch (k) {
+            .module => 2,
+            .namespace => 3,
+            .class => 5,
+            .method, .test_decl => 6,
+            .field => 8,
+            .@"enum", .error_set => 10,
+            .interface => 11,
+            .function => 12,
+            .variable => 13,
+            .constant => 14,
+            .heading => 15,
+            .@"struct", .@"union", .@"opaque" => 23,
+            .type_alias => 26,
+        };
+    }
+};
 
 /// An outline entry. `parent` indexes `Structure.symbols`.
 pub const Symbol = struct {
