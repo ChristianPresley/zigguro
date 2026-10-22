@@ -22,7 +22,7 @@ const t = std.testing;
 const gpa = t.allocator;
 
 /// Writes a change with the given files on `parents`.
-fn commit(m: *mutable_mod.MutableRepo, parents: []const ObjectId, description: []const u8, files: []const [2][]const u8) !ObjectId {
+pub fn commit(m: *mutable_mod.MutableRepo, parents: []const ObjectId, description: []const u8, files: []const [2][]const u8) !ObjectId {
     var tm = tree_merge.TreeMerger.init(gpa, m.batch.store, m.batch);
     defer tm.deinit();
     const tree = try tree_merge.testTree(&tm, files);
@@ -151,7 +151,7 @@ const Setup = struct {
     }
 };
 
-fn addLane(m: *mutable_mod.MutableRepo, name: []const u8, ws: []const u8, base: ObjectId, wc: ObjectId, policy: []const u8) !void {
+pub fn addLane(m: *mutable_mod.MutableRepo, name: []const u8, ws: []const u8, base: ObjectId, wc: ObjectId, policy: []const u8) !void {
     try m.setWcCommit(ws, wc);
     try m.setLane(.{ .name = name, .workspace = ws, .owner = "agent-7", .base = base, .status = "active", .policy = policy, .updated_ms = 1, .extra = &.{} });
 }

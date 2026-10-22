@@ -2290,6 +2290,65 @@ Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
+## zg_editor.modes (ModeHandler, Host, VimState)
+
+### Defined in
+`packages/editor/src/modes.zig`, `packages/editor/src/modes/{key,mode}.zig` and
+`packages/editor/src/modes/vim/*.zig` (E05.F09).
+
+### Implemented by
+E05.F09.S01.T01 (Vim core). Registers, dot repeat, macros, marks and ex come
+with E05.F09.S01.T02; Emacs with E05.F09.S02.
+
+### Consumed by
+EditorView (E04/E05 view: builds a `Host` per editor and routes keys), the
+E15 keymap layer (`vim.mode` context, status text, caret shape).
+
+### Signature
+```zig
+// key.zig
+pub const Key = struct { code: u21, ctrl: bool = false, alt: bool = false, shift: bool = false,
+    pub fn text(k) ?u21; pub fn is(k, s: Special) bool; pub fn isCtrl(k, c: u8) bool; pub fn isEscape(k) bool };
+pub fn parse(notation: []const u8, out: []Key) !usize;   // "d2w<Esc><C-v>"
+// mode.zig
+pub const CaretShape = enum { bar, block, underline, half_block };
+pub const KeyResult = enum { consumed, passthrough };
+pub const Host = struct { doc: *Document, sels: *SelectionSet, undo: *UndoTree,
+    edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null };
+pub const ModeHandler = struct { ctx: *anyopaque, handleKeyFn, statusTextFn, caretShapeFn,
+    pub fn handleKey(h, k: Key, host: *Host) !KeyResult; pub fn statusText(h) []const u8; pub fn caretShape(h) CaretShape };
+pub const ChangeGroup = struct { // one undo step from several document changes
+    pub fn begin(g, sels) !void; pub fn commit(g, undo, sels_after, meta) !void; pub fn cancel(g) void; pub fn listener(g) Listener };
+// vim/state.zig
+pub const Mode = enum { normal, insert, replace, visual, visual_line, visual_block, op_pending };
+pub const VimState = struct {
+    pub fn init(gpa) VimState; pub fn deinit(vs) void; pub fn handler(vs) ModeHandler;
+    pub fn handleKey(vs, k: Key, host: *Host) !KeyResult;
+    pub fn statusText(vs) []const u8;   // "-- INSERT --", "-- VISUAL BLOCK --", pending "2d"
+    pub fn caretShape(vs) CaretShape; pub fn detach(vs) void;
+};
+```
+Vim keeps one cursor per host selection and writes them back after every key
+(a caret in Normal mode, the inclusive area in Visual modes); in Insert and
+Replace mode the host selections are the truth and typing goes through
+`smart_edit`. Commands run at every cursor, last to first. Each change (an
+operator, a command, or a whole insert session with its count) is one undo
+step. Behaviour is checked against Vim 9.1: `testdata/vim/core/*.txt` (405
+scenarios) are recorded by `testdata/vim/oracle.py` from real Vim and replayed
+by `vim_core_test.zig`.
+
+### Threading
+UI thread only, like the document it edits.
+
+### Ownership/lifetime
+`VimState` owns its cursors, register and pending keys; it registers a
+listener on the first document it sees and removes it in `detach`/`deinit`.
+The `Host` and what it points to belong to the caller.
+
+### Stability
+Unstable until EditorView routes keys to modes. Gaps: `=`, `!`, `H`/`M`/`L`,
+blockwise put, counts on Visual operators other than shifts.
+
 ## zg_vulkan.r2d (DrawList, Renderer, Prim)
 
 ### Defined in

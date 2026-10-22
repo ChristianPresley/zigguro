@@ -1,9 +1,12 @@
-//! `zg scm` (E09): repository commands. For now `zg scm debug fsck`
-//! (E09.F01.S01.T03), which checks the object store of the repository
-//! around the current directory and reports every problem it finds.
+//! `zg scm` (E09): repository commands.
 //!
-//! Exit 0 when the store is clean, 1 on corruption or missing objects,
-//! 2 on a usage error or when there is no repository.
+//! - `zg scm debug fsck` (E09.F01.S01.T03) checks the object store of the
+//!   repository around the current directory and reports every problem it
+//!   finds: exit 0 when clean, 1 on corruption or missing objects.
+//! - `zg scm lane status` (E09.F06.S03.T01) lists the lanes with their
+//!   status and landing ticket.
+//!
+//! Both exit 2 on a usage error or when there is no repository.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -14,11 +17,15 @@ const Allocator = std.mem.Allocator;
 
 pub const usage =
     \\Usage: zg scm debug fsck [--repo DIR] [--json]
+    \\       zg scm lane status [--repo DIR] [--json]
     \\
     \\Checks the object store: index checksums and order, that every
     \\record hashes to its ID, that trees, changes and chunked blobs decode,
     \\and that everything they refer to is present. Data files without an
     \\index (left by an interrupted write) are listed but are not errors.
+    \\
+    \\`lane status` lists every lane: workspace, owner, status, and its
+    \\landing ticket (state and the reason a lane came back).
     \\
     \\--repo DIR   a workspace (or its .zg/repo); default: the nearest one
     \\             at or above the current directory
@@ -42,10 +49,15 @@ pub fn runIn(gpa: Allocator, io: Io, cwd: Io.Dir, argv: []const []const u8, out:
         try out.writeAll(usage);
         return 0;
     }
-    if (argv.len < 2 or !std.mem.eql(u8, argv[0], "debug") or !std.mem.eql(u8, argv[1], "fsck")) {
+    const Cmd = enum { fsck, lane_status };
+    const cmd: Cmd = if (argv.len >= 2 and std.mem.eql(u8, argv[0], "debug") and std.mem.eql(u8, argv[1], "fsck"))
+        .fsck
+    else if (argv.len >= 2 and std.mem.eql(u8, argv[0], "lane") and std.mem.eql(u8, argv[1], "status"))
+        .lane_status
+    else {
         try err.writeAll(usage);
         return 2;
-    }
+    };
     var repo: ?[]const u8 = null;
     var json = false;
     var i: usize = 2;
@@ -62,14 +74,17 @@ pub fn runIn(gpa: Allocator, io: Io, cwd: Io.Dir, argv: []const []const u8, out:
         }
     }
 
-    var store_dir = (if (repo) |r| openStoreAt(io, cwd, r) else findStore(io, cwd)) catch |e| switch (e) {
+    var repo_dir = (if (repo) |r| openRepoAt(io, cwd, r) else findRepo(io, cwd)) catch |e| switch (e) {
         error.NoRepository => {
             try err.writeAll("zg scm: no zg repository here (looked for .zg/repo/store)\n");
             return 2;
         },
         else => return e,
     };
+    defer repo_dir.close(io);
+    var store_dir = (try storeIn(io, repo_dir)).?;
     defer store_dir.close(io);
+    if (cmd == .lane_status) return laneStatus(gpa, io, repo_dir, store_dir, json, out, err);
 
     const s = try zg_scm.Store.open(gpa, io, store_dir, .{});
     defer s.close();
@@ -79,21 +94,35 @@ pub fn runIn(gpa: Allocator, io: Io, cwd: Io.Dir, argv: []const []const u8, out:
     return if (report.clean()) 0 else 1;
 }
 
-/// The store of the repository at `path`: a workspace root or the
-/// `.zg/repo` directory itself.
-fn openStoreAt(io: Io, cwd: Io.Dir, path: []const u8) !Io.Dir {
+/// The repository at `path`: a workspace root or the `.zg/repo`
+/// directory itself.
+fn openRepoAt(io: Io, cwd: Io.Dir, path: []const u8) !Io.Dir {
     var d = cwd.openDir(io, path, .{}) catch return error.NoRepository;
+    if (try storeIn(io, d)) |s| {
+        var st = s;
+        st.close(io);
+        return d;
+    }
     defer d.close(io);
-    if (try storeIn(io, d)) |s| return s;
     var zg = d.openDir(io, ".zg", .{}) catch return error.NoRepository;
     defer zg.close(io);
-    var r = repoDir(io, zg) catch return error.NoRepository;
-    defer r.close(io);
-    return (try storeIn(io, r)) orelse error.NoRepository;
+    return try usable(io, repoDir(io, zg) catch return error.NoRepository);
+}
+
+/// `r` when it holds a store, else closed and `NoRepository`.
+fn usable(io: Io, r: Io.Dir) !Io.Dir {
+    var d = r;
+    if (try storeIn(io, d)) |s| {
+        var st = s;
+        st.close(io);
+        return d;
+    }
+    d.close(io);
+    return error.NoRepository;
 }
 
 /// Walks up from `cwd` to the nearest directory with a `.zg/repo`.
-fn findStore(io: Io, cwd: Io.Dir) !Io.Dir {
+fn findRepo(io: Io, cwd: Io.Dir) !Io.Dir {
     var d = try cwd.openDir(io, ".", .{});
     defer d.close(io);
     var last_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -103,10 +132,8 @@ fn findStore(io: Io, cwd: Io.Dir) !Io.Dir {
         if (d.openDir(io, ".zg", .{})) |zg_dir| {
             var zg = zg_dir;
             defer zg.close(io);
-            if (repoDir(io, zg)) |r_dir| {
-                var r = r_dir;
-                defer r.close(io);
-                if (try storeIn(io, r)) |s| return s;
+            if (repoDir(io, zg)) |r| {
+                if (usable(io, r)) |ok| return ok else |_| {}
             } else |_| {}
         } else |_| {}
         // Stop at the filesystem root, where ".." is the directory itself.
@@ -142,6 +169,64 @@ fn storeIn(io: Io, repo: Io.Dir) !?Io.Dir {
     };
     seg.close(io);
     return s;
+}
+
+fn laneStatus(gpa: Allocator, io: Io, repo_dir: Io.Dir, store_dir: Io.Dir, json: bool, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const s = try zg_scm.Store.open(gpa, io, store_dir, .{});
+    defer s.close();
+    const r = zg_scm.Repo.load(gpa, io, repo_dir, s, .{}, .head) catch |e| switch (e) {
+        error.NotInitialized, error.NoOpHeads => {
+            try err.writeAll("zg scm: the repository has no operation log yet\n");
+            return 2;
+        },
+        else => return e,
+    };
+    defer r.close();
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const lanes = r.view().lanes;
+    if (!json) {
+        if (lanes.len == 0) try out.writeAll("no lanes\n");
+        for (lanes) |l| {
+            try out.print("{s}  {s}  workspace {s}, owner {s}", .{ l.name, l.status, l.workspace, l.owner });
+            if (zg_scm.ai.landing.laneState(a, l)) |st| {
+                try out.print(", ticket {d} {t}", .{ st.ticket, st.state });
+                if (st.reason.len > 0) try out.print(": {s}", .{std.mem.sliceTo(st.reason, '\n')});
+            }
+            try out.writeByte('\n');
+        }
+        return 0;
+    }
+    var js: std.json.Stringify = .{ .writer = out };
+    try js.beginObject();
+    try js.objectField("lanes");
+    try js.beginArray();
+    for (lanes) |l| {
+        try js.beginObject();
+        inline for (.{ "name", "workspace", "owner", "status", "policy" }) |f| {
+            try js.objectField(f);
+            try js.write(@field(l, f));
+        }
+        try js.objectField("base");
+        if (l.base) |b| try js.print("\"{f}\"", .{b}) else try js.write(null);
+        try js.objectField("landing");
+        if (zg_scm.ai.landing.laneState(a, l)) |st| {
+            try js.beginObject();
+            try js.objectField("ticket");
+            try js.write(st.ticket);
+            try js.objectField("state");
+            try js.write(@tagName(st.state));
+            try js.objectField("reason");
+            try js.write(st.reason);
+            try js.endObject();
+        } else try js.write(null);
+        try js.endObject();
+    }
+    try js.endArray();
+    try js.endObject();
+    try out.writeByte('\n');
+    return 0;
 }
 
 fn writeText(r: *const zg_scm.fsck.FsckReport, out: *Io.Writer) !void {
@@ -238,4 +323,46 @@ test "zg scm debug fsck: clean, damaged, and no repository" {
     defer parsed.deinit();
     try testing.expectEqual(false, parsed.value.object.get("clean").?.bool);
     try testing.expectEqual(@as(usize, 1), parsed.value.object.get("corrupt").?.array.items.len);
+}
+
+test "zg scm lane status: text and JSON" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var err: Io.Writer.Allocating = .init(gpa);
+    defer err.deinit();
+
+    var repo_dir = try tmp.dir.createDirPathOpen(io, "ws/.zg/repo", .{});
+    defer repo_dir.close(io);
+    var store_dir = try repo_dir.createDirPathOpen(io, "store/seg", .{});
+    store_dir.close(io);
+    store_dir = try repo_dir.openDir(io, "store", .{});
+    defer store_dir.close(io);
+    {
+        const s = try zg_scm.Store.open(gpa, io, store_dir, .{ .fsync = false });
+        defer s.close();
+        const meta: zg_scm.OpMeta = .{ .start_ms = 1, .end_ms = 1, .description = "init", .user = "t", .host = "h", .workspace = "default", .actor = .human, .tags = &.{} };
+        const r0 = try zg_scm.Repo.init(gpa, io, repo_dir, s, .{}, meta);
+        defer r0.close();
+        const tx = try r0.startTransaction(meta);
+        try tx.mutRepo().setLane(.{ .name = "fix-parser", .workspace = "ws1", .owner = "agent-1", .base = null, .status = "landing", .policy = "", .updated_ms = 1, .extra = &.{
+            .{ .key = "landing", .value = "{\"ticket\":3,\"state\":\"returned_conflict\",\"target\":\"main\",\"reason\":\"src/a.zig\"}" },
+        } });
+        const r1 = try tx.commit();
+        r1.close();
+    }
+
+    try testing.expectEqual(@as(u8, 0), try runIn(gpa, io, tmp.dir, &.{ "lane", "status", "--repo", "ws" }, &out.writer, &err.writer));
+    try testing.expectEqualStrings("fix-parser  landing  workspace ws1, owner agent-1, ticket 3 returned_conflict: src/a.zig\n", out.written());
+
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runIn(gpa, io, tmp.dir, &.{ "lane", "status", "--repo", "ws/.zg/repo", "--json" }, &out.writer, &err.writer));
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, out.written(), .{});
+    defer parsed.deinit();
+    const lane = parsed.value.object.get("lanes").?.array.items[0].object;
+    try testing.expectEqualStrings("fix-parser", lane.get("name").?.string);
+    try testing.expectEqualStrings("returned_conflict", lane.get("landing").?.object.get("state").?.string);
 }

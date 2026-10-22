@@ -224,3 +224,43 @@ test "plan: order and masks for latn with liga=0" {
     // mark and mkmk keep joiners manual.
     try testing.expect(p.apply_gpos and !p.apply_kern);
 }
+
+test "dense pair classes equal the class definitions" {
+    const digest = @import("digest.zig");
+    const lc = @import("../ot/layout_common.zig");
+    var checked: usize = 0;
+    for ([_][]const u8{ "Inter[opsz,wght].ttf", "SourceSerif4-Regular.otf", "FiraCode-Regular.ttf", "NotoSansArabic-Subset.ttf" }) |name| {
+        var l: Loaded = undefined;
+        try load(&l, name);
+        defer l.deinit();
+        const t = lc.LayoutTable.init(l.face.knownTable(.gpos) orelse continue) catch continue;
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const accels = try digest.buildAccels(arena.allocator(), t, true, l.face.num_glyphs);
+        for (accels) |acc| for (acc.subtables) |sa| {
+            const pc = sa.pair_classes orelse continue;
+            const cd1 = try lc.ClassDef.init(sa.data, try ot.reader.readAt(u16, sa.data, 8));
+            const cd2 = try lc.ClassDef.init(sa.data, try ot.reader.readAt(u16, sa.data, 10));
+            for (0..l.face.num_glyphs) |g| {
+                try testing.expectEqual(cd1.class(@intCast(g)), pc.first[g]);
+                try testing.expectEqual(cd2.class(@intCast(g)), pc.second[g]);
+            }
+            checked += 1;
+        };
+    }
+    try testing.expect(checked > 0);
+}
+
+test "class definition fill rejects overlapping ranges" {
+    const lc = @import("../ot/layout_common.zig");
+    // At offset 2, format 2 with two ranges: 5-9 class 1, then 8-12
+    // class 2 (overlapping).
+    const bad = [_]u8{ 0, 0, 0, 2, 0, 2, 0, 5, 0, 9, 0, 1, 0, 8, 0, 12, 0, 2 };
+    var out: [16]u8 = undefined;
+    try testing.expect(!(try lc.ClassDef.init(&bad, 2)).fill(u8, &out));
+    // Sorted ranges fill as `class` reads them.
+    const good = [_]u8{ 0, 0, 0, 2, 0, 2, 0, 5, 0, 7, 0, 1, 0, 8, 0, 12, 0, 2 };
+    const cd = try lc.ClassDef.init(&good, 2);
+    try testing.expect(cd.fill(u8, &out));
+    for (out, 0..) |k, g| try testing.expectEqual(cd.class(@intCast(g)), k);
+}

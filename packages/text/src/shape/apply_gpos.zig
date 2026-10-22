@@ -40,6 +40,13 @@ pub fn applyAtAccel(c: *Ctx, acc: *const digest.LookupAccel, i: usize) Allocator
     for (acc.subtables) |sa| {
         if (!digest.has(sa.digest, gid)) continue;
         if (!c.budget.take()) return null;
+        if (sa.pair_classes) |*pc| {
+            // The digest is the coverage, so the glyph is covered.
+            if (sa.digest.len != 0 and gid < pc.first.len) {
+                if (applyPairClasses(c, sa.data, pc, i)) |next| return next;
+                continue;
+            }
+        }
         if (try applySubtable(c, sa.kind, sa.data, i)) |next| return next;
     }
     return null;
@@ -69,13 +76,11 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
     c.nesting_left = skippy.max_nesting;
     const filter = if (acc) |a| a.digest else c.lookup_digest;
     var i: usize = 0;
-    while (i < c.buf.len()) {
-        if (c.budget.exhausted) return;
-        if (!digest.has(filter, c.buf.infos.items[i].gid) or !c.applicable(i)) {
-            i += 1;
-            continue;
-        }
+    while (true) {
+        i = c.nextCandidate(filter, i);
+        if (i >= c.buf.len()) return;
         const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+        if (c.budget.exhausted) return;
         if (applied) |next| {
             i = if (next <= i) i + 1 else next;
         } else i += 1;
@@ -85,6 +90,7 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
 /// Applies `lookups` (one stage) in order.
 pub fn applyLookups(c: *Ctx, lookups: anytype) Allocator.Error!void {
     for (lookups) |lm| {
+        if (lm.mask & c.buf.mask_union == 0) continue;
         if (!digest.intersects(c.buf.glyph_set.items, lm.digest)) continue;
         c.lookup_digest = lm.digest;
         defer c.lookup_digest = &.{};
@@ -119,6 +125,13 @@ fn deviceDelta(c: *const Ctx, base: []const u8, off: u16) i32 {
 /// `base`) to `p`. True when any field was non-zero.
 fn applyValue(c: *const Ctx, base: []const u8, rec: []const u8, format: u16, p: *GlyphPos) bool {
     if (format == 0) return false;
+    // Kerning: an x advance alone.
+    if (format == 0x4) {
+        if (rec.len < 2) return false;
+        const v = std.mem.readInt(i16, rec[0..2], .big);
+        p.x_adv += v;
+        return v != 0;
+    }
     var ret = false;
     var off: usize = 0;
     const field = struct {
@@ -244,6 +257,31 @@ fn applyPair(c: *Ctx, st: []const u8, i: usize) ?usize {
         },
         else => return null,
     }
+}
+
+/// PairPos format 2 at covered glyph `i` with dense class tables.
+fn applyPairClasses(c: *Ctx, st: []const u8, pc: *const digest.PairClasses, i: usize) ?usize {
+    const infos = c.buf.infos.items;
+    const k1: usize = pc.first[infos[i].gid];
+    if (k1 >= pc.class1_count) return null;
+    var it = Skippy.init(c, false);
+    it.reset(i, 1);
+    const j = it.peekNext() orelse blk: {
+        if (!it.next(null)) return null;
+        break :blk it.idx;
+    };
+    const g2 = infos[j].gid;
+    if (g2 >= pc.second.len) return applyPair(c, st, i);
+    const k2: usize = pc.second[g2];
+    if (k2 >= pc.class2_count) return null;
+    const len1 = valueSize(pc.value_format1);
+    const rec_size = len1 + valueSize(pc.value_format2);
+    const rec = pc.records[(k1 * pc.class2_count + k2) * rec_size ..][0..rec_size];
+    const pos = c.buf.pos.items;
+    const a = applyValue(c, st, rec, pc.value_format1, &pos[i]);
+    const b = pc.value_format2 != 0 and applyValue(c, st, rec[len1..], pc.value_format2, &pos[j]);
+    if (a or b) c.buf.unsafeToBreak(i, j + 1);
+    return if (pc.value_format2 != 0) j + 1 else j;
 }
 
 fn applyCursive(c: *Ctx, st: []const u8, j: usize) ?usize {

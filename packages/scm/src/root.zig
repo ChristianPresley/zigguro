@@ -72,6 +72,8 @@ pub const ai = struct {
     pub const ports = @import("ai/ports.zig");
     /// The lane landing queue.
     pub const landing = @import("ai/landing.zig");
+    /// Tools for agents, through zg_ai's foreign-tool contract.
+    pub const agent_tools = @import("ai/agent_tools.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -129,4 +131,5 @@ test {
     _ = @import("ai/testing/fake_model.zig");
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
+    _ = @import("ai/agent_tools_test.zig");
 }

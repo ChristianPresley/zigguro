@@ -39,6 +39,8 @@ pub const pack_writer = @import("pack/writer.zig");
 pub const indexer = @import("pack/indexer.zig");
 /// commit-graph reader.
 pub const commit_graph = @import("commit_graph.zig");
+/// Repository discovery and reading files at HEAD.
+pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
 pub const refs = struct {
     /// Refname validation.

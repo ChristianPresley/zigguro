@@ -88,6 +88,9 @@ pub const FileSync = struct {
     undo_next: ?[]u8 = null,
     /// Diffs the document against the file's text (not owned).
     diff: ?*DiffModel = null,
+    /// The diff's base is the file at git HEAD, which saving or reloading
+    /// does not change.
+    diff_head: bool = false,
 
     pub const UndoStore = struct { dir: Io.Dir, key: [32]u8 };
 
@@ -191,6 +194,7 @@ pub const FileSync = struct {
     fn rebase(fs: *FileSync, snap: Snapshot) void {
         var s = snap;
         const m = fs.diff orelse return s.release();
+        if (fs.diff_head) return s.release();
         m.setBase(s) catch |e| {
             s.release();
             log.warn("diff of {s}: {t}", .{ fs.path, e });

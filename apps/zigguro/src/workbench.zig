@@ -47,6 +47,7 @@ const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
 const file_sync = @import("file_sync.zig");
 const FileSync = file_sync.FileSync;
 const diff_model = zg_editor.model.diff.diff_model;
+const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -265,6 +266,7 @@ pub const Workbench = struct {
                     f.diff = m;
                     sync.diff = m;
                     f.view.scm = .of(m);
+                    wb.diffAgainstHead(sync, m, p, loaded.?);
                 } else |e| log.warn("diff of {s}: {t}", .{ p, e });
             }
         }
@@ -278,6 +280,26 @@ pub const Workbench = struct {
             f.view.syntax = sx;
         };
         return f;
+    }
+
+    /// In a git working tree, the change bars compare with the file at
+    /// `HEAD` instead of the text on disk.
+    fn diffAgainstHead(wb: *Workbench, sync: *FileSync, m: *diff_model.DiffModel, path: []const u8, loaded: zg_editor.model.buffer.external.Loaded) void {
+        const gpa = wb.gpa;
+        const abs = std.fs.path.resolve(gpa, &.{ wb.cwd, path }) catch return;
+        defer gpa.free(abs);
+        const text = scm_base.headText(gpa, wb.io, abs, loaded.encoding, loaded.eol.style) catch |e| {
+            log.warn("HEAD version of {s}: {t}", .{ path, e });
+            return;
+        } orelse return;
+        defer gpa.free(text);
+        const base = Document.initBytes(gpa, @enumFromInt(0), text) catch return;
+        defer base.deinit();
+        m.setBase(base.snapshot()) catch |e| {
+            log.warn("HEAD diff of {s}: {t}", .{ path, e });
+            return;
+        };
+        sync.diff_head = true;
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
@@ -603,7 +625,13 @@ pub const Workbench = struct {
     fn layoutSnapshot(ctx: *anyopaque, arena: std.mem.Allocator) anyerror!persist.LayoutFile {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         var windows: [1]persist.WindowLayout = .{.{ .id = "main" }};
-        if (wb.win) |w| windows[0].rect = .{ 0, 0, @intFromFloat(@max(0, w.size.w)), @intFromFloat(@max(0, w.size.h)) };
+        if (wb.win) |w| {
+            // The size the window opens at next time: without the
+            // invisible resize margins of client-side decorations (or
+            // each session grows by them).
+            const m = w.chrome.margins(w.scale);
+            windows[0].rect = .{ 0, 0, @intFromFloat(@round(@max(0, w.size.w - m.l - m.r))), @intFromFloat(@round(@max(0, w.size.h - m.t - m.b))) };
+        }
         return persist.fromModel(arena, &wb.dock, layout_kinds, &windows, &.{});
     }
 
@@ -1509,4 +1537,27 @@ test "workbench: the gutter shows edits against the file" {
     _ = t.settle();
     Workbench.onAppMessage(&wb, &t.app, .{ .kind = diff_model.ui_msg_kind, .a = @intFromPtr(m) });
     try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+}
+
+test "workbench: the saved window size leaves out decoration margins" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    t.win.chrome.client = true;
+    t.win.chrome.margins_px = .{ 12, 12, 12, 12 };
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const file = try Workbench.layoutSnapshot(&wb, arena.allocator());
+    try std.testing.expectEqual(@as(i32, 876), file.windows[0].rect[2]);
+    try std.testing.expectEqual(@as(i32, 576), file.windows[0].rect[3]);
 }

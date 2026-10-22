@@ -4,6 +4,7 @@
 
 test {
     _ = @import("agent/approvals.zig");
+    _ = @import("scm_base.zig");
     _ = @import("agent/editor_files.zig");
     _ = @import("agent/review_glue.zig");
     _ = @import("agent/review_agent_port.zig");
