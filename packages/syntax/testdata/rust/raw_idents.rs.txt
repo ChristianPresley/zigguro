@@ -1,0 +1,5 @@
+let r#match = 1;
+let r#type = r#match + 1;
+fn r#fn() {}
+let r = 1;
+let r2 = r#type;

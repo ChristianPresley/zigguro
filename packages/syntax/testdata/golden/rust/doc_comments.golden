@@ -1,0 +1,9 @@
+1| comment.doc://! Crate docs.
+2| comment.doc:/// Item docs.
+3| comment://// Not docs.
+4| comment.doc:/** Block docs */
+5| comment.doc:/*! Inner block docs */
+6| comment:/*** Not docs */
+7| comment:/**/ keyword.storage:let variable:a operator:= number:1 punctuation.delimiter:;
+8| comment:// plain
+9| keyword.storage:fn function:documented punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}

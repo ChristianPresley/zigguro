@@ -1,0 +1,39 @@
+1| keyword.storage:package variable:main
+2|
+3| keyword.storage:import punctuation.bracket:(
+4| string:"fmt"
+5| string:"os"
+6| punctuation.bracket:)
+7|
+8| keyword.storage:type type:Point keyword.storage:struct punctuation.bracket:{ variable:X punctuation.delimiter:, variable:Y type.builtin:int punctuation.bracket:}
+9|
+10| keyword.storage:const variable:Max operator:= number:10
+11|
+12| keyword.storage:var variable:global type.builtin:int
+13|
+14| keyword.storage:func function:main punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{
+15| keyword.control:for variable:i operator::= number:0 punctuation.delimiter:; variable:i operator:< variable:Max punctuation.delimiter:; variable:i operator:++ punctuation.bracket:{
+16| keyword.control:if variable:i operator:% number:2 operator:== number:0 punctuation.bracket:{
+17| keyword.control:continue
+18| punctuation.bracket:} keyword.control:else keyword.control:if variable:i operator:> number:8 punctuation.bracket:{
+19| keyword.control:break
+20| punctuation.bracket:}
+21| punctuation.bracket:}
+22| keyword.control:switch variable:x operator::= number:1 punctuation.delimiter:; variable:x punctuation.bracket:{
+23| keyword.control:case number:1 punctuation.delimiter::
+24| keyword.control:fallthrough
+25| keyword.control:default punctuation.delimiter::
+26| punctuation.bracket:}
+27| keyword.control:select punctuation.bracket:{
+28| keyword.control:case variable:v operator::= operator:<- variable:ch punctuation.delimiter::
+29| variable:_ operator:= variable:v
+30| punctuation.bracket:}
+31| keyword.control:defer function:cleanup punctuation.bracket:( punctuation.bracket:)
+32| keyword.control:go function:worker punctuation.bracket:( punctuation.bracket:)
+33| keyword.control:goto variable:end
+34| variable:end punctuation.delimiter::
+35| keyword.control:for variable:k punctuation.delimiter:, variable:v operator::= keyword.control:range variable:m punctuation.bracket:{
+36| variable:_ punctuation.delimiter:, variable:_ operator:= variable:k punctuation.delimiter:, variable:v
+37| punctuation.bracket:}
+38| keyword.control:return
+39| punctuation.bracket:}

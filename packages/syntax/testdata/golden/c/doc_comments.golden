@@ -1,0 +1,9 @@
+1| comment.doc:/// A doc comment.
+2| comment://// Not a doc comment.
+3| comment.doc://! Inner doc.
+4| comment.doc:/** Block doc
+5| comment.doc: * @param x the value
+6| comment.doc: */
+7| type.builtin:int function:f punctuation.bracket:( type.builtin:int variable:x punctuation.bracket:) punctuation.delimiter:;
+8| comment.doc:/*! Qt style */
+9| comment:/***************/

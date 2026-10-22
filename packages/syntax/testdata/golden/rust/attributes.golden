@@ -1,0 +1,12 @@
+1| attribute:#! punctuation.bracket:[ attribute:allow punctuation.bracket:( variable:dead_code punctuation.bracket:) punctuation.bracket:]
+2| attribute:# punctuation.bracket:[ attribute:derive punctuation.bracket:( type:Debug punctuation.delimiter:, type:Clone punctuation.bracket:) punctuation.bracket:]
+3| attribute:# punctuation.bracket:[ attribute:cfg punctuation.bracket:( variable:test punctuation.bracket:) punctuation.bracket:]
+4| attribute:# punctuation.bracket:[ attribute:serde punctuation.bracket:( variable:rename operator:= string:"x" punctuation.bracket:) punctuation.bracket:]
+5| attribute:# punctuation.bracket:[ attribute:doc operator:= string:"docs" punctuation.bracket:]
+6| attribute:# punctuation.bracket:[ attribute:rustfmt::skip punctuation.bracket:]
+7| keyword.storage:struct type:S punctuation.delimiter:;
+8| attribute:#! punctuation.bracket:[ attribute:no_std punctuation.bracket:]
+9| attribute:# punctuation.bracket:[
+10| variable:inline
+11| punctuation.bracket:]
+12| keyword.storage:fn function:f punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ punctuation.bracket:}

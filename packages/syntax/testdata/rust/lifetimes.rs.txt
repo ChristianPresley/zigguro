@@ -1,0 +1,7 @@
+struct Ref<'a, T: 'a> { r: &'a T }
+fn longest<'a, 'b: 'a>(x: &'a str, y: &'b str) -> &'a str { x }
+fn stat() -> &'static str { "s" }
+impl<'a> Ref<'a, u8> {}
+'outer: loop { 'inner: loop { break 'outer; } }
+let x: &'_ str = "x";
+fn raw<'r#fn>() {}

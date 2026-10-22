@@ -1,0 +1,10 @@
+1| variable:a operator:= variable:b operator:+ variable:c operator:- variable:d operator:* variable:e operator:/ variable:f operator:% variable:g punctuation.delimiter:;
+2| variable:a operator:+= number:1 punctuation.delimiter:; variable:a operator:-= number:1 punctuation.delimiter:; variable:a operator:*= number:2 punctuation.delimiter:; variable:a operator:/= number:2 punctuation.delimiter:; variable:a operator:%= number:3 punctuation.delimiter:;
+3| variable:a operator:<<= number:1 punctuation.delimiter:; variable:a operator:>>= number:1 punctuation.delimiter:; variable:a operator:&= variable:m punctuation.delimiter:; variable:a operator:|= variable:m punctuation.delimiter:; variable:a operator:^= variable:m punctuation.delimiter:;
+4| variable:x operator:= variable:a operator:<< number:2 operator:>> number:1 punctuation.delimiter:;
+5| variable:y operator:= variable:a operator:& variable:b operator:| variable:c operator:^ operator:~ variable:d punctuation.delimiter:;
+6| variable:z operator:= operator:! variable:a operator:&& variable:b operator:|| variable:c punctuation.delimiter:;
+7| variable:p operator:-> variable:field punctuation.delimiter:; variable:s punctuation.delimiter:. variable:field punctuation.delimiter:; operator:++ variable:i punctuation.delimiter:; operator:-- variable:j punctuation.delimiter:;
+8| variable:r operator:= variable:a operator:< variable:b operator:? variable:a operator:<= variable:b punctuation.delimiter:: variable:a operator:>= variable:b punctuation.delimiter:;
+9| variable:q operator:= variable:a operator:== variable:b operator:!= variable:c punctuation.delimiter:;
+10| function:f punctuation.bracket:( operator:... punctuation.bracket:) punctuation.delimiter:;

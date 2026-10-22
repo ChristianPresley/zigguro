@@ -100,6 +100,8 @@ pub const AgentEvent = union(enum) {
     tool_queued: ToolCallInfo,
     tool_started: []const u8,
     tool_progress: struct { id: []const u8, chunk: []const u8 },
+    /// A validation, hook, permission or bounding decision about a call.
+    tool_decision: @import("deps.zig").ToolDecision,
     tool_finished: ToolFinished,
     usage: UsageTotals,
     retrying: RetryInfo,

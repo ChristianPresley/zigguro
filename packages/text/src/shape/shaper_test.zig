@@ -31,12 +31,15 @@ const features_mod = @import("features.zig");
 const buffer = @import("buffer.zig");
 const fvar = @import("../ot/var/fvar.zig");
 
+const Script = @import("../unicode/root.zig").Script;
+
 const GoldenAxis = struct { tag: []const u8, value: f32 };
 const GoldenCase = struct {
     font: []const u8,
     text: []const u8,
     features: []const u8,
     dir: buffer.Direction,
+    script: Script = .Latn,
     axes: []const GoldenAxis,
     glyphs: []const [5]i32,
 };
@@ -69,7 +72,7 @@ fn checkGolden(set: []const u8, verbose: bool) !usize {
         defer feats.deinit(gpa);
         try features_mod.parseFeatures(cs.features, &feats, gpa);
         var run: GlyphRun = .{};
-        try s.shape(&l.inst, cs.text, .Latn, cs.dir, ot.tag("dflt"), feats.items, &run, arena.allocator());
+        try s.shape(&l.inst, cs.text, cs.script, cs.dir, ot.tag("dflt"), feats.items, &run, arena.allocator());
         s.forget(&l.inst);
         var ok = run.len() == cs.glyphs.len;
         if (ok) for (cs.glyphs, 0..) |g, i| {
@@ -102,6 +105,14 @@ test "shape golden: gpos marks" {
 
 test "shape golden: driver" {
     try testing.expectEqual(@as(usize, 0), try checkGolden("driver", true));
+}
+
+test "shape golden: random" {
+    try testing.expectEqual(@as(usize, 0), try checkGolden("random", true));
+}
+
+test "shape golden: arabic" {
+    try testing.expectEqual(@as(usize, 0), try checkGolden("arabic", true));
 }
 
 const shape_cache = @import("shape_cache.zig");

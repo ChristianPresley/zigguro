@@ -1,0 +1,8 @@
+let a = b"bytes\x00\n";
+let b = br"raw bytes";
+let c = br#"raw "bytes""#;
+let d = c"c string\0";
+let e = cr#"raw c"#;
+let f = b'x';
+let g = b'\'';
+let h = b'\x7f';

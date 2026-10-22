@@ -1,0 +1,10 @@
+1| keyword.storage:let variable:a operator:= character:'a' punctuation.delimiter:;
+2| keyword.storage:let variable:b operator:= character:' string.escape:\n character:' punctuation.delimiter:;
+3| keyword.storage:let variable:c operator:= character:' string.escape:\' character:' punctuation.delimiter:;
+4| keyword.storage:let variable:d operator:= character:' string.escape:\\ character:' punctuation.delimiter:;
+5| keyword.storage:let variable:e operator:= character:' string.escape:\u{1F600} character:' punctuation.delimiter:;
+6| keyword.storage:let variable:f operator:= character:' string.escape:\x41 character:' punctuation.delimiter:;
+7| keyword.storage:let variable:g operator:= character:'é' punctuation.delimiter:;
+8| keyword.storage:let variable:h operator:= character:'"' punctuation.delimiter:;
+9| keyword.storage:let variable:i operator:= character:' ' punctuation.delimiter:;
+10| keyword.storage:let variable:j operator:= character:'0' punctuation.delimiter:;

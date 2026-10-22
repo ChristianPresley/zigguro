@@ -157,7 +157,7 @@ pub const FileTools = struct {
         const r = try ft.files.resolve(c.io, c.arena, path);
         if (ft.policy) |p| {
             switch (p.check(p.ctx, c.io, c.agent, r, access) catch return error.Canceled) {
-                .allow => return .{ .ok = r },
+                .allow, .allow_edited => return .{ .ok = r },
                 .deny => |why| return .{ .denied = why },
             }
         }

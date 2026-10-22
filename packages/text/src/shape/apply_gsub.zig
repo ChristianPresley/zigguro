@@ -19,6 +19,7 @@ const Skippy = skippy.Skippy;
 const context = @import("context.zig");
 const digest = @import("digest.zig");
 const GlyphInfo = @import("buffer.zig").GlyphInfo;
+const Buffer = @import("buffer.zig").Buffer;
 
 const log = std.log.scoped(.zg_text);
 
@@ -78,6 +79,7 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
     c.lookup_index = index;
     c.lookup_props = l.props();
     c.nesting_left = skippy.max_nesting;
+    defer c.buf.compact();
     const filter = if (acc) |a| a.digest else c.lookup_digest;
     if (lookupKind(l) == 8) {
         var i = c.buf.len();
@@ -90,6 +92,7 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
         }
         return;
     }
+    if (lookupKind(l) == 2) return applyMultipleLookup(c, l, acc, filter);
     var i: usize = 0;
     while (i < c.buf.len()) {
         if (c.budget.exhausted) return;
@@ -105,6 +108,43 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
             i = if (next <= i and c.buf.len() >= before) i + 1 else next;
         } else i += 1;
     }
+}
+
+/// A MultipleSubst lookup copies the run into `buf.out`, expanding as it
+/// goes, so a run that decomposes every letter stays linear.
+fn applyMultipleLookup(c: *Ctx, l: Lookup, acc: ?*const digest.LookupAccel, filter: []const u64) Allocator.Error!void {
+    const b = c.buf;
+    b.out.clearRetainingCapacity();
+    try b.out.ensureTotalCapacity(b.gpa, b.len());
+    c.multi_out = true;
+    defer c.multi_out = false;
+    var i: usize = 0;
+    while (i < b.len()) : (i += 1) {
+        if (!c.budget.exhausted and digest.has(filter, b.infos.items[i].gid) and c.applicable(i)) {
+            const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+            if (applied != null) continue;
+        }
+        try b.out.append(b.gpa, b.infos.items[i]);
+    }
+    b.swapOut();
+}
+
+/// HarfBuzz's `delete_glyph` while copying to `buf.out`: glyph `i` is
+/// dropped and its cluster merged into a neighbour.
+fn deleteToOut(b: *Buffer, i: usize) void {
+    const infos = b.infos.items;
+    const out = b.out.items;
+    const cluster = infos[i].cluster;
+    if ((i + 1 < infos.len and infos[i + 1].cluster == cluster) or (out.len > 0 and out[out.len - 1].cluster == cluster)) return;
+    if (out.len > 0) {
+        if (cluster < out[out.len - 1].cluster) {
+            const old = out[out.len - 1].cluster;
+            var k = out.len;
+            while (k > 0 and out[k - 1].cluster == old) : (k -= 1) out[k - 1].cluster = cluster;
+        }
+        return;
+    }
+    if (i + 1 < infos.len) b.mergeClusters(i, i + 2);
 }
 
 fn replace(c: *Ctx, i: usize, gid: GlyphId) void {
@@ -144,6 +184,29 @@ fn applyMultiple(c: *Ctx, st: []const u8, i: usize) Allocator.Error!?usize {
     const seq = reader.sub(st, readAt(u16, st, 6 + @as(usize, ci) * 2) catch return null) catch return null;
     const count = readAt(u16, seq, 0) catch return null;
     const subs = U16Array.init(seq, 2, count) catch return null;
+    if (count > skippy.max_context_length * 4) return null;
+    if (c.multi_out) {
+        const b = c.buf;
+        if (count == 0) {
+            deleteToOut(b, i);
+            return i + 1;
+        }
+        const orig = b.infos.items[i];
+        if (count == 1) {
+            replace(c, i, subs.get(0));
+            try b.out.append(b.gpa, b.infos.items[i]);
+            return i + 1;
+        }
+        const klass: u16 = if (orig.isLigature()) GlyphProps.base else 0;
+        for (0..count) |k| {
+            var g = orig;
+            if (orig.ligId() == 0) g.setLigPropsForMark(0, @intCast(k));
+            c.setGlyphClass(&g, subs.get(k), klass, false, true);
+            g.gid = subs.get(k);
+            try b.out.append(b.gpa, g);
+        }
+        return i + 1;
+    }
     switch (count) {
         0 => {
             // Deletion (Uniscribe allows it).
@@ -156,7 +219,6 @@ fn applyMultiple(c: *Ctx, st: []const u8, i: usize) Allocator.Error!?usize {
         },
         else => {},
     }
-    if (count > skippy.max_context_length * 4) return null;
     try c.buf.infos.ensureUnusedCapacity(c.buf.gpa, count - 1);
     const orig = c.buf.infos.items[i];
     const klass: u16 = if (orig.isLigature()) GlyphProps.base else 0;
@@ -281,6 +343,12 @@ fn ligate(c: *Ctx, count: usize, positions: *const context.Positions, match_end:
             infos[k].setLigPropsForMark(lig_id, so_far - last_num + @min(this_comp, last_num));
         }
     }
+    if (c.nesting_left == skippy.max_nesting) {
+        // Top level: the lookup pass compacts once at its end.
+        for (positions[1..count]) |p| b.markDeleted(p);
+        return positions[count - 1] + 1;
+    }
+    // Nested: callers adjust their positions by the length change.
     var r = count;
     while (r > 1) {
         r -= 1;

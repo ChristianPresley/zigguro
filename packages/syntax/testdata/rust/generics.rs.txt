@@ -1,0 +1,5 @@
+fn map<T, U, F: Fn(T) -> U>(v: Vec<T>, f: F) -> Vec<U> { v.into_iter().map(f).collect() }
+let x: Option<Result<i32, String>> = None;
+let y = Vec::<u8>::with_capacity(10);
+impl<T: Clone + Send + 'static> Trait for Wrapper<T> {}
+const LIMIT: usize = 10;

@@ -1,0 +1,10 @@
+1| keyword.storage:class type:Shape punctuation.bracket:{
+2| keyword.storage:public punctuation.delimiter::
+3| keyword.storage:virtual type.builtin:double function:area punctuation.bracket:( punctuation.bracket:) keyword.storage:const operator:= number:0 punctuation.delimiter:;
+4| keyword.storage:virtual operator:~ function:Shape punctuation.bracket:( punctuation.bracket:) operator:= keyword.control:default punctuation.delimiter:;
+5| punctuation.bracket:} punctuation.delimiter:;
+6| keyword.storage:struct type:Circle punctuation.delimiter:: type:Shape punctuation.bracket:{
+7| type.builtin:double variable:r punctuation.delimiter:;
+8| type.builtin:double function:area punctuation.bracket:( punctuation.bracket:) keyword.storage:const keyword.storage:override punctuation.bracket:{ keyword.control:return number:3.14159 operator:* variable:r operator:* variable:r punctuation.delimiter:; punctuation.bracket:}
+9| punctuation.bracket:} punctuation.delimiter:;
+10| type:Circle function:make punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:;

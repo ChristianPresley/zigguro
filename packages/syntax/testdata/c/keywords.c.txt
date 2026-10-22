@@ -1,0 +1,17 @@
+static int counter = 0;
+extern const volatile int reg;
+typedef struct node node_t;
+int main(void) {
+    for (int i = 0; i < 10; i++) {
+        if (i % 2) continue; else break;
+    }
+    switch (counter) {
+    case 1: goto done;
+    default: break;
+    }
+    do { counter--; } while (counter > 0);
+done:
+    return sizeof(node_t) + _Alignof(int);
+}
+_Static_assert(sizeof(int) == 4, "int");
+register auto restrict inline _Thread_local _Noreturn

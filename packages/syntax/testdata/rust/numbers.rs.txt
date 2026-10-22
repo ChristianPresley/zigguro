@@ -1,0 +1,15 @@
+let a = 42;
+let b = 1_000_000;
+let c = 0xFF_u8;
+let d = 0o777;
+let e = 0b1010_1010;
+let f = 3.14;
+let g = 1e10;
+let h = 2.5E-3f64;
+let i = 1u32 + 2i64 + 3usize;
+let j = 1.0f32;
+let k = 0..10;
+let l = 1..=5;
+let m = 1.max(2);
+let n = t.0.1;
+let o = 1.;

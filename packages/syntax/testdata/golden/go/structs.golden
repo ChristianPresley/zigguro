@@ -1,0 +1,8 @@
+1| keyword.storage:type type:Config keyword.storage:struct punctuation.bracket:{
+2| variable:Name type.builtin:string string:`json:"name"`
+3| variable:Port type.builtin:int string:`json:"port,omitempty"`
+4| variable:Enabled type.builtin:bool
+5| variable:inner operator:* variable:Config
+6| punctuation.bracket:}
+7| variable:c operator::= variable:Config punctuation.bracket:{ variable:Name punctuation.delimiter:: string:"x" punctuation.delimiter:, variable:Port punctuation.delimiter:: number:80 punctuation.bracket:}
+8| variable:c punctuation.delimiter:. variable:inner operator:= operator:& variable:Config punctuation.bracket:{ punctuation.bracket:}

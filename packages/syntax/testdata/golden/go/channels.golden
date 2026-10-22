@@ -1,0 +1,11 @@
+1| variable:ch operator::= function.builtin:make punctuation.bracket:( keyword.storage:chan type.builtin:int punctuation.delimiter:, number:10 punctuation.bracket:)
+2| keyword.storage:var variable:recv operator:<- keyword.storage:chan type.builtin:int operator:= variable:ch
+3| keyword.storage:var variable:send keyword.storage:chan operator:<- type.builtin:int operator:= variable:ch
+4| keyword.control:go keyword.storage:func punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ variable:ch operator:<- number:1 punctuation.bracket:} punctuation.bracket:( punctuation.bracket:)
+5| variable:v punctuation.delimiter:, variable:ok operator::= operator:<- variable:ch
+6| function.builtin:close punctuation.bracket:( variable:ch punctuation.bracket:)
+7| keyword.control:select punctuation.bracket:{
+8| keyword.control:case variable:x operator::= operator:<- variable:ch punctuation.delimiter::
+9| variable:_ operator:= variable:x
+10| keyword.control:default punctuation.delimiter::
+11| punctuation.bracket:}

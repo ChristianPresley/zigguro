@@ -1,0 +1,7 @@
+1| comment:// line
+2| comment:/* block */ type.builtin:int variable:a punctuation.delimiter:;
+3| comment:/* multi
+4| comment:   line */ type.builtin:int variable:b punctuation.delimiter:;
+5| comment.doc:/// doc
+6| comment.doc:/** doc block */
+7| type.builtin:int variable:c punctuation.delimiter:; comment:// tail "string"

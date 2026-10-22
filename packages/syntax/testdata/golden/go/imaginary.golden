@@ -1,0 +1,7 @@
+1| variable:a operator::= number:1i
+2| variable:b operator::= number:0i
+3| variable:c operator::= number:2.5i
+4| variable:d operator::= number:1e3i
+5| variable:e operator::= number:0x1p-2i
+6| variable:f operator::= number:0b1i
+7| variable:g operator::= function.builtin:complex punctuation.bracket:( number:1 punctuation.delimiter:, number:2 punctuation.bracket:) operator:+ number:3i

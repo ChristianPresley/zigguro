@@ -1,0 +1,10 @@
+/* outer /* inner */ still outer */ let a = 1;
+/* level 1
+   /* level 2
+      /* level 3 */
+   back to 2 */
+   back to 1
+*/
+let b = 2;
+/* unbalanced */ */ let c = 3;
+let d = 4; /* /* */ */ let e = 5;

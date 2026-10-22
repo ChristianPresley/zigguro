@@ -1,0 +1,6 @@
+int a = 1'000'000;
+long b = 0x7FFF'FFFF;
+auto c = 0b1010'1010;
+double d = 1'234.567'8;
+char e = 'x'; int f = 1'0;
+unsigned long long g = 18'446'744'073'709'551'615ull;

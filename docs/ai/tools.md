@@ -110,3 +110,54 @@ returned to the model as `Permission denied: <reason>`.
 **Tests.** `run_test.zig` drives the tools against `FakeHost`, a scripted
 host with virtual time. `process_host_test.zig` runs real processes,
 including the process-tree stop.
+
+## File tools
+
+`read_file`, `edit_file`, `multi_edit` and `write_file` work through the
+`Files` seam in `tools/builtin/files.zig`, so the same tools run against
+the IDE's open documents and against the disk.
+
+- **`read_file`** returns numbered lines and pages with `offset` and
+  `limit`. It cuts long lines, decodes UTF-16 that has a BOM and refuses
+  binary files. Images and PDFs go to the model as image or document
+  parts when it accepts them. Text from an unsaved editor buffer is marked
+  as such.
+- **`edit_file`** replaces one match of `old_string`, or every match with
+  `replace_all`. **`multi_edit`** applies several replacements to the text
+  the agent read and proposes the result as one change, so all of them
+  land or none do.
+- **`write_file`** creates a file, or replaces one the agent has read.
+- Every change is a proposal. `Files.propose` applies it, keeps it pending
+  in a changeset for review, or rejects it (for example as stale), and
+  the model is told which.
+- `ReadTracker` records what each agent has read and at which version.
+  An agent must read a file before it edits or replaces it.
+- `zg agent` uses `DiskFiles`, which applies proposals directly. The IDE
+  adapts `Files` to the editor's agent edit sessions.
+
+## The invoke pipeline
+
+Every tool call goes through `tools/invoke.zig`, in this order:
+
+1. **Validation.** The input is checked against the tool's schema. An
+   invalid input returns the errors to the model and nothing else runs.
+2. **`PreToolUse` hooks.** A deny ends the call. An allow skips the
+   approval prompt, but deny rules and plan mode still apply. An ask forces
+   a prompt. An updated input is validated again.
+3. **Permission.** `deps.Permission` (E16 in the IDE) allows, denies or
+   prompts. An input the user edits in the approval is validated again.
+4. **The handler.** A Zig error from the handler becomes an instruction to
+   the model, for example to try a smaller request after a timeout.
+5. **`PostToolUse` hooks** (`PostToolUseFailure` when the result is an
+   error). Their extra context is appended to the result, and an updated
+   output replaces it.
+6. **Bounding.** Text over 30,000 characters is cut to its first and last
+   2,000 characters, on line ends. The whole output is saved to
+   `<spill dir>/<call id>.txt`, and the model is told the path so it can
+   read the rest with `read_file`. `zg agent` saves under
+   `<state dir>/tool-output`.
+
+Every decision goes to the audit sink (`deps.Audit`). All of them except
+plain permission allows are also published as `tool_decision` events. The
+pipeline adds under 1 µs to a call that has no hooks and is allowed
+(bench `ai.invoke_overhead`).

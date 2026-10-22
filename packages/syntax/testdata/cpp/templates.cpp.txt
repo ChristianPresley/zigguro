@@ -1,0 +1,9 @@
+template <typename T, std::size_t N>
+struct Array {
+    T data[N];
+};
+template <class T> concept Number = std::is_arithmetic_v<T>;
+template <Number T> requires (sizeof(T) > 1)
+T twice(T x) { return x * 2; }
+std::vector<std::pair<int, std::string>> v;
+auto x = static_cast<int>(y) + reinterpret_cast<long>(z);

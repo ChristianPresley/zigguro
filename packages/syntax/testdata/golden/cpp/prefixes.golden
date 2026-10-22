@@ -1,0 +1,9 @@
+1| keyword.storage:auto variable:a operator:= string:u8"utf8" punctuation.delimiter:;
+2| keyword.storage:auto variable:b operator:= string:u"utf16" punctuation.delimiter:;
+3| keyword.storage:auto variable:c operator:= string:U"utf32" punctuation.delimiter:;
+4| keyword.storage:auto variable:d operator:= string:L"wide" punctuation.delimiter:;
+5| keyword.storage:auto variable:e operator:= character:u8'c' punctuation.delimiter:;
+6| keyword.storage:auto variable:f operator:= character:L'w' punctuation.delimiter:;
+7| keyword.storage:auto variable:g operator:= character:U' string.escape:\U0001F600 character:' punctuation.delimiter:;
+8| keyword.storage:auto variable:u8x operator:= number:1 punctuation.delimiter:;
+9| keyword.storage:auto type:L operator:= number:2 punctuation.delimiter:;

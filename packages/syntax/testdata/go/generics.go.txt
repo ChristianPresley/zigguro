@@ -1,0 +1,14 @@
+func Map[T, U any](s []T, f func(T) U) []U {
+	r := make([]U, 0, len(s))
+	for _, v := range s {
+		r = append(r, f(v))
+	}
+	return r
+}
+type Number interface {
+	~int | ~int64 | ~float64
+}
+type Pair[K comparable, V any] struct {
+	Key K
+	Val V
+}

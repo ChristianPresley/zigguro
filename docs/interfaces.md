@@ -2321,7 +2321,7 @@ Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
-- `ExternalRing` exists but `VkRenderer` does not use it yet: every `.external` target goes through the shm sink. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
+- `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
 - Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
@@ -2346,8 +2346,8 @@ Internal to E02 behind `r2d.Renderer`.
 
 ### Implemented by
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
-structure from `std.zig.Ast`), E05.F04.S03.T01 (bracket-pair tree, fallback
-structure and structure queries).
+structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers),
+E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -2428,6 +2428,19 @@ pub const DocumentSyntax = struct { hl: Highlighter, brackets: BracketTree, vers
     pub fn fallbackStructure(ds, gpa, tree) !Structure };  // brackets follow the tokens; exact once idle is done
 pub fn lineIndex(tree: *const PieceTree) LineIndex;
 pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
+// Tier-1 languages (langs/*.zig), all in `builtin_languages`.
+pub const zig_language, c_language, cpp_language, rust_language, go_language: Language;
+pub const EditRules = struct { line_comment, block_comment, auto_close,
+    insert_spaces: ?bool = null,                 // Go: false (tabs)
+    indent_after: []const []const u8,            // e.g. "{"
+    dedent_on: []const []const u8 };             // e.g. "}"
+// langs/c.zig: state `mode` = construct | Mode.directive while a directive continues;
+// a C++ raw string's delimiter is in `aux`.
+pub fn c.lexLineWith(comptime o: struct { dialect: enum { c, cpp }, directive_tokens: bool = false }, st, s, out) void;
+// langs/rust.zig: block-comment depth in `depth`, raw-string `#` count in `aux[0]`.
+pub fn rust.classifyQuote(line: []const u8, pos: usize) struct { enum { char, lifetime, invalid }, usize };
+// langs/go.zig: tier 2 turns on automatic semicolons (a `Kind.virtual_semicolon` token at the line end).
+pub fn go.lexLineWith(comptime o: struct { virtual_semicolons: bool = false }, st, s, out) void;
 ```
 
 ### Threading
@@ -2720,6 +2733,8 @@ pub const RenderThread = struct {
     pub fn stats(self) FrameStats;                       // last completed frame
     pub fn shutdown(self) void;                          // joins, destroys the renderer
 };
+// FrameStats.skipped: the renderer had no free target buffer; the thread
+// re-renders (the same list if nothing newer was posted) one refresh later.
 pub const FramePacer = struct {
     pub const Mode = enum { immediate, present_wait2, present_wait, platform_frame, timer };
     pub const Caps = struct { headless, present_wait2, present_wait, platform_frames: bool };
