@@ -18,6 +18,12 @@ pub const text_field = @import("text_field/root.zig");
 pub const overlay = @import("overlay.zig");
 /// The `dialog.zig` module.
 pub const dialog = @import("dialog.zig");
+/// The `menu.zig` module.
+pub const menu = @import("menu.zig");
+/// The `menu_aim.zig` module.
+pub const menu_aim = @import("menu_aim.zig");
+/// The `menubar.zig` module.
+pub const menubar_mod = @import("menubar.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -51,6 +57,16 @@ pub const popover = overlay.popover;
 pub const modalDialog = dialog.dialog;
 /// See `dialog.confirm`.
 pub const confirm = dialog.confirm;
+/// See `menu.MenuItem`.
+pub const MenuItem = menu.MenuItem;
+/// See `menu.openMenu`.
+pub const openMenu = menu.openMenu;
+/// See `menu.contextMenu`.
+pub const contextMenu = menu.contextMenu;
+/// See `menu.menuButton`.
+pub const menuButton = menu.menuButton;
+/// See `menubar.menubar`.
+pub const menubar = menubar_mod.menubar;
 /// See `text.TextProps`.
 pub const TextProps = text.TextProps;
 

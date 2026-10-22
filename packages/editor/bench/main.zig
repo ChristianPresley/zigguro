@@ -353,4 +353,55 @@ fn register(b: *bench.Bench) !void {
     }
     try registerDiff(b);
     try registerFind(b);
+    try registerLspSync(b, text);
+}
+
+const api = zg_editor.model.api;
+
+const NullSink = struct {
+    fn didOpen(_: *anyopaque, _: []const u8, _: []const u8, _: i32, _: buffer.piece_tree.ChunkIterator) void {}
+    fn didChange(_: *anyopaque, _: []const u8, v: i32, changes: []const api.lsp_sync.LspChange, _: ?buffer.piece_tree.ChunkIterator) void {
+        bench.doNotOptimizeAway(v);
+        bench.doNotOptimizeAway(changes.len);
+    }
+    fn didSave(_: *anyopaque, _: []const u8, _: ?buffer.piece_tree.ChunkIterator) void {}
+    fn didClose(_: *anyopaque, _: []const u8) void {}
+};
+
+const SyncDoc = struct { reg: *api.registry.DocumentRegistry, sync: *api.lsp_sync.LspSync, h: api.registry.DocHandle };
+
+fn registerLspSync(b: *bench.Bench, text: []const u8) !void {
+    var reg: api.registry.DocumentRegistry = .init(b.gpa, .posix);
+    defer reg.deinit();
+    var dummy: u8 = 0;
+    var sync: api.lsp_sync.LspSync = .init(b.gpa, &reg, .utf16, .incremental, .{
+        .ctx = &dummy,
+        .didOpen = NullSink.didOpen,
+        .didChange = NullSink.didChange,
+        .didSave = NullSink.didSave,
+        .didClose = NullSink.didClose,
+    });
+    defer sync.deinit();
+    const h = try reg.openFile("/bench.txt", text);
+    defer reg.release(h);
+    try sync.track(h, "plaintext");
+    var d: SyncDoc = .{ .reg = &reg, .sync = &sync, .h = h };
+    try b.run("editor.lsp_sync.keystroke_100k", &d, lspKeystroke);
+}
+
+/// One typed character in the middle of a 100k-line document, then the
+/// frame's flush: ChangeSet, compose and UTF-16 positions.
+fn lspKeystroke(d: *SyncDoc, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const doc = d.reg.get(d.h).?;
+    var at = doc.tree.lineStart(doc.tree.lineCount() / 2) + 10;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, doc.len(), &.{.{ .range = .{ .start = at, .end = at }, .text = "x" }}) catch unreachable;
+        doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        d.sync.flush();
+        doc.endFrame();
+        at += 1;
+    }
 }

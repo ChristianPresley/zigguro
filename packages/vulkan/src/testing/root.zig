@@ -22,6 +22,8 @@ pub const scenes = @import("scenes.zig");
 pub const parity = @import("parity.zig");
 /// Validation-layer assertions for GPU tests.
 pub const validation = @import("validation.zig");
+/// Device and command-buffer helpers for GPU tests.
+pub const gpu = @import("gpu.zig");
 
 test {
     _ = CpuImage;

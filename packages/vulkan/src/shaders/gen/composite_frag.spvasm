@@ -1,0 +1,105 @@
+; SPIR-V
+; Version: 1.3
+; Generator: 0
+; Bound: 66
+; Schema: 0
+                 OpCapability RuntimeDescriptorArray
+                 OpCapability ShaderNonUniform
+                 OpCapability SampledImageArrayNonUniformIndexing
+                 OpCapability Shader
+                 OpExtension "SPV_EXT_descriptor_indexing"
+           %32 = OpExtInstImport "GLSL.std.450"
+                 OpMemoryModel Logical GLSL450
+                 OpEntryPoint Fragment %main "main" %18 %20
+                 OpExecutionMode %main OriginUpperLeft
+                 OpName %main "main"
+                 OpMemberName %CompositeConstants 0 "offset"
+                 OpMemberName %CompositeConstants 1 "size"
+                 OpMemberName %CompositeConstants 2 "slot"
+                 OpMemberName %CompositeConstants 3 "opacity"
+                 OpMemberName %CompositeConstants 4 "_pad"
+                 OpMemberName %CompositeConstants 5 "flags"
+                 OpName %CompositeConstants "CompositeConstants"
+                 OpName %pc "pc"
+                 OpName %textures "textures"
+                 OpMemberDecorate %CompositeConstants 0 Offset 0
+                 OpMemberDecorate %CompositeConstants 1 Offset 8
+                 OpMemberDecorate %CompositeConstants 2 Offset 16
+                 OpMemberDecorate %CompositeConstants 3 Offset 20
+                 OpMemberDecorate %CompositeConstants 4 Offset 24
+                 OpMemberDecorate %CompositeConstants 5 Offset 28
+                 OpDecorate %CompositeConstants Block
+                 OpDecorate %textures DescriptorSet 0
+                 OpDecorate %textures Binding 2
+                 OpDecorate %18 Location 0
+                 OpDecorate %20 BuiltIn FragCoord
+                 OpDecorate %48 NonUniform
+                 OpDecorate %50 NonUniform
+                 OpDecorate %51 NonUniform
+            %1 = OpTypeVoid
+            %3 = OpTypeFunction %1
+            %5 = OpTypeFloat 32
+            %6 = OpTypeVector %5 2
+            %7 = OpTypeInt 32 0
+%CompositeConstants = OpTypeStruct %6 %6 %7 %5 %7 %7
+            %9 = OpTypePointer PushConstant %CompositeConstants
+           %pc = OpVariable %9 PushConstant
+           %11 = OpTypeImage %5 2D 0 0 0 1 Unknown
+           %12 = OpTypeSampledImage %11
+           %13 = OpTypeRuntimeArray %12
+           %14 = OpTypePointer UniformConstant %13
+     %textures = OpVariable %14 UniformConstant
+           %16 = OpTypeVector %5 4
+           %17 = OpTypePointer Output %16
+           %18 = OpVariable %17 Output
+           %19 = OpTypePointer Input %16
+           %20 = OpVariable %19 Input
+           %22 = OpTypePointer PushConstant %6
+           %23 = OpConstant %7 1
+           %27 = OpConstant %7 0
+           %36 = OpTypePointer PushConstant %7
+           %37 = OpConstant %7 5
+           %41 = OpTypeBool
+           %43 = OpTypeVector %41 2
+           %46 = OpConstant %7 2
+           %49 = OpTypePointer UniformConstant %12
+           %59 = OpConstant %5 0
+           %61 = OpTypePointer PushConstant %5
+           %62 = OpConstant %7 3
+         %main = OpFunction %1 None %3
+            %4 = OpLabel
+           %21 = OpLoad %16 %20
+           %24 = OpAccessChain %22 %pc %23
+           %25 = OpLoad %6 %24
+           %26 = OpVectorShuffle %6 %21 %21 0 1
+           %28 = OpAccessChain %22 %pc %27
+           %29 = OpLoad %6 %28
+           %30 = OpFAdd %6 %26 %29
+           %31 = OpFDiv %6 %30 %25
+           %33 = OpExtInst %6 %32 Floor %31
+           %34 = OpFMul %6 %25 %33
+           %35 = OpFSub %6 %30 %34
+           %38 = OpAccessChain %36 %pc %37
+           %39 = OpLoad %7 %38
+           %40 = OpBitwiseAnd %7 %39 %23
+           %42 = OpINotEqual %41 %40 %27
+           %44 = OpCompositeConstruct %43 %42 %42
+           %45 = OpSelect %6 %44 %35 %30
+           %47 = OpAccessChain %36 %pc %46
+           %48 = OpLoad %7 %47
+           %50 = OpAccessChain %49 %textures %48
+           %51 = OpLoad %12 %50
+           %52 = OpCompositeExtract %5 %45 0
+           %53 = OpCompositeExtract %5 %45 1
+           %54 = OpCompositeExtract %5 %25 0
+           %55 = OpFDiv %5 %52 %54
+           %56 = OpCompositeExtract %5 %25 1
+           %57 = OpFDiv %5 %53 %56
+           %58 = OpCompositeConstruct %6 %55 %57
+           %60 = OpImageSampleExplicitLod %16 %51 %58 Lod %59
+           %63 = OpAccessChain %61 %pc %62
+           %64 = OpLoad %5 %63
+           %65 = OpVectorTimesScalar %16 %60 %64
+                 OpStore %18 %65
+                 OpReturn
+                 OpFunctionEnd

@@ -1,11 +1,14 @@
-//! The CPU presenter for Wayland windows: `wl_shm` buffers in memfds.
-//! `present` acks the pending configure, then sets the scale, attaches,
-//! damages and commits in one flush, so the compositor never sees a
-//! buffer of the old size after the ack.
+//! The presenter for Wayland windows: `wl_shm` buffers in memfds from
+//! `allocCpuBuffer`, and E02's images through `importBuffer` (dmabuf via
+//! zwp_linux_dmabuf_v1, or an shm fd). `present` attaches a sync_file
+//! acquire fence (implicit sync), then acks the pending configure, sets
+//! the scale, attaches, damages, asks for a frame callback and
+//! presentation feedback and commits in one flush, so the compositor
+//! never sees a buffer of the old size after the ack.
 //!
-//! dmabuf import, explicit sync and presentation feedback belong to the
-//! full presenter (E01.F04.S04); `importBuffer` reports `Unsupported`
-//! until then.
+//! Explicit sync (wp_linux_drm_syncobj_v1) needs a release timeline the
+//! presenter contract does not carry yet; a `.syncobj` acquire point is
+//! `error.Unsupported`.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -13,6 +16,7 @@ const wl = @import("wl_gen");
 const types = @import("../api/types.zig");
 const surface = @import("../api/surface.zig");
 const Backend = @import("backend.zig").WaylandBackend;
+const dmabuf = @import("dmabuf.zig");
 
 /// DRM fourcc `AR24`.
 pub const fourcc_argb8888: u32 = 0x34325241;
@@ -21,14 +25,19 @@ pub const fourcc_xrgb8888: u32 = 0x34325258;
 
 const page = std.heap.page_size_min;
 
-/// One shm buffer.
+/// One buffer: allocated shm, imported shm, or imported dmabuf.
 pub const ShmBuffer = struct {
     /// The handle given to E02.
     handle: u32,
     /// The protocol object.
     buffer: wl.wl_buffer.Id,
-    /// The mapping.
-    mem: []align(page) u8,
+    /// The mapping of an `allocCpuBuffer` buffer; null for imports.
+    mem: ?[]align(page) u8 = null,
+    /// An imported dmabuf's plane fds (borrowed from E02), for implicit
+    /// sync.
+    dmabuf_fds: [4]i32 = .{ -1, -1, -1, -1 },
+    /// How many `dmabuf_fds` are set; 0 for shm.
+    planes: u8 = 0,
     /// Width in pixels.
     w: u32,
     /// Height in pixels.
@@ -50,6 +59,8 @@ pub const ShmPresenter = struct {
     /// Buffers the compositor released, not yet polled.
     released: std.ArrayList(surface.BufferHandle) = .empty,
     next: u32 = 1,
+    /// Whether the CPU-wait fallback has been logged.
+    warned_cpu_wait: bool = false,
 
     /// A presenter for `win`.
     pub fn init(b: *Backend, win: types.WindowId) ShmPresenter {
@@ -66,7 +77,7 @@ pub const ShmPresenter = struct {
         const gpa = p.b.gpa;
         for (p.buffers.items) |buf| {
             wl.wl_buffer.destroy(p.b.conn, buf.buffer) catch {};
-            std.posix.munmap(buf.mem);
+            if (buf.mem) |m| std.posix.munmap(m);
         }
         p.buffers.deinit(gpa);
         p.released.deinit(gpa);
@@ -99,11 +110,19 @@ fn of(ctx: *anyopaque) *ShmPresenter {
     return @ptrCast(@alignCast(ctx));
 }
 
-fn drmDevice(_: *anyopaque) ?surface.DrmDevice {
-    return null;
+fn drmDevice(ctx: *anyopaque) ?surface.DrmDevice {
+    const b = of(ctx).b;
+    b.lock();
+    defer b.unlock();
+    return b.feedback.device;
 }
 
-fn formats(_: *anyopaque, out: []surface.FormatModifier) usize {
+fn formats(ctx: *anyopaque, out: []surface.FormatModifier) usize {
+    const b = of(ctx).b;
+    b.lock();
+    defer b.unlock();
+    // With dmabuf, the compositor's list in preference order.
+    if (b.dmabuf != null and b.feedback.formats.items.len > 0) return b.feedback.copyFormats(out);
     // Every compositor supports these two (wl_shm requires them).
     const all = [_]surface.FormatModifier{ .{ .fourcc = fourcc_argb8888, .modifier = 0 }, .{ .fourcc = fourcc_xrgb8888, .modifier = 0 } };
     const n = @min(out.len, all.len);
@@ -111,12 +130,53 @@ fn formats(_: *anyopaque, out: []surface.FormatModifier) usize {
     return all.len;
 }
 
-fn syncMode(_: *anyopaque) surface.SyncMode {
-    return .cpu_only;
+fn syncMode(ctx: *anyopaque) surface.SyncMode {
+    const b = of(ctx).b;
+    return if (b.dmabuf != null) .implicit_sync_file else .cpu_only;
 }
 
-fn importBuffer(_: *anyopaque, _: *const surface.BufferDesc) anyerror!surface.BufferHandle {
-    return error.Unsupported;
+fn importBuffer(ctx: *anyopaque, desc: *const surface.BufferDesc) anyerror!surface.BufferHandle {
+    const p = of(ctx);
+    const b = p.b;
+    const c = b.conn;
+    if (desc.width == 0 or desc.height == 0 or desc.width > 16384 or desc.height > 16384) return error.InvalidSize;
+    if (desc.planes.len == 0 or desc.planes.len > 4) return error.InvalidBuffer;
+    b.lock();
+    defer b.unlock();
+    try p.buffers.ensureUnusedCapacity(b.gpa, 1);
+    var entry: ShmBuffer = .{ .handle = p.next, .buffer = undefined, .w = desc.width, .h = desc.height, .stride = desc.planes[0].stride };
+    switch (desc.kind) {
+        .dmabuf => {
+            const dm = b.dmabuf orelse return error.Unsupported;
+            const params = try c.newIdVersion(wl.zwp_linux_buffer_params_v1, c.version(@intFromEnum(dm)), null);
+            try wl.zwp_linux_dmabuf_v1.createParams(c, dm, params);
+            const hi: u32 = @truncate(desc.modifier >> 32);
+            const lo: u32 = @truncate(desc.modifier);
+            for (desc.planes, 0..) |pl, i| {
+                try wl.zwp_linux_buffer_params_v1.add(c, params, pl.fd, @intCast(i), pl.offset, pl.stride, hi, lo);
+                entry.dmabuf_fds[i] = pl.fd;
+            }
+            entry.planes = @intCast(desc.planes.len);
+            entry.buffer = try c.newIdVersion(wl.wl_buffer, 1, b.handler(.buffer));
+            try wl.zwp_linux_buffer_params_v1.createImmed(c, params, entry.buffer, @intCast(desc.width), @intCast(desc.height), desc.fourcc, .{});
+            try wl.zwp_linux_buffer_params_v1.destroy(c, params);
+        },
+        .shm => {
+            const fmt = shmFormat(desc.fourcc) orelse return error.UnsupportedFormat;
+            const pl = desc.planes[0];
+            const size = @as(u64, pl.offset) + @as(u64, pl.stride) * desc.height;
+            if (size > std.math.maxInt(i32)) return error.InvalidSize;
+            const pool = try c.newIdVersion(wl.wl_shm_pool, c.version(@intFromEnum(b.shm)), null);
+            try wl.wl_shm.createPool(c, b.shm, pool, pl.fd, @intCast(size));
+            entry.buffer = try c.newIdVersion(wl.wl_buffer, c.version(@intFromEnum(pool)), b.handler(.buffer));
+            try wl.wl_shm_pool.createBuffer(c, pool, entry.buffer, @intCast(pl.offset), @intCast(desc.width), @intCast(desc.height), @intCast(pl.stride), fmt);
+            try wl.wl_shm_pool.destroy(c, pool);
+        },
+    }
+    p.buffers.appendAssumeCapacity(entry);
+    p.next += 1;
+    try c.flush();
+    return @enumFromInt(entry.handle);
 }
 
 fn shmFormat(fourcc: u32) ?wl.wl_shm.Format {
@@ -158,9 +218,28 @@ fn allocCpuBuffer(ctx: *anyopaque, w: u32, h: u32, fourcc: u32) anyerror!surface
 }
 
 fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.PxRect, acquire: surface.SyncPoint, ack: ?surface.ConfigureAck) anyerror!void {
-    _ = acquire; // CPU buffers are written before present returns.
     const p = of(ctx);
     const b = p.b;
+    switch (acquire) {
+        .none => {},
+        // The presenter owns the sync_file and closes it here.
+        .sync_file => |sf| {
+            defer _ = linux.close(sf);
+            b.lock();
+            const i = p.byHandle(handle);
+            const buf = if (i) |x| p.buffers.items[x] else null;
+            b.unlock();
+            const bf = buf orelse return error.InvalidBuffer;
+            // Imported outside the mutex: the fallback blocks.
+            if (bf.planes > 0) {
+                if (dmabuf.importSyncFile(bf.dmabuf_fds[0..bf.planes], sf) == .waited and !p.warned_cpu_wait) {
+                    p.warned_cpu_wait = true;
+                    std.log.scoped(.wayland).warn("DMA_BUF_IOCTL_IMPORT_SYNC_FILE unavailable; waiting on the CPU (degraded)", .{});
+                }
+            } else dmabuf.waitSyncFile(sf);
+        },
+        .syncobj => return error.Unsupported,
+    }
     b.lock();
     defer b.unlock();
     const i = p.byHandle(handle) orelse return error.InvalidBuffer;
@@ -176,7 +255,7 @@ fn releaseBuffer(ctx: *anyopaque, handle: surface.BufferHandle) void {
     const i = p.byHandle(handle) orelse return;
     const buf = p.buffers.swapRemove(i);
     wl.wl_buffer.destroy(b.conn, buf.buffer) catch {};
-    std.posix.munmap(buf.mem);
+    if (buf.mem) |m| std.posix.munmap(m);
     b.conn.flush() catch {};
 }
 

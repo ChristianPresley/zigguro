@@ -19,7 +19,10 @@ pub const Response = packed struct(u32) {
     drag_started: bool = false,
     dragging: bool = false,
     drag_ended: bool = false,
-    _pad: u18 = 0,
+    /// A context menu was asked for on this node or a descendant
+    /// (right-click, Shift+F10, the Menu key); see `Window.context_at`.
+    context_menu: bool = false,
+    _pad: u17 = 0,
 
     /// The union of two responses.
     pub fn merge(a: Response, b: Response) Response {

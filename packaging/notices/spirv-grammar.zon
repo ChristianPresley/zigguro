@@ -1,0 +1,15 @@
+// The SPIR-V machine-readable grammar read by tools/spirv (E02). Only the
+// build-time shader toolchain uses it; nothing from it ships.
+// Details: tools/spirv/data/SOURCES.md.
+.{
+    .name = "SPIR-V grammar (SPIRV-Headers)",
+    .version = "vulkan-sdk-1.4.335.0",
+    .license_spdx = "MIT",
+    .source_url = "https://github.com/KhronosGroup/SPIRV-Headers",
+    .shipped = false,
+    .paths = .{
+        "tools/spirv/data/**",
+        "tools/spirv/spec.zig",
+    },
+    .license_text_files = .{"tools/spirv/data/LICENSE"},
+}

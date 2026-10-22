@@ -28,6 +28,25 @@ pub const Format = enum(u8) {
         };
     }
 
+    /// The view format. Shaders blend in sRGB-encoded space (as the
+    /// software renderer does), so sRGB images are viewed as UNORM and
+    /// sampling never linearises.
+    pub fn viewFormat(f: Format) vk.Format {
+        return switch (f) {
+            .rgba8_srgb => .r8g8b8a8_unorm,
+            else => f.vkFormat(),
+        };
+    }
+
+    /// The view swizzle: r8 replicates coverage into every channel, as
+    /// the software renderer's `texel` does.
+    pub fn swizzle(f: Format) vk.ComponentMapping {
+        return switch (f) {
+            .r8_unorm => .{ .r = .r, .g = .r, .b = .r, .a = .r },
+            else => .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        };
+    }
+
     pub fn bytesPerTexel(f: Format) u32 {
         return switch (f) {
             .r8_unorm => 1,
@@ -61,6 +80,7 @@ pub fn create(mem: *DeviceMemory, w: u32, h: u32, fmt: Format, use: Use, name: [
         .render_target => .{ .color_attachment = true, .sampled = true, .transfer_src = true, .transfer_dst = true },
     };
     const img = try mem.createImage(.{
+        .flags = .{ .mutable_format = fmt.viewFormat() != fmt.vkFormat() },
         .image_type = .@"2d",
         .format = fmt.vkFormat(),
         .extent = .{ .width = w, .height = h, .depth = 1 },
@@ -78,8 +98,8 @@ pub fn create(mem: *DeviceMemory, w: u32, h: u32, fmt: Format, use: Use, name: [
     _ = try vk.check(gpu.ddisp.create_image_view(gpu.dev, &.{
         .image = img.handle,
         .view_type = .@"2d",
-        .format = fmt.vkFormat(),
-        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .format = fmt.viewFormat(),
+        .components = fmt.swizzle(),
         .subresource_range = barriers.color_range,
     }, null, &view));
     gpu.name(view, name);
