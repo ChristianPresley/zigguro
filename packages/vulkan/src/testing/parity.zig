@@ -13,6 +13,7 @@ const scenes = @import("scenes.zig");
 const atlas = @import("synthetic_atlas.zig");
 const CpuImage = @import("CpuImage.zig");
 const golden = @import("golden_image.zig");
+const image_diff = @import("image_diff.zig");
 const SwRenderer = @import("../sw/SwRenderer.zig");
 
 /// Golden directory relative to the package root.
@@ -100,4 +101,50 @@ test "scene: corpus on software matches goldens" {
         }
     }
     try std.testing.expectEqual(@as(u32, 0), failed);
+}
+
+/// Renders every frame of the scroll layer seam scene through `target`
+/// (a backend with `renderToImage`) and compares it with the same frame
+/// drawn without the scroll layer: within 1 LSB at integer scroll
+/// offsets, 2 LSB at fractional ones. Returns the number of mismatches.
+pub fn seamMismatches(gpa: std.mem.Allocator, target: anytype, r: r2d.Renderer, order: CpuImage.Order) !u32 {
+    const tex = try Textures.create(gpa, r);
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+    dl.setGlyphPages(&tex.pages);
+    dl.layer_query = r.layerQuery();
+    const size: r2d.Size = .{ .w = 120, .h = 90 };
+    var a = try CpuImage.initOrder(gpa, size.w, size.h, order);
+    defer a.deinit(gpa);
+    var b = try CpuImage.initOrder(gpa, size.w, size.h, order);
+    defer b.deinit(gpa);
+    var prng = std.Random.DefaultPrng.init(1);
+    var bad: u32 = 0;
+    for (scenes.seam.scrolls, 0..) |s, frame| {
+        dl.reset(size, 1);
+        dl.damageAll();
+        scenes.seam.layered(&dl, @intCast(frame), tex.image, prng.random());
+        _ = try target.renderToImage(&dl, &a);
+        dl.reset(size, 1);
+        dl.damageAll();
+        scenes.seam.reference(&dl, frame);
+        _ = try target.renderToImage(&dl, &b);
+        const tol: image_diff.Tolerance = .{ .max_channel_diff = if (s == @floor(s)) 1 else 2 };
+        const res = try image_diff.diff(gpa, &a, &b, tol, false);
+        if (!res.pass) {
+            std.debug.print("scroll layer seam: frame {d} (scroll {d}): {d} pixels off, max diff {d}\n", .{ frame, s, res.bad_pixels, res.max_diff });
+            bad += 1;
+        }
+    }
+    return bad;
+}
+
+test "scene: scroll layer seam matches unlayered rendering (software)" {
+    const gpa = std.testing.allocator;
+    var sink: platform.surface.HeadlessSink = .{ .ptr = undefined, .write = struct {
+        fn w(_: *anyopaque, _: platform.types.WindowId, _: []const r2d.PxRect, _: []const u8, _: u32) void {}
+    }.w };
+    const sw = try SwRenderer.create(gpa, std.testing.io, .{ .target = .{ .headless = &sink } });
+    defer sw.destroy();
+    try std.testing.expectEqual(@as(u32, 0), try seamMismatches(gpa, sw, sw.renderer(), .rgba));
 }

@@ -22,9 +22,6 @@ pub const pending = [_][]const u8{
     "text.layout_200col",
     "text.measure_hit",
     "text.registry_get",
-    "text.shape_code_line_200",
-    "text.shape_latin_1k",
-    "text.shape_word_cache_hit",
     "text.wrap_10kb",
 };
 
@@ -222,6 +219,69 @@ fn register(b: *bench.Bench) !void {
     var screen: [200 * 60]u32 = undefined;
     for (&screen) |*o| o.* = cache_prng.random().uintLessThan(u32, 100);
     try b.run("text.cache_screen", CacheCtx{ .cache = &cache, .keys = resident, .order = &screen, .frame = &frame }, cacheScreen);
+
+    // Shaping with a warm shaper (plans built, buffers grown): 1000
+    // characters of Latin prose in Inter (GPOS kerning, marks), and one
+    // 200-column code line in JetBrains Mono (calt ligatures).
+    const inter = try zg_text.ot.Face.init(fonts.data[2], 0);
+    var inter_inst = try vt.FaceInstance.init(b.gpa, &inter, &.{});
+    defer inter_inst.deinit(b.gpa);
+    var shaper = zg_text.shape.Shaper.init(b.gpa);
+    defer shaper.deinit();
+    var prose: [1000]u8 = undefined;
+    fill(&prose, &.{ "The quick brown fox jumps over the lazy dog. ", "AVATAR Wave To office caf\u{E9}, ", "na\u{EF}ve r\u{E9}sum\u{E9} 1234; " });
+    const dflt = zg_text.ot.tag("dflt");
+    const prose_plan = try shaper.plan(&inter_inst, .Latn, dflt, .ltr, &.{});
+    try b.run("text.shape_latin_1k", ShapeCtx{ .shaper = &shaper, .plan = prose_plan, .text = &prose }, shapeText);
+    var code: [200]u8 = undefined;
+    fill(&code, &.{ "if (a != b && c => d) { x = y->z; } ", "// TODO: <!-- www --> 0xFF ", "for (i = 0; i <= n; i++) ||| " });
+    const code_plan = try shaper.plan(&jb_inst, .Latn, dflt, .ltr, &.{});
+    try b.run("text.shape_code_line_200", ShapeCtx{ .shaper = &shaper, .plan = code_plan, .text = &code }, shapeText);
+
+    // Word-cache hits: one cached word per iteration (Inter without `calt`
+    // and `kern`, whose lookups would make spaces participate).
+    const no_ctx = [_]zg_text.shape.Feature{ .{ .tag = zg_text.ot.tag("calt"), .value = 0 }, .{ .tag = zg_text.ot.tag("kern"), .value = 0 } };
+    var shape_cache = try zg_text.shape.ShapeCache.init(b.gpa, .{});
+    defer shape_cache.deinit();
+    const words = [_][]const u8{ "office ", "Wave ", "the ", "quick ", "brown ", "r\u{E9}sum\u{E9} ", "jumps ", "AVATAR " };
+    var arena_buf: [64 << 10]u8 = undefined;
+    var word_ctx: WordCtx = .{ .shaper = &shaper, .cache = &shape_cache, .inst = &inter_inst, .features = &no_ctx, .words = &words, .arena = &arena_buf };
+    for (words) |w| word_ctx.one(w); // fill the cache
+    try b.run("text.shape_word_cache_hit", &word_ctx, shapeWordHit);
+}
+
+const ShapeCtx = struct { shaper: *zg_text.shape.Shaper, plan: *const zg_text.shape.ShapePlan, text: []const u8 };
+
+fn shapeText(ctx: ShapeCtx, s: *State) void {
+    for (0..s.iterations()) |_| {
+        ctx.shaper.shapeWithPlan(ctx.plan, ctx.text) catch unreachable;
+        bench.doNotOptimizeAway(ctx.shaper.buf.pos.items.len);
+    }
+    s.setBytes(ctx.text.len);
+}
+
+const WordCtx = struct {
+    shaper: *zg_text.shape.Shaper,
+    cache: *zg_text.shape.ShapeCache,
+    inst: *const zg_text.ot.variation.FaceInstance,
+    features: []const zg_text.shape.Feature,
+    words: []const []const u8,
+    arena: []u8,
+
+    fn one(ctx: *WordCtx, word: []const u8) void {
+        var fba = std.heap.FixedBufferAllocator.init(ctx.arena);
+        var run: zg_text.shape.GlyphRun = .{};
+        zg_text.shape.shape_cache.shapeCached(ctx.shaper, ctx.cache, ctx.inst, 1, 1, word, .Latn, .ltr, zg_text.ot.tag("dflt"), ctx.features, &run, fba.allocator()) catch unreachable;
+        bench.doNotOptimizeAway(run.gids.len);
+    }
+};
+
+fn shapeWordHit(ctx: *WordCtx, s: *State) void {
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
+        ctx.one(ctx.words[k]);
+        k = (k + 1) % ctx.words.len;
+    }
 }
 
 const han_cps = [12]u21{ '語', '漢', '字', '日', '本', 'あ', 'い', 'う', 'え', 'お', 'か', 'き' };

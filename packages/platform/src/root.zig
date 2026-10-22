@@ -315,6 +315,12 @@ pub const win32 = struct {
     pub const cf_html = @import("win32/cf_html.zig");
     /// See `win32/hdrop.zig`.
     pub const hdrop = @import("win32/hdrop.zig");
+    /// See `win32/frame.zig`.
+    pub const frame = @import("win32/frame.zig");
+    /// See `win32/cursor.zig`.
+    pub const cursor = @import("win32/cursor.zig");
+    /// See `win32/ime.zig`.
+    pub const ime = @import("win32/ime.zig");
     /// See `win32/backend.zig`.
     pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
     /// See `win32/backend.zig`.
@@ -408,6 +414,9 @@ test {
     _ = win32.cpu_present;
     _ = win32.cf_html;
     _ = win32.hdrop;
+    _ = win32.frame;
+    _ = win32.cursor;
+    _ = win32.ime;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -517,6 +526,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/cf_html.zig", .src = @embedFile("win32/cf_html.zig") },
     .{ .path = "win32/hdrop.zig", .src = @embedFile("win32/hdrop.zig") },
     .{ .path = "win32/clipboard.zig", .src = @embedFile("win32/clipboard.zig") },
+    .{ .path = "win32/frame.zig", .src = @embedFile("win32/frame.zig") },
+    .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
+    .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
     .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 

@@ -13,7 +13,8 @@ external binary it runs is the official Zig release named in
 | `.github/workflows/nightly.yml` | 03:17 UTC daily, manual | `fuzz` (35 min per target on x86_64 and aarch64 Linux), `bench` (full, Linux and Windows), `toolchain-selftest` (cold cache, all 4 runners) |
 
 `ci.yml` cancels the previous run of the same pull request when a new push
-arrives. The PR title and branch reach `prlint` only through `env:`, never by
+arrives. Every push to `main` runs in its own concurrency group (keyed by
+commit), so no merge's run is cancelled or replaced by a later one. The PR title and branch reach `prlint` only through `env:`, never by
 interpolation into a script, and no workflow uses `pull_request_target`.
 
 `fuzz-smoke` and the nightly fuzz jobs run on Linux only: Zig 0.16's build

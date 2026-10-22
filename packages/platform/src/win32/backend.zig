@@ -21,8 +21,18 @@
 //! reads are posted to the message window, which also receives the
 //! delayed-rendering and `WM_CLIPBOARDUPDATE` messages.
 //!
-//! Not yet here: the custom frame and hit-testing (#219), raw input, pen
-//! and touch (#222), IME (#226), drag and drop (#232), cursors and
+//! Client-decorated windows (`Decorations.client`) get the custom frame in
+//! `frame.zig`: the whole window is client area, `WM_NCHITTEST` answers
+//! from the resize band and the app's hit map, and the caption buttons are
+//! non-client (so Windows 11 shows snap layouts) but pressed by us.
+//! Cursors come from `cursor.zig`. Every window gets the DWM dark mode
+//! that matches the system theme.
+//!
+//! IME composition (`ime.zig`) runs in the window procedure: preedit and
+//! commits become `ime_preedit` and `text_input`, and `set_ime_state`
+//! is posted to the window's thread, where IMM32 contexts live.
+//!
+//! Not yet here: raw input, pen and touch (#222), drag and drop (#232) and
 //! cloaking until the first present.
 
 const std = @import("std");
@@ -51,6 +61,11 @@ const L = @import("wide.zig").L;
 const wide = @import("wide.zig");
 const CpuPresenter = @import("cpu_present.zig").CpuPresenter;
 const clip_mod = @import("clipboard.zig");
+const frame = @import("frame.zig");
+const ime_mod = @import("ime.zig");
+const ImePurpose = @import("../api/ime.zig").ImePurpose;
+const cursor_mod = @import("cursor.zig");
+const CursorShape = @import("../api/cursor.zig").CursorShape;
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -80,6 +95,16 @@ const WM_APP_QUIT = WM.APP + 4;
 const WM_APP_CLIP_WRITE = WM.APP + 5;
 /// wParam: the `MimeId`; lParam: the request id.
 const WM_APP_CLIP_READ = WM.APP + 6;
+/// To a window: re-apply its cursor if the pointer is over it.
+const WM_APP_CURSOR = WM.APP + 7;
+/// To a window: wParam is a `WM_SYSCOMMAND` code to run with the capture
+/// released (interactive move or resize).
+const WM_APP_SYSDRAG = WM.APP + 8;
+/// To a window: show the window menu at client point lParam (x low, y
+/// high, signed 16-bit).
+const WM_APP_SYSMENU = WM.APP + 9;
+/// To a window: apply `Window.ime_req`.
+const WM_APP_IME = WM.APP + 10;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
@@ -107,7 +132,30 @@ const Window = struct {
     last_click_pos: [2]f32 = .{ -100, -100 },
     last_click_button: types.Button = .left,
     clicks: u8 = 0,
+    /// Client-decorated: the custom frame.
+    custom: bool = false,
+    /// The app's hit map (custom frame only). Guarded by the mutex.
+    hit: ?frame.AppHit = null,
+    /// Guarded by the mutex.
+    cursor: CursorShape = .default,
+    /// Platform thread only: non-client leave tracking and the caption
+    /// button being pressed.
+    nc_tracking: bool = false,
+    nc_pressed: u32 = 0,
+    /// Window thread only.
+    ime: ime_mod.Ime = .{},
+    /// The latest `set_ime_state`, waiting for the window thread. Guarded
+    /// by the mutex.
+    ime_req: ?ImeRequest = null,
+    /// Window thread only: keys held (released on focus loss) and the
+    /// AltGr fake Left Ctrl being held.
+    down: wkeys.DownKeys = .{},
+    fake_ctrl: bool = false,
 };
+
+const no_cp: u32 = 0xFFFF_FFFF;
+
+const ImeRequest = struct { enabled: bool, purpose: ImePurpose, caret: types.PxRect };
 
 /// A `createWindow` request carried by `WM_APP_CREATE`.
 const CreateRequest = struct {
@@ -152,6 +200,14 @@ pub const Win32Backend = struct {
     /// The frame interval in use (see `InitOptions.refresh_ns`).
     refresh_ns: std.atomic.Value(u32) = .init(16_666_667),
     get_dpi_for_monitor: ?GetDpiForMonitorFn = null,
+    /// The Windows build (for DWM attributes) and the system theme.
+    build: u32 = 0,
+    dark: bool = false,
+    /// Platform thread only.
+    cursors: cursor_mod.Cache = .{},
+    /// Platform thread only: each scancode's unshifted codepoint under the
+    /// current layout (`no_cp` = not looked up yet), for shortcut keysyms.
+    unshifted: [512]u32 = @splat(no_cp),
 
     /// Starts the platform thread and waits until its message window exists.
     pub fn init(gpa: Allocator, io: Io, opts: InitOptions) !*Win32Backend {
@@ -230,7 +286,7 @@ pub const Win32Backend = struct {
         const id: WindowId = @enumFromInt(b.next_win);
         b.next_win += 1;
         b.unlock();
-        w.* = .{ .b = b, .id = id, .presenter = .init(b.gpa, b.io), .min_size = opts.min_size };
+        w.* = .{ .b = b, .id = id, .presenter = .init(b.gpa, b.io), .min_size = opts.min_size, .custom = opts.decorations == .client };
         w.presenter.bind();
         w.presenter.on_present = .{ .ctx = w, .f = onPresented };
         var req: CreateRequest = .{ .w = w, .title = title, .size = .{ .w = std.math.clamp(opts.size.w, 1, 16384), .h = std.math.clamp(opts.size.h, 1, 16384) } };
@@ -257,9 +313,48 @@ pub const Win32Backend = struct {
                 defer b.gpa.free(title);
                 _ = user32.SetWindowTextW(hwnd, title.ptr);
             },
-            .set_cursor => |c| _ = try b.hwndOf(c.win),
-            .set_ime_state => |c| _ = try b.hwndOf(c.win),
-            .set_hit_test => |c| _ = try b.hwndOf(c.win),
+            .set_cursor => |c| {
+                const hwnd = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const w = b.find(c.win) orelse return error.InvalidWindow;
+                    w.cursor = c.shape;
+                    break :blk w.hwnd orelse return error.InvalidWindow;
+                };
+                // SetCursor only works on the window's own thread.
+                _ = user32.PostMessageW(hwnd, WM_APP_CURSOR, 0, 0);
+            },
+            .set_ime_state => |c| {
+                const hwnd = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const w = b.find(c.win) orelse return error.InvalidWindow;
+                    w.ime_req = .{ .enabled = c.enabled, .purpose = c.purpose, .caret = c.caret_rect_px };
+                    break :blk w.hwnd orelse return error.InvalidWindow;
+                };
+                // IMM32 contexts belong to the window's thread.
+                _ = user32.PostMessageW(hwnd, WM_APP_IME, 0, 0);
+            },
+            .set_hit_test => |c| {
+                b.lock();
+                defer b.unlock();
+                const w = b.find(c.win) orelse return error.InvalidWindow;
+                w.hit = .{ .f = c.f, .ctx = c.ctx };
+            },
+            .begin_move => |win| {
+                const hwnd = try b.hwndOf(win);
+                _ = user32.PostMessageW(hwnd, WM_APP_SYSDRAG, frame.SC.MOVE | frame.HT.CAPTION, 0);
+            },
+            .begin_resize => |c| {
+                const hwnd = try b.hwndOf(c.win);
+                _ = user32.PostMessageW(hwnd, WM_APP_SYSDRAG, frame.sizeCommand(c.edge), 0);
+            },
+            .show_window_menu => |c| {
+                const hwnd = try b.hwndOf(c.win);
+                const x: u16 = @bitCast(@as(i16, @intCast(std.math.clamp(c.at.x, -32768, 32767))));
+                const y: u16 = @bitCast(@as(i16, @intCast(std.math.clamp(c.at.y, -32768, 32767))));
+                _ = user32.PostMessageW(hwnd, WM_APP_SYSMENU, 0, @intCast(@as(u32, x) | @as(u32, y) << 16));
+            },
             .set_min_size => |c| {
                 b.lock();
                 defer b.unlock();
@@ -311,7 +406,7 @@ pub const Win32Backend = struct {
                 // stalls the UI thread.
                 if (user32.PostMessageW(b.msg_hwnd, WM_APP_CLIP_READ, @intFromEnum(c.mime), @bitCast(@as(usize, c.request))) == 0) return error.SystemResources;
             },
-            .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
     }
 
@@ -512,6 +607,8 @@ pub const Win32Backend = struct {
             if (kernel32.GetProcAddress(shcore, "GetDpiForMonitor")) |f| b.get_dpi_for_monitor = @ptrCast(@alignCast(f));
         }
         b.readRefresh();
+        b.build = frame.windowsBuild();
+        b.dark = frame.systemDark();
         const wc: t.WNDCLASSEXW = .{
             .lpfnWndProc = wndProc,
             .hInstance = b.hinstance,
@@ -559,6 +656,7 @@ pub const Win32Backend = struct {
         }
         b.clip_ready = false;
         b.clip.deinit();
+        b.cursors.deinit();
         _ = user32.DestroyWindow(b.msg_hwnd.?);
     }
 
@@ -596,7 +694,8 @@ pub const Win32Backend = struct {
         // WM_DPICHANGED corrects it if the window lands elsewhere.
         const style = msgs.WS.OVERLAPPEDWINDOW | msgs.WS.CLIPCHILDREN;
         var r: t.RECT = .{ .left = 0, .top = 0, .right = @intCast(req.size.w), .bottom = @intCast(req.size.h) };
-        _ = user32.AdjustWindowRectExForDpi(&r, style, t.FALSE, msgs.WS.EX_APPWINDOW, msgs.default_dpi);
+        // The custom frame has no non-client area: window size = client size.
+        if (!w.custom) _ = user32.AdjustWindowRectExForDpi(&r, style, t.FALSE, msgs.WS.EX_APPWINDOW, msgs.default_dpi);
         const hwnd = user32.CreateWindowExW(msgs.WS.EX_APPWINDOW, class_name, req.title.ptr, style, msgs.CW_USEDEFAULT, msgs.CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, null, null, b.hinstance, w) orelse {
             log.err("CreateWindowExW failed (error {d})", .{kernel32.GetLastError()});
             return;
@@ -615,9 +714,17 @@ pub const Win32Backend = struct {
         // while the window is still hidden, so the client size is exact.
         if (wdpi != msgs.default_dpi) {
             var rd: t.RECT = .{ .left = 0, .top = 0, .right = @intCast(req.size.w), .bottom = @intCast(req.size.h) };
-            _ = user32.AdjustWindowRectExForDpi(&rd, style, t.FALSE, msgs.WS.EX_APPWINDOW, wdpi);
+            if (!w.custom) _ = user32.AdjustWindowRectExForDpi(&rd, style, t.FALSE, msgs.WS.EX_APPWINDOW, wdpi);
             _ = user32.SetWindowPos(hwnd, null, 0, 0, rd.right - rd.left, rd.bottom - rd.top, msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE | msgs.SWP_NOMOVE);
         }
+        if (w.custom) {
+            // A 1 px top margin keeps the DWM shadow and border; the frame
+            // change makes Windows ask WM_NCCALCSIZE again.
+            const margins: t.MARGINS = .{ .cxLeftWidth = 0, .cxRightWidth = 0, .cyTopHeight = 1, .cyBottomHeight = 0 };
+            _ = dwmapi.DwmExtendFrameIntoClientArea(hwnd, &margins);
+            _ = user32.SetWindowPos(hwnd, null, 0, 0, 0, 0, msgs.SWP_FRAMECHANGED | msgs.SWP_NOMOVE | msgs.SWP_NOSIZE | msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE);
+        }
+        frame.applyDwm(hwnd, b.build, b.dark, .auto, w.custom);
         _ = user32.ShowWindow(hwnd, msgs.SW_SHOWNORMAL);
         var cr: t.RECT = undefined;
         _ = user32.GetClientRect(hwnd, &cr);
@@ -729,6 +836,127 @@ pub const Win32Backend = struct {
         const w: *Window = @ptrFromInt(raw);
         const b = w.b;
         switch (msg) {
+            WM.NCCALCSIZE => {
+                if (!w.custom or wp == 0) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                // The whole window is client area; a maximized window
+                // hangs past the monitor by the resize border, so inset it.
+                const p: *t.NCCALCSIZE_PARAMS = @ptrFromInt(@as(usize, @bitCast(lp)));
+                const r = &p.rgrc[0];
+                const c = frame.clientRect(.{ .left = r.left, .top = r.top, .right = r.right, .bottom = r.bottom }, frame.borderPx(w.dpi), user32.IsZoomed(hwnd) != 0);
+                r.* = .{ .left = c.left, .top = c.top, .right = c.right, .bottom = c.bottom };
+                return 0;
+            },
+            WM.NCHITTEST => {
+                if (!w.custom) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                var res: t.LRESULT = 0;
+                if (dwmapi.DwmDefWindowProc(hwnd, msg, wp, lp, &res) != 0) return res;
+                var pt = screenPoint(lp);
+                _ = user32.ScreenToClient(hwnd, &pt);
+                var cr: t.RECT = undefined;
+                _ = user32.GetClientRect(hwnd, &cr);
+                const app = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    break :blk w.hit;
+                };
+                const ht = frame.hitTest(pt.x, pt.y, cr.right - cr.left, cr.bottom - cr.top, frame.borderPx(w.dpi), user32.IsZoomed(hwnd) != 0, app);
+                if (ht == frame.HT.NOWHERE) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                return ht;
+            },
+            WM.NCMOUSEMOVE => {
+                if (!w.custom) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                // Hover over the caption and its buttons reaches the app
+                // as ordinary pointer motion.
+                if (!w.nc_tracking) {
+                    var tme: t.TRACKMOUSEEVENT = .{ .dwFlags = msgs.TME_LEAVE | msgs.TME_NONCLIENT, .hwndTrack = hwnd };
+                    if (user32.TrackMouseEvent(&tme) != 0) {
+                        w.nc_tracking = true;
+                        b.lock();
+                        defer b.unlock();
+                        b.stage(.{ .pointer_enter_leave = .{ .win = w.id, .entered = true } });
+                    }
+                }
+                {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = clientPos(hwnd, lp), .mods = modsNow(), .time_ns = b.nowNs() } });
+                }
+                if (frame.isButton(@truncate(wp))) return 0;
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
+            },
+            WM.NCMOUSELEAVE => {
+                if (!w.custom) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                w.nc_tracking = false;
+                w.nc_pressed = 0;
+                b.lock();
+                defer b.unlock();
+                b.stage(.{ .pointer_enter_leave = .{ .win = w.id, .entered = false } });
+                return 0;
+            },
+            WM.NCLBUTTONDOWN, WM.NCLBUTTONUP => {
+                const ht: u32 = @truncate(wp);
+                if (!w.custom or !frame.isButton(ht)) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                // Our buttons: DefWindowProc would draw classic ones.
+                const pressed = msg == WM.NCLBUTTONDOWN;
+                {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .pointer_button = .{ .win = w.id, .button = .left, .pressed = pressed, .pos_px = clientPos(hwnd, lp), .mods = modsNow(), .clicks = if (pressed) 1 else 0, .time_ns = b.nowNs() } });
+                }
+                if (pressed) {
+                    w.nc_pressed = ht;
+                } else if (w.nc_pressed == ht) {
+                    w.nc_pressed = 0;
+                    const sc: usize = switch (ht) {
+                        frame.HT.MINBUTTON => frame.SC.MINIMIZE,
+                        frame.HT.MAXBUTTON => if (user32.IsZoomed(hwnd) != 0) frame.SC.RESTORE else frame.SC.MAXIMIZE,
+                        else => frame.SC.CLOSE,
+                    };
+                    _ = user32.PostMessageW(hwnd, WM.SYSCOMMAND, sc, 0);
+                }
+                return 0;
+            },
+            WM.SETCURSOR => {
+                if (wp != @intFromPtr(hwnd) or (@as(usize, @bitCast(lp)) & 0xffff) != frame.HT.CLIENT) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                b.applyCursor(w);
+                return 1;
+            },
+            WM_APP_CURSOR => {
+                if (w.tracking_leave) b.applyCursor(w);
+                return 0;
+            },
+            WM_APP_IME => {
+                const req = blk: {
+                    b.lock();
+                    defer b.unlock();
+                    const r = w.ime_req;
+                    w.ime_req = null;
+                    break :blk r;
+                };
+                if (req) |r| w.ime.apply(hwnd, r.enabled, r.purpose, r.caret);
+                return 0;
+            },
+            ime_mod.WM_IME.SETCONTEXT, ime_mod.WM_IME.STARTCOMPOSITION, ime_mod.WM_IME.ENDCOMPOSITION, ime_mod.WM_IME.COMPOSITION, ime_mod.WM_IME.CHAR => {
+                var lp2: t.LPARAM = lp;
+                const sink: ime_mod.Sink = .{ .ctx = w, .preedit = imePreedit, .commit = imeCommit };
+                if (w.ime.onMessage(hwnd, msg, wp, lp, sink, &lp2)) |r| return r;
+                return user32.DefWindowProcW(hwnd, msg, wp, lp2);
+            },
+            WM_APP_SYSDRAG => {
+                // The press that started the drag holds the capture.
+                _ = user32.ReleaseCapture();
+                _ = user32.SendMessageW(hwnd, WM.SYSCOMMAND, wp, 0);
+                return 0;
+            },
+            WM_APP_SYSMENU => {
+                const l: usize = @bitCast(lp);
+                var pt: t.POINT = .{ .x = @as(i16, @bitCast(@as(u16, @truncate(l)))), .y = @as(i16, @bitCast(@as(u16, @truncate(l >> 16)))) };
+                _ = user32.ClientToScreen(hwnd, &pt);
+                const menu = user32.GetSystemMenu(hwnd, t.FALSE) orelse return 0;
+                const cmd = user32.TrackPopupMenu(menu, msgs.TPM_RETURNCMD | msgs.TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, null);
+                if (cmd != 0) _ = user32.PostMessageW(hwnd, WM.SYSCOMMAND, @intCast(cmd), 0);
+                return 0;
+            },
             WM.ERASEBKGND => return 1,
             WM.PAINT => {
                 var ps: t.PAINTSTRUCT = undefined;
@@ -801,7 +1029,7 @@ pub const Win32Backend = struct {
                 if (w.min_size) |m| {
                     const mmi: *t.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lp)));
                     var r: t.RECT = .{ .left = 0, .top = 0, .right = @intCast(m.w), .bottom = @intCast(m.h) };
-                    _ = user32.AdjustWindowRectExForDpi(&r, msgs.WS.OVERLAPPEDWINDOW, t.FALSE, 0, w.dpi);
+                    if (!w.custom) _ = user32.AdjustWindowRectExForDpi(&r, msgs.WS.OVERLAPPEDWINDOW, t.FALSE, 0, w.dpi);
                     mmi.ptMinTrackSize = .{ .x = r.right - r.left, .y = r.bottom - r.top };
                 }
                 return 0;
@@ -810,6 +1038,18 @@ pub const Win32Backend = struct {
                 b.lock();
                 defer b.unlock();
                 const focused = msg == WM.SETFOCUS;
+                // Keys held when focus leaves never send their release here.
+                if (!focused) for (w.down.drain()) |k| b.stage(.{ .key = .{ .win = w.id, .ev = .{
+                    .key = wkeys.keyOf(k.scancode, k.vk),
+                    .keysym = wkeys.keysymOf(k.vk, 0),
+                    .codepoint = 0,
+                    .mods = .{},
+                    .action = .release,
+                    .text = .empty,
+                    .native_scancode = k.scancode,
+                    .native_vk = k.vk,
+                    .time_ns = b.nowNs(),
+                } } });
                 if (w.focused != focused) {
                     w.focused = focused;
                     b.stage(.{ .window_focus = .{ .win = w.id, .focused = focused } });
@@ -817,10 +1057,17 @@ pub const Win32Backend = struct {
                 return 0;
             },
             WM.KEYDOWN, WM.SYSKEYDOWN, WM.KEYUP, WM.SYSKEYUP => {
-                b.onKey(w, hwnd, msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN, @intCast(wp & 0xffff), lp);
-                // Let DefWindowProc see Alt+F4 and the system menu keys.
-                if (msg == WM.SYSKEYDOWN or msg == WM.SYSKEYUP) return user32.DefWindowProcW(hwnd, msg, wp, lp);
+                const vk: u16 = @intCast(wp & 0xffff);
+                b.onKey(w, hwnd, msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN, vk, lp);
+                // Alt, Alt+Space and Alt+F4 keep their system meaning; F10
+                // and Alt+letter (no menu bar) do not.
+                const alt = (@as(usize, @bitCast(lp)) >> 29) & 1 != 0;
+                if ((msg == WM.SYSKEYDOWN or msg == WM.SYSKEYUP) and wkeys.systemKey(vk, alt)) return user32.DefWindowProcW(hwnd, msg, wp, lp);
                 return 0;
+            },
+            WM.INPUTLANGCHANGE => {
+                b.unshifted = @splat(no_cp);
+                return user32.DefWindowProcW(hwnd, msg, wp, lp);
             },
             WM.CHAR, WM.SYSCHAR => return 0, // consumed with their WM_KEYDOWN
             WM.MOUSEMOVE => {
@@ -860,7 +1107,9 @@ pub const Win32Backend = struct {
                 b.lock();
                 defer b.unlock();
                 // Wheel forward (positive) scrolls towards the start: negative dy.
-                b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else notches, .dy = if (vertical) -notches else 0, .unit = .lines, .source = .wheel, .phase = .none } });
+                // Precision touchpads send deltas below a whole notch.
+                const source: types.ScrollSource = if (@rem(delta, msgs.WHEEL_DELTA) != 0) .continuous else .wheel;
+                b.stage(.{ .scroll = .{ .win = w.id, .dx = if (vertical) 0 else notches, .dy = if (vertical) -notches else 0, .unit = .lines, .source = source, .phase = .none } });
                 return 0;
             },
             else => return user32.DefWindowProcW(hwnd, msg, wp, lp),
@@ -868,8 +1117,59 @@ pub const Win32Backend = struct {
         return 0;
     }
 
+    /// Shows `w`'s cursor. Platform thread.
+    fn applyCursor(b: *Win32Backend, w: *Window) void {
+        const shape = blk: {
+            b.lock();
+            defer b.unlock();
+            break :blk w.cursor;
+        };
+        _ = user32.SetCursor(b.cursors.get(shape, w.dpi));
+    }
+
+    fn imePreedit(ctx: *anyopaque, text: []const u8, begin: i32, end: i32) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch types.PayloadSlice.empty;
+        b.stage(.{ .ime_preedit = .{ .win = w.id, .text = p, .cursor_begin = begin, .cursor_end = end } });
+    }
+
+    fn imeCommit(ctx: *anyopaque, text: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        const b = w.b;
+        b.lock();
+        defer b.unlock();
+        const p = b.arena.put(text) catch return;
+        b.stage(.{ .text_input = .{ .win = w.id, .text = p } });
+    }
+
     fn onKey(b: *Win32Backend, w: *Window, hwnd: t.HWND, pressed: bool, vk: u16, lp: t.LPARAM) void {
-        const sc = wkeys.scancodeOf(lp);
+        // The IME consumed this key; its result arrives as composition.
+        if (vk == ime_mod.VK_PROCESSKEY) return;
+        var sc = wkeys.scancodeOf(lp);
+        if (sc & 0xff == 0) {
+            // Synthetic input without a scancode.
+            const m = user32.MapVirtualKeyExW(vk, msgs.MAPVK_VK_TO_VSC_EX, null);
+            sc = @intCast((m & 0xff) | (if (m & 0xff00 == 0xe000) @as(u32, 0x100) else 0));
+        }
+        if (sc == 0x1d) {
+            // AltGr arrives as a fake Left Ctrl plus Right Alt with the
+            // same message time; report only the Right Alt.
+            if (pressed) {
+                var m: t.MSG = undefined;
+                const next: ?wkeys.KeyMsg = if (user32.PeekMessageW(&m, hwnd, WM.KEYDOWN, WM.SYSKEYDOWN, msgs.PM_NOREMOVE) != 0) .{ .scancode = wkeys.scancodeOf(m.lParam), .time = m.time } else null;
+                if (wkeys.isFakeAltGrCtrl(.{ .scancode = sc, .time = @bitCast(user32.GetMessageTime()) }, next)) {
+                    w.fake_ctrl = true;
+                    return;
+                }
+            } else if (w.fake_ctrl) {
+                w.fake_ctrl = false;
+                return;
+            }
+        }
+        if (pressed) w.down.press(.{ .scancode = sc, .vk = vk }) else w.down.release(sc);
         // TranslateMessage has queued the key's WM_CHAR(s); take them now so
         // the text travels with the key event.
         var text_buf: [16]u8 = undefined;
@@ -899,20 +1199,44 @@ pub const Win32Backend = struct {
             }
         }
         const mods = modsNow();
+        const ctrl_chord = mods.ctrl and !mods.alt_gr;
+        // Shortcuts need a keysym even when Ctrl suppresses the text: use
+        // the layout's unshifted character then.
+        const keysym = wkeys.keysymOf(vk, if (ctrl_chord or cp == 0) b.unshiftedCp(vk, sc) else cp);
+        const ctrl_state = wkeys.ctrlStateFrom({}, keyDown, keyToggled, sc & 0x100 != 0);
+        const action: @import("../api/keys.zig").KeyAction = if (!pressed) .release else if (wkeys.isRepeat(lp)) .repeat else .press;
+        // Coalesced auto-repeat: one event per repeat (capped).
+        const count: u8 = if (action == .repeat) wkeys.repeatCount(lp) else 1;
         b.lock();
         defer b.unlock();
         const text = b.arena.put(text_buf[0..text_len]) catch types.PayloadSlice.empty;
-        b.stage(.{ .key = .{ .win = w.id, .ev = .{
+        const now = b.nowNs();
+        for (0..count) |i| b.stage(.{ .key = .{ .win = w.id, .ev = .{
             .key = wkeys.keyOf(sc, vk),
-            .keysym = wkeys.keysymOf(vk, if (mods.ctrl and !mods.alt_gr) 0 else cp),
-            .codepoint = if (mods.ctrl and !mods.alt_gr) 0 else cp,
+            .keysym = keysym,
+            .codepoint = if (ctrl_chord) 0 else cp,
             .mods = mods,
-            .action = if (!pressed) .release else if (wkeys.isRepeat(lp)) .repeat else .press,
-            .text = if (mods.ctrl and !mods.alt_gr) .empty else text,
+            .action = action,
+            .text = if (ctrl_chord or i > 0) .empty else text,
             .native_scancode = sc,
             .native_vk = vk,
-            .time_ns = b.nowNs(),
+            .native_ctrl_state = ctrl_state,
+            .time_ns = now,
         } } });
+    }
+
+    /// The character key `sc` produces with no modifiers under the current
+    /// layout, or 0; cached per scancode until the layout changes.
+    fn unshiftedCp(b: *Win32Backend, vk: u16, sc: u16) u21 {
+        const slot = &b.unshifted[sc & 0x1ff];
+        if (slot.* == no_cp) {
+            const state: [256]u8 = @splat(0);
+            var buf: [4]u16 = undefined;
+            const scan: u32 = (sc & 0xff) | (if (sc & 0x100 != 0) @as(u32, 0xe000) else 0);
+            const n = user32.ToUnicodeEx(vk, scan, &state, &buf, buf.len, msgs.TOUNICODE_NO_STATE_CHANGE, user32.GetKeyboardLayout(0));
+            slot.* = if (n == 1 and buf[0] >= 0x20 and buf[0] != 0x7f and (buf[0] < 0xd800 or buf[0] >= 0xe000)) buf[0] else 0;
+        }
+        return @intCast(slot.*);
     }
 
     fn onButton(b: *Win32Backend, w: *Window, hwnd: t.HWND, button: types.Button, pressed: bool, lp: t.LPARAM) void {
@@ -961,6 +1285,19 @@ fn rectOf(r: t.RECT) types.PxRect {
 }
 
 /// The client position in a mouse message's lParam (signed 16-bit each).
+/// The screen point packed in a non-client message's lParam.
+fn screenPoint(lp: t.LPARAM) t.POINT {
+    const l: usize = @bitCast(lp);
+    return .{ .x = @as(i16, @bitCast(@as(u16, @truncate(l)))), .y = @as(i16, @bitCast(@as(u16, @truncate(l >> 16)))) };
+}
+
+/// A non-client message's screen point in client pixels.
+fn clientPos(hwnd: t.HWND, lp: t.LPARAM) [2]f32 {
+    var pt = screenPoint(lp);
+    _ = user32.ScreenToClient(hwnd, &pt);
+    return .{ @floatFromInt(pt.x), @floatFromInt(pt.y) };
+}
+
 fn posOf(lp: t.LPARAM) [2]f32 {
     const l: usize = @bitCast(lp);
     const x: i16 = @bitCast(@as(u16, @truncate(l)));
@@ -1217,4 +1554,138 @@ test "win32 clipboard: another writer raises clipboard_changed, our own write do
     const theirs = try readClip(p, .text_utf8, 8);
     defer testing.allocator.free(theirs);
     try testing.expectEqualStrings("xyz", theirs);
+}
+
+test "win32 custom frame: client = window, hit-test codes, caption buttons" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg frame", .size = .{ .w = 400, .h = 300 }, .decorations = .client });
+    const hwnd = try b.hwndOf(win);
+    var wr: t.RECT = undefined;
+    var cr: t.RECT = undefined;
+    _ = user32.GetWindowRect(hwnd, &wr);
+    _ = user32.GetClientRect(hwnd, &cr);
+    try testing.expectEqual(wr.right - wr.left, cr.right - cr.left);
+    try testing.expectEqual(wr.bottom - wr.top, cr.bottom - cr.top);
+
+    const Stub = struct {
+        fn hit(_: *anyopaque, pt: types.PxPoint) types.HitRegion {
+            if (pt.y >= 40) return .client;
+            if (pt.x >= 340) return .button_close;
+            if (pt.x >= 280) return .button_max;
+            if (pt.x >= 220) return .button_min;
+            return .caption;
+        }
+    };
+    var ctx: u8 = 0;
+    try p.submit(.{ .set_hit_test = .{ .win = win, .f = Stub.hit, .ctx = &ctx } });
+    const border = frame.borderPx(user32.GetDpiForWindow(hwnd));
+    const at = struct {
+        fn ht(h: t.HWND, r: t.RECT, x: i32, y: i32) u32 {
+            const sx: u16 = @bitCast(@as(i16, @intCast(r.left + x)));
+            const sy: u16 = @bitCast(@as(i16, @intCast(r.top + y)));
+            return @intCast(user32.SendMessageW(h, WM.NCHITTEST, 0, @intCast(@as(u32, sx) | @as(u32, sy) << 16)));
+        }
+    }.ht;
+    try testing.expectEqual(frame.HT.TOPLEFT, at(hwnd, wr, 1, 1));
+    try testing.expectEqual(frame.HT.BOTTOMRIGHT, at(hwnd, wr, 398, 298));
+    try testing.expectEqual(frame.HT.LEFT, at(hwnd, wr, 1, 150));
+    try testing.expectEqual(frame.HT.TOP, at(hwnd, wr, 100, border - 1));
+    try testing.expectEqual(frame.HT.CAPTION, at(hwnd, wr, 100, 20));
+    try testing.expectEqual(frame.HT.MINBUTTON, at(hwnd, wr, 230, 20));
+    try testing.expectEqual(frame.HT.MAXBUTTON, at(hwnd, wr, 290, 20));
+    try testing.expectEqual(frame.HT.CLOSE, at(hwnd, wr, 350, 20));
+    try testing.expectEqual(frame.HT.CLIENT, at(hwnd, wr, 200, 150));
+
+    // Pressing and releasing our close button asks to close.
+    const lp_close: t.LPARAM = @intCast(@as(u32, @as(u16, @intCast(wr.left + 350))) | @as(u32, @as(u16, @intCast(wr.top + 20))) << 16);
+    _ = user32.SendMessageW(hwnd, WM.NCLBUTTONDOWN, frame.HT.CLOSE, lp_close);
+    _ = user32.SendMessageW(hwnd, WM.NCLBUTTONUP, frame.HT.CLOSE, lp_close);
+    _ = try waitFor(p, .window_close_requested, win);
+    p.destroyWindow(win);
+}
+
+test "win32 cursors: every shape builds at 100, 150 and 200%" {
+    var cache: cursor_mod.Cache = .{};
+    defer cache.deinit();
+    for ([_]u32{ 96, 144, 192 }) |d| for (std.enums.values(CursorShape)) |s| {
+        const h = cache.get(s, d);
+        if (s == .hidden) try testing.expect(h == null) else try testing.expect(h != null);
+    };
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg cursor", .size = .{ .w = 320, .h = 200 } });
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .grab } });
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    p.destroyWindow(win);
+}
+
+test "win32 ime: state commands, composition start/end and cancel" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg ime", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .password, .caret_rect_px = .{ .x = 40, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .normal, .caret_rect_px = .{ .x = 50, .y = 60, .w = 2, .h = 18 }, .surrounding = null } });
+    // Handled without the default composition window.
+    try testing.expectEqual(@as(t.LRESULT, 0), user32.SendMessageW(hwnd, ime_mod.WM_IME.STARTCOMPOSITION, 0, 0));
+    // No GCS flags: the composition was cancelled.
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.COMPOSITION, 0, 0);
+    const pe = (try waitFor(p, .ime_preedit, win)).ime_preedit;
+    try testing.expectEqual(@as(usize, 0), p.payload(pe.text).len);
+    _ = user32.SendMessageW(hwnd, ime_mod.WM_IME.ENDCOMPOSITION, 0, 0);
+    _ = try waitFor(p, .ime_preedit, win);
+    // A key the IME consumed is not reported.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, ime_mod.VK_PROCESSKEY, 1);
+    var evs: [64]Event = undefined;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .key);
+    p.destroyWindow(win);
+}
+
+test "win32 keys: coalesced repeats, focus-loss releases, ctrl state" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg keys", .size = .{ .w = 320, .h = 200 } });
+    const hwnd = try b.hwndOf(win);
+    // 'A' down, then a repeat message carrying a count of 3.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, 'A', 0x001E0001);
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, 'A', 0x401E0003);
+    // Numpad Enter (E0 1C): enhanced.
+    _ = user32.SendMessageW(hwnd, WM.KEYDOWN, msgs.VK.RETURN, 0x011C0001);
+    var presses: usize = 0;
+    var repeats: usize = 0;
+    var enhanced = false;
+    var evs: [64]Event = undefined;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    while (presses + repeats < 5) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .key) switch (e.key.ev.action) {
+            .press => {
+                presses += 1;
+                if (e.key.ev.native_vk == msgs.VK.RETURN) enhanced = e.key.ev.native_ctrl_state & wkeys.CtrlState.ENHANCED != 0;
+            },
+            .repeat => repeats += 1,
+            .release => {},
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        if (presses + repeats < 5) p.waitEvents(deadline);
+    }
+    try testing.expectEqual(@as(usize, 2), presses);
+    try testing.expectEqual(@as(usize, 3), repeats);
+    try testing.expect(enhanced);
+    // Focus loss releases both held keys.
+    _ = user32.SendMessageW(hwnd, WM.KILLFOCUS, 0, 0);
+    var releases: usize = 0;
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| if (e == .key and e.key.ev.action == .release) {
+        releases += 1;
+    };
+    try testing.expectEqual(@as(usize, 2), releases);
+    p.destroyWindow(win);
 }

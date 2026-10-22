@@ -23,11 +23,24 @@ pub fn pipelineOf(p: *const Prim, dual_src: bool) Pipeline {
     return if (dual_src and p.kind == .glyph_subpixel) .text_subpixel else .prim;
 }
 
-/// Whether `p` is drawn in the window pass (layer content and layer
-/// composites are drawn by the layer passes).
-pub fn inWindowPass(p: *const Prim) bool {
-    return p.layer_z == 0 and p.kind != .layer;
+/// Whether `p` is drawn in the pass of layer `z` (0 = the window). Layer
+/// composites are drawn only when their layer has a texture slot
+/// (`layer_slots[params] != 0`).
+pub fn inPass(p: *const Prim, z: u16, layer_slots: []const u32) bool {
+    if (p.layer_z != z) return false;
+    if (p.kind == .layer) return p.params < layer_slots.len and layer_slots[p.params] != 0;
+    return true;
 }
+
+/// What `buildBatches` draws.
+pub const Filter = struct {
+    /// The pass: 0 = window, n = layer n - 1.
+    z: u16 = 0,
+    /// Texture slot per layer of the frame (0 = none).
+    layer_slots: []const u32 = &.{},
+    /// Added to every batch's `first`.
+    base: u32 = 0,
+};
 
 /// Whether `p` can touch a pixel of `rect`.
 pub fn touches(p: *const Prim, clips: []const r2d.ClipRect, rect: PxRect) bool {
@@ -36,22 +49,22 @@ pub fn touches(p: *const Prim, clips: []const r2d.ClipRect, rect: PxRect) bool {
     return s.x0 < @as(i64, rect.x) + rect.w and s.x1 > rect.x and s.y0 < @as(i64, rect.y) + rect.h and s.y1 > rect.y;
 }
 
-/// Appends the batches of the window pass to `out`, culled to `rect`
-/// when given. Pure.
-pub fn buildBatches(gpa: std.mem.Allocator, prims: []const Prim, clips: []const r2d.ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void {
+/// Appends the batches of the pass `f.z` to `out`, culled to `rect` when
+/// given. Pure.
+pub fn buildBatches(gpa: std.mem.Allocator, prims: []const Prim, clips: []const r2d.ClipRect, f: Filter, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void {
     const start = out.items.len;
     if (rect) |r| {
-        try runs(gpa, prims, clips, r, dual_src, out);
+        try runs(gpa, prims, clips, f, r, dual_src, out);
         if (out.items.len - start <= max_runs_per_rect) return;
         out.shrinkRetainingCapacity(start);
     }
-    try runs(gpa, prims, clips, null, dual_src, out);
+    try runs(gpa, prims, clips, f, null, dual_src, out);
 }
 
-fn runs(gpa: std.mem.Allocator, prims: []const Prim, clips: []const r2d.ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void {
+fn runs(gpa: std.mem.Allocator, prims: []const Prim, clips: []const r2d.ClipRect, f: Filter, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void {
     var open: ?Batch = null;
     for (prims, 0..) |*p, i| {
-        const keep = inWindowPass(p) and (rect == null or touches(p, clips, rect.?));
+        const keep = inPass(p, f.z, f.layer_slots) and (rect == null or touches(p, clips, rect.?));
         if (!keep) {
             if (open) |b| try out.append(gpa, b);
             open = null;
@@ -65,7 +78,7 @@ fn runs(gpa: std.mem.Allocator, prims: []const Prim, clips: []const r2d.ClipRect
             }
             try out.append(gpa, b.*);
         }
-        open = .{ .pipeline = pl, .first = @intCast(i), .count = 1 };
+        open = .{ .pipeline = pl, .first = f.base + @as(u32, @intCast(i)), .count = 1 };
     }
     if (open) |b| try out.append(gpa, b);
 }
@@ -92,7 +105,7 @@ test "batch: splits only on pipeline/layer" {
     prims[5].layer_z = 1;
     var out: std.ArrayList(Batch) = .empty;
     defer out.deinit(gpa);
-    try buildBatches(gpa, &prims, &.{.{ .bounds = .{ 0, 0, 0, 0 } }}, null, true, &out);
+    try buildBatches(gpa, &prims, &.{.{ .bounds = .{ 0, 0, 0, 0 } }}, .{}, null, true, &out);
     try testing.expectEqualSlices(Batch, &.{
         .{ .pipeline = .prim, .first = 0, .count = 2 },
         .{ .pipeline = .text_subpixel, .first = 2, .count = 2 },
@@ -101,7 +114,7 @@ test "batch: splits only on pipeline/layer" {
     }, out.items);
     // Without dual-source blending subpixel glyphs join the prim runs.
     out.clearRetainingCapacity();
-    try buildBatches(gpa, prims[0..5], &.{}, null, false, &out);
+    try buildBatches(gpa, prims[0..5], &.{}, .{}, null, false, &out);
     try testing.expectEqualSlices(Batch, &.{.{ .pipeline = .prim, .first = 0, .count = 5 }}, out.items);
 }
 
@@ -112,7 +125,7 @@ test "batch: per-rect culling keeps paint order" {
     var out: std.ArrayList(Batch) = .empty;
     defer out.deinit(gpa);
     // Rect around column 1 (prims 1 and 5).
-    try buildBatches(gpa, &prims, &.{}, .{ .x = 18, .y = 0, .w = 8, .h = 40 }, false, &out);
+    try buildBatches(gpa, &prims, &.{}, .{}, .{ .x = 18, .y = 0, .w = 8, .h = 40 }, false, &out);
     try testing.expectEqualSlices(Batch, &.{
         .{ .pipeline = .prim, .first = 1, .count = 1 },
         .{ .pipeline = .prim, .first = 5, .count = 1 },
@@ -121,6 +134,26 @@ test "batch: per-rect culling keeps paint order" {
     var many: [200]Prim = undefined;
     for (&many, 0..) |*p, i| p.* = rectPrim(if (i % 2 == 0) 0 else 100, 0, .rect);
     out.clearRetainingCapacity();
-    try buildBatches(gpa, &many, &.{}, .{ .x = 0, .y = 0, .w = 8, .h = 8 }, false, &out);
+    try buildBatches(gpa, &many, &.{}, .{}, .{ .x = 0, .y = 0, .w = 8, .h = 8 }, false, &out);
     try testing.expectEqualSlices(Batch, &.{.{ .pipeline = .prim, .first = 0, .count = 200 }}, out.items);
+}
+
+test "batch: layer passes and composites" {
+    const gpa = testing.allocator;
+    var prims = [_]Prim{
+        rectPrim(0, 0, .rect), // layer 1 content
+        rectPrim(0, 0, .rect),
+        rectPrim(0, 0, .layer), // composite of layer 0
+        rectPrim(0, 0, .layer), // composite of layer 1 (no texture)
+    };
+    prims[0].layer_z = 1;
+    prims[3].params = 1;
+    var out: std.ArrayList(Batch) = .empty;
+    defer out.deinit(gpa);
+    const slots = [_]u32{ 7, 0 };
+    try buildBatches(gpa, &prims, &.{}, .{ .z = 1, .layer_slots = &slots, .base = 100 }, null, false, &out);
+    try testing.expectEqualSlices(Batch, &.{.{ .pipeline = .prim, .first = 100, .count = 1 }}, out.items);
+    out.clearRetainingCapacity();
+    try buildBatches(gpa, &prims, &.{}, .{ .layer_slots = &slots }, null, false, &out);
+    try testing.expectEqualSlices(Batch, &.{.{ .pipeline = .prim, .first = 1, .count = 2 }}, out.items);
 }
