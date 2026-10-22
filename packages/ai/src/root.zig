@@ -95,6 +95,8 @@ pub const context = struct {
     pub const env_block = @import("context/env_block.zig");
     pub const assembler = @import("context/assembler.zig");
     pub const compactor = @import("context/compactor.zig");
+    pub const stack = @import("context/stack.zig");
+    pub const ContextStack = stack.ContextStack;
     test {
         _ = @import("context/frontmatter_test.zig");
         _ = @import("context/memory_test.zig");
