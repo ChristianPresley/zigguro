@@ -34,6 +34,17 @@ pub const CaretShape = enum { bar, block, underline, half_block };
 
 pub const KeyResult = enum { consumed, passthrough };
 
+/// The system clipboard and primary selection, supplied by the platform
+/// (E01): Vim's `+` and `*` registers, the Emacs kill ring.
+pub const ClipboardPort = struct {
+    pub const Which = enum { clipboard, primary };
+
+    ctx: *anyopaque,
+    /// The current text (caller frees), or null when empty.
+    getFn: *const fn (ctx: *anyopaque, which: Which, gpa: Allocator) anyerror!?[]u8,
+    setFn: *const fn (ctx: *anyopaque, which: Which, text: []const u8) anyerror!void,
+};
+
 /// File and window commands a mode asks the editor for (`:w`, `:q`,
 /// `:e`; Emacs `C-x C-s`).
 pub const Action = union(enum) {
@@ -43,6 +54,9 @@ pub const Action = union(enum) {
     /// Write when modified, then close (`:x`).
     exit,
     edit: struct { path: ?[]const u8 = null, force: bool = false },
+    /// A workbench command by id (`file.save`, `quickOpen.files`,
+    /// `workbench.showCommands`), as the E15 keymap names them.
+    command: []const u8,
 };
 
 pub const Actions = struct {
@@ -130,7 +144,8 @@ pub const ChangeGroup = struct {
     }
 
     /// Records what was collected as one undo step (nothing if nothing
-    /// changed) and stops collecting.
+    /// changed) and stops collecting. With `meta.coalesce_key` the step
+    /// may join the previous one under the undo tree's rules.
     pub fn commit(g: *ChangeGroup, undo: *UndoTree, sels_after: []const Selection, meta: undo_mod.GroupMeta) Allocator.Error!void {
         if (!g.active) return;
         g.active = false;
@@ -139,9 +154,11 @@ pub const ChangeGroup = struct {
         const inv = g.inverse.?;
         g.forward = null;
         g.inverse = null;
-        undo.breakGroup();
+        // A coalescing key lets the step join the one before it (Emacs
+        // amalgamating self-inserts); otherwise it stands alone.
+        if (meta.coalesce_key == null) undo.breakGroup();
         try undo.record(f, inv, g.sel_before.items, sels_after, meta);
-        undo.breakGroup();
+        if (meta.coalesce_key == null) undo.breakGroup();
     }
 
     /// Stops collecting without recording.

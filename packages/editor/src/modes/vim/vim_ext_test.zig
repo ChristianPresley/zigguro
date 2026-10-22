@@ -81,6 +81,7 @@ const FakeActions = struct {
             .write => |w| try f.log.print(gpa, "write {s}{s};", .{ w.path orelse "-", if (w.force) "!" else "" }),
             .quit => |q| try f.log.print(gpa, "quit{s};", .{if (q.force) "!" else ""}),
             .exit => try f.log.appendSlice(gpa, "exit;"),
+            .command => |c| try f.log.print(gpa, "command {s};", .{c}),
             .edit => |ed| {
                 if (ed.path != null and std.mem.eql(u8, ed.path.?, "locked")) return error.AccessDenied;
                 try f.log.print(gpa, "edit {s}{s};", .{ ed.path orelse "-", if (ed.force) "!" else "" });
