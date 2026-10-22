@@ -1,0 +1,9 @@
+        <type category="struct" name="VkApplicationInfo">
+            <member values="VK_STRUCTURE_TYPE_APPLICATION_INFO"><type>VkStructureType</type> <name>sType</name></member>
+            <member optional="true">const <type>void</type>*     <name>pNext</name></member>
+            <member optional="true" len="null-terminated">const <type>char</type>*     <name>pApplicationName</name></member>
+            <member><type>uint32_t</type>        <name>applicationVersion</name></member>
+            <member optional="true" len="null-terminated">const <type>char</type>*     <name>pEngineName</name></member>
+            <member><type>uint32_t</type>        <name>engineVersion</name></member>
+            <member><type>uint32_t</type>        <name>apiVersion</name></member>
+        </type>
