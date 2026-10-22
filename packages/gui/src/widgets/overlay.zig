@@ -89,6 +89,10 @@ pub const Options = struct {
     title: []const u8 = "",
     /// Panel width; null sizes to content.
     width: ?f32 = null,
+    /// Overlays sharing a non-zero group (a menu and its submenus) count as
+    /// one for light dismiss: a press inside any of them is inside, and a
+    /// press outside closes them all.
+    group: u32 = 0,
     on_close: ?CloseHook = null,
 };
 
@@ -123,6 +127,7 @@ pub const Stack = struct {
     /// Frees the list.
     pub fn deinit(s: *Stack, gpa: std.mem.Allocator) void {
         s.items.deinit(gpa);
+        s.* = .{};
     }
 
     /// Adds an overlay above the others of its layer.
@@ -174,7 +179,8 @@ pub const viewport_margin: f32 = 8;
 
 /// Where an overlay of `size` goes next to `anchor` inside `viewport`:
 /// on `p.side` when it fits, else on the opposite side when that has more
-/// room; then shifted to stay `viewport_margin` inside the viewport.
+/// room; aligned to the anchor's other edge when it would overflow; then
+/// shifted to stay `viewport_margin` inside the viewport.
 pub fn place(anchor: Rect, size: Size, viewport: Rect, p: Placement) Rect {
     const vp = viewport.inset(.all(viewport_margin));
     var x: f32 = 0;
@@ -195,6 +201,10 @@ pub fn place(anchor: Rect, size: Size, viewport: Rect, p: Placement) Rect {
                 .center => anchor.x + (anchor.w - size.w) / 2,
                 .end => anchor.right() - size.w,
             };
+            // Overflowing an edge: align to the anchor's other edge instead
+            // (a context menu at the pointer opens leftwards).
+            if (p.alignment == .start and x + size.w > vp.right() and anchor.right() - size.w >= vp.x) x = anchor.right() - size.w;
+            if (p.alignment == .end and x < vp.x and anchor.x + size.w <= vp.right()) x = anchor.x;
         },
         .right, .left => {
             const right_x = anchor.right() + p.gap;
@@ -211,6 +221,8 @@ pub fn place(anchor: Rect, size: Size, viewport: Rect, p: Placement) Rect {
                 .center => anchor.y + (anchor.h - size.h) / 2,
                 .end => anchor.bottom() - size.h,
             };
+            if (p.alignment == .start and y + size.h > vp.bottom() and anchor.bottom() - size.h >= vp.y) y = anchor.bottom() - size.h;
+            if (p.alignment == .end and y < vp.y and anchor.y + size.h <= vp.bottom()) y = anchor.y;
         },
     }
     x = @max(vp.x, @min(x, vp.right() - size.w));
