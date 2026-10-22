@@ -15,17 +15,15 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",    "text.cache_hit",
-    "text.cache_screen",    "text.cells_row_200",
-    "text.fontdb_load_3k",  "text.gamma",
-    "text.hit_test",        "text.integrate_gpix",
-    "text.itemize_200col",  "text.layout_200col",
-    "text.lcd",             "text.measure_hit",
-    "text.raster_14px",     "text.raster_64px_cjk",
-    "text.raster_lcd_14px", "text.registry_get",
-    "text.sdf_48px",        "text.shape_code_line_200",
-    "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.wrap_10kb",
+    "text.atlas_insert",         "text.cache_hit",
+    "text.cache_screen",         "text.cells_row_200",
+    "text.fontdb_load_3k",       "text.gamma",
+    "text.hit_test",             "text.itemize_200col",
+    "text.layout_200col",        "text.lcd",
+    "text.measure_hit",          "text.raster_lcd_14px",
+    "text.registry_get",         "text.sdf_48px",
+    "text.shape_code_line_200",  "text.shape_latin_1k",
+    "text.shape_word_cache_hit", "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -130,6 +128,61 @@ fn register(b: *bench.Bench) !void {
     var serif_gids: [94]u16 = undefined;
     for (&serif_gids, 0..) |*g, i| g.* = serif.glyphIndex(@intCast(0x21 + i));
     try b.run("text.cff_outline", VarOutlineCtx{ .inst = &serif_inst, .gids = &serif_gids, .gpa = b.gpa }, gvarOutline);
+
+    // Outline + coverage raster of one JetBrains Mono ASCII glyph at 14 px.
+    var jb_inst = try vt.FaceInstance.init(b.gpa, &jb, &.{});
+    defer jb_inst.deinit(b.gpa);
+    try b.run("text.raster_14px", RasterCtx{ .inst = &jb_inst, .gids = &ascii_gids, .gpa = b.gpa, .px = 14 }, rasterGlyph);
+
+    // The same for Source Han Sans JP (CFF, CJK) at 64 px.
+    const han = try zg_text.ot.Face.init(fonts.data[4], 0);
+    var han_inst = try vt.FaceInstance.init(b.gpa, &han, &.{});
+    defer han_inst.deinit(b.gpa);
+    var han_gids: [12]u16 = undefined;
+    for (&han_gids, han_cps) |*g, c| g.* = han.glyphIndex(c);
+    try b.run("text.raster_64px_cjk", RasterCtx{ .inst = &han_inst, .gids = &han_gids, .gpa = b.gpa, .px = 64 }, rasterGlyph);
+
+    // Prefix-sum integration of a 256×256 accumulator; bytes/s = pixels/s.
+    try b.run("text.integrate_gpix", b.gpa, integrate);
+}
+
+const han_cps = [12]u21{ '語', '漢', '字', '日', '本', 'あ', 'い', 'う', 'え', 'お', 'か', 'き' };
+
+const RasterCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator, px: f32 };
+
+fn rasterGlyph(ctx: RasterCtx, s: *State) void {
+    var r: zg_text.raster.Rasterizer = .init(ctx.gpa);
+    defer r.deinit();
+    for (ctx.gids) |gid| _ = r.rasterizeGlyph(ctx.inst, gid, .{ .px_per_em = ctx.px }) catch unreachable;
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
+        const bm = r.rasterizeGlyph(ctx.inst, ctx.gids[k], .{ .px_per_em = ctx.px }) catch unreachable;
+        bench.doNotOptimizeAway(bm.pixels.len);
+        k += 1;
+        if (k == ctx.gids.len) k = 0;
+    }
+}
+
+fn integrate(gpa: std.mem.Allocator, s: *State) void {
+    const n = 256;
+    var acc: zg_text.raster.coverage.Accumulator = .{};
+    defer acc.deinit(gpa);
+    acc.reset(gpa, n, n) catch unreachable;
+    // A ring per row keeps every row's deltas balanced.
+    for (0..n) |y| {
+        const row = acc.buf[y * acc.stride ..];
+        row[3] = 0.6;
+        row[4] = 0.4;
+        row[200] = -0.6;
+        row[201] = -0.4;
+    }
+    const out = gpa.alloc(u8, n * n) catch unreachable;
+    defer gpa.free(out);
+    for (0..s.iterations()) |_| {
+        acc.integrate(out, n);
+        bench.doNotOptimizeAway(out[n * n - 1]);
+    }
+    s.setBytes(n * n);
 }
 
 const VarOutlineCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator };
