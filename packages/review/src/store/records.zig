@@ -12,6 +12,7 @@
 const std = @import("std");
 const proto = @import("zg_ai_proto");
 const model = @import("../model/root.zig");
+const pull = @import("../model/pull.zig");
 
 const Allocator = std.mem.Allocator;
 const Stringify = std.json.Stringify;
@@ -21,6 +22,7 @@ const FileChange = model.FileChange;
 const ChangeSet = model.changeset.ChangeSet;
 const Replace = model.changeset.Replace;
 const BlobHash = model.BlobHash;
+const Tokens = pull.Pull;
 
 pub const inline_limit = 16 << 10;
 
@@ -330,134 +332,310 @@ fn writeEdits(s: *Stringify, cs: *const ChangeSet) Stringify.Error!void {
 
 // ---------------------------------------------------------------- decode
 
-/// Rebuilds a changeset from its snapshot. Strings are copied into the
-/// changeset's arena; `blobs` serves large edits.
-pub fn readChangeset(gpa: Allocator, v: Value, blobs: model.Blobs) anyerror!*Changeset {
-    const o = try obj(v);
-    const cs = try gpa.create(Changeset);
-    errdefer gpa.destroy(cs);
+/// Rebuilds a changeset from its snapshot's JSON text. Strings are copied
+/// into the changeset's arena; `blobs` serves large edits. A cold load
+/// decodes every snapshot, so this pulls tokens instead of building a
+/// `std.json.Value` tree (E12.F01.S02 load budget).
+pub fn readChangeset(gpa: Allocator, json: []const u8, blobs: model.Blobs) anyerror!*Changeset {
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+    var t: Tokens = .init(sa, json);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     const a = arena.allocator();
-    const files_v = try arr(get(o, "files") orelse return error.InvalidRecord);
-    const files = a.alloc(FileChange, files_v.items.len) catch |e| {
-        arena.deinit();
-        return e;
-    };
-    var built: usize = 0;
+    var files: std.ArrayList(FileChange) = .empty;
     errdefer {
-        for (files[0..built]) |*f| f.deinitContent();
+        for (files.items) |*f| f.deinitContent();
         arena.deinit();
     }
-    for (files, files_v.items) |*f, fv| {
-        f.* = try readFile(gpa, a, fv, blobs);
-        built += 1;
+    var id: ?u64 = null;
+    var prov: ?model.Provenance = null;
+    var state: ?model.State = null;
+    var revision: ?u16 = null;
+    var presentation: ?model.Presentation = null;
+    var created_ms: ?i64 = null;
+    var have_files = false;
+    var cs: Changeset = undefined;
+    cs.supersedes = null;
+    cs.checkpoint = null;
+    cs.auto_applied = false;
+    cs.decided_ms = null;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "id")) {
+            id = try t.int(u64);
+        } else if (eql(k, "prov")) {
+            prov = try model.provenance.readProvenance(a, &t);
+        } else if (eql(k, "state")) {
+            state = try t.enumOf(model.State);
+        } else if (eql(k, "revision")) {
+            revision = try t.int(u16);
+        } else if (eql(k, "supersedes")) {
+            cs.supersedes = @enumFromInt(try t.int(u64));
+        } else if (eql(k, "checkpoint")) {
+            cs.checkpoint = try t.int(u64);
+        } else if (eql(k, "auto_applied")) {
+            cs.auto_applied = try t.boolean();
+        } else if (eql(k, "presentation")) {
+            presentation = try t.enumOf(model.Presentation);
+        } else if (eql(k, "created_ms")) {
+            created_ms = try t.int(i64);
+        } else if (eql(k, "decided_ms")) {
+            cs.decided_ms = try t.int(i64);
+        } else if (eql(k, "files")) {
+            if (have_files) return error.InvalidRecord;
+            have_files = true;
+            try t.expect(.array_begin);
+            while (try t.more()) {
+                var f = try readFile(gpa, a, &t, blobs);
+                files.append(sa, f) catch |e| {
+                    f.deinitContent();
+                    return e;
+                };
+            }
+        } else try t.skip();
     }
-    cs.* = .{
-        .id = @enumFromInt(try int(u64, get(o, "id"))),
-        .prov = try model.parseProvenanceJson(a, get(o, "prov") orelse return error.InvalidRecord),
-        .files = files,
-        .state = try enumOf(model.State, get(o, "state")),
-        .revision = try int(u16, get(o, "revision")),
-        .supersedes = if (get(o, "supersedes")) |x| @enumFromInt(try int(u64, x)) else null,
-        .checkpoint = if (get(o, "checkpoint")) |x| try int(u64, x) else null,
-        .auto_applied = if (get(o, "auto_applied")) |x| x == .bool and x.bool else false,
-        .presentation = try enumOf(model.Presentation, get(o, "presentation")),
-        .created_ms = try int(i64, get(o, "created_ms")),
-        .decided_ms = if (get(o, "decided_ms")) |x| try int(i64, x) else null,
-        .arena = arena.state,
-    };
-    return cs;
+    try t.expect(.end);
+    if (!have_files) return error.InvalidRecord;
+    cs.id = @enumFromInt(id orelse return error.InvalidRecord);
+    cs.prov = prov orelse return error.InvalidRecord;
+    cs.state = state orelse return error.InvalidRecord;
+    cs.revision = revision orelse return error.InvalidRecord;
+    cs.presentation = presentation orelse return error.InvalidRecord;
+    cs.created_ms = created_ms orelse return error.InvalidRecord;
+    cs.files = try a.dupe(FileChange, files.items);
+    const out = try gpa.create(Changeset);
+    cs.arena = arena.state;
+    out.* = cs;
+    return out;
 }
 
-fn readFile(gpa: Allocator, a: Allocator, v: Value, blobs: model.Blobs) anyerror!FileChange {
-    const o = try obj(v);
-    var f: FileChange = .{ .path = try dupe(a, get(o, "path")), .op = .modify, .content = .none };
-    const op = try obj(get(o, "op") orelse return error.InvalidRecord);
-    f.op = switch (try enumOf(std.meta.Tag(model.FileOp), get(op, "type"))) {
-        .create => .{ .create = .{ .executable = try boolean(get(op, "executable")) } },
-        .modify => .modify,
-        .delete => .delete,
-        .rename => .{ .rename = .{ .from = try dupe(a, get(op, "from")) } },
-        .set_executable => .{ .set_executable = try boolean(get(op, "on")) },
-    };
-    f.state = try enumOf(model.FileState, get(o, "state"));
-    if (get(o, "base")) |b| f.base = try readBase(b);
-    if (get(o, "folded_from")) |ff| {
-        const items = (try arr(ff)).items;
-        const out = try a.alloc(model.ChangesetId, items.len);
-        for (out, items) |*d, x| d.* = @enumFromInt(try int(u64, x));
-        f.folded_from = out;
-    }
-    if (get(o, "previous")) |x| f.previous = try unhex(x);
-    const c = try obj(get(o, "content") orelse return error.InvalidRecord);
-    switch (try enumOf(std.meta.Tag(model.Content), get(c, "type"))) {
-        .none => {},
-        .text => {
-            const base_len = try int(u64, get(c, "base_len"));
-            var scratch: std.heap.ArenaAllocator = .init(gpa);
-            defer scratch.deinit();
-            const edits_v: Value = if (get(c, "edits")) |e| e else blk: {
-                const h = try unhex(get(c, "edits_blob"));
-                const bytes = (try blobs.get(scratch.allocator(), h)) orelse return error.InvalidRecord;
-                break :blk try std.json.parseFromSliceLeaky(Value, scratch.allocator(), bytes, .{});
-            };
-            const items = (try arr(edits_v)).items;
-            const reps = try scratch.allocator().alloc(Replace, items.len);
-            for (reps, items) |*r, x| {
-                const t = (try arr(x)).items;
-                if (t.len != 3) return error.InvalidRecord;
-                r.* = .{ .range = .{ .start = try int(u64, t[0]), .end = try int(u64, t[1]) }, .text = try str(t[2]) };
-            }
-            const edits = ChangeSet.fromEdits(gpa, base_len, reps) catch |e| switch (e) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.InvalidRecord,
-            };
-            f.content = .{ .text = .{ .base = if (get(c, "base")) |b| try readBase(b) else null, .edits = edits } };
-        },
-        .binary => f.content = .{ .binary = .{
-            .base = if (get(c, "base")) |b| try unhex(b) else null,
-            .new = try unhex(get(c, "new")),
-            .new_size = try int(u64, get(c, "new_size")),
-        } },
-    }
+fn readFile(gpa: Allocator, a: Allocator, t: *Tokens, blobs: model.Blobs) anyerror!FileChange {
+    var f: FileChange = .{ .path = "", .op = .modify, .content = .none };
     errdefer f.deinitContent();
-    const hs = (try arr(get(o, "hunks") orelse return error.InvalidRecord)).items;
-    const hunks = try a.alloc(model.Hunk, hs.len);
-    for (hunks, hs, 0..) |*h, hv, i| {
-        const t = (try arr(hv)).items;
-        if (t.len != 8 and t.len != 9) return error.InvalidRecord;
-        const dec = try int(u8, t[6]);
-        if (dec > @intFromEnum(model.Decision.edited)) return error.InvalidRecord;
-        h.* = .{
-            .id = @intCast(i),
-            .base_lines = .{ .start = try int(u32, t[0]), .count = try int(u32, t[1]) },
-            .new_lines = .{ .start = try int(u32, t[2]), .count = try int(u32, t[3]) },
-            .replace_span = .{ try int(u32, t[4]), try int(u32, t[5]) },
-            .decision = @enumFromInt(dec),
-            .key = std.fmt.parseInt(u64, try str(t[7]), 16) catch return error.InvalidRecord,
-        };
-        if (t.len == 9) {
-            const co = try obj(t[8]);
-            h.conflict = .{
-                .kind = try enumOf(model.ConflictKind, get(co, "kind")),
-                .other = if (get(co, "other")) |x| @enumFromInt(try int(u64, x)) else null,
-                .ours_lines = .{ .start = try int(u32, get(co, "start")), .count = try int(u32, get(co, "count")) },
-                .theirs_text = try dupe(a, get(co, "theirs")),
-            };
-        }
+    var path: ?[]const u8 = null;
+    var op: ?model.FileOp = null;
+    var state: ?model.FileState = null;
+    var hunks: ?[]model.Hunk = null;
+    var have_content = false;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "path")) {
+            path = try a.dupe(u8, try t.str());
+        } else if (eql(k, "op")) {
+            op = try readOp(a, t);
+        } else if (eql(k, "state")) {
+            state = try t.enumOf(model.FileState);
+        } else if (eql(k, "base")) {
+            f.base = try readBase(t);
+        } else if (eql(k, "folded_from")) {
+            var ids: std.ArrayList(model.ChangesetId) = .empty;
+            try t.expect(.array_begin);
+            while (try t.more()) try ids.append(t.a, @enumFromInt(try t.int(u64)));
+            f.folded_from = try a.dupe(model.ChangesetId, ids.items);
+        } else if (eql(k, "previous")) {
+            f.previous = try readHash(t);
+        } else if (eql(k, "content")) {
+            if (have_content) return error.InvalidRecord;
+            have_content = true;
+            f.content = try readContent(gpa, t, blobs);
+        } else if (eql(k, "hunks")) {
+            hunks = try readHunks(a, t);
+        } else try t.skip();
     }
-    f.hunks = hunks;
+    if (!have_content) return error.InvalidRecord;
+    f.path = path orelse return error.InvalidRecord;
+    f.op = op orelse return error.InvalidRecord;
+    f.state = state orelse return error.InvalidRecord;
+    f.hunks = hunks orelse return error.InvalidRecord;
     return f;
 }
 
-fn readBase(v: Value) Error!model.BaseRef {
-    const o = try obj(v);
-    return .{
-        .hash = try unhex(get(o, "hash")),
-        .size = try int(u64, get(o, "size")),
-        .doc_version = if (get(o, "doc_version")) |x| try int(u64, x) else null,
-        .eol = try enumOf(model.Eol, get(o, "eol")),
+fn readOp(a: Allocator, t: *Tokens) Error!model.FileOp {
+    var kind: ?std.meta.Tag(model.FileOp) = null;
+    var flag: ?bool = null;
+    var from: ?[]const u8 = null;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "type")) {
+            kind = try t.enumOf(std.meta.Tag(model.FileOp));
+        } else if (eql(k, "executable") or eql(k, "on")) {
+            flag = try t.boolean();
+        } else if (eql(k, "from")) {
+            from = try a.dupe(u8, try t.str());
+        } else try t.skip();
+    }
+    return switch (kind orelse return error.InvalidRecord) {
+        .create => .{ .create = .{ .executable = flag orelse return error.InvalidRecord } },
+        .modify => .modify,
+        .delete => .delete,
+        .rename => .{ .rename = .{ .from = from orelse return error.InvalidRecord } },
+        .set_executable => .{ .set_executable = flag orelse return error.InvalidRecord },
     };
+}
+
+/// The `content` object. `base` is a `BaseRef` object for text and a
+/// hash for binaries.
+fn readContent(gpa: Allocator, t: *Tokens, blobs: model.Blobs) anyerror!model.Content {
+    var kind: ?std.meta.Tag(model.Content) = null;
+    var base_ref: ?model.BaseRef = null;
+    var base_hash: ?BlobHash = null;
+    var base_len: ?u64 = null;
+    var edits: ?[]Replace = null;
+    var edits_blob: ?BlobHash = null;
+    var new: ?BlobHash = null;
+    var new_size: ?u64 = null;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "type")) {
+            kind = try t.enumOf(std.meta.Tag(model.Content));
+        } else if (eql(k, "base")) {
+            if (try t.peek() == .object_begin) base_ref = try readBase(t) else base_hash = try readHash(t);
+        } else if (eql(k, "base_len")) {
+            base_len = try t.int(u64);
+        } else if (eql(k, "edits")) {
+            edits = try readEdits(t);
+        } else if (eql(k, "edits_blob")) {
+            edits_blob = try readHash(t);
+        } else if (eql(k, "new")) {
+            new = try readHash(t);
+        } else if (eql(k, "new_size")) {
+            new_size = try t.int(u64);
+        } else try t.skip();
+    }
+    switch (kind orelse return error.InvalidRecord) {
+        .none => return .none,
+        .text => {
+            const reps = edits orelse blk: {
+                const bytes = (try blobs.get(t.a, edits_blob orelse return error.InvalidRecord)) orelse return error.InvalidRecord;
+                var bt: Tokens = .init(t.a, bytes);
+                const r = try readEdits(&bt);
+                try bt.expect(.end);
+                break :blk r;
+            };
+            const cs = ChangeSet.fromEdits(gpa, base_len orelse return error.InvalidRecord, reps) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidRecord,
+            };
+            return .{ .text = .{ .base = base_ref, .edits = cs } };
+        },
+        .binary => return .{ .binary = .{
+            .base = base_hash,
+            .new = new orelse return error.InvalidRecord,
+            .new_size = new_size orelse return error.InvalidRecord,
+        } },
+    }
+}
+
+/// `[[start, end, "text"], ...]`, in `t`'s scratch.
+fn readEdits(t: *Tokens) Error![]Replace {
+    var reps: std.ArrayList(Replace) = .empty;
+    try t.expect(.array_begin);
+    while (try t.more()) {
+        try t.expect(.array_begin);
+        const start = try t.int(u64);
+        const end = try t.int(u64);
+        const text = try t.str();
+        try t.expect(.array_end);
+        try reps.append(t.a, .{ .range = .{ .start = start, .end = end }, .text = text });
+    }
+    return reps.items;
+}
+
+fn readHunks(a: Allocator, t: *Tokens) Error![]model.Hunk {
+    var hunks: std.ArrayList(model.Hunk) = .empty;
+    try t.expect(.array_begin);
+    while (try t.more()) {
+        try t.expect(.array_begin);
+        var n: [7]u32 = undefined;
+        for (&n) |*x| x.* = try t.int(u32);
+        if (n[6] > @intFromEnum(model.Decision.edited)) return error.InvalidRecord;
+        var h: model.Hunk = .{
+            .id = @intCast(hunks.items.len),
+            .base_lines = .{ .start = n[0], .count = n[1] },
+            .new_lines = .{ .start = n[2], .count = n[3] },
+            .replace_span = .{ n[4], n[5] },
+            .decision = @enumFromInt(n[6]),
+            .key = std.fmt.parseInt(u64, try t.str(), 16) catch return error.InvalidRecord,
+        };
+        if (try t.more()) {
+            h.conflict = try readConflict(a, t);
+            try t.expect(.array_end);
+        }
+        try hunks.append(t.a, h);
+    }
+    return a.dupe(model.Hunk, hunks.items);
+}
+
+fn readConflict(a: Allocator, t: *Tokens) Error!model.ConflictInfo {
+    var kind: ?model.ConflictKind = null;
+    var other: ?model.ChangesetId = null;
+    var start: ?u32 = null;
+    var count: ?u32 = null;
+    var theirs: ?[]const u8 = null;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "kind")) {
+            kind = try t.enumOf(model.ConflictKind);
+        } else if (eql(k, "other")) {
+            other = @enumFromInt(try t.int(u64));
+        } else if (eql(k, "start")) {
+            start = try t.int(u32);
+        } else if (eql(k, "count")) {
+            count = try t.int(u32);
+        } else if (eql(k, "theirs")) {
+            theirs = try a.dupe(u8, try t.str());
+        } else try t.skip();
+    }
+    return .{
+        .kind = kind orelse return error.InvalidRecord,
+        .other = other,
+        .ours_lines = .{ .start = start orelse return error.InvalidRecord, .count = count orelse return error.InvalidRecord },
+        .theirs_text = theirs orelse return error.InvalidRecord,
+    };
+}
+
+fn readBase(t: *Tokens) Error!model.BaseRef {
+    var hash: ?BlobHash = null;
+    var size: ?u64 = null;
+    var doc_version: ?u64 = null;
+    var eol: ?model.Eol = null;
+    try t.expect(.object_begin);
+    while (try t.key()) |k| {
+        if (try t.isNull()) continue;
+        if (eql(k, "hash")) {
+            hash = try readHash(t);
+        } else if (eql(k, "size")) {
+            size = try t.int(u64);
+        } else if (eql(k, "doc_version")) {
+            doc_version = try t.int(u64);
+        } else if (eql(k, "eol")) {
+            eol = try t.enumOf(model.Eol);
+        } else try t.skip();
+    }
+    return .{
+        .hash = hash orelse return error.InvalidRecord,
+        .size = size orelse return error.InvalidRecord,
+        .doc_version = doc_version,
+        .eol = eol orelse return error.InvalidRecord,
+    };
+}
+
+fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn readHash(t: *Tokens) Error!BlobHash {
+    const s = try t.str();
+    var h: BlobHash = undefined;
+    if (s.len != 64) return error.InvalidRecord;
+    _ = std.fmt.hexToBytes(&h, s) catch return error.InvalidRecord;
+    return h;
 }
 
 fn get(o: std.json.ObjectMap, k: []const u8) ?Value {
@@ -516,10 +694,7 @@ fn roundTrip(q: *model.Queue, mem: *model.MemBlobs, id: model.ChangesetId) !void
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     try writeChangeset(&aw.writer, cs, mem.blobs(), testing.allocator);
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const v = try std.json.parseFromSliceLeaky(Value, arena.allocator(), aw.written(), .{});
-    const back = try readChangeset(testing.allocator, v, mem.blobs());
+    const back = try readChangeset(testing.allocator, aw.written(), mem.blobs());
     defer {
         back.deinit(testing.allocator);
         testing.allocator.destroy(back);
@@ -545,9 +720,40 @@ test "store: changeset record round trip" {
     try q.setExecutable(b, "run", true);
     const id = try q.commitBatch(b, .{ .checkpoint = 4, .presentation = .inline_ });
     q.getMut(id).?.files[0].hunks[0].decision = .rejected;
+    q.getMut(id).?.files[1].folded_from = &.{ @enumFromInt(2), @enumFromInt(3) };
     try roundTrip(q, &mem, id);
     q.getMut(id).?.files[0].hunks[0].conflict = .{ .kind = .sibling_changeset, .other = @enumFromInt(3), .ours_lines = .{ .start = 0, .count = 1 }, .theirs_text = "x\n" };
     try roundTrip(q, &mem, id);
+}
+
+test "records: changeset decoder takes keys in any order, nulls as absent" {
+    var mem: model.MemBlobs = .init(testing.allocator);
+    defer mem.deinit();
+    const json =
+        \\{"files":[{"hunks":[[0,1,0,1,0,1,2,"00000000000000ff",{"theirs":"t\n","count":1,"start":0,"kind":"sibling_changeset"}]],
+        \\"content":{"edits":[[0,1,"A\u0022"]],"base_len":2,"type":"text","base":null},"previous":null,"op":{"from":"old","type":"rename"},
+        \\"state":"pending","path":"p\/q","extra":[1,{"x":null}]}],"created_ms":-5,"presentation":"queue","revision":2,"state":"pending","supersedes":null,
+        \\"prov":{"workspace":"/w","label":"l","origin":{"type":"search_replace","query":"foo"},"created_ms":0},"id":12}
+    ;
+    const cs = try readChangeset(testing.allocator, json, mem.blobs());
+    defer {
+        cs.deinit(testing.allocator);
+        testing.allocator.destroy(cs);
+    }
+    try testing.expectEqual(@as(u64, 12), @intFromEnum(cs.id));
+    try testing.expectEqual(@as(i64, -5), cs.created_ms);
+    try testing.expectEqual(@as(?model.ChangesetId, null), cs.supersedes);
+    const f = cs.files[0];
+    try testing.expectEqualStrings("p/q", f.path);
+    try testing.expectEqualStrings("old", f.op.rename.from);
+    try testing.expectEqualStrings("A\"", f.content.text.edits.replaces[0].text);
+    try testing.expectEqual(@as(u64, 0xff), f.hunks[0].key);
+    try testing.expectEqual(model.Decision.rejected, f.hunks[0].decision);
+    try testing.expectEqualStrings("t\n", f.hunks[0].conflict.?.theirs_text);
+    // Missing fields, wrong types and trailing text are refused.
+    for ([_][]const u8{ "{}", "{\"files\":[]}", "[1]", json ++ "1", "{\"id\":\"1\"}" }) |bad| {
+        try testing.expectError(error.InvalidRecord, readChangeset(testing.allocator, bad, mem.blobs()));
+    }
 }
 
 test "records: apply record round trip" {

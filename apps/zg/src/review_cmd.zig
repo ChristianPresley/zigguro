@@ -782,7 +782,7 @@ const Cmd = struct {
             w: *Writer,
             from: u64,
             n: u64 = 0,
-            fn on(ctx: *anyopaque, kind: zg_review.store.journal.Kind, rec: std.json.Value) anyerror!void {
+            fn on(ctx: *anyopaque, kind: zg_review.store.journal.Kind, rec: []const u8) anyerror!void {
                 const d: *@This() = @ptrCast(@alignCast(ctx));
                 defer d.n += 1;
                 if (d.n < d.from) return;
@@ -793,7 +793,9 @@ const Cmd = struct {
                 try s.objectField("kind");
                 try s.write(std.enums.tagName(zg_review.store.journal.Kind, kind) orelse "unknown");
                 try s.objectField("record");
-                try s.write(rec);
+                try s.beginWriteRaw();
+                try d.w.writeAll(rec);
+                s.endWriteRaw();
                 try s.endObject();
                 try d.w.writeByte('\n');
             }

@@ -15,4 +15,5 @@ test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("store_test.zig");
     _ = @import("gc_test.zig");
+    _ = @import("crc32c.zig");
 }
