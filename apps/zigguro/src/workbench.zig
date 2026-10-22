@@ -51,6 +51,9 @@ const PanelRef = zg_gui.dock.model.PanelRef;
 const Area = zg_gui.dock.model.Area;
 
 /// See the module doc.
+/// How often the review panel looks for other processes' decisions.
+const review_poll_ms = 1000;
+
 pub const Workbench = struct {
     rt: *zg_core.Runtime,
     gpa: std.mem.Allocator,
@@ -121,6 +124,9 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
+    /// Polls the review store for other processes' records (`zg review`)
+    /// while the review panel exists.
+    review_timer: Window.TimerId = .none,
 
     /// One open file and its dock panel; the current one is mirrored in
     /// the fields above.
@@ -384,6 +390,8 @@ pub const Workbench = struct {
         wb.agent_panel = null;
         if (wb.review_view) |v| v.destroy();
         wb.review_view = null;
+        if (wb.review_timer != .none) w.cancelTimer(wb.review_timer);
+        wb.review_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
@@ -598,10 +606,21 @@ pub const Workbench = struct {
             p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
             p.open_review = .{ .ctx = wb, .f = openReview };
             wb.review_panel = p;
+            wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
         }
         if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
         try wb.reveal(wb.review_ref.?, .left);
         w.markAllDirty();
+    }
+
+    /// Takes in what `zg review` or another window decided, then polls
+    /// again.
+    fn pollReview(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.review_timer = .none;
+        const host = wb.agent orelse return;
+        if (host.review.refresh()) w.markAllDirty();
+        wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
     }
 
     /// A palette "AI: /name" command: opens the agent pane and runs
