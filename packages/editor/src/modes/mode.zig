@@ -34,6 +34,22 @@ pub const CaretShape = enum { bar, block, underline, half_block };
 
 pub const KeyResult = enum { consumed, passthrough };
 
+/// File and window commands a mode asks the editor for (`:w`, `:q`,
+/// `:e`; Emacs `C-x C-s`).
+pub const Action = union(enum) {
+    write: struct { path: ?[]const u8 = null, force: bool = false },
+    /// Close the editor (`:q`); `force` discards changes.
+    quit: struct { force: bool = false },
+    /// Write when modified, then close (`:x`).
+    exit,
+    edit: struct { path: ?[]const u8 = null, force: bool = false },
+};
+
+pub const Actions = struct {
+    ctx: *anyopaque,
+    runFn: *const fn (ctx: *anyopaque, a: Action) anyerror!void,
+};
+
 /// What a mode edits.
 pub const Host = struct {
     doc: *Document,
@@ -44,6 +60,8 @@ pub const Host = struct {
     brackets: ?*const zg_syntax.BracketTree = null,
     /// For undo timestamps; null records time zero.
     io: ?std.Io = null,
+    /// Runs `:w`, `:q` and the like; null when the editor has none.
+    actions: ?Actions = null,
 
     pub fn now(h: *const Host) std.Io.Timestamp {
         const io = h.io orelse return .{ .nanoseconds = 0 };
