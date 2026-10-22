@@ -27,6 +27,7 @@ const proto = @import("proto.zig");
 const Conn = @import("conn.zig").Conn;
 const dri3 = @import("dri3.zig");
 const dmabuf = @import("../wayland/dmabuf.zig");
+const xsync = @import("xsync.zig");
 
 /// DRM fourcc `AR24`.
 pub const fourcc_argb8888: u32 = 0x34325241;
@@ -97,6 +98,11 @@ pub const Presenter = struct {
     serial: u32 = 0,
     /// Whether the CPU-wait sync fallback has been logged.
     warned_cpu_wait: bool = false,
+    /// The window's `_NET_WM_SYNC_REQUEST_COUNTER`, or 0.
+    sync_counter: u32 = 0,
+    /// A sync value to set once a frame of `sync_size` is presented.
+    sync_value: ?u64 = null,
+    sync_size: [2]u32 = .{ 0, 0 },
 
     /// A presenter for `window`, drawing through `gc`.
     pub fn init(gpa: std.mem.Allocator, io: Io, conn: *Conn, path: Path, window: u32, gc: u32, depth: u8, win: types.WindowId) Presenter {
@@ -114,6 +120,25 @@ pub const Presenter = struct {
         p.buffers.deinit(p.gpa);
         p.released.deinit(p.gpa);
         p.scratch.deinit(p.gpa);
+    }
+
+    /// Sets the sync counter to `value` after the next present of a
+    /// `w`×`h` buffer.
+    pub fn armSync(p: *Presenter, value: u64, w: u32, h: u32) void {
+        p.lock();
+        defer p.unlock();
+        p.sync_value = value;
+        p.sync_size = .{ w, h };
+    }
+
+    /// Sets the counter if a sync is armed for a `w`×`h` frame. Mutex
+    /// held.
+    fn syncAfterPresent(p: *Presenter, w: u32, h: u32) !void {
+        const v = p.sync_value orelse return;
+        if (p.sync_counter == 0 or w != p.sync_size[0] or h != p.sync_size[1]) return;
+        p.sync_value = null;
+        const s = xsync.split(v);
+        _ = try p.conn.request(xsync.SetCounter, .{ .counter = p.sync_counter, .hi = s.hi, .lo = s.lo }, &.{});
     }
 
     fn lock(p: *Presenter) void {
@@ -413,6 +438,7 @@ fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.
         const prev = p.last;
         p.last = b.handle;
         if (prev) |h| if (h != b.handle) if (p.find(h)) |old| p.maybeRelease(old);
+        try p.syncAfterPresent(b.w, b.h);
         try p.conn.flush();
         return;
     }
@@ -427,6 +453,7 @@ fn present(ctx: *anyopaque, handle: surface.BufferHandle, damage: []const types.
     p.last = b.handle;
     p.seq += 1;
     if (prev) |h| if (h != b.handle) if (p.find(h)) |old| p.maybeRelease(old);
+    try p.syncAfterPresent(b.w, b.h);
     // PutImage copies the pixels into the request: a later present may
     // reuse the buffer at once, once it is no longer the newest.
     try p.conn.flush();

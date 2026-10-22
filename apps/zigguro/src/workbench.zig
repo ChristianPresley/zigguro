@@ -33,6 +33,7 @@ const zg_security_ui = @import("zg_security_ui");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
+const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const path_crumbs = @import("path_crumbs.zig");
 
 const Ui = zg_gui.Ui;
@@ -102,6 +103,8 @@ pub const Workbench = struct {
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
+    /// Slash commands and skills, in the palette and the agent prompt.
+    agent_cmds: ?*AgentCommands = null,
     focus_agent: bool = false,
 
     /// One open file and its dock panel; the current one is mirrored in
@@ -151,6 +154,10 @@ pub const Workbench = struct {
         wb.reg = try registry.CommandRegistry.init(gpa, &wb.keys, .{ .io = io });
         try registry.registerBuiltins(wb.reg);
         try wb.registerCommands();
+        const ac = try AgentCommands.init(gpa, io, wb.cwd);
+        wb.agent_cmds = ac;
+        ac.on_palette = .{ .ctx = wb, .f = runAgentCommand };
+        try ac.registerPalette(wb.reg);
         wb.resolver = try zg_config.resolver.Resolver.init(gpa, &wb.keys, &zg_config.keys.us_layout, .{});
         try wb.loadKeymap();
     }
@@ -314,6 +321,7 @@ pub const Workbench = struct {
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.agent_cmds) |c| c.target = null;
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
         if (wb.terminal) |t| t.destroy();
@@ -334,6 +342,8 @@ pub const Workbench = struct {
         for (wb.keymap_docs.items) |*d| d.deinit();
         wb.keymap_docs.deinit(wb.gpa);
         wb.reg.deinit();
+        // After the registry: its palette handlers point into it.
+        if (wb.agent_cmds) |c| c.deinit();
         wb.diags.deinit();
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
@@ -482,6 +492,10 @@ pub const Workbench = struct {
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
             p.attachChildren(&host.children);
+            if (wb.agent_cmds) |c| {
+                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs };
+                p.commands = c;
+            }
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
             wb.agent = host;
             wb.agent_panel = p;
@@ -491,6 +505,23 @@ pub const Workbench = struct {
         wb.focus_agent = true;
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusAgent });
+    }
+
+    /// A palette "AI: /name" command: opens the agent pane and runs
+    /// `/name`, or for one that takes arguments, puts `/name ` in the
+    /// prompt.
+    fn runAgentCommand(ctx: *anyopaque, name: []const u8, takes_args: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (!wb.shown(wb.agent_ref) or wb.areaOf(wb.agent_ref) == .center) wb.toggleAgent() catch |e| {
+            wb.notify(.error_, "Could not start the agent: {t}", .{e});
+            return;
+        };
+        const p = wb.agent_panel orelse return;
+        var buf: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "/{s}{s}", .{ name, if (takes_args) " " else "" }) catch return;
+        if (takes_args) {
+            p.input.setText(line) catch {};
+        } else p.submit(line) catch |e| wb.notify(.error_, "/{s} failed: {t}", .{ name, e });
     }
 
     fn focusAgent(ctx: *anyopaque, w: *Window) void {
@@ -553,6 +584,13 @@ pub const Workbench = struct {
         }
         wb.followFocus();
         wb.dv.beginFrame(ui);
+        // At the window origin: the chrome (title bar and frame when the
+        // platform asks us to draw them), then the dock's drop preview.
+        ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column } });
+        defer ui.close();
+        defer wb.dv.dropOverlay(ui);
+        zg_gui.dock.chrome.begin(ui, .{ .title = "zigguro" });
+        defer zg_gui.dock.chrome.end(ui);
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column, .bg = .{ .token = .bg_base } } });
         defer ui.close();
         wb.header(ui);
@@ -575,7 +613,6 @@ pub const Workbench = struct {
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
-        wb.dv.dropOverlay(ui);
     }
 
     const agent_w: f32 = 380;

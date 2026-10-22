@@ -114,6 +114,7 @@ pub const headless = struct {
     pub const runner = @import("headless/runner.zig");
     pub const print = @import("headless/print.zig");
     pub const repl = @import("headless/repl.zig");
+    pub const slash = @import("headless/slash.zig");
     pub const HeadlessOptions = args.HeadlessOptions;
     pub const ExitCode = exit_codes.ExitCode;
     pub const parseArgs = args.parseArgs;
@@ -122,6 +123,7 @@ pub const headless = struct {
     test {
         _ = @import("headless/args_test.zig");
         _ = @import("headless/print_test.zig");
+        _ = @import("headless/slash_test.zig");
         _ = @import("headless/stream_json_test.zig");
     }
 };
@@ -175,10 +177,20 @@ pub const ext = struct {
     pub const hook_io = @import("ext/hook_io.zig");
     pub const hook_match = @import("ext/hook_match.zig");
     pub const HookEngine = hooks.HookEngine;
+    pub const substitute = @import("ext/substitute.zig");
+    pub const skills = @import("ext/skills.zig");
+    pub const skill_tool = @import("ext/skill_tool.zig");
+    pub const commands = @import("ext/commands.zig");
+    pub const builtin_commands = @import("ext/builtin_commands.zig");
+    pub const SkillIndex = skills.SkillIndex;
+    pub const SkillTool = skill_tool.SkillTool;
     test {
         _ = hook_io;
         _ = hook_match;
+        _ = commands;
         _ = @import("ext/hooks_test.zig");
+        _ = @import("ext/substitute_test.zig");
+        _ = @import("ext/skills_test.zig");
     }
 };
 /// Plan mode, todos and questions to the user (E10.F09.S02).

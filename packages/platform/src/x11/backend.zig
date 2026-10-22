@@ -31,8 +31,25 @@
 //! `selection.zig`. A drag we start grabs the pointer and walks the
 //! windows under it for an XDND target.
 //!
-//! Not yet here (later E01.F05 tasks): RandR monitors,
-//! _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors.
+//! Window manager (E01.F05.S02.T01, `ewmh.zig`): `_NET_WM_PING` is
+//! answered, `_NET_WM_STATE` changes become `window_configure` state, and
+//! client-decorated windows (`Decorations.client`) ask for no WM frame
+//! with `_MOTIF_WM_HINTS`. On those, presses on the app's caption and
+//! resize regions start `_NET_WM_MOVERESIZE`, a right press on the caption
+//! opens `_GTK_SHOW_WINDOW_MENU` and a double click toggles maximize.
+//!
+//! Cursors (E01.F05.S02.T01, `cursor.zig`): Xcursor theme images through
+//! RENDER, else core glyph cursors, set per window with
+//! ChangeWindowAttributes. Client-decorated windows show resize cursors
+//! over the app's resize regions.
+//!
+//! Monitors (E01.F05.S02.T01, `randr.zig`): RandR 1.5 `RRGetMonitors`,
+//! refreshed on `RRScreenChangeNotify` (→ `monitors_changed`); one monitor
+//! for the screen without RandR 1.5.
+//!
+//! Smooth resizing (`xsync.zig`): with SYNC 3.1 each window has a
+//! `_NET_WM_SYNC_REQUEST_COUNTER`; the value a WM asks for is set after
+//! the first present at the configured size.
 
 const std = @import("std");
 const Io = std.Io;
@@ -63,6 +80,12 @@ const selection = @import("selection.zig");
 const xkb_ext = @import("xkb.zig");
 const xinput2 = @import("xinput2.zig");
 const xdnd = @import("xdnd.zig");
+const ewmh = @import("ewmh.zig");
+const cursor_mod = @import("cursor.zig");
+const randr = @import("randr.zig");
+const xsync = @import("xsync.zig");
+const CursorShape = @import("../api/cursor.zig").CursorShape;
+const csd = @import("../wayland/csd.zig");
 const seat_mod = @import("../wayland/seat.zig");
 const compose = @import("../xkb/compose.zig");
 
@@ -102,6 +125,15 @@ const atom_names = [_][]const u8{
     "_NET_WM_WINDOW_TYPE",
     "_NET_WM_WINDOW_TYPE_NORMAL",
     "_NET_ACTIVE_WINDOW",
+    "_NET_WM_PING",
+    "_NET_WM_STATE_HIDDEN",
+    "_NET_WM_STATE_DEMANDS_ATTENTION",
+    "_NET_WM_MOVERESIZE",
+    "_NET_SUPPORTED",
+    "_MOTIF_WM_HINTS",
+    "_GTK_SHOW_WINDOW_MENU",
+    "_NET_WM_SYNC_REQUEST",
+    "_NET_WM_SYNC_REQUEST_COUNTER",
 };
 const Atoms = @import("atoms.zig").AtomTable(&atom_names);
 
@@ -140,6 +172,32 @@ const Window = struct {
     last_click_pos: [2]f32 = .{ -100, -100 },
     last_click_button: u8 = 0,
     clicks: u8 = 0,
+    /// Client-decorated: presses route through `hit`.
+    csd: bool = false,
+    hit: ?Hit = null,
+    /// A button whose press started a WM action; its release is dropped.
+    csd_swallow: ?u8 = null,
+    csd_clicks: csd.Clicks = .{},
+    /// Minimized, per `_NET_WM_STATE_HIDDEN`.
+    hidden: bool = false,
+    /// The last known root position of the window's origin.
+    origin: ?types.PxPoint = null,
+    /// The app's cursor, and the resize cursor over a client-decorated
+    /// window's resize region.
+    cursor: CursorShape = .default,
+    auto_cursor: ?CursorShape = null,
+    /// The cursor set on the window (0 before the first).
+    shown_cursor: u32 = 0,
+    /// A `_NET_WM_SYNC_REQUEST` value waiting for its ConfigureNotify.
+    sync_request: ?u64 = null,
+
+    const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
+};
+
+/// The newest button press: where (root coordinates) and which button.
+const Press = struct {
+    root: [2]i32 = .{ 0, 0 },
+    button: u8 = 0,
 };
 
 /// Where the seat's keyboard logic puts events. Mutex held.
@@ -201,6 +259,16 @@ pub const X11Backend = struct {
     xdnd_source: ?xdnd.Source = null,
     /// The newest server timestamp seen in an event (0 = CurrentTime).
     last_time: u32 = 0,
+    /// The newest button press, for WM move/resize requests.
+    last_press: Press = .{},
+    /// Created cursors. Guarded by the mutex.
+    cursors: cursor_mod.Cursors,
+    /// RandR 1.5's first event code, or null without it.
+    randr_event: ?u8 = null,
+    /// The monitors, refreshed on screen changes. Guarded by the mutex.
+    mons: std.ArrayList(types.MonitorInfo) = .empty,
+    /// SYNC 3.1 is available for `_NET_WM_SYNC_REQUEST`.
+    sync_ok: bool = false,
     /// Payloads over the arena's limit, by id. Guarded by the mutex.
     large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
     next_large: u32 = 0,
@@ -237,6 +305,7 @@ pub const X11Backend = struct {
             .path = .put_image,
             .arena = arena,
             .ui_wake = ui_wake,
+            .cursors = .init(gpa, opts.environ_map),
             .hooks = .{
                 .ptr = b,
                 .win32SetMessageHook = noHook,
@@ -258,6 +327,9 @@ pub const X11Backend = struct {
         b.enableXi2();
         errdefer b.scrolling.deinit(gpa);
         b.sel = try .init(gpa, conn);
+        errdefer b.mons.deinit(gpa);
+        b.initRandr();
+        b.sync_ok = initSync(conn);
         errdefer b.sel.deinit();
         b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
         const shm_ok = b.shmUsable();
@@ -412,10 +484,11 @@ pub const X11Backend = struct {
         defer b.unlock();
         const id: WindowId = @enumFromInt(b.next_win);
         b.next_win += 1;
-        w.* = .{ .id = id, .xid = xid, .gc = gc, .size = size, .presenter = .init(b.gpa, b.io, c, b.path, xid, gc, s.root_depth, id) };
+        w.* = .{ .id = id, .xid = xid, .gc = gc, .size = size, .presenter = .init(b.gpa, b.io, c, b.path, xid, gc, s.root_depth, id), .csd = opts.decorations == .client };
         w.presenter.bind();
         if (b.gpu) |*g| w.presenter.gpu = g;
         b.createX(w, opts) catch return error.SystemResources;
+        b.applyCursor(w);
         b.windows.append(b.gpa, w) catch {
             _ = c.request(proto.DestroyWindow, .{ .window = xid }, &.{}) catch {};
             return error.OutOfMemory;
@@ -450,7 +523,19 @@ pub const X11Backend = struct {
         if (b.gpu != null) _ = try c.request(dri3.PresentSelectInput, .{ .eid = try c.newXid(), .window = w.xid, .event_mask = dri3.EventMask.complete | dri3.EventMask.idle }, &.{});
         if (b.xi_opcode != null) _ = try c.request(xinput2.SelectEvents, .{ .window = w.xid, .device_id = xinput2.Device.all_master, .mask = xinput2.windowMask(true) }, &.{});
         const a = &b.atoms;
-        try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
+        if (b.sync_ok) {
+            const counter = try c.newXid();
+            _ = try c.request(xsync.CreateCounter, .{ .id = counter }, &.{});
+            w.presenter.sync_counter = counter;
+            var v: [4]u8 = undefined;
+            std.mem.writeInt(u32, &v, counter, .little);
+            try b.setProp(w.xid, a.get("_NET_WM_SYNC_REQUEST_COUNTER"), proto.Atom.cardinal, 32, &v);
+            try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{ a.get("WM_DELETE_WINDOW"), a.get("_NET_WM_PING"), a.get("_NET_WM_SYNC_REQUEST") });
+        } else try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{ a.get("WM_DELETE_WINDOW"), a.get("_NET_WM_PING") });
+        if (w.csd) {
+            const hints = ewmh.motifNoDecorations();
+            try b.setProp(w.xid, a.get("_MOTIF_WM_HINTS"), a.get("_MOTIF_WM_HINTS"), 32, &hints);
+        }
         try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
         try b.setAtoms(w.xid, b.xdnd_atoms.get("XdndAware"), &.{xdnd.version});
         try b.setTitle(w.xid, opts.title);
@@ -500,6 +585,7 @@ pub const X11Backend = struct {
     }
 
     fn destroyX(b: *X11Backend, w: *Window) void {
+        if (w.presenter.sync_counter != 0) _ = b.conn.request(xsync.DestroyCounter, .{ .counter = w.presenter.sync_counter }, &.{}) catch {};
         w.presenter.deinit();
         _ = b.conn.request(proto.FreeGC, .{ .gc = w.gc }, &.{}) catch {};
         _ = b.conn.request(proto.DestroyWindow, .{ .window = w.xid }, &.{}) catch {};
@@ -526,19 +612,23 @@ pub const X11Backend = struct {
     fn run(b: *X11Backend, cmd: Command) !void {
         switch (cmd) {
             .set_title => |t| try b.setTitle((try b.lookup(t.win)).xid, t.title),
-            // Cursors, the IME and hit-testing come with later E01.F05
-            // tasks; the window must exist.
-            .set_cursor => |t| _ = try b.lookup(t.win),
+            // The IME comes with a later E01.F05 task; the window must
+            // exist.
+            .set_cursor => |t| {
+                const w = try b.lookup(t.win);
+                w.cursor = t.shape;
+                b.applyCursor(w);
+            },
             .set_ime_state => |t| _ = try b.lookup(t.win),
-            .set_hit_test => |t| _ = try b.lookup(t.win),
+            .set_hit_test => |t| (try b.lookup(t.win)).hit = .{ .f = t.f, .ctx = t.ctx },
             .set_min_size => |t| try b.setMinSize((try b.lookup(t.win)).xid, t.size),
             .request_state => |t| {
                 const w = try b.lookup(t.win);
                 const a = &b.atoms;
                 switch (t.op) {
-                    .show => try b.sendRoot(w.xid, a.get("_NET_ACTIVE_WINDOW"), .{ 1, 0, 0, 0, 0 }),
-                    .maximize, .unmaximize => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .maximize), a.get("_NET_WM_STATE_MAXIMIZED_VERT"), a.get("_NET_WM_STATE_MAXIMIZED_HORZ"), 1, 0 }),
-                    .fullscreen, .unfullscreen => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .fullscreen), a.get("_NET_WM_STATE_FULLSCREEN"), 0, 1, 0 }),
+                    .show => try b.activate(w, ewmh.Source.application),
+                    .maximize, .unmaximize => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .maximize), a.get("_NET_WM_STATE_MAXIMIZED_VERT"), a.get("_NET_WM_STATE_MAXIMIZED_HORZ"), ewmh.Source.application, 0 }),
+                    .fullscreen, .unfullscreen => try b.sendRoot(w.xid, a.get("_NET_WM_STATE"), .{ @intFromBool(t.op == .fullscreen), a.get("_NET_WM_STATE_FULLSCREEN"), 0, ewmh.Source.application, 0 }),
                     .minimize => try b.sendRoot(w.xid, a.get("WM_CHANGE_STATE"), .{ 3, 0, 0, 0, 0 }), // IconicState
                 }
             },
@@ -560,8 +650,174 @@ pub const X11Backend = struct {
                 b.ui_wake.signal();
             },
             .set_drop_effect => |t| b.xdndSetEffect(t.win, t.accept, t.effect),
-            .begin_move, .begin_resize, .show_window_menu, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .begin_move => |win| try b.moveResize(try b.lookup(win), ewmh.move_direction),
+            .begin_resize => |t| try b.moveResize(try b.lookup(t.win), ewmh.resizeDirection(t.edge)),
+            .show_window_menu => |t| {
+                const w = try b.lookup(t.win);
+                const r = try b.conn.reply(try b.conn.request(proto.TranslateCoordinates, .{ .src_window = w.xid, .dst_window = b.conn.screen().root, .src_x = @intCast(std.math.clamp(t.at.x, -32768, 32767)), .src_y = @intCast(std.math.clamp(t.at.y, -32768, 32767)) }, &.{}));
+                try b.showWindowMenu(w, .{ r.x, r.y });
+            },
+            .activate => |t| try b.activate(try b.lookup(t.win), if (t.token != null) ewmh.Source.user else ewmh.Source.application),
+            .request_attention => |win| {
+                const w = try b.lookup(win);
+                try b.sendRoot(w.xid, b.atoms.get("_NET_WM_STATE"), .{ ewmh.StateAction.add, b.atoms.get("_NET_WM_STATE_DEMANDS_ATTENTION"), 0, ewmh.Source.application, 0 });
+            },
+            .open_dialog, .open_uri => return error.Unsupported,
         }
+    }
+
+    /// Asks the WM to raise and focus `w`, mapping it first if minimized.
+    fn activate(b: *X11Backend, w: *Window, source: u32) !void {
+        if (w.hidden) _ = try b.conn.request(proto.MapWindow, .{ .window = w.xid }, &.{});
+        try b.sendRoot(w.xid, b.atoms.get("_NET_ACTIVE_WINDOW"), .{ source, b.last_time, 0, 0, 0 });
+    }
+
+    /// Hands the pointer to the WM for a move (`ewmh.move_direction`) or
+    /// resize from the newest press.
+    fn moveResize(b: *X11Backend, w: *Window, direction: u32) !void {
+        const p = b.last_press;
+        // The press's implicit grab would keep the pointer from the WM.
+        b.ungrabPointer();
+        try b.sendRoot(w.xid, b.atoms.get("_NET_WM_MOVERESIZE"), .{ @bitCast(p.root[0]), @bitCast(p.root[1]), direction, if (p.button == 0) 1 else p.button, ewmh.Source.user });
+    }
+
+    /// Opens the WM's window menu at `root` if it supports
+    /// `_GTK_SHOW_WINDOW_MENU`.
+    fn showWindowMenu(b: *X11Backend, w: *Window, root: [2]i32) !void {
+        const c = b.conn;
+        const supported = try c.reply(try c.request(proto.GetProperty, .{ .window = c.screen().root, .property = b.atoms.get("_NET_SUPPORTED"), .type = proto.Atom.atom }, &.{}));
+        if (supported.format != 32 or !ewmh.lists(supported.value, b.atoms.get("_GTK_SHOW_WINDOW_MENU"))) return;
+        b.ungrabPointer();
+        try b.sendRoot(w.xid, b.atoms.get("_GTK_SHOW_WINDOW_MENU"), .{ b.xi_pointer, @bitCast(root[0]), @bitCast(root[1]), 0, 0 });
+    }
+
+    fn setSyncCounter(b: *X11Backend, w: *Window, v: u64) void {
+        const s = xsync.split(v);
+        _ = b.conn.request(xsync.SetCounter, .{ .counter = w.presenter.sync_counter, .hi = s.hi, .lo = s.lo }, &.{}) catch |err| log.warn("setting the sync counter: {t}", .{err});
+    }
+
+    /// Answers `_NET_WM_PING` by sending it back to the root window.
+    fn pong(b: *X11Backend, ev: []const u8) void {
+        const root = b.conn.screen().root;
+        _ = b.conn.request(proto.SendEvent, .{
+            .destination = root,
+            .event_mask = proto.EventMask.substructure_notify | proto.EventMask.substructure_redirect,
+            .event = ewmh.pong(ev, root),
+        }, &.{}) catch |err| log.warn("answering _NET_WM_PING: {t}", .{err});
+    }
+
+    /// Re-reads `_NET_WM_STATE` and reports maximize/fullscreen changes.
+    fn readWmState(b: *X11Backend, w: *Window) void {
+        const c = b.conn;
+        const a = &b.atoms;
+        const reply = c.reply(c.request(proto.GetProperty, .{ .window = w.xid, .property = a.get("_NET_WM_STATE"), .type = proto.Atom.atom }, &.{}) catch return) catch return;
+        const st = ewmh.parseState(if (reply.format == 32) reply.value else &.{}, .{
+            .max_vert = a.get("_NET_WM_STATE_MAXIMIZED_VERT"),
+            .max_horz = a.get("_NET_WM_STATE_MAXIMIZED_HORZ"),
+            .fullscreen = a.get("_NET_WM_STATE_FULLSCREEN"),
+            .hidden = a.get("_NET_WM_STATE_HIDDEN"),
+        });
+        if (st.hidden != w.hidden) {
+            w.hidden = st.hidden;
+            // Un-minimizing maps the window again, which clears it.
+            if (st.hidden) b.setOccluded(w, true);
+        }
+        if (st.maximized == w.maximized and st.fullscreen == w.fullscreen) return;
+        w.maximized = st.maximized;
+        w.fullscreen = st.fullscreen;
+        w.serial +%= 1;
+        b.stageConfigure(w);
+    }
+
+    /// Shows `w`'s cursor (the resize cursor over a resize region, else
+    /// the app's) at the current scale.
+    fn applyCursor(b: *X11Backend, w: *Window) void {
+        const shape = w.auto_cursor orelse w.cursor;
+        const size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(b.cursors.baseSize())) * b.scale));
+        const xid = b.cursors.get(b.gpa, b.io, b.conn, shape, @max(size, 1)) catch |err| {
+            log.warn("creating the {t} cursor: {t}", .{ shape, err });
+            return;
+        };
+        if (xid == w.shown_cursor) return;
+        w.shown_cursor = xid;
+        _ = b.conn.request(proto.ChangeWindowAttributes, .{ .window = w.xid, .values = .{ .values = .{ .cursor = xid } } }, &.{}) catch |err| log.warn("setting the cursor: {t}", .{err});
+    }
+
+    /// Over a client-decorated window, shows resize cursors on the app's
+    /// resize regions.
+    fn csdHover(b: *X11Backend, w: *Window, pos: [2]f32) void {
+        if (!w.csd) return;
+        const h = w.hit orelse return;
+        const region = h.f(h.ctx, .{ .x = @intFromFloat(@floor(pos[0])), .y = @intFromFloat(@floor(pos[1])) });
+        const shape: ?CursorShape = if (csd.regionEdge(region)) |e| csd.cursorFor(e) else null;
+        if (std.meta.eql(shape, w.auto_cursor)) return;
+        w.auto_cursor = shape;
+        b.applyCursor(w);
+    }
+
+    /// Selects RandR 1.5 screen changes and reads the monitors.
+    fn initRandr(b: *X11Backend) void {
+        const c = b.conn;
+        const info = c.extension("RANDR") orelse return;
+        const v = c.reply(c.request(randr.QueryVersion, .{}, &.{}) catch return) catch return;
+        if (v.major < 1 or (v.major == 1 and v.minor < 5)) return;
+        _ = c.request(randr.SelectInput, .{ .window = c.screen().root, .enable = randr.NotifyMask.layout }, &.{}) catch return;
+        b.randr_event = info.first_event;
+        b.refreshMonitors();
+    }
+
+    /// Re-reads the RandR monitors; keeps the old list on failure.
+    fn refreshMonitors(b: *X11Backend) void {
+        const c = b.conn;
+        const reply = c.reply(c.request(randr.GetMonitors, .{ .window = c.screen().root }, &.{}) catch return) catch return;
+        var found: [16]randr.Monitor = undefined;
+        const total = randr.parseMonitors(reply.bytes, &found) catch return;
+        const n = @min(total, found.len);
+        b.mons.clearRetainingCapacity();
+        const refresh: u32 = @intCast(@divTrunc(std.time.ns_per_s * 1000, @as(u64, b.opts.refresh_ns)));
+        for (found[0..n]) |m| {
+            var info: types.MonitorInfo = .{ .id = m.name, .rect_px = m.rect, .work_px = m.rect, .scale = .{ .factor = b.scale }, .refresh_mhz = refresh, .primary = m.primary };
+            // The reply buffer is reused: names are fetched after parsing.
+            if (c.reply(c.request(proto.GetAtomName, .{ .atom = m.name }, &.{}) catch null orelse continue)) |nm| {
+                info.name_len = @intCast(@min(nm.name.len, info.name_buf.len));
+                @memcpy(info.name_buf[0..info.name_len], nm.name[0..info.name_len]);
+            } else |_| {}
+            b.mons.append(b.gpa, info) catch return;
+        }
+    }
+
+    fn stageConfigure(b: *X11Backend, w: *Window) void {
+        b.stage(.{ .window_configure = .{ .win = w.id, .size = w.size, .scale = .{ .factor = b.scale }, .state = .{ .maximized = w.maximized, .fullscreen = w.fullscreen, .activated = w.focused }, .serial = w.serial, .screen_origin_px = w.origin } });
+    }
+
+    /// Routes a press or release on a client-decorated window: caption
+    /// and resize regions go to the WM; true when the event was used.
+    fn routeCsd(b: *X11Backend, w: *Window, detail: u8, pressed: bool, pos: [2]f32) bool {
+        if (!w.csd) return false;
+        if (!pressed) {
+            if (w.csd_swallow != detail) return false;
+            w.csd_swallow = null;
+            return true;
+        }
+        const region: types.HitRegion = if (w.hit) |h| h.f(h.ctx, .{ .x = @intFromFloat(@floor(pos[0])), .y = @intFromFloat(@floor(pos[1])) }) else .client;
+        const button: types.Button = switch (detail) {
+            1 => .left,
+            2 => .middle,
+            3 => .right,
+            else => return false,
+        };
+        const double = region == .caption and button == .left and w.csd_clicks.press(b.nowNs(), pos, double_click_ns, double_click_px);
+        const action = csd.pressAction(region, button, double);
+        const result = switch (action) {
+            .deliver => return false,
+            .move => b.moveResize(w, ewmh.move_direction),
+            .resize => |e| b.moveResize(w, ewmh.resizeDirection(e)),
+            .window_menu => b.showWindowMenu(w, b.last_press.root),
+            .toggle_maximize => b.sendRoot(w.xid, b.atoms.get("_NET_WM_STATE"), .{ ewmh.StateAction.toggle, b.atoms.get("_NET_WM_STATE_MAXIMIZED_VERT"), b.atoms.get("_NET_WM_STATE_MAXIMIZED_HORZ"), ewmh.Source.user, 0 }),
+        };
+        result catch |err| log.warn("window manager request: {t}", .{err});
+        w.csd_swallow = detail;
+        return true;
     }
 
     /// Sends an EWMH client message about `xid` to the root window.
@@ -659,6 +915,13 @@ pub const X11Backend = struct {
 
     /// See `Platform.VTable.monitors`: the screen, until RandR monitors.
     pub fn monitors(b: *X11Backend, out: []types.MonitorInfo) usize {
+        b.lock();
+        defer b.unlock();
+        if (b.mons.items.len > 0) {
+            const n = @min(out.len, b.mons.items.len);
+            @memcpy(out[0..n], b.mons.items[0..n]);
+            return b.mons.items.len;
+        }
         const s = b.conn.screen();
         if (out.len > 0) {
             const r: types.PxRect = .{ .x = 0, .y = 0, .w = s.width_px, .h = s.height_px };
@@ -774,6 +1037,9 @@ pub const X11Backend = struct {
         b.scrolling.deinit(b.gpa);
         if (b.compose_table) |*t| t.deinit(b.gpa);
         if (b.gpu) |*g| g.deinit(b.gpa);
+        b.mons.deinit(b.gpa);
+        b.cursors.deinit(b.gpa, b.conn);
+        b.conn.flush() catch {};
         b.conn.deinit();
         b.arena.deinit(b.gpa);
         b.ui_wake.deinit();
@@ -824,6 +1090,11 @@ pub const X11Backend = struct {
             return;
         };
         if (b.gpu) |g| if (code == proto.generic_event and ev[1] == g.present_opcode) return b.onPresentEvent(ev);
+        if (b.randr_event) |base| if (code == base or code == base + 1) {
+            if (code == base + 1 and !randr.notifyChangesLayout(ev[1])) return;
+            b.refreshMonitors();
+            return b.stage(.monitors_changed);
+        };
         if (b.xkb_event) |base| if (code == base) return b.onXkbEvent(ev);
         // While we drag, the pointer grab sends core events to us.
         if (b.xdnd_source) |s| if (s.grabbed and b.xi_opcode == null) switch (code) {
@@ -847,6 +1118,7 @@ pub const X11Backend = struct {
             proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
             proto.EventCode.motion_notify => {
                 const w = b.byXid(u32At(ev, 12)) orelse return;
+                b.csdHover(w, eventPos(ev));
                 b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = eventPos(ev), .mods = modsFromState(u16At(ev, 28)), .time_ns = b.nowNs() } });
             },
             proto.EventCode.enter_notify, proto.EventCode.leave_notify => {
@@ -889,17 +1161,33 @@ pub const X11Backend = struct {
             proto.EventCode.configure_notify => {
                 const w = b.byXid(u32At(ev, 8)) orelse return;
                 const size: PxSize = .{ .w = u16At(ev, 20), .h = u16At(ev, 22) };
+                if (w.sync_request) |v| {
+                    w.sync_request = null;
+                    // Nothing to redraw at an unchanged size: answer now.
+                    if (size.w == w.size.w and size.h == w.size.h) b.setSyncCounter(w, v) else w.presenter.armSync(v, size.w, size.h);
+                }
                 if (size.w == 0 or size.h == 0 or (size.w == w.size.w and size.h == w.size.h)) return;
                 w.size = size;
                 w.serial +%= 1;
-                b.stage(.{ .window_configure = .{ .win = w.id, .size = size, .scale = .{ .factor = b.scale }, .state = .{ .maximized = w.maximized, .fullscreen = w.fullscreen, .activated = w.focused }, .serial = w.serial, .screen_origin_px = .{ .x = @as(i16, @bitCast(u16At(ev, 16))), .y = @as(i16, @bitCast(u16At(ev, 18))) } } });
+                w.origin = .{ .x = @as(i16, @bitCast(u16At(ev, 16))), .y = @as(i16, @bitCast(u16At(ev, 18))) };
+                b.stageConfigure(w);
             },
             proto.EventCode.client_message => {
                 if (xdnd.decode(&b.xdnd_atoms, ev)) |m| return b.onXdnd(u32At(ev, 4), m);
                 const w = b.byXid(u32At(ev, 4)) orelse return;
-                if (u32At(ev, 8) == b.atoms.get("WM_PROTOCOLS") and u32At(ev, 12) == b.atoms.get("WM_DELETE_WINDOW")) {
+                if (u32At(ev, 8) != b.atoms.get("WM_PROTOCOLS")) return;
+                const which = u32At(ev, 12);
+                if (which == b.atoms.get("WM_DELETE_WINDOW")) {
                     b.stage(.{ .window_close_requested = w.id });
+                } else if (which == b.atoms.get("_NET_WM_PING")) {
+                    b.pong(ev);
+                } else if (which == b.atoms.get("_NET_WM_SYNC_REQUEST") and w.presenter.sync_counter != 0) {
+                    w.sync_request = xsync.join(@bitCast(u32At(ev, 24)), u32At(ev, 20));
                 }
+            },
+            proto.EventCode.property_notify => {
+                const w = b.byXid(u32At(ev, 4)) orelse return;
+                if (u32At(ev, 8) == b.atoms.get("_NET_WM_STATE")) b.readWmState(w);
             },
             proto.EventCode.mapping_notify => if (ev[4] == 1 and b.xkb_event == null) {
                 // MappingKeyboard: refetch. The reply may queue more events;
@@ -1023,13 +1311,14 @@ pub const X11Backend = struct {
                         }
                         if (e.pos[0] == b.ptr_pos[0] and e.pos[1] == b.ptr_pos[1]) return;
                         b.ptr_pos = e.pos;
+                        b.csdHover(w, e.pos);
                         b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = e.pos, .mods = mods, .time_ns = b.nowNs() } });
                     },
                     xinput2.EventType.button_press, xinput2.EventType.button_release => {
                         // Wheel buttons emulated from scroll valuators: the
                         // valuators already scrolled.
                         if (e.flags & xinput2.pointer_emulated != 0) return;
-                        b.pointerButton(w, @intCast(@min(e.detail, 255)), e.evtype == xinput2.EventType.button_press, e.pos, mods);
+                        b.pointerButton(w, @intCast(@min(e.detail, 255)), e.evtype == xinput2.EventType.button_press, e.pos, e.root, mods);
                     },
                     xinput2.EventType.touch_begin, xinput2.EventType.touch_update, xinput2.EventType.touch_end => {
                         const phase: types.Phase = switch (e.evtype) {
@@ -1047,12 +1336,15 @@ pub const X11Backend = struct {
 
     fn onButton(b: *X11Backend, ev: []const u8, pressed: bool) void {
         const w = b.byXid(u32At(ev, 12)) orelse return;
-        b.pointerButton(w, ev[1], pressed, eventPos(ev), modsFromState(u16At(ev, 28)));
+        const root: [2]f32 = .{ @floatFromInt(@as(i16, @bitCast(u16At(ev, 20)))), @floatFromInt(@as(i16, @bitCast(u16At(ev, 22)))) };
+        b.pointerButton(w, ev[1], pressed, eventPos(ev), root, modsFromState(u16At(ev, 28)));
     }
 
     /// A button press or release; 4–7 are wheel notches. Mutex held.
-    fn pointerButton(b: *X11Backend, w: *Window, detail: u8, pressed: bool, pos: [2]f32, mods: keys_api.Mods) void {
+    fn pointerButton(b: *X11Backend, w: *Window, detail: u8, pressed: bool, pos: [2]f32, root: [2]f32, mods: keys_api.Mods) void {
         const now = b.nowNs();
+        if (pressed and (detail < 4 or detail > 7)) b.last_press = .{ .root = .{ @intFromFloat(@floor(root[0])), @intFromFloat(@floor(root[1])) }, .button = detail };
+        if (b.routeCsd(w, detail, pressed, pos)) return;
         switch (detail) {
             4, 5, 6, 7 => {
                 if (!pressed) return;
@@ -1453,6 +1745,13 @@ pub const X11Backend = struct {
         return if (b.find(win)) |w| w.xid else null;
     }
 };
+
+/// Initializes SYNC 3.1; false without it.
+fn initSync(c: *Conn) bool {
+    if (c.extension("SYNC") == null) return false;
+    const v = c.reply(c.request(xsync.Initialize, .{}, &.{}) catch return false) catch return false;
+    return v.major > 3 or (v.major == 3 and v.minor >= 1);
+}
 
 fn u16At(b: []const u8, at: usize) u16 {
     return std.mem.readInt(u16, b[at..][0..2], .little);
@@ -1950,4 +2249,431 @@ test "Xvfb: XDND between two clients (enter, status, drop, finished)" {
     try testing.expectEqual(wa, finished.?.win);
     try testing.expectEqual(clipboard.DragActions{ .copy = true }, finished.?.allowed);
     try testing.expect(a.xdnd_source == null and b.xdnd_target == null);
+}
+
+/// A second client acting as the window manager: it redirects the root's
+/// substructure, so client messages sent to the root reach it.
+const FakeWm = struct {
+    r: *Conn,
+    /// `pointer_button` events `message` saw while polling.
+    buttons: usize = 0,
+
+    fn start(display: []const u8) !FakeWm {
+        var env: std.process.Environ.Map = .init(testing.allocator);
+        defer env.deinit();
+        const r = try Conn.connect(testing.allocator, testing.io, &env, .{ .display = display });
+        errdefer r.deinit();
+        const mask = proto.EventMask.substructure_notify | proto.EventMask.substructure_redirect;
+        try r.checked(proto.ChangeWindowAttributes, .{ .window = r.screen().root, .values = .{ .values = .{ .event_mask = mask } } }, &.{});
+        return .{ .r = r };
+    }
+
+    fn stop(f: *FakeWm) void {
+        f.r.deinit();
+    }
+
+    /// The next client message of type `ty` sent to the root, letting `p`
+    /// dispatch meanwhile; other events are dropped.
+    fn message(f: *FakeWm, p: Platform, ty: u32) ![5]u32 {
+        var evs: [16]Event = undefined;
+        var tries: usize = 0;
+        while (tries < 2000) : (tries += 1) {
+            const n = p.pollEvents(&evs);
+            for (evs[0..n]) |e| if (e == .pointer_button) {
+                f.buttons += 1;
+            };
+            try f.r.flush();
+            while (try f.r.pollEvent()) |ev| {
+                if (ev[0] & 0x7f != proto.EventCode.client_message or u32At(ev, 8) != ty) continue;
+                var out: [5]u32 = undefined;
+                for (&out, 0..) |*d, i| d.* = u32At(ev, 12 + i * 4);
+                return out;
+            }
+            try testing.io.sleep(.fromMilliseconds(1), .awake);
+        }
+        return error.Timeout;
+    }
+};
+
+test "Xvfb: _NET_WM_PING answered; _NET_WM_STATE reported; move, resize, menu and activate requests" {
+    var x = XvfbForTest.start(9) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg wm", .size = .{ .w = 64, .h = 48 } });
+    _ = try waitFor(p, .window_configure, win);
+    var wm = try FakeWm.start(x.display());
+    defer wm.stop();
+    const r = wm.r;
+    const a = &b.atoms;
+    const xid = b.xidOf(win).?;
+    const root = r.screen().root;
+
+    // WM_PROTOCOLS lists the ping.
+    const protos = try r.reply(try r.request(proto.GetProperty, .{ .window = xid, .property = a.get("WM_PROTOCOLS"), .type = proto.Atom.atom }, &.{}));
+    try testing.expect(ewmh.lists(protos.value, a.get("_NET_WM_PING")));
+
+    var ping: [32]u8 = @splat(0);
+    ping[0] = proto.EventCode.client_message;
+    ping[1] = 32;
+    std.mem.writeInt(u32, ping[4..8], xid, .little);
+    std.mem.writeInt(u32, ping[8..12], a.get("WM_PROTOCOLS"), .little);
+    std.mem.writeInt(u32, ping[12..16], a.get("_NET_WM_PING"), .little);
+    std.mem.writeInt(u32, ping[16..20], 4321, .little);
+    std.mem.writeInt(u32, ping[20..24], xid, .little);
+    try r.checked(proto.SendEvent, .{ .destination = xid, .event_mask = 0, .event = ping }, &.{});
+    const pong = try wm.message(p, a.get("WM_PROTOCOLS"));
+    try testing.expectEqual(a.get("_NET_WM_PING"), pong[0]);
+    try testing.expectEqual(4321, pong[1]);
+    try testing.expectEqual(xid, pong[2]);
+
+    // The WM maximizes the window.
+    var state: [8]u8 = undefined;
+    std.mem.writeInt(u32, state[0..4], a.get("_NET_WM_STATE_MAXIMIZED_HORZ"), .little);
+    std.mem.writeInt(u32, state[4..8], a.get("_NET_WM_STATE_MAXIMIZED_VERT"), .little);
+    try r.checked(proto.ChangeProperty, .{ .window = xid, .property = a.get("_NET_WM_STATE"), .type = proto.Atom.atom, .format = 32, .length = 2, .bytes = &state }, &.{});
+    const cfg = (try waitFor(p, .window_configure, win)).window_configure;
+    try testing.expect(cfg.state.maximized);
+    try testing.expect(!cfg.state.fullscreen);
+
+    try p.submit(.{ .begin_resize = .{ .win = win, .edge = .bottom_right } });
+    const rs = try wm.message(p, a.get("_NET_WM_MOVERESIZE"));
+    try testing.expectEqual(4, rs[2]);
+    try testing.expectEqual(1, rs[3]);
+    try testing.expectEqual(ewmh.Source.user, rs[4]);
+    try p.submit(.{ .begin_move = win });
+    try testing.expectEqual(ewmh.move_direction, (try wm.message(p, a.get("_NET_WM_MOVERESIZE")))[2]);
+
+    // The window menu needs _GTK_SHOW_WINDOW_MENU in _NET_SUPPORTED.
+    var supported: [4]u8 = undefined;
+    std.mem.writeInt(u32, &supported, a.get("_GTK_SHOW_WINDOW_MENU"), .little);
+    try r.checked(proto.ChangeProperty, .{ .window = root, .property = a.get("_NET_SUPPORTED"), .type = proto.Atom.atom, .format = 32, .length = 1, .bytes = &supported }, &.{});
+    try p.submit(.{ .show_window_menu = .{ .win = win, .at = .{ .x = 5, .y = 6 } } });
+    const menu = try wm.message(p, a.get("_GTK_SHOW_WINDOW_MENU"));
+    // No WM moved the window: window and root coordinates agree.
+    try testing.expectEqual(5, menu[1]);
+    try testing.expectEqual(6, menu[2]);
+
+    try p.submit(.{ .activate = .{ .win = win, .token = "t" } });
+    try testing.expectEqual(ewmh.Source.user, (try wm.message(p, a.get("_NET_ACTIVE_WINDOW")))[0]);
+    try p.submit(.{ .request_attention = win });
+    const att = try wm.message(p, a.get("_NET_WM_STATE"));
+    try testing.expectEqual(ewmh.StateAction.add, att[0]);
+    try testing.expectEqual(a.get("_NET_WM_STATE_DEMANDS_ATTENTION"), att[1]);
+}
+
+test "Xvfb: client decorations route caption presses to the window manager" {
+    var x = XvfbForTest.start(10) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (b.conn.extension("XTEST") == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg csd", .size = .{ .w = 120, .h = 80 }, .decorations = .client });
+    _ = try waitFor(p, .window_configure, win);
+    const Caption = struct {
+        fn hit(_: *anyopaque, pt: types.PxPoint) types.HitRegion {
+            if (pt.y < 20) return .caption;
+            if (pt.x >= 110 and pt.y >= 70) return .resize_bottom_right;
+            return .client;
+        }
+    };
+    var dummy: u8 = 0;
+    try p.submit(.{ .set_hit_test = .{ .win = win, .f = Caption.hit, .ctx = &dummy } });
+    var wm = try FakeWm.start(x.display());
+    defer wm.stop();
+    const a = &b.atoms;
+    const xid = b.xidOf(win).?;
+    const hints = try wm.r.reply(try wm.r.request(proto.GetProperty, .{ .window = xid, .property = a.get("_MOTIF_WM_HINTS"), .type = a.get("_MOTIF_WM_HINTS") }, &.{}));
+    try testing.expectEqualSlices(u8, &ewmh.motifNoDecorations(), hints.value);
+
+    const root = b.conn.screen().root;
+    const clicks = [_][2]i16{ .{ 10, 5 }, .{ 115, 75 }, .{ 30, 40 } };
+    for (clicks) |at| {
+        _ = try b.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = at[0], .root_y = at[1] }, &.{});
+        _ = try b.conn.request(XTestFakeInput, .{ .type = 4, .detail = 1 }, &.{});
+        _ = try b.conn.request(XTestFakeInput, .{ .type = 5, .detail = 1 }, &.{});
+    }
+    try b.conn.sync();
+    const move = try wm.message(p, a.get("_NET_WM_MOVERESIZE"));
+    try testing.expectEqual([5]u32{ 10, 5, ewmh.move_direction, 1, ewmh.Source.user }, move);
+    const resize = try wm.message(p, a.get("_NET_WM_MOVERESIZE"));
+    try testing.expectEqual([5]u32{ 115, 75, 4, 1, ewmh.Source.user }, resize);
+
+    // Only the press in the client area reaches the app.
+    var buttons: usize = wm.buttons;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (buttons < 2) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .pointer_button) {
+            try testing.expectEqual(@as(f32, 30), e.pointer_button.pos_px[0]);
+            buttons += 1;
+        };
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+    try testing.expectEqual(2, buttons);
+    try b.conn.sync();
+    const n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .pointer_button);
+}
+
+/// XFIXES GetCursorImage: the cursor on screen.
+const XFixesGetCursorImage = struct {
+    /// The extension that owns this request.
+    pub const extension = "XFIXES";
+    /// The minor opcode.
+    pub const minor = 4;
+
+    /// The cursor's size, hotspot and first pixel.
+    pub const Reply = struct {
+        width: u16,
+        height: u16,
+        hot: [2]u16,
+        first: u32,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(bytes: []const u8, _: *@import("../wayland/wire/fdqueue.zig").FdQueue) proto.DecodeError!Reply {
+            if (bytes.len < 36) return error.Malformed;
+            return .{ .width = u16At(bytes, 12), .height = u16At(bytes, 14), .hot = .{ u16At(bytes, 16), u16At(bytes, 18) }, .first = u32At(bytes, 32) };
+        }
+    };
+};
+
+/// Writes an Xcursor file of square `size` px frames, one per color.
+fn writeTestCursor(dir: Io.Dir, name: []const u8, size: u32, hot: [2]u32, colors: []const u32) !void {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const n: u32 = @intCast(colors.len);
+    const px = size * size * 4;
+    var words: std.ArrayList(u32) = .empty;
+    defer words.deinit(testing.allocator);
+    try words.appendSlice(testing.allocator, &.{ 0x72756358, 16, 0x10000, n });
+    for (0..n) |i| try words.appendSlice(testing.allocator, &.{ 0xfffd0002, size, 16 + n * 12 + @as(u32, @intCast(i)) * (36 + px) });
+    for (words.items) |v| {
+        var bb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bb, v, .little);
+        try file.appendSlice(testing.allocator, &bb);
+    }
+    for (colors) |c| {
+        for ([_]u32{ 36, 0xfffd0002, size, 1, size, size, hot[0], hot[1], 30 }) |v| {
+            var bb: [4]u8 = undefined;
+            std.mem.writeInt(u32, &bb, v, .little);
+            try file.appendSlice(testing.allocator, &bb);
+        }
+        var bb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bb, c, .little);
+        for (0..size * size) |_| try file.appendSlice(testing.allocator, &bb);
+    }
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "icons/test/cursors/{s}", .{name});
+    try dir.writeFile(testing.io, .{ .sub_path = path, .data = file.items });
+}
+
+test "Xvfb: theme, animated, hidden, glyph and resize cursors" {
+    var x = XvfbForTest.start(11) catch return error.SkipZigTest;
+    defer x.stop();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "icons/test/cursors");
+    try writeTestCursor(tmp.dir, "left_ptr", 24, .{ 1, 1 }, &.{ 0xff0000aa, 0xff0000bb });
+    try writeTestCursor(tmp.dir, "xterm", 24, .{ 3, 4 }, &.{0xff102030});
+    try writeTestCursor(tmp.dir, "nwse-resize", 24, .{ 12, 12 }, &.{0xff445566});
+    var root_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &root_buf);
+    const icons = try std.fmt.allocPrint(testing.allocator, "{s}/icons", .{root_buf[0..n]});
+    defer testing.allocator.free(icons);
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("XCURSOR_PATH", icons);
+    try env.put("XCURSOR_THEME", "test");
+    try env.put("ZG_SCALE", "1");
+
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display(), .environ_map = &env });
+    defer b.deinit();
+    if (b.conn.extension("XTEST") == null or b.conn.extension("RENDER") == null or b.sel.xfixes_event == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg cursors", .size = .{ .w = 64, .h = 48 }, .decorations = .client });
+    _ = try waitFor(p, .window_configure, win);
+    const Corner = struct {
+        fn hit(_: *anyopaque, pt: types.PxPoint) types.HitRegion {
+            return if (pt.x >= 54 and pt.y >= 38) .resize_bottom_right else .client;
+        }
+    };
+    var dummy: u8 = 0;
+    try p.submit(.{ .set_hit_test = .{ .win = win, .f = Corner.hit, .ctx = &dummy } });
+    const root = b.conn.screen().root;
+    const c = b.conn;
+    const image = struct {
+        fn get(conn: *Conn) !XFixesGetCursorImage.Reply {
+            try conn.sync();
+            return conn.reply(try conn.request(XFixesGetCursorImage, .{}, &.{}));
+        }
+    }.get;
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 10, .root_y = 10 }, &.{});
+
+    // The default arrow animates: both frames show up (an animated
+    // cursor itself reads back as an empty 1x1 image between frames).
+    var seen: [2]bool = .{ false, false };
+    var tries: usize = 0;
+    while (!(seen[0] and seen[1])) : (tries += 1) {
+        if (tries > 500) return error.Timeout;
+        const img = try image(c);
+        if (img.width == 24) {
+            try testing.expectEqual([2]u16{ 1, 1 }, img.hot);
+            if (img.first == 0xff0000aa) seen[0] = true;
+            if (img.first == 0xff0000bb) seen[1] = true;
+        }
+        try testing.io.sleep(.fromMilliseconds(5), .awake);
+    }
+
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .text } });
+    const text = try image(c);
+    try testing.expectEqual([2]u16{ 3, 4 }, text.hot);
+    try testing.expectEqual(0xff102030, text.first);
+
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    const hidden = try image(c);
+    try testing.expectEqual(1, hidden.width);
+    try testing.expectEqual(0, hidden.first);
+
+    // Not in the theme: a cursor-font glyph.
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .help } });
+    const glyph = try image(c);
+    try testing.expect(glyph.width > 1 and glyph.first != 0xff102030);
+
+    // The app's resize region shows the resize cursor, and leaving it
+    // restores the app's cursor.
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .text } });
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 60, .root_y = 44 }, &.{});
+    var spins: usize = 0;
+    while ((try image(c)).first != 0xff445566) : (spins += 1) {
+        if (spins > 500) return error.Timeout;
+        var evs: [16]Event = undefined;
+        _ = p.pollEvents(&evs);
+        try testing.io.sleep(.fromMilliseconds(2), .awake);
+    }
+    _ = try c.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 20, .root_y = 20 }, &.{});
+    spins = 0;
+    while ((try image(c)).first != 0xff102030) : (spins += 1) {
+        if (spins > 500) return error.Timeout;
+        var evs: [16]Event = undefined;
+        _ = p.pollEvents(&evs);
+        try testing.io.sleep(.fromMilliseconds(2), .awake);
+    }
+}
+
+/// RANDR SetMonitor (1.5): adds or replaces a monitor.
+const RRSetMonitor = struct {
+    /// The extension that owns this request.
+    pub const extension = "RANDR";
+    /// The minor opcode.
+    pub const minor = 43;
+    window: u32,
+    name: u32,
+    primary: bool = false,
+    automatic: bool = false,
+    noutput: u16 = 0,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    width_mm: u32 = 0,
+    height_mm: u32 = 0,
+};
+
+test "Xvfb: RandR monitors and monitors_changed" {
+    var x = XvfbForTest.start(12) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (b.randr_event == null) return error.SkipZigTest;
+    const p = b.platform();
+    var out: [4]types.MonitorInfo = undefined;
+    try testing.expectEqual(1, p.monitors(&out));
+    try testing.expectEqual(types.PxRect{ .x = 0, .y = 0, .w = 640, .h = 480 }, out[0].rect_px);
+    try testing.expect(out[0].name().len > 0);
+
+    // Another client splits off a virtual monitor.
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    const r = try Conn.connect(testing.allocator, testing.io, &env, .{ .display = x.display() });
+    defer r.deinit();
+    const at = try r.internAtoms(&.{"ZG-VIRTUAL"});
+    try r.checked(RRSetMonitor, .{ .window = r.screen().root, .name = at.get("ZG-VIRTUAL"), .x = 320, .y = 0, .width = 320, .height = 480 }, &.{});
+    // Xvfb sends no notify for SetMonitor; send the ScreenChangeNotify a
+    // real server would.
+    const win = try p.createWindow(.{ .title = "zg randr", .size = .{ .w = 16, .h = 16 } });
+    var note: [32]u8 = @splat(0);
+    note[0] = b.randr_event.?;
+    try r.checked(proto.SendEvent, .{ .destination = b.xidOf(win).?, .event_mask = 0, .event = note }, &.{});
+
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var evs: [16]Event = undefined;
+    outer: while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .monitors_changed) break :outer;
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+    const n = p.monitors(&out);
+    try testing.expectEqual(2, n);
+    var found = false;
+    for (out[0..n]) |m| if (std.mem.eql(u8, m.name(), "ZG-VIRTUAL")) {
+        found = true;
+        try testing.expectEqual(types.PxRect{ .x = 320, .y = 0, .w = 320, .h = 480 }, m.rect_px);
+        try testing.expectEqual(at.get("ZG-VIRTUAL"), m.id);
+    };
+    try testing.expect(found);
+}
+
+test "Xvfb: _NET_WM_SYNC_REQUEST counter is set after a present at the new size" {
+    var x = XvfbForTest.start(13) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (!b.sync_ok) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg sync", .size = .{ .w = 64, .h = 48 } });
+    _ = try waitFor(p, .window_configure, win);
+    const a = &b.atoms;
+    const xid = b.xidOf(win).?;
+    var wm = try FakeWm.start(x.display());
+    defer wm.stop();
+    const r = wm.r;
+    const counter = (try r.reply(try r.request(proto.GetProperty, .{ .window = xid, .property = a.get("_NET_WM_SYNC_REQUEST_COUNTER"), .type = proto.Atom.cardinal }, &.{}))).value;
+    try testing.expectEqual(4, counter.len);
+    const cid = u32At(counter, 0);
+    const protos = try r.reply(try r.request(proto.GetProperty, .{ .window = xid, .property = a.get("WM_PROTOCOLS"), .type = proto.Atom.atom }, &.{}));
+    try testing.expect(ewmh.lists(protos.value, a.get("_NET_WM_SYNC_REQUEST")));
+
+    // The WM asks for 0x1_00000007, then resizes the window.
+    var ev: [32]u8 = @splat(0);
+    ev[0] = proto.EventCode.client_message;
+    ev[1] = 32;
+    std.mem.writeInt(u32, ev[4..8], xid, .little);
+    std.mem.writeInt(u32, ev[8..12], a.get("WM_PROTOCOLS"), .little);
+    std.mem.writeInt(u32, ev[12..16], a.get("_NET_WM_SYNC_REQUEST"), .little);
+    std.mem.writeInt(u32, ev[20..24], 7, .little);
+    std.mem.writeInt(u32, ev[24..28], 1, .little);
+    try r.checked(proto.SendEvent, .{ .destination = xid, .event_mask = 0, .event = ev }, &.{});
+    try r.checked(proto.ConfigureWindow, .{ .window = xid, .mask = 0b1100, .values = &.{ 80, 60 } }, &.{});
+    const cfg = (try waitFor(p, .window_configure, win)).window_configure;
+    try testing.expectEqual(PxSize{ .w = 80, .h = 60 }, cfg.size);
+    // Not yet drawn at the new size.
+    try testing.expectEqual(0, (try r.reply(try r.request(xsync.QueryCounter, .{ .counter = cid }, &.{}))).value);
+
+    const pr = try p.cpuPresenter(win);
+    // A stale-size frame leaves it alone.
+    const old = try pr.allocCpuBuffer(64, 48, present_mod.fourcc_argb8888);
+    try pr.present(old.handle, &.{}, .none, null);
+    try b.conn.sync();
+    try testing.expectEqual(0, (try r.reply(try r.request(xsync.QueryCounter, .{ .counter = cid }, &.{}))).value);
+    const buf = try pr.allocCpuBuffer(80, 60, present_mod.fourcc_argb8888);
+    try pr.present(buf.handle, &.{}, .none, null);
+    try b.conn.sync();
+    try testing.expectEqual(0x1_0000_0007, (try r.reply(try r.request(xsync.QueryCounter, .{ .counter = cid }, &.{}))).value);
 }

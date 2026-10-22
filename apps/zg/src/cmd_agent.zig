@@ -170,6 +170,25 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer plan_mode.deinit();
     if (!one_shot) try tool_registry.addSource(plan_mode.source());
 
+    // Skills and commands: managed, user and workspace `skills` and
+    // `commands` (`.claude` too), run as `/name args` or by the model
+    // through `skill`; shell injections run as child processes behind
+    // the command-line rules, without prompting.
+    const cfg_paths: ?zg_config.paths.ConfigPaths = zg_config.paths.resolve(arena, &env, .{}) catch null;
+    var skill_index: zg_ai.ext.SkillIndex = try .load(gpa, io, try zg_ai.ext.skills.standardRoots(
+        arena,
+        cwd,
+        if (cfg_paths) |p| p.config else null,
+        if (cfg_paths) |p| p.managed else null,
+        true,
+    ));
+    defer skill_index.deinit();
+    for (skill_index.warnings.items) |w| err.print("zg agent: skipping skill {s}\n", .{w}) catch {};
+    var skill_tool: zg_ai.ext.SkillTool = .init(gpa, &skill_index);
+    defer skill_tool.deinit();
+    skill_tool.subagents = &subagents;
+    try tool_registry.addSource(skill_tool.source());
+
     // Hooks (Claude Code format): managed and user `hooks.json`, then the
     // workspace's `.zigguro/hooks.json` and `hooks.local.json`, and in
     // compat `.claude/settings.json` and `settings.local.json`. Running
@@ -225,6 +244,7 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .default_model = env.get("ZG_MODEL") orelse "sonnet",
         .todos = &todos,
         .plan_mode = if (one_shot) null else &plan_mode,
+        .skills = .{ .index = &skill_index, .tool = &skill_tool, .host = processes.host() },
     };
 
     const code = if (one_shot)
