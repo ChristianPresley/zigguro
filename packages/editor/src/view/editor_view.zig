@@ -22,6 +22,15 @@
 //! are captured from the document's change events and recorded as one undo
 //! step each.
 //!
+//! Decorations (`decorations`): highlights, underlines and strikes paint
+//! over the text; `inline_before`/`inline_after` texts (ghost text, a
+//! pending change's one-line insert) are drawn in the row and shift the
+//! text after them; `block_above`/`block_below` reserve `rows` line
+//! heights above or below their line. Positions, hit tests and scrolling
+//! go through `lineTop`/`lineAtY`, which count the blocks. A block's
+//! content comes from `block_painter`, or from a widget the host places at
+//! `blockRect` (the inline-edit prompt bar).
+//!
 //! Modal input (`mode`, e.g. a `VimState`): the widget offers keys to the
 //! mode first (`modeKey`); keys it passes through get the normal
 //! handling. The mode edits through a `modes.Host` built from the view
@@ -87,6 +96,37 @@ pub const ChangeHook = struct {
 
 /// Horizontal moves.
 pub const Unit = enum { char, word };
+
+/// A block row group, as `BlockPainter` and `blocks` see it.
+pub const BlockInfo = struct {
+    owner: deco_store.OwnerId,
+    payload: u64,
+    /// Above its line (else below).
+    above: bool,
+    line: u64,
+    rows: u32,
+};
+
+/// Paints the content of block decorations (deleted lines, accept and
+/// reject rows). `rect` is in the editor node's coordinates.
+pub const BlockPainter = struct {
+    ctx: ?*anyopaque = null,
+    paint: *const fn (ctx: ?*anyopaque, pc: *zg_gui.paint.PaintCx, rect: zg_gui.core.Rect, b: BlockInfo) void,
+};
+
+/// Text drawn inside a row at `offset` (`after`: the caret at `offset`
+/// stays before it).
+pub const Inlay = struct {
+    offset: u64,
+    text: []const u8,
+    style: deco_store.StyleRef,
+    after: bool,
+    /// Its width, set by `rowInlays`.
+    w: f32 = 0,
+};
+
+/// Most inlays laid out per row.
+pub const max_row_inlays = 16;
 
 /// The changes a model command made, from the document's change events:
 /// composed forward and inverse ChangeSets.
@@ -189,6 +229,17 @@ pub const EditorView = struct {
     /// or LSP edit) since it was last seen clean, so the undo tree's saved
     /// marker no longer says whether the text matches the disk.
     foreign: bool = false,
+    /// Paints block decorations' content (none: blocks stay empty).
+    block_painter: ?BlockPainter = null,
+    /// The window and node the editor widget was last built as
+    /// (`focusEditor`).
+    ui_window: ?*zg_gui.Window = null,
+    ui_node: zg_gui.core.NodeId = .none,
+    /// Block decorations by line (`ensureBlocks`), and the running sum of
+    /// their heights: `block_cum[i]` is the height of `blocks[0..i]`.
+    blocks: std.ArrayList(BlockInfo) = .empty,
+    block_cum: std.ArrayList(f32) = .empty,
+    blocks_key: [5]u64 = .{ 0, 0, 0, 0, 0 },
 
     /// A view on `doc` with a caret at the start.
     pub fn init(gpa: Allocator, doc: *Document, opts: Options) !*EditorView {
@@ -211,6 +262,8 @@ pub const EditorView = struct {
         v.undo.deinit();
         v.auto_pairs.deinit();
         v.scratch.deinit(v.gpa);
+        v.blocks.deinit(v.gpa);
+        v.block_cum.deinit(v.gpa);
         v.gpa.destroy(v);
     }
 
@@ -352,38 +405,37 @@ pub const EditorView = struct {
     /// The offset nearest to `p`, in text-area coordinates (scroll applied
     /// by the caller is not: `p` is relative to the text origin).
     pub fn offsetAt(v: *EditorView, p: Vec2) u64 {
-        const lh = v.lineHeight();
-        const line_f = @floor(p.y / lh);
-        if (line_f < 0) return 0;
-        const line: u64 = @intFromFloat(line_f);
-        if (line >= v.lineCount()) return v.doc.len();
+        if (p.y < 0) return 0;
+        const line = v.lineAtY(p.y);
+        if (p.y >= v.lineTop(line) + v.lineHeight() and line + 1 >= v.lineCount()) return v.doc.len();
         const r = v.lineRange(line);
+        var inl: [max_row_inlays]Inlay = undefined;
+        const ins = v.rowInlays(r, &inl);
         const s = v.text(r);
-        return r.start + v.colAt(s, p.x);
+        return r.start + v.colAtInlays(s, r.start, ins, p.x);
     }
 
     /// The text-origin position of offset `off` (top of its row).
     pub fn posOf(v: *EditorView, off: u64) Vec2 {
         const line = v.lineOf(off);
         const r = v.lineRange(line);
+        var inl: [max_row_inlays]Inlay = undefined;
+        const ins = v.rowInlays(r, &inl);
         const s = v.text(r);
-        return .{ .x = v.xInLine(s, @intCast(off - r.start)), .y = @as(f32, @floatFromInt(line)) * v.lineHeight() };
+        return .{ .x = v.xInLine(s, @intCast(off - r.start)) + inlayShift(ins, off), .y = v.lineTop(line) };
     }
 
     /// Lines `[first, last]` intersecting the viewport.
-    pub fn visibleLines(v: *const EditorView) [2]u64 {
-        const lh = v.lineHeight();
-        const first: u64 = @intFromFloat(@max(0, @floor(v.scroll.y / lh)));
-        const rows: u64 = @intFromFloat(@max(1, @ceil(v.viewport.h / lh)));
-        const last = @min(v.lineCount() - 1, first + rows);
+    pub fn visibleLines(v: *EditorView) [2]u64 {
+        const first = v.lineAtY(@max(0, v.scroll.y));
+        const last = @min(v.lineCount() - 1, v.lineAtY(v.scroll.y + @max(v.viewport.h, 1)) + 1);
         return .{ @min(first, last), last };
     }
 
     /// Clamps the scroll offset to the content.
     pub fn clampScroll(v: *EditorView) void {
-        const lh = v.lineHeight();
         // One screen of overscroll past the last line, like most editors.
-        const max_y = @max(0, @as(f32, @floatFromInt(v.lineCount() - 1)) * lh);
+        const max_y = @max(0, v.lineTop(v.lineCount() - 1));
         v.scroll.y = std.math.clamp(v.scroll.y, 0, max_y);
         v.scroll.x = @max(0, v.scroll.x);
     }
@@ -398,7 +450,7 @@ pub const EditorView = struct {
 
     /// Scrolls so `line` is the first visible row.
     pub fn scrollToLine(v: *EditorView, line: u64) void {
-        v.scroll.y = @as(f32, @floatFromInt(line)) * v.lineHeight();
+        v.scroll.y = v.lineTop(@min(line, v.lineCount() - 1));
         v.clampScroll();
         v.touch();
     }
@@ -415,6 +467,231 @@ pub const EditorView = struct {
         if (p.x - v.scroll.x > v.viewport.w - margin) v.scroll.x = p.x - v.viewport.w + margin;
         v.clampScroll();
         v.touch();
+    }
+
+    /// Scrolls so the lines of `range`, with the blocks above its first
+    /// line (a prompt bar), are in view; the top wins when they don't fit.
+    pub fn revealRange(v: *EditorView, range: Range) void {
+        if (v.viewport.h <= 0) return;
+        const first = v.lineOf(range.start);
+        const last = v.lineOf(range.end);
+        const top = v.blocksTop(first);
+        const bottom = v.lineTop(last) + v.lineHeight();
+        if (bottom > v.scroll.y + v.viewport.h) v.scroll.y = bottom - v.viewport.h;
+        if (top < v.scroll.y) v.scroll.y = top;
+        v.clampScroll();
+        v.touch();
+    }
+
+    // -- blocks and inlays ---------------------------------------------------
+
+    /// Rebuilds `blocks` when the decorations, the document or the line
+    /// height changed.
+    fn ensureBlocks(v: *EditorView) void {
+        const ds = v.decorations orelse {
+            v.blocks.clearRetainingCapacity();
+            v.block_cum.clearRetainingCapacity();
+            return;
+        };
+        const lh = v.lineHeight();
+        const key: [5]u64 = .{ @intFromPtr(ds), ds.inline_generation, v.doc.version, v.lineCount(), @as(u32, @bitCast(lh)) };
+        if (std.mem.eql(u64, &key, &v.blocks_key)) return;
+        v.blocks_key = key;
+        v.blocks.clearRetainingCapacity();
+        v.block_cum.clearRetainingCapacity();
+        var refs: std.ArrayList(deco_store.DecoRef) = .empty;
+        defer refs.deinit(v.gpa);
+        var mask: deco_store.KindMask = .initEmpty();
+        mask.insert(.block_above);
+        mask.insert(.block_below);
+        ds.query(.{ .start = 0, .end = v.doc.len() }, mask, v.gpa, &refs) catch {
+            v.blocks_key[0] = 0;
+            return;
+        };
+        for (refs.items) |r| {
+            const above = r.deco.kind == .block_above;
+            const spec = switch (r.deco.kind) {
+                .block_above, .block_below => |b| b,
+                else => continue,
+            };
+            if (spec.rows == 0) continue;
+            const line = v.lineOf(if (above) r.range.start else r.range.end);
+            v.blocks.append(v.gpa, .{ .owner = r.deco.owner, .payload = spec.payload, .above = above, .line = line, .rows = spec.rows }) catch break;
+        }
+        // By line; above blocks before the line's text, below ones after.
+        std.sort.insertion(BlockInfo, v.blocks.items, {}, struct {
+            fn lt(_: void, a: BlockInfo, b: BlockInfo) bool {
+                return blockKey(a) < blockKey(b);
+            }
+        }.lt);
+        v.block_cum.ensureTotalCapacity(v.gpa, v.blocks.items.len + 1) catch {
+            v.blocks.clearRetainingCapacity();
+            return;
+        };
+        var sum: f32 = 0;
+        v.block_cum.appendAssumeCapacity(0);
+        for (v.blocks.items) |b| {
+            sum += @as(f32, @floatFromInt(b.rows)) * lh;
+            v.block_cum.appendAssumeCapacity(sum);
+        }
+    }
+
+    fn blockKey(b: BlockInfo) u64 {
+        return b.line * 2 + @intFromBool(!b.above);
+    }
+
+    /// How many blocks sort before key `k`.
+    fn blocksBefore(v: *const EditorView, k: u64) usize {
+        var lo: usize = 0;
+        var hi: usize = v.blocks.items.len;
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            if (blockKey(v.blocks.items[mid]) < k) lo = mid + 1 else hi = mid;
+        }
+        return lo;
+    }
+
+    /// The y of `line`'s text row from the text origin (blocks above it
+    /// included).
+    pub fn lineTop(v: *EditorView, line: u64) f32 {
+        v.ensureBlocks();
+        const base = @as(f32, @floatFromInt(line)) * v.lineHeight();
+        if (v.blocks.items.len == 0) return base;
+        return base + v.block_cum.items[v.blocksBefore(line * 2 + 1)];
+    }
+
+    /// The y where `line`'s blocks above start (its text row's top when it
+    /// has none).
+    pub fn blocksTop(v: *EditorView, line: u64) f32 {
+        v.ensureBlocks();
+        const base = @as(f32, @floatFromInt(line)) * v.lineHeight();
+        if (v.blocks.items.len == 0) return base;
+        return base + v.block_cum.items[v.blocksBefore(line * 2)];
+    }
+
+    /// The line whose text row is at or above `y` (a block's area maps to
+    /// the line before it).
+    pub fn lineAtY(v: *EditorView, y: f32) u64 {
+        const n = v.lineCount();
+        v.ensureBlocks();
+        if (v.blocks.items.len == 0) {
+            const f = @floor(@max(0, y) / v.lineHeight());
+            return @min(n - 1, @as(u64, @intFromFloat(@min(f, @as(f32, @floatFromInt(n))))));
+        }
+        var lo: u64 = 0;
+        var hi: u64 = n;
+        while (hi - lo > 1) {
+            const mid = lo + (hi - lo) / 2;
+            if (v.lineTop(mid) <= y) lo = mid else hi = mid;
+        }
+        return lo;
+    }
+
+    /// The block decorations, sorted by line (valid until the next
+    /// geometry call).
+    pub fn blockList(v: *EditorView) []const BlockInfo {
+        v.ensureBlocks();
+        return v.blocks.items;
+    }
+
+    /// Where block `i` of `blockList` is, in editor node coordinates.
+    pub fn blockRectAt(v: *EditorView, i: usize) zg_gui.core.Rect {
+        v.ensureBlocks();
+        const b = v.blocks.items[i];
+        const lh = v.lineHeight();
+        var y = @as(f32, @floatFromInt(b.line)) * lh + v.block_cum.items[i];
+        if (!b.above) y += lh;
+        return .{ .x = v.gutter_w, .y = y - v.scroll.y, .w = v.viewport.w, .h = @as(f32, @floatFromInt(b.rows)) * lh };
+    }
+
+    /// The slot of `owner`'s block with `payload`, in editor node
+    /// coordinates, for a widget the host places over the editor; null when
+    /// there is no such block.
+    pub fn blockRect(v: *EditorView, owner: deco_store.OwnerId, payload: u64) ?zg_gui.core.Rect {
+        v.ensureBlocks();
+        for (v.blocks.items, 0..) |b, i| if (b.owner == owner and b.payload == payload) return v.blockRectAt(i);
+        return null;
+    }
+
+    /// The inline texts in line range `lr`, sorted by offset, with their
+    /// widths.
+    pub fn rowInlays(v: *EditorView, lr: Range, out: *[max_row_inlays]Inlay) []Inlay {
+        const ds = v.decorations orelse return out[0..0];
+        if (ds.inline_generation == 0) return out[0..0];
+        var refs: std.ArrayList(deco_store.DecoRef) = .empty;
+        defer refs.deinit(v.gpa);
+        var mask: deco_store.KindMask = .initEmpty();
+        mask.insert(.inline_before);
+        mask.insert(.inline_after);
+        ds.query(lr, mask, v.gpa, &refs) catch return out[0..0];
+        var n: usize = 0;
+        for (refs.items) |r| {
+            if (n == out.len) break;
+            const it, const after = switch (r.deco.kind) {
+                .inline_before => |t| .{ t, false },
+                .inline_after => |t| .{ t, true },
+                else => continue,
+            };
+            const at = if (after) r.range.end else r.range.start;
+            if (at < lr.start or at > lr.end) continue;
+            out[n] = .{ .offset = at, .text = it.text, .style = it.style, .after = after, .w = v.textWidth(it.text) };
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    /// Width of `s` without tabs.
+    fn textWidth(v: *const EditorView, s: []const u8) f32 {
+        var w: f32 = 0;
+        var it = (std.unicode.Utf8View.init(s) catch return 0).iterator();
+        while (it.nextCodepoint()) |cp| w += v.advance(cp);
+        return w;
+    }
+
+    /// How far inlays push the text at document offset `off` right.
+    pub fn inlayShift(ins: []const Inlay, off: u64) f32 {
+        var w: f32 = 0;
+        for (ins) |i| {
+            if (i.offset < off or (i.offset == off and !i.after)) w += i.w;
+        }
+        return w;
+    }
+
+    /// The byte column in line text `s` (starting at document offset
+    /// `start`) nearest to `x`, with `ins` in the row.
+    fn colAtInlays(v: *const EditorView, s: []const u8, start: u64, ins: []const Inlay, x: f32) usize {
+        if (ins.len == 0) return v.colAt(s, x);
+        // Walk the columns: the shift only grows, so the first column past
+        // `x` with its shift is the answer.
+        var i: usize = 0;
+        while (i < s.len) {
+            const n = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+            const x0 = v.xInLine(s, i) + inlayShift(ins, start + i);
+            const x1 = v.xInLine(s, i + n) + inlayShift(ins, start + i + n) - (if (inlayAt(ins, start + i + n)) |w| w else 0);
+            if (x < (x0 + x1) / 2) return i;
+            i += n;
+        }
+        return s.len;
+    }
+
+    /// The width of inlays drawn before the text at `off` (an
+    /// `inline_before` there), which a click just left of `off` skips.
+    fn inlayAt(ins: []const Inlay, off: u64) ?f32 {
+        var w: f32 = 0;
+        var any = false;
+        for (ins) |i| if (i.offset == off and !i.after) {
+            w += i.w;
+            any = true;
+        };
+        return if (any) w else null;
+    }
+
+    /// Moves keyboard focus to the editor widget (after a prompt bar or
+    /// popover over it closes).
+    pub fn focusEditor(v: *EditorView) void {
+        const w = v.ui_window orelse return;
+        if (v.ui_node.isNone() or !w.store.valid(v.ui_node)) return;
+        w.setFocus(v.ui_node, false);
     }
 
     // -- selections --------------------------------------------------------
@@ -658,9 +935,7 @@ pub const EditorView = struct {
 
     /// The display position (row, x) of text-area point `p`.
     pub fn displayPosAt(v: *EditorView, p: Vec2) multi.DisplayPos {
-        const row_f = @max(0, @floor(p.y / v.lineHeight()));
-        const row: u64 = @min(@as(u64, @intFromFloat(row_f)), v.lineCount() - 1);
-        return .{ .row = row, .col_px = @max(0, p.x) };
+        return .{ .row = v.lineAtY(@max(0, p.y)), .col_px = @max(0, p.x) };
     }
 
     /// Column (box) selection between two display positions.
