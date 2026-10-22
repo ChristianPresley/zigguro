@@ -51,16 +51,21 @@ pub const Error = error{OutOfMemory};
 pub fn parse(gpa: std.mem.Allocator, io: std.Io, text: []const u8, ctx: IncludeContext, sink: Sink) Error!void {
     var lines = std.mem.splitScalar(u8, text, '\n');
     var line_no: usize = 0;
+    var not_utf8: usize = 0;
     while (lines.next()) |line| {
         line_no += 1;
         parseLine(gpa, io, line, ctx, sink) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Invalid => log.debug("line {d}: invalid rule skipped", .{line_no}),
+            // Legacy-charset Compose files (iso8859-1 and the like): one
+            // summary line, not one per rule.
+            error.NotUtf8 => not_utf8 += 1,
         };
     }
+    if (not_utf8 > 0) log.debug("{d} rules with non-UTF-8 strings skipped", .{not_utf8});
 }
 
-const LineError = error{ OutOfMemory, Invalid };
+const LineError = error{ OutOfMemory, Invalid, NotUtf8 };
 
 const Cursor = struct {
     s: []const u8,
@@ -185,10 +190,7 @@ fn parseLine(gpa: std.mem.Allocator, io: std.Io, line: []const u8, ctx: IncludeC
         const cp = keysyms.keysymToCodepoint(keysym) orelse return error.Invalid;
         utf8 = cp_buf[0 .. std.unicode.utf8Encode(cp, &cp_buf) catch return error.Invalid];
     }
-    if (!std.unicode.utf8ValidateSlice(utf8)) {
-        log.info("rule with invalid UTF-8 dropped", .{});
-        return;
-    }
+    if (!std.unicode.utf8ValidateSlice(utf8)) return error.NotUtf8;
     try sink.add(sink.ctx, .{ .sequence = seq[0..n], .utf8 = utf8, .keysym = keysym });
 }
 
