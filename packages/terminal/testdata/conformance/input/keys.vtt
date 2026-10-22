@@ -1,0 +1,206 @@
+# Legacy key encoding through the terminal's modes: cursor and editing
+# keys, function keys, modifiers, DECCKM, DECKPAM, DECBKM, LNM and
+# modifyOtherKeys.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-PC-Style-Function-Keys
+
+@case A letter sends itself
+@size 10x2
+@key a
+@expect-input "a"
+
+@case Shift+letter sends the capital
+@size 10x2
+@key a shift
+@expect-input "A"
+
+@case Ctrl+letter sends the control byte
+@size 10x2
+@key c ctrl
+@expect-input "^C"
+
+@case Alt+letter sends ESC first
+@size 10x2
+@key x alt
+@expect-input "\ex"
+
+@case Ctrl+Space sends NUL
+@size 10x2
+@key space ctrl
+@expect-input "\x00"
+
+@case Enter sends CR
+@size 10x2
+@key enter
+@expect-input "\r"
+
+@case Enter with LNM sends CR LF
+@size 10x2
+@send "\e[20h"
+@key enter
+@expect-input "\r\n"
+
+@case Tab sends HT
+@size 10x2
+@key tab
+@expect-input "\t"
+
+@case Shift+Tab sends CBT
+@size 10x2
+@key tab shift
+@expect-input "\e[Z"
+
+@case Backspace sends DEL
+@size 10x2
+@key backspace
+@expect-input "^?"
+
+@case Backspace with DECBKM sends BS
+@size 10x2
+@send "\e[?67h"
+@key backspace
+@expect-input "^H"
+
+@case Escape sends ESC
+@size 10x2
+@key escape
+@expect-input "\e"
+
+@case Up sends CSI A
+@size 10x2
+@key up
+@expect-input "\e[A"
+
+@case Up with DECCKM sends SS3 A
+@size 10x2
+@send "\e[?1h"
+@key up
+@expect-input "\eOA"
+
+@case Ctrl+Up sends CSI 1;5A
+@size 10x2
+@key up ctrl
+@expect-input "\e[1;5A"
+
+@case Ctrl+Up with DECCKM still uses CSI
+@size 10x2
+@send "\e[?1h"
+@key up ctrl
+@expect-input "\e[1;5A"
+
+@case Shift+Alt+Left sends CSI 1;4D
+@size 10x2
+@key left shift alt
+@expect-input "\e[1;4D"
+
+@case Home sends CSI H
+@size 10x2
+@key home
+@expect-input "\e[H"
+
+@case End with DECCKM sends SS3 F
+@size 10x2
+@send "\e[?1h"
+@key end
+@expect-input "\eOF"
+
+@case Insert sends CSI 2~
+@size 10x2
+@key insert
+@expect-input "\e[2~"
+
+@case Delete sends CSI 3~
+@size 10x2
+@key delete
+@expect-input "\e[3~"
+
+@case Page Up sends CSI 5~
+@size 10x2
+@key page_up
+@expect-input "\e[5~"
+
+@case Ctrl+Page Down sends CSI 6;5~
+@size 10x2
+@key page_down ctrl
+@expect-input "\e[6;5~"
+
+@case F1 sends SS3 P
+@size 10x2
+@key f1
+@expect-input "\eOP"
+
+@case Shift+F1 sends CSI 1;2P
+@size 10x2
+@key f1 shift
+@expect-input "\e[1;2P"
+
+@case F5 sends CSI 15~
+@size 10x2
+@key f5
+@expect-input "\e[15~"
+
+@case F12 sends CSI 24~
+@size 10x2
+@key f12
+@expect-input "\e[24~"
+
+@case Ctrl+F12 sends CSI 24;5~
+@size 10x2
+@key f12 ctrl
+@expect-input "\e[24;5~"
+
+@case Keypad digits send text in numeric mode
+@size 10x2
+@key kp_5
+@expect-input "5"
+
+@case Keypad digits send SS3 with DECKPAM
+@size 10x2
+@send "\e="
+@key kp_5
+@expect-input "\eOu"
+
+@case Keypad Enter sends SS3 M with DECKPAM
+@size 10x2
+@send "\e="
+@key kp_enter
+@expect-input "\eOM"
+
+@case DECKPNM returns the keypad to numeric
+@size 10x2
+@send "\e=\e>"
+@key kp_5
+@expect-input "5"
+
+@case modifyOtherKeys 2 encodes Ctrl+Enter
+@size 10x2
+@send "\e[>4;2m"
+@key enter ctrl
+@expect-input "\e[27;5;13~"
+
+@case modifyOtherKeys 2 encodes Ctrl+digit
+@size 10x2
+@send "\e[>4;2m"
+@key 1 ctrl
+@expect-input "\e[27;5;49~"
+
+@case modifyOtherKeys 1 keeps plain control bytes
+@size 10x2
+@send "\e[>4;1m"
+@key c ctrl
+@expect-input "^C"
+
+@case RIS turns DECCKM off
+@size 10x2
+@send "\e[?1h\ec"
+@key up
+@expect-input "\e[A"
+
+@case Key releases send nothing in legacy mode
+@size 10x2
+@key a release
+@expect-input ""
+
+@case Modifier keys alone send nothing
+@size 10x2
+@key left_shift shift
+@expect-input ""
