@@ -1,0 +1,12 @@
+// Settings declared by zg_config (keyboard and command behaviour).
+.{ .package = "config", .settings = .{
+    .{ .key = "keyboard.preset", .type = .enum_, .enum_values = .{ "vscode", "jetbrains", "sublime", "none" }, .default = "vscode", .title = "Keymap Preset", .description = "The base keymap. User bindings always apply on top.", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.chordTimeoutMs", .type = .int, .default = 1000, .minimum = 0, .maximum = 60000, .title = "Chord Timeout", .description = "How long a key that is both a binding and a chord prefix waits for the next stroke before firing (ms).", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.doubleTapMs", .type = .int, .default = 300, .minimum = 50, .maximum = 2000, .title = "Double Tap Interval", .description = "Maximum time between two modifier taps (e.g. Shift Shift), in ms.", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.chordMismatch", .type = .enum_, .enum_values = .{ "swallow", "passthrough" }, .enum_descriptions = .{ "Consume the key and show a status message.", "Hand the key to the focused widget." }, .default = "swallow", .title = "Chord Mismatch", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.dispatch", .type = .enum_, .enum_values = .{ "auto", "physical", "logical" }, .default = "auto", .title = "Key Dispatch", .description = "Match bindings by physical key, by layout character, or both (auto).", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.vim.enabled", .type = .bool, .default = false, .title = "Vim Mode", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.emacs.enabled", .type = .bool, .default = false, .title = "Emacs Mode", .tags = .{"keyboard"} },
+    .{ .key = "keyboard.vim.passthroughKeys", .type = .array, .items = .keybinding, .default = .{ "mod+shift+p", "mod+p", "mod+," }, .title = "Vim Passthrough Keys", .description = "Keys that keep their workbench meaning outside Vim insert mode.", .tags = .{"keyboard"} },
+    .{ .key = "commands.historySize", .type = .int, .default = 50, .minimum = 0, .maximum = 1000, .title = "Command History Size", .tags = .{"commands"} },
+} }
