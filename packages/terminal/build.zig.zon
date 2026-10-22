@@ -6,6 +6,8 @@
     .dependencies = .{
         .zg_build = .{ .path = "../build" },
         .zg_core = .{ .path = "../core" },
+        .zg_gui = .{ .path = "../gui" },
+        .zg_platform = .{ .path = "../platform" },
     },
     .paths = .{
         "build.zig",
