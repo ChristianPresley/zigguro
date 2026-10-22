@@ -121,6 +121,49 @@ pub fn build(b: *std.Build) void {
     const transcript = addToolImports(b, "zg-transcript", "tools/transcript/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "zg_transcript", .module = b.createModule(.{ .root_source_file = b.path("packages/lsp/src/client/transcript.zig") }) },
     });
+    // zg-release (E17) links zg_release built for the host.
+    var host_args = f.args();
+    host_args.target = b.graph.host;
+    const release_host = b.dependency("zg_release", host_args).module("zg_release");
+    const release_tool = addToolImports(b, "zg-release", "tools/release/src/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "zg_release", .module = release_host },
+    });
+    b.installArtifact(release_tool);
+    const release_run = b.addRunArtifact(release_tool);
+    if (b.args) |a| release_run.addArgs(a);
+    release_run.has_side_effects = true;
+    b.step("release-tool", "Run tools/release (zg-release <command> ...; args after --)").dependOn(&release_run.step);
+
+    // Third-party data notices are checked by `zig build test`.
+    const notices_check = b.addRunArtifact(release_tool);
+    notices_check.setCwd(b.path("."));
+    notices_check.addArgs(&.{ "notices", "--check", "true" });
+    notices_check.has_side_effects = true;
+    const notices_check_step = b.step("notices-check", "Fail if a third-party data file has no packaging/notices entry");
+    notices_check_step.dependOn(&notices_check.step);
+    test_step.dependOn(notices_check_step);
+
+    // `zig build package -Dtarget=<t> -Doptimize=ReleaseFast -Dversion=<v>
+    // -Dsource-date-epoch=<s>`: dist tree in zig-out/dist/<t>, archives in
+    // zig-out/release.
+    const dist_target = b.fmt("{s}-{s}", .{ @tagName(f.target.result.cpu.arch), @tagName(f.target.result.os.tag) });
+    const dist_dir = b.fmt("dist/{s}", .{dist_target});
+    const package_step = b.step("package", "Build zig-out/dist/<t> and package it into zig-out/release (E17)");
+    const package_run = b.addRunArtifact(release_tool);
+    package_run.has_side_effects = true;
+    package_run.setCwd(b.path("."));
+    package_run.addArgs(&.{ "package", "--target", dist_target, "--version", zg_build.versionWithMetadata(b, f), "--epoch", b.fmt("{d}", .{f.source_date_epoch}), "--channel", @tagName(f.channel), "--commit", f.commit, "--release-target", zg_build.releaseTarget(b, f.target.result) });
+    package_run.addArg("--dist");
+    package_run.addArg(b.getInstallPath(.prefix, dist_dir));
+    package_run.addArg("--out");
+    package_run.addArg(b.getInstallPath(.prefix, "release"));
+    if (f.target.result.os.tag == .windows) package_run.addArgs(&.{ "--portable", "true" });
+    inline for (.{ zigguro_exe, zg_exe }) |exe| {
+        const inst = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dist_dir } }, .pdb_dir = .disabled });
+        package_run.step.dependOn(&inst.step);
+    }
+    package_step.dependOn(&package_run.step);
+
     const transcript_run = b.addRunArtifact(transcript);
     if (b.args) |args| transcript_run.addArgs(args);
     b.step("zg-transcript", "Run zg-transcript (pass arguments after --)").dependOn(&transcript_run.step);
@@ -305,15 +348,21 @@ fn addApp(
     var imports: std.ArrayList(std.Build.Module.Import) = .empty;
     imports.append(b.allocator, .{ .name = "zg_options", .module = options }) catch @panic("OOM");
     inline for (packages.all, 0..) |p, i| imports.append(b.allocator, .{ .name = p.name, .module = mods[i] }) catch @panic("OOM");
-    return b.addExecutable(.{
+    // Crash reports (E17.F05) need frame pointers and a GNU build id, and
+    // the self-hosted aarch64 backend traps before the segfault hook runs.
+    const exe = b.addExecutable(.{
         .name = name,
         .root_module = b.createModule(.{
             .root_source_file = b.path("apps/" ++ name ++ "/src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = imports.items,
+            .omit_frame_pointer = false,
         }),
+        .use_llvm = if (target.result.cpu.arch == .aarch64) true else null,
     });
+    if (target.result.ofmt == .elf) exe.build_id = .sha1;
+    return exe;
 }
 
 fn addTool(

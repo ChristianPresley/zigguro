@@ -1,0 +1,49 @@
+// Product constants: the single source of the app id, AUMID, update feeds,
+// release keys and OAuth identifiers (E17.F01.S01.T01). Imported by
+// packages/release as the module `zg_product_zon`; see zg_release.product.
+.{
+    .app_id = "dev.zigguro.zigguro",
+    .aumid = "Zigguro.Zigguro",
+    .display_name = "zigguro",
+    .publisher = "Christian Presley",
+    .wm_class = "Zigguro",
+    .homepage = "https://github.com/ChristianPresley/zigguro",
+    .issues_url = "https://github.com/ChristianPresley/zigguro/issues/new",
+    // URL templates; {channel} is replaced by the release channel.
+    .update_feeds = .{
+        "https://christianpresley.github.io/zigguro/updates/v1/{channel}.json",
+        "https://github.com/ChristianPresley/zigguro/releases/latest/download/update-{channel}.json",
+    },
+    // Minisign public keys ("RW..."), newest first. Filled by the key
+    // ceremony in docs/release.md; non-dev builds fail while it is empty.
+    .release_keys = .{},
+    .symbols_url_template = "https://github.com/ChristianPresley/zigguro/releases/download/v{version}/zigguro-{version}-{target}-symbols.tar.gz",
+    .oauth = .{
+        .github_client_id = "",
+        .cimd_url = "https://christianpresley.github.io/zigguro/oauth/client-metadata.json",
+    },
+    .file_associations = .{
+        .{ .ext = ".zig", .mime = "text/x-zig", .description = "Zig source" },
+        .{ .ext = ".zon", .mime = "text/x-zon", .description = "Zig object notation" },
+        .{ .ext = ".md", .mime = "text/markdown", .description = "Markdown document" },
+        .{ .ext = ".txt", .mime = "text/plain", .description = "Text document" },
+        .{ .ext = ".json", .mime = "application/json", .description = "JSON document" },
+        .{ .ext = ".jsonc", .mime = "application/jsonc", .description = "JSON with comments" },
+        .{ .ext = ".toml", .mime = "application/toml", .description = "TOML document" },
+        .{ .ext = ".yaml", .mime = "application/yaml", .description = "YAML document" },
+        .{ .ext = ".yml", .mime = "application/yaml", .description = "YAML document" },
+        .{ .ext = ".c", .mime = "text/x-csrc", .description = "C source" },
+        .{ .ext = ".h", .mime = "text/x-chdr", .description = "C header" },
+        .{ .ext = ".cpp", .mime = "text/x-c++src", .description = "C++ source" },
+        .{ .ext = ".hpp", .mime = "text/x-c++hdr", .description = "C++ header" },
+        .{ .ext = ".rs", .mime = "text/rust", .description = "Rust source" },
+        .{ .ext = ".go", .mime = "text/x-go", .description = "Go source" },
+        .{ .ext = ".py", .mime = "text/x-python", .description = "Python source" },
+        .{ .ext = ".js", .mime = "text/javascript", .description = "JavaScript source" },
+        .{ .ext = ".ts", .mime = "text/x-typescript", .description = "TypeScript source" },
+        .{ .ext = ".tsx", .mime = "text/x-tsx", .description = "TypeScript JSX source" },
+        .{ .ext = ".sh", .mime = "application/x-shellscript", .description = "Shell script" },
+        .{ .ext = ".ps1", .mime = "text/x-powershell", .description = "PowerShell script" },
+        .{ .ext = ".log", .mime = "text/x-log", .description = "Log file" },
+    },
+}

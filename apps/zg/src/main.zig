@@ -1,31 +1,46 @@
 //! zg: the headless CLI agent and SCM CLI (works without the GUI). Until the
 //! owning epics land this only initialises the zg_core runtime and handles
-//! `--version`.
+//! `--version` (through zg_release, before the runtime starts).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
-const options = @import("zg_options");
+const zg_release = @import("zg_release");
+const zg_crash = @import("zg_crash");
 
-pub const std_options: std.Options = .{ .logFn = zg_core.log.logFn };
+pub const std_options: std.Options = .{
+    .logFn = zg_core.log.logFn,
+    // Crash reports in every mode (std enables it only with runtime safety).
+    .enable_segfault_handler = true,
+    .signal_stack_size = 256 * 1024,
+};
 pub const panic = std.debug.FullPanic(zg_core.report.panicHandler);
+pub const debug = struct {
+    pub const handleSegfault = zg_crash.handleSegfault;
+};
 
 pub fn main(min: std.process.Init.Minimal) !u8 {
+    // Before any runtime init: no allocator, no worker threads.
+    if (zg_release.cli.handleVersionFlag(min, &zg_release.current, "zg")) return 0;
+    installCrashHandler(min, "zg");
+
     var rt: zg_core.Runtime = undefined;
     try rt.init(min, .{});
     defer _ = rt.deinit();
 
-    var arena: std.heap.ArenaAllocator = .init(rt.gpa);
-    defer arena.deinit();
-    const args = try min.args.toSlice(arena.allocator());
-
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
     const w = &out.interface;
-    if (args.len > 1 and (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-V"))) {
-        try w.print("zg {s}\n", .{options.version});
-    } else {
-        try w.print("zg {s}: nothing to run yet; see GitHub issue #1198 for the plan\n", .{options.version});
-    }
+    try w.print("zg {s}: nothing to run yet; see GitHub issue #1198 for the plan\n", .{zg_release.current.version_string});
     try w.flush();
     return 0;
+}
+
+/// Crash reports go to `<state>/crashes` (E17.F05); `install` copies the
+/// paths. A failure here only means no reports.
+fn installCrashHandler(min: std.process.Init.Minimal, product: []const u8) void {
+    var state_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var crash_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const state = zg_crash.paths.stateDir(min.environ, &state_buf) orelse return;
+    const crashes = zg_crash.paths.crashDir(state, &crash_buf) orelse return;
+    zg_crash.install(.{ .crash_dir = crashes, .state_dir = state, .product = product }) catch {};
 }

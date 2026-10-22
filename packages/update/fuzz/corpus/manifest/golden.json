@@ -1,0 +1,10 @@
+{ "schema": 1, "product": "dev.zigguro.zigguro", "channel": "stable",
+  "serial": 1761016620, "issued_at": "2026-10-21T03:17:00Z", "expires_at": "2026-11-11T03:17:00Z",
+  "latest": { "version": "0.4.0+g1a2b3c4d5e6f", "released_at": "2026-10-20T12:00:00Z",
+              "summary": "Faster search", "notes_url": "https://github.com/ChristianPresley/zigguro/releases/tag/v0.4.0",
+              "critical": false, "rollout": { "start": "2026-10-20T12:00:00Z", "hours": 72 },
+              "artifacts": { "x86_64-windows": { "url": "https://github.com/ChristianPresley/zigguro/releases/download/v0.4.0/zigguro-0.4.0-x86_64-windows.zip",
+                                                 "size": 21733120, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+                             "x86_64-linux": { "url": "https://github.com/ChristianPresley/zigguro/releases/download/v0.4.0/zigguro-0.4.0-x86_64-linux.tar.gz",
+                                               "size": 20000000, "sha256": "0000000000000000000000000000000000000000000000000000000000000000" } } },
+  "blocked": ["0.3.2"] }
