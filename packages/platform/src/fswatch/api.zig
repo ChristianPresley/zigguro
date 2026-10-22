@@ -66,6 +66,9 @@ pub const WatchOptions = struct {
     /// Use fanotify instead of inotify (not implemented yet; returns
     /// `error.Unsupported`).
     use_fanotify: bool = false,
+    /// Windows: bytes in each of a root's two change buffers (clamped to
+    /// 1–64 KiB; network shares refuse more than 64 KiB).
+    rdcw_buffer_bytes: u32 = 64 * 1024,
 };
 
 /// Kernel limits relevant to watching, for the UI hint on `watch_limit`.
@@ -91,6 +94,7 @@ pub const Error = error{
 
 const Impl = switch (builtin.os.tag) {
     .linux => @import("linux_inotify.zig").Inotify,
+    .windows => @import("windows_rdcw.zig").Rdcw,
     else => void,
 };
 
@@ -127,7 +131,7 @@ pub const Watcher = struct {
         return self.impl.poll(out);
     }
 
-    /// Readable (eventfd) while a batch is ready.
+    /// Readable (eventfd) or signalled (event) while a batch is ready.
     pub fn waitHandle(self: *Watcher) NativeHandle {
         return self.impl.waitHandle();
     }
