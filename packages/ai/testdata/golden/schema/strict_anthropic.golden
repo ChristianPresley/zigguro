@@ -1,0 +1,6 @@
+{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"],"additionalProperties":false}
+{"type":"object","properties":{"edits":{"type":"array","items":{"type":"object","properties":{"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["old_string","new_string"],"additionalProperties":false}}},"required":["edits"],"additionalProperties":false}
+{"type":"object","properties":{"mode":{"enum":["a","b"],"type":"string"},"opts":{"type":["object","null"],"properties":{"x":{"type":"number"}},"additionalProperties":false}},"additionalProperties":false}
+{"type":"object","properties":{"target":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":[],"additionalProperties":false}
+{"$defs":{"pos":{"type":"object","properties":{"line":{"type":"integer"},"col":{"type":"integer"}},"required":["line","col"],"additionalProperties":false}},"type":"object","properties":{"at":{"$ref":"#/$defs/pos"}},"required":["at"],"additionalProperties":false}
+{"type":"object","properties":{},"additionalProperties":false}

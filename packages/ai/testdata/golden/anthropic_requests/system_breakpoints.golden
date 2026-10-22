@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"system":[{"type":"text","text":"You are zigguro.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Project rules...","cache_control":{"type":"ephemeral"}},{"type":"text","text":"env: linux"}],"messages":[{"role":"user","content":[{"type":"text","text":"Hello","cache_control":{"type":"ephemeral"}}]}],"stream":true}

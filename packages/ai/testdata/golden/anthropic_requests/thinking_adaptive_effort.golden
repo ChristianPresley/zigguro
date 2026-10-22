@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"stream":true}

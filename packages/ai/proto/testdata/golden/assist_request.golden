@@ -1,0 +1,1 @@
+{"kind":"explain_error","prompt":"Why did this fail?","context":[{"ref":{"type":"terminal","terminal":1,"block":null},"title":"t","mime":"text/plain","text":"error: x","tokens":3,"version_hash":0,"truncated":false,"omitted":[]}],"output_schema_json":"{\"type\":\"object\"}","open_agent_pane":true,"origin":"terminal"}

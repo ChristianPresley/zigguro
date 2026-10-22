@@ -1,0 +1,1 @@
+{"model":"m","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},{"type":"image","source":{"type":"url","url":"https://example.com/a.jpg"}},{"type":"text","text":"What is this?"}]}],"stream":true}

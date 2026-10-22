@@ -1,0 +1,1 @@
+{"model":"m","messages":[{"role":"user","content":"Hello"}],"tools":[{"type":"function","function":{"name":"read_file","description":"Read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}],"tool_choice":{"type":"function","function":{"name":"read_file"}},"parallel_tool_calls":false,"max_tokens":8192,"stream":true,"stream_options":{"include_usage":true}}
