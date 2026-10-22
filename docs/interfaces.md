@@ -3130,3 +3130,69 @@ A `Changeset` owns its arena (paths, labels, hunks) and every text
 ### Stability
 Unstable until the queue and store land; the provenance JSON is stable
 (golden-tested).
+
+## zg_review.model.Queue (batch submission, Submitter, events)
+
+### Defined in
+`packages/review/src/model/{queue,batch,blobs,events}.zig` (E12.F01.S01.T02).
+
+### Implemented by
+E12.F01.S01.T02.
+
+### Consumed by
+E10 edit tools (batch per turn), E07 ReviewSink, E08 replace and notes, E12 review UI, apply and store.
+
+### Signature
+```zig
+pub const Queue = struct {
+    pub fn init(gpa, io, o: Options{ root, blobs: Blobs, first_id: u64 = 1, wake: ?Wake = null, hunk_options }) !*Queue;
+    pub fn deinit(q) void;
+    pub fn beginBatch(q, prov: Provenance) !BatchId;                                   // any thread
+    pub fn addEdit(q, b, path, base: []const u8, base_version: ?u64, edits: *const ChangeSet) !void;
+    pub fn addCreate(q, b, path, bytes) !void;
+    pub fn addDelete(q, b, path, base: []const u8) !void;
+    pub fn addRename(q, b, from, to) !void;
+    pub fn setExecutable(q, b, path, on: bool) !void;
+    pub fn abortBatch(q, b) void;
+    pub fn commitBatch(q, b, o: SubmitOptions) !ChangesetId;                          // owner thread
+    pub fn drain(q) void;                                                              // owner thread
+    pub fn get(q, id) ?*const Changeset;
+    pub fn getMut(q, id) ?*Changeset;
+    pub fn list(q, f: Filter{ open_only, session }, out: *ArrayList(ChangesetId), gpa) !void;
+    pub fn remove(q, id) void;
+    pub fn subscribe(q, Listener{ ctx, on }) !ListenerId;
+    pub fn submitter(q) *Submitter;
+};
+pub const SubmitOptions = struct { auto_apply: bool = false, presentation: Presentation = .queue, supersedes: ?ChangesetId = null, checkpoint: ?u64 = null };
+pub const Submitter = struct { // any thread; E10 shapes: addCreate(b, path, bytes), commitBatch(b)
+    beginBatch, addEdit, addCreate, setExecutable, addDelete, addRename, abortBatch, commitBatch, commitBatchWith };
+pub const Event = union(enum) { submitted: ChangesetId, updated: ChangesetId, state: { cs, from, to }, removed: ChangesetId };
+pub const Blobs = struct { ctx, vtable: { put(ctx, bytes) !BlobHash, get(ctx, arena, hash) !?[]const u8 } };
+pub const MemBlobs = struct { pub fn init(gpa) MemBlobs; pub fn blobs(m) Blobs; ... };
+```
+Deviations from the spec text:
+- `addEdit` and `addDelete` take the base text instead of a `BaseRef`. The
+  queue hashes and stores it, and derives hunks from it. `BaseRef` is
+  computed from the text.
+- `FileChange.base` records what a delete removes.
+- `Submitter.commitBatch` reserves the id at once. The batch becomes a
+  changeset at the owner's next `drain`, which the `wake` hook requests
+  (the app posts it through `Runtime.post`).
+- Not yet implemented:
+  - `addPending` (E05 PendingChange tokens);
+  - the E07 and E08 port adapters;
+  - streaming plans;
+  - background hunk derivation for large files;
+  - auto-apply, which is fail-closed with no policy.
+
+### Threading
+Changesets, listeners and events belong to the owner thread. Batches and
+committed-but-undrained batches are guarded by an `Io.Mutex`; ids come
+from an atomic counter.
+
+### Ownership/lifetime
+A batch copies every text and ChangeSet it gets. The queue owns its
+changesets until `remove`.
+
+### Stability
+Unstable until the store and the E10 binding land.
