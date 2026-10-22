@@ -432,3 +432,30 @@ test "DocumentSyntax: brackets in strings ignored, fallback structure" {
     try testing.expectEqual(@as(usize, 1), s.symbols.len);
     try testing.expectEqualStrings("f", s.symbols[0].name);
 }
+
+test "DocumentSyntax: C brackets inside multi-line comments and strings are ignored" {
+    const gpa = testing.allocator;
+    var reg = try syntax.defaultRegistry(gpa);
+    defer reg.deinit(gpa);
+    const text =
+        \\int f(void) {
+        \\    /* a comment over lines ( [
+        \\       still ) } */
+        \\    const char *s = "{ \
+        \\    ] spliced";
+        \\    return g('(');
+        \\}
+        \\
+    ;
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var ds = try DocumentSyntax.init(gpa, reg.get(.c).?, &reg, &doc.tree, doc.version);
+    defer ds.deinit();
+    while (!try ds.idle(&doc.tree, null)) {}
+    var un: std.ArrayList(u64) = .empty;
+    defer un.deinit(gpa);
+    try ds.brackets.unmatched(gpa, .{ .start = 0, .end = doc.len() }, &un);
+    try testing.expectEqual(@as(usize, 0), un.items.len);
+    const brace = std.mem.indexOf(u8, text, "{").?;
+    try testing.expectEqual(@as(?u64, std.mem.lastIndexOf(u8, text, "}").?), ds.brackets.matching(brace).?.close);
+}
