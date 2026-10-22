@@ -1,0 +1,200 @@
+# Reflow on resize: logical lines re-wrap at the new width, wide
+# characters move past the edge, and the cursor keeps its place in the
+# text.
+@cite https://ghostty.org/docs/vt
+
+@case Narrowing wraps a long row
+@size 10x3
+@send "abcdefgh"
+@resize 5x3
+@expect-screen
+|abcde|
+|fgh··|
+@expect-cursor 2,4
+
+@case Widening joins a wrapped row
+@size 5x3
+@send "abcdefgh"
+@resize 10x3
+@expect-screen
+|abcdefgh··|
+@expect-cursor 1,9
+
+@case Narrow then wide restores the line
+@size 10x3
+@send "abcdefgh"
+@resize 4x3
+@resize 10x3
+@expect-screen
+|abcdefgh··|
+
+@case Narrowing to three columns
+@size 10x3
+@send "abcdefgh"
+@resize 3x3
+@expect-screen
+|abc|
+|def|
+|gh·|
+@expect-cursor 3,3
+
+@case Separate lines stay separate
+@size 10x3
+@send "abc\r\ndef"
+@resize 5x3
+@expect-screen
+|abc··|
+|def··|
+
+@case Separate lines are not joined when widening
+@size 5x3
+@send "abcde\r\nfg"
+@resize 10x3
+@expect-screen
+|abcde·····|
+|fg········|
+
+@case A line exactly as wide as the new width
+@size 10x3
+@send "abcde\r\nx"
+@resize 5x3
+@expect-screen
+|abcde|
+|x····|
+
+@case A wrapped line that now fits on one row
+@size 4x3
+@send "abcdef\r\nx"
+@resize 6x3
+@expect-screen
+|abcdef|
+|x·····|
+
+@case Trailing blanks are not carried to the new rows
+@size 10x3
+@send "ab\e[1;8Hc\r\nx"
+@resize 5x3
+@expect-screen
+|ab···|
+|··c··|
+|x····|
+
+@case Cells with a background are carried
+@size 10x3
+@send "ab\e[44m\e[K\e[0m\r\nx"
+@resize 5x3
+@expect-cell 2,5 bg=4
+@expect-screen
+|ab···|
+|·····|
+|x····|
+
+@case The cursor follows its character
+@size 10x3
+@send "abcdefgh\e[1;7H"
+@resize 5x3
+@expect-cursor 2,2
+
+@case A cursor after the text keeps its offset
+@size 10x3
+@send "ab\e[1;5H"
+@resize 8x3
+@expect-cursor 1,5
+
+@case A cursor past the new width is clamped
+@size 10x3
+@send "ab\e[1;9H"
+@resize 5x3
+@expect-cursor 1,5
+
+@case A pending wrap survives widening
+@size 5x3
+@send "abcde"
+@resize 8x3
+@expect-cursor 1,6
+@send "x"
+@expect-screen
+|abcdex··|
+
+@case Text at the right edge keeps a pending wrap when narrowed exactly
+@size 10x3
+@send "abcdefghij"
+@resize 5x3
+@expect-cursor 2,5
+@send "x"
+@expect-screen
+|abcde|
+|fghij|
+|x····|
+
+@case Printing continues the logical line after reflow
+@size 10x3
+@send "abcdefg"
+@resize 4x3
+@send "hi"
+@resize 10x3
+@expect-screen
+|abcdefghi·|
+
+@case A wide character that would straddle the edge moves down
+@size 10x3
+@send "abcd日x"
+@resize 5x3
+@expect-screen
+|abcd·|
+|日‹x··|
+
+@case The spacer head goes away when widening
+@size 5x3
+@send "abcd日x"
+@resize 10x3
+@expect-screen
+|abcd日‹x···|
+
+@case Wide characters re-wrap in pairs
+@size 10x3
+@send "日本語"
+@resize 4x3
+@expect-screen
+|日‹本‹|
+|語‹··|
+
+@case Wide characters at an odd width
+@size 10x3
+@send "日本語"
+@resize 3x3
+@expect-screen
+|日‹·|
+|本‹·|
+|語‹·|
+
+@case A combining mark moves with its base
+@size 10x3
+@send "abcde\u{301}f"
+@resize 4x3
+@expect-screen
+|abcd|
+|éf··|
+
+@case Styles move with their cells
+@size 10x3
+@send "abcd\e[1mef\e[0m"
+@resize 4x3
+@expect-cell 2,1 bold
+@expect-cell 1,4 !bold
+
+@case Links move with their cells
+@size 10x3
+@send "abcd\e]8;;https://x.example/^Gef\e]8;;^G"
+@resize 4x3
+@expect-cell 2,2 link=https://x.example/
+@expect-cell 1,4 nolink
+
+@case Empty lines stay
+@size 10x4
+@send "a\r\n\r\nb"
+@resize 5x4
+@expect-screen
+|a····|
+|·····|
+|b····|
