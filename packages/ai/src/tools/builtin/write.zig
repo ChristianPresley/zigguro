@@ -37,7 +37,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
         .ok => |r| r,
         .denied => |why| return files.errOut(a, try std.fmt.allocPrint(a, "Permission denied: {s}", .{why})),
     };
-    const origin: files.Origin = .{ .agent = c.agent, .tool = c.name, .tool_call_id = c.id };
+    const origin: files.Origin = .{ .agent = c.agent, .turn = c.turn, .tool = c.name, .tool_call_id = c.id };
     switch (ft.files.kind(c.io, r.abs)) {
         .directory => return files.errOut(a, try std.fmt.allocPrint(a, "{s} is a directory.", .{r.rel})),
         .missing => {
@@ -46,9 +46,9 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
             return switch (o) {
                 .applied => |ap| blk: {
                     try ft.tracker.wrote(c.agent, r.abs, ap.version, n);
-                    break :blk files.textOut(a, try std.fmt.allocPrint(a, "Created {s} ({d} lines).", .{ r.rel, n }));
+                    break :blk ft.withDiagnostics(c, r.abs, o, try files.textOut(a, try std.fmt.allocPrint(a, "Created {s} ({d} lines).", .{ r.rel, n })));
                 },
-                .pending => |p| files.textOut(a, try std.fmt.allocPrint(a, "Proposed new file {s} ({d} lines) in changeset #{d} — pending review.", .{ r.rel, n, p.changeset })),
+                .pending => |p| files.textOut(a, try std.fmt.allocPrint(a, "Proposed new file {s} ({d} lines) in {s} — pending review.", .{ r.rel, n, try files.changesetName(a, p.changeset) })),
                 .rejected => |rej| files.errOut(a, try files.rejectionText(a, r.rel, rej)),
             };
         },
@@ -59,7 +59,7 @@ fn call(ctx: *anyopaque, c: *proto.ToolCall) proto.ToolError!proto.ToolOutput {
     const before = ft.files.read(c.io, a, r.abs, std.math.maxInt(usize)) catch |e| return failed(a, r.rel, e);
     const o = ft.files.propose(c.io, a, r.abs, .{ .whole_file = .{ .text = content, .base_version = base } }, origin) catch |e| return failed(a, r.rel, e);
     if (o == .applied) try ft.tracker.wrote(c.agent, r.abs, o.applied.version, lineCount(content));
-    return files.outcomeText(a, r.rel, "write", o, before.bytes, content, ft.cfg.diff_lines);
+    return ft.withDiagnostics(c, r.abs, o, try files.outcomeText(a, r.rel, "write", o, before.bytes, content, ft.cfg.diff_lines));
 }
 
 fn failed(a: std.mem.Allocator, rel: []const u8, e: anyerror) proto.ToolError!proto.ToolOutput {
