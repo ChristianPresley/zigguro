@@ -24,6 +24,8 @@ pub const intraline = @import("diff/intraline.zig");
 pub const postprocess = @import("diff/postprocess.zig");
 /// Moved-block detection.
 pub const moves = @import("diff/moves.zig");
+/// The live base-vs-current diff.
+pub const diff_model = @import("diff/diff_model.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -155,4 +157,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("diff/diff_test.zig");
     _ = @import("diff/diff_post_test.zig");
+    _ = @import("diff/diff_model_test.zig");
 }

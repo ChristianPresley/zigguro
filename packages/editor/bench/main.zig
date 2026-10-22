@@ -365,6 +365,7 @@ fn register(b: *bench.Bench) !void {
     try registerEncoding(b, text);
     try registerSave(b, text);
     try registerUndoFile(b, text);
+    try registerDiffModel(b);
 }
 
 const MoveBench = struct { snap: zg_editor.model.snapshot.Snapshot, unit: zg_editor.model.edit.movement.Unit };
@@ -635,6 +636,43 @@ fn undoRestore(c: *UndoFileBench, s: *bench.State) void {
     while (i < s.iterations()) : (i += 1) {
         var t = (zg_editor.model.edit.undo_file.decode(c.gpa, c.bytes, c.hash, c.len, .{ .max_bytes = 1 << 30 }) catch unreachable).?;
         t.deinit();
+    }
+}
+
+const DiffModelBench = struct { doc: *zg_editor.model.document.Document, m: *zg_editor.model.diff.diff_model.DiffModel, at: u64 };
+
+/// One keystroke (insert, then delete) in the middle of a 10k-line file
+/// whose live diff has 100 hunks.
+fn registerDiffModel(b: *bench.Bench) !void {
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "editor.diff_model.keystroke_10k", f) == null) return;
+    const Document = zg_editor.model.document.Document;
+    const base = try genLines(b.gpa, 10_000);
+    defer b.gpa.free(base);
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), base);
+    defer doc.deinit();
+    const snap = doc.snapshot();
+    // Change one line in every hundred: 100 hunks.
+    var k: u64 = 50;
+    while (k < 10_000) : (k += 100) try benchEdit(b.gpa, doc, doc.tree.lineStart(k), 2, "CHANGED");
+    const m = try zg_editor.model.diff.diff_model.DiffModel.init(b.gpa, null, snap, doc, .{});
+    defer m.deinit();
+    try m.completeFull();
+    std.debug.assert(m.hunks().len == 100);
+    var db: DiffModelBench = .{ .doc = doc, .m = m, .at = doc.tree.lineStart(5_020) + 3 };
+    try b.run("editor.diff_model.keystroke_10k", &db, diffKeystroke);
+}
+
+fn benchEdit(gpa: std.mem.Allocator, doc: *zg_editor.model.document.Document, at: u64, del: u64, text: []const u8) !void {
+    var cs = try zg_editor.model.edit.change_set.ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at + del }, .text = text }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+}
+
+fn diffKeystroke(c: *DiffModelBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        // Alternate typing and deleting a character.
+        if (i % 2 == 0) benchEdit(c.m.gpa, c.doc, c.at, 0, "x") catch unreachable else benchEdit(c.m.gpa, c.doc, c.at, 1, "") catch unreachable;
     }
 }
 
