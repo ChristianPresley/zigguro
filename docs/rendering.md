@@ -107,6 +107,59 @@ a time on up to 8 workers. Output is identical for any thread count and on
 every CPU. It renders to a headless sink, to an shm presenter (E01
 `allocCpuBuffer` ring with buffer age) or to a `CpuImage` (`renderToImage`).
 
+## GPU shaders and pipelines
+
+The Vulkan backend shades every prim with the same math as the software
+renderer (`r2d/shading.zig`, mirrored op for op in
+`src/shaders/sdf.zig`). Blending happens in sRGB-encoded space with
+premultiplied colour, so sampled textures and render targets use UNORM
+views (sRGB images get a UNORM view), and r8 glyph pages swizzle `r`
+into every channel.
+
+The frozen interface (`src/shaders/interface.zig`, guarded by
+`shaders.interface_hash`):
+
+| what | value |
+|---|---|
+| set 0, binding 0 | `readonly buffer Prims { Prim items[]; }` (64 B each, `PrimGpu` view) |
+| set 0, binding 1 | `readonly buffer Clips { ClipGpu items[]; }` (bounds + radii, 32 B) |
+| set 0, binding 2 | `sampler2D textures[]`: partially bound, update-after-bind, non-uniform index |
+| push constants (32 B) | `viewport_px, inv_viewport, clip_base, text_gamma, text_contrast, flags` |
+| composite push constants | `offset, size, slot, opacity, _, flags` (bit 0 = wrap) |
+
+A texture id is its descriptor slot; slot 0 is "none". Prims are drawn
+as instanced 4-vertex triangle strips: `firstInstance` is the index of
+the first prim of a run in the prim buffer, and `clip_base` is the index
+of the frame's clip 0 in the clip buffer. Pipelines: `prim` (every kind),
+`text_subpixel` (dual-source blending, subpixel glyphs only; without
+`dualSrcBlend` they draw through `prim` with averaged coverage) and
+`composite` (full-screen triangle sampling a layer with wrap). All blend
+`ONE, ONE_MINUS_SRC_ALPHA`; `text_subpixel` uses `ONE,
+ONE_MINUS_SRC1_COLOR` for colour.
+
+The pipeline cache persists at `<cache dir>/pipelines-<vendor>-<device>.bin`
+behind a checked header (magic, version, payload hash, shader identity)
+and the Vulkan header; any mismatch gives an empty cache.
+
+`zig build test-vulkan-gpu` renders every single-frame, layer-free scene
+of the corpus through these pipelines on lavapipe and compares it with
+the software goldens (`Tolerance.gpu`; observed max channel difference
+2).
+
+## Vulkan backend
+
+`zg_vulkan.VkRenderer` implements `Renderer` on Vulkan. Each frame:
+1. Wait for the frame slot.
+2. Compute the repaint region (image age plus damage, at most 16 rects).
+3. Copy prims and clips into the upload ring, and record pending texture uploads.
+4. Run one dynamic-rendering pass. Each repaint rect is cleared to transparent, scissored, and drawn with the batches culled to it.
+5. Copy the repainted rects out through the target.
+
+With no damage, nothing is submitted. Targets today are headless and
+in-memory readback. Layers are not drawn yet. The whole scene corpus apart
+from layers, multi-frame damage scenes included, matches the software
+goldens on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
+
 ## Golden images
 
 `zg_vulkan.testing.expectImage(io, @src(), name, &img, tolerance)` compares

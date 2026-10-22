@@ -48,6 +48,9 @@ pub const Anchor = union(enum) {
     /// A fixed rectangle in window coordinates (context menus at the
     /// pointer).
     rect: Rect,
+    /// Centred horizontally, this fraction of the window height from the
+    /// top (QuickPick).
+    top: f32,
 };
 
 /// Placement next to the anchor.
@@ -236,6 +239,15 @@ pub fn center(size: Size, viewport: Rect) Rect {
     const vp = viewport.inset(.all(viewport_margin));
     const x = vp.x + @max(0, (vp.w - size.w) / 2);
     const y = vp.y + @max(0, (vp.h - size.h) * 0.4);
+    return .{ .x = x, .y = y, .w = size.w, .h = size.h };
+}
+
+/// The rectangle for an overlay centred horizontally at `frac` of the
+/// viewport height from the top, kept inside the margins.
+pub fn atTop(size: Size, viewport: Rect, frac: f32) Rect {
+    const vp = viewport.inset(.all(viewport_margin));
+    const x = vp.x + @max(0, (vp.w - size.w) / 2);
+    const y = @max(vp.y, @min(viewport.y + viewport.h * frac, vp.bottom() - size.h));
     return .{ .x = x, .y = y, .w = size.w, .h = size.h };
 }
 

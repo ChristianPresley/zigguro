@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const zg_platform = @import("zg_platform");
+const zg_core = @import("zg_core");
 const ids = @import("ids.zig");
 const view = @import("view.zig");
 const window_mod = @import("window.zig");
@@ -88,6 +89,30 @@ pub const App = struct {
     /// Milliseconds on a monotonic clock: set by the Host on every pump,
     /// by tests directly. Drives undo coalescing and other timing.
     now_ms: u64 = 0,
+    /// Worker threads and the UI mailbox (`attachRuntime`); without one,
+    /// `spawn` runs work inline and `post` queues locally.
+    rt: ?*zg_core.Runtime = null,
+    work: ?zg_core.runtime.Subsystem = null,
+    /// Calls posted while no runtime is attached.
+    local_calls: std.ArrayList(Call) = .empty,
+    /// Receives mailbox messages that are not `gui_call`s (other
+    /// subsystems' kinds).
+    on_message: ?MessageHandler = null,
+
+    /// The mailbox kind of `post`ed calls ("G\x04" + 0x0100).
+    pub const gui_call: u32 = 0x4704_0100;
+
+    /// A function to run on the UI thread with its context.
+    pub const Call = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, app: *App) void,
+    };
+
+    /// Handles mailbox messages of other kinds.
+    pub const MessageHandler = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, app: *App, msg: zg_core.runtime.UiMsg) void,
+    };
 
     /// An empty app.
     pub fn init(gpa: std.mem.Allocator) App {
@@ -101,6 +126,11 @@ pub const App = struct {
 
     /// Closes every window and frees every entity.
     pub fn deinit(app: *App) void {
+        // Background work first: it may post into what follows.
+        if (app.work) |*wk| wk.shutdown();
+        // Deliver what finished work posted, so its owners can release it.
+        _ = app.drainMessages();
+        app.local_calls.deinit(app.gpa);
         for (app.windows.items) |w| w.destroy();
         app.windows.deinit(app.gpa);
         var it = app.observers.valueIterator();
@@ -111,6 +141,64 @@ pub const App = struct {
         app.effect_arena.deinit();
         app.entities.deinit();
         app.clipboard.text.deinit(app.gpa);
+    }
+
+    // -- background work ----------------------------------------------------
+
+    /// Gives the app worker threads and a UI mailbox. `rt` must outlive the
+    /// app, and the UI thread must be bound (`Runtime.bindUiThread`; the
+    /// Host does it).
+    pub fn attachRuntime(app: *App, rt: *zg_core.Runtime) void {
+        app.rt = rt;
+        app.work = .init(rt.io);
+    }
+
+    /// Runs `func(args)` on a worker (inline when no runtime is attached).
+    /// `func` returns `void` or `std.Io.Cancelable!void`; it reports back
+    /// with `post`. Cancelled when the app shuts down.
+    pub fn spawn(app: *App, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) void {
+        if (app.work) |*wk| {
+            wk.spawn(func, args);
+        } else {
+            _ = @call(.auto, func, args);
+        }
+    }
+
+    /// Waits for every spawned task to finish (tests, shutdown).
+    pub fn joinWork(app: *App) void {
+        if (app.work) |*wk| wk.join() catch {};
+    }
+
+    /// Runs `c` on the UI thread at the next `drainMessages`. Any thread;
+    /// never blocks. Fails when the mailbox is full or closed.
+    pub fn post(app: *App, c: Call) zg_core.runtime.Runtime.PostError!void {
+        if (app.rt) |rt| return rt.post(.{ .kind = gui_call, .a = @intFromPtr(c.f), .b = @intFromPtr(c.ctx) });
+        app.local_calls.append(app.gpa, c) catch return error.Full;
+    }
+
+    /// UI thread: runs posted calls and hands other messages to
+    /// `on_message`. Returns how many were handled.
+    pub fn drainMessages(app: *App) usize {
+        var n: usize = 0;
+        while (app.local_calls.items.len > 0) {
+            const c = app.local_calls.orderedRemove(0);
+            c.f(c.ctx, app);
+            n += 1;
+        }
+        const rt = app.rt orelse return n;
+        var buf: [64]zg_core.runtime.UiMsg = undefined;
+        while (true) {
+            const got = rt.drain(&buf);
+            for (buf[0..got]) |m| {
+                if (m.kind == gui_call) {
+                    const f: *const fn (*anyopaque, *App) void = @ptrFromInt(@as(usize, @intCast(m.a)));
+                    f(@ptrFromInt(@as(usize, @intCast(m.b))), app);
+                } else if (app.on_message) |h| h.f(h.ctx, app, m);
+            }
+            n += got;
+            if (got < buf.len) break;
+        }
+        return n;
     }
 
     /// Opens a window (see `Window.Options`).
@@ -312,6 +400,11 @@ pub const Context = struct {
         cx.app.effects.append(cx.app.gpa, .{ .emit = .{ .source = cx.entity, .tag = ids.kindTag(T), .payload = copy } }) catch {};
     }
 
+    /// Runs `func(args)` on a worker; see `App.spawn`.
+    pub fn spawn(cx: *Context, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) void {
+        cx.app.spawn(func, args);
+    }
+
     /// Asks for another frame (animation, polling).
     pub fn requestFrame(cx: *Context) void {
         if (cx.win) |w| w.needs_frame = true;
@@ -369,4 +462,46 @@ test "effect cycle guard" {
     cx.emit(Ping{});
     app.flushEffects();
     try std.testing.expect(app.effect_cycle);
+}
+
+const Tally = struct {
+    n: std.atomic.Value(u32) = .init(0),
+    seen: u32 = 0,
+
+    fn work(t: *Tally, app: *App) void {
+        _ = t.n.fetchAdd(1, .monotonic);
+        app.post(.{ .ctx = t, .f = done }) catch {};
+    }
+
+    fn done(ctx: *anyopaque, _: *App) void {
+        const t: *Tally = @ptrCast(@alignCast(ctx));
+        t.seen += 1;
+    }
+};
+
+test "spawn and post without a runtime run inline and locally" {
+    var app = App.init(std.testing.allocator);
+    defer app.deinit();
+    var t: Tally = .{};
+    app.spawn(Tally.work, .{ &t, &app });
+    try std.testing.expectEqual(@as(u32, 1), t.n.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 0), t.seen);
+    try std.testing.expectEqual(@as(usize, 1), app.drainMessages());
+    try std.testing.expectEqual(@as(u32, 1), t.seen);
+}
+
+test "spawn with 1 000 concurrent tasks delivers all results" {
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    rt.bindUiThread(.noop);
+    var app = App.init(std.testing.allocator);
+    defer app.deinit();
+    app.attachRuntime(&rt);
+    var t: Tally = .{};
+    for (0..1000) |_| app.spawn(Tally.work, .{ &t, &app });
+    app.joinWork();
+    while (app.drainMessages() > 0) {}
+    try std.testing.expectEqual(@as(u32, 1000), t.n.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 1000), t.seen);
 }

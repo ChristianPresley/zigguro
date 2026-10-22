@@ -11,6 +11,10 @@
 //!   writes go out as `clipboard_write`; a `clipboard_changed` is read
 //!   back into `App.clipboard`);
 //! - `App.now_ms` is refreshed from the awake clock on every pump;
+//! - with a runtime attached to the app (`App.attachRuntime`), the Host
+//!   binds the UI thread with a waker that wakes the platform, and drains
+//!   the mailbox (worker results) on every pump;
+//! - window timers run on every pump, and `run` sleeps until the earliest;
 //! - with a `FontText`, the glyph atlas is uploaded to every window's
 //!   renderer (one texture per atlas page) before it renders.
 //!
@@ -72,6 +76,8 @@ pub const Host = struct {
     /// is a `FontText`).
     fonts: ?*FontText = null,
     seen_evictions: u32 = 0,
+    /// The app's runtime was bound to this thread.
+    rt_bound: bool = false,
     atlas_updates: std.ArrayList(zg_text.cache.AtlasUpdate) = .empty,
 
     /// Options for `init`.
@@ -166,7 +172,12 @@ pub const Host = struct {
     /// Returns the number of events handled.
     pub fn pump(h: *Host) !usize {
         h.app.now_ms = @intCast(@max(0, @divFloor(std.Io.Clock.awake.now(h.io).nanoseconds, std.time.ns_per_ms)));
-        var total: usize = 0;
+        if (h.app.rt) |rt| if (!h.rt_bound) {
+            // The Host must not move after its first pump.
+            rt.bindUiThread(.{ .ctx = &h.platform, .wakeFn = wakePlatform });
+            h.rt_bound = true;
+        };
+        var total: usize = h.app.drainMessages();
         while (true) {
             const n = h.platform.pollEvents(&h.events);
             for (h.events[0..n]) |ev| try h.handle(ev);
@@ -194,6 +205,11 @@ pub const Host = struct {
             i += 1;
         }
         return total;
+    }
+
+    fn wakePlatform(ctx: ?*anyopaque) void {
+        const p: *Platform = @ptrCast(@alignCast(ctx.?));
+        p.wake();
     }
 
     fn handle(h: *Host, ev: Event) !void {

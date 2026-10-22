@@ -87,6 +87,7 @@ pub const FeatureSet = struct {
             .descriptor_binding_partially_bound = .true,
             .descriptor_binding_sampled_image_update_after_bind = .true,
             .descriptor_binding_variable_descriptor_count = .true,
+            .descriptor_binding_update_unused_while_pending = .true,
             .shader_sampled_image_array_non_uniform_indexing = .true,
             .host_query_reset = .true,
             .scalar_block_layout = .true,

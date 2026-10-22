@@ -5,11 +5,13 @@ pub fn build(b: *std.Build) void {
     const f = zg_build.flags(b);
     const core = b.dependency("zg_core", f.args()).module("zg_core");
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
+    const gui = b.dependency("zg_gui", f.args()).module("zg_gui");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_config",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_jsonrpc", .module = jsonrpc },
+            .{ .name = "zg_gui", .module = gui },
         },
         .bench = "bench/main.zig",
     });

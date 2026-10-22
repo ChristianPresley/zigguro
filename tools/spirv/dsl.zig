@@ -139,8 +139,14 @@ pub fn Val(comptime T: type) type {
         pub fn exp(a: Self) Error!Self {
             return a.ext(T, .Exp, &.{});
         }
+        pub fn log(a: Self) Error!Self {
+            return a.ext(T, .Log, &.{});
+        }
         pub fn floor(a: Self) Error!Self {
             return a.ext(T, .Floor, &.{});
+        }
+        pub fn ceil(a: Self) Error!Self {
+            return a.ext(T, .Ceil, &.{});
         }
         pub fn fract(a: Self) Error!Self {
             return a.ext(T, .Fract, &.{});
@@ -375,18 +381,48 @@ pub const SampledImageArray = struct {
     var_id: Id,
     sampled_image_t: Id,
 
-    /// `textureLod(textures[nonuniformEXT(index)], uv, 0)`.
-    pub fn sample(a: SampledImageArray, index: Val(u32), uv: Val(Vec2)) Error!Val(Vec4) {
+    /// `textures[nonuniformEXT(index)]`.
+    pub fn at(a: SampledImageArray, index: Val(u32)) Error!SampledImage {
         const s = a.s;
-        try s.m.decorate(index.id, .NonUniform);
+        try s.nonUniform(index.id);
         const ptr_t = try s.m.typePointer(.UniformConstant, a.sampled_image_t);
         const p = try s.f.result(.OpAccessChain, ptr_t, &.{ a.var_id.word(), index.id.word() });
         try s.m.decorate(p, .NonUniform);
         const img = try s.f.result(.OpLoad, a.sampled_image_t, &.{p.word()});
         try s.m.decorate(img, .NonUniform);
+        return .{ .s = s, .id = img };
+    }
+
+    /// `textureLod(textures[nonuniformEXT(index)], uv, 0)`.
+    pub fn sample(a: SampledImageArray, index: Val(u32), uv: Val(Vec2)) Error!Val(Vec4) {
+        return (try a.at(index)).sample(uv);
+    }
+};
+
+/// One loaded (non-uniform) combined image sampler.
+pub const SampledImage = struct {
+    s: *Shader,
+    id: Id,
+
+    /// `textureLod(t, uv, 0)`: explicit LOD, so it is valid in
+    /// non-uniform control flow.
+    pub fn sample(t: SampledImage, uv: Val(Vec2)) Error!Val(Vec4) {
+        const s = t.s;
         const zero = try s.m.constant(try s.m.typeFloat(32), 0.0);
         const lod: spec.ImageOperands = .{ .Lod = true };
-        return s.op(Vec4, .OpImageSampleExplicitLod, &.{ img.word(), uv.id.word(), @bitCast(lod), zero.word() });
+        return s.op(Vec4, .OpImageSampleExplicitLod, &.{ t.id.word(), uv.id.word(), @bitCast(lod), zero.word() });
+    }
+
+    /// `vec2(textureSize(t, 0))` in texels.
+    pub fn size(t: SampledImage) Error!Val(Vec2) {
+        const s = t.s;
+        try s.m.capability(.ImageQuery);
+        const img_t = try s.m.typeImage(.{ .sampled_type = try s.m.typeFloat(32) });
+        const img = try s.f.result(.OpImage, img_t, &.{t.id.word()});
+        try s.m.decorate(img, .NonUniform);
+        const lod = try s.m.constant(try s.m.typeInt(32, true), 0);
+        const isz = try s.op(@Vector(2, i32), .OpImageQuerySizeLod, &.{ img.word(), lod.word() });
+        return isz.to(f32);
     }
 };
 
@@ -471,6 +507,8 @@ pub const Shader = struct {
     interface: std.ArrayList(Id) = .empty,
     /// Zig types (by name) to SPIR-V type ids for structs and arrays.
     composite_types: std.StringHashMapUnmanaged(Id) = .empty,
+    /// Ids already decorated NonUniform (a second decoration is invalid).
+    non_uniform: std.AutoHashMapUnmanaged(Id, void) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, stage: Stage) Error!*Shader {
         const s = try gpa.create(Shader);
@@ -486,6 +524,7 @@ pub const Shader = struct {
         const gpa = s.m.gpa;
         s.interface.deinit(gpa);
         s.composite_types.deinit(gpa);
+        s.non_uniform.deinit(gpa);
         s.m.deinit();
         gpa.destroy(s);
     }
@@ -500,6 +539,12 @@ pub const Shader = struct {
         try s.m.entryPoint(model, s.f, "main", s.interface.items);
         if (s.stage == .fragment) try s.m.executionMode(s.f, .OriginUpperLeft);
         return s.m.finish();
+    }
+
+    /// Decorates `id` NonUniform once.
+    pub fn nonUniform(s: *Shader, id: Id) Error!void {
+        if ((try s.non_uniform.getOrPut(s.m.gpa, id)).found_existing) return;
+        try s.m.decorate(id, .NonUniform);
     }
 
     fn startBlock(s: *Shader, l: Id) Error!void {
@@ -916,5 +961,9 @@ test "dsl: sampled image array is decorated NonUniform" {
     const uv = try s.input(Vec2, 1, false);
     try out.store(try tex.sample(idx, uv));
     try expectOp(s, .OpStore);
+    const sz = try (try tex.at(idx)).size();
+    try expectOp(s, .OpConvertSToF);
+    _ = try tex.at(idx); // the index is decorated only once
+    _ = sz;
     try expectValid(s);
 }

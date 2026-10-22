@@ -354,6 +354,211 @@ fn register(b: *bench.Bench) !void {
     try registerDiff(b);
     try registerFind(b);
     try registerLspSync(b, text);
+    try registerDecorations(b, text);
+    try registerAiOverlays(b, text);
+    try registerAgentEdit(b, text);
+}
+
+const AgentBench = struct {
+    session: *api.agent_edit.AgentEditSession,
+    h: api.registry.DocHandle,
+    cs: *const zg_editor.model.edit.change_set.ChangeSet,
+    base: u64,
+
+    fn deny(_: *anyopaque, _: u64, _: api.registry.DocHandle, _: api.agent_edit.ProposalSummary) api.agent_edit.Decision {
+        return .deny;
+    }
+};
+
+fn registerAgentEdit(b: *bench.Bench, text: []const u8) !void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var reg: api.registry.DocumentRegistry = .init(b.gpa, .posix);
+    defer reg.deinit();
+    const h = try reg.openFile("/bench.zig", text);
+    defer reg.release(h);
+    var dummy: u8 = 0;
+    var session: api.agent_edit.AgentEditSession = .init(b.gpa, &reg, 1, .{ .ctx = &dummy, .decide = AgentBench.deny });
+    defer session.deinit();
+    const doc = reg.get(h).?;
+    const base = doc.version;
+    // The agent edits 20 places in the second half...
+    var edits: [20]buffer.piece_tree.Edit = undefined;
+    for (&edits, 0..) |*e, i| {
+        const st = doc.tree.lineStart(60_000 + i * 1000);
+        e.* = .{ .range = .{ .start = st, .end = st + 5 }, .text = "agent" };
+    }
+    var cs = try ChangeSet.fromEdits(b.gpa, doc.len(), &edits);
+    defer cs.deinit();
+    // ...while the user types 100 characters in the first half.
+    for (0..100) |i| {
+        const at = doc.tree.lineStart(1000 + i * 10);
+        var u = try ChangeSet.fromEdits(b.gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at }, .text = "u" }});
+        defer u.deinit();
+        try doc.applyChangeSet(&u, .{ .user = 0 });
+    }
+    var ab: AgentBench = .{ .session = &session, .h = h, .cs = &cs, .base = base };
+    try b.run("editor.agent.rebase_100_edits", &ab, agentRebase);
+}
+
+/// Validates and rebases a 20-replace proposal over 100 user edits (the
+/// policy denies it, so nothing is applied).
+fn agentRebase(a: *AgentBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var o = a.session.propose(a.h, .{ .change_set = .{ .cs = a.cs, .base_version = a.base } }, "bench") catch unreachable;
+        std.debug.assert(o == .rejected and o.rejected == .denied);
+        o.deinit(std.heap.smp_allocator);
+    }
+}
+
+const AiBench = struct {
+    doc: *zg_editor.model.document.Document,
+    store: *deco.DecorationStore,
+    owner: deco.OwnerId,
+    pending: ?*zg_editor.model.decorations.pending.PendingChange = null,
+    ghost: ?*zg_editor.model.decorations.ghost.GhostText = null,
+
+    fn onChange(ctx: *anyopaque, ev: *const zg_editor.model.document.ChangeEvent) void {
+        const a: *AiBench = @ptrCast(@alignCast(ctx));
+        if (a.pending) |p| p.onChange(ev) catch unreachable;
+        if (a.ghost) |g| _ = g.onType(ev) catch unreachable;
+    }
+};
+
+fn registerAiOverlays(b: *bench.Bench, text: []const u8) !void {
+    const Document = zg_editor.model.document.Document;
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var store: deco.DecorationStore = .init(b.gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    var ab: AiBench = .{ .doc = doc, .store = &store, .owner = try store.registerOwner("ai", 0) };
+    _ = try doc.subscribe(.{ .ctx = &ab, .onChange = AiBench.onChange });
+    {
+        // 50 hunks spread over the second half of the document.
+        var edits: [50]buffer.piece_tree.Edit = undefined;
+        for (&edits, 0..) |*e, i| {
+            const st = doc.tree.lineStart(50_000 + i * 900);
+            e.* = .{ .range = .{ .start = st, .end = st + 10 }, .text = "agent text" };
+        }
+        var cs = try ChangeSet.fromEdits(b.gpa, doc.len(), &edits);
+        defer cs.deinit();
+        ab.pending = try zg_editor.model.decorations.pending.PendingChange.create(b.gpa, doc, &store, ab.owner, &cs, doc.version, "bench", .{ .agent = 1 }, .{});
+        defer {
+            ab.pending.?.destroy();
+            ab.pending = null;
+        }
+        try b.run("editor.pending.rebase_50_hunks", &ab, typeAtTop);
+    }
+    {
+        const ghost_owner = try store.registerOwner("ai.ghost", 0);
+        const at = doc.tree.lineStart(1000);
+        const g_text = "a" ** 4096;
+        var g = try zg_editor.model.decorations.ghost.GhostText.show(b.gpa, doc, &store, at, g_text, .{ .request_id = 1, .source = ghost_owner });
+        defer g.deinit();
+        ab.ghost = &g;
+        defer ab.ghost = null;
+        try b.run("editor.ghost.type_through", &ab, typeThrough);
+    }
+}
+
+/// A typed character at the top of the document; the pending change
+/// rebases its 50 hunks.
+fn typeAtTop(a: *AiBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, a.doc.len(), &.{.{ .range = .{ .start = 3, .end = 3 }, .text = "x" }}) catch unreachable;
+        a.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        a.doc.endFrame();
+    }
+}
+
+/// Typing the next character of a ghost (re-shown when it runs out).
+fn typeThrough(a: *AiBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const g = a.ghost.?;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        if (g.remaining().len < 2) {
+            g.text.appendNTimes(std.heap.smp_allocator, 'a', 4096) catch unreachable;
+        }
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, a.doc.len(), &.{.{ .range = .{ .start = g.at, .end = g.at }, .text = "a" }}) catch unreachable;
+        a.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        a.doc.endFrame();
+    }
+}
+
+const deco = zg_editor.model.decorations.store;
+
+const DecoBench = struct {
+    doc: *zg_editor.model.document.Document,
+    store: *deco.DecorationStore,
+    owner: deco.OwnerId,
+    set: []deco.Decoration,
+};
+
+fn registerDecorations(b: *bench.Bench, text: []const u8) !void {
+    const Document = zg_editor.model.document.Document;
+    const doc = try Document.initBytes(b.gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var store: deco.DecorationStore = .init(b.gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    const owner = try store.registerOwner("lsp.diagnostics", 10);
+    // 100k diagnostics, one per line.
+    const set = try b.gpa.alloc(deco.Decoration, doc.tree.lineCount() - 1);
+    defer b.gpa.free(set);
+    for (set, 0..) |*d, i| {
+        const st = doc.tree.lineStart(i);
+        d.* = .{ .range = .{ .start = st + 2, .end = st + 8 }, .owner = owner, .kind = .{ .underline = .{ .style = @enumFromInt(1) } } };
+    }
+    var db: DecoBench = .{ .doc = doc, .store = &store, .owner = owner, .set = set };
+    try b.run("editor.deco.replace_100k", &db, decoReplace);
+    var db10k = db;
+    db10k.set = set[0..10_000];
+    try b.run("editor.deco.replace_10k", &db10k, decoReplace);
+    try store.setOwnerDecorations(owner, doc.version, set);
+    try b.run("editor.deco.viewport_query_100k", &db, decoQuery);
+    try b.run("editor.deco.edit_shift_100k", &db, decoEdit);
+}
+
+/// Replaces an owner's 100k decorations (LSP diagnostics push).
+fn decoReplace(d: *DecoBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        d.store.setOwnerDecorations(d.owner, d.doc.version, d.set) catch unreachable;
+    }
+}
+
+/// 80 visible lines in the middle of 100k decorated lines.
+fn decoQuery(d: *DecoBench, s: *bench.State) void {
+    const mid = d.doc.tree.lineCount() / 2;
+    const r: zg_editor.model.buffer.piece_tree.Range = .{ .start = d.doc.tree.lineStart(mid), .end = d.doc.tree.lineStart(mid + 80) };
+    var out: std.ArrayList(deco.DecoRef) = .empty;
+    defer out.deinit(std.heap.smp_allocator);
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        out.clearRetainingCapacity();
+        d.store.query(r, .initFull(), std.heap.smp_allocator, &out) catch unreachable;
+        bench.doNotOptimizeAway(out.items.len);
+    }
+}
+
+/// A typed character at the top of the document: every later decoration
+/// moves (one tree shift) and the decoration on that line is remapped.
+fn decoEdit(d: *DecoBench, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var cs = ChangeSet.fromEdits(std.heap.smp_allocator, d.doc.len(), &.{.{ .range = .{ .start = 4, .end = 4 }, .text = "x" }}) catch unreachable;
+        d.doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        cs.deinit();
+        d.doc.endFrame();
+    }
 }
 
 const api = zg_editor.model.api;

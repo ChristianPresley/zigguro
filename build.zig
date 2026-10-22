@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
     const spirv_dis = addTool(b, "spirv-dis", "tools/spirv/dis_main.zig", test_filters, f.optimize, tools_test_step);
     const spirv_mod = b.createModule(.{ .root_source_file = b.path("tools/spirv/root.zig") });
     const shader_programs = b.createModule(.{
-        .root_source_file = b.path("packages/vulkan/src/shaders/programs.zig"),
+        .root_source_file = b.path("packages/vulkan/src/shader_programs.zig"),
         .imports = &.{.{ .name = "spirv", .module = spirv_mod }},
     });
     const shaderc = addToolImports(b, "shaderc", "tools/shaderc/main.zig", test_filters, f.optimize, tools_test_step, &.{
