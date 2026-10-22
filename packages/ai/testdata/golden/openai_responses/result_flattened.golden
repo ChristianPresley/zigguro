@@ -1,0 +1,1 @@
+{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]},{"type":"function_call","call_id":"call_a","name":"shot","arguments":"{}"},{"type":"function_call_output","call_id":"call_a","output":"a\n[image omitted]"}],"max_output_tokens":8192,"include":["reasoning.encrypted_content"],"store":false,"stream":true}

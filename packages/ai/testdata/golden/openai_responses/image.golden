@@ -1,0 +1,1 @@
+{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"what"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}],"max_output_tokens":8192,"include":["reasoning.encrypted_content"],"store":false,"stream":true}
