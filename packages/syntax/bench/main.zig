@@ -96,6 +96,41 @@ const go_template =
     \\
 ;
 
+const python_template =
+    \\def widget_{d}(self, index: int) -> "Widget | None":
+    \\    """Returns the {d}th widget, clamped to the table."""
+    \\    i = min(index, len(self.items) - 1)
+    \\    if not self.items:
+    \\        return None
+    \\    total = 0x{x}
+    \\    for k, w in enumerate(self.items[:i]):
+    \\        total += w.weight * k  # weighted
+    \\        if w.flags.hidden:
+    \\            continue
+    \\    label = f"widget {{i}} \x41 {d}: {{total:>8}}"
+    \\    log.debug("%s", label)
+    \\    return self.items[i]
+    \\
+;
+
+const yaml_template =
+    \\widget_{d}:
+    \\  name: "widget {d}"
+    \\  weight: 0x{x}
+    \\  enabled: true
+    \\  tags: [alpha, beta, &t{d} gamma]
+    \\  # weighted entries
+    \\  items:
+    \\    - id: 1
+    \\      label: plain text value
+    \\    - id: 2
+    \\      note: |
+    \\        literal block
+    \\        with two lines
+    \\  ref: *t1
+    \\
+;
+
 /// A corpus of about `lines` lines from a 14-line template.
 fn genFrom(gpa: std.mem.Allocator, comptime tmpl: []const u8, lines: usize) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -370,6 +405,8 @@ fn register(b: *bench.Bench) !void {
         .{ "c", c_template, &syntax.langs.c.c_language, true },
         .{ "rust", rust_template, &syntax.langs.rust.rust_language, true },
         .{ "go", go_template, &syntax.langs.go.go_language, false },
+        .{ "python", python_template, &syntax.langs.python.python_language, true },
+        .{ "yaml", yaml_template, &syntax.langs.yaml.yaml_language, false },
     }) |l| {
         const spaced = try genFrom(gpa, l[1], n_lines);
         defer gpa.free(spaced);
