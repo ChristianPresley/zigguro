@@ -129,6 +129,60 @@ test "checkpoints: restore reverts later applies, keeps the user's edit, closes 
     try testing.expectError(error.UnknownCheckpoint, fx.cps.restoreTo(a, 999, .{}));
 }
 
+test "checkpoints: redo reverses a restore, keeps later edits and revives what it closed" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    try fx.disk.put("a.txt", "one\n.\ntwo\n.\nthree\n", false);
+    const cp = fx.cps.create(.{ .session = s1 }, 1, "turn 1");
+    try fx.accept(s1, "a.txt", "ONE\n.\ntwo\n.\nthree\n");
+    try fx.accept(s1, "new.txt", "made\n");
+    const open = try fx.edit(s1, "a.txt", "ONE\n.\ntwo\n.\nTHREE\n");
+    const a = fx.arena.allocator();
+    const r = try fx.cps.restoreTo(a, cp, .{});
+    try fx.expectDisk("a.txt", "one\n.\ntwo\n.\nthree\n");
+    try testing.expectEqual(model.State.discarded, fx.q.get(open).?.state);
+
+    // The user edits another line after the restore.
+    try fx.disk.put("a.txt", "one\n.\nTwo\n.\nthree\n", false);
+    const dry = try fx.cps.redo(a, r.record.?, .{ .dry_run = true });
+    try testing.expectEqual(@as(usize, 2), dry.restored.len);
+    try testing.expectEqual(@as(usize, 1), dry.revived.len);
+    try fx.expectDisk("new.txt", null);
+
+    const rd = try fx.cps.redo(a, r.record.?, .{});
+    try testing.expectEqual(@as(usize, 0), rd.conflicts.len);
+    try fx.expectDisk("a.txt", "ONE\n.\nTwo\n.\nthree\n");
+    try fx.expectDisk("new.txt", "made\n");
+    try testing.expectEqual(model.State.pending, fx.q.get(open).?.state);
+    try testing.expectEqual(r.record.?, fx.history.get(rd.record.?).?.undoes.?);
+    try testing.expectError(error.AlreadyRedone, fx.cps.redo(a, r.record.?, .{}));
+    try testing.expectError(error.NotARestore, fx.cps.redo(a, 1, .{}));
+    try testing.expectError(error.UnknownRestore, fx.cps.redo(a, 999, .{}));
+
+    // The redone applies count again: restoring the checkpoint reverts them.
+    const again = try fx.cps.restoreTo(a, cp, .{});
+    try testing.expectEqual(@as(usize, 2), again.restored.len);
+    try fx.expectDisk("a.txt", "one\n.\nTwo\n.\nthree\n");
+}
+
+test "checkpoints: a restore that only closes changesets is recorded and redoable" {
+    var fx: Fx = undefined;
+    try fx.init();
+    defer fx.deinit();
+    try fx.disk.put("a.txt", "a\n", false);
+    const cp = fx.cps.create(.{ .session = s1 }, 1, "");
+    const open = try fx.edit(s1, "a.txt", "A\n");
+    const a = fx.arena.allocator();
+    const r = try fx.cps.restoreTo(a, cp, .{});
+    try testing.expectEqual(@as(usize, 0), r.restored.len);
+    try testing.expectEqual(@as(usize, 1), fx.history.get(r.record.?).?.closed.len);
+    // Redo gives it back.
+    const rd = try fx.cps.redo(a, r.record.?, .{});
+    try testing.expectEqual(@as(usize, 1), rd.revived.len);
+    try testing.expectEqual(model.State.pending, fx.q.get(open).?.state);
+}
+
 test "checkpoints: conflicts are reported and left alone; scope picks the sessions" {
     var fx: Fx = undefined;
     try fx.init();
@@ -243,8 +297,15 @@ test "checkpoints: random agent applies and user edits on other lines restore ex
             };
             try fx.disk.put("f.txt", try std.mem.concat(a, u8, &lines), false);
         }
+        const before = try std.mem.concat(a, u8, &lines);
         const r = try fx.cps.restoreTo(a, cp, .{});
         try testing.expectEqual(@as(usize, 0), r.conflicts.len);
         try fx.expectDisk("f.txt", try std.mem.concat(a, u8, &want));
+        // Redo right away gives back exactly what was there.
+        if (r.record) |id| {
+            const rd = try fx.cps.redo(a, id, .{});
+            try testing.expectEqual(@as(usize, 0), rd.conflicts.len);
+        }
+        try fx.expectDisk("f.txt", before);
     }
 }

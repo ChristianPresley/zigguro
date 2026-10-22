@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const ids = @import("ids.zig");
+const changeset = @import("changeset.zig");
 
 const Allocator = std.mem.Allocator;
 const BlobHash = ids.BlobHash;
@@ -30,10 +31,16 @@ pub const ApplyFile = struct {
     post_exec: bool = false,
 };
 
+/// A changeset a restore closed, with its state before (for redo).
+pub const Closed = struct {
+    cs: ChangesetId,
+    from: changeset.State,
+};
+
 pub const ApplyKind = enum(u8) {
     /// Accepted hunks or files landed.
     apply,
-    /// An earlier apply was reverted (`undoes`).
+    /// An earlier apply was reverted, or a restore redone (`undoes`).
     undo,
     /// Files went back to a checkpoint.
     restore,
@@ -50,6 +57,8 @@ pub const Apply = struct {
     session: ?u128 = null,
     created_ms: i64,
     files: []const ApplyFile,
+    /// A restore: the changesets it closed.
+    closed: []const Closed = &.{},
 };
 
 /// Journals new records.
@@ -140,6 +149,7 @@ pub const History = struct {
         }
         var c = a;
         c.files = files;
+        c.closed = try ar.dupe(Closed, a.closed);
         return c;
     }
 };

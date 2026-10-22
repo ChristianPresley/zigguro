@@ -3,7 +3,8 @@
 //! Changeset: `open_batch → pending` at commit; `pending → partially_applied
 //! | applied | rejected | superseded | discarded`; `partially_applied →
 //! applied | rejected`; `applied → pending` only through "undo accept".
-//! `superseded` and `discarded` are terminal.
+//! `superseded` and `discarded` are terminal, except that redoing a
+//! checkpoint restore puts back the changesets it closed (`revive`).
 //!
 //! File: decisions move a file between `pending`, `partially_applied`,
 //! `applied` and `rejected` (and back, for undo). Rebase marks it
@@ -54,6 +55,15 @@ pub fn transition(cs: *Changeset, to: State) TransitionError!void {
         std.debug.assert(false);
         return error.InvalidTransition;
     }
+    cs.state = to;
+}
+
+/// Redo of a checkpoint restore: a changeset the restore closed goes back
+/// to the state it had (`discarded → pending`, `rejected →
+/// partially_applied`). Only for the changesets the restore record names.
+pub fn revive(cs: *Changeset, to: State) TransitionError!void {
+    const ok = (cs.state == .discarded and to == .pending) or (cs.state == .rejected and to == .partially_applied);
+    if (!ok) return error.InvalidTransition;
     cs.state = to;
 }
 
@@ -143,6 +153,18 @@ test "state: transition table exhaustive" {
         };
         try testing.expectEqual(want, allowed(from, to));
     };
+}
+
+test "state: revive only undoes what a restore closed" {
+    var cs: Changeset = .{ .id = @enumFromInt(1), .prov = undefined, .files = &.{}, .state = .discarded, .created_ms = 0 };
+    try revive(&cs, .pending);
+    try testing.expectEqual(State.pending, cs.state);
+    try testing.expectError(error.InvalidTransition, revive(&cs, .partially_applied));
+    cs.state = .rejected;
+    try testing.expectError(error.InvalidTransition, revive(&cs, .pending));
+    try revive(&cs, .partially_applied);
+    cs.state = .superseded;
+    try testing.expectError(error.InvalidTransition, revive(&cs, .pending));
 }
 
 test "state: file transitions" {
