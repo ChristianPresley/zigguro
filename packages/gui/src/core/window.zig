@@ -25,6 +25,7 @@ const event = @import("../input/event.zig");
 const hit_test = @import("../input/hit_test.zig");
 const keys_mod = @import("../input/keys.zig");
 const box = @import("../widgets/box.zig");
+const theme_mod = @import("../theme/theme.zig");
 
 const NodeId = ids.NodeId;
 const Rect = geom.Rect;
@@ -722,6 +723,12 @@ pub const Window = struct {
         .release = sinkRelease,
         .setCursor = sinkCursor,
         .nodeRect = sinkRect,
+        .relayout = sinkRelayout,
+        .textSystem = sinkText,
+        .theme = sinkTheme,
+        .clipboardGet = sinkClipGet,
+        .clipboardSet = sinkClipSet,
+        .nowMs = sinkNow,
     };
 
     fn sinkRespond(p: *anyopaque, n: NodeId, r: Response) void {
@@ -752,6 +759,31 @@ pub const Window = struct {
     fn sinkRect(p: *anyopaque, n: NodeId) Rect {
         const w: *Window = @ptrCast(@alignCast(p));
         return w.store.absRect(n);
+    }
+    fn sinkRelayout(p: *anyopaque, n: NodeId) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.store.markLayout(n);
+        w.needs_frame = true;
+    }
+    fn sinkText(p: *anyopaque) text.TextSystem {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.text_sys;
+    }
+    fn sinkTheme(p: *anyopaque) *const theme_mod.Theme {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.theme;
+    }
+    fn sinkClipGet(p: *anyopaque) []const u8 {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.clipboard.get();
+    }
+    fn sinkClipSet(p: *anyopaque, s: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        w.app.clipboard.set(w.gpa, s);
+    }
+    fn sinkNow(p: *anyopaque) u64 {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return w.app.now_ms;
     }
 
     /// Delivers `ev` along the path root → `target` (capture) and back
