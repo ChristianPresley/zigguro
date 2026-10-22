@@ -2,13 +2,17 @@
 //! With an embedded payload it installs or upgrades; the helper copy in
 //! `app\` (no payload) uninstalls and applies updates. See args.zig for
 //! the command line and exit codes. Progress and errors go to
-//! `%TEMP%\zigguro-setup.log`, appended in every mode.
+//! `%TEMP%\zigguro-setup.log`, appended in every mode, and those of
+//! `--apply` also to `<state>\update\apply.log`.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const zg_install = @import("zg_install");
 const zg_config = @import("zg_config");
+const zg_crash = @import("zg_crash");
+const zg_update = @import("zg_update");
+const apply = @import("apply.zig");
 const args_mod = @import("args.zig");
 const install = @import("install.zig");
 const payload = @import("payload.zig");
@@ -31,7 +35,7 @@ fn run(init: std.process.Init) Exit {
     const io = init.io;
     const arena = init.arena.allocator();
     var log_buf: [1024]u8 = undefined;
-    var log = Log.open(io, init.environ_map, &log_buf);
+    var log = Log.openTemp(io, init.environ_map, &log_buf);
     defer log.close(io);
 
     const argz = init.minimal.args.toSlice(arena) catch return .io_failure;
@@ -44,10 +48,7 @@ fn run(init: std.process.Init) Exit {
     return switch (cmd) {
         .install => |i| runInstall(gpa, io, arena, init.environ_map, i, &log),
         .uninstall => |u| if (u.stage2) uninstallStage2(gpa, io, arena, init.environ_map, u, &log) else uninstallStage1(io, arena, init.environ_map, u, &log),
-        .apply => {
-            log.line("{t}: not available in this build", .{cmd});
-            return .bad_arguments;
-        },
+        .apply => |a| runApply(gpa, io, arena, init.minimal.environ, a, &log),
     };
 }
 
@@ -100,8 +101,76 @@ fn runInstall(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, env: *co
     const ms = t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
     log.line("done in {d} ms{s}", .{ ms, if (out.upgraded) " (upgrade)" else "" });
 
-    if (!a.silent and a.launch) launch(io, arena, root, log);
+    if (!a.silent and a.launch) launch(io, arena, root, &.{}, log);
     return .ok;
+}
+
+/// Tells the relaunched app that the helper ran but `app\` did not change.
+const update_skipped = "--update-skipped";
+
+/// The update helper: waits for the app to exit, swaps in the staged
+/// version (or rolls back), then relaunches the app.
+fn runApply(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, environ: std.process.Environ, a: args_mod.Apply, temp_log: *Log) Exit {
+    var state_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const state = zg_crash.paths.stateDir(environ, &state_buf);
+    var log_buf: [1024]u8 = undefined;
+    var own_log: ?Log = if (state) |s| open: {
+        const dir = std.fs.path.join(arena, &.{ s, zg_update.boot_health.dir_name }) catch break :open null;
+        Io.Dir.cwd().createDirPath(io, dir) catch break :open null;
+        const path = std.fs.path.join(arena, &.{ dir, "apply.log" }) catch break :open null;
+        const l = Log.open(io, path, &log_buf);
+        break :open if (l.file != null) l else null;
+    } else null;
+    defer if (own_log) |*l| l.close(io);
+    const log = if (own_log) |*l| l else temp_log;
+    const mode: apply.Mode = if (a.rollback) .rollback else .apply;
+    log.line("{t}: {s}, waiting for process {d}", .{ mode, a.root, a.wait_pid });
+
+    if (!win.waitForExit(a.wait_pid, 30_000)) {
+        log.line("process {d} did not exit", .{a.wait_pid});
+        return .app_running;
+    }
+    var extra: std.ArrayList([]const u8) = .empty;
+    if (a.relaunch) |tail| {
+        const parts = zg_install.win.cmdline.split(arena, tail) catch |err| {
+            log.line("--relaunch: {t}", .{err});
+            return .bad_arguments;
+        };
+        extra.appendSlice(arena, parts) catch return .io_failure;
+    }
+    // Another window still runs from `app\`: the update waits for the
+    // next start.
+    if (instance.exists(instance.app_mutex)) {
+        log.line("zigguro is still running; nothing applied", .{});
+        extra.append(arena, update_skipped) catch return .io_failure;
+        if (a.relaunch != null) launch(io, arena, a.root, extra.items, log);
+        return .app_running;
+    }
+
+    var root = Io.Dir.cwd().openDir(io, a.root, .{}) catch |err| {
+        log.line("open {s}: {t}", .{ a.root, err });
+        return .io_failure;
+    };
+    defer root.close(io);
+    const now: i64 = @intCast(@divFloor(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
+    const plan: apply.Plan = .{ .mode = mode, .state_path = state, .crash_report = a.crash_report };
+    var code: Exit = .ok;
+    // The app hands over again unless it sees one of these flags.
+    var flag: []const []const u8 = &.{update_skipped};
+    if (apply.run(gpa, arena, io, root, plan, .windows, now, log.writer())) |r| {
+        if (r.changed()) flag = arena.dupe([]const u8, &.{ switch (mode) {
+            .apply => "--updated-from",
+            .rollback => "--rolled-back-from",
+        }, r.from }) catch return .io_failure;
+        log.line("done: {s} -> {s}", .{ r.from, r.to });
+    } else |err| {
+        log.line("{t} failed: {t}", .{ mode, err });
+        code = .io_failure;
+    }
+    extra.appendSlice(arena, flag) catch return .io_failure;
+    // Relaunch whatever `app\` holds now, even after a failure.
+    if (a.relaunch != null) launch(io, arena, a.root, extra.items, log);
+    return code;
 }
 
 /// Uninstall, first stage: copy this helper to %TEMP% and start the copy,
@@ -210,24 +279,29 @@ fn scheduleSelfDelete(io: Io, arena: std.mem.Allocator, env: *const std.process.
     };
 }
 
-/// Starts `<root>\app\zigguro.exe` without waiting for it.
-fn launch(io: Io, arena: std.mem.Allocator, root: []const u8, log: *Log) void {
+/// Starts `<root>\app\zigguro.exe args...` without waiting for it.
+fn launch(io: Io, arena: std.mem.Allocator, root: []const u8, args: []const []const u8, log: *Log) void {
     const exe = std.fs.path.join(arena, &.{ root, "app", zg_install.win.registry.exe_name }) catch return;
-    _ = std.process.spawn(io, .{ .argv = &.{exe}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
+    const argv = std.mem.concat(arena, []const u8, &.{ &.{exe}, args }) catch return;
+    _ = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
         log.line("launch {s}: {t}", .{ exe, err });
     };
 }
 
-/// `%TEMP%\zigguro-setup.log`, appended; silently absent when it cannot
-/// be opened.
+/// A log file, appended; silently absent when it cannot be opened.
 const Log = struct {
     file: ?Io.File,
     w: Io.File.Writer = undefined,
 
-    fn open(io: Io, env: *const std.process.Environ.Map, buf: []u8) Log {
+    /// `%TEMP%\zigguro-setup.log`.
+    fn openTemp(io: Io, env: *const std.process.Environ.Map, buf: []u8) Log {
         const tmp = env.get("TEMP") orelse env.get("TMP") orelse env.get("TMPDIR") orelse return .{ .file = null };
         var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}{c}zigguro-setup.log", .{ tmp, std.fs.path.sep }) catch return .{ .file = null };
+        return open(io, path, buf);
+    }
+
+    fn open(io: Io, path: []const u8, buf: []u8) Log {
         const f = Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return .{ .file = null };
         var l: Log = .{ .file = f };
         l.w = f.writer(io, buf);
@@ -252,6 +326,7 @@ const Log = struct {
 };
 
 test {
+    _ = apply;
     _ = args_mod;
     _ = install;
     _ = @import("zipcheck.zig");
