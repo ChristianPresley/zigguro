@@ -124,6 +124,23 @@ pub const NodeCold = struct {
     /// Content-box size of the children from the last layout (the
     /// scrollable extent of a scroll container).
     content: geom.Size = .{},
+    /// A scroll container painted through a scroll layer: its state at
+    /// the last paint.
+    layer: ?ScrollLayerState = null,
+};
+
+/// What a scroll container's layer looked like when last painted.
+pub const ScrollLayerState = struct {
+    /// Window → content offset (scroll minus the viewport's position),
+    /// logical pixels.
+    k: geom.Vec2,
+    /// The scroll offset in whole physical pixels.
+    si: [2]i32,
+    /// The layer's wrap origin.
+    origin: [2]i32,
+    /// The layer's size, physical pixels.
+    size: [2]u32,
+    scale: f32,
 };
 
 /// Iterates a node's children in order.

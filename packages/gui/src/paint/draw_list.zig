@@ -28,6 +28,8 @@ comptime {
     std.debug.assert(@offsetOf(canvas_mod.GlyphQuad, "page") == @offsetOf(r2d.GlyphQuad, "page"));
     std.debug.assert(@offsetOf(canvas_mod.GlyphQuad, "format") == @offsetOf(r2d.GlyphQuad, "format"));
     std.debug.assert(@sizeOf(Color) == @sizeOf(r2d.Color));
+    std.debug.assert(@sizeOf(canvas_mod.PxRect) == @sizeOf(r2d.PxRect));
+    std.debug.assert(@offsetOf(canvas_mod.PxRect, "w") == @offsetOf(r2d.PxRect, "w"));
 }
 
 /// A `Canvas` that records into an `r2d.DrawList`.
@@ -56,6 +58,9 @@ pub const DrawListCanvas = struct {
         .popClip = popClip,
         .addDamage = addDamage,
         .end = end,
+        .beginScrollLayer = beginScrollLayer,
+        .endLayer = endLayer,
+        .drawLayer = drawLayer,
     };
 
     fn dl(p: *anyopaque) *r2d.DrawList {
@@ -115,6 +120,16 @@ pub const DrawListCanvas = struct {
     }
     fn image(p: *anyopaque, tex: canvas_mod.TextureId, dst: Rect, uv: Rect, tint: Color, radii: Radii) void {
         dl(p).image(@enumFromInt(@intFromEnum(tex)), rf(dst), rf(uv), col(tint), rr(radii));
+    }
+    fn beginScrollLayer(p: *anyopaque, id: u32, size: [2]u32, origin: [2]i32, damage: []const canvas_mod.PxRect) bool {
+        const d: [*]const r2d.PxRect = @ptrCast(damage.ptr);
+        return dl(p).beginScrollLayer(@enumFromInt(id), .{ .w = size[0], .h = size[1] }, origin, d[0..damage.len]);
+    }
+    fn endLayer(p: *anyopaque) void {
+        dl(p).endLayer();
+    }
+    fn drawLayer(p: *anyopaque, id: u32, dst: Rect, scroll_px: Vec2) void {
+        dl(p).drawLayer(@enumFromInt(id), rf(dst), .{ .x = scroll_px.x, .y = scroll_px.y }, 1);
     }
     fn pushClip(p: *anyopaque, r: Rect, radii: Radii) void {
         dl(p).pushClip(rf(r), rr(radii));
