@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     const new_name = b.option([]const u8, "name", "new-package: package name, e.g. zg_demo");
     const new_dir = b.option([]const u8, "dir", "new-package: directory under packages/, e.g. demo");
     const new_layer = b.option(u8, "layer", "new-package: layer number (see tools/pkgtool/layers.zon)");
+    const zig_version = b.option([]const u8, "zig-version", "zig-pin: Zig release to pin") orelse "0.16.0";
 
     const test_filters: []const []const u8 = if (test_filter) |t| b.dupeStrings(&.{t}) else &.{};
 
@@ -73,6 +74,13 @@ pub fn build(b: *std.Build) void {
     const pkgtool = addTool(b, "pkgtool", "tools/pkgtool/main.zig", test_filters, tools_test_step);
     const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, tools_test_step);
     const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, tools_test_step);
+    const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, tools_test_step);
+
+    const zig_pin = b.addRunArtifact(zig_verify);
+    zig_pin.setCwd(b.path("."));
+    zig_pin.addArgs(&.{ "pin", "--version", zig_version, "--out", ".github/zig-toolchain.txt" });
+    zig_pin.has_side_effects = true;
+    b.step("zig-pin", "Download, verify and pin the Zig toolchain (-Dzig-version=0.16.0)").dependOn(&zig_pin.step);
 
     const check_layers = b.addRunArtifact(pkgtool);
     check_layers.addArgs(&.{ "check-layers", "--root" });
