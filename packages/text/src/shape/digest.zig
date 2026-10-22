@@ -86,11 +86,17 @@ pub const SubAccel = struct {
     pair_classes: ?PairClasses = null,
 };
 
-/// Dense class tables of a PairPos format 2 subtable (one byte per glyph
-/// id below the face's glyph count).
+/// A PairPos format 2 subtable, parsed: its class tables dense (one byte
+/// per glyph id below the face's glyph count) and its records checked.
 pub const PairClasses = struct {
     first: []const u8,
     second: []const u8,
+    value_format1: u16,
+    value_format2: u16,
+    class1_count: u16,
+    class2_count: u16,
+    /// `class1_count * class2_count` records of the two value records.
+    records: []const u8,
 };
 
 /// Fonts with more glyphs than this keep searching the class definitions
@@ -100,8 +106,14 @@ pub const dense_class_limit = 1 << 14;
 fn pairClasses(a: Allocator, st: []const u8, num_glyphs: usize) Allocator.Error!?PairClasses {
     if (num_glyphs > dense_class_limit) return null;
     if ((readAt(u16, st, 0) catch return null) != 2) return null;
+    const vf1 = readAt(u16, st, 4) catch return null;
+    const vf2 = readAt(u16, st, 6) catch return null;
     const cd1 = lc.ClassDef.init(st, readAt(u16, st, 8) catch return null) catch return null;
     const cd2 = lc.ClassDef.init(st, readAt(u16, st, 10) catch return null) catch return null;
+    const n1 = readAt(u16, st, 12) catch return null;
+    const n2 = readAt(u16, st, 14) catch return null;
+    const rec_size = (@as(usize, @popCount(vf1 & 0xFF)) + @popCount(vf2 & 0xFF)) * 2;
+    const records = ot.reader.subLen(st, 16, @as(usize, n1) * n2 * rec_size) catch return null;
     const first = try a.alloc(u8, num_glyphs);
     const second = try a.alloc(u8, num_glyphs);
     if (!cd1.fill(u8, first) or !cd2.fill(u8, second)) {
@@ -109,7 +121,7 @@ fn pairClasses(a: Allocator, st: []const u8, num_glyphs: usize) Allocator.Error!
         a.free(first);
         return null;
     }
-    return .{ .first = first, .second = second };
+    return .{ .first = first, .second = second, .value_format1 = vf1, .value_format2 = vf2, .class1_count = n1, .class2_count = n2, .records = records };
 }
 
 /// A lookup with its subtables pre-resolved (HarfBuzz's accelerator).
