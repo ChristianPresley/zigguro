@@ -350,6 +350,7 @@ test "all glyphs of all TTF test fonts decode within header bounds" {
 
 const Golden = struct {
     font: []const u8,
+    coords: []const i16 = &.{},
     glyphs: []const struct { gid: u16, name: []const u8, path: []const u8 },
 };
 
