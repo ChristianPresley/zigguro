@@ -26,6 +26,8 @@ pub const session = @import("session/root.zig");
 pub const feedback = @import("feedback/root.zig");
 /// E09's review port: AI SCM proposals and lane landings as review items.
 pub const scm = @import("scm/root.zig");
+/// AI assist in the editor: inline edit by instruction.
+pub const assist = @import("assist/root.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
