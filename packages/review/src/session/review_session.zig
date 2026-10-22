@@ -150,6 +150,18 @@ pub const ReviewSession = struct {
         return s.q.get(s.files_.items[i].cs);
     }
 
+    /// File `i`'s text before and after its open changes, in `arena`
+    /// (a create's base is empty); null for a file without text.
+    pub fn texts(s: *const ReviewSession, arena: Allocator, i: u32) !?struct { base: []const u8, new: []const u8 } {
+        const fc = s.fileChange(i) orelse return null;
+        const t = switch (fc.content) {
+            .text => |*t| t,
+            else => return null,
+        };
+        const base: []const u8 = if (t.base) |b| try s.q.blobs.get(arena, b.hash) orelse return error.MissingBlob else "";
+        return .{ .base = base, .new = try t.edits.applyToSlice(arena, base) };
+    }
+
     /// The focused hunk, if any.
     pub fn hunk(s: *const ReviewSession) ?*const model.Hunk {
         const fc = s.fileChange(s.cursor.file) orelse return null;
