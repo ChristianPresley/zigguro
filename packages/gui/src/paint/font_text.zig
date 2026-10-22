@@ -213,17 +213,8 @@ pub const FontText = struct {
         };
         if (e.isEmpty()) return null;
         ft.atlas.touch(e.page, ft.frame);
-        const ps: f32 = @floatFromInt(ft.atlas.page_size);
-        const fx: f32 = @floatFromInt(e.x);
-        const fy: f32 = @floatFromInt(e.y);
-        const fw: f32 = @floatFromInt(e.w);
-        const fh: f32 = @floatFromInt(e.h);
-        return .{
-            .dst = .{ (ix + @as(f32, @floatFromInt(e.left))) / s, (by + @as(f32, @floatFromInt(e.top))) / s, fw / s, fh / s },
-            .uv = .{ fx / ps, fy / ps, (fx + fw) / ps, (fy + fh) / ps },
-            .page = e.page,
-            .format = zg_text.cache.atlas.formatOf(e.format),
-        };
+        // The bitmap is pixel-exact: one texel per physical pixel.
+        return zg_text.cache.atlas.quadFor(e, ft.atlas.page_size, ix / s, by / s, 1 / s);
     }
 };
 
