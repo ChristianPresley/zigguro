@@ -1,0 +1,12 @@
+# The counter example: buttons, a checkbox and the status text.
+open Counter start=2
+expect role=text name="Count: 2"
+click role=button name="Increment"
+click role=button name="Increment"
+expect role=text name~="4"
+expect role=checkbox name="Enabled" checked
+click role=checkbox name="Enabled"
+expect role=checkbox name="Enabled" unchecked
+expect role=button name="Increment" disabled
+expect role=button count=2
+snapshot semantics "counter"
