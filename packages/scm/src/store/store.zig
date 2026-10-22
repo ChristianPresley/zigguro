@@ -59,6 +59,9 @@ pub const Segment = struct {
     index_file: MappedFile,
     index: seg.SegmentIndex,
     refs: std.atomic.Value(u32),
+    /// Set by `Store.retire` when the files could not be deleted while
+    /// mapped (Windows): the last release unmaps them, then deletes them.
+    doomed_by: ?*Store = null,
 
     /// Maps `<stem>.zgs` and `<stem>.zgi` in `dir` and checks that they
     /// belong together. Does not hash the index (fsck does).
@@ -94,6 +97,7 @@ pub const Segment = struct {
         if (s.refs.fetchSub(1, .acq_rel) != 1) return;
         s.data.close(s.gpa, s.io);
         s.index_file.close(s.gpa, s.io);
+        if (s.doomed_by) |store| store.reap(s.stem);
         s.gpa.free(s.stem);
         s.gpa.destroy(s);
     }
@@ -169,6 +173,9 @@ pub const Store = struct {
     pin_mutex: std.Io.Mutex = .init,
     /// Pinned IDs with counts; GC treats them as roots.
     pins: std.AutoHashMapUnmanaged(ObjectId, u32) = .empty,
+    /// Retired segments still mapped here, whose files could not be
+    /// deleted yet; rescans skip them. Guarded by `lock`.
+    doomed: std.StringHashMapUnmanaged(void) = .empty,
 
     /// Opens (creating if needed) the store rooted at `dir`. Maps every
     /// published segment; nothing beyond headers is parsed.
@@ -187,6 +194,7 @@ pub const Store = struct {
     /// Unmaps everything. Every `ObjectRef` must have been released.
     pub fn close(s: *Store) void {
         s.pins.deinit(s.gpa);
+        s.doomed.deinit(s.gpa);
         for (s.segments.items) |sg| sg.release();
         s.segments.deinit(s.gpa);
         s.cache.deinit();
@@ -237,7 +245,16 @@ pub const Store = struct {
         }
 
         s.lock.lockSharedUncancelable(s.io);
-        const old = try gpa.dupe(*Segment, s.segments.items);
+        const old = gpa.dupe(*Segment, s.segments.items) catch |e| {
+            s.lock.unlockShared(s.io);
+            return e;
+        };
+        var k: usize = 0;
+        while (k < stems.items.len) {
+            if (s.doomed.contains(stems.items[k])) {
+                gpa.free(stems.swapRemove(k));
+            } else k += 1;
+        }
         s.lock.unlockShared(s.io);
         defer gpa.free(old);
 
@@ -414,11 +431,15 @@ pub const Store = struct {
         gpa.free(segs);
     }
 
-    /// Removes `old` from the store and deletes their files, index first so
-    /// the segment is unpublished before its data goes. A file that cannot
-    /// be deleted yet (still mapped on Windows) is left for the next GC.
+    /// Removes `old` (which the caller holds references to) from the store
+    /// and deletes their files, index first so the segment is unpublished
+    /// before its data goes. Where a mapped file cannot be deleted
+    /// (Windows), the deletion waits for the segment's last release here;
+    /// a file another process still maps is left for a later GC.
     pub fn retire(s: *Store, old: []const *Segment) void {
         s.lock.lockUncancelable(s.io);
+        var mine: std.ArrayList(*Segment) = .empty;
+        defer mine.deinit(s.gpa);
         var i: usize = 0;
         while (i < s.segments.items.len) {
             const sg = s.segments.items[i];
@@ -427,16 +448,44 @@ pub const Store = struct {
             } else false;
             if (gone) {
                 _ = s.segments.orderedRemove(i);
-                sg.release();
+                // Our reference moves to `mine` until the files are dealt with.
+                mine.append(s.gpa, sg) catch sg.release();
             } else i += 1;
         }
         s.lock.unlock(s.io);
-        for (old) |sg| {
-            var nb: [64]u8 = undefined;
-            s.seg_dir.deleteFile(s.io, std.fmt.bufPrint(&nb, "{s}.zgi", .{sg.stem}) catch continue) catch {};
-            s.seg_dir.deleteFile(s.io, std.fmt.bufPrint(&nb, "{s}.zgs", .{sg.stem}) catch continue) catch {};
+        for (mine.items) |sg| {
+            if (!s.deleteFiles(sg.stem)) {
+                s.lock.lockUncancelable(s.io);
+                const doomed = s.doomed.put(s.gpa, sg.stem, {});
+                s.lock.unlock(s.io);
+                if (doomed) |_| sg.doomed_by = s else |_| {}
+            }
+            sg.release();
         }
         s.bumpGen();
+    }
+
+    /// Deletes a segment's index, then (only once that is gone) its data.
+    /// False when the index could not be deleted.
+    fn deleteFiles(s: *Store, stem: []const u8) bool {
+        var nb: [64]u8 = undefined;
+        const zgi = std.fmt.bufPrint(&nb, "{s}.zgi", .{stem}) catch return true;
+        s.seg_dir.deleteFile(s.io, zgi) catch |e| switch (e) {
+            error.FileNotFound => {},
+            else => return false,
+        };
+        const zgs = std.fmt.bufPrint(&nb, "{s}.zgs", .{stem}) catch return true;
+        // A data file without an index is garbage GC removes later.
+        s.seg_dir.deleteFile(s.io, zgs) catch {};
+        return true;
+    }
+
+    /// Called by a doomed segment's last release, after it unmapped.
+    fn reap(s: *Store, stem: []const u8) void {
+        _ = s.deleteFiles(stem);
+        s.lock.lockUncancelable(s.io);
+        defer s.lock.unlock(s.io);
+        _ = s.doomed.remove(stem);
     }
 
     /// Number of published segments currently mapped.
