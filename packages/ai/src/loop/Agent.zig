@@ -47,6 +47,9 @@ pub const Config = struct {
     auto_continue: bool = true,
     /// `ai.refusalFallbackModel`.
     refusal_fallback: ?[]const u8 = null,
+    /// The session id of a top-level agent (a resumed or forked session);
+    /// generated when null. Ignored for subagents.
+    session: ?proto.SessionId = null,
 };
 
 pub const Deps = struct {
@@ -59,7 +62,12 @@ pub const Deps = struct {
     hooks: ?dp.Hooks = null,
     ledger: ?*ledger.CostLedger = null,
     estimator: ?*estimate.TokenEstimator = null,
+    /// E12 checkpoints taken at the start of each user turn.
+    checkpoints: ?dp.Checkpoints = null,
 };
+
+/// A checkpoint and the sequence number of its event.
+pub const CheckpointMark = struct { seq: u64, id: u64 };
 
 /// An immutable view of the agent's state.
 pub const Snapshot = struct {
@@ -81,6 +89,10 @@ deps: Deps,
 /// Owns the transcript and event payloads; written only by the turn task.
 arena: std.heap.ArenaAllocator,
 transcript: std.ArrayList(proto.Message) = .empty,
+/// The bus (and session record) sequence number of each transcript message.
+seqs: std.ArrayList(u64) = .empty,
+/// E12 checkpoints taken at the start of user turns, oldest first.
+checkpoints: std.ArrayList(CheckpointMark) = .empty,
 bus: busm.Bus,
 
 /// Guards the fields below.
@@ -242,6 +254,63 @@ pub fn messages(a: *Agent) []const proto.Message {
     a.mutex.lockUncancelable(a.io);
     defer a.mutex.unlock(a.io);
     return a.transcript.items;
+}
+
+/// The sequence number of transcript message `i` (0 when unknown).
+pub fn messageSeq(a: *Agent, i: usize) u64 {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    return if (i < a.seqs.items.len) a.seqs.items[i] else 0;
+}
+
+/// Replaces the transcript (resume, rewind, compaction) with deep copies
+/// of `msgs`, whose sequence numbers are `seqs`. Numbering continues
+/// after `last_seq`. Only while the agent is idle.
+pub fn setTranscript(a: *Agent, msgs: []const proto.Message, seqs: []const u64, last_seq: u64) (error{Busy} || Allocator.Error)!void {
+    std.debug.assert(msgs.len == seqs.len);
+    const ar = a.arena.allocator();
+    const copy = try ar.alloc(proto.Message, msgs.len);
+    for (msgs, copy) |m, *c| c.* = try proto.json.cloneMessage(ar, m);
+    {
+        a.mutex.lockUncancelable(a.io);
+        defer a.mutex.unlock(a.io);
+        if (a.running) return error.Busy;
+        a.transcript.clearRetainingCapacity();
+        try a.transcript.appendSlice(ar, copy);
+        a.seqs.clearRetainingCapacity();
+        try a.seqs.appendSlice(ar, seqs);
+    }
+    // The bus lock is never taken under the agent lock.
+    a.bus.startAt(last_seq);
+}
+
+/// Replaces the known checkpoints (a resume).
+pub fn setCheckpoints(a: *Agent, marks: []const CheckpointMark) Allocator.Error!void {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    a.checkpoints.clearRetainingCapacity();
+    try a.checkpoints.appendSlice(a.arena.allocator(), marks);
+}
+
+/// The latest checkpoint taken before sequence number `seq`.
+pub fn checkpointBefore(a: *Agent, seq: u64) ?CheckpointMark {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    var best: ?CheckpointMark = null;
+    for (a.checkpoints.items) |c| if (c.seq < seq and (best == null or c.seq > best.?.seq)) {
+        best = c;
+    };
+    return best;
+}
+
+/// Drops the transcript from message `len` on (a conversation rewind).
+/// Only while the agent is idle.
+pub fn truncate(a: *Agent, len: usize) error{Busy}!void {
+    a.mutex.lockUncancelable(a.io);
+    defer a.mutex.unlock(a.io);
+    if (a.running) return error.Busy;
+    a.transcript.items.len = @min(a.transcript.items.len, len);
+    a.seqs.items.len = @min(a.seqs.items.len, len);
 }
 
 /// Registers a subagent for `cancel(.everything)`.
