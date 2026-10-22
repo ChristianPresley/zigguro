@@ -46,6 +46,7 @@ const ApprovalsInbox = @import("review/approvals_view.zig").ApprovalsInbox;
 const PaneApprovals = @import("agent/pane_approvals.zig").PaneApprovals;
 const file_sync = @import("file_sync.zig");
 const FileSync = file_sync.FileSync;
+const diff_model = zg_editor.model.diff.diff_model;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -170,6 +171,9 @@ pub const Workbench = struct {
         syntax: ?*DocumentSyntax,
         /// The document's file on disk (null: untitled).
         sync: ?*FileSync = null,
+        /// The document against the file's text, for the gutter's SCM
+        /// bar (null: not read from disk).
+        diff: ?*diff_model.DiffModel = null,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -255,8 +259,16 @@ pub const Workbench = struct {
             const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
             f.sync = sync;
-            if (loaded != null) wb.persistUndo(sync, p, bytes);
+            if (loaded != null) {
+                wb.persistUndo(sync, p, bytes);
+                if (diff_model.DiffModel.init(gpa, wb.rt, f.doc.snapshot(), f.doc, .{})) |m| {
+                    f.diff = m;
+                    sync.diff = m;
+                    f.view.scm = .of(m);
+                } else |e| log.warn("diff of {s}: {t}", .{ p, e });
+            }
         }
+        errdefer if (f.diff) |m| m.deinit();
         errdefer if (f.sync) |x| x.destroy();
         if (wb.langs.detect(f.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
             const sx = try gpa.create(DocumentSyntax);
@@ -270,6 +282,7 @@ pub const Workbench = struct {
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
         if (f.sync) |x| x.destroy();
+        if (f.diff) |m| m.deinit();
         f.view.deinit();
         if (f.syntax) |sx| {
             sx.deinit();
@@ -653,6 +666,9 @@ pub const Workbench = struct {
             f.view.on_change = null;
             f.view.on_caret = null;
         }
+        if (w.app.on_message) |h| if (h.ctx == @as(*anyopaque, wb)) {
+            w.app.on_message = null;
+        };
         wb.win = null;
     }
 
@@ -705,6 +721,7 @@ pub const Workbench = struct {
             wb.approvals_inbox = inb;
         } else |e| log.err("approvals inbox: {t}", .{e});
         wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
+        if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
             wb.persister = .{ .gpa = wb.gpa, .io = wb.io, .app = win.app, .dir = dir, .source = .{ .ctx = wb, .snapshot = layoutSnapshot }, .win = win };
@@ -820,6 +837,18 @@ pub const Workbench = struct {
     /// gains focus, and with the review poll while the agent runs).
     fn checkFiles(wb: *Workbench) void {
         for (wb.files.items) |f| if (f.sync) |fs| fs.check() catch {};
+    }
+
+    /// Mailbox messages for the workbench's models: a DiffModel's full
+    /// diff finished (ignored when its file closed meanwhile).
+    fn onAppMessage(ctx: *anyopaque, _: *zg_gui.App, msg: zg_core.runtime.UiMsg) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (msg.kind != diff_model.ui_msg_kind) return;
+        for (wb.files.items) |f| if (f.diff) |m| if (@intFromPtr(m) == msg.a) {
+            m.completeFull() catch |e| log.warn("diff: {t}", .{e});
+            if (wb.win) |w| w.markAllDirty();
+            return;
+        };
     }
 
     fn onFileSync(ctx: *anyopaque, fs: *FileSync, o: file_sync.Outcome) void {
@@ -1441,4 +1470,43 @@ test "workbench: undo history survives the session" {
         try std.testing.expect(u.canUndo());
         try std.testing.expect(u.isAtSaved());
     }
+}
+
+test "workbench: the gutter shows edits against the file" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.txt" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    const m = wb.files.items[0].diff.?;
+    // The full diff's message, as the mailbox would deliver it.
+    Workbench.onAppMessage(&wb, &t.app, .{ .kind = diff_model.ui_msg_kind, .a = @intFromPtr(m) });
+    try std.testing.expect(!m.fullPending());
+    try std.testing.expect(wb.view.scm != null);
+    try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+    _ = t.settle();
+    t.typeText("x");
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 1), m.hunks().len);
+    try wb.save();
+    _ = t.settle();
+    Workbench.onAppMessage(&wb, &t.app, .{ .kind = diff_model.ui_msg_kind, .a = @intFromPtr(m) });
+    try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
 }
