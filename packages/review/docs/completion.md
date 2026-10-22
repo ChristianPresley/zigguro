@@ -1,8 +1,8 @@
-# Completion context
+# Completion
 
 `zg_review.assist.complete` (E12.F07.S01.T02) builds the request for a
-ghost-text completion. The scheduler (#940), the provider adapters (#944)
-and the ghost-text controller (#946) build on it.
+ghost-text completion. The provider adapters (#944) and the ghost-text controller (#946) build
+on the request builder and the scheduler.
 
 ## Request
 
@@ -65,8 +65,60 @@ CodeGemma. Providers that apply the template on the server (llama.cpp
 `/infill`, Ollama `suffix`) take the structured fields and need no
 template.
 
+## Scheduling
+
+`Scheduler` (E12.F07.S01.T01) decides when to ask. It has no clock of its
+own: the host reports edits, cursor moves, invokes and accepts, each with
+the current time. The host arms one timer from `nextDeadline` and calls
+`poll` when that timer fires. Tests drive it with a virtual clock.
+
+- **Triggers.** A user edit that inserts at most 64 bytes with one caret
+  triggers. So does a cursor move on the same line within a second of an
+  edit, an explicit invoke (fires at once), and a speculative request
+  right after an accept.
+  - Undo, redo, agent and LSP edits, larger pastes and multi-cursor edits
+    never trigger. They drop a pending trigger and cancel the request in
+    flight.
+- **Debounce.** The debounce is `clamp(min(debounce, 0.8 × ewma),
+  min_debounce, debounce)`, where `ewma` tracks the gaps between
+  keystrokes. Gaps over 2 s are pauses and do not count.
+- **Single flight.** Each document has at most one request in flight.
+  `typed` decides what happens when the user types while a request
+  streams:
+  - The request is kept when the typed bytes are how its answer starts
+    (`keep = n`: hide the first `n` bytes).
+  - It is cancelled otherwise, when the user has typed past what has
+    streamed, and always when it is speculative.
+  - `finished` returns null for a result that a later request replaced.
+- **Gate.** `gate` gives the first reason not to ask, cheapest check first:
+  1. policy exclusion
+  2. language, then glob
+  3. snooze
+  4. multiple carets
+  5. a selection
+  6. IME composition
+  7. the LSP popup (unless the ghost text wins)
+  8. read-only
+  9. documents over 10 MB
+  10. mid-word: an identifier character after the cursor, or other
+      non-closing text when the provider cannot fill in the middle. An
+      explicit invoke skips this check.
+
+Once a document is open, a keystroke allocates nothing.
+
+`Cache` holds up to 512 finished completions in 4 MiB, least recently
+used first out. Its keys are the document, the model, and XxHash3 hashes
+of the last 2 KiB of prefix and the first 256 bytes of suffix. `extend`
+serves the rest of a cached completion that the user typed through after
+dismissing it. `invalidateDoc` clears a document's completions after a
+non-typing edit.
+
 ## Bench
 
 `review.complete.build_request_100k` builds a request in the middle of a
 100,000-line file, with 20 neighbour documents of 2,000 lines each. The
 budget is under 2 ms.
+
+`review.complete.scheduler_10k_keys` runs 10,000 keystrokes through the
+scheduler. It covers the UI thread's share of the time from keystroke to
+request.
