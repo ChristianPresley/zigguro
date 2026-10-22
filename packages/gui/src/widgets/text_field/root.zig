@@ -11,6 +11,8 @@ pub const undo = @import("undo.zig");
 pub const commands = @import("commands.zig");
 /// The `ime.zig` module.
 pub const ime = @import("ime.zig");
+/// The `prompt_hooks.zig` module.
+pub const prompt_hooks = @import("prompt_hooks.zig");
 /// The `view.zig` module.
 pub const view = @import("view.zig");
 
@@ -22,6 +24,8 @@ pub const Selection = model.Selection;
 pub const TextField = view.TextField;
 /// See `view.ImeHooks`.
 pub const ImeHooks = view.ImeHooks;
+/// See `prompt_hooks.PromptHooks`.
+pub const PromptHooks = prompt_hooks.PromptHooks;
 /// See `view.textField`.
 pub const textField = view.textField;
 

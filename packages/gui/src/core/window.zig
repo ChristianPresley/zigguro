@@ -1320,6 +1320,8 @@ pub const Window = struct {
         .theme = sinkTheme,
         .clipboardGet = sinkClipGet,
         .clipboardSet = sinkClipSet,
+        .primaryGet = sinkPrimaryGet,
+        .primarySet = sinkPrimarySet,
         .nowMs = sinkNow,
         .setIme = sinkIme,
         .allocator = sinkGpa,
@@ -1374,6 +1376,14 @@ pub const Window = struct {
     fn sinkClipSet(p: *anyopaque, s: []const u8) void {
         const w: *Window = @ptrCast(@alignCast(p));
         w.app.clipboard.set(w.gpa, s);
+    }
+    fn sinkPrimaryGet(p: *anyopaque) ?[]const u8 {
+        const w: *Window = @ptrCast(@alignCast(p));
+        return if (w.app.has_primary) w.app.primary.get() else null;
+    }
+    fn sinkPrimarySet(p: *anyopaque, s: []const u8) void {
+        const w: *Window = @ptrCast(@alignCast(p));
+        if (w.app.has_primary) w.app.primary.set(w.gpa, s);
     }
     fn sinkIme(p: *anyopaque, n: NodeId, r: ?event.ImeRequest) void {
         const w: *Window = @ptrCast(@alignCast(p));
