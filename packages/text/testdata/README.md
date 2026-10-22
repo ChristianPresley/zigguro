@@ -65,6 +65,19 @@ with `zg_text` points at a bug in one of them. `zig build` never runs it.
   line by line.
 - Regenerate `zg_core.testkit.golden` files with `zig build test-text -Dupdate-golden`.
 
+## Outline goldens
+
+`golden/glyf/*.zon` hold fontTools `BasePen` paths for selected glyphs (the
+`Path.format` grammar), written by `provenance/gen_outline_golden.py`:
+
+```
+python3 testdata/provenance/gen_outline_golden.py testdata/fonts/FiraCode-Regular.ttf A a g O at ampersand zero Adieresis uni0123 Aacute > testdata/golden/glyf/FiraCode-Regular.zon
+```
+
+The exact command for each file is in its header. Tests compare
+coordinates within 1/64 unit. For a full check, diff
+`gen_outline_golden.py --all <font>` against `zig build text-dump -- outline <font> all`.
+
 ## text-dump
 
 From `packages/text`:
