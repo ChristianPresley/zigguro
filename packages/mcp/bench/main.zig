@@ -37,6 +37,29 @@ fn register(b: *bench.Bench) !void {
     try b.run("protocol: decode tools/call result", {}, decodeCall);
     try b.run("protocol: encode tools/call request", {}, encodeCall);
     try registerSchema(b);
+    try registerClient(b);
+}
+
+/// Acceptance (E11.F03.S01.T01): connect overhead < 1 ms in-process. The
+/// scripted server's own work is included and is a few allocations.
+fn registerClient(b: *bench.Bench) !void {
+    var rt: zg_core.Runtime = undefined;
+    try rt.initBorrowed(b.gpa, b.io, 64);
+    defer _ = rt.deinit();
+    try b.run("client: connect in-process (modern)", &rt, connectInProcess);
+}
+
+fn connectInProcess(rt: *zg_core.Runtime, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var srv: zg_mcp.testing.MockServer = undefined;
+        srv.init(s.allocator(), rt.io, .modern);
+        const c = zg_mcp.client.Client.connect(rt, s.allocator(), .{ .in_process = &srv.pair }, .{
+            .client_info = .{ .name = "zigguro", .version = "0.0.0" },
+        }) catch unreachable;
+        bench.doNotOptimizeAway(c.serverInfo().revision);
+        c.close();
+        srv.deinit();
+    }
 }
 
 const schema = zg_mcp.schema;
