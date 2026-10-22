@@ -11,15 +11,19 @@
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
 //! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `agent.togglePane`
 //! (Ctrl+L), `workspace.manageTrust`, `editor.undo`, `editor.redo`,
-//! `editor.selectAll` and `workbench.toggleTheme`.
+//! `editor.selectAll`, `workbench.toggleTheme` and
+//! `workbench.floatingAlwaysOnTop`.
 //!
 //! The document lives in an E05 `DocumentRegistry`, so the agent pane's
 //! file tools read and edit it through the editor (agent/editor_files.zig)
-//! and their approvals come up as dialogs (agent/approvals.zig).
+//! and their approvals go to the approvals inbox at the top of the review
+//! queue (agent/approvals.zig, review/approvals_view.zig).
 //!
 //! Workspace trust is asked per session until the trust store
 //! (E16.F07.S01.T01) persists it; the status line shows Restricted Mode.
-//! `approvals` is the dialog ApprovalPort for consumers (agents, MCP);
+//! `approvals` is E12's `ApprovalBroker`, the ApprovalPort for consumers
+//! (agents, MCP): a request shows the review queue with its card, and
+//! while the window is unfocused a toast;
 //! `mcp_input` asks the user when an MCP server needs input mid-call.
 
 const std = @import("std");
@@ -38,6 +42,7 @@ const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
+const ApprovalsInbox = @import("review/approvals_view.zig").ApprovalsInbox;
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
@@ -115,7 +120,9 @@ pub const Workbench = struct {
     focus_terminal: bool = false,
     /// This session's trust in the working folder (until the trust store).
     trust: zg_security.contracts.TrustState = .unknown,
-    approvals: zg_security_ui.DialogApprovalPort = undefined,
+    approvals: zg_review.approvals.ApprovalBroker = undefined,
+    /// The approvals section of the review queue (from `attach`).
+    approvals_inbox: ?*ApprovalsInbox = null,
     /// Asks the user when an MCP server needs input during a call (from
     /// `attach`).
     mcp_input: McpInputDialogs = undefined,
@@ -581,6 +588,8 @@ pub const Workbench = struct {
         wb.agent = null;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
+        if (wb.approvals_inbox) |i| i.destroy();
+        wb.approvals_inbox = null;
         wb.approvals.deinit();
         wb.mcp_input.deinit();
         wb.palette.handle.close(w);
@@ -624,7 +633,13 @@ pub const Workbench = struct {
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
         for (wb.files.items) |f| f.view.on_change = .{ .ctx = wb, .f = onViewChange };
-        wb.approvals = .init(wb.gpa, wb.io, win);
+        wb.approvals = .init(wb.gpa, wb.io, .{});
+        if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
+            inb.win = win;
+            inb.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            inb.on_pending = .{ .ctx = wb, .f = onApprovalPending };
+            wb.approvals_inbox = inb;
+        } else |e| log.err("approvals inbox: {t}", .{e});
         wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
@@ -662,11 +677,13 @@ pub const Workbench = struct {
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
+        .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
         .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
+        .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -719,6 +736,12 @@ pub const Workbench = struct {
 
     fn selectAll(wb: *Workbench) !void {
         wb.view.selectAll();
+    }
+
+    fn toggleFloatOnTop(wb: *Workbench) !void {
+        const fl = if (wb.floater) |*fl| fl else return;
+        fl.setAlwaysOnTop(!fl.policy.always_on_top);
+        wb.notify(.info, "Floating windows {s}", .{if (fl.policy.always_on_top) "stay on top" else "no longer stay on top"});
     }
 
     fn toggleTheme(wb: *Workbench) !void {
@@ -774,7 +797,7 @@ pub const Workbench = struct {
     /// Creates the agent and its panel, once.
     fn startAgent(wb: *Workbench, w: *Window) !void {
         if (wb.agent_panel != null) return;
-        const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, wb.approvals.port());
+        const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, &wb.approvals);
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
         const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
@@ -826,8 +849,22 @@ pub const Workbench = struct {
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
         p.open_review = .{ .ctx = wb, .f = openReview };
+        p.inbox = wb.approvals_inbox;
         wb.review_panel = p;
         wb.review_timer = w.setTimer(w.app.now_ms + review_poll_ms, .{ .ctx = wb, .f = pollReview }) catch .none;
+    }
+
+    /// Shows the review queue, whose top lists the approvals.
+    pub fn showApprovals(wb: *Workbench) !void {
+        if (wb.shown(wb.review_ref) and wb.areaOf(wb.review_ref) != .center) return;
+        try wb.toggleReview();
+    }
+
+    /// A request waits for approval (UI thread).
+    fn onApprovalPending(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showApprovals() catch |e| log.err("approvals: cannot show the review queue: {t}", .{e});
+        if (wb.win) |w| w.markAllDirty();
     }
 
     /// Takes in what `zg review` or another window decided, then polls
@@ -1133,11 +1170,11 @@ pub const Workbench = struct {
         const head = wb.view.primarySel().head;
         const line = wb.view.lineOf(head);
         const col = head - wb.view.lineRange(line).start;
-        const pos = if (wb.view.sels.items.len > 1)
-            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.sels.items.len }) catch ""
+        const pos = if (wb.view.selections().len > 1)
+            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [7]zg_gui.w.StatusItem = undefined;
+        var items: [8]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -1149,6 +1186,12 @@ pub const Workbench = struct {
         }
         if (wb.syntax) |sx| {
             items[n] = .{ .id = "language", .text = sx.lang.name, .side = .right, .priority = 50 };
+            n += 1;
+        }
+        var ab: [32]u8 = undefined;
+        const waiting = wb.approvals.pendingCount(.{});
+        if (waiting > 0) {
+            items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
             n += 1;
         }
         items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };

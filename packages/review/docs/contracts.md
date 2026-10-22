@@ -29,3 +29,13 @@ Rules:
 In the app, the `Files` seam implemented in
 `apps/zigguro/src/agent/editor_files.zig` is where this binds, together
 with the turn seams of #1356: `end_turn` commits the turn's batch.
+
+## E16 approvals through the broker (E12.F05.S02.T01)
+
+`zg_review.approvals.ApprovalBroker.approvalPort()` is E16's
+`contracts.ApprovalPort`, with no E12 copy of `ApprovalRequest` or
+`Answer`. Ids are `ApprovalId` values (`@intFromEnum` at the boundary).
+E06 and E10 put `cwd`, `terminal` (an integer id) and `shell` in
+`ApprovalRequest.detail_json` for command requests; `commandView` reads
+them. When an edited input still needs approval, the caller presents the
+new request with `presentChained(req, previous)`. See `approvals.md`.

@@ -11,6 +11,7 @@ const syntax = @import("zg_syntax");
 const pt = @import("buffer/piece_tree.zig");
 const document = @import("document.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
+const pairs = @import("edit/pairs.zig");
 
 const Allocator = std.mem.Allocator;
 const PieceTree = pt.PieceTree;
@@ -197,6 +198,36 @@ pub const DocumentSyntax = struct {
         var hb = ds.bracketSource(tree);
         defer ds.scratch = hb.scratch;
         try ds.brackets.applyEdits(text_edits, ds.retokenized.items, hb.source());
+    }
+};
+
+/// Token kinds of a document from its `DocumentSyntax`, for smart typing
+/// (pairs stay out of strings and comments). `tree` is the version the
+/// syntax reflects. At the end of a line only a comment counts: a string
+/// token there is closed or continues on the next line either way.
+pub const SyntaxTokens = struct {
+    ds: *DocumentSyntax,
+    tree: *const PieceTree,
+
+    pub fn query(s: *SyntaxTokens) pairs.TokenQuery {
+        return .{ .ptr = s, .kindAtFn = kindAt };
+    }
+
+    fn kindAt(ptr: *anyopaque, pos: u64) pairs.TokenKind {
+        const s: *SyntaxTokens = @ptrCast(@alignCast(ptr));
+        const lr = s.tree.lineRange(s.tree.lineOf(pos));
+        const line = s.tree.lineOf(pos);
+        s.ds.ensure(s.tree, line, line) catch return .code;
+        const toks = s.ds.hl.tokens(line);
+        const col = pos - lr.start;
+        var hl: syntax.HighlightId = .none;
+        for (toks) |t| {
+            if (t.start > col) break;
+            hl = t.hl;
+        }
+        const k = pairs.kindOf(hl);
+        if (pos >= lr.end and k != .comment) return .code;
+        return k;
     }
 };
 

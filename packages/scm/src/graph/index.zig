@@ -660,6 +660,8 @@ pub const CommitIndex = struct {
         std.mem.sort(ObjectId, ids, {}, ObjectId.lessThan);
         for (ids) |h| try b.visitFrom(h);
         try ix.publish(&b, true);
+        // Positions may have moved.
+        ix.walker.invalidate();
         ix.recovered = false;
     }
 

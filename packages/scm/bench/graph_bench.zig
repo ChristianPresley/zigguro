@@ -153,8 +153,11 @@ fn isAncestorP99(gpa: std.mem.Allocator, io: std.Io, ix: *scm.CommitIndex) !void
     var prng: std.Random.DefaultPrng = .init(5);
     const rng = prng.random();
     const n = ix.count();
-    // The first query builds the reverse edges; keep it out of the numbers.
+    // The first query builds the reverse edges and reachability labels;
+    // keep it out of the percentiles.
+    const t_first = now(io);
     _ = try ix.isAncestor(scm.Pos.of(0), scm.Pos.of(n - 1));
+    std.debug.print("graph.is_ancestor_p99 first query (builds labels): {d} ms\n", .{(now(io) - t_first) / std.time.ns_per_ms});
     for ([_][]const u8{ "near", "far" }, 0..) |label, kind| {
         const samples = try gpa.alloc(u64, 10_000);
         defer gpa.free(samples);

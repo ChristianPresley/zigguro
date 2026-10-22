@@ -1990,6 +1990,61 @@ Nothing is retained between calls.
 ### Stability
 Unstable until the F05 display map and the bracket tree replace the fallbacks.
 
+## zg_editor.model.edit smart typing (smart_edit, pairs, indent, comment)
+
+### Defined in
+`packages/editor/src/model/edit/{smart_edit.zig, pairs.zig, indent.zig, comment.zig}` and
+`SyntaxTokens` in `packages/editor/src/model/syntax.zig` (E05.F02.S03). Behaviour per language:
+`docs/editor/smart-typing.md`; goldens in `packages/editor/testdata/golden/smart_edit/`.
+
+### Implemented by
+E05.F02.S03.T01.
+
+### Consumed by
+`EditorView` and E15 keybindings (type, Enter, Backspace, `editor.toggleLineComment`,
+`editor.toggleBlockComment`), E05.F09 Vim/Emacs insert mode.
+
+### Signature
+```zig
+// smart_edit.zig
+pub const EditCtx = struct { lang: ?*const Language = null, tab_size: u8 = 4, insert_spaces: bool = true,
+    unit: ?IndentUnit = null, auto_close: AutoClose = .language_defined, tokens: ?TokenQuery = null,
+    auto_pairs: ?*AutoPairs = null, origin: EditOrigin = .{ .user = 0 } };
+pub fn typeChar(doc, sels, cp: u21, ctx: EditCtx) !RunResult;   // surround, overtype, auto-close, electric
+pub fn newline(doc, sels, ctx) !RunResult;                       // auto-indent, pair split
+pub fn deleteLeft(doc, sels, ctx, use_tab_stops: bool) !RunResult;
+pub fn toggleLineComment(doc, sels, ctx) !bool; pub fn toggleBlockComment(doc, sels, ctx) !bool;
+// pairs.zig
+pub const TokenKind = enum { code, string, comment, regex, char };
+pub const TokenQuery = struct { ptr: *anyopaque, kindAtFn: *const fn (*anyopaque, u64) TokenKind };
+pub const AutoClose = enum { always, language_defined, before_whitespace, never };
+pub const AutoPairs = struct { gpa: Allocator, ... };            // add, sync, has, remove, clear, deinit
+// indent.zig
+pub const IndentUnit = struct { tabs: bool, size: u8 };          // columns(ws, tab), write(cols, buf)
+pub fn guess(snap: *const Snapshot) ?IndentUnit;                  // first 1000 indented lines
+// syntax.zig
+pub const SyntaxTokens = struct { ds: *DocumentSyntax, tree: *const PieceTree };  // query() TokenQuery
+// runner.zig
+pub const Mapping = enum { keep, grow };
+pub fn applyEdits(doc, sels, edits: []const Replace, origin, mapping: Mapping) !bool;
+// Target gains `.at: u64` (a caret at a mapped old position).
+```
+`zg_syntax.language.EditRules` gains `surround` (pairs that wrap a selection, defaulting to
+`auto_close`) and `tag_pairs` (Enter between `<p>` and `</p>`); Python lists `dedent_on`
+keywords. `startsDedented` now requires keywords to end at a word boundary and always
+counts closers.
+
+### Threading
+Owner (UI) thread, with the Document. `SyntaxTokens.kindAt` may tokenize the queried line.
+
+### Ownership/lifetime
+`AutoPairs` is owned by the view (one per editor) and cleared on caret jumps; the rest
+borrows its inputs for one call.
+
+### Stability
+Unstable: embedded languages (script in HTML, code fences) use the host language's rules
+until the injection map is queryable by position.
+
 ## zg_editor.model.diff
 
 ### Defined in
@@ -3915,3 +3970,55 @@ rebuilt.
 
 ### Stability
 Unstable until the panel binds it.
+
+## zg_review.approvals (ApprovalBroker)
+
+### Defined in
+`packages/review/src/approvals/{broker.zig, inbox.zig}` (E12.F05.S02.T01); see `packages/review/docs/approvals.md`.
+
+### Implemented by
+E12.F05.S02.T01. Views: `apps/zigguro/src/review/{approval_card.zig, approvals_view.zig}` (E12.F05.S02.T02).
+
+### Consumed by
+E16 (`ApprovalPort`), E10's `ToolApprovals` in the IDE, the review queue panel's inbox, the status bar, `zg review approvals` (not yet).
+
+### Signature
+```zig
+pub const ApprovalBroker = struct {
+    pub fn init(gpa, io, o: Options{ timeout_ms = 0, id_base = 0, recorder: ?Recorder = null }) ApprovalBroker;
+    pub fn deinit(b) void;
+    pub fn bind(b, r: ?Recorder, id_base: u64) void;                // once the review store is open
+    pub fn approvalPort(b) zg_security.contracts.ApprovalPort;      // exactly E16's type
+    pub fn present(b, req: ApprovalRequest) !ApprovalId;            // created_ms 0 → now
+    pub fn presentChained(b, req, previous: ?ApprovalId) !ApprovalId;
+    pub fn await(b, id, io) Io.Cancelable!Answer;                   // Io cancellation cancels the request
+    pub fn answer(b, id, a: Answer, by: []const u8) error{ UnknownApproval, AlreadyAnswered, NotEditable, OutOfMemory }!void;
+    pub fn cancel(b, id) void;
+    pub fn expireDue(b, now_ms: i64) u32;
+    pub fn get(b, id) ?InboxItem;
+    pub fn list(b, arena, f: Filter{ session: ?[]const u8, answered = true }) ![]InboxItem;   // pending first, then oldest
+    pub fn pendingCount(b, f: Filter) usize;
+    pub fn addListener(b, l: InboxListener) !void;
+    pub fn removeListener(b, ctx: *anyopaque) void;
+    pub fn prune(b, before_ms: i64) u32;
+    pub fn restoreSink(b) RestoreSink;                              // QueueSink.approvals, load only
+};
+pub fn commandView(req: *const ApprovalRequest, arena) !?CommandView;   // line + cwd/terminal/shell from detail_json
+```
+Deviations from the spec text:
+- Tests live in `src/approvals/broker_test.zig` (a module cannot import
+  outside its folder).
+- No owner-thread posting: every call is mutex-guarded and listeners run
+  after the lock is released, on the calling thread.
+- The views live in apps/zigguro (no `zg_review_ui` module): the card,
+  not a `zg_gui.Widget`, is a build function plus a `CardState`.
+
+### Threading
+Any thread.
+
+### Ownership/lifetime
+Requests and answers are copied into each item's arena and stay valid
+until `prune` drops the item.
+
+### Stability
+Unstable until E10's agent pane embeds the card.

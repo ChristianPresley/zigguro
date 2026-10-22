@@ -15,6 +15,8 @@ pub const input = @import("input/root.zig");
 pub const paint = @import("paint/root.zig");
 /// Widgets.
 pub const w = @import("widgets/root.zig");
+/// Virtualised trees and tables.
+pub const virtual = @import("virtual/root.zig");
 /// Design tokens and themes.
 pub const theme = @import("theme/root.zig");
 /// Docking: the workbench layout model.
@@ -68,4 +70,6 @@ test {
     _ = @import("core/ui_state.zig");
     _ = @import("testing/script_test.zig");
     _ = @import("widgets/quick_pick_test.zig");
+    _ = @import("virtual/flat_tree.zig");
+    _ = @import("virtual/tree_view_test.zig");
 }

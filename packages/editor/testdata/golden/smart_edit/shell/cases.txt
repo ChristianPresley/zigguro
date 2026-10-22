@@ -1,0 +1,90 @@
+=== enter between braces
+--- before
+f() {¦}
+--- keys
+<enter>
+--- after
+f() {
+    ¦
+}
+
+=== then block
+--- before
+if x; then¦
+--- keys
+<enter>y
+--- after
+if x; then
+    y¦
+
+=== do block
+--- before
+for i in a; do¦
+--- keys
+<enter>echo
+--- after
+for i in a; do
+    echo¦
+
+=== fi dedents
+--- before
+if x; then
+    y
+    ¦
+--- keys
+fi<enter>
+--- after
+if x; then
+    y
+fi
+¦
+
+=== subshell
+--- before
+x=¦
+--- keys
+$(ls
+--- after
+x=$(ls¦)
+
+=== quote
+--- before
+echo ¦
+--- keys
+"hi
+--- after
+echo "hi¦"
+
+=== comment
+--- before
+«a
+b»
+--- keys
+<lc>
+--- after
+«# a
+# b»
+
+=== no autoclose in comment
+--- before
+# ¦
+--- keys
+(
+--- after
+# (¦
+
+=== surround
+--- before
+echo «a»
+--- keys
+"
+--- after
+echo "«a»"
+
+=== brackets test
+--- before
+if ¦
+--- keys
+[ -f x
+--- after
+if [ -f x¦]
