@@ -249,12 +249,34 @@ test "wordAt identifier with underscore" {
     try testing.expectEqual(@as(usize, 0), e.len);
 }
 
+/// Normalization invariants: every form is idempotent and NFC(NFD(x)) is
+/// NFC(x).
+fn checkNormalize(input: []const u8) !void {
+    const norm = @import("normalize.zig");
+    const gpa = testing.allocator;
+    for ([_]norm.Form{ .nfc, .nfd, .nfkc, .nfkd }) |form| {
+        const once = try norm.normalize(gpa, input, form);
+        defer gpa.free(once);
+        const twice = try norm.normalize(gpa, once, form);
+        defer gpa.free(twice);
+        try testing.expectEqualSlices(u8, once, twice);
+    }
+    const nfd = try norm.normalize(gpa, input, .nfd);
+    defer gpa.free(nfd);
+    const a = try norm.normalize(gpa, nfd, .nfc);
+    defer gpa.free(a);
+    const b = try norm.normalize(gpa, input, .nfc);
+    defer gpa.free(b);
+    try testing.expectEqualSlices(u8, b, a);
+}
+
 test "fuzz: unicode-segment" {
     try testing.fuzz({}, struct {
         fn one(_: void, s: *testing.Smith) anyerror!void {
             var buf: [200]u8 = undefined;
             const input = buf[0..s.slice(&buf)];
             try checkConsistency(input);
+            try checkNormalize(input);
         }
     }.one, .{ .corpus = @import("zg_core").testkit.fuzz.corpus(@import("zg_corpus"), "unicode-segment") });
 }
