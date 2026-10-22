@@ -221,8 +221,9 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.cache_screen", CacheCtx{ .cache = &cache, .keys = resident, .order = &screen, .frame = &frame }, cacheScreen);
 
     // Shaping with a warm shaper (plans built, buffers grown): 1000
-    // characters of Latin prose in Inter (GPOS kerning, marks), and one
-    // 200-column code line in JetBrains Mono (calt ligatures).
+    // characters of Latin prose in Inter (GPOS kerning, marks), one
+    // 200-column code line in JetBrains Mono (calt ligatures), and 1000
+    // characters of Arabic.
     const inter = try zg_text.ot.Face.init(fonts.data[2], 0);
     var inter_inst = try vt.FaceInstance.init(b.gpa, &inter, &.{});
     defer inter_inst.deinit(b.gpa);
@@ -237,6 +238,15 @@ fn register(b: *bench.Bench) !void {
     fill(&code, &.{ "if (a != b && c => d) { x = y->z; } ", "// TODO: <!-- www --> 0xFF ", "for (i = 0; i <= n; i++) ||| " });
     const code_plan = try shaper.plan(&jb_inst, .Latn, dflt, .ltr, &.{});
     try b.run("text.shape_code_line_200", ShapeCtx{ .shaper = &shaper, .plan = code_plan, .text = &code }, shapeText);
+    // 1000 characters of Arabic (joining forms, lam-alef, marks) in Noto
+    // Sans Arabic; the text is about 1000 code points of two bytes each.
+    const naskh = try zg_text.ot.Face.init(fonts.data[5], 0);
+    var naskh_inst = try vt.FaceInstance.init(b.gpa, &naskh, &.{});
+    defer naskh_inst.deinit(b.gpa);
+    var arabic_text: [2000]u8 = undefined;
+    fill(&arabic_text, &.{ "\u{628}\u{633}\u{645} \u{627}\u{644}\u{644}\u{647} \u{627}\u{644}\u{631}\u{62D}\u{645}\u{646} ", "\u{645}\u{64E}\u{631}\u{652}\u{62D}\u{64E}\u{628}\u{64B}\u{627} \u{644}\u{627} ", "\u{6A9}\u{62A}\u{627}\u{628} \u{6AF}\u{686}\u{6CC} " });
+    const arabic_plan = try shaper.plan(&naskh_inst, .Arab, dflt, .rtl, &.{});
+    try b.run("text.shape_arabic_1k", ShapeCtx{ .shaper = &shaper, .plan = arabic_plan, .text = &arabic_text }, shapeText);
 
     // Word-cache hits: one cached word per iteration (Inter without `calt`
     // and `kern`, whose lookups would make spaces participate).
