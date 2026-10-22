@@ -102,8 +102,12 @@ pub const Window = struct {
     configured: bool = false,
     /// Toplevel fields buffered until `xdg_surface.configure`.
     pending: Pending = .{},
-    /// The app asked for a frame without presenting.
+    /// The app asked for a frame before the first configure; it is
+    /// answered when the configure arrives.
     frame_requested: bool = false,
+    /// A buffer has been attached: the surface is mapped and frame
+    /// callbacks fire. Before that, frames are answered at once.
+    presented: bool = false,
 
     /// `xdg_toplevel.configure` fields waiting for the surface configure.
     pub const Pending = struct {

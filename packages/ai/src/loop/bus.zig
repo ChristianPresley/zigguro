@@ -142,6 +142,15 @@ pub const Bus = struct {
         };
     }
 
+    /// Continues numbering after `seq` (a resumed session), so new events
+    /// and session records never reuse a sequence number. Call before the
+    /// first publish.
+    pub fn startAt(b: *Bus, seq: u64) void {
+        b.mutex.lockUncancelable(b.io);
+        defer b.mutex.unlock(b.io);
+        b.seq = @max(b.seq, seq);
+    }
+
     /// The last sequence number published.
     pub fn lastSeq(b: *Bus) u64 {
         b.mutex.lockUncancelable(b.io);

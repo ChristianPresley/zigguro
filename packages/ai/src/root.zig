@@ -104,14 +104,33 @@ pub const context = struct {
     }
 };
 /// Sessions: the JSONL log, index, resume, fork and rewind (E10.F08).
+/// Cassettes and the eval runner (E10.F10.S02).
+pub const testing = struct {
+    pub const cassette = @import("testing/cassette.zig");
+    test {
+        _ = @import("testing/cassette_test.zig");
+    }
+};
 pub const session = struct {
     pub const key = @import("session/key.zig");
     pub const records = @import("session/records.zig");
     pub const writer = @import("session/writer.zig");
     pub const loader = @import("session/loader.zig");
     pub const store = @import("session/store.zig");
+    pub const index = @import("session/index.zig");
+    pub const search = @import("session/search.zig");
+    pub const retention = @import("session/retention.zig");
+    pub const title = @import("session/title.zig");
+    pub const @"export" = @import("session/export.zig");
+    pub const fork = @import("session/fork.zig");
+    pub const @"resume" = @import("session/resume.zig");
+    pub const rewind = @import("session/rewind.zig");
     test {
         _ = @import("session/store_test.zig");
+        _ = @import("session/index_test.zig");
+        _ = @import("session/resume_test.zig");
+        _ = @import("session/fork_test.zig");
+        _ = @import("session/rewind_test.zig");
     }
 };
 pub const schema = struct {
@@ -155,4 +174,5 @@ test {
     std.testing.refAllDecls(loop);
     std.testing.refAllDecls(context);
     std.testing.refAllDecls(session);
+    std.testing.refAllDecls(testing);
 }

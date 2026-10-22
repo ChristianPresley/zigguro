@@ -100,7 +100,7 @@ pub const MessageAssembler = struct {
                 .retry_after_ms = e.retry_after_ms,
                 .request_id = if (e.request_id) |r| try a.arena.dupe(u8, r) else null,
             },
-            .ping, .warning => {},
+            .ping, .warning, .retrying => {},
         }
     }
 

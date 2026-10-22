@@ -430,9 +430,12 @@ pub const WaylandBackend = struct {
         const s = b.find(win) orelse return error.InvalidWindow;
         const w = &s.win;
         const c = b.conn;
-        if (serial != null) if (w.takeAck(serial)) |ack| try wl.xdg_surface.ackConfigure(c, w.xdg_surface, ack);
+        // Without a serial (E02's software path passes none) the present
+        // answers the newest configure: the renderer resized on it.
+        if (w.takeAck(serial)) |ack| try wl.xdg_surface.ackConfigure(c, w.xdg_surface, ack);
         try b.applyScale(w);
         try wl.wl_surface.attach(c, w.surface, buffer, 0, 0);
+        w.presented = true;
         if (damage.len == 0) {
             try wl.wl_surface.damageBuffer(c, w.surface, 0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
         } else for (damage) |d| {
@@ -461,6 +464,12 @@ pub const WaylandBackend = struct {
                 w.applied_buffer_scale = bs;
             }
         }
+    }
+
+    /// Stages `Event.frame` for `w`. Mutex held.
+    fn stageFrame(b: *WaylandBackend, w: *Window) !void {
+        const refresh = b.refreshFor(w);
+        try b.stage(.{ .frame = .{ .win = w.id, .target_ns = b.nowNs() + refresh, .refresh_ns = refresh } });
     }
 
     fn requestFrameLocked(b: *WaylandBackend, w: *Window) !void {
@@ -501,6 +510,12 @@ pub const WaylandBackend = struct {
             },
             .request_frame => |win| {
                 const w = try b.lookup(win);
+                // An unmapped surface gets no frame callbacks: answer at
+                // once (or at the first configure) so frame 0 can map it.
+                if (!w.presented) {
+                    if (w.configured) try b.stageFrame(w) else w.frame_requested = true;
+                    return;
+                }
                 try b.requestFrameLocked(w);
                 try wl.wl_surface.commit(c, w.surface);
             },
@@ -647,7 +662,13 @@ pub const WaylandBackend = struct {
                 defer b.unlock();
                 const w = b.byObject("xdg_surface", obj) orelse return;
                 switch (ev) {
-                    .configure => |cf| try b.stageConfigure(w, w.onConfigure(cf.serial, b.nowNs(), b.opts.ack_timeout_ns)),
+                    .configure => |cf| {
+                        try b.stageConfigure(w, w.onConfigure(cf.serial, b.nowNs(), b.opts.ack_timeout_ns));
+                        if (w.frame_requested and !w.presented) {
+                            w.frame_requested = false;
+                            try b.stageFrame(w);
+                        }
+                    },
                 }
             },
             .toplevel => {
@@ -691,8 +712,7 @@ pub const WaylandBackend = struct {
                 defer b.unlock();
                 const w = b.byObject("frame_cb", obj) orelse return;
                 w.frame_cb = null;
-                const refresh = b.refreshFor(w);
-                try b.stage(.{ .frame = .{ .win = w.id, .target_ns = b.nowNs() + refresh, .refresh_ns = refresh } });
+                try b.stageFrame(w);
             },
             .buffer => {
                 _ = try wl.wl_buffer.decodeEvent(opcode, body, fds);
@@ -1191,9 +1211,9 @@ test "outputs, integer output scale, close and destroy" {
     try testing.expectEqual(PxSize{ .w = 640, .h = 480 }, cf.size);
     try testing.expectEqual(@as(f32, 2), cf.scale.factor);
 
+    // Unmapped surfaces get no frame callbacks: the request is answered
+    // at once so frame 0 can map the window.
     try p.submit(.{ .request_frame = win });
-    _ = try rig.peer.waitFor(wl.wl_surface, .frame, std.time.ns_per_s);
-    try wl.wl_callback.server.done(rig.peer.fc, rig.peer.id(wl.wl_callback), 1);
     const fr = try expectEvent(p, .frame, win);
     try testing.expectEqual(@as(u32, 8_333_333), fr.refresh_ns);
 

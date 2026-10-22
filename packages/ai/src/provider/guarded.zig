@@ -86,11 +86,14 @@ pub const Guarded = struct {
         return g.opts.policy.delayMs(d, attempt, retry_after_ms, g.rng.random());
     }
 
-    /// Sleeps before the next attempt, or returns null to give up.
-    fn backoff(g: *Guarded, io: std.Io, err: StreamError, status: ?u16, retry_after_ms: ?u64, attempt: u8) error{Canceled}!bool {
+    /// Sleeps before the next attempt, or returns false to give up. The
+    /// retry is announced to the listener and to `sink` (the caller's
+    /// stream, so the agent can show it and a cancel can interrupt it).
+    fn backoff(g: *Guarded, io: std.Io, err: StreamError, status: ?u16, retry_after_ms: ?u64, attempt: u8, sink: ?events.EventSink) error{Canceled}!bool {
         const d = g.opts.policy.classify(err, status, retry_after_ms != null);
         const ms = g.delay(io, d, attempt, retry_after_ms) orelse return false;
         if (g.opts.listener) |li| li.on_retry(li.ctx, .{ .attempt = attempt + 1, .delay_ms = ms, .status = status, .err = err });
+        if (sink) |s| s.send(.{ .retrying = .{ .attempt = attempt + 2, .delay_ms = ms, .status = status, .err = @errorName(err) } });
         try g.opts.clock.sleep(io, ms);
         return true;
     }
@@ -119,7 +122,7 @@ pub const Guarded = struct {
                 if (tap.content or tap.oom) return tap.giveUp(err);
                 const status: ?u16 = if (tap.last_error) |e| (if (e.status != 0) e.status else null) else null;
                 const ra = if (tap.last_error) |e| e.retry_after_ms else null;
-                if (!(try g.backoff(io, err, status, ra, attempt))) return tap.giveUp(err);
+                if (!(try g.backoff(io, err, status, ra, attempt, sink))) return tap.giveUp(err);
             }
         }
     }
@@ -133,7 +136,7 @@ pub const Guarded = struct {
             const r = g.inner.countTokens(io, arena, req);
             p.release(io);
             if (r) |n| return n else |err| {
-                if (err == error.Unsupported or !(try g.backoff(io, err, null, null, attempt))) return err;
+                if (err == error.Unsupported or !(try g.backoff(io, err, null, null, attempt, null))) return err;
             }
         }
     }
@@ -147,7 +150,7 @@ pub const Guarded = struct {
             const r = g.inner.listModels(io, arena);
             p.release(io);
             if (r) |ms| return ms else |err| {
-                if (err == error.Unsupported or !(try g.backoff(io, err, null, null, attempt))) return err;
+                if (err == error.Unsupported or !(try g.backoff(io, err, null, null, attempt, null))) return err;
             }
         }
     }
@@ -208,6 +211,8 @@ const Tap = struct {
                 break :blk e;
             },
             .message_start, .usage, .ping, .warning => if (t.content) t.outer.send(ev) else t.hold(ev),
+            // A nested guard's notice: pass it on now.
+            .retrying => t.outer.send(ev),
             else => {
                 t.flush();
                 t.content = true;

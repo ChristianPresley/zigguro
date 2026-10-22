@@ -48,8 +48,10 @@ Keys are written in a fixed order. Messages use the `zg_ai_proto` JSON codecs
 ```
 
 `parent` (`{"session":"<ulid>","seq":N}`) is present on forks: records with
-`seq <= N` are read from the parent file. `origin` is one of `gui`, `cli`,
-`subagent`, `schedule`.
+`seq <= N` are read from the parent file. When the fork chain would be deeper
+than 32, the parent's records are copied into the file instead and the link
+has `"materialized":true`; the parent is then not read. `origin` is one of
+`gui`, `cli`, `subagent`, `schedule`.
 
 ### `user`, `assistant`, `tool_results`
 
@@ -101,7 +103,8 @@ An E12 checkpoint taken at the start of a user-prompted turn.
 ### `rewind`
 
 The conversation head moved back to `to_seq`; later records stay in the file
-but are inactive.
+but are inactive. Readers drop the message records with `seq > to_seq` that
+come before the `rewind` record; a compaction dropped this way is undone.
 
 ```json
 {"v":1,"seq":9,"t":0,"type":"rewind","to_seq":1,"action":"conversation"}
@@ -146,3 +149,26 @@ but are inactive.
 
 Version bumps must stay backward-readable: add record types or optional keys,
 never change the meaning of existing ones. Readers skip unknown record types.
+
+## The index
+
+`index.zon` in the same directory lists every session's metadata for the
+picker and `zg sessions`: id, title, name, created and updated times, branch,
+model, message count, cost, parent, pinned flag, origin and file size. It is a
+ZON struct `.{ .version = 1, .sessions = .{ ... } }` with ids as ULID text,
+written atomically (temp file, then rename) at most once a second.
+
+The index is a cache. When it is missing, corrupt or of another version it is
+rebuilt from the session files, reading only each header line and the last
+4 KiB (for the latest `title` record and the last record time).
+
+- **Search** reads the `.jsonl` files newest first. Literal queries are matched
+  against the raw line first, so only candidate lines are decoded. A hit must
+  be in message text, a tool name, a tool input, a text tool result or a title,
+  never in JSON keys.
+- **Retention** deletes sessions not updated for `ai.sessions.retentionDays`,
+  along with their `.blobs` directories. Pinned sessions are kept, and so are
+  the parents of kept sessions, because a fork reads its prefix from its
+  parent. E12 is notified so it can collect the deleted sessions' checkpoints.
+- **Export** writes the active conversation (rewound messages left out) as
+  Markdown or as the canonical JSON message array.
