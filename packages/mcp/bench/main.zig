@@ -38,6 +38,43 @@ fn register(b: *bench.Bench) !void {
     try b.run("protocol: encode tools/call request", {}, encodeCall);
     try registerSchema(b);
     try registerClient(b);
+    try registerServer(b);
+}
+
+/// Acceptance (E11.F05.S01.T01): `tools/list` with 100 tools, warm (the
+/// page is cached), < 200 µs per request including dispatch and the send.
+fn registerServer(b: *bench.Bench) !void {
+    const Server = zg_mcp.server.Server;
+    const srv = try Server.init(b.gpa, b.io, .{ .info = .{ .name = "bench", .version = "0" } });
+    defer srv.deinit();
+    var arena: std.heap.ArenaAllocator = .init(b.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = try codec.parseValue(a, tool_schema);
+    for (0..100) |i| try srv.addDynamicTool(.{
+        .def = .{ .name = try std.fmt.allocPrint(a, "tool_{d}", .{i}), .description = "Does a thing to the repository.", .input_schema = input },
+        .handler = .{ .ctx = null, .call = nopTool },
+    });
+    var sent: usize = 0;
+    const conn = try srv.connect(.{ .ctx = &sent, .send = countBytes }, null);
+    try b.run("server: tools/list 100 tools (warm, modern)", conn, listTools);
+}
+
+fn nopTool(_: ?*anyopaque, _: *zg_mcp.server.CallCtx, _: std.json.Value) anyerror!M.CallToolResult {
+    return .{ .content = &.{} };
+}
+
+fn countBytes(ctx: ?*anyopaque, body: []const u8) void {
+    const n: *usize = @ptrCast(@alignCast(ctx.?));
+    n.* += body.len;
+}
+
+const list_request =
+    \\{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+;
+
+fn listTools(conn: *zg_mcp.server.Conn, s: *State) void {
+    for (0..s.iterations()) |_| conn.receive(list_request);
 }
 
 /// Acceptance (E11.F03.S01.T01): connect overhead < 1 ms in-process. The
