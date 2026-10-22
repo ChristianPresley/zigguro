@@ -17,12 +17,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 pub const pending = [_][]const u8{
     "text.cells_row_200",
     "text.fontdb_load_3k",
-    "text.hit_test",
-    "text.itemize_200col",
-    "text.layout_200col",
-    "text.measure_hit",
     "text.registry_get",
-    "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -113,7 +108,6 @@ fn register(b: *bench.Bench) !void {
     try b.run("text.glyf_outline", OutlineCtx{ .face = &jb, .gids = &ascii_gids, .gpa = b.gpa }, glyfOutline);
 
     // HVAR advance at wght=700 with cached region scalars.
-    const vt = zg_text.ot.variation;
     var bold = try vt.FaceInstance.init(b.gpa, &jb, &.{.{ .tag = zg_text.ot.tag("wght"), .value = 700 }});
     defer bold.deinit(b.gpa);
     try b.run("text.var_advance", AdvanceCtx{ .inst = &bold, .gids = &ascii_gids }, varAdvance);
@@ -258,6 +252,132 @@ fn register(b: *bench.Bench) !void {
     var word_ctx: WordCtx = .{ .shaper = &shaper, .cache = &shape_cache, .inst = &inter_inst, .features = &no_ctx, .words = &words, .arena = &arena_buf };
     for (words) |w| word_ctx.one(w); // fill the cache
     try b.run("text.shape_word_cache_hit", &word_ctx, shapeWordHit);
+
+    try layoutBenches(b, &jb_inst, &inter_inst, &naskh_inst, &code, &prose);
+}
+
+/// E03.F08 layout benches: lines (fast and ligature paths), itemization,
+/// wrapping, measuring and hit testing, all with warm caches.
+fn layoutBenches(b: *bench.Bench, jb: *const vt.FaceInstance, inter: *const vt.FaceInstance, naskh: *const vt.FaceInstance, code: []const u8, prose: []const u8) !void {
+    const L = zg_text.layout;
+    var reg = zg_text.fonts.FontRegistry.init(b.gpa);
+    defer reg.deinit();
+    const id_jb = try reg.register(jb);
+    const id_inter = try reg.register(inter);
+    const id_naskh = try reg.register(naskh);
+    var fb = zg_text.fonts.Fallback.init(b.gpa, &reg);
+    defer fb.deinit();
+    const code_chain = try fb.chainOf(&.{ id_jb, id_naskh });
+    const ui_chain = try fb.chainOf(&.{ id_inter, id_naskh });
+    var tl = try L.TextLayout.init(b.gpa, &reg, &fb);
+    defer tl.deinit();
+    const arena_buf = try b.gpa.alloc(u8, 4 << 20);
+    defer b.gpa.free(arena_buf);
+
+    const lig: L.TextStyle = .{ .chain = code_chain, .size_px = 14 };
+    var ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = code, .style = lig };
+    ctx.line(); // warm the caches
+    try b.run("text.layout_200col", &ctx, layoutLine);
+    const off = [_]zg_text.shape.Feature{ .{ .tag = zg_text.ot.tag("calt"), .value = 0 }, .{ .tag = zg_text.ot.tag("liga"), .value = 0 } };
+    var plain: [200]u8 = undefined;
+    fill(&plain, &.{ "if (a != b && c => d) { x = y->z; } ", "// TODO: <!-- www --> 0xFF ", "for (i = 0; i <= n; i++) ||| " });
+    var fast: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = &plain, .style = .{ .chain = code_chain, .size_px = 14, .features = try tl.featureSet(&off) } };
+    fast.line();
+    try b.run("text.layout_200col_fast", &fast, layoutLine);
+    tl.fast_path = false;
+    try b.run("text.layout_200col_nofast", &fast, layoutLine);
+    tl.fast_path = true;
+
+    var item_ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = code, .style = lig };
+    try b.run("text.itemize_200col", &item_ctx, itemizeLine);
+    var mixed: [200]u8 = undefined;
+    fill(&mixed, &.{ "x = \"\u{645}\u{631}\u{62D}\u{628}\u{627}\"; ", "label(\"\u{644}\u{627}\") + 12; " });
+    var item_mixed: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = &mixed, .style = lig };
+    try b.run("text.itemize_200col_mixed", &item_mixed, itemizeLine);
+
+    // 10 KB of prose wrapped to 600 px.
+    const para = try b.gpa.alloc(u8, 10 * 1024);
+    defer b.gpa.free(para);
+    for (para, 0..) |*c, i| c.* = prose[i % prose.len];
+    var wrap_ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = para, .style = .{ .chain = ui_chain, .size_px = 14 } };
+    wrapPara(&wrap_ctx, null);
+    try b.run("text.wrap_10kb", &wrap_ctx, wrapBench);
+    // The same in JetBrains Mono, whose words shape independently.
+    var wrap_code: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = para, .style = lig };
+    wrapPara(&wrap_code, null);
+    try b.run("text.wrap_10kb_mono", &wrap_code, wrapBench);
+
+    var measure_ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = "Save all changes", .style = .{ .chain = ui_chain, .size_px = 13 } };
+    _ = tl.measure(measure_ctx.text, measure_ctx.style);
+    try b.run("text.measure_hit", &measure_ctx, measureHit);
+
+    var hit_ctx: LayoutCtx = .{ .tl = &tl, .arena = arena_buf, .text = code, .style = lig };
+    var fba = std.heap.FixedBufferAllocator.init(arena_buf);
+    hit_ctx.laid = try tl.layoutLine(fba.allocator(), code, &.{.{ .end = @intCast(code.len), .style = lig }}, .{});
+    try b.run("text.hit_test", &hit_ctx, hitTest);
+}
+
+const vt = zg_text.ot.variation;
+
+const LayoutCtx = struct {
+    tl: *zg_text.layout.TextLayout,
+    arena: []u8,
+    text: []const u8,
+    style: zg_text.layout.TextStyle,
+    laid: zg_text.layout.Line = .{},
+
+    fn runs(ctx: *const LayoutCtx) [1]zg_text.layout.StyleRun {
+        return .{.{ .end = @intCast(ctx.text.len), .style = ctx.style }};
+    }
+
+    fn line(ctx: *LayoutCtx) void {
+        var fba = std.heap.FixedBufferAllocator.init(ctx.arena);
+        const r = ctx.runs();
+        const l = ctx.tl.layoutLine(fba.allocator(), ctx.text, &r, .{}) catch unreachable;
+        bench.doNotOptimizeAway(l.width);
+    }
+};
+
+fn layoutLine(ctx: *LayoutCtx, s: *State) void {
+    for (0..s.iterations()) |_| ctx.line();
+    s.setBytes(ctx.text.len);
+}
+
+fn itemizeLine(ctx: *LayoutCtx, s: *State) void {
+    const r = ctx.runs();
+    for (0..s.iterations()) |_| {
+        var fba = std.heap.FixedBufferAllocator.init(ctx.arena);
+        var items: std.ArrayList(zg_text.layout.Item) = .empty;
+        _ = zg_text.layout.itemize.itemize(fba.allocator(), ctx.text, &r, .auto, ctx.tl.fb, &items) catch unreachable;
+        bench.doNotOptimizeAway(items.items.len);
+    }
+    s.setBytes(ctx.text.len);
+}
+
+fn wrapPara(ctx: *LayoutCtx, _: ?*State) void {
+    var fba = std.heap.FixedBufferAllocator.init(ctx.arena);
+    const r = ctx.runs();
+    const lines = ctx.tl.wrap(fba.allocator(), ctx.text, &r, 600, .{}) catch unreachable;
+    bench.doNotOptimizeAway(lines.len);
+}
+
+fn wrapBench(ctx: *LayoutCtx, s: *State) void {
+    for (0..s.iterations()) |_| wrapPara(ctx, s);
+    s.setBytes(ctx.text.len);
+}
+
+fn measureHit(ctx: *LayoutCtx, s: *State) void {
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(ctx.tl.measure(ctx.text, ctx.style));
+}
+
+fn hitTest(ctx: *LayoutCtx, s: *State) void {
+    var x: f32 = 0;
+    const w = ctx.laid.width;
+    for (0..s.iterations()) |_| {
+        bench.doNotOptimizeAway(ctx.laid.hitTest(x).offset);
+        x += 7.3;
+        if (x > w) x -= w;
+    }
 }
 
 const ShapeCtx = struct { shaper: *zg_text.shape.Shaper, plan: *const zg_text.shape.ShapePlan, text: []const u8 };

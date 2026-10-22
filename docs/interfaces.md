@@ -951,7 +951,19 @@ after `InitOptions.transfer_timeout_ns` (5 s) answers with empty data.
 `clipboard_changed` fires when another client sets a selection.
 `uri_list` data is the raw `text/uri-list`;
 `zg_platform.linux_util.uri_list.paths` turns it into local paths.
-Drag-and-drop offers are dropped until E01.F04.S03.T03. Move,
+Drag-and-drop offers are dropped until E01.F04.S03.T03.
+
+Cursors (E01.F04.S02.T04, `wayland/cursor.zig`, `linux/xcursor.zig`):
+`set_cursor` is per window and takes effect while the pointer is over
+it. With `wp_cursor_shape_manager_v1` the shape is sent as
+`set_shape(last enter serial, shape)`; `hidden` sets a null cursor.
+Without it, the Xcursor theme from `XCURSOR_THEME`/`XCURSOR_SIZE`/
+`XCURSOR_PATH` (via `InitOptions.environ_map`) is loaded on the platform
+thread, following `Inherits=` and then `default`, trying the CSS name
+and then legacy names, at size × the window's integer scale, and shown
+on a cursor surface with that buffer scale. A shape the theme lacks
+shows the default arrow. Animated cursors show their first frame.
+`zg_platform.linux_util.xcursor` parses Xcursor files for X11 too. Move,
 resize, window menu, drag, activation, dialogs and URIs return
 `error.Unsupported`.
 

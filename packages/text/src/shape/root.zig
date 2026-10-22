@@ -14,6 +14,8 @@ pub const apply_gsub = @import("apply_gsub.zig");
 pub const apply_gpos = @import("apply_gpos.zig");
 /// Glyph-set digests that let lookups skip glyphs they cannot match.
 pub const digest = @import("digest.zig");
+/// Can a lookup fire on glyphs from a set (layout's ASCII fast path).
+pub const set_closure = @import("set_closure.zig");
 /// Legacy `kern` table fallback.
 pub const kern_fallback = @import("kern_fallback.zig");
 /// Shape plans: features, masks and lookup stages.
