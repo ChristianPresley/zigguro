@@ -1,7 +1,7 @@
 //! Pseudo-terminals for the terminal (E06) and agent tools (E10): spawn a
 //! child on a PTY, read and write it, resize it, and wait for or kill it.
-//! Linux uses `/dev/ptmx` (`pty_linux.zig`); Windows ConPTY arrives with
-//! E01.F06.S03.T01 (#267).
+//! Linux uses `/dev/ptmx` (`pty_linux.zig`); Windows uses ConPTY
+//! (`pty_windows.zig`, Windows 10 1809+).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -90,8 +90,13 @@ pub const Error = @import("spawn_linux.zig").SpawnError || error{
 
 const Impl = switch (builtin.os.tag) {
     .linux => @import("pty_linux.zig").LinuxPty,
+    .windows => @import("pty_windows.zig").WindowsPty,
     else => void,
 };
+
+/// What `writer` and `exitHandle` return: a descriptor on Linux, a
+/// `HANDLE` on Windows.
+pub const Handle = if (builtin.os.tag == .windows) *anyopaque else std.os.linux.fd_t;
 
 /// A child process on a pseudo-terminal.
 pub const Pty = struct {
@@ -99,23 +104,28 @@ pub const Pty = struct {
 
     /// Spawns `opts.argv` on a new PTY.
     pub fn spawn(gpa: std.mem.Allocator, io: std.Io, opts: SpawnOptions) Error!Pty {
-        _ = io;
         if (Impl == void) return error.Unsupported;
+        if (builtin.os.tag == .windows) return .{ .impl = try Impl.spawn(gpa, io, opts) };
         return .{ .impl = try Impl.spawn(gpa, opts) };
     }
 
-    /// The master descriptor to poll for output (Linux; non-blocking).
+    /// The master descriptor to poll for output (Linux; non-blocking). On
+    /// Windows, wait with `waitReadable` instead.
     pub fn reader(self: *Pty) std.os.linux.fd_t {
         return self.impl.master;
     }
 
-    /// The descriptor input is written to (Linux: the same master).
-    pub fn writer(self: *Pty) std.os.linux.fd_t {
+    /// Where input is written: the master (Linux) or the input pipe's
+    /// write end (Windows).
+    pub fn writer(self: *Pty) Handle {
+        if (builtin.os.tag == .windows) return self.impl.in_write.?;
         return self.impl.master;
     }
 
-    /// A pidfd that becomes readable when the child exits.
-    pub fn exitHandle(self: *Pty) std.os.linux.fd_t {
+    /// Signalled when the child exits: a pidfd (Linux) or the process
+    /// handle (Windows).
+    pub fn exitHandle(self: *Pty) Handle {
+        if (builtin.os.tag == .windows) return self.impl.process;
         return self.impl.child.pidfd;
     }
 
@@ -136,7 +146,8 @@ pub const Pty = struct {
         return self.impl.waitReadable(timeout_ns);
     }
 
-    /// Changes the terminal size; the foreground job gets SIGWINCH.
+    /// Changes the terminal size; the foreground job gets SIGWINCH (Linux)
+    /// or the console resizes (Windows).
     pub fn resize(self: *Pty, size: PtySize) Error!void {
         return self.impl.resize(size);
     }
@@ -157,7 +168,8 @@ pub const Pty = struct {
     }
 
     /// Releases the master and pidfd. Call `wait` first, or the child
-    /// stays a zombie until zigguro exits.
+    /// stays a zombie until zigguro exits. On Windows, closes the
+    /// pseudoconsole and ends the child's tree if still running.
     pub fn close(self: *Pty) void {
         self.impl.close();
     }
@@ -298,4 +310,99 @@ test "kill_tree and tryWait" {
     try testing.expectEqual(null, try p.tryWait());
     p.kill(.kill_tree);
     try testing.expectEqual(ExitStatus{ .signaled = @intFromEnum(std.os.linux.SIG.KILL) }, try p.wait());
+}
+
+/// Bytes of `out` with VT escape sequences (CSI and OSC) removed, so the
+/// ConPTY tests can look for plain text.
+fn stripVt(out: []const u8, buf: []u8) []u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < out.len) : (i += 1) {
+        if (out[i] == 0x1b and i + 1 < out.len) {
+            i += 1;
+            if (out[i] == '[') {
+                while (i + 1 < out.len and !(out[i + 1] >= 0x40 and out[i + 1] <= 0x7e)) i += 1;
+                i += 1;
+            } else if (out[i] == ']') {
+                while (i + 1 < out.len and out[i + 1] != 0x07 and out[i + 1] != 0x1b) i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (n < buf.len) {
+            buf[n] = out[i];
+            n += 1;
+        }
+    }
+    return buf[0..n];
+}
+
+/// Wine 9's pseudoconsole spawns and reaps the child but never delivers its
+/// output, so the tests that read output skip there; they run on Windows.
+fn underWine() bool {
+    if (builtin.os.tag != .windows) return false;
+    const k32 = @import("../win32/bindings/kernel32.zig");
+    const ntdll = k32.GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("ntdll.dll")) orelse return false;
+    return k32.GetProcAddress(ntdll, "wine_get_version") != null;
+}
+
+fn winEnv(a: std.mem.Allocator) !std.process.Environ.Map {
+    var env: std.process.Environ.Map = .init(a);
+    try env.put("SystemRoot", "C:\\windows");
+    try env.put("PATH", "C:\\windows\\system32;C:\\windows");
+    try env.put("ZG_SECRET", "hidden");
+    return env;
+}
+
+test "conpty: cmd /c echo hello, exit code 3" {
+    if (builtin.os.tag != .windows or underWine()) return error.SkipZigTest;
+    var env = try winEnv(testing.allocator);
+    defer env.deinit();
+    var p = try Pty.spawn(testing.allocator, testing.io, .{ .argv = &.{ "cmd.exe", "/c", "echo hello & exit 3" }, .env = &env });
+    defer p.close();
+    var r = try runOn(&p, null);
+    defer r.deinit();
+    var plain: [4096]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, stripVt(r.out.items, &plain), "hello") != null);
+    try testing.expectEqual(ExitStatus{ .exited = 3 }, r.status);
+}
+
+test "conpty: input reaches the child, resize, missing program" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var env = try winEnv(testing.allocator);
+    defer env.deinit();
+    try testing.expectError(error.FileNotFound, Pty.spawn(testing.allocator, testing.io, .{ .argv = &.{"zg-missing-shell.exe"}, .env = &env }));
+    if (underWine()) return error.SkipZigTest;
+    var p = try Pty.spawn(testing.allocator, testing.io, .{ .argv = &.{ "cmd.exe", "/c", "set /p X=name? & echo got-%X%" }, .env = &env, .size = .{ .cols = 100, .rows = 30 } });
+    defer p.close();
+    try p.resize(.{ .cols = 120, .rows = 40 });
+    var r = try runOn(&p, "zig\r\n");
+    defer r.deinit();
+    var plain: [4096]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, stripVt(r.out.items, &plain), "got-zig") != null);
+}
+
+test "conpty: exit code without reading" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var env = try winEnv(testing.allocator);
+    defer env.deinit();
+    var p = try Pty.spawn(testing.allocator, testing.io, .{ .argv = &.{ "cmd.exe", "/c", "exit 3" }, .env = &env });
+    defer p.close();
+    try testing.expectEqual(ExitStatus{ .exited = 3 }, try p.wait());
+}
+
+test "conpty: close ends a running tree" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var env = try winEnv(testing.allocator);
+    defer env.deinit();
+    var p = try Pty.spawn(testing.allocator, testing.io, .{ .argv = &.{ "cmd.exe", "/c", "ping -n 30 127.0.0.1" }, .env = &env });
+    try testing.expectEqual(null, try p.tryWait());
+    p.kill(.kill_tree);
+    _ = try p.wait();
+    p.close();
+}
+
+test "stripVt" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("hello\r\n", stripVt("\x1b[?25l\x1b]0;title\x07hel\x1b[1mlo\r\n", &buf));
 }
