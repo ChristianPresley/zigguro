@@ -228,6 +228,11 @@ pub const TestExe = struct {
     /// Extra imports; the package module itself is always importable
     /// under the package name.
     imports: []const std.Build.Module.Import = &.{},
+    /// Overrides -Doptimize (e.g. crash tests run ReleaseFast and ReleaseSafe helpers).
+    optimize: ?std.builtin.OptimizeMode = null,
+    build_id: ?std.zig.BuildId = null,
+    use_llvm: ?bool = null,
+    omit_frame_pointer: ?bool = null,
 };
 
 /// Suffix of the module name under which a package exposes its test
@@ -267,10 +272,13 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
                 .root_module = b.createModule(.{
                     .root_source_file = b.path(te.root),
                     .target = f.target,
-                    .optimize = f.optimize,
+                    .optimize = te.optimize orelse f.optimize,
                     .imports = te.imports,
+                    .omit_frame_pointer = te.omit_frame_pointer,
                 }),
+                .use_llvm = te.use_llvm,
             });
+            exe.build_id = te.build_id;
             exe.root_module.addImport(spec.name, mod);
             o.addOptionPath(te.name, exe.getEmittedBin());
         }
