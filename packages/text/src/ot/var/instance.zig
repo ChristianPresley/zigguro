@@ -17,6 +17,7 @@ const Mvar = @import("mvar.zig").Mvar;
 const gvar_mod = @import("gvar.zig");
 const Gvar = gvar_mod.Gvar;
 const glyf_mod = @import("../glyf.zig");
+const cff_mod = @import("../cff.zig");
 const Path = @import("../../outline/path.zig").Path;
 
 const Face = face_mod.Face;
@@ -73,6 +74,10 @@ pub const FaceInstance = struct {
     hvar_data: []ivs.ItemVariationStore.Data = &.{},
     /// Region scalars of MVAR's store (empty without MVAR).
     mvar_scalars: []f32 = &.{},
+    /// The CFF/CFF2 table, parsed once (null for TrueType faces).
+    cff: ?cff_mod.Cff = null,
+    /// Region scalars of the CFF2 VariationStore (empty at the default).
+    cff_scalars: []f32 = &.{},
 
     /// The instance at `user` settings (normalized through fvar and avar).
     /// A face without `fvar` gives the default instance.
@@ -93,8 +98,13 @@ pub const FaceInstance = struct {
         const axes: usize = if (fvarOf(face)) |f| f.axis_count else 0;
         fi.axis_count = @intCast(@min(axes, coords.len));
         @memcpy(fi.coords[0..fi.axis_count], coords[0..fi.axis_count]);
+        fi.cff = face.cff();
         if (fi.isDefault()) return fi;
         errdefer fi.deinit(gpa);
+        if (fi.cff) |c| if (c.store) |st| {
+            fi.cff_scalars = try gpa.alloc(f32, st.region_count);
+            st.regionScalars(fi.coordsSlice(), fi.cff_scalars);
+        };
         if (face.knownTable(.hvar)) |t| if (Hvar.init(t)) |h| {
             fi.hvar_scalars = try gpa.alloc(f32, h.store.region_count);
             h.store.regionScalars(fi.coordsSlice(), fi.hvar_scalars);
@@ -120,6 +130,8 @@ pub const FaceInstance = struct {
         gpa.free(fi.hvar_scalars);
         gpa.free(fi.hvar_data);
         gpa.free(fi.mvar_scalars);
+        gpa.free(fi.cff_scalars);
+        fi.cff_scalars = &.{};
         fi.hvar_data = &.{};
         fi.hvar_scalars = &.{};
         fi.mvar_scalars = &.{};
@@ -160,10 +172,16 @@ pub const FaceInstance = struct {
         return @as(f32, @floatFromInt(fi.face.advance(gid))) + fi.phantomAdvanceDelta(gid);
     }
 
-    /// Appends the outline of `gid` at this instance to `out` (font units,
-    /// origin at the glyph's left phantom point). Allocation-free once
-    /// `scratch` and `out` are warm.
+    /// Appends the outline of `gid` at this instance to `out`: TrueType in
+    /// font units with the origin at the left phantom point, CFF in
+    /// charstring units (see `Cff.fontMatrix`; the usual 0.001 matrix with
+    /// a 1000-unit em makes them font units). Allocation-free once `scratch`
+    /// and `out` are warm.
     pub fn outline(fi: *const FaceInstance, gpa: Allocator, gid: GlyphId, scratch: *OutlineScratch, out: *Path) error{ Malformed, OutOfMemory, LimitExceeded, Unsupported }!void {
+        if (fi.cff) |*c| {
+            const blend: ?cff_mod.BlendCtx = if (fi.cff_scalars.len > 0) .{ .scalars = fi.cff_scalars } else null;
+            return c.outline(gid, blend, out, gpa);
+        }
         const g = fi.face.glyf() orelse return error.Unsupported;
         const hook: ?glyf_mod.DeltaHook = if (fi.gvar) |*gv| gv.hook(gpa, fi.coordsSlice(), &scratch.gvar) else null;
         _ = try g.outline(gpa, gid, &scratch.glyf, hook, out);
