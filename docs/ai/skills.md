@@ -114,3 +114,30 @@ The built-ins are `/clear`, `/compact`, `/context`, `/memory`, `/model`,
 `registerWithPalette` registers each built-in as `ai.<name>` and each
 user-runnable skill as `ai.skill.<name>`, through a `PaletteSink` that
 the app adapts to E15's command registry.
+
+## In `zg agent`
+
+`zg agent` loads the skills from the managed, user and workspace roots,
+with `.claude` included, and registers the `skill` tool.
+
+In the REPL, `/name args` runs a skill. The expanded text is sent as the
+prompt, and the skill's `allowed-tools` are granted for that turn. These
+built-ins work in the REPL:
+
+- `/help`
+- `/plan [prompt]`
+- `/mode <mode>`
+- `/model [id]`
+- `/clear`
+- `/cost`
+- `/skills`
+- `/exit`
+
+The other built-ins report that they are not available yet.
+
+With `-p "/name args"`, the skill is expanded the same way. A built-in
+there is a usage error, and an unknown `/word` is sent as plain text.
+
+Shell injections run as child processes behind the command-line rules
+(`--allowed-tools`, `--permission-mode`). Nothing prompts, so a command
+those rules do not allow stops the skill.

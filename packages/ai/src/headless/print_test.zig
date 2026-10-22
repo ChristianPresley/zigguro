@@ -214,11 +214,11 @@ test "repl runs lines until ctrl-d" {
     var h: Harness = undefined;
     try h.init(&.{ script.text("One."), script.text("Two.") });
     defer h.deinit();
-    var in: std.Io.Reader = .fixed("first\n\n/help\nsecond\n");
+    var in: std.Io.Reader = .fixed("first\n\n/nope\nsecond\n");
     const code = try repl.runRepl(io, testing.allocator, h.manager, try h.options(&.{}), &h.out.writer, &in);
     try testing.expectEqual(.ok, code);
     try testing.expectEqualStrings("> One.\n> > > Two.\n> \n", h.stdout());
-    try testing.expect(std.mem.indexOf(u8, h.stderr(), "unknown command /help") != null);
+    try testing.expect(std.mem.indexOf(u8, h.stderr(), "unknown command /nope") != null);
     try testing.expectEqualStrings("second", h.lastUserText(1));
 }
 

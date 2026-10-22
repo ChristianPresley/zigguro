@@ -14,6 +14,9 @@ const signals = @import("signals.zig");
 const sj = @import("stream_json.zig");
 const todos_mod = @import("../plan/todos.zig");
 const plan_mode = @import("../plan/plan_mode.zig");
+const skills_mod = @import("../ext/skills.zig");
+const skill_tool = @import("../ext/skill_tool.zig");
+const host_mod = @import("../tools/builtin/terminal_host.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -61,6 +64,17 @@ pub const HeadlessOptions = struct {
 };
 
 /// The process around a headless run, filled in by the app.
+/// What `/name` and the `skill` tool run on.
+pub const Skills = struct {
+    index: *skills_mod.SkillIndex,
+    /// The model's `skill` tool; the runner gives it the shell and grants.
+    tool: ?*skill_tool.SkillTool = null,
+    /// Runs shell injections; without one they fail.
+    host: ?host_mod.TerminalHost = null,
+    /// `ai.skills.disableShellExecution`.
+    disable_shell: bool = false,
+};
+
 pub const Env = struct {
     /// Stdin is a pipe or a file rather than a terminal.
     stdin_piped: bool = false,
@@ -95,6 +109,8 @@ pub const Env = struct {
     /// `exit_plan_mode`, registered with a placeholder agent: the runner
     /// attaches the run's agent and keeps the permission mode in step.
     plan_mode: ?*plan_mode.PlanMode = null,
+    /// Skills and slash commands; null runs without them.
+    skills: ?Skills = null,
 };
 
 pub const usage_text =
@@ -266,7 +282,8 @@ fn usage(diag: ?*[]const u8, msg: []const u8) Error {
     return error.Usage;
 }
 
-fn permissionMode(v: []const u8) ?PermissionMode {
+/// A `--permission-mode` value (also `/mode` in the REPL).
+pub fn permissionMode(v: []const u8) ?PermissionMode {
     const map = [_]struct { []const u8, PermissionMode }{
         .{ "default", .default },
         .{ "accept-edits", .accept_edits },

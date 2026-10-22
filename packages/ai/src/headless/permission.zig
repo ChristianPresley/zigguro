@@ -15,6 +15,7 @@ const std = @import("std");
 const proto = @import("zg_ai_proto");
 const deps = @import("../loop/deps.zig");
 const readonly = @import("../plan/readonly.zig");
+const run_mod = @import("../tools/builtin/run.zig");
 const ratelimit = @import("../provider/ratelimit.zig");
 const args_mod = @import("args.zig");
 const sj = @import("stream_json.zig");
@@ -188,6 +189,9 @@ pub const HeadlessPermission = struct {
     arena: std.heap.ArenaAllocator,
     /// Calls refused for want of an approval.
     denials: std.ArrayList(sj.Denial) = .empty,
+    /// Rules a skill's `allowed-tools` granted for the current turn
+    /// (guarded by `mutex`; strings in `arena`).
+    granted: std.ArrayList(Rule) = .empty,
 
     pub fn init(gpa: Allocator, opts: Options) Allocator.Error!HeadlessPermission {
         const allowed = try gpa.alloc(Rule, opts.allowed.len);
@@ -202,7 +206,52 @@ pub const HeadlessPermission = struct {
         h.gpa.free(h.allowed);
         h.gpa.free(h.disallowed);
         h.denials.deinit(h.gpa);
+        h.granted.deinit(h.gpa);
         h.arena.deinit();
+    }
+
+    /// Allows calls matching `rules` until `clearGrants`.
+    pub fn grant(h: *HeadlessPermission, io: Io, rules: []const []const u8) Allocator.Error!void {
+        h.mutex.lockUncancelable(io);
+        defer h.mutex.unlock(io);
+        for (rules) |t| try h.granted.append(h.gpa, .parse(try h.arena.allocator().dupe(u8, t)));
+    }
+
+    /// Ends the grants (the turn is over).
+    pub fn clearGrants(h: *HeadlessPermission, io: Io) void {
+        h.mutex.lockUncancelable(io);
+        defer h.mutex.unlock(io);
+        h.granted.clearRetainingCapacity();
+    }
+
+    fn isGranted(h: *HeadlessPermission, io: Io, sa: Allocator, tool: []const u8, input_json: []const u8) bool {
+        h.mutex.lockUncancelable(io);
+        defer h.mutex.unlock(io);
+        for (h.granted.items) |r| if (r.matches(sa, tool, input_json)) return true;
+        return false;
+    }
+
+    /// The rules as a command policy that never prompts: what would need
+    /// an approval is refused. Skill shell injections run behind it.
+    pub fn quietPolicy(h: *HeadlessPermission) run_mod.CommandPolicy {
+        return .{ .ctx = h, .check = quietCheck };
+    }
+
+    fn quietCheck(ctx: *anyopaque, io: Io, req: run_mod.CommandRequest) Io.Cancelable!deps.Decision {
+        const h: *HeadlessPermission = @ptrCast(@alignCast(ctx));
+        var scratch: std.heap.ArenaAllocator = .init(h.gpa);
+        defer scratch.deinit();
+        const input = std.json.Stringify.valueAlloc(scratch.allocator(), .{ .command = req.command }, .{}) catch return .{ .deny = "out of memory" };
+        const spec: proto.ToolSpec = .{
+            .name = "run_command",
+            .description = "",
+            .input_schema_json = "{}",
+            .read_only = false,
+            .handler = undefined,
+            .effects = .{ .executes = true },
+            .permission = .execute,
+        };
+        return h.decide(io, req.agent, &spec, input, .none, false);
     }
 
     /// Switches the mode, as plan approval does mid-turn.
@@ -230,6 +279,12 @@ pub const HeadlessPermission = struct {
     /// allow rules and modes that would have avoided one.
     fn checkHinted(ctx: *anyopaque, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: deps.Hint) Io.Cancelable!deps.Decision {
         const h: *HeadlessPermission = @ptrCast(@alignCast(ctx));
+        return h.decide(io, agent, spec, input_json, hint, true);
+    }
+
+    /// Without `may_prompt`, what would need an approval is refused
+    /// (and not counted as a denial).
+    fn decide(h: *HeadlessPermission, io: Io, agent: proto.AgentRef, spec: *const proto.ToolSpec, input_json: []const u8, hint: deps.Hint, may_prompt: bool) Io.Cancelable!deps.Decision {
         var scratch: std.heap.ArenaAllocator = .init(h.gpa);
         defer scratch.deinit();
         const sa = scratch.allocator();
@@ -248,10 +303,12 @@ pub const HeadlessPermission = struct {
         if (hint != .hook_ask) {
             if (mode == .bypass_permissions) return .allow;
             for (h.allowed) |r| if (r.matches(sa, spec.name, input_json)) return .allow;
+            if (h.isGranted(io, sa, spec.name, input_json)) return .allow;
             if (read_only) return .allow;
         }
         if (hint == .hook_allow) return .allow;
         if (hint != .hook_ask and mode == .accept_edits and !e.executes and !e.network and !e.open_world) return .allow;
+        if (!may_prompt) return .{ .deny = h.keep(io, "{s} needs approval, and commands in skills cannot ask; allow it with --allowed-tools or the skill's allowed-tools", .{spec.name}) };
         if (mode != .dont_ask) if (h.opts.broker) |b| {
             const reason = h.keep(io, "{s} needs approval", .{spec.name});
             const a = try b.ask(spec.name, input_json, reason);
