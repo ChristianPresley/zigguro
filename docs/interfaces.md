@@ -1807,14 +1807,17 @@ destroys and recreates the whole `Gpu`.
 Internal to E02 except `writeReport`'s JSON schema (golden-tested) and
 `CreateOptions`, which the app fills from `EnvOverrides` and E15 settings.
 
-## zg_syntax (Language, Registry, Highlighter)
+## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in
 `packages/syntax/src/root.zig`, `language.zig`, `registry.zig`, `detect.zig`,
-`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig` (E05.F04).
+`highlight_names.zig`, `lex/*.zig`, `highlight/*.zig`, `langs/*.zig`,
+`structure/*.zig` (E05.F04); the document adapter is
+`packages/editor/src/model/syntax.zig`.
 
 ### Implemented by
-E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer).
+E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
+structure from `std.zig.Ast`).
 
 ### Consumed by
 zg_editor (document highlighting and smart editing), E04 (rendering tokens),
@@ -1832,7 +1835,7 @@ pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: 
 pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
 pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
     lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
-    context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
+    structure: ?ParseFn, context_of: ?fn (kind: u16) ?ContextKind, edit_rules: EditRules, brackets: []const BracketPair, ... };
 pub const Registry = struct { pub fn init(gpa) !Registry; pub fn register(r, gpa, l: *const Language) !void;
     pub fn detect(r, path: ?[]const u8, head: []const u8) ?LanguageId; pub fn byName(r, name) ?LanguageId };
 pub fn defaultRegistry(gpa) !Registry;
@@ -1842,17 +1845,37 @@ pub const Highlighter = struct {
     pub fn init(gpa, lang: *const Language, reg: *const Registry) !Highlighter;
     pub fn reset(h, src: LineSource) !void;
     pub fn onEdit(h, e: LineEdit, src: LineSource, deadline: ?Deadline) !void; // to convergence, 4096-line cap
+    pub fn onEdits(h, edits: []const LineEdit, src: LineSource, deadline: ?Deadline) !void; // multi-cursor, old coords
     pub fn ensure(h, src: LineSource, first: u64, last: u64) !void;          // viewport exact (or approximate after resync)
     pub fn idle(h, src: LineSource, deadline: ?Deadline) !bool;              // true when done
     pub fn tokens(h, line: u64) []const Token;
     pub fn isExact(h, line: u64) bool; pub fn isApprox(h, line: u64) bool;
     pub fn kindAt(h, line: u64, col: u32, line_len: u32) ContextKind;
 };
+// Tier 2: structure parsed from a whole text (off the UI thread).
+pub const ParseFn = *const fn (gpa, text: []const u8, version: u64) (Allocator.Error || error{TooLarge})!Structure;
+pub const Structure = struct { version: u64, folds: []const FoldRange, symbols: []const Symbol, scopes: []const Scope, ...,
+    pub fn deinit(s) void;
+    pub fn outline(s) []const Symbol;                                        // pre-order, `parent` indexes
+    pub fn enclosingScopes(s, gpa, pos: u32, out: *ArrayList(Scope)) !void;  // innermost first
+    pub fn selectionRanges(s, gpa, pos: u32, out: *ArrayList(ByteRange)) !void; // innermost first
+    pub fn indentDepth(s, pos: u32) ?u32;
+};
+// zg_editor.model.syntax: the document adapter.
+pub fn lineSource(tree: *const PieceTree) LineSource;
+pub fn lineEdits(gpa, ev: *const ChangeEvent, after: PieceTree, out: *ArrayList(LineEdit)) !?[]const LineEdit;
+pub const DocumentSyntax = struct { hl: Highlighter, version: u64,
+    pub fn init(gpa, lang, reg, tree: *const PieceTree, version: u64) !DocumentSyntax;
+    pub fn onChange(ds, ev: *const ChangeEvent, after: *const PieceTree, deadline: ?Deadline) !void; // from a Listener
+    pub fn ensure(ds, tree, first: u64, last: u64) !void; pub fn idle(ds, tree, deadline) !bool };
+pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Structure;
 ```
 
 ### Threading
-One `Highlighter` per document, used from one thread (the UI thread). A
-`Registry` is read-only after setup and can be shared.
+One `Highlighter` (or `DocumentSyntax`) per document, used from one thread
+(the UI thread). A `Registry` is read-only after setup and can be shared.
+`parseStructure` runs on any thread from a retained `Snapshot`; the result is
+immutable and tagged with the snapshot's version, so a stale one is dropped.
 
 ### Ownership/lifetime
 `Language` definitions and the `Registry` are borrowed and must outlive every
