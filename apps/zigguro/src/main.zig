@@ -25,6 +25,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
+const zg_install = @import("zg_install");
 const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
 const zg_update = @import("zg_update");
@@ -53,6 +54,9 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     // Before any runtime init: no allocator, no worker threads.
     if (zg_release.cli.handleVersionFlag(min, &zg_release.current, "zigguro")) return 0;
     installCrashHandler(min, "zigguro");
+    // Windows: setup waits while this named mutex exists (E17.F02.S01.T03).
+    const running = zg_install.win.instance.hold(zg_install.win.instance.app_mutex);
+    defer running.release();
 
     var rt: zg_core.Runtime = undefined;
     try rt.init(min, .{});
