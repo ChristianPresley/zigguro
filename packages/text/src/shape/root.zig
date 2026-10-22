@@ -39,6 +39,7 @@ pub const complex = struct {
     pub const indic_tables = @import("complex/indic_tables.zig");
     pub const indic = @import("complex/indic.zig");
     pub const khmer = @import("complex/khmer.zig");
+    pub const vowel_constraints = @import("complex/vowel_constraints.zig");
     pub const myanmar = @import("complex/myanmar.zig");
 };
 
@@ -63,4 +64,5 @@ test {
     _ = @import("complex/khmer_myanmar_test.zig");
     _ = @import("would_apply.zig");
     _ = @import("complex/indic_test.zig");
+    _ = @import("complex/vowel_constraints.zig");
 }
