@@ -18,6 +18,8 @@ const skills_mod = @import("../ext/skills.zig");
 const skill_tool = @import("../ext/skill_tool.zig");
 const host_mod = @import("../tools/builtin/terminal_host.zig");
 const stack_mod = @import("../context/stack.zig");
+const agent_defs = @import("../subagent/defs.zig");
+const hooks_mod = @import("../ext/hooks.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -115,6 +117,10 @@ pub const Env = struct {
     /// Memory files, context assembly and compaction, installed by the
     /// app; `/context`, `/memory` and `/compact` read it.
     context: ?*stack_mod.ContextStack = null,
+    /// Subagent definitions, for `/agents`.
+    agents: []const agent_defs.AgentDef = &.{},
+    /// The hooks in effect, for `/hooks`.
+    hooks: ?*const hooks_mod.HookEngine = null,
 };
 
 pub const usage_text =

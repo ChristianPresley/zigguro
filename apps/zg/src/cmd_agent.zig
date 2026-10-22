@@ -271,6 +271,8 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
         .plan_mode = if (one_shot) null else &plan_mode,
         .skills = .{ .index = &skill_index, .tool = &skill_tool, .host = processes.host() },
         .context = &context,
+        .agents = agent_defs.items,
+        .hooks = &hook_engine,
     };
 
     const code = if (one_shot)
