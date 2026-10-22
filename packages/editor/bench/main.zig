@@ -146,6 +146,61 @@ fn undo10k(d: *Doc, s: *bench.State) void {
     }
 }
 
+/// A modified copy of `text` with `hunks` scattered single-line changes.
+fn mutateLines(gpa: std.mem.Allocator, text: []const u8, hunks: usize) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    const lines = std.mem.count(u8, text, "\n");
+    const every = lines / hunks;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var i: usize = 0;
+    while (it.next()) |line| : (i += 1) {
+        if (line.len == 0 and it.peek() == null) break;
+        if (every > 0 and i % every == every / 2) try out.appendSlice(gpa, "changed line\n");
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const DiffPair = struct {
+    a: zg_editor.model.diff.LineSource,
+    b: zg_editor.model.diff.LineSource,
+};
+
+fn diffPair(p: *DiffPair, s: *bench.State) void {
+    const diff = zg_editor.model.diff;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var r = diff.diffLines(std.heap.page_allocator, &p.a, &p.b, .{}) catch unreachable;
+        bench.doNotOptimizeAway(r.hunks.len);
+        r.deinit(std.heap.page_allocator);
+    }
+}
+
+fn registerDiff(b: *bench.Bench) !void {
+    const diff = zg_editor.model.diff;
+    inline for (.{
+        .{ "editor.diff.10k_100hunks", 10_000, 100, false },
+        .{ "editor.diff.100k_1khunks", 100_000, 1000, false },
+        .{ "editor.diff.unrelated_100k", 100_000, 0, true },
+    }) |c| {
+        const a_text = try genLines(b.gpa, c[1]);
+        defer b.gpa.free(a_text);
+        const b_text = if (c[3]) blk: {
+            const t = try b.gpa.dupe(u8, a_text);
+            std.mem.reverse(u8, t);
+            break :blk t;
+        } else try mutateLines(b.gpa, a_text, c[2]);
+        defer b.gpa.free(b_text);
+        var p: DiffPair = .{ .a = try .fromBytes(b.gpa, a_text), .b = try .fromBytes(b.gpa, b_text) };
+        defer p.a.deinit(b.gpa);
+        defer p.b.deinit(b.gpa);
+        _ = diff;
+        try b.run(c[0], &p, diffPair);
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -165,4 +220,5 @@ fn register(b: *bench.Bench) !void {
         defer d.deinit(b.gpa);
         try b.run(entry[0], d, entry[1]);
     }
+    try registerDiff(b);
 }
