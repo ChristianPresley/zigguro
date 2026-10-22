@@ -101,9 +101,10 @@ pub const Masks = struct {
     }
 };
 
-/// Click-count limits, as on Win32.
-const double_click_ns: u64 = 500 * std.time.ns_per_ms;
-const double_click_px: f32 = 4;
+/// Longest gap between the presses of a multi-click, as on Win32.
+pub const double_click_ns: u64 = 500 * std.time.ns_per_ms;
+/// Farthest the pointer may move between the presses of a multi-click.
+pub const double_click_px: f32 = 4;
 
 /// A wl_pointer axis.
 pub const Axis = enum(u1) { vertical, horizontal };
