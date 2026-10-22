@@ -236,6 +236,18 @@ pub const Seat = struct {
         for (0..@min(n, 32)) |_| try s.emitKey(out, win, k, .repeat, now_ns);
     }
 
+    /// A press from a server that repeats keys itself (X11 detectable
+    /// autorepeat): if `evdev` is already held, emits a repeat and returns
+    /// true; otherwise the caller handles it as a press with `key`.
+    pub fn serverRepeat(s: *Seat, out: anytype, evdev: u32, now_ns: u64) !bool {
+        const win = s.kb_focus orelse return false;
+        for (s.held[0..s.n_held]) |h| if (h == evdev) {
+            try s.emitKey(out, win, evdev, .repeat, now_ns);
+            return true;
+        };
+        return false;
+    }
+
     /// `wl_keyboard.modifiers`.
     pub fn modifiers(s: *Seat, serial: u32, depressed: u32, latched: u32, locked: u32, group: u32) void {
         s.last_serial = serial;
@@ -614,6 +626,26 @@ test "repeat fires for the held key; rate 0 disables" {
     for (r.events.items) |e| try testing.expectEqual(keys.KeyAction.repeat, e.key.ev.action);
     try testing.expectEqual(Repeat.disarm, s.repeatInfo(0, 300));
     try testing.expectEqual(Repeat.keep, try s.key(&r, 4, KEY_A, true, 0));
+}
+
+test "detectable autorepeat: a second press of a held key repeats" {
+    var s = try seatWithKeymap();
+    defer s.deinit(testing.allocator);
+    var r: Rec = .{};
+    defer r.deinit();
+    try s.kbEnter(&r, w1, 1, &.{});
+    try testing.expect(!try s.serverRepeat(&r, KEY_A, 0));
+    _ = try s.key(&r, 0, KEY_A, true, 0);
+    try testing.expect(try s.serverRepeat(&r, KEY_A, 0));
+    try testing.expect(try s.serverRepeat(&r, KEY_A, 0));
+    _ = try s.key(&r, 0, KEY_A, false, 0);
+    try testing.expect(!try s.serverRepeat(&r, KEY_A, 0));
+    const ev = r.events.items[1..];
+    try testing.expectEqual(@as(usize, 4), ev.len);
+    try testing.expectEqual(keys.KeyAction.press, ev[0].key.ev.action);
+    try testing.expectEqual(keys.KeyAction.repeat, ev[1].key.ev.action);
+    try testing.expectEqualStrings("a", r.textOf(ev[2].key.ev.text));
+    try testing.expectEqual(keys.KeyAction.release, ev[3].key.ev.action);
 }
 
 test "dead key + letter → one composed text_input" {

@@ -188,6 +188,27 @@ fn keystroke(t: *TestApp, s: *bench.State) void {
 
 /// Opens a 50-item menu and runs the frame that shows it, then closes it
 /// again (two frames per iteration; the open frame is the budgeted part).
+/// A workbench-sized layout: 4 groups of 6 tabs.
+const DockCase = struct {
+    m: zg_gui.dock.DockModel,
+    groups: [4]zg_gui.dock.model.GroupId,
+    panels: [24]zg_gui.dock.model.PanelRef,
+};
+
+/// Moves a tab into another tab's group, with undo history (one op per
+/// iteration).
+fn dockOp(c: *DockCase, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const p = c.panels[i % c.panels.len];
+        // Next to another panel, wherever that one is now.
+        const q = c.panels[(i * 7 + 3) % c.panels.len];
+        const g = c.m.groupOf(q) orelse continue;
+        c.m.move(p, .{ .group = .{ .g = g } }) catch return;
+        bench.doNotOptimizeAway(c.m.groups.count());
+    }
+}
+
 fn menuOpen(t: *TestApp, s: *bench.State) void {
     var i: u64 = 0;
     while (i < s.iterations()) : (i += 1) {
@@ -321,6 +342,19 @@ fn register(b: *bench.Bench) !void {
         defer t.deinit();
         var c: QpCase = .{ .t = t, .qp = &qp };
         try b.run("gui.quickpick_100k", &c, quickPick);
+    }
+    {
+        var c: DockCase = .{ .m = try .init(b.gpa), .groups = undefined, .panels = undefined };
+        defer c.m.deinit();
+        const center = c.m.firstGroup(c.m.areas[@intFromEnum(zg_gui.dock.model.Area.center)].root).?;
+        c.groups[0] = center;
+        for (&c.panels, 0..) |*p, i| {
+            p.* = try c.m.addPanel(1, null);
+            if (i < 4 and i > 0) {
+                c.groups[i] = (try c.m.split(c.groups[i - 1], if (i % 2 == 0) .bottom else .right, p.*)).?;
+            } else try c.m.openIn(p.*, c.groups[i % 4], null, .{});
+        }
+        try b.run("gui.dock.op", &c, dockOp);
     }
     {
         var h: zg_gui.w.HeightIndex = .init(b.gpa);

@@ -210,6 +210,8 @@ pub const wayland = struct {
     pub const seat = @import("wayland/seat.zig");
     /// See `wayland/data_device.zig`.
     pub const data_device = @import("wayland/data_device.zig");
+    /// See `wayland/dnd.zig`.
+    pub const dnd = @import("wayland/dnd.zig");
     /// See `wayland/cursor.zig`.
     pub const cursor = @import("wayland/cursor.zig");
     /// See `wayland/dmabuf.zig`.
@@ -295,6 +297,12 @@ pub const x11 = if (is_linux) struct {
     pub const keymap = @import("x11/keymap.zig");
     /// See `x11/selection.zig`.
     pub const selection = @import("x11/selection.zig");
+    /// See `x11/xkb.zig`.
+    pub const xkb = @import("x11/xkb.zig");
+    /// See `x11/keymap_from_server.zig`.
+    pub const keymap_from_server = @import("x11/keymap_from_server.zig");
+    /// See `x11/xinput2.zig`.
+    pub const xinput2 = @import("x11/xinput2.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -447,6 +455,7 @@ test {
     _ = win32.ime;
     _ = wayland.seat;
     _ = wayland.data_device;
+    _ = wayland.dnd;
     _ = linux_util.uri_list;
     _ = linux_util.xcursor;
     _ = wayland.cursor;
@@ -464,6 +473,9 @@ test {
         _ = @import("x11/backend.zig");
         _ = @import("x11/dri3.zig");
         _ = @import("x11/selection.zig");
+        _ = @import("x11/xkb.zig");
+        _ = @import("x11/keymap_from_server.zig");
+        _ = @import("x11/xinput2.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
     _ = @import("fswatch/windows_rdcw.zig");
@@ -532,6 +544,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/backend.zig", .src = @embedFile("wayland/backend.zig") },
     .{ .path = "wayland/seat.zig", .src = @embedFile("wayland/seat.zig") },
     .{ .path = "wayland/data_device.zig", .src = @embedFile("wayland/data_device.zig") },
+    .{ .path = "wayland/dnd.zig", .src = @embedFile("wayland/dnd.zig") },
     .{ .path = "linux/pipe_transfer.zig", .src = @embedFile("linux/pipe_transfer.zig") },
     .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
     .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
@@ -555,6 +568,9 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
     .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
     .{ .path = "x11/selection.zig", .src = @embedFile("x11/selection.zig") },
+    .{ .path = "x11/xkb.zig", .src = @embedFile("x11/xkb.zig") },
+    .{ .path = "x11/keymap_from_server.zig", .src = @embedFile("x11/keymap_from_server.zig") },
+    .{ .path = "x11/xinput2.zig", .src = @embedFile("x11/xinput2.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
     .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
     .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },

@@ -951,7 +951,26 @@ after `InitOptions.transfer_timeout_ns` (5 s) answers with empty data.
 `clipboard_changed` fires when another client sets a selection.
 `uri_list` data is the raw `text/uri-list`;
 `zg_platform.linux_util.uri_list.paths` turns it into local paths.
-Drag-and-drop offers are dropped until E01.F04.S03.T03.
+
+Drag and drop (E01.F04.S03.T03, `wayland/dnd.zig`):
+- As a target, `wl_data_device.enter` becomes `drop{enter}`, with the
+  offered types as `MimeId`s and the source's actions.
+  `application/x-zigguro-internal` is listed only while our own drag is
+  in progress. `motion` becomes `drop{over}` and `leave` becomes
+  `drop{leave}`.
+- `Command.set_drop_effect` sends `wl_data_offer.accept(enter serial,
+  type)` and (v3) `set_actions(effect, preferred)`, only when they
+  change. An `accept` type that is not offered refuses the drag.
+- On `drop` with an accepted type, the payload is read through a pipe
+  on the platform thread and becomes `drop{drop, data}`, with `allowed`
+  set to the compositor's final action. After that comes `finish` (v3,
+  unless the action is ask) and the offer is destroyed. A drop with
+  nothing accepted, or a failed read, becomes `drop{leave}`.
+- As a source, `Command.start_drag` creates a `wl_data_source` offering
+  the items, sets the allowed actions (v3) and starts the drag with the
+  newest button serial. `send` writes through the transfers, and
+  `dnd_finished` and `cancelled` become `drop{source_finished}` with the
+  chosen action (empty when cancelled). Drag icons are not sent yet.
 
 Cursors (E01.F04.S02.T04, `wayland/cursor.zig`, `linux/xcursor.zig`):
 `set_cursor` is per window and takes effect while the pointer is over
@@ -964,7 +983,7 @@ and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
 shows the default arrow. Animated cursors show their first frame.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too. Move,
-resize, window menu, drag, activation, dialogs and URIs return
+resize, window menu, activation, dialogs and URIs return
 `error.Unsupported`.
 
 ## zg_platform.x11.X11Backend
@@ -973,14 +992,17 @@ resize, window menu, drag, activation, dialogs and URIs return
 `packages/platform/src/x11/backend.zig`, with `present.zig` (the
 presenter: DRI3 pixmaps shown with `PresentPixmap`, MIT-SHM `AttachFd`
 memfds or core `PutImage`), `dri3.zig` (DRI3/Present requests, events
-and the startup probe), `keymap.zig`
-(core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
+and the startup probe), `xkb.zig` (XKB requests and events),
+`keymap_from_server.zig` (the server's XKB keymap → `xkb.Keymap`),
+`keymap.zig` (core keycode → keysym table, without XKB), `xinput2.zig`
+(XI2 requests, events and scroll valuators) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
 requests and event codes are in `proto.zig`; selections are in
 `selection.zig` (E01.F05.S02.T01, first part, E01.F05.S03.T01 and
 E01.F05.S03.T02).
 
 ### Implemented by
-E01.F05.S02.T01 / E01.F05.S03.T01 / E01.F05.S03.T02.
+E01.F05.S02.T01 / E01.F05.S02.T02 (XKB keyboard) / E01.F05.S03.T01 /
+E01.F05.S03.T02.
 
 ### Consumed by
 `zg_platform.init` on X11 sessions (and as the fallback from an
@@ -1011,6 +1033,27 @@ and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
 MSC, flip → `zero_copy`, skip → `discarded`). Frame pacing stays on the
 timer.
 
+Keyboard (E01.F05.S02.T02): with XKB, `XkbGetMap` and `XkbGetNames`
+become the shared `xkb.Keymap`
+(`keymapFromXkbGetMap(gpa, map_reply, names_reply, vmod_names)`), so keys
+resolve exactly as on Wayland: keys run through the Wayland seat's
+keyboard logic (`wayland/seat.zig`) for text, compose (rules loaded on a
+helper thread at startup) and chords. StateNotify feeds modifiers and the
+layout group; MapNotify and NewKeyboardNotify refetch the keymap.
+Detectable autorepeat is on, so server repeats arrive as `action =
+.repeat` (`Seat.serverRepeat`). Focus out releases held keys. Without
+XKB, keys use the core mapping.
+
+Pointer (E01.F05.S02.T02): with XInput 2.2+, windows select XI2 pointer
+and touch events for the master devices instead of core ones. Positions
+are subpixel (FP16.16), and entering a window also reports
+`pointer_move`. Scroll valuators (from `XIQueryDevice`, re-read on
+DeviceChanged and HierarchyChanged) give `scroll` in lines (one valuator
+increment = one notch, `.wheel` for whole notches, `.continuous`
+otherwise). The baseline resets on enter, and wheel buttons emulated from
+valuators are dropped. Devices without scroll valuators keep wheel buttons
+4–7. TouchBegin/Update/End become `touch`.
+
 Selections (E01.F05.S03.T01, `selection.zig`): CLIPBOARD and PRIMARY on a
 hidden InputOnly window. `clipboard_write` takes ownership with the newest
 event time (an empty item list gives it up). As owner we answer
@@ -1034,9 +1077,7 @@ A window's presenter and its buffers die with `destroyWindow`; `deinit`
 destroys every window and closes the connection.
 
 ### Stability
-Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
-use the core mapping, and auto-repeat arrives as release/press pairs),
-RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
+Experimental. Not yet: RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, explicit sync (`PresentPixmapSynced`), XFIXES
 update regions (presents update the whole window), MSC-based pacing and
 XDND. Move, resize, window
