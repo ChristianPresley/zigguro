@@ -7,6 +7,8 @@ const std = @import("std");
 
 /// The UCD input files in the order `ucdgen` expects them (for build scripts).
 pub const files = @import("src/tables.zig").files;
+/// The UCD input files of `ucdgen regex`, in argument order (zg_regex).
+pub const regex_files = @import("src/emit_regex.zig").files;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
