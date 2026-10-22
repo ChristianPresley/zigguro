@@ -94,14 +94,12 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
     }
     if (lookupKind(l) == 2) return applyMultipleLookup(c, l, acc, filter);
     var i: usize = 0;
-    while (i < c.buf.len()) {
-        if (c.budget.exhausted) return;
-        if (!digest.has(filter, c.buf.infos.items[i].gid) or !c.applicable(i)) {
-            i += 1;
-            continue;
-        }
+    while (true) {
+        i = c.nextCandidate(filter, i);
+        if (i >= c.buf.len()) return;
         const before = c.buf.len();
         const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+        if (c.budget.exhausted) return;
         if (applied) |next| {
             // A rule that consumed nothing and removed nothing must still
             // move on.
