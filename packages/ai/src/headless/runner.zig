@@ -18,6 +18,7 @@ const exit_codes = @import("exit_codes.zig");
 const permission = @import("permission.zig");
 const signals = @import("signals.zig");
 const sj = @import("stream_json.zig");
+const skills_mod = @import("../ext/skills.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -73,6 +74,8 @@ pub const Runner = struct {
     schema: ?validate.Compiled = null,
     structured: ?[]const u8 = null,
     invalid_output: bool = false,
+    /// Runs skill shell injections behind the quiet policy.
+    skill_shell: skills_mod.HostShell = undefined,
 
     /// Sets up the run. `r` must not move afterwards. On a `SetupError`,
     /// `r.diag` says why and `deinit` must still be called.
@@ -158,6 +161,13 @@ pub const Runner = struct {
             pm.targets.mode_sink = .{ .ctx = &r.perm, .set = setPermMode };
             pm.setMode(r.opts.permission_mode);
         } else r.agent.setPlanMode(r.opts.permission_mode == .plan);
+        if (env.skills) |sk| {
+            if (sk.host) |h| r.skill_shell = .{ .host = h, .policy = r.perm.quietPolicy() };
+            if (sk.tool) |t| {
+                t.expand = r.expandCtx();
+                t.grants = .{ .ctx = &r.perm, .grant = grantRules };
+            }
+        }
 
         r.seen_seq = r.agent.bus.lastSeq();
         // Inline: output keeps event order with permission prompts written
@@ -180,6 +190,38 @@ pub const Runner = struct {
                 .permission_mode = modeName(r.opts.permission_mode),
             } });
         }
+    }
+
+    fn grantRules(ctx: *anyopaque, io: Io, _: proto.AgentRef, _: []const u8, rules: []const []const u8) void {
+        const p: *permission.HeadlessPermission = @ptrCast(@alignCast(ctx));
+        p.grant(io, rules) catch {};
+    }
+
+    /// How skills expand in this run: the workspace, compat names, the
+    /// quiet shell.
+    pub fn expandCtx(r: *Runner) skills_mod.ExpandCtx {
+        const sk = r.opts.env.skills orelse return .{};
+        return .{
+            .vars = .{ .session_id = &r.session_text, .project_dir = r.opts.env.cwd, .compat = true },
+            .owner = r.agent.ref,
+            .shell = if (sk.host != null) r.skill_shell.shell() else null,
+            .disable_shell = sk.disable_shell,
+        };
+    }
+
+    /// Switches the permission mode between turns.
+    pub fn setMode(r: *Runner, mode: args_mod.PermissionMode) void {
+        if (r.opts.env.plan_mode) |pm| return pm.setMode(mode);
+        r.perm.setMode(mode);
+        r.agent.setPlanMode(mode == .plan);
+    }
+
+    /// Output for a slash command, ending with a newline.
+    pub fn say(r: *Runner, text: []const u8) void {
+        if (text.len == 0) return;
+        r.endText();
+        r.writeText(text);
+        r.endText();
     }
 
     fn setPermMode(ctx: *anyopaque, mode: args_mod.PermissionMode) void {
@@ -418,6 +460,8 @@ pub const Runner = struct {
         }
         r.in_turn.store(true, .release);
         defer r.in_turn.store(false, .release);
+        // Skill grants last until the turn ends.
+        defer r.perm.clearGrants(r.io);
         _ = try r.agent.submit(.{ .text = text, .source = .cli });
         r.agent.waitIdle();
         r.sync();
