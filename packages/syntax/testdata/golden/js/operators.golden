@@ -1,0 +1,8 @@
+1| variable:a operator:= variable:b operator:+ variable:c operator:- variable:d operator:* variable:e operator:/ variable:f operator:% variable:g operator:** variable:h punctuation.delimiter:;
+2| variable:x operator:+= number:1 punctuation.delimiter:; variable:y operator:-= number:2 punctuation.delimiter:; variable:z operator:||= variable:w punctuation.delimiter:; variable:q operator:??= variable:r punctuation.delimiter:;
+3| keyword.storage:const variable:ok operator:= variable:a operator:=== variable:b operator:&& variable:c operator:!== variable:d operator:|| operator:! variable:e punctuation.delimiter:;
+4| keyword.storage:const variable:s operator:= variable:a operator:<< number:2 operator:>> number:1 operator:>>> number:0 operator:& number:0xff operator:| number:1 operator:^ number:2 punctuation.delimiter:;
+5| keyword.storage:const variable:t operator:= variable:cond operator:? variable:yes operator:: variable:no punctuation.delimiter:;
+6| keyword.storage:const variable:spread operator:= punctuation.bracket:[ operator:... variable:items punctuation.delimiter:, operator:... variable:more punctuation.bracket:] punctuation.delimiter:;
+7| keyword.storage:const variable:fn operator:= punctuation.bracket:( variable:x punctuation.bracket:) operator:=> variable:x operator:* number:2 punctuation.delimiter:;
+8| variable:obj punctuation.delimiter:?. property:prop punctuation.delimiter:?. punctuation.bracket:[ variable:key punctuation.bracket:] punctuation.delimiter:?. punctuation.bracket:( variable:arg punctuation.bracket:) punctuation.delimiter:;
