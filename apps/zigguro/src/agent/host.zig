@@ -37,6 +37,7 @@ const zg_mcp_servers = @import("zg_mcp_servers");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
 const ReviewGlue = @import("review_glue.zig").ReviewGlue;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
+const ReviewAgentPort = @import("review_agent_port.zig").ReviewAgentPort;
 const PlanCards = @import("plan_card.zig").PlanCards;
 const ChildRelay = @import("panel.zig").ChildRelay;
 
@@ -65,6 +66,8 @@ pub const AgentHost = struct {
     /// E12: agent writes recorded, a checkpoint per user turn, and the
     /// restore behind rewind.
     review: *ReviewGlue,
+    /// Review fix requests reach `agent` through this.
+    review_port: ReviewAgentPort,
     file_tools: builtin_tools.files.FileTools,
     adapters: zg_ai.tools.adapters.all.Adapters,
     agent_tools: zg_ai.tools.AgentTools,
@@ -180,6 +183,8 @@ pub const AgentHost = struct {
         // Before the agent: it copies the manager's deps.
         h.context.install(&h.mgr.deps);
         h.agent = try h.mgr.create(.{ .model = model_name, .cwd = h.cwd });
+        h.review_port = .{ .agent = h.agent };
+        try h.review.bindAgent(h.review_port.port());
         // Undo groups name the agent's session.
         h.files.edits.session = @truncate(h.agent.ref.session);
         // Plan mode: `exit_plan_mode` asks through the panel's plan card.

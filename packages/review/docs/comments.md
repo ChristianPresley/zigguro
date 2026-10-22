@@ -123,6 +123,21 @@ the threads:
 - The header warns "⚠ N blocking comments unresolved". Accept all still
   works.
 
+Fix requests in the IDE:
+
+- The review glue owns `Feedback`. The workbench binds it to its agent
+  (`apps/zigguro/src/agent/review_agent_port.zig`) and runs `pump` after
+  each turn's changeset and each refresh. The workbench runs one agent,
+  so another session counts as ended. Sessions are not saved yet, so
+  "resume" is not offered; the view offers to send the request to the
+  current agent instead.
+- Request fix (in the header, when the focused file's changeset has open
+  threads) sends them all. Threads show "sent" and, once the agent's
+  revision changed their lines, "maybe addressed".
+- Interdiff (in the header, once there is a previous revision or a
+  superseded changeset) shows the changes between the two proposals;
+  Full diff goes back.
+
 Still to come: re-anchoring when an accepted hunk rebases the others,
 the `m`/`r`/`R` keys, and Markdown rendering of the comment bodies.
 
