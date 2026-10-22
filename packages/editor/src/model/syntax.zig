@@ -1,5 +1,6 @@
-//! Syntax for a document: drives a zg_syntax `Highlighter` from document
-//! changes and parses tier-2 structure from snapshots.
+//! Syntax for a document: drives a zg_syntax `Highlighter` and the
+//! bracket-pair tree from document changes, and parses structure (tier 2
+//! from snapshots, or the fallback from brackets and lines).
 //!
 //! zg_syntax knows lines, not documents (it sits a layer below), so this
 //! adapter supplies a `LineSource` over a piece tree and turns each
@@ -21,6 +22,9 @@ const Language = syntax.Language;
 const Registry = syntax.Registry;
 const Structure = syntax.Structure;
 const ChangeEvent = document.ChangeEvent;
+const BracketTree = syntax.BracketTree;
+const bracket_tree = syntax.brackets.bracket_tree;
+const HighlightBrackets = syntax.brackets.highlight_source.HighlightBrackets;
 
 /// A `LineSource` over `tree.*` (which must outlive the source). Lines that
 /// fit in one piece are returned in place; others are copied to scratch.
@@ -81,12 +85,18 @@ fn flush(gpa: Allocator, out: *std.ArrayList(LineEdit), c: anytype) Allocator.Er
     return @as(i128, e.inserted) - @as(i128, e.removed);
 }
 
-/// Highlighting for one document, updated from its change events.
+/// Highlighting and bracket pairs for one document, updated from its
+/// change events. The bracket tree follows the tokens: it is exact where
+/// the highlighting is.
 pub const DocumentSyntax = struct {
     gpa: Allocator,
     lang: *const Language,
     hl: Highlighter,
+    brackets: BracketTree,
     edits: std.ArrayList(LineEdit) = .empty,
+    text_edits: std.ArrayList(bracket_tree.TextEdit) = .empty,
+    retokenized: std.ArrayList(bracket_tree.Range) = .empty,
+    scratch: std.ArrayList(u8) = .empty,
     /// Version the highlighter reflects.
     version: u64,
 
@@ -96,13 +106,20 @@ pub const DocumentSyntax = struct {
         var hl: Highlighter = try .init(gpa, lang, reg);
         errdefer hl.deinit();
         try hl.reset(lineSource(tree));
-        return .{ .gpa = gpa, .lang = lang, .hl = hl, .version = version };
+        var ds: DocumentSyntax = .{ .gpa = gpa, .lang = lang, .hl = hl, .brackets = .init(gpa), .version = version };
+        errdefer ds.brackets.deinit();
+        try ds.rebuildBrackets(tree);
+        return ds;
     }
 
     /// Frees everything.
     pub fn deinit(ds: *DocumentSyntax) void {
         ds.hl.deinit();
+        ds.brackets.deinit();
         ds.edits.deinit(ds.gpa);
+        ds.text_edits.deinit(ds.gpa);
+        ds.retokenized.deinit(ds.gpa);
+        ds.scratch.deinit(ds.gpa);
     }
 
     /// Applies a change (from a document listener; `after` is the
@@ -113,18 +130,109 @@ pub const DocumentSyntax = struct {
         const src = lineSource(after);
         if (try lineEdits(ds.gpa, ev, after.*, &ds.edits)) |edits| {
             if (edits.len > 0) try ds.hl.onEdits(edits, src, deadline);
-        } else try ds.hl.reset(src);
+            ds.text_edits.clearRetainingCapacity();
+            for (ev.changes.replaces) |r| try ds.text_edits.append(ds.gpa, .{ .start = r.range.start, .end = r.range.end, .new_len = r.text.len });
+            try ds.syncBrackets(after, ds.text_edits.items, edits);
+        } else {
+            try ds.hl.reset(src);
+            try ds.rebuildBrackets(after);
+        }
     }
 
     /// Makes lines `[first, last]` of `tree` exact (or approximate, see
     /// `Highlighter.ensure`).
     pub fn ensure(ds: *DocumentSyntax, tree: *const PieceTree, first: u64, last: u64) Allocator.Error!void {
-        return ds.hl.ensure(lineSource(tree), first, last);
+        try ds.hl.ensure(lineSource(tree), first, last);
+        try ds.syncBrackets(tree, &.{}, &.{});
     }
 
     /// Background relexing; true when everything is exact.
     pub fn idle(ds: *DocumentSyntax, tree: *const PieceTree, deadline: ?Deadline) Allocator.Error!bool {
-        return ds.hl.idle(lineSource(tree), deadline);
+        const done = try ds.hl.idle(lineSource(tree), deadline);
+        try ds.syncBrackets(tree, &.{}, &.{});
+        return done;
+    }
+
+    /// Fallback structure (bracket and indentation folds, comment runs,
+    /// regions, declaration scopes) of `tree`, at the version the syntax
+    /// reflects. Exact once `idle` has finished.
+    pub fn fallbackStructure(ds: *DocumentSyntax, gpa: Allocator, tree: *const PieceTree) syntax.structure.structure.ParseError!Structure {
+        const text = try tree.copyRange(gpa, .{ .start = 0, .end = tree.len() });
+        defer gpa.free(text);
+        var hints: CommentHints = .{ .hl = &ds.hl, .src = lineSource(tree), .gpa = gpa };
+        defer hints.scratch.deinit(gpa);
+        const bt: ?*const BracketTree = if (ds.lang.brackets.len > 0) &ds.brackets else null;
+        return syntax.fallbackStructure(gpa, text, ds.version, bt, ds.lang, .{ .hints = .{ .ctx = &hints, .commentFn = CommentHints.isComment } });
+    }
+
+    fn bracketSource(ds: *DocumentSyntax, tree: *const PieceTree) HighlightBrackets {
+        var hb: HighlightBrackets = .init(ds.gpa, &ds.hl, lineSource(tree), lineIndex(tree));
+        hb.scratch = ds.scratch;
+        ds.scratch = .empty;
+        return hb;
+    }
+
+    fn rebuildBrackets(ds: *DocumentSyntax, tree: *const PieceTree) Allocator.Error!void {
+        _ = ds.hl.takeRelexed();
+        var hb = ds.bracketSource(tree);
+        defer ds.scratch = hb.scratch;
+        try ds.brackets.rebuild(hb.source());
+    }
+
+    /// Brings the bracket tree up to date: `text_edits` (old offsets) and
+    /// `line_edits` (old lines) are the change just applied, if any; lines
+    /// the highlighter relexed since are retokenized.
+    fn syncBrackets(ds: *DocumentSyntax, tree: *const PieceTree, text_edits: []const bracket_tree.TextEdit, line_edits: []const LineEdit) Allocator.Error!void {
+        ds.retokenized.clearRetainingCapacity();
+        // Lines the edits touched lost their tokens, whether or not they
+        // were relexed yet.
+        var delta: i128 = 0;
+        for (line_edits) |e| {
+            const first: u64 = @intCast(@as(i128, e.first) + delta);
+            try ds.retokenized.append(ds.gpa, lineBytes(tree, first, first + e.inserted));
+            delta += @as(i128, e.inserted) - @as(i128, e.removed);
+        }
+        if (ds.hl.takeRelexed()) |r| try ds.retokenized.append(ds.gpa, lineBytes(tree, r.start, r.end));
+        if (text_edits.len == 0 and ds.retokenized.items.len == 0) return;
+        var hb = ds.bracketSource(tree);
+        defer ds.scratch = hb.scratch;
+        try ds.brackets.applyEdits(text_edits, ds.retokenized.items, hb.source());
+    }
+};
+
+/// Bytes of lines `[a, b)` of `t`.
+fn lineBytes(t: *const PieceTree, a: u64, b: u64) bracket_tree.Range {
+    const n = t.lineCount();
+    const s = if (a < n) t.lineStart(a) else t.len();
+    const e = if (b < n) t.lineStart(b) else t.len();
+    return .{ .start = s, .end = @max(s, e) };
+}
+
+/// Line offsets of `tree.*`.
+pub fn lineIndex(tree: *const PieceTree) syntax.brackets.highlight_source.LineIndex {
+    return .{ .ctx = @ptrCast(tree), .len = tree.len(), .startFn = treeLineStart, .lineOfFn = treeLineOf };
+}
+
+fn treeLineStart(ctx: *const anyopaque, line: u64) u64 {
+    const t: *const PieceTree = @ptrCast(@alignCast(ctx));
+    return t.lineStart(line);
+}
+
+fn treeLineOf(ctx: *const anyopaque, pos: u64) u64 {
+    const t: *const PieceTree = @ptrCast(@alignCast(ctx));
+    return t.lineOf(pos);
+}
+
+const CommentHints = struct {
+    hl: *const Highlighter,
+    src: LineSource,
+    gpa: Allocator,
+    scratch: std.ArrayList(u8) = .empty,
+
+    fn isComment(ctx: *const anyopaque, line: u64) bool {
+        const c: *CommentHints = @ptrCast(@alignCast(@constCast(ctx)));
+        const text = c.src.get(line, &c.scratch, c.gpa) catch return false;
+        return c.hl.isCommentLine(line, text);
     }
 };
 
@@ -162,6 +270,22 @@ fn expectMatchesFresh(gpa: Allocator, ds: *DocumentSyntax, reg: *const Registry,
         try testing.expectEqualSlices(syntax.Token, fresh.hl.tokens(line), ds.hl.tokens(line));
         try testing.expect(fresh.hl.endState(line).eql(ds.hl.endState(line)));
     }
+    // The incrementally kept bracket tree equals one built from scratch.
+    try ds.brackets.check();
+    var pa: std.ArrayList(bracket_tree.BracketPairInfo) = .empty;
+    defer pa.deinit(gpa);
+    var pb: std.ArrayList(bracket_tree.BracketPairInfo) = .empty;
+    defer pb.deinit(gpa);
+    try ds.brackets.pairsInRange(gpa, .{ .start = 0, .end = tree.len() + 1 }, &pa);
+    try fresh.brackets.pairsInRange(gpa, .{ .start = 0, .end = tree.len() + 1 }, &pb);
+    try testing.expectEqualSlices(bracket_tree.BracketPairInfo, pb.items, pa.items);
+    var ua: std.ArrayList(u64) = .empty;
+    defer ua.deinit(gpa);
+    var ub: std.ArrayList(u64) = .empty;
+    defer ub.deinit(gpa);
+    try ds.brackets.unmatched(gpa, .{ .start = 0, .end = tree.len() + 1 }, &ua);
+    try fresh.brackets.unmatched(gpa, .{ .start = 0, .end = tree.len() + 1 }, &ub);
+    try testing.expectEqualSlices(u64, ub.items, ua.items);
 }
 
 test "lineEdits: inside a line, across lines, CRLF and merging" {
@@ -231,7 +355,7 @@ test "DocumentSyntax follows random edits" {
     var follower: Follower = .{ .doc = doc, .ds = &ds };
     _ = try doc.subscribe(.{ .ctx = &follower, .onChange = Follower.onChange });
 
-    const pieces = [_][]const u8{ "\n", "\r\n", "\"", "\\\\", "//", "'", "fn ", "x", "}", "{", "\r", "@" };
+    const pieces = [_][]const u8{ "\n", "\r\n", "\"", "\\\\", "//", "'", "fn ", "x", "}", "{", "\r", "@", "(", ")", "[" };
     var prng: std.Random.DefaultPrng = .init(0x5eed);
     const rand = prng.random();
     for (0..300) |round| {
@@ -270,4 +394,41 @@ test "parseStructure from a snapshot" {
     try testing.expect(s.symbols.len >= 3);
     try testing.expectEqualStrings("A", s.symbols[0].name);
     try testing.expect(try parseStructure(gpa, reg.get(.plain).?, &snap) == null);
+}
+
+test "DocumentSyntax: brackets in strings ignored, fallback structure" {
+    const gpa = testing.allocator;
+    var reg = try syntax.defaultRegistry(gpa);
+    defer reg.deinit(gpa);
+    const text =
+        \\// One
+        \\// two
+        \\// three
+        \\fn f(s: []const u8) void {
+        \\    const x = "})]";
+        \\    // ({[
+        \\    g(s, '}');
+        \\}
+        \\
+    ;
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), text);
+    defer doc.deinit();
+    var ds = try DocumentSyntax.init(gpa, reg.get(.zig).?, &reg, &doc.tree, doc.version);
+    defer ds.deinit();
+    while (!try ds.idle(&doc.tree, null)) {}
+    var un: std.ArrayList(u64) = .empty;
+    defer un.deinit(gpa);
+    try ds.brackets.unmatched(gpa, .{ .start = 0, .end = doc.len() }, &un);
+    try testing.expectEqual(@as(usize, 0), un.items.len);
+    const brace = std.mem.indexOf(u8, text, "{").?;
+    const m = ds.brackets.matching(brace).?;
+    try testing.expectEqual(@as(?u64, std.mem.lastIndexOf(u8, text, "}").?), m.close);
+    var s = try ds.fallbackStructure(gpa, &doc.tree);
+    defer s.deinit();
+    try testing.expectEqual(@as(usize, 2), s.folds.len);
+    try testing.expectEqual(syntax.structure.structure.FoldKind.comment, s.folds[0].kind);
+    try testing.expectEqual(@as(u32, 3), s.folds[1].start_line);
+    try testing.expectEqual(@as(u32, 6), s.folds[1].end_line);
+    try testing.expectEqual(@as(usize, 1), s.symbols.len);
+    try testing.expectEqualStrings("f", s.symbols[0].name);
 }

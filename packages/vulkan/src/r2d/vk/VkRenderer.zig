@@ -19,11 +19,15 @@
 //! 6. The target copies the repainted rects out (Readback) and delivers
 //!    them when the frame retires.
 //!
+//! Timestamps around the uploads, layer passes and window pass are read
+//! back when their slot is reused (`gpu_timing.zig`), so `FrameStats.gpu_ns`
+//! lags by up to frames_in_flight frames and never blocks.
+//!
 //! Layers not used in a frame are evicted least recently used first once
 //! they exceed `RendererOptions.layer_budget_bytes`.
 //!
 //! Targets today: headless and in-memory Readback. The Win32 swapchain,
-//! the Linux dmabuf ring and GPU timing follow.
+//! the Linux dmabuf ring follow.
 
 const VkRenderer = @This();
 
@@ -45,6 +49,7 @@ const Readback = @import("../../present/Readback.zig");
 const Damage = @import("../../present/Damage.zig");
 const CpuImage = @import("../../testing/CpuImage.zig");
 const batch = @import("batch.zig");
+const GpuTimer = @import("gpu_timing.zig");
 const wrap = r2d.layers;
 
 const log = std.log.scoped(.zg_vulkan);
@@ -118,6 +123,10 @@ frame_no: u64 = 0,
 extent: Size = .{ .w = 0, .h = 0 },
 scale: f32 = 1,
 needs_full: bool = true,
+/// GPU timestamps (null when the queue has none).
+timer: ?GpuTimer = null,
+/// The latest durations read back (from frames_in_flight frames ago).
+last_gpu: ?GpuTimer.Durations = null,
 
 /// Creates a Vulkan device for `opts` and a renderer on it. Headless
 /// targets only for now (`error.Unsupported` otherwise).
@@ -185,6 +194,8 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
     self.extent = opts.size;
     self.scale = 1;
     self.needs_full = true;
+    self.timer = GpuTimer.init(gpu, frames) catch null;
+    self.last_gpu = null;
     try self.textures.append(gpa, null); // slot 0 = none
     self.bindRing();
     return self;
@@ -193,6 +204,7 @@ pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.Re
 pub fn destroy(self: *VkRenderer) void {
     const gpa = self.gpa;
     self.sched.waitValue(self.sched.submitted) catch {};
+    if (self.timer) |*t| t.deinit();
     self.readback.deinit();
     self.uploader.deinit();
     for (self.textures.items) |t| if (t) |tex| {
@@ -616,16 +628,27 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
 
     const cb = fs.cb;
     const d = &self.gpu.ddisp;
+    // The slot retired in `begin`: read its timestamps, then reuse them.
+    var timer: ?*GpuTimer = null;
+    if (self.timer) |*t| {
+        if (t.collect(fs.index, self.io)) |g| self.last_gpu = g;
+        t.begin(cb, fs.index);
+        t.mark(cb, fs.index, .frame, .start);
+        t.mark(cb, fs.index, .uploads, .start);
+        timer = t;
+    }
     self.initFresh(cb);
     try self.uploader.record(cb, d);
     for (self.uploader.staging.items) |b| self.sched.deferDestroy(.{ .buffer = b });
     self.uploader.staging.clearRetainingCapacity();
     try self.ring.endFrame(cb, d);
+    if (timer) |t| t.mark(cb, fs.index, .uploads, .end);
     self.heap.bind(cb);
     const dual_src = self.pipes.text_subpixel != null;
     var bound: ?batch.Pipeline = null;
 
     // Layer passes.
+    if (timer) |t| if (self.layer_passes.items.len != 0) t.mark(cb, fs.index, .layers, .start);
     for (self.layer_passes.items) |lp| {
         const lu = dl.layers.items[lp.index];
         const tex = lp.tex;
@@ -652,8 +675,12 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
         tex.access = .shader_read;
     }
 
+    if (timer) |t| if (self.layer_passes.items.len != 0) t.mark(cb, fs.index, .layers, .end);
+
     // The window pass.
     if (repaint.slice().len != 0) {
+        if (timer) |t| t.mark(cb, fs.index, .main, .start);
+        defer if (timer) |t| t.mark(cb, fs.index, .main, .end);
         const img = acq.image;
         barriers.imageTransition(cb, d, img.image.handle, if (acq.age == 0) .undefined else img.access, .color_attachment, .{ .color = true });
         img.access = .color_attachment;
@@ -670,6 +697,7 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     }
 
     try self.readback.recordCopy(fs, repaint.slice());
+    if (timer) |t| t.mark(cb, fs.index, .frame, .end);
     self.retireDoomed();
     try self.sched.submit(fs, &.{}, &.{});
     self.readback.present(fs);
@@ -677,6 +705,7 @@ fn renderInner(self: *VkRenderer, dl: *const DrawList) !r2d.FrameStats {
     self.needs_full = false;
     stats.needs_full_redraw = full_repaint;
     stats.present_id = fs.timeline_value;
+    if (self.last_gpu) |g| stats.gpu_ns = g.frame_ns;
     stats.cpu_encode_ns = @intCast(zg_core.time.nowNs(self.io) - start);
     return stats;
 }

@@ -74,7 +74,8 @@ pub const Deadline = struct {
     }
 };
 
-const Range = struct { start: u64, end: u64 };
+/// Lines `[start, end)`.
+pub const Range = struct { start: u64, end: u64 };
 
 pub const Highlighter = struct {
     /// `onEdit` relexes at most this many lines (on top of its deadline).
@@ -94,6 +95,8 @@ pub const Highlighter = struct {
     pending: std.ArrayList(Range) = .empty,
     sink: TokenSink = .{},
     scratch: std.ArrayList(u8) = .empty,
+    /// Lines relexed since the last `takeRelexed`, in current lines.
+    relexed: ?Range = null,
     /// Counters for tests and benches.
     stats: struct { lines_lexed: u64 = 0, resets: u64 = 0 } = .{},
 
@@ -116,6 +119,7 @@ pub const Highlighter = struct {
     pub fn reset(h: *Highlighter, src: LineSource) Allocator.Error!void {
         try h.store.spliceLines(h.gpa, 0, h.store.lineCount(), src.lines);
         h.pending.clearRetainingCapacity();
+        h.relexed = null;
         if (src.lines > 0) try h.pending.append(h.gpa, .{ .start = 0, .end = src.lines });
     }
 
@@ -143,6 +147,32 @@ pub const Highlighter = struct {
     /// Whether `line`'s tokens came from a resync approximation.
     pub fn isApprox(h: *const Highlighter, line: u64) bool {
         return h.store.rec(line).flags.approx;
+    }
+
+    /// Lines `[start, end)` whose tokens may have changed since the last
+    /// call (relexed lines, which also covers lines whose tokens came out
+    /// the same). For keeping derived data, like the bracket tree, current.
+    pub fn takeRelexed(h: *Highlighter) ?Range {
+        defer h.relexed = null;
+        return h.relexed;
+    }
+
+    /// Whether `line` (whose text is `text`) holds a comment and nothing
+    /// else but blanks.
+    pub fn isCommentLine(h: *const Highlighter, line: u64, text: []const u8) bool {
+        const toks = h.tokens(line);
+        var any = false;
+        for (toks, 0..) |t, i| {
+            const end = if (i + 1 < toks.len) toks[i + 1].start else text.len;
+            if (t.start >= text.len) break;
+            const lang = if (t.kind & Token.injected_bit != 0) h.reg.getOrPlain(h.endState(line).top()) else h.lang;
+            if (lang.contextOf(t.kind, t.hl) == .comment) {
+                any = true;
+                continue;
+            }
+            for (text[t.start..@min(end, text.len)]) |c| if (c != ' ' and c != '\t') return false;
+        }
+        return any;
     }
 
     /// Whether everything is relexed.
@@ -194,6 +224,15 @@ pub const Highlighter = struct {
             }
         }
         h.pending.items.len = out;
+        if (h.relexed) |*r| {
+            if (r.end <= e.first) {} else if (r.start >= old_end) {
+                r.start = r.start - e.removed + e.inserted;
+                r.end = r.end - e.removed + e.inserted;
+            } else {
+                r.start = @min(r.start, e.first);
+                r.end = if (r.end > old_end) r.end - e.removed + e.inserted else e.first + e.inserted;
+            }
+        }
         // The edited lines, or the line after a pure deletion.
         const n = h.store.lineCount();
         const mark_end = @min(n, e.first + @max(e.inserted, 1));
@@ -294,6 +333,10 @@ pub const Highlighter = struct {
                 return .reset;
             },
         };
+        if (h.relexed) |*r| {
+            r.start = @min(r.start, line);
+            r.end = @max(r.end, line + 1);
+        } else h.relexed = .{ .start = line, .end = line + 1 };
         const changed = try h.store.setLine(h.gpa, line, h.sink.tokens(), end, .{
             .approx = approx,
             .long_line = text.len > lexer.max_tokenized_line,
