@@ -1,6 +1,7 @@
 //! zg_platform benchmarks (`zig build bench`): event ring push/pop and
 //! cross-thread wake round trips (E01.F01 budgets: ring < 30 ns per push+pop,
-//! wake < 100 µs p99), PTY spawn (E01.F06: < 5 ms on Linux) and watch setup (>= 50k dirs/s).
+//! wake < 100 µs p99), PTY spawn (E01.F06: < 5 ms on Linux), watch setup (>= 50k dirs/s)
+//! and XKB keymap parsing (E01.F04: < 2 ms for us.xkb in ReleaseFast).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -26,6 +27,23 @@ fn register(b: *bench.Bench) !void {
     if (@import("builtin").os.tag == .linux) {
         try b.run("pty: spawn /bin/true and wait", b, ptySpawnTrue);
         try watchSetup(b);
+    }
+    try xkbParse(b);
+}
+
+/// Parses the `us` fixture (about 60 KB, like Mutter's). Skipped when not
+/// run from the repository root.
+fn xkbParse(b: *bench.Bench) !void {
+    const text = std.Io.Dir.cwd().readFileAlloc(b.io, "packages/platform/src/xkb/testdata/us.xkb", b.gpa, .limited(1 << 20)) catch return;
+    defer b.gpa.free(text);
+    try b.run("xkb: parse us.xkb", text, xkbParseOnce);
+}
+
+fn xkbParseOnce(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| {
+        var km = zg_platform.xkb.Keymap.parse(s.allocator(), text) catch unreachable;
+        km.deinit(s.allocator());
     }
 }
 
