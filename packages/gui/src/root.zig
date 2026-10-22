@@ -42,4 +42,5 @@ test {
     _ = @import("layout/flex_test.zig");
     _ = @import("input/input_test.zig");
     _ = @import("widgets/controls_test.zig");
+    _ = @import("paint/draw_list_test.zig");
 }
