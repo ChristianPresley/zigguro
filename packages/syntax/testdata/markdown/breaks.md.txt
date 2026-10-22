@@ -1,0 +1,10 @@
+Paragraph one.
+
+***
+---
+___
+* * *
+
+line with hard break  
+next line\
+last line

@@ -1,0 +1,7 @@
+<!-- a one-line comment -->
+<p>before<!-- inline --> after</p>
+<!--
+  a comment over
+  several lines with <b>tags</b>
+-->
+<p>done</p>

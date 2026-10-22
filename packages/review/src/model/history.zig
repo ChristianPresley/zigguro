@@ -6,6 +6,10 @@
 //! A rename is recorded as two files: the new path created (with `from`),
 //! the old one deleted.
 //!
+//! `fold` replaces several records with one (an agent turn's writes
+//! become its changeset's apply): each folded record gets an `undo` with
+//! no files, so undo, restore and `lastApplyOf` see only the new record.
+//!
 //! Owner thread only, like the queue, except `lastId`, which any thread
 //! may read (checkpoints). The store journals each record (`Recorder`)
 //! and replays it with `restore`.
@@ -106,6 +110,19 @@ pub const History = struct {
         if (c.id >= h.next_id.load(.monotonic)) h.next_id.store(c.id + 1, .release);
     }
 
+    /// Replaces the apply records `ids` (oldest first) with `a`, which
+    /// must cover what they wrote (each file's first `pre`, last `post`):
+    /// each gets an `undo` record without files, then `a` is recorded.
+    /// Returns `a`'s id.
+    pub fn fold(h: *History, folded: []const u64, a: Apply) Allocator.Error!u64 {
+        for (folded) |id| {
+            const r = h.get(id) orelse continue;
+            if (r.kind != .apply or h.undone(id)) continue;
+            _ = try h.record(.{ .kind = .undo, .cs = r.cs, .undoes = id, .session = r.session, .created_ms = a.created_ms, .files = &.{} });
+        }
+        return h.record(a);
+    }
+
     /// Ids below `next` are taken: a compaction dropped their records.
     pub fn reserve(h: *History, next: u64) void {
         if (next > h.next_id.load(.monotonic)) h.next_id.store(next, .release);
@@ -197,4 +214,23 @@ test "history: ids increase, restore keeps order, undo hides an apply" {
     const u = try h.record(.{ .kind = .undo, .cs = cs, .undoes = 7, .created_ms = 3, .files = &.{} });
     try testing.expectEqual(@as(u64, 8), u);
     try testing.expectEqual(a1, h.lastApplyOf(cs).?.id);
+}
+
+test "history: fold hides the folded records behind one apply" {
+    var h: History = .init(testing.allocator, null);
+    defer h.deinit();
+    const cs: ChangesetId = @enumFromInt(4);
+    const f1 = [_]ApplyFile{.{ .path = "a.txt", .pre = ids.blobHash("0"), .post = ids.blobHash("1") }};
+    const f2 = [_]ApplyFile{.{ .path = "a.txt", .pre = ids.blobHash("1"), .post = ids.blobHash("2") }};
+    const w1 = try h.record(.{ .cs = null, .session = 9, .created_ms = 1, .files = &f1 });
+    const w2 = try h.record(.{ .cs = null, .session = 9, .created_ms = 2, .files = &f2 });
+    const all = [_]ApplyFile{.{ .path = "a.txt", .pre = ids.blobHash("0"), .post = ids.blobHash("2") }};
+    const id = try h.fold(&.{ w1, w2, 99 }, .{ .cs = cs, .session = 9, .created_ms = 3, .files = &all });
+    try testing.expect(h.undone(w1) and h.undone(w2));
+    try testing.expect(!h.undone(id));
+    try testing.expectEqual(id, h.lastApplyOf(cs).?.id);
+    try testing.expectEqual(h.lastId(), id);
+    var live: usize = 0;
+    for (h.items()) |r| live += @intFromBool(r.kind == .apply and !h.undone(r.id));
+    try testing.expectEqual(@as(usize, 1), live);
 }

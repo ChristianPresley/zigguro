@@ -1,0 +1,7 @@
+<script>
+  const greet = (name) => `hello ${name}`;
+  if (a < b && c > d) console.log("</p>");
+</script>
+<script type="module">import { x } from "./x.js";</script>
+<script type="application/json">{"not": "lexed as js"}</script>
+<script src="app.js"></script>

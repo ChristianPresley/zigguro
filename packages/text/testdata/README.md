@@ -66,6 +66,15 @@ with `zg_text` points at a bug in one of them. `zig build` never runs it.
   line by line.
 - Regenerate `zg_core.testkit.golden` files with `zig build test-text -Dupdate-golden`.
 
+## Terminal cell goldens
+
+`golden/cells/procedural_WxH.pgm` hold every procedural glyph (box
+drawing, blocks, braille, Powerline, sextants) drawn at a W×H cell, 32 per
+row in `box_drawing.id` order, produced by `sheet()` in
+`src/layout/cells_test.zig` and checked by eye. The test compares them
+byte for byte; after a deliberate drawing change, delete the files and run
+the tests twice per size to write new ones.
+
 ## Outline goldens
 
 `golden/glyf/*.zon` hold fontTools `BasePen` paths for selected glyphs (the
@@ -145,3 +154,13 @@ zig build text-dump -- raster <font> <gid|U+XXXX> <px> [--subpixel 0.25] [--coor
 ```
 
 Subcommands whose engine has not landed print `not implemented` and exit 2.
+
+## Font discovery fixtures
+
+`fontconfig/root/` and `fontconfig/noconfig/` are fake file system roots
+for the Linux discovery tests (`src/fonts/discovery_test.zig`), passed as
+`Options.sysroot` with `HOME=/home/u`. The `.conf` files are hand-written
+in fontconfig's format (fonts-conf(5)) to cover dir prefixes, `conf.d`
+ordering, include cycles, aliases, the match-prepend pattern and a
+malformed file. The `.ttf`/`.otf`/`.ttc`/`.otc` files there are one-line
+placeholders, not fonts: discovery only looks at names.

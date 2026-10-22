@@ -1,0 +1,6 @@
+<form action="/submit" method="post">
+  <label for="name">Name</label>
+  <input id="name" name="name" required minlength="2">
+  <select name="pick"><option value="1" selected>One</option></select>
+  <button type="submit">Send</button>
+</form>

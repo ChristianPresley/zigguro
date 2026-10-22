@@ -1,0 +1,6 @@
+<br>
+<br/>
+<hr />
+<img src="a.png" />
+<link rel="stylesheet" href="s.css">
+<meta name="viewport" content="width=device-width">

@@ -1,0 +1,6 @@
+1| punctuation.delimiter:---
+2| property:title punctuation.delimiter:: string:"Hello"
+3| property:tags punctuation.delimiter:: punctuation.bracket:[ string:a punctuation.delimiter:, string:b punctuation.bracket:]
+4| property:draft punctuation.delimiter:: constant.builtin:false
+5| punctuation.delimiter:---
+6| markup.heading.1:# Body

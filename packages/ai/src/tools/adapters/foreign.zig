@@ -24,6 +24,9 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const log = std.log.scoped(.ai_tools);
 
+/// What `Exporter.subscribe_changed` registers.
+pub const ChangedCb = registry.ChangedCb;
+
 pub const Kind = enum {
     lsp,
     debug,

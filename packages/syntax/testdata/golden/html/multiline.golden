@@ -1,0 +1,8 @@
+1| punctuation:< tag:div
+2| attribute:class operator:= string:"wide"
+3| attribute:title operator:= string:"a value
+4| string:spanning lines"
+5| attribute:data-x operator:= string:'single
+6| string:quoted' punctuation:>
+7|
+8| punctuation:</ tag:div punctuation:>

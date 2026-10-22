@@ -66,6 +66,18 @@ pub const LexState = struct {
         return true;
     }
 
+    /// Like `push`, for a guest named by a registry name or alias (a
+    /// Markdown info string): the framework looks the name up when the
+    /// host returns, and pops the guest again when it is unknown, so the
+    /// host lexes the next line itself. Names longer than `max_aux` never
+    /// match.
+    pub fn pushByName(s: *LexState, name: []const u8) bool {
+        if (name.len == 0 or name.len > max_aux) return false;
+        if (!s.push(LanguageId.unresolved)) return false;
+        s.setAux(name);
+        return true;
+    }
+
     /// Ends the running guest and resumes its host's mode and depth (the
     /// host's aux bytes are not kept). No-op at the root.
     pub fn pop(s: *LexState) void {

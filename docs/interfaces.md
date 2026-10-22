@@ -1843,7 +1843,7 @@ panel, "undo agent change"), E12 checkpoints.
 
 ### Signature
 ```zig
-pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0 };
+pub const Selection = struct { anchor: u64, head: u64, goal_x: ?f32 = null, id: u32 = 0, virtual: u32 = 0 };
 pub const CoalesceKey = enum { typing_word, typing_space, delete_left, delete_right };
 pub const GroupMeta = struct { label: []const u8 = "", origin: EditOrigin, timestamp: std.Io.Timestamp, coalesce_key: ?CoalesceKey = null };
 pub const NodeId = enum(u32) { root = 0, none = maxInt(u32), _ };
@@ -1874,6 +1874,69 @@ invalidated by a `record` that prunes.
 
 ### Stability
 Unstable until the persistent undo file (E05.F02.S02.T02) lands.
+
+## zg_editor.model.edit selections (SelectionSet, multi_cursor, runner)
+
+### Defined in
+`packages/editor/src/model/edit/{selection.zig, multi_cursor.zig, runner.zig}` (E05.F02.S01).
+
+### Implemented by
+E05.F02.S01.T02.
+
+### Consumed by
+`EditorView` (F05) and the E15 command layer (multi-cursor commands), F07 smart typing and F08
+line operations (as `EditFn`s), E05.F09 Vim/Emacs.
+
+### Signature
+```zig
+pub const max_selections = 100_000;
+pub const NormalizeMode = enum { for_display, for_edit }; // for_edit also merges a caret touching a range
+pub const SelectionSet = struct { gpa, items, primary_id: u32, word_search: bool,
+    pub fn init(gpa, first: Selection) !SelectionSet; pub fn deinit(s) void;
+    pub fn slice(s) []const Selection; pub fn count(s) usize; pub fn ranges(s) RangeIterator;
+    pub fn primary(s) Selection; pub fn primaryIndex(s) u32; pub fn setPrimary(s, idx: u32) void;
+    pub fn add(s, sel) error{TooManySelections, OutOfMemory}!void;     // becomes primary; normalize after
+    pub fn set(s, sels: []const Selection, primary_idx: usize) !void;
+    pub fn normalize(s, mode: NormalizeMode) void; pub fn mapThrough(s, cs: *const ChangeSet) void;
+    pub fn collapseToPrimary(s) void;
+    pub fn pushHistory(s) !void; pub fn undoCursorOp(s) !bool; pub fn clearHistory(s) void };
+// multi_cursor.zig
+pub const DisplayPos = struct { row: u64, col_px: f32 };
+pub const Hit = struct { offset: u64, virtual: u32 = 0 };
+pub const DisplayMapQuery = struct { ptr, rowCountFn, hitTestFn; pub fn rowCount(q) u64; pub fn hitTest(q, row, col_px) Hit };
+pub const ColumnOptions = struct { tab_size: u32 = 4, width: zg_text.unicode.width.WidthOptions = .{} };
+pub const ColumnMap = struct { gpa, snap: *const Snapshot, o: ColumnOptions; pub fn query(m) DisplayMapQuery }; // headless
+pub const BoxSelection = struct { anchor: DisplayPos, head: DisplayPos, virtual_space: bool = false };
+pub fn boxToSelections(b: BoxSelection, dm: DisplayMapQuery, out: *SelectionSet) !void;
+pub fn addCursorVertical(snap, sels, dir: enum { up, down }, o: ColumnOptions) !bool;
+pub fn splitIntoLines(snap, sels) !void; pub fn collapse(sels) !void;
+pub const OccurrenceOptions = struct { case_sensitive: ?bool = null, whole_word: ?bool = null, wrap: bool = true };
+pub fn addNextOccurrence(doc, sels, o) !bool; pub fn skipOccurrence(doc, sels, o) !bool;
+pub fn selectAllOccurrences(doc, sels, o) !usize;
+pub fn columnOf(line, at, o) u32; pub fn byteAtColumn(line, col, o) struct { byte: usize, virtual: u32 };
+// runner.zig
+pub const Target = union(enum) { map, in_edit: struct { edit: u32, delta: ?u32 = null },
+    range_in_edit: struct { edit: u32, anchor: u32, head: u32 } };
+pub const EditBuilder = struct { pub fn replace(b, range, text) !u32; pub fn insert(b, at, text) !u32;
+    pub fn delete(b, range) !u32; pub fn select(b, t: Target) void };
+pub const EditFn = *const fn (ctx: *anyopaque, snap: *const Snapshot, sel: Selection, out: *EditBuilder) anyerror!void;
+pub const RunResult = struct { dropped: u32 = 0, changed: bool = false };
+pub fn runPerSelection(doc, sels, f: EditFn, ctx: *anyopaque, origin: EditOrigin) !RunResult;
+pub fn typeText(doc, sels, text, origin) !RunResult; // pads carets in virtual space first
+```
+Edits are ordered by position, then selection order; an edit overlapping one kept before it
+is dropped (counted in `dropped`) and its selection is mapped instead. A run clears the cursor
+history and `word_search`. Occurrence commands started from a caret select the word under each
+caret first and then match whole words case-sensitively (VS Code).
+
+### Threading
+Owner (UI) thread, with the Document.
+
+### Ownership/lifetime
+The set owns its selections and history. `ColumnMap` borrows the snapshot.
+
+### Stability
+Unstable until the F05 display map supplies `DisplayMapQuery`.
 
 ## zg_editor.model.diff
 
@@ -2731,7 +2794,7 @@ Internal to E02 behind `r2d.Renderer`.
 E05.F04.S01.T01 (tier-1 framework), E05.F04.S01.T02 (Zig lexer and Zig
 structure from `std.zig.Ast`), E05.F04.S02.T01 (C/C++, Rust and Go lexers), E05.F04.S02.T02 (Python and YAML),
 E05.F04.S02.T03 (JSON/JSONC, TOML and shell),
-E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS),
+E05.F04.S02.T04 (JavaScript, TypeScript, JSX/TSX and CSS), E05.F04.S02.T05 (HTML and Markdown with injection),
 E05.F04.S03.T01 (bracket-pair tree, fallback structure and structure queries).
 
 ### Consumed by
@@ -2746,7 +2809,10 @@ pub const HighlightId = enum(u16) { none, comment, comment_doc, string, ..., inv
 pub fn resolve(comptime T: type, table: []const ?T, id: HighlightId) ?T;
 pub const Token = packed struct(u64) { start: u32, kind: u16, hl: HighlightId };
 pub const LexState = struct { stack: [4]Frame, stack_len: u8, mode: u16, depth: u16, aux: [32]u8, aux_len: u8,
-    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool };
+    pub fn push(s, guest: LanguageId) bool; pub fn pop(s) void; pub fn eql(a, b) bool,
+    // Pushes `LanguageId.unresolved` with `name` in `aux`; after the host's lexLine the framework looks the
+    // name up with `Registry.byName` and starts that guest, or pops back so the host lexes raw lines.
+    pub fn pushByName(s, name: []const u8) bool };
 pub const Lexer = struct { lexLineFn: *const fn (st: *LexState, s: *Scanner, out: *TokenSink) void };
 pub const Language = struct { id: LanguageId, name: []const u8, aliases, extensions, filenames, shebangs: []const []const u8,
     lexer: Lexer, injection_end: ?fn (host_mode: u16, line: []const u8, from: u32) ?u32, resync: ?fn ([]const u8) bool,
@@ -2816,7 +2882,8 @@ pub fn parseStructure(gpa, lang: *const Language, snap: *const Snapshot) !?Struc
 // Tier-1 languages (langs/*.zig), all in `builtin_languages`.
 pub const zig_language, c_language, cpp_language, rust_language, go_language, python_language, yaml_language,
     json_language, jsonc_language, toml_language, shell_language,
-    javascript_language, typescript_language, jsx_language, tsx_language, css_language: Language;
+    javascript_language, typescript_language, jsx_language, tsx_language, css_language,
+    html_language, markdown_language: Language;
 pub const EditRules = struct { line_comment, block_comment, auto_close,
     insert_spaces: ?bool = null,                 // Go: false (tabs)
     indent_after: []const []const u8,            // e.g. "{"
@@ -2849,6 +2916,13 @@ pub const js.Dialect = packed struct { typescript: bool = false, jsx: bool = fal
 pub fn js.lexLineWith(comptime d: Dialect, st, s, out) void;
 // langs/css.zig: `depth` = brace depth (selectors at 0, declarations inside; a line whose `{` comes before `;`/`}`
 // is a nested selector); `mode` = block comment | value continues | at-rule prelude.
+// langs/html.zig: `mode` = html.State (data, tag, comment, rcdata, raw script, CDATA, quoted attribute, script,
+// style, declaration) | open element << 4 (script, style, textarea, title) | non-JS type | end tag | type attribute.
+// `<script>` pushes javascript and `<style>` css; injection_end finds `</script` / `</style` (case-insensitive).
+// langs/markdown.zig: `mode` = block (normal, fence, front matter, HTML block) | paragraph | started, and for a
+// fence its character and length << 6. Fences push the info string's first word by name (unknown names stay raw),
+// front matter on line 1 pushes yaml, HTML blocks push html until a blank line.
+pub fn markdown.infoName(info: []const u8) []const u8;
 ```
 
 ### Threading
@@ -2868,6 +2942,37 @@ A `BracketSource` must describe the text the tree is updated to.
 Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
+
+## zg_editor.view.markdown_highlighter (MarkdownHighlighter)
+
+### Defined in
+`packages/editor/src/view/markdown_highlighter.zig` (E05.F04.S02).
+
+### Implemented by
+E05.F04.S02.T05.
+
+### Consumed by
+Hosts of `zg_gui.markdown.view` (the agent panel, notes, hovers) via `MdViewProps.highlighter`.
+
+### Signature
+```zig
+pub const MarkdownHighlighter = struct {
+    pub fn init(gpa) !MarkdownHighlighter;            // registry of every built-in language
+    pub fn deinit(m, gpa) void;
+    pub fn highlighter(m) zg_gui.markdown.code_view.Highlighter;
+    // Sorted, disjoint, non-plain spans; nothing for an unknown language (looked up by name or alias).
+    pub fn highlight(m, gpa, lang: []const u8, code: []const u8, out: *std.ArrayList(Span)) !void };
+pub fn classOf(hl: zg_syntax.HighlightId) zg_gui.markdown.code_view.SyntaxClass; // by dotted parent
+```
+
+### Threading
+One per UI thread; it reuses a token buffer between calls.
+
+### Ownership/lifetime
+Owns its registry; must outlive every `MdViewProps` that holds its `highlighter()`.
+
+### Stability
+Unstable until E15 themes map `HighlightId` directly.
 
 ## zg_editor.model.api (DocumentRegistry, LspSync)
 

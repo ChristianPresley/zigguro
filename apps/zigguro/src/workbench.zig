@@ -30,11 +30,13 @@ const zg_syntax = @import("zg_syntax");
 const zg_terminal_view = @import("zg_terminal_view");
 const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
+const zg_review = @import("zg_review");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const QueuePanel = @import("review/queue_panel.zig").QueuePanel;
+const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 
 const Ui = zg_gui.Ui;
@@ -67,10 +69,14 @@ pub const Workbench = struct {
     /// The docking layout and its view.
     dock: zg_gui.dock.DockModel,
     dv: zg_gui.dock.DockView = undefined,
+    /// Torn-off panels' windows (`enableFloating`).
+    floater: ?zg_gui.dock.floating.Floater = null,
     /// The dock panels of the terminal and the agent, once created.
     terminal_ref: ?PanelRef = null,
     agent_ref: ?PanelRef = null,
     review_ref: ?PanelRef = null,
+    /// The hunk-by-hunk review tab (editor area), while open.
+    review_view_ref: ?PanelRef = null,
     /// The current file's panel.
     cur_panel: ?PanelRef = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
@@ -110,6 +116,9 @@ pub const Workbench = struct {
     focus_agent: bool = false,
     /// The review queue (needs the agent), created on first show.
     review_panel: ?*QueuePanel = null,
+    /// The last review view; kept after its tab closes until the next
+    /// one opens.
+    review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
 
@@ -130,6 +139,7 @@ pub const Workbench = struct {
     const kind_terminal: zg_gui.dock.model.PanelKindId = 2;
     const kind_agent: zg_gui.dock.model.PanelKindId = 3;
     const kind_review: zg_gui.dock.model.PanelKindId = 4;
+    const kind_review_view: zg_gui.dock.model.PanelKindId = 5;
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -153,7 +163,7 @@ pub const Workbench = struct {
             .crumbs = .init(gpa, io),
             .dock = try .init(gpa),
         };
-        wb.dv = .init(gpa, &wb.dock, .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose });
+        wb.dv = .init(gpa, &wb.dock, wb.panelHost());
         wb.cwd = try std.process.currentPathAlloc(io, gpa);
         const f = try wb.addFile(try wb.load(path));
         wb.setCurrent(f.*);
@@ -306,6 +316,36 @@ pub const Workbench = struct {
         return std.mem.eql(u8, a, abs);
     }
 
+    /// Opens changeset `cs` hunk by hunk in an editor-area tab (one at a
+    /// time).
+    fn openReview(ctx: *anyopaque, cs: zg_review.model.ChangesetId) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showReview(cs) catch |e| wb.notify(.error_, "Could not open the review: {t}", .{e});
+    }
+
+    fn showReview(wb: *Workbench, cs: zg_review.model.ChangesetId) !void {
+        const w = wb.win orelse return;
+        const host = wb.agent orelse return;
+        const v = try ReviewView.create(wb.gpa, wb.io, w.app, host.review, .{ .changeset = cs });
+        v.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        if (wb.review_view) |old| old.destroy();
+        wb.review_view = v;
+        if (wb.review_view_ref == null) wb.review_view_ref = try wb.dock.addPanel(kind_review_view, null);
+        try wb.reveal(wb.review_view_ref.?, .center);
+        w.markAllDirty();
+    }
+
+    /// Whether the review root's `rel` is open in an editor (the review
+    /// panel leaves those files alone).
+    fn reviewFileOpen(ctx: *anyopaque, rel: []const u8) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const host = wb.agent orelse return false;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ host.review.root, rel }) catch return true;
+        defer wb.gpa.free(abs);
+        for (wb.files.items) |f| if (f.path) |p| if (wb.samePath(p, abs)) return true;
+        return false;
+    }
+
     /// Breadcrumb dropdowns run `file.open` from event handling: switch
     /// at the next build.
     fn onChromeAction(ctx: ?*anyopaque, action: zg_gui.w.menu.ActionId, arg: ?[]const u8) void {
@@ -321,13 +361,29 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    fn panelHost(wb: *Workbench) zg_gui.dock.PanelHost {
+        return .{ .ctx = wb, .tab = panelTab, .build = panelBuild, .empty = emptyGroup, .can_close = canClose };
+    }
+
+    /// Lets tabs tear off into their own windows, opened by `opener`
+    /// (after `attach`).
+    pub fn enableFloating(wb: *Workbench, opener: zg_gui.dock.floating.WindowOpener) void {
+        const w = wb.win orelse return;
+        wb.floater = .init(wb.gpa, &wb.dock, wb.panelHost(), opener, .{});
+        wb.floater.?.attachMain(w, &wb.dv);
+    }
+
     /// Unhooks from the window; call while it still exists.
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
+        // Floating panels come home before their windows close.
+        if (wb.floater) |*fl| fl.closeAll();
         // The panel stops the agent first: its tools may be waiting on
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.review_view) |v| v.destroy();
+        wb.review_view = null;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
@@ -357,6 +413,7 @@ pub const Workbench = struct {
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
+        if (wb.floater) |*fl| fl.deinit();
         wb.dv.deinit();
         wb.dock.deinit();
         if (wb.pending_open) |p| wb.gpa.free(p);
@@ -507,11 +564,14 @@ pub const Workbench = struct {
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
             p.attachChildren(&host.children);
+            // Rewinding code goes through E12's checkpoints.
+            p.restore = host.review.restore();
             if (wb.agent_cmds) |c| {
-                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs };
+                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs, .context = &host.context };
                 p.commands = c;
             }
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
             wb.agent = host;
             wb.agent_panel = p;
         }
@@ -535,6 +595,8 @@ pub const Workbench = struct {
         if (wb.review_panel == null) {
             const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
+            p.open_review = .{ .ctx = wb, .f = openReview };
             wb.review_panel = p;
         }
         if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
@@ -585,6 +647,8 @@ pub const Workbench = struct {
     fn onTrust(ctx: ?*anyopaque, c: zg_security_ui.TrustChoice) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
         wb.trust = if (c == .restricted) .restricted else .trusted;
+        // A trusted folder's MCP servers may start.
+        if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -721,6 +785,7 @@ pub const Workbench = struct {
             kind_terminal => .{ .title = "Terminal", .badge = if (wb.terminal) |t| t.noteText() else "" },
             kind_agent => .{ .title = "Agent" },
             kind_review => .{ .title = "Review", .badge = if (wb.review_panel) |r| r.badge(&wb.review_badge) else "" },
+            kind_review_view => .{ .title = if (wb.review_view) |v| v.title else "Review" },
             else => .{ .title = "?" },
         };
     }
@@ -731,7 +796,8 @@ pub const Workbench = struct {
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
             defer ui.close();
             _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
-            f.node = ui.lastNode();
+            // Focus helpers act on the main window's nodes only.
+            f.node = if (ui.window() == wb.win) ui.lastNode() else .none;
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
@@ -742,6 +808,7 @@ pub const Workbench = struct {
                 a.build(ui);
             },
             kind_review => if (wb.review_panel) |r| r.build(ui),
+            kind_review_view => if (wb.review_view) |v| v.build(ui),
             else => {},
         }
     }
@@ -760,6 +827,11 @@ pub const Workbench = struct {
             if (!f.doc.isDirty()) return true;
             wb.notify(.warning, "{s} has unsaved changes: save it first", .{if (f.path) |path| std.fs.path.basename(path) else "Untitled"});
             return false;
+        }
+        // The review view's tab closes; the view stays until the next one.
+        if (p == wb.review_view_ref) {
+            wb.review_view_ref = null;
+            return true;
         }
         if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
@@ -813,7 +885,7 @@ pub const Workbench = struct {
             ui.close();
         }
         _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
-        wb.terminal_node = t.view.node;
+        if (ui.window() == wb.win) wb.terminal_node = t.view.node;
     }
 
     fn statusBar(wb: *Workbench, ui: *Ui) void {

@@ -154,3 +154,42 @@ test "zg agent: run_command approved over the pipe, denied without a prompt chan
     const v = try std.json.parseFromSliceLeaky(std.json.Value, a, d.out, .{});
     try testing.expectEqualStrings("run_command", v.object.get("permission_denials").?.array.items[0].object.get("tool_name").?.string);
 }
+
+test "zg agent: an MCP server's tool from --mcp-config" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const state = buf[0..try tmp.dir.realPath(io, &buf)];
+    var env = try testing.environ.createMap(testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGURO_STATE_DIR", state);
+    try env.put("LOCALAPPDATA", state);
+    try env.put("ZG_CASSETTE", fixtures.mcp_cassette);
+    try env.put("FIXTURE_BIN", fixtures.mcp_server);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "mcp.json", .data =
+        \\{"mcpServers":{"fx":{"command":"${FIXTURE_BIN}"},"gone":{"command":"/no/such/server"}}}
+    });
+    const cfg = try std.fs.path.join(a, &.{ state, "mcp.json" });
+    const r = try zg(&env, &.{ "-p", "add 2 and 3", "--output-format", "stream-json", "--mcp-config", cfg, "--allowed-tools", "mcp__fx__add", "--no-session-persistence" }, "");
+    defer r.deinit();
+    testing.expectEqual(@as(u8, 0), r.code) catch |e| {
+        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ r.out, r.err });
+        return e;
+    };
+    const init = (try lineOf(a, r.out, "system")).?;
+    var found = false;
+    for (init.object.get("tools").?.array.items) |t| found = found or std.mem.eql(u8, t.string, "mcp__fx__add");
+    try testing.expect(found);
+    const servers = init.object.get("mcp_servers").?.array.items;
+    try testing.expectEqual(@as(usize, 2), servers.len);
+    try testing.expectEqualStrings("connected", servers[0].object.get("status").?.string);
+    try testing.expectEqualStrings("failed", servers[1].object.get("status").?.string);
+    const res = (try lineOf(a, r.out, "user")).?;
+    const block = res.object.get("message").?.object.get("content").?.array.items[0];
+    try testing.expectEqualStrings("5", block.object.get("content").?.array.items[0].object.get("text").?.string);
+    try testing.expectEqualStrings("The sum is 5.", (try lineOf(a, r.out, "result")).?.object.get("result").?.string);
+}

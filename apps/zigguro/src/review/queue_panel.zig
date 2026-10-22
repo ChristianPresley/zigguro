@@ -2,12 +2,16 @@
 //! panel over the agent's `ReviewGlue`. It lists what is pending and what
 //! each agent turn changed, grouped by session (or agent, origin, top
 //! directory, none), with a filter box (`state:all path:src/** text`).
-//! A click on a changeset shows its files.
+//! The header switches whether agent edits land at once or are held for
+//! review (`ReviewGlue.mode`). A click on a changeset shows its files. An applied changeset can be
+//! undone, which reverts its files and puts its changes back for review;
+//! an open one can be accepted or rejected.
 //!
 //! The rows come from `zg_review.queue_view.QueueModel`, which the
 //! glue's queue updates on the agents' tasks under the glue's mutex; the
-//! panel reads it under the same mutex. Accept and reject arrive with
-//! the review mode that keeps proposals pending.
+//! panel reads it, and acts, under the same mutex. Files open in an
+//! editor are left alone (the editor holds their text): the action is
+//! refused until they are closed.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -18,6 +22,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Ui = zg_gui.Ui;
 const qv = zg_review.queue_view;
+const Action = ReviewGlue.Action;
 
 /// See the module doc.
 pub const QueuePanel = struct {
@@ -30,6 +35,18 @@ pub const QueuePanel = struct {
     filter_error: ?[]const u8 = null,
     /// Row to expand or collapse after this build.
     toggle_row: ?usize = null,
+    /// A button's action, run after this build's rows.
+    action: ?struct { cs: zg_review.model.ChangesetId, act: Action } = null,
+    /// The last action's outcome, under the filter box.
+    status: []const u8 = "",
+    status_bad: bool = false,
+    status_buf: [192]u8 = undefined,
+    /// Opens a changeset in the hunk-by-hunk review view.
+    open_review: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, cs: zg_review.model.ChangesetId) void } = null,
+    /// A Review button's changeset, opened after the build.
+    open_req: ?zg_review.model.ChangesetId = null,
+    /// Whether a workspace-relative path is open in an editor.
+    is_open: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, rel: []const u8) bool } = null,
     /// The workbench repaints.
     on_change: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
     /// A repaint is queued on the UI thread.
@@ -73,7 +90,16 @@ pub const QueuePanel = struct {
 
     pub fn build(p: *QueuePanel, ui: *Ui) void {
         p.glue.mutex.lockUncancelable(p.io);
-        defer p.glue.mutex.unlock(p.io);
+        p.buildLocked(ui);
+        p.glue.mutex.unlock(p.io);
+        // Outside the lock: the review view takes it too.
+        if (p.open_req) |id| {
+            p.open_req = null;
+            if (p.open_review) |o| o.f(o.ctx, id);
+        }
+    }
+
+    fn buildLocked(p: *QueuePanel, ui: *Ui) void {
         const m = p.glue.model;
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .role = .group, .label = "Review queue" });
         defer ui.close();
@@ -97,6 +123,44 @@ pub const QueuePanel = struct {
             m.toggle(i) catch {};
             ui.window().markAllDirty();
         }
+        if (p.action) |a| {
+            p.action = null;
+            p.run(a.cs, a.act);
+            ui.window().markAllDirty();
+        }
+    }
+
+    /// Runs a row's action (locked) and says how it went.
+    fn run(p: *QueuePanel, cs: zg_review.model.ChangesetId, act: Action) void {
+        const c = p.glue.q.get(cs) orelse return;
+        const label = c.prov.label;
+        if (p.is_open) |o| for (c.files) |f| if (o.f(o.ctx, f.path)) {
+            p.say(true, "Close {s} first: it is open in an editor", .{f.path});
+            return;
+        };
+        var arena_state: std.heap.ArenaAllocator = .init(p.gpa);
+        defer arena_state.deinit();
+        const r = p.glue.actLocked(arena_state.allocator(), cs, act) catch |e| {
+            p.say(true, "{s}: {t}", .{ label, e });
+            return;
+        };
+        switch (r) {
+            .ok => switch (act) {
+                .undo => p.say(false, "Undid {s}: its changes wait for review", .{label}),
+                .accept => p.say(false, "Applied {s}", .{label}),
+                .reject => p.say(false, "Rejected {s}", .{label}),
+            },
+            .refused => |x| if (x.path.len > 0)
+                p.say(true, "Not done: {s} {s}", .{ x.path, x.reason })
+            else
+                p.say(true, "Not done: {s}", .{x.reason}),
+            .failed => |x| p.say(true, "Writing {s} failed: {t}", .{ x.path, x.err }),
+        }
+    }
+
+    fn say(p: *QueuePanel, bad: bool, comptime fmt: []const u8, args: anytype) void {
+        p.status = std.fmt.bufPrint(&p.status_buf, fmt, args) catch p.status_buf[0..p.status_buf.len];
+        p.status_bad = bad;
     }
 
     fn header(p: *QueuePanel, ui: *Ui, m: *qv.QueueModel) void {
@@ -123,11 +187,21 @@ pub const QueuePanel = struct {
         }
         ui.close();
 
+        ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .shrink = 0 } });
+        const held = p.glue.mode == .review;
+        if (zg_gui.w.button(ui, .{ .label = if (held) "Agent edits: held" else "Agent edits: applied", .variant = .ghost }).clicked) {
+            p.glue.mode = if (held) .auto_apply else .review;
+            p.say(false, "{s}", .{if (held) "Agent edits now land at once (each turn can be undone here)" else "Agent edits now wait here for review"});
+            ui.window().markAllDirty();
+        }
+        ui.close();
+
         ui.open(.{ .style = .{ .dir = .column, .padding = .xy(8, 2), .shrink = 0 } });
         defer ui.close();
         const r = zg_gui.w.textField(ui, .{ .buffer = &p.filter, .placeholder = "Filter: text, state:all, path:src/**, agent:name, conflicts:yes", .a11y_label = "Filter the review queue" });
         if (r.changed) p.applyFilter(m);
         if (p.filter_error) |e| ui.text(e, .{ .color = .danger, .wrap = false });
+        if (p.status.len > 0) ui.text(p.status, .{ .color = if (p.status_bad) .danger else .fg_muted });
     }
 
     fn applyFilter(p: *QueuePanel, m: *qv.QueueModel) void {
@@ -145,6 +219,11 @@ pub const QueuePanel = struct {
         m.setFilter(f) catch {
             p.filter_error = "Invalid path pattern";
         };
+    }
+
+    fn actionButton(p: *QueuePanel, ui: *Ui, cs: zg_review.model.ChangesetId, act: Action, label: []const u8) void {
+        ui.id(@intFromEnum(act));
+        if (zg_gui.w.button(ui, .{ .label = label, .variant = .ghost }).clicked) p.action = .{ .cs = cs, .act = act };
     }
 
     fn buildRow(p: *QueuePanel, ui: *Ui, r: qv.Row, i: usize, now: i64) void {
@@ -172,6 +251,18 @@ pub const QueuePanel = struct {
             w.print("  {s}", .{age(&ab, now - r.created_ms)}) catch {};
         }
         ui.text(w.buffered(), .{ .color = if (r.conflicts > 0) .danger else .fg_muted, .wrap = false });
+        if (r.kind == .changeset) if (r.cs) |id| if (p.glue.q.get(id)) |c| switch (c.state) {
+            .applied => p.actionButton(ui, id, .undo, "Undo"),
+            .pending, .partially_applied => {
+                if (p.open_review != null) {
+                    ui.id(100);
+                    if (zg_gui.w.button(ui, .{ .label = "Review", .variant = .ghost }).clicked) p.open_req = id;
+                }
+                p.actionButton(ui, id, .accept, "Accept");
+                p.actionButton(ui, id, .reject, "Reject");
+            },
+            else => {},
+        };
         ui.open(.{ .style = .{ .w = .{ .px = 8 }, .shrink = 0 } });
         ui.close();
     }
@@ -253,6 +344,46 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     try t.click(.{ .role = .button, .name_contains = "Turn 1" });
     _ = t.settle();
     try testing.expect(t.find(.{ .name_contains = "a.txt" }) != null);
+
+    // Undo puts the turn back for review; the file is open, then closed.
+    var open_file = true;
+    p.is_open = .{ .ctx = &open_file, .f = struct {
+        fn f(ctx: *anyopaque, rel: []const u8) bool {
+            const o: *bool = @ptrCast(@alignCast(ctx));
+            return o.* and std.mem.eql(u8, rel, "a.txt");
+        }
+    }.f };
+    try t.click(.{ .role = .button, .name = "Undo" });
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name_contains = "Close a.txt first" }) != null);
+    open_file = false;
+    try t.click(.{ .role = .button, .name = "Undo" });
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name_contains = "Undid Turn 1" }) != null);
+    try testing.expectEqualStrings("one\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena_state.allocator(), .limited(64)));
+    // Review opens the changeset (outside the glue's lock).
+    var opened: ?zg_review.model.ChangesetId = null;
+    p.open_review = .{ .ctx = &opened, .f = struct {
+        fn f(ctx: *anyopaque, cs: zg_review.model.ChangesetId) void {
+            const o: *?zg_review.model.ChangesetId = @ptrCast(@alignCast(ctx));
+            o.* = cs;
+        }
+    }.f };
+    t.win.markAllDirty();
+    _ = t.settle();
+    try t.click(.{ .role = .button, .name = "Review" });
+    _ = t.settle();
+    try testing.expect(opened != null);
+    try t.click(.{ .role = .button, .name = "Accept" });
+    _ = t.settle();
+    try testing.expect(t.find(.{ .name_contains = "Applied Turn 1" }) != null);
+    try testing.expectEqualStrings("ONE\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena_state.allocator(), .limited(64)));
+
+    // The mode switch.
+    try t.click(.{ .role = .button, .name = "Agent edits: applied" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.review, g.mode);
+    try testing.expect(t.find(.{ .name = "Agent edits: held" }) != null);
 
     // A filter that matches nothing, then a bad one.
     p.filter.setText("nothing-matches") catch unreachable;

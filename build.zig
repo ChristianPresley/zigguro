@@ -155,6 +155,10 @@ pub fn build(b: *std.Build) void {
         fx.addOptionPath("zg", zg_exe.getEmittedBin());
         fx.addOptionPath("cassette", b.path("apps/zg/testdata/cassettes/two_turns.jsonl"));
         fx.addOptionPath("approval_cassette", b.path("apps/zg/testdata/cassettes/approval.jsonl"));
+        fx.addOptionPath("mcp_cassette", b.path("apps/zg/testdata/cassettes/mcp_tool.jsonl"));
+        // A stdio MCP server on the zg_mcp SDK, for `--mcp-config`.
+        const mcp_fixture = b.addExecutable(.{ .name = "zg-mcp-fixture", .root_module = appModule(b, "apps/zg/test/fixtures/mcp_server.zig", f.target, f.optimize, &mods, options) });
+        fx.addOptionPath("mcp_server", mcp_fixture.getEmittedBin());
         const e2e = b.addTest(.{ .name = "zg-agent-e2e", .root_module = b.createModule(.{
             .root_source_file = b.path("apps/zg/test/agent_e2e_test.zig"),
             .target = f.target,
@@ -163,9 +167,13 @@ pub fn build(b: *std.Build) void {
         }), .filters = test_filters });
         const run = b.addRunArtifact(e2e);
         run.skip_foreign_checks = true;
-        const zg_step = b.step("test-zg", "Run the zg CLI end-to-end tests");
+        const zg_step = b.step("test-zg", "Run the zg CLI tests (unit and end to end)");
         zg_step.dependOn(&run.step);
         test_step.dependOn(&run.step);
+        const unit = b.addTest(.{ .name = "zg-app", .root_module = appModule(b, "apps/zg/src/tests.zig", f.target, f.optimize, &mods, options), .filters = test_filters });
+        const run_unit = b.addRunArtifact(unit);
+        zg_step.dependOn(&run_unit.step);
+        test_step.dependOn(&run_unit.step);
 
         // `zg ui-test` on the zg_gui example scripts (E04.F01.S03.T01).
         const ux = b.addOptions();
@@ -582,6 +590,12 @@ fn appModule(
     // Extra modules packages export next to their root module.
     imports.append(b.allocator, .{ .name = "zg_terminal_view", .module = mods[comptime packages.indexOf("zg_terminal")].owner.modules.get("zg_terminal_view").? }) catch @panic("OOM");
     imports.append(b.allocator, .{ .name = "zg_security_ui", .module = mods[comptime packages.indexOf("zg_security")].owner.modules.get("zg_security_ui").? }) catch @panic("OOM");
+    // The IDE connects MCP servers the way `zg agent --mcp-config` does.
+    if (std.mem.startsWith(u8, root, "apps/zigguro/")) {
+        const servers = b.createModule(.{ .root_source_file = b.path("apps/zg/src/mcp_servers.zig"), .target = target, .optimize = optimize });
+        inline for (.{ "zg_core", "zg_net", "zg_mcp", "zg_ai" }) |n| servers.addImport(n, mods[comptime packages.indexOf(n)]);
+        imports.append(b.allocator, .{ .name = "zg_mcp_servers", .module = servers }) catch @panic("OOM");
+    }
     // Crash reports (E17.F05) need frame pointers and a GNU build id, and
     // the self-hosted aarch64 backend traps before the segfault hook runs.
     return b.createModule(.{
