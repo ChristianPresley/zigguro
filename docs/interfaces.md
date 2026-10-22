@@ -2880,6 +2880,37 @@ Unstable while E05.F04 is in progress. The highlighter speaks lines, not
 documents: zg_editor (layer 4) maps its ChangeSets to `LineEdit`s and serves
 text through a `LineSource`, because zg_syntax (layer 3) cannot import it.
 
+## zg_editor.view.markdown_highlighter (MarkdownHighlighter)
+
+### Defined in
+`packages/editor/src/view/markdown_highlighter.zig` (E05.F04.S02).
+
+### Implemented by
+E05.F04.S02.T05.
+
+### Consumed by
+Hosts of `zg_gui.markdown.view` (the agent panel, notes, hovers) via `MdViewProps.highlighter`.
+
+### Signature
+```zig
+pub const MarkdownHighlighter = struct {
+    pub fn init(gpa) !MarkdownHighlighter;            // registry of every built-in language
+    pub fn deinit(m, gpa) void;
+    pub fn highlighter(m) zg_gui.markdown.code_view.Highlighter;
+    // Sorted, disjoint, non-plain spans; nothing for an unknown language (looked up by name or alias).
+    pub fn highlight(m, gpa, lang: []const u8, code: []const u8, out: *std.ArrayList(Span)) !void };
+pub fn classOf(hl: zg_syntax.HighlightId) zg_gui.markdown.code_view.SyntaxClass; // by dotted parent
+```
+
+### Threading
+One per UI thread; it reuses a token buffer between calls.
+
+### Ownership/lifetime
+Owns its registry; must outlive every `MdViewProps` that holds its `highlighter()`.
+
+### Stability
+Unstable until E15 themes map `HighlightId` directly.
+
 ## zg_editor.model.api (DocumentRegistry, LspSync)
 
 ### Defined in
