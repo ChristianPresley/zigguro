@@ -1,7 +1,7 @@
 //! zg_gui: zigguro's UI toolkit (E04). A retained node tree built
-//! declaratively by views and reconciled by key (ADR E04-0001), a CSS-subset
-//! layout engine, input routing and focus, design-token theming, widgets and
-//! a headless test driver. See packages/gui/README.md.
+//! declaratively by views and reconciled by key (docs/adr/0009), a CSS-subset
+//! layout engine, input routing and focus, design-token theming, widgets, a
+//! platform host and a headless test driver.
 
 const std = @import("std");
 
@@ -19,6 +19,8 @@ pub const w = @import("widgets/root.zig");
 pub const theme = @import("theme/root.zig");
 /// Headless test driver.
 pub const testing = @import("testing/root.zig");
+/// Runs windows on a platform and renderer.
+pub const host = @import("host.zig");
 
 /// The builder view code calls.
 pub const Ui = core.Ui;
@@ -34,6 +36,8 @@ pub const Response = core.Response;
 pub const Context = core.Context;
 /// A layout style.
 pub const Style = layout.Style;
+/// See `host.Host`.
+pub const Host = host.Host;
 
 test {
     std.testing.refAllDecls(@This());
@@ -43,4 +47,5 @@ test {
     _ = @import("input/input_test.zig");
     _ = @import("widgets/controls_test.zig");
     _ = @import("paint/draw_list_test.zig");
+    _ = @import("host_test.zig");
 }
