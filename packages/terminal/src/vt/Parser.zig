@@ -173,32 +173,71 @@ inline fn feedImpl(p: *Parser, comptime fast: bool, bytes: []const u8, h: anytyp
 /// and returns, so the table continues from that byte. Returns the number of
 /// bytes consumed after `ESC [`.
 fn csiFast(p: *Parser, bytes: []const u8, h: anytype) usize {
-    p.csi.clear();
+    const c = &p.csi;
+    c.clear();
     p.inter_overflow = false;
-    p.state = .csi_entry;
     var i: usize = 0;
+    var private = false;
     if (i < bytes.len and bytes[i] >= 0x3C and bytes[i] <= 0x3F) {
-        p.csi.private = bytes[i];
-        p.state = .csi_param;
+        c.private = bytes[i];
+        private = true;
         i += 1;
     }
+    // The current param is kept in registers and stored when it ends, with
+    // the same results as `Csi.digit` and `Csi.separator`.
+    var n: u8 = 0; // index of the current param
+    var started = false;
+    var v: u32 = 0;
+    var digits = false;
     while (i < bytes.len) : (i += 1) {
         const b = bytes[i];
+        const d = b -% '0';
+        if (d < 10) {
+            // After an overflow `v` is never stored, so no check is needed.
+            started = true;
+            v = @min(v * 10 + d, std.math.maxInt(u16));
+            digits = true;
+            continue;
+        }
         switch (b) {
-            '0'...'9' => p.csi.digit(b - '0'),
-            ';' => p.csi.separator(false),
-            ':' => p.csi.separator(true),
+            ';', ':' => {
+                started = true;
+                if (c.overflow) continue;
+                storeParam(c, n, v, digits);
+                if (n + 1 == params.max_params) {
+                    c.overflow = true;
+                    continue;
+                }
+                n += 1;
+                v = 0;
+                digits = false;
+                if (b == ':') c.colon_mask |= @as(u32, 1) << @intCast(n);
+            },
             0x40...0x7E => {
-                p.csi.final = b;
+                if (started) {
+                    if (!c.overflow) storeParam(c, n, v, digits);
+                    c.count = n + 1;
+                }
+                c.final = b;
                 p.state = .ground;
-                h.csiDispatch(&p.csi);
+                h.csiDispatch(c);
                 return i + 1;
             },
-            else => return i,
+            else => break,
         }
-        p.state = .csi_param;
     }
+    // Hand the partial sequence to the table-driven parser.
+    if (started) {
+        if (!c.overflow) storeParam(c, n, v, digits);
+        c.count = n + 1;
+    }
+    p.state = if (started or private) .csi_param else .csi_entry;
     return i;
+}
+
+fn storeParam(c: *params.Csi, n: u8, v: u32, digits: bool) void {
+    c.params[n] = @intCast(v);
+    if (digits) c.has_value |= @as(u32, 1) << @intCast(n);
 }
 
 /// Length of the leading run of plain data bytes for the current string
