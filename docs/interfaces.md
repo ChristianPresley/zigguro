@@ -3296,17 +3296,21 @@ pub const ChangesetStore = struct {
     pub fn load(s, sink: Sink) !LoadReport;                      // { records, truncated_bytes, quarantined }
     pub fn tail(s, sink: Sink) !u32;                             // other processes' new records
     pub fn recorder(s) model.Recorder;                           // for History.init: journals apply records
-    pub fn queueSink(s, q: *model.Queue, history: ?*model.History) QueueSink;  // restores into a queue and history
+    pub fn checkpointRecorder(s) model.CheckpointRecorder;       // for Checkpoints.init; thread-safe
+    pub fn queueSink(s, q: *model.Queue, history: ?*model.History, checkpoints: ?model.CheckpointSink) QueueSink;
 };
 pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, _ };
 pub fn records.writeChangeset(w, cs, blobs, scratch) !void;
 pub fn records.readChangeset(gpa, v: std.json.Value, blobs) !*Changeset;
 pub fn records.writeApply(w, a: *const model.Apply) !void;
 pub fn records.readApply(arena, v: std.json.Value) !model.Apply;
+pub fn records.writeCheckpoint(w, c: *const model.Checkpoint) !void;
+pub fn records.readCheckpoint(arena, v: std.json.Value) !model.Checkpoint;
 ```
 Deviations from the spec text:
-- The records are changeset snapshots, `remove` and `apply`. Decisions
-  are in the snapshots; there is no separate `decide` record.
+- The records are changeset snapshots, `remove`, `apply` and
+  `checkpoint`. Decisions are in the snapshots; there is no separate
+  `decide` record.
 - `flush` is called by the owner of the store's worker. There is no
   internal worker or fsync window yet.
 - Not implemented yet:
@@ -3353,7 +3357,12 @@ pub const Applier = struct {
     pub fn init(gpa, io, q: *Queue, files: Files, history: *model.History) Applier;
     pub fn apply(a, req: ApplyRequest{ cs, items: []const ApplyItem{ file, input, whole_file: ?enum { accept, reject } } }) !ApplyResult;
     pub fn acceptAll(a, cs: ChangesetId) !ApplyResult;
+    pub fn undoApply(a, arena, apply_id: u64) !UndoResult;    // ok: undo record | conflicts (nothing written) | failed
 };
+pub const revert.Target = struct { path, steps: []const Step{ pre: ?BlobHash, pre_exec, post: ?BlobHash, post_exec } };
+pub fn revert.plan(gpa, blobs, t: *txn.Txn, targets: []const Target) !Plan{ reverted, conflicts };
+pub const txn.Txn = struct { pub fn read(t, path) !?Entry; pub fn add(t, Op) !void; pub fn saveImages(t, blobs) !void;
+    pub fn run(t) ?Failure; pub fn records(t) ![]ApplyFile };
 pub const ApplyResult = union(enum) { ok: { apply: ?u64, files: u32, hunks: u32 }, failed: { path, err, rolled_back: bool } };
 pub const model.History = struct {
     pub fn init(gpa, recorder: ?Recorder) History;
@@ -3370,8 +3379,10 @@ Deviations from the spec text:
 - The applier is synchronous on the queue's owner thread and returns the
   result (no ticket). It writes closed files through the `Files` port
   with its own rollback log; open documents through E05, E08 FileOps
-  transactions, E09 provenance, echo suppression, save-on-accept,
-  undo accept and exclusion between processes come later.
+  transactions, E09 provenance, echo suppression, save-on-accept and
+  exclusion between processes come later. Undo accept is
+  `undoApply`: it works on the newest apply of a changeset only, and
+  editor-undo notification (E05 GroupMeta) is not wired.
 - A rename is written as the new file plus a delete of the old one.
 - Rebase on `BaseMoved` (E12.F02.S02) does not exist yet: the apply fails
   and nothing is written.
@@ -3386,5 +3397,58 @@ and `merge3` are pure.
 owned by the changeset.
 
 ### Stability
-Unstable until open-document apply and undo accept land. The apply
-record JSON may gain fields.
+Unstable until open-document apply lands. The apply record JSON may gain
+fields.
+
+## zg_review.checkpoint (Checkpoints, restoreTo)
+
+### Defined in
+`packages/review/src/checkpoint/checkpoints.zig`, `packages/review/src/model/checkpoint.zig` (E12.F04.S01.T01, E12.F04.S01.T02); see `packages/review/docs/checkpoints.md`.
+
+### Implemented by
+E12.F04.S01.T01, E12.F04.S01.T02.
+
+### Consumed by
+E10 (`deps.Checkpoints.create` at turn start, `rewind.CheckpointRestore`), the review timeline UI.
+
+### Signature
+```zig
+pub const model.Checkpoint = struct { id: u64, session: u128, agent: u32 = 0, turn: u32, label: []const u8 = "",
+    created_ms: i64, after_apply: u64, next_changeset: u64, pinned: bool = false };
+pub const Checkpoints = struct {
+    pub fn init(gpa, io, q: *Queue, history: *History, files: apply.Files, recorder: ?model.CheckpointRecorder) Checkpoints;
+    pub fn create(c, origin: zg_ai_proto.AgentRef, turn: u32, label: []const u8) u64;        // any thread, never fails
+    pub fn createErased(ctx: *anyopaque, io: Io, origin: AgentRef, turn: u32, label: []const u8) u64;  // = deps.Checkpoints.create
+    pub fn sink(c) model.CheckpointSink;                                                      // for store.queueSink
+    pub fn get(c, id) ?Checkpoint; pub fn listSession(c, session, out, gpa) !void;
+    pub fn changesetsSince(c, id, scope: Scope, out: *ArrayList(ChangesetId), gpa) !void;
+    pub fn restoreTo(c, arena, id, o: RestoreOptions{ dry_run = false, scope: .session | .all_agents = .session }) !RestoreReport;
+};
+pub const RestoreReport = struct { restored: []const []const u8, conflicts: []const revert.Conflict,
+    discarded: []const ChangesetId, record: ?u64, failed: ?txn.Failure };
+```
+Deviations from the spec text:
+- Only agent-only mode. Full mode (E09 op restore), redo, the untracked
+  report, symlink and hard-link skipping, ScmPort, retention and GC are
+  not done.
+- Ordering uses `History` record ids and changeset ids, not store
+  sequence numbers.
+- `create` copies the label; out of memory it still returns an id, which
+  then restores as `error.UnknownCheckpoint`.
+- zg_review imports only `zg_ai_proto`, so the E10 binding is app glue:
+  `deps.Checkpoints{ .ctx = &checkpoints, .create = Checkpoints.createErased }`
+  plus a `CheckpointRestore.restore_to` adapter that maps `RestoreReport`
+  to `RestoreOutcome`.
+- Applies are undone one by one, newest first, so user edits between
+  agent turns on other lines survive (the spec accepted losing them).
+
+### Threading
+`create` and `get` are thread-safe (`Io.Mutex`). `restoreTo`,
+`changesetsSince` and the store sink run on the queue's owner thread.
+
+### Ownership/lifetime
+`Checkpoints` copies labels into its arena. The report is allocated in
+the caller's arena.
+
+### Stability
+Unstable until the E10 binding and the timeline UI use it.
