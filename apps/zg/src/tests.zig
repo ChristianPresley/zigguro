@@ -6,4 +6,7 @@ test {
     _ = @import("review_cli_test.zig");
     _ = @import("review_hooks.zig");
     _ = @import("cmd_scm.zig");
+    _ = @import("cmd_scm_ai.zig");
+    _ = @import("scm_model.zig");
+    _ = @import("scm_tools.zig");
 }

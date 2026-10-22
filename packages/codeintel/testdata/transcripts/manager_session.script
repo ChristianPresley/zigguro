@@ -1,0 +1,14 @@
+# One server for a Zig document: handshake with initializationOptions,
+# text sync, a routed hover, then close and shutdown.
+> initialize {"initializationOptions": {"x": 1}}
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "hoverProvider": true}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"languageId": "zig", "version": 1, "text": "const a = 1;\n"}}
+> textDocument/didChange {"textDocument": {"version": 2}, "contentChanges": [{"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}}, "text": "b"}]}
+> textDocument/didSave
+> textDocument/hover {"position": {"line": 0, "character": 6}}
+< {"id": $1, "result": {"contents": {"kind": "plaintext", "value": "b: comptime_int"}}}
+> textDocument/didClose
+> shutdown
+< {"id": $1, "result": null}
+> exit

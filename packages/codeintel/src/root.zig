@@ -19,8 +19,13 @@ pub const registry = struct {
     pub const routing = @import("registry/routing.zig");
 };
 
+/// Starts language servers on demand and routes documents and requests
+/// to them.
+pub const Manager = @import("Manager.zig");
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("sync/sink_test.zig");
     _ = @import("registry/registry_test.zig");
+    _ = @import("Manager_test.zig");
 }

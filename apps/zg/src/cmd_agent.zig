@@ -12,6 +12,7 @@
 //!   ZIGGURO_STATE_DIR    where sessions are kept (see zg_crash.paths)
 //!
 //! `--mcp-config <file>` connects MCP servers (`mcp_servers.zig`).
+//! Inside a zg repository the agent gets its tools (`scm_tools.zig`).
 //! `--review` decides what happens to the agent's edits (`review_hooks.zig`).
 
 const std = @import("std");
@@ -23,6 +24,7 @@ const zg_crash = @import("zg_crash");
 const zg_config = @import("zg_config");
 const zg_mcp = @import("zg_mcp");
 const mcp_servers = @import("mcp_servers.zig");
+const scm_tools_mod = @import("scm_tools.zig");
 const review_hooks = @import("review_hooks.zig");
 
 const headless = zg_ai.headless;
@@ -146,7 +148,14 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     try mcp.load(rt, client, opts.mcp_configs, &env, cwd, err);
     var adapters: zg_ai.tools.adapters.all.Adapters = .init(gpa, io);
     defer adapters.deinit();
-    try adapters.registerAll(&tool_registry, &.{ .mcp = mcp.exporters.items }, .{}, .{});
+    // Repository tools when the working directory is in a zg repository.
+    var scm_tools = scm_tools_mod.ScmTools.open(gpa, io, Io.Dir.cwd()) catch |e| blk: {
+        try err.print("zg agent: repository tools unavailable: {t}\n", .{e});
+        break :blk null;
+    };
+    defer if (scm_tools) |*st| st.close();
+    const scm_exporter: ?zg_ai.tools.adapters.foreign.Exporter = if (scm_tools) |*st| st.exporter() else null;
+    try adapters.registerAll(&tool_registry, &.{ .scm = scm_exporter, .mcp = mcp.exporters.items }, .{}, .{});
     var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &tool_registry, .{
         .deny = try bareRules(arena, opts.disallowed_tools),
         .mode = opts.permission_mode,

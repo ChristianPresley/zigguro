@@ -68,9 +68,17 @@ pub const max_height = 8;
 /// Errors from edits.
 pub const EditError = error{ OutOfMemory, BufferFull, OutOfBounds, Overlap };
 
+/// Short add-buffer pieces an insertion follows are copied into a new
+/// piece together with the inserted text, up to this many bytes, so that
+/// multi-cursor typing (where only one caret can extend the add tail)
+/// keeps one piece per caret instead of one per keystroke.
+pub const merge_max: u32 = 16;
+
 const Ctx = struct {
     pool: *NodePool,
     bt: *BufferTable,
+    /// Room for merging short pieces is reserved in the add page.
+    merge: bool = false,
 };
 
 /// A version of the text. Holds one reference to `root`.
@@ -156,10 +164,10 @@ pub const PieceTree = struct {
             if (e.range.start < prev_end) return error.Overlap;
             prev_end = e.range.end;
         }
-        const c: Ctx = .{ .pool = pool, .bt = t.buffers };
+        var c: Ctx = .{ .pool = pool, .bt = t.buffers };
         // Fast path: every edit stays inside one leaf, so leaves are rebuilt
         // in place along copied paths (typing, backspace, multi-cursor).
-        if (t.root) |root| if (try prepareLocal(c, root, edits)) {
+        if (t.root) |root| if (try prepareLocal(&c, root, edits)) {
             root.retain();
             var list: std.ArrayList(*Node) = .empty;
             defer list.deinit(pool.gpa);
@@ -928,8 +936,9 @@ fn childFor(n: *Node, key: u64, base_in: u64) struct { idx: usize, base: u64 } {
 }
 
 /// Whether every edit lies inside one leaf and all inserted text fits the
-/// current add page (reserving a fresh page when needed).
-fn prepareLocal(c: Ctx, root: *Node, edits: []const Edit) error{ OutOfMemory, BufferFull }!bool {
+/// current add page (reserving a fresh page when needed). Also reserves
+/// room for merging short pieces when it fits a page (`c.merge`).
+fn prepareLocal(c: *Ctx, root: *Node, edits: []const Edit) error{ OutOfMemory, BufferFull }!bool {
     var text_total: usize = 0;
     for (edits) |e| {
         if (e.text.len > max_piece_len) return false;
@@ -945,7 +954,10 @@ fn prepareLocal(c: Ctx, root: *Node, edits: []const Edit) error{ OutOfMemory, Bu
         }
     }
     if (text_total > buffers.page_size) return false;
-    if (text_total > 0) try c.bt.reserve(text_total);
+    if (text_total == 0) return true;
+    const with_merge = text_total + edits.len * merge_max;
+    c.merge = with_merge <= buffers.page_size;
+    try c.bt.reserve(if (c.merge) with_merge else text_total);
     return true;
 }
 
@@ -1040,6 +1052,17 @@ fn rebuildLeaf(c: Ctx, n: *Node, edits: []const Edit, base: u64, out: *std.Array
                 const q = try c.bt.append(e.text);
                 std.debug.assert(q.len == e.text.len);
                 ps[np - 1].len += q.len;
+                ss[np - 1] = ss[np - 1].combine(add_sum);
+            } else if (c.merge and np > 0 and ps[np - 1].buf != .original and ps[np - 1].len + e.text.len <= merge_max) {
+                // Copy the short piece before the caret and the text into
+                // one new piece.
+                var buf: [merge_max]u8 = undefined;
+                const old = c.bt.bytes(ps[np - 1]);
+                @memcpy(buf[0..old.len], old);
+                @memcpy(buf[old.len..][0..e.text.len], e.text);
+                const q = try c.bt.append(buf[0 .. old.len + e.text.len]);
+                std.debug.assert(q.len == old.len + e.text.len);
+                ps[np - 1] = q;
                 ss[np - 1] = ss[np - 1].combine(add_sum);
             } else {
                 ps[np] = try c.bt.append(e.text);

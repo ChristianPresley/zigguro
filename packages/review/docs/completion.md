@@ -1,8 +1,8 @@
-# Completion context
+# Completion
 
-`zg_review.assist.complete` (E12.F07.S01.T02) builds the request for a
-ghost-text completion. The scheduler (#940), the provider adapters (#944)
-and the ghost-text controller (#946) build on it.
+`zg_review.assist.complete` (E12.F07.S01) builds the request for a
+ghost-text completion, decides when to send it, and streams the answer
+from a FIM provider. The ghost-text controller (#946) builds on these.
 
 ## Request
 
@@ -65,8 +65,111 @@ CodeGemma. Providers that apply the template on the server (llama.cpp
 `/infill`, Ollama `suffix`) take the structured fields and need no
 template.
 
+## Scheduling
+
+`Scheduler` (E12.F07.S01.T01) decides when to ask. It has no clock of its
+own: the host reports edits, cursor moves, invokes and accepts, each with
+the current time. The host arms one timer from `nextDeadline` and calls
+`poll` when that timer fires. Tests drive it with a virtual clock.
+
+- **Triggers.** A user edit that inserts at most 64 bytes with one caret
+  triggers. So does a cursor move on the same line within a second of an
+  edit, an explicit invoke (fires at once), and a speculative request
+  right after an accept.
+  - Undo, redo, agent and LSP edits, larger pastes and multi-cursor edits
+    never trigger. They drop a pending trigger and cancel the request in
+    flight.
+- **Debounce.** The debounce is `clamp(min(debounce, 0.8 × ewma),
+  min_debounce, debounce)`, where `ewma` tracks the gaps between
+  keystrokes. Gaps over 2 s are pauses and do not count.
+- **Single flight.** Each document has at most one request in flight.
+  `typed` decides what happens when the user types while a request
+  streams:
+  - The request is kept when the typed bytes are how its answer starts
+    (`keep = n`: hide the first `n` bytes).
+  - It is cancelled otherwise, when the user has typed past what has
+    streamed, and always when it is speculative.
+  - `finished` returns null for a result that a later request replaced.
+- **Gate.** `gate` gives the first reason not to ask, cheapest check first:
+  1. policy exclusion
+  2. language, then glob
+  3. snooze
+  4. multiple carets
+  5. a selection
+  6. IME composition
+  7. the LSP popup (unless the ghost text wins)
+  8. read-only
+  9. documents over 10 MB
+  10. mid-word: an identifier character after the cursor, or other
+      non-closing text when the provider cannot fill in the middle. An
+      explicit invoke skips this check.
+
+Once a document is open, a keystroke allocates nothing.
+
+`CompletionEngine` puts the scheduler, the cache and a provider together.
+Everything runs on the UI thread except the provider call, which runs on
+its own task and sends its text back through `Host.post`. When `tick`
+finds a trigger due, the engine takes a snapshot of the document from the
+host. A snapshot older than the trigger starts nothing. A cache hit is
+delivered at once; otherwise the engine builds the request and starts the
+provider. `Host.deliver` gets the text so far, how many leading bytes the
+user already typed (to hide), and whether it is final. `typed` keeps or
+cancels the request in flight, and `dismiss` drops everything for a
+document. A request that was replaced or cancelled is never delivered.
+The host must stop running posted callbacks once it calls `deinit`.
+
+`Cache` holds up to 512 finished completions in 4 MiB, least recently
+used first out. Its keys are the document, the model, and XxHash3 hashes
+of the last 2 KiB of prefix and the first 256 bytes of suffix. `extend`
+serves the rest of a cached completion that the user typed through after
+dismissing it. `invalidateDoc` clears a document's completions after a
+non-typing edit.
+
+## Providers
+
+A `FimProvider` (E12.F07.S01.T03) streams the middle for a
+`CompletionRequest` into a `Sink`. The call blocks, so the engine runs it
+on a worker task. Cancelling that task returns `error.Canceled` and drops
+the connection: llama.cpp and Ollama stop generating when the client goes
+away, and a half-read connection never goes back to the pool. Each
+provider's `caps.server_side_template` says whether it fills the middle
+itself; `gate` uses it to decide about mid-line requests.
+
+`HttpFim` talks to three kinds of server through `zg_net`:
+
+| Kind | Request | Stream |
+| --- | --- | --- |
+| llama.cpp | `POST /infill`: `input_prefix`, `input_suffix`, `input_extra` (the snippets), `n_predict`, `stop`, `stream`, `cache_prompt`, optional `id_slot` | SSE, `content` and `stop` |
+| Ollama | `POST /api/generate`: `model`, `prompt` (the snippets as comments, then the prefix), `suffix`, `raw: false`, `keep_alive`, `options.num_predict`, `options.stop`, `options.temperature` | NDJSON, `response` and `done` |
+| OpenAI-style | `POST /v1/completions`: `model`, `prompt` from `fim.render`, `max_tokens`, up to four `stop`s, `temperature`, `stream` | SSE, `choices[0].text`, then `[DONE]` |
+
+- **End tokens.** The OpenAI-style output ends at the first end token or
+  FIM marker of the template, even when it is split across chunks.
+- **No retries.** A failed completion is not retried. Three failures in a
+  row make the provider unhealthy for 30 seconds (`healthy` drives the
+  status-bar indicator). While it is unhealthy, `complete` returns
+  `error.Unhealthy` without sending a request.
+- **Warm-up.** `warm` opens a connection with a cheap request (`/health`,
+  `/api/version` or `/v1/models`) at most once a minute. The host calls it
+  on editor focus.
+- **Endpoints.** HTTPS and loopback are always allowed. Plain HTTP to
+  another host needs `allow_insecure_http` (`completions.allowInsecureHttp`,
+  for LAN servers). The API key comes from E16 secrets, is sent as a bearer
+  token, and is never logged.
+
+`ChatFim` uses a chat model with no FIM support. The system prompt asks
+for only the code that replaces `<CURSOR>`, and the user message is the
+snippets followed by the file with the cursor marked, sent at temperature
+0. A reply wrapped in a Markdown fence is unwrapped. zg_review does not
+import zg_ai, so the app binds a `ChatPort` to E10's `Provider.stream`.
+The app also builds providers from E10's ModelRegistry (role `completion`).
+
 ## Bench
 
 `review.complete.build_request_100k` builds a request in the middle of a
 100,000-line file, with 20 neighbour documents of 2,000 lines each. The
 budget is under 2 ms.
+
+`review.complete.scheduler_10k_keys` runs 10,000 keystrokes through the
+scheduler. It covers the UI thread's share of the time from keystroke to
+request.
