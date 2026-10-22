@@ -423,11 +423,10 @@ pub const Pacing = struct { mode: FramePacer.Mode, waiter: ?FramePacer.PresentWa
 /// How a render thread paces `r`: present waits for a Vulkan swapchain
 /// that supports them, else the platform's frame events.
 pub fn pacingFor(r: zg_vulkan.r2d.Renderer) Pacing {
-    if (r.backend() != .vulkan) return .{ .mode = .platform_frame, .waiter = null };
-    const vk: *zg_vulkan.VkRenderer = @ptrCast(@alignCast(r.ptr));
-    const mode = FramePacer.selectMode(vk.pacerCaps());
+    const vk = zg_vulkan.vulkanPacing(r) orelse return .{ .mode = .platform_frame, .waiter = null };
+    const mode = FramePacer.selectMode(vk.caps);
     return switch (mode) {
-        .present_wait, .present_wait2 => if (vk.presentWaiter()) |w| .{ .mode = mode, .waiter = w } else .{ .mode = .platform_frame, .waiter = null },
+        .present_wait, .present_wait2 => if (vk.waiter) |w| .{ .mode = mode, .waiter = w } else .{ .mode = .platform_frame, .waiter = null },
         .platform_frame, .immediate => .{ .mode = mode, .waiter = null },
         // A swapchain without present waits: the compositor's frame events
         // still pace best.
