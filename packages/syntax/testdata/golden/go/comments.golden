@@ -1,0 +1,8 @@
+1| comment:// line comment
+2| variable:x operator::= number:1 comment:// trailing
+3| comment:/* block */ variable:y operator::= number:2
+4| comment:/* multi
+5| comment:   line
+6| comment:   comment */ variable:z operator::= number:3
+7| comment:/* not /* nested */ variable:w operator::= number:4
+8| comment://go:build linux
