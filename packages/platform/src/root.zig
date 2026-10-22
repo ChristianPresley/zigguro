@@ -115,6 +115,13 @@ pub const xkb = struct {
     pub const parser = @import("xkb/parser.zig");
 };
 
+/// The Wayland client: generated protocol bindings (`wl_gen`).
+pub const wayland = struct {
+    /// Typed encoders and decoders for every vendored protocol, generated
+    /// at build time by zg_build's `wayland_scanner`.
+    pub const protocol = @import("wl_gen");
+};
+
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
 pub const dbus = struct {
     /// See `dbus/signature.zig`.
@@ -201,6 +208,7 @@ test {
     std.testing.refAllDecls(dbus);
     std.testing.refAllDecls(xkb);
     _ = @import("xkb/resolve.zig");
+    inline for (wayland.protocol.interfaces) |I| std.testing.refAllDecls(I);
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
 
