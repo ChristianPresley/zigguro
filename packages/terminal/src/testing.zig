@@ -13,4 +13,5 @@ pub const invariants = @import("testing/invariants.zig");
 
 test {
     _ = @import("testing/conformance_test.zig");
+    _ = @import("testing/input_steps.zig");
 }
