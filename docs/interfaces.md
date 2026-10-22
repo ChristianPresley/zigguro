@@ -2682,3 +2682,36 @@ the UI until it is posted again. Only lists from `firstList`/`post` may be poste
 Unstable until E04 adopts it. `post` returns a non-null list, unlike the `?*DrawList` in the draft
 signature. The present-wait modes need a swapchain to install a `PresentWaiter`; until then they start
 frames at once.
+
+## zg_vulkan.GpuTimer
+
+### Defined in
+`packages/vulkan/src/r2d/vk/gpu_timing.zig` (E02.F06.S04.T01).
+
+### Implemented by
+E02.F06.S04.T01.
+
+### Consumed by
+VkRenderer (`FrameStats.gpu_ns`), E14 (budgets via trace counters).
+
+### Signature
+```zig
+pub const Zone = enum(u3) { frame, uploads, layers, main };
+pub const Durations = struct { frame_ns: u64, uploads_ns: u64, layers_ns: u64, main_ns: u64, gpu_start_ns: ?u64 = null };
+pub fn init(gpu: *Gpu, frames_in_flight: u32) !?GpuTimer;   // null without timestamp support
+pub fn begin(self, cb, slot: u32) void;                      // host or command reset
+pub fn mark(self, cb, slot: u32, z: Zone, edge: Edge) void;  // vkCmdWriteTimestamp2
+pub fn collect(self, slot: u32, io) ?Durations;              // after the slot retired; never waits
+pub fn ticksToNs(start: u64, end: u64, valid_bits: u32, period_ns: f32) u64;
+```
+
+### Threading
+Render thread (the one recording the frame).
+
+### Ownership/lifetime
+Owned by the VkRenderer; the query pool is destroyed with it.
+
+### Stability
+Stable. GPU zones are emitted as trace counters. Complete GPU-track events wait for a
+`zg_core.trace` API that records events with explicit timestamps.
+
