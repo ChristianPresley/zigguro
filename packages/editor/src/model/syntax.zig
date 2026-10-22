@@ -26,6 +26,7 @@ const ChangeEvent = document.ChangeEvent;
 const BracketTree = syntax.BracketTree;
 const bracket_tree = syntax.brackets.bracket_tree;
 const HighlightBrackets = syntax.brackets.highlight_source.HighlightBrackets;
+const SemanticOverlay = syntax.SemanticOverlay;
 
 /// A `LineSource` over `tree.*` (which must outlive the source). Lines that
 /// fit in one piece are returned in place; others are copied to scratch.
@@ -100,6 +101,9 @@ pub const DocumentSyntax = struct {
     scratch: std.ArrayList(u8) = .empty,
     /// Version the highlighter reflects.
     version: u64,
+    /// LSP semantic tokens over the lexical highlighting, once a server
+    /// provides them (E07 feeds results through `semanticOverlay`).
+    semantic: ?SemanticOverlay = null,
 
     /// Highlighting of `tree` (at `version`) in `lang`; nothing is lexed
     /// until `ensure`, `idle` or an edit.
@@ -121,6 +125,33 @@ pub const DocumentSyntax = struct {
         ds.text_edits.deinit(ds.gpa);
         ds.retokenized.deinit(ds.gpa);
         ds.scratch.deinit(ds.gpa);
+        if (ds.semantic) |*o| o.deinit();
+    }
+
+    /// The semantic-token overlay, created on first use for `tree` (the
+    /// version the syntax reflects).
+    pub fn semanticOverlay(ds: *DocumentSyntax, tree: *const PieceTree) Allocator.Error!*SemanticOverlay {
+        if (ds.semantic == null) ds.semantic = try .init(ds.gpa, tree.lineCount(), ds.version);
+        return &ds.semantic.?;
+    }
+
+    /// Drops semantic tokens (the server went away or stopped providing them).
+    pub fn clearSemantic(ds: *DocumentSyntax) void {
+        if (ds.semantic) |*o| o.deinit();
+        ds.semantic = null;
+    }
+
+    /// The tokens to draw for `line` of `tree`: lexical tokens with any
+    /// semantic tokens laid over them. Lexes the line first if needed.
+    pub fn mergedTokens(ds: *DocumentSyntax, tree: *const PieceTree, line: u64, out: *std.ArrayList(syntax.Token)) Allocator.Error!void {
+        try ds.ensure(tree, line, line);
+        const lex = ds.hl.tokens(line);
+        const o = if (ds.semantic) |*so| so else {
+            out.clearRetainingCapacity();
+            return out.appendSlice(ds.gpa, lex);
+        };
+        const lr = tree.lineRange(line);
+        try o.mergeLine(line, lex, @intCast(lr.end - lr.start), out, ds.gpa);
     }
 
     /// Applies a change (from a document listener; `after` is the
@@ -131,12 +162,18 @@ pub const DocumentSyntax = struct {
         const src = lineSource(after);
         if (try lineEdits(ds.gpa, ev, after.*, &ds.edits)) |edits| {
             if (edits.len > 0) try ds.hl.onEdits(edits, src, deadline);
+            if (ds.semantic) |*o| try o.onEdits(edits, ev.new_version);
             ds.text_edits.clearRetainingCapacity();
             for (ev.changes.replaces) |r| try ds.text_edits.append(ds.gpa, .{ .start = r.range.start, .end = r.range.end, .new_len = r.text.len });
             try ds.syncBrackets(after, ds.text_edits.items, edits);
         } else {
             try ds.hl.reset(src);
             try ds.rebuildBrackets(after);
+            if (ds.semantic != null) {
+                // Line edits are unknown: start over without tokens.
+                ds.clearSemantic();
+                _ = try ds.semanticOverlay(after);
+            }
         }
     }
 
@@ -489,4 +526,52 @@ test "DocumentSyntax: C brackets inside multi-line comments and strings are igno
     try testing.expectEqual(@as(usize, 0), un.items.len);
     const brace = std.mem.indexOf(u8, text, "{").?;
     try testing.expectEqual(@as(?u64, std.mem.lastIndexOf(u8, text, "}").?), ds.brackets.matching(brace).?.close);
+}
+
+test "DocumentSyntax: semantic tokens follow edits" {
+    const gpa = testing.allocator;
+    var reg = try syntax.defaultRegistry(gpa);
+    defer reg.deinit(gpa);
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), "const a = \"s\";\nconst b = a;\n");
+    defer doc.deinit();
+    var ds = try DocumentSyntax.init(gpa, reg.get(.zig).?, &reg, &doc.tree, doc.version);
+    defer ds.deinit();
+    var follower: Follower = .{ .doc = doc, .ds = &ds };
+    _ = try doc.subscribe(.{ .ctx = &follower, .onChange = Follower.onChange });
+    var names: syntax.HighlightNames = .init(gpa);
+    defer names.deinit();
+    var legend = try (syntax.SemanticLegend{ .types = &.{ "variable", "string" }, .modifiers = &.{"readonly"} }).compile(gpa, &names);
+    defer legend.deinit();
+    const o = try ds.semanticOverlay(&doc.tree);
+    const v0 = doc.version;
+    // `a` (readonly) on both lines, and the string literal.
+    try testing.expect(try o.applyFull(v0, null, &.{ 0, 6, 1, 0, 1, 0, 4, 3, 1, 0, 1, 10, 1, 0, 1 }, &legend, lineSource(&doc.tree)));
+    var out: std.ArrayList(syntax.Token) = .empty;
+    defer out.deinit(gpa);
+    try ds.mergedTokens(&doc.tree, 1, &out);
+    const at = struct {
+        fn hl(toks: []const syntax.Token, col: u32) syntax.HighlightId {
+            var h: syntax.HighlightId = .none;
+            for (toks) |t| {
+                if (t.start > col) break;
+                h = t.hl;
+            }
+            return h;
+        }
+    }.hl;
+    try testing.expectEqualStrings("variable.readonly", names.name(at(out.items, 10)));
+    // Typing on line 0 drops its semantic tokens; line 1 keeps them.
+    var cs = try ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = 0, .end = 0 }, .text = "pub " }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+    try ds.mergedTokens(&doc.tree, 0, &out);
+    try testing.expectEqualSlices(syntax.Token, ds.hl.tokens(0), out.items);
+    try ds.mergedTokens(&doc.tree, 1, &out);
+    try testing.expectEqualStrings("variable.readonly", names.name(at(out.items, 10)));
+    // A late result for the old version keeps line 0 lexical.
+    try testing.expect(try o.applyFull(v0, null, &.{ 0, 6, 1, 0, 1 }, &legend, lineSource(&doc.tree)));
+    try testing.expectEqual(@as(usize, 0), o.lineTokens(0).len);
+    ds.clearSemantic();
+    try ds.mergedTokens(&doc.tree, 1, &out);
+    try testing.expectEqualSlices(syntax.Token, ds.hl.tokens(1), out.items);
 }
