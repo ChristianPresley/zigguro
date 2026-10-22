@@ -53,6 +53,12 @@ pub extern "user32" fn TranslateMessage(*const t.MSG) callconv(.winapi) BOOL;
 pub extern "user32" fn DispatchMessageW(*const t.MSG) callconv(.winapi) LRESULT;
 /// Posts a message to a window's thread.
 pub extern "user32" fn PostMessageW(?HWND, UINT, WPARAM, LPARAM) callconv(.winapi) BOOL;
+/// Sends a message and waits for the window's thread to handle it.
+pub extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+/// Unregisters a window class.
+pub extern "user32" fn UnregisterClassW(LPCWSTR, ?t.HINSTANCE) callconv(.winapi) BOOL;
+/// Paints the window's update region now (sends WM_PAINT).
+pub extern "user32" fn UpdateWindow(HWND) callconv(.winapi) BOOL;
 /// Waits for handles or queued input.
 pub extern "user32" fn MsgWaitForMultipleObjectsEx(n: DWORD, handles: ?[*]const HANDLE, ms: DWORD, wake: DWORD, flags: DWORD) callconv(.winapi) DWORD;
 /// Stores a pointer-sized value in a window (GWLP_USERDATA).

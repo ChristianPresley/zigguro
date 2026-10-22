@@ -10,56 +10,10 @@ const Uploader = @import("Uploader.zig");
 const Texture = @import("Texture.zig");
 const barriers = @import("barriers.zig");
 const validation = @import("../testing/validation.zig");
+const testing_gpu = @import("../testing/gpu.zig");
 
-fn quiet(_: std.log.Level, _: []const u8) void {}
-
-fn gpuOrSkip() !*Gpu {
-    return Gpu.create(std.testing.allocator, std.testing.io, .{ .instance = .{ .validation = .on }, .log_emit = quiet }) catch |err| switch (err) {
-        error.VulkanNotInstalled, error.Unsupported, error.NoSuitableDevice, error.LoaderTooOld, error.IncompatibleDriver => return error.SkipZigTest,
-        else => return err,
-    };
-}
-
-/// A one-shot command buffer on the graphics queue.
-const OneShot = struct {
-    gpu: *Gpu,
-    pool: vk.CommandPool,
-    cb: vk.CommandBuffer,
-    fence: vk.Fence,
-
-    fn begin(gpu: *Gpu) !OneShot {
-        const d = &gpu.ddisp;
-        var s: OneShot = .{ .gpu = gpu, .pool = .null_handle, .cb = .null_handle, .fence = .null_handle };
-        _ = try vk.check(d.create_command_pool(gpu.dev, &.{ .queue_family_index = gpu.gfx.family, .flags = .{ .reset_command_buffer = true } }, null, &s.pool));
-        _ = try vk.check(d.allocate_command_buffers(gpu.dev, &.{ .command_pool = s.pool, .level = .primary, .command_buffer_count = 1 }, @ptrCast(&s.cb)));
-        _ = try vk.check(d.create_fence(gpu.dev, &.{}, null, &s.fence));
-        _ = try vk.check(d.begin_command_buffer(s.cb, &.{ .flags = .{ .one_time_submit = true } }));
-        return s;
-    }
-
-    /// Ends, submits and waits.
-    fn submit(s: *OneShot) !void {
-        const d = &s.gpu.ddisp;
-        _ = try vk.check(d.end_command_buffer(s.cb));
-        const cbi = [_]vk.CommandBufferSubmitInfo{.{ .command_buffer = s.cb, .device_mask = 0 }};
-        const si = [_]vk.SubmitInfo2{.{ .command_buffer_info_count = 1, .p_command_buffer_infos = &cbi }};
-        _ = try vk.check(d.queue_submit2(s.gpu.gfx.handle, 1, &si, s.fence));
-        _ = try vk.check(d.wait_for_fences(s.gpu.dev, 1, @ptrCast(&s.fence), .true, std.time.ns_per_s * 10));
-    }
-
-    /// Resets for another recording.
-    fn again(s: *OneShot) !void {
-        const d = &s.gpu.ddisp;
-        _ = try vk.check(d.reset_fences(s.gpu.dev, 1, @ptrCast(&s.fence)));
-        _ = try vk.check(d.begin_command_buffer(s.cb, &.{ .flags = .{ .one_time_submit = true } }));
-    }
-
-    fn deinit(s: *OneShot) void {
-        const d = &s.gpu.ddisp;
-        d.destroy_fence(s.gpu.dev, s.fence, null);
-        d.destroy_command_pool(s.gpu.dev, s.pool, null);
-    }
-};
+const gpuOrSkip = testing_gpu.gpuOrSkip;
+const OneShot = testing_gpu.OneShot;
 
 test "gpu: mem: 10k buffers need few vkAllocateMemory calls" {
     const gpu = try gpuOrSkip();

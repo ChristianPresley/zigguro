@@ -144,6 +144,34 @@ fn register(b: *bench.Bench) !void {
     }
     std.debug.print("  corpus: {d} bytes, {d} lines\n", .{ text.len, lines.len });
 
+    {
+        const z = try gpa.dupeZ(u8, text);
+        defer gpa.free(z);
+        // Reference: std.zig.Ast.parse alone.
+        try b.run("syntax.structure.ast_parse_only", z, struct {
+            fn f(src: [:0]const u8, st: *bench.State) void {
+                var it: u64 = 0;
+                while (it < st.iterations()) : (it += 1) {
+                    var t = std.zig.Ast.parse(std.heap.smp_allocator, src, .zig) catch unreachable;
+                    bench.doNotOptimizeAway(t.nodes.len);
+                    t.deinit(std.heap.smp_allocator);
+                }
+                st.setBytes(src.len);
+            }
+        }.f);
+    }
+    try b.run("syntax.structure.zig_100k_full", text, struct {
+        fn f(src: []const u8, st: *bench.State) void {
+            var it: u64 = 0;
+            while (it < st.iterations()) : (it += 1) {
+                var s = syntax.langs.zig.zig_language.structure.?(std.heap.smp_allocator, src, it) catch unreachable;
+                bench.doNotOptimizeAway(s.folds.len);
+                s.deinit();
+            }
+            st.setBytes(src.len);
+        }
+    }.f);
+
     inline for (.{ .{ "syntax.keystroke.zig_100k", &syntax.langs.zig.zig_language }, .{ "syntax.keystroke.toy_100k", &toy } }) |c| {
         var h: syntax.Highlighter = try .init(gpa, c[1], &reg);
         defer h.deinit();

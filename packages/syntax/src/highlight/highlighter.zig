@@ -154,9 +154,26 @@ pub const Highlighter = struct {
     /// (if any), or `edit_line_budget` lines; the rest is left to `ensure`
     /// and `idle`.
     pub fn onEdit(h: *Highlighter, e: LineEdit, src: LineSource, deadline: ?Deadline) Allocator.Error!void {
+        return h.onEdits(&.{e}, src, deadline);
+    }
+
+    /// `onEdit` for several edits at once (multi-cursor): sorted by `first`,
+    /// non-overlapping, all in old-text line coordinates.
+    pub fn onEdits(h: *Highlighter, edits: []const LineEdit, src: LineSource, deadline: ?Deadline) Allocator.Error!void {
+        // Back to front, so each edit's coordinates are still valid.
+        var i = edits.len;
+        while (i > 0) {
+            i -= 1;
+            if (i > 0) std.debug.assert(edits[i - 1].first + edits[i - 1].removed <= edits[i].first);
+            try h.splice(edits[i]);
+        }
+        std.debug.assert(h.store.lineCount() == src.lines);
+        try h.run(src, std.math.maxInt(u64), deadline, edit_line_budget);
+    }
+
+    fn splice(h: *Highlighter, e: LineEdit) Allocator.Error!void {
         std.debug.assert(e.first + e.removed <= h.store.lineCount());
         try h.store.spliceLines(h.gpa, e.first, e.removed, e.inserted);
-        std.debug.assert(h.store.lineCount() == src.lines);
         // Shift pending ranges into new coordinates.
         const old_end = e.first + e.removed;
         var out: usize = 0;
@@ -181,7 +198,6 @@ pub const Highlighter = struct {
         const n = h.store.lineCount();
         const mark_end = @min(n, e.first + @max(e.inserted, 1));
         if (e.first < mark_end) try h.addPending(e.first, mark_end);
-        try h.run(src, std.math.maxInt(u64), deadline, edit_line_budget);
     }
 
     /// Makes lines `[first, last]` exact, or approximate when the nearest

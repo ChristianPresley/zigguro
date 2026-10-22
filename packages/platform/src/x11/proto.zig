@@ -411,6 +411,13 @@ pub const FreeGC = struct {
     gc: u32,
 };
 
+/// FreePixmap (54).
+pub const FreePixmap = struct {
+    /// The major opcode.
+    pub const opcode = 54;
+    pixmap: u32,
+};
+
 /// Image formats of PutImage and GetImage.
 pub const ImageFormat = enum(u8) { bitmap = 0, xy_pixmap = 1, z_pixmap = 2 };
 

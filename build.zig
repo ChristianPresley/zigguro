@@ -158,6 +158,20 @@ pub fn build(b: *std.Build) void {
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
     const vkgen = addTool(b, "vkgen", "tools/vkgen/main.zig", test_filters, f.optimize, tools_test_step);
+    // The SPIR-V toolchain (E02.F05, ADR-E02-004): grammar codegen, the
+    // disassembler, and shaderc, which runs the shader programs under
+    // packages/vulkan/src/shaders.
+    const spirvgen = addTool(b, "spirvgen", "tools/spirv/grammar_gen.zig", test_filters, f.optimize, tools_test_step);
+    const spirv_dis = addTool(b, "spirv-dis", "tools/spirv/dis_main.zig", test_filters, f.optimize, tools_test_step);
+    const spirv_mod = b.createModule(.{ .root_source_file = b.path("tools/spirv/root.zig") });
+    const shader_programs = b.createModule(.{
+        .root_source_file = b.path("packages/vulkan/src/shaders/programs.zig"),
+        .imports = &.{.{ .name = "spirv", .module = spirv_mod }},
+    });
+    const shaderc = addToolImports(b, "shaderc", "tools/shaderc/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "spirv", .module = spirv_mod },
+        .{ .name = "shader_programs", .module = shader_programs },
+    });
     // zg-transcript shares its core with zg_lsp (a std-only file).
     const transcript = addToolImports(b, "zg-transcript", "tools/transcript/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "zg_transcript", .module = b.createModule(.{ .root_source_file = b.path("packages/lsp/src/client/transcript.zig") }) },
@@ -232,6 +246,32 @@ pub fn build(b: *std.Build) void {
             }
         }
     }
+    // spirvgen reads two grammar files; shaderc writes a directory.
+    const shaders_gen = "packages/vulkan/src/shaders/gen";
+    inline for (.{ false, true }) |check| {
+        const gen = b.addRunArtifact(spirvgen);
+        gen.addFileArg(b.path("tools/spirv/data/spirv.core.grammar.json"));
+        gen.addFileArg(b.path("tools/spirv/data/extinst.glsl.std.450.grammar.json"));
+        gen.addArg(b.pathFromRoot("tools/spirv/spec.zig"));
+        gen.has_side_effects = true;
+        const sc = b.addRunArtifact(shaderc);
+        sc.addArg(b.pathFromRoot(shaders_gen));
+        sc.has_side_effects = true;
+        if (check) {
+            gen.addArg("--check");
+            sc.addArg("--check");
+            check_gen_step.dependOn(&gen.step);
+            check_gen_step.dependOn(&sc.step);
+        } else {
+            b.step("spirvgen", "Regenerate tools/spirv/spec.zig from the SPIR-V grammar").dependOn(&gen.step);
+            b.step("shaderc", "Regenerate the SPIR-V shaders in " ++ shaders_gen).dependOn(&sc.step);
+        }
+    }
+    const dis_run = b.addRunArtifact(spirv_dis);
+    dis_run.addArgs(&.{ "--dir", b.pathFromRoot(shaders_gen) });
+    if (b.args) |a| dis_run.addArgs(a);
+    b.step("spirv-dis", "Disassemble generated shaders (zig build spirv-dis -- prim_frag)").dependOn(&dis_run.step);
+
     // The vkgen golden for its mini registry (checked by `test-tools`).
     const vkgen_mini = b.addRunArtifact(vkgen);
     vkgen_mini.addFileArg(b.path("tools/vkgen/testdata/mini.xml"));

@@ -46,8 +46,8 @@ pub const headless = struct {
 /// Starts the backend chosen by `platform.selectBackend`, falling back
 /// along Wayland → X11 when the backend was detected rather than forced
 /// (by `opts.backend` or `ZG_PLATFORM`) and it cannot connect. The app
-/// falls back to headless itself. Win32 (E01.F02) and Cocoa (E01.F08)
-/// return `error.BackendUnavailable` until they land.
+/// falls back to headless itself. Cocoa (E01.F08) returns
+/// `error.BackendUnavailable` until it lands.
 pub fn init(gpa: std.mem.Allocator, io: std.Io, opts: InitOptions) Error!Platform {
     const first = platform.selectBackend(opts);
     if (initBackend(gpa, io, first, opts)) |p| return p else |err| {
@@ -85,7 +85,14 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, backend: Backend, opts: I
             };
             return b.platform();
         },
-        .win32, .cocoa => {},
+        .win32 => if (is_windows) {
+            const b = win32.Win32Backend.init(gpa, io, .{}) catch |err| {
+                log.info("Win32 backend unavailable: {t}", .{err});
+                return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
+            };
+            return b.platform();
+        },
+        .cocoa => {},
     }
     return error.BackendUnavailable;
 }
@@ -197,6 +204,8 @@ pub const wayland = struct {
     pub const output = @import("wayland/output.zig");
     /// See `wayland/window.zig`.
     pub const window = @import("wayland/window.zig");
+    /// See `wayland/dmabuf.zig`.
+    pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
 
 const is_linux = @import("builtin").os.tag == .linux;
@@ -260,6 +269,8 @@ pub const x11 = if (is_linux) struct {
     pub const XvfbForTest = @import("x11/backend.zig").XvfbForTest;
     /// See `x11/present.zig`.
     pub const present = @import("x11/present.zig");
+    /// See `x11/dri3.zig`.
+    pub const dri3 = @import("x11/dri3.zig");
     /// See `x11/dpi.zig`.
     pub const dpi = @import("x11/dpi.zig");
     /// See `x11/keymap.zig`.
@@ -292,6 +303,18 @@ pub const win32 = struct {
     pub const dwmapi = if (is_windows) @import("win32/bindings/dwmapi.zig") else struct {};
     /// See `win32/bindings/advapi32.zig`.
     pub const advapi32 = if (is_windows) @import("win32/bindings/advapi32.zig") else struct {};
+    /// See `win32/msgs.zig`.
+    pub const msgs = @import("win32/msgs.zig");
+    /// See `win32/keys.zig`.
+    pub const keys = @import("win32/keys.zig");
+    /// See `win32/dpi.zig`.
+    pub const dpi = @import("win32/dpi.zig");
+    /// See `win32/cpu_present.zig`.
+    pub const cpu_present = @import("win32/cpu_present.zig");
+    /// See `win32/backend.zig`.
+    pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
+    /// See `win32/backend.zig`.
+    pub const InitOptions = if (is_windows) @import("win32/backend.zig").InitOptions else void;
 };
 
 /// The transport between the platform and UI threads, used by backends.
@@ -374,17 +397,23 @@ test {
     if (is_windows) {
         inline for (.{ "user32", "kernel32", "gdi32", "imm32", "ole32", "shell32", "dwmapi", "advapi32" }) |n| std.testing.refAllDecls(@field(win32, n));
         _ = @import("win32/bindings/windows_test.zig");
+        _ = @import("win32/backend.zig");
     }
+    _ = win32.keys;
+    _ = win32.dpi;
+    _ = win32.cpu_present;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
         _ = @import("wayland/wire/fuzz.zig");
         _ = @import("wayland/backend.zig");
         _ = @import("wayland/shm.zig");
+        _ = @import("wayland/dmabuf.zig");
         _ = @import("portal/fake_portal.zig");
         std.testing.refAllDecls(x11.Conn);
         _ = @import("x11/testing/fake_server.zig");
         _ = @import("x11/backend.zig");
+        _ = @import("x11/dri3.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
@@ -450,6 +479,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
     .{ .path = "wayland/shm.zig", .src = @embedFile("wayland/shm.zig") },
+    .{ .path = "wayland/dmabuf.zig", .src = @embedFile("wayland/dmabuf.zig") },
     .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
     .{ .path = "x11/conn.zig", .src = @embedFile("x11/conn.zig") },
     .{ .path = "x11/auth.zig", .src = @embedFile("x11/auth.zig") },
@@ -460,6 +490,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/testing/fake_server.zig", .src = @embedFile("x11/testing/fake_server.zig") },
     .{ .path = "x11/backend.zig", .src = @embedFile("x11/backend.zig") },
     .{ .path = "x11/present.zig", .src = @embedFile("x11/present.zig") },
+    .{ .path = "x11/dri3.zig", .src = @embedFile("x11/dri3.zig") },
     .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
     .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
@@ -473,13 +504,18 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/bindings/advapi32.zig", .src = @embedFile("win32/bindings/advapi32.zig") },
     .{ .path = "win32/com.zig", .src = @embedFile("win32/com.zig") },
     .{ .path = "win32/wide.zig", .src = @embedFile("win32/wide.zig") },
+    .{ .path = "win32/msgs.zig", .src = @embedFile("win32/msgs.zig") },
+    .{ .path = "win32/keys.zig", .src = @embedFile("win32/keys.zig") },
+    .{ .path = "win32/dpi.zig", .src = @embedFile("win32/dpi.zig") },
+    .{ .path = "win32/cpu_present.zig", .src = @embedFile("win32/cpu_present.zig") },
+    .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 
 test "init starts the headless backend" {
     const p = try init(std.testing.allocator, std.testing.io, .{ .backend = .headless });
     defer p.deinit();
     try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .wayland }));
-    try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .win32 }));
+    if (!is_windows) try std.testing.expectError(error.BackendUnavailable, init(std.testing.allocator, std.testing.io, .{ .backend = .win32 }));
 }
 
 test "init falls back from an unreachable Wayland display to X11" {
