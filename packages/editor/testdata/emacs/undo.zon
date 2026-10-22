@@ -1,0 +1,12 @@
+// Emacs undo cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "undo typing", .before = "¦", .keys = "abc<C-/>", .after = "¦" },
+    .{ .name = "undo kill", .before = "¦foo bar", .keys = "<M-d><C-/>", .after = "¦foo bar" },
+    .{ .name = "undo twice", .before = "¦foo bar", .keys = "<M-d><M-d><C-/><C-/>", .after = "¦foo bar" },
+    .{ .name = "undo then redo by breaking", .before = "¦foo bar", .keys = "<M-d><C-/><C-f><C-/>", .after = "¦ bar" },
+    .{ .name = "undo underscore", .before = "¦ab", .keys = "<C-d><C-_>", .after = "¦ab" },
+    .{ .name = "C-x u", .before = "¦ab", .keys = "<C-d><C-x>u", .after = "¦ab" },
+    .{ .name = "undo nothing fails", .before = "¦ab", .keys = "<C-/>x", .after = "¦ab" },
+    .{ .name = "undo yank", .before = "¦foo bar", .keys = "<M-d><C-y><C-y><C-/>", .after = "foo¦ bar" },
+    .{ .name = "undo two runs", .before = "¦", .keys = "ab<C-b>cd<C-/>", .after = "a¦b" },
+}

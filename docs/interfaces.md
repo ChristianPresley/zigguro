@@ -1031,8 +1031,10 @@ compositor decides: a token it does not trust usually marks the window
 urgent instead of raising it, which is what `request_attention` wants.
 Without the global both return `error.Unsupported`. `open_dialog`,
 `open_uri` and `appearance_changed` go through `zg_platform.portal.desktop`
-(see that section); Wayland dialogs are not parented yet (that needs an
-xdg-foreign export handle).
+(see that section). When the compositor offers `zxdg_exporter_v2`, every
+toplevel is exported at creation; a dialog whose `parent` has received its
+handle (and `open_uri`, for the focused window) passes `wayland:<handle>`
+as the portal's parent window, otherwise "" (an unparented dialog).
 
 IME (E01.F04.S03.T01, `wayland/text_input.zig`): one `zwp_text_input_v3`
 on the seat. `set_ime_state` is stored per window and sent while the
@@ -2290,15 +2292,17 @@ Unstable until the diff views (E05.F07.S02) land. Unified output matches
 `git diff` hunk headers; histogram ties prefer the run nearest the middle of
 the region (JGit takes the first).
 
-## zg_editor.modes (ModeHandler, Host, VimState)
+## zg_editor.modes (ModeHandler, Host, VimState, EmacsState)
 
 ### Defined in
 `packages/editor/src/modes.zig`, `packages/editor/src/modes/{key,mode}.zig` and
 `packages/editor/src/modes/vim/*.zig` (E05.F09).
 
 ### Implemented by
-E05.F09.S01.T01 (Vim core). Registers, dot repeat, macros, marks and ex come
-with E05.F09.S01.T02; Emacs with E05.F09.S02.
+E05.F09.S01.T01 (Vim core) and E05.F09.S01.T02 (registers, dot repeat,
+macros, marks and the jumplist, searches, the Ex subset); E05.F09.S02.T01
+(Emacs: bindings, mark and region, kill ring, isearch, query replace, the
+universal argument).
 
 ### Consumed by
 EditorView (E04/E05 view: builds a `Host` per editor and routes keys), the
@@ -2314,19 +2318,54 @@ pub fn parse(notation: []const u8, out: []Key) !usize;   // "d2w<Esc><C-v>"
 pub const CaretShape = enum { bar, block, underline, half_block };
 pub const KeyResult = enum { consumed, passthrough };
 pub const Host = struct { doc: *Document, sels: *SelectionSet, undo: *UndoTree,
-    edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null };
+    edit: smart_edit.EditCtx = .{}, move: MoveContext = .{}, brackets: ?*const zg_syntax.BracketTree = null, io: ?std.Io = null,
+    actions: ?Actions = null };   // :w :q :x :e go here; without it they fail with a message
+pub const Action = union(enum) { write: struct { path: ?[]const u8, force: bool }, quit: struct { force: bool },
+    exit, edit: struct { path: ?[]const u8, force: bool }, command: []const u8 };
+pub const ClipboardPort = struct { ctx, getFn(ctx, Which{clipboard, primary}, gpa) !?[]u8, setFn(ctx, Which, []const u8) !void };
+pub const Actions = struct { ctx: *anyopaque, runFn: *const fn (ctx, Action) anyerror!void };
 pub const ModeHandler = struct { ctx: *anyopaque, handleKeyFn, statusTextFn, caretShapeFn,
     pub fn handleKey(h, k: Key, host: *Host) !KeyResult; pub fn statusText(h) []const u8; pub fn caretShape(h) CaretShape };
 pub const ChangeGroup = struct { // one undo step from several document changes
     pub fn begin(g, sels) !void; pub fn commit(g, undo, sels_after, meta) !void; pub fn cancel(g) void; pub fn listener(g) Listener };
 // vim/state.zig
-pub const Mode = enum { normal, insert, replace, visual, visual_line, visual_block, op_pending };
+pub const Mode = enum { normal, insert, replace, visual, visual_line, visual_block, op_pending, cmdline };
+pub const Options = struct { number, relativenumber, wrap, ignorecase, smartcase: bool };   // :set
+pub const Shared = struct { regs: Registers, global_marks: GlobalMarks, search: Search, options: Options,
+    highlight_off: bool,   // :noh
+    pub fn init(gpa) Shared; pub fn deinit(sh) void };
 pub const VimState = struct {
+    shared: ?*Shared = null;   // one per window: registers, A-Z marks, last search, options
+    pub fn sh(vs) *Shared;     // `shared`, else the state's own
+    pub fn markPos(vs, name: u21) ?u64;
+    pub fn runCmdline(vs, kind: u8, line: []const u8, host) !void;   // ":", "/", "?" without the prefix
     pub fn init(gpa) VimState; pub fn deinit(vs) void; pub fn handler(vs) ModeHandler;
     pub fn handleKey(vs, k: Key, host: *Host) !KeyResult;
-    pub fn statusText(vs) []const u8;   // "-- INSERT --", "-- VISUAL BLOCK --", pending "2d"
+    pub fn statusText(vs) []const u8;   // "-- INSERT --", ":%s/a/b", "recording @q", messages, pending "2d"
     pub fn caretShape(vs) CaretShape; pub fn detach(vs) void;
 };
+// vim/registers.zig: a-z (A-Z append), 0-9, -, +, * (through ClipboardPort), . : / (read-only), _
+pub const Registers = struct { clipboard: ?ClipboardPort = null,
+    pub fn get(r, name: u8) ?*const Register; pub fn put(r, name: u8, text, kind) !void };
+// emacs/emacs.zig
+pub const EmacsState = struct {
+    kill_ring: KillRing, mark_active: bool, isearch: ?ISearch,
+    failed: bool,   // the last key's command signalled an error or quit (a script stops)
+    pub fn init(gpa) EmacsState; pub fn deinit(es) void; pub fn handler(es) ModeHandler;
+    pub fn handleKey(es, k: Key, host: *Host) !KeyResult;   // .passthrough for keys Emacs leaves alone
+    pub fn statusText(es) []const u8;   // "I-search: foo", "Query replace ...", "C-u 4-", "C-x-", messages
+    pub fn caretShape(es) CaretShape; pub fn detach(es) void;
+};
+pub const commands = struct { save, find_file, switch_buffer, kill_buffer, execute_command, split_right };   // Action.command ids
+// emacs/kill_ring.zig
+pub const KillRing = struct { max: u32 = 120, clipboard: ?ClipboardPort,
+    pub fn kill(k, text, append: enum { no, after, before }) !void; pub fn killPieces(k, pieces, append) !void;
+    pub fn yank(k) !?[]const u8; pub fn yankPop(k) ?[]const u8; pub fn current(k, n: i64) !?*const Entry };
+// emacs/regexp.zig: Emacs regexp -> zg_regex syntax
+pub fn translate(gpa, src) error{Unsupported, Syntax, OutOfMemory}![]u8;
+// vim/pattern.zig: Vim regex -> zg_regex syntax
+pub fn translatePattern(gpa, vim_pat, Flags{ ignorecase, smartcase, diag: ?*Diag }) error{Unsupported, Syntax, OutOfMemory}![]u8;
+pub fn translateReplacement(gpa, rep, previous, diag) ![]u8;
 ```
 Vim keeps one cursor per host selection and writes them back after every key
 (a caret in Normal mode, the inclusive area in Visual modes); in Insert and
@@ -2335,7 +2374,40 @@ Replace mode the host selections are the truth and typing goes through
 operator, a command, or a whole insert session with its count) is one undo
 step. Behaviour is checked against Vim 9.1: `testdata/vim/core/*.txt` (405
 scenarios) are recorded by `testdata/vim/oracle.py` from real Vim and replayed
-by `vim_core_test.zig`.
+by `vim_core_test.zig`; `testdata/vim/ext/*.txt` (176 scenarios: registers,
+dot repeat, macros, marks, searches, Ex) are replayed by `vim_ext_test.zig`.
+
+Registers follow Vim: yanks go to `0`, deletes over lines (or with `%`, `(`,
+`)`, `` ` ``, `/`, `?`, `n`, `N`, `{`, `}`) shift `1`-`9`, smaller deletes go
+to `-`. Macros record Vim's bytes (`<Esc>` is 0x1B, named keys use Vim's
+`K_SPECIAL` codes), so a register can be put, edited and run again; a count
+or a recursive macro stops at the first command that fails. `.` replays the
+command and the keys typed in its insert session, so smart typing applies
+again. Marks are offsets mapped through every change, so a mark moves with
+its text; `'<`/`'>` and `` `. `` are kept, and the jumplist (100 entries)
+follows Vim's `Ctrl-O`/`Ctrl-I`. Patterns are Vim's (`\v \m \M \V`, `\<
+\>`, `\{n,m}`, `\{-}`, `\c`, `\_s`, `\%x41`...), translated for zg_regex;
+search offsets (`/pat/e+1`, `s-1`, `+2`) work. The Ex subset is ranges (`%`,
+`.`, `$`, `'x`, `/pat/`, `+n`), `:s` with `g i I e n &` (`:s`, `:&&`, `~`),
+`:g`/`:v` with `d`, `:d`, `:noh`, `:set`, `:let @r = '...'`, and `:w` `:q`
+`:wq` `:x` `:e` through `Host.actions`.
+
+Emacs keeps a point and a mark per cursor; the mark is active for all or
+none (transient-mark-mode) and an active region is the host selection.
+Kills append when the previous command was a kill (backward kills before);
+the ring stores one piece per cursor and joins them with line breaks for
+the clipboard, and `C-y` gives each cursor its own piece when the counts
+match. A kill sets the clipboard (`KillRing.clipboard`); a clipboard
+changed elsewhere is pushed and yanked by the next `C-y`. `C-s`/`C-r`
+search incrementally with a `FindSession` (`C-M-s`, `C-u C-s`: Emacs
+regexps); `M-%`/`C-M-%` query replace with `y n ! . q`. Self-inserts
+amalgamate up to 20 per undo step (`CoalesceKey.amalgamate`), and undo
+follows Emacs: after any other command, `C-/` first undoes the undos.
+`C-x C-s`, `C-x C-f`, `C-x b`, `C-x k`, `C-x 3` and `M-x` become
+`Action.command` with the ids `src/modes/emacs/keymap.zon` gives the E15
+layer. Behaviour is checked against GNU Emacs 29: `testdata/emacs/*.zon`
+(132 cases) are recorded by `testdata/emacs/oracle.py` from `emacs
+--batch` keyboard macros and replayed by `emacs_test.zig`.
 
 ### Threading
 UI thread only, like the document it edits.
@@ -2346,8 +2418,17 @@ listener on the first document it sees and removes it in `detach`/`deinit`.
 The `Host` and what it points to belong to the caller.
 
 ### Stability
-Unstable until EditorView routes keys to modes. Gaps: `=`, `!`, `H`/`M`/`L`,
-blockwise put, counts on Visual operators other than shifts.
+Unstable. Gaps: `=`, `!`, `H`/`M`/`L`, blockwise put, counts on Visual
+operators other than shifts; `:s` flag `c`; `\zs`, `\ze`, look-around and
+back references in patterns (reported with their span); `:g` with commands
+other than `d`; jumping to a file mark in another document (the host has to
+open it); marks on deleted lines move to the deletion instead of being
+dropped, and a mark keeps its place in the text where Vim keeps its column.
+Emacs: the mark ring is the primary cursor's; `C-v`/`M-v` move by
+`page_rows - 2` lines rather than scrolling; undo in an active region,
+isearch `C-w`/`M-r`, `M-y` without a yank (Emacs 28's kill-ring menu) and
+query replace `,`/`^`/`E` are not there; columns count characters, not
+display width.
 
 ## zg_vulkan.r2d (DrawList, Renderer, Prim)
 

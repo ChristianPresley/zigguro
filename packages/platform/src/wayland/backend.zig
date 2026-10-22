@@ -60,6 +60,7 @@ const native_api = @import("../api/native.zig");
 const platform_api = @import("../api/platform.zig");
 const PayloadArena = @import("../queue/payload_arena.zig").PayloadArena;
 const portal = @import("../portal/desktop.zig");
+const portal_handle = @import("../portal/window_handle.zig");
 const EventRing = @import("../queue/event_ring.zig").EventRing;
 const Wake = @import("../queue/wake.zig").Wake;
 
@@ -126,7 +127,7 @@ pub const InitOptions = struct {
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input, decoration, activation_token };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input, decoration, activation_token, exported };
 
 /// Keymaps larger than this are refused.
 const max_keymap_bytes = 16 * 1024 * 1024;
@@ -155,6 +156,10 @@ const Slot = struct {
     auto_cursor: ?CursorShape = null,
     /// The window's app id, for activation tokens (owned).
     app_id: ?[:0]u8 = null,
+    /// The xdg-foreign export and the handle the compositor gave it
+    /// (owned), for parenting portal dialogs.
+    exported: ?wl.zxdg_exported_v2.Id = null,
+    foreign_handle: ?[:0]u8 = null,
 
     const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
 };
@@ -277,6 +282,9 @@ pub const WaylandBackend = struct {
     /// xdg-activation (E01.F01.S03.T01), and tokens being requested.
     activation: ?wl.xdg_activation_v1.Id = null,
     tokens: std.ArrayList(TokenPending) = .empty,
+    /// xdg-foreign (E01.F07): every window is exported so portal dialogs
+    /// can name it as their parent.
+    exporter: ?wl.zxdg_exporter_v2.Id = null,
     csd_clicks: csd.Clicks = .{},
     csd_swallow: ?u32 = null,
     text_input: ?wl.zwp_text_input_v3.Id = null,
@@ -367,6 +375,7 @@ pub const WaylandBackend = struct {
         b.ti_manager = try registry.bind(wl.zwp_text_input_manager_v3, 1, 1, null);
         b.deco_manager = try registry.bind(wl.zxdg_decoration_manager_v1, 1, 1, null);
         b.activation = try registry.bind(wl.xdg_activation_v1, 1, 1, null);
+        b.exporter = try registry.bind(wl.zxdg_exporter_v2, 1, 1, null);
         if (b.seat_id) |sid| {
             if (b.ti_manager) |m| {
                 const ti = try conn.newIdVersion(wl.zwp_text_input_v3, 1, b.handler(.text_input));
@@ -512,6 +521,11 @@ pub const WaylandBackend = struct {
             try wl.wp_fractional_scale_manager_v1.getFractionalScale(c, fm, f, surf);
             w.frac = f;
         }
+        if (b.exporter) |ex| {
+            const e = try c.newIdVersion(wl.zxdg_exported_v2, 1, b.handler(.exported));
+            try wl.zxdg_exporter_v2.exportToplevel(c, ex, e, surf);
+            slot.exported = e;
+        }
         // The initial commit without a buffer asks for the first configure.
         try wl.wl_surface.commit(c, surf);
         try c.flush();
@@ -548,6 +562,9 @@ pub const WaylandBackend = struct {
         s.ime.deinit(b.gpa);
         if (s.app_id) |a| b.gpa.free(a);
         s.app_id = null;
+        if (s.exported) |e| wl.zxdg_exported_v2.destroy(c, e) catch {};
+        if (s.foreign_handle) |h| b.gpa.free(h);
+        s.foreign_handle = null;
         if (w.frame_cb) |cb| c.setHandler(@intFromEnum(cb), null);
         var i: usize = 0;
         while (i < b.pres_pending.items.len) {
@@ -918,10 +935,24 @@ pub const WaylandBackend = struct {
                 // window urgent instead of focusing it.
                 try b.requestToken(win, false);
             },
-            // No xdg-foreign export yet, so dialogs are not parented.
-            .open_dialog => |d| try b.desktop.openDialog(d, ""),
-            .open_uri => |uri| try b.desktop.openUri(uri, ""),
+            .open_dialog => |d| {
+                var hbuf: [256]u8 = undefined;
+                try b.desktop.openDialog(d, b.portalParent(&hbuf, d.parent));
+            },
+            // The focused window owns any "open with" chooser.
+            .open_uri => |uri| {
+                var hbuf: [256]u8 = undefined;
+                try b.desktop.openUri(uri, b.portalParent(&hbuf, b.seat.kb_focus));
+            },
         }
+    }
+
+    /// `wayland:<handle>` for `win` once the compositor has answered its
+    /// xdg-foreign export, else "" (the portal shows an unparented
+    /// dialog). Mutex held.
+    fn portalParent(b: *WaylandBackend, buf: []u8, win: ?WindowId) []const u8 {
+        const s = b.find(win orelse return "") orelse return "";
+        return portal_handle.wayland(buf, s.foreign_handle orelse return "") catch "";
     }
 
     /// Asks for an activation token for `win` (with the newest input
@@ -1386,6 +1417,21 @@ pub const WaylandBackend = struct {
                 };
                 try wl.xdg_activation_token_v1.destroy(c, tok);
                 try c.flush();
+            },
+            .exported => {
+                const ev = try wl.zxdg_exported_v2.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                for (b.slots.items) |s| if (s.exported) |e| if (@intFromEnum(e) == obj) {
+                    switch (ev) {
+                        .handle => |h| {
+                            const z = try b.gpa.dupeZ(u8, h.handle);
+                            if (s.foreign_handle) |old| b.gpa.free(old);
+                            s.foreign_handle = z;
+                        },
+                    }
+                    return;
+                };
             },
             .decoration => {
                 const ev = try wl.zxdg_toplevel_decoration_v1.decodeEvent(opcode, body, fds);
@@ -3147,6 +3193,47 @@ test "portal: without a session bus, dialogs and URIs are unsupported" {
     const p = rig.b.platform();
     try testing.expectError(error.Unsupported, p.submit(.{ .open_dialog = .{ .request = 1, .kind = .open_file } }));
     try testing.expectError(error.Unsupported, p.submit(.{ .open_uri = "https://ziglang.org" }));
+}
+
+test "xdg-foreign: dialogs and URIs name the exported parent window" {
+    const dbus_conn = @import("../dbus/conn.zig");
+    var daemon: dbus_conn.TestDaemon = undefined;
+    if (!try daemon.start()) return error.SkipZigTest;
+    defer daemon.stop();
+    var fp: @import("../portal/fake_portal.zig").FakePortal = .{ .uris = &.{"file:///tmp/a"} };
+    try fp.start(testing.allocator, testing.io, daemon.address());
+    defer fp.stop();
+    const globals = seat_globals ++ [_]fake.Global{.{ .name = 12, .interface = "zxdg_exporter_v2", .version = 1 }};
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .dbus_address = daemon.address(), .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    // Until the compositor answers, the dialog is unparented.
+    try p.submit(.{ .open_dialog = .{ .request = 1, .kind = .open_file, .parent = win } });
+    _ = try expectEvent(p, .dialog_result, null);
+    try testing.expectEqualStrings("", fp.lastParent());
+    try wl.zxdg_exported_v2.server.handle(rig.peer.fc, rig.peer.id(wl.zxdg_exported_v2), "h-42");
+    var tries: usize = 0;
+    while (true) : (tries += 1) {
+        rig.b.lock();
+        const got = rig.b.find(win).?.foreign_handle != null;
+        rig.b.unlock();
+        if (got) break;
+        if (tries > 500) return error.Timeout;
+        try testing.io.sleep(.fromMilliseconds(2), .awake);
+    }
+    try p.submit(.{ .open_dialog = .{ .request = 2, .kind = .open_file, .parent = win } });
+    const res = try expectEvent(p, .dialog_result, null);
+    try testing.expectEqual(2, res.request);
+    try testing.expectEqualStrings("wayland:h-42", fp.lastParent());
+    // Without a parent the dialog stays unparented.
+    try p.submit(.{ .open_dialog = .{ .request = 3, .kind = .open_file } });
+    _ = try expectEvent(p, .dialog_result, null);
+    try testing.expectEqualStrings("", fp.lastParent());
+    // Destroying the window destroys its export.
+    p.destroyWindow(win);
+    _ = try rig.peer.waitFor(wl.zxdg_exported_v2, .destroy, std.time.ns_per_s);
 }
 
 test "placement: set_position and set_always_on_top are unsupported" {

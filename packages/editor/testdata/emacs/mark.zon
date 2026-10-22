@@ -1,0 +1,15 @@
+// Emacs mark cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "C-SPC and move", .before = "¦abc", .keys = "<C-Space><C-f><C-f>", .after = "«ab¦c" },
+    .{ .name = "C-g deactivates", .before = "¦abc", .keys = "<C-Space><C-f><C-g>", .after = "a¦bc" },
+    .{ .name = "C-SPC twice deactivates", .before = "¦abc", .keys = "<C-Space><C-Space><C-f>", .after = "a¦bc" },
+    .{ .name = "C-x C-x", .before = "¦abcd", .keys = "<C-Space><C-f><C-f><C-x><C-x>", .after = "¦ab«cd" },
+    .{ .name = "C-x C-x reactivates", .before = "¦abcd", .keys = "<C-Space><C-f><C-f><C-g><C-x><C-x>", .after = "ab¦cd" },
+    .{ .name = "C-x C-x no mark fails", .before = "¦ab", .keys = "<C-x><C-x>x", .after = "¦ab" },
+    .{ .name = "C-x h", .before = "a¦b\ncd", .keys = "<C-x>h", .after = "¦ab\ncd«" },
+    .{ .name = "typing deactivates", .before = "¦abc", .keys = "<C-Space><C-f>X", .after = "aX¦bc" },
+    .{ .name = "M-w deactivates +kill", .before = "¦abc", .keys = "<C-Space><C-f><M-w>", .after = "a¦bc\n[kill] \"a\"" },
+    .{ .name = "C-u C-SPC pops", .before = "ab¦cd", .keys = "<C-Space><C-e><C-u><C-Space>", .after = "ab¦cd" },
+    .{ .name = "mark follows insert before +mark", .before = "ab¦cd", .keys = "<C-Space><C-g><C-a>XY", .after = "ab¦cd\n[mark 2]" },
+    .{ .name = "isearch saves mark +mark", .before = "¦foo bar", .keys = "<C-s>bar<CR>", .after = "foo bar¦\n[mark 0]" },
+}

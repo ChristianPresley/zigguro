@@ -9,7 +9,9 @@
 //! per character; scrolling the viewport back into them decodes them into
 //! hot pages again at the current width. Cold pages are evicted first when
 //! the byte cap is exceeded, then whole hot pages from the top; pins into
-//! evicted or compacted rows become `garbage`.
+//! evicted rows become `garbage`. Pins into compacted rows are garbage
+//! too while cold, but keep their logical position (`TrackedPin.cold`) and
+//! come back when their page is decoded, at whatever width it has then.
 //!
 //! Row indices (`rowIndex`, `screenRow`, `totalRows`, `scrollbackRows`)
 //! count cold rows first, so they stay stable across compaction and
@@ -53,8 +55,20 @@ pub const Pin = struct {
 /// A pin kept up to date by the list.
 pub const TrackedPin = struct {
     pin: Pin,
-    /// The pinned row was evicted or erased; the pin no longer points at it.
+    /// The pinned row was evicted or erased, or is cold; the pin no
+    /// longer points at it.
     garbage: bool = false,
+    /// While the row is cold: where it is in the cold page's lines, so
+    /// `thawNewest` can restore the pin. Null once that page is evicted.
+    cold: ?ColdPos = null,
+};
+
+/// A position in cold scrollback: cold page `seq`, logical line `line`
+/// of it, and cell `offset` from the start of that line.
+pub const ColdPos = struct {
+    seq: u64,
+    line: u32,
+    offset: u32,
 };
 
 /// List options.
@@ -74,6 +88,8 @@ pub const Options = struct {
 pub const ColdNode = struct {
     page: cold.ColdPage,
     rows: u32,
+    /// Unique per list, for pins into this page.
+    seq: u64 = 0,
 };
 
 gpa: Allocator,
@@ -99,6 +115,8 @@ cold_nodes: std.ArrayList(ColdNode) = .empty,
 /// Rows of every cold node at `cols`.
 cold_rows: u64 = 0,
 cold_bytes: usize = 0,
+/// The next `ColdNode.seq`.
+cold_seq: u64 = 0,
 
 /// Creates a list with an active area of `cols` x `rows` blank rows.
 pub fn init(gpa: Allocator, cols: u16, rows: u16, o: Options) !PageList {
@@ -282,6 +300,9 @@ fn unlinkHead(pl: *PageList) *Node {
 /// Drops the oldest cold page.
 fn evictCold(pl: *PageList) void {
     var c = pl.cold_nodes.orderedRemove(0);
+    for (pl.pins.items) |t| if (t.cold) |cp| if (cp.seq == c.seq) {
+        t.cold = null;
+    };
     pl.cold_rows -= c.rows;
     pl.evicted += c.rows;
     pl.cold_bytes -= c.page.bytesUsed();
@@ -317,7 +338,9 @@ pub fn compact(pl: *PageList) !void {
         // Same width: the rows are exactly the ones encoded.
         cp.cached_cols = pl.cols;
         cp.cached_rows = @intCast(n);
-        try pl.cold_nodes.append(pl.gpa, .{ .page = cp, .rows = @intCast(n) });
+        try pl.cold_nodes.append(pl.gpa, .{ .page = cp, .rows = @intCast(n), .seq = pl.cold_seq });
+        pl.freezePins(n, pl.cold_seq);
+        pl.cold_seq += 1;
         pl.cold_rows += n;
         pl.cold_bytes += cp.bytesUsed();
         for (0..count) |_| {
@@ -329,8 +352,54 @@ pub fn compact(pl: *PageList) !void {
     }
 }
 
+/// Gives pins in the first `n` hot rows (being compacted into cold page
+/// `seq`) their logical position, and marks them garbage.
+fn freezePins(pl: *PageList, n: u64, seq: u64) void {
+    var line: u32 = 0;
+    var row_in_line: u32 = 0;
+    var p: Pin = pl.firstHot();
+    for (0..n) |i| {
+        for (pl.pins.items) |t| if (!t.garbage and t.pin.node == p.node and t.pin.y == p.y) {
+            t.cold = .{ .seq = seq, .line = line, .offset = row_in_line * pl.cols + t.pin.x };
+            t.garbage = true;
+        };
+        if (p.row().wrap) row_in_line += 1 else {
+            line += 1;
+            row_in_line = 0;
+        }
+        if (i + 1 < n) p = next(p).?;
+    }
+}
+
+/// Restores pins into cold page `seq`, just decoded into `fresh` at width
+/// `cols`. Wide characters can wrap a column early at another width, so
+/// the column is approximate there; it never leaves its logical line.
+fn thawPins(pl: *PageList, fresh: *const PageList, seq: u64) void {
+    for (pl.pins.items) |t| {
+        const cp = t.cold orelse continue;
+        if (cp.seq != seq) continue;
+        t.cold = null;
+        if (fresh.total == 0) continue;
+        var p: Pin = .{ .node = fresh.head, .y = 0 };
+        var line: u32 = 0;
+        const found = while (line < cp.line) {
+            if (!p.row().wrap) line += 1;
+            p = next(p) orelse break false;
+        } else true;
+        if (!found) continue;
+        var off = cp.offset;
+        while (off >= fresh.cols and p.row().wrap) {
+            p = next(p) orelse break;
+            off -= fresh.cols;
+        }
+        p.x = @intCast(@min(off, fresh.cols - 1));
+        t.pin = p;
+        t.garbage = false;
+    }
+}
+
 /// Decodes the newest cold page back into hot pages above `head`, at the
-/// current width. Row indices do not change.
+/// current width. Row indices do not change; pins into the page return.
 pub fn thawNewest(pl: *PageList) !void {
     const c = &pl.cold_nodes.items[pl.cold_nodes.items.len - 1];
     var fresh: PageList = .{ .gpa = pl.gpa, .pool = pl.pool, .opts = pl.opts, .cols = pl.cols, .rows = pl.rows, .page_bytes = pl.page_bytes, .head = undefined, .tail = undefined };
@@ -344,6 +413,7 @@ pub fn thawNewest(pl: *PageList) !void {
         return err;
     };
     pl.pool = fresh.pool;
+    pl.thawPins(&fresh, c.seq);
     if (fresh.total == 0) {
         freeNodes(pl.gpa, &pl.pool, fresh.head);
     } else {

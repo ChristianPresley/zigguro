@@ -27,7 +27,15 @@ const Selection = sel_mod.Selection;
 const Timestamp = std.Io.Timestamp;
 
 /// Which kind of repeated command an edit is, for grouping.
-pub const CoalesceKey = enum { typing_word, typing_space, delete_left, delete_right };
+pub const CoalesceKey = enum {
+    typing_word,
+    typing_space,
+    delete_left,
+    delete_right,
+    /// Emacs's amalgamating commands (up to 20 self-inserts per step):
+    /// they coalesce whatever the time between them.
+    amalgamate,
+};
 
 /// Describes the edit being recorded.
 pub const GroupMeta = struct {
@@ -212,6 +220,7 @@ pub const UndoTree = struct {
         const pk = n.coalesce_key orelse return false;
         const k = meta.coalesce_key orelse return false;
         if (!compatible(pk, k)) return false;
+        if (k == .amalgamate) return sel_mod.eql(n.sel_after, sel_before);
         const dt = meta.timestamp.nanoseconds - n.timestamp.nanoseconds;
         if (dt < 0 or dt >= @as(i96, u.limits.group_ms) * std.time.ns_per_ms) return false;
         return sel_mod.eql(n.sel_after, sel_before);
