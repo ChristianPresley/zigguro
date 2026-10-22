@@ -63,12 +63,16 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/zig-toolchain
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}-${{ hashFiles('.github/zig-toolchain.txt') }}
       - if: runner.os == 'Linux'
         run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      # The aarch64-windows zig 0.16.0 exits at once on `zig build` (no
+      # output; exit 1 under pwsh, SIGSEGV under Git Bash), while `zig
+      # version` works. Until that is fixed upstream, windows-11-arm runs the
+      # x86_64 toolchain under emulation; `cross` still builds aarch64-windows.
       - if: runner.os == 'Windows'
         shell: pwsh
-        run: .github/scripts/setup-zig.ps1 -Dest "$HOME\zig-toolchain"
+        run: .github/scripts/setup-zig.ps1 -Dest "$HOME\zig-toolchain" ${{ matrix.os == 'windows-11-arm' && '-Arch x86_64' || '' }}
       - if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
@@ -79,10 +83,8 @@ jobs:
         with:
           path: ~\AppData\Local\zig
           key: zig-cache-test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.optimize }}-${{ hashFiles('**/build.zig.zon') }}
-      # pwsh, not Git Bash: on windows-11-arm, zig build segfaulted at
-      # startup under the x64-emulated MSYS bash, while zig ran from pwsh.
       - name: zig build test
-        shell: pwsh
+        shell: bash
         run: zig build test -Doptimize=${{ matrix.optimize }} --test-timeout 120s --summary line
       - name: zig build test-ci-scripts
         if: runner.os == 'Linux' && matrix.optimize == 'Debug'
