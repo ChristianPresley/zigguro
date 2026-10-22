@@ -58,6 +58,9 @@ pub const AgentPanel = struct {
     items: std.ArrayList(Item) = .empty,
     /// The last item is the reply being streamed.
     streaming: bool = false,
+    /// Colours code blocks in replies (the app passes zg_editor's
+    /// `MarkdownHighlighter`); plain without one.
+    highlighter: ?zg_gui.markdown.code_view.Highlighter = null,
     status: ev.Status = .idle,
     input: zg_gui.w.TextBuffer,
     /// Files dropped on the prompt become `@path` mentions.
@@ -622,7 +625,7 @@ pub const AgentPanel = struct {
                 if (it.rewind_open and it.sent and idle) p.rewindChoices(ui, i);
             },
             .assistant => if (it.reply) |r| {
-                zg_gui.markdown.view(ui, &r.view, .{ .streaming = r.streaming, .compact = true, .virtualize = false, .max_width = std.math.inf(f32) });
+                zg_gui.markdown.view(ui, &r.view, .{ .streaming = r.streaming, .compact = true, .virtualize = false, .max_width = std.math.inf(f32), .highlighter = p.highlighter });
             } else ui.text(it.text.items, .{}),
             .tool => {
                 if (it.children.items.len > 0) return p.taskItem(ui, it);
@@ -926,6 +929,71 @@ test "agent panel: a prompt, a denied tool call and the reply" {
     t.win.markAllDirty();
     _ = t.settle();
     try testing.expect(t.find(.{ .kind = "md_text", .name = "Understood, I left it." }) != null);
+}
+
+test "agent panel: code blocks in replies go through the highlighter" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    rt.bindUiThread(.noop);
+    defer _ = rt.deinit();
+
+    var models: zg_ai.ModelRegistry = .init(gpa, io, test_catalog);
+    defer models.deinit();
+    const sp = try scripted.ScriptedProvider.init(gpa, &.{
+        scripted.script.text("Try:\n\n```zig\nconst a = 1;\n```\n"),
+    }, .all);
+    var provider = sp.provider();
+    defer provider.deinit();
+    var specs = [_]proto.ToolSpec{};
+    var tools: zg_ai.loop.deps.StaticTools = .{ .specs = &specs };
+    var fp: zg_security.testing.FakeApprovalPort = .{ .gpa = gpa };
+    defer fp.deinit();
+    var approvals: ToolApprovals = .init(gpa, fp.port());
+    defer approvals.deinit();
+    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &models, .providers = .fixed(&provider), .tools = tools.tools(), .permission = approvals.permission() });
+    defer mgr.deinit();
+    const agent = try mgr.create(.{ .model = "m" });
+
+    const Counting = struct {
+        langs: std.ArrayList(u8) = .empty,
+        fn hl(ptr: *anyopaque, a: Allocator, lang: []const u8, code: []const u8, out: *std.ArrayList(zg_gui.markdown.code_view.Span)) Allocator.Error!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            try self.langs.appendSlice(testing.allocator, lang);
+            if (std.mem.indexOf(u8, code, "const")) |k| try out.append(a, .{ .start = @intCast(k), .end = @intCast(k + 5), .class = .keyword });
+        }
+    };
+    var counting: Counting = .{};
+    defer counting.langs.deinit(gpa);
+    const Root = struct {
+        p: ?*AgentPanel = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.p) |x| x.build(ui);
+        }
+    };
+    var root: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 400, .h = 600 }, .root = .of(&root) });
+    defer t.deinit();
+    t.app.attachRuntime(&rt);
+    const p = try AgentPanel.create(gpa, io, &t.app, agent);
+    defer p.destroy();
+    p.highlighter = .{ .ptr = &counting, .highlight = Counting.hl };
+    root.p = p;
+    t.win.markAllDirty();
+    _ = t.settle();
+    t.win.setFocus(p.input_node, false);
+    t.typeText("show me");
+    t.press(.enter, .{});
+    var spins: u32 = 0;
+    while (find(p, .assistant, "Try") == null or busy(p.status)) : (spins += 1) {
+        try testing.expect(spins < 5000);
+        _ = t.settle();
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    t.win.markAllDirty();
+    _ = t.settle();
+    try testing.expect(std.mem.indexOf(u8, counting.langs.items, "zig") != null);
 }
 
 /// `read_file` (read-only, so no approval) for the subagent test.

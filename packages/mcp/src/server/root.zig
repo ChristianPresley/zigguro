@@ -12,6 +12,7 @@ pub const subscriptions = @import("subscriptions.zig");
 pub const ctx = @import("ctx.zig");
 pub const mrtr_seal = @import("mrtr_seal.zig");
 pub const legacy_requests = @import("legacy_requests.zig");
+pub const transport = @import("transport/root.zig");
 
 pub const CallCtx = Server.CallCtx;
 pub const InputError = ctx.InputError;
