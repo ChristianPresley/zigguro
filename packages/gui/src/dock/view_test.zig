@@ -1,7 +1,8 @@
 //! Dock UI (E04.F07.S01.T02): splits render with splitters that resize
 //! (pointer, keyboard, double-click), tab strips follow APG tabs and keep
 //! the active tab in view, close gestures and the tab context menu act
-//! on the model, and focus inside a group focuses it.
+//! on the model, focus inside a group focuses it, and dragging a tab
+//! reorders, splits, docks into side areas or floats.
 
 const std = @import("std");
 const ui_mod = @import("../core/ui.zig");
@@ -27,7 +28,9 @@ const Page = struct {
         p.dv.beginFrame(ui);
         ui.open(.{ .style = .{ .dir = .row, .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .align_items = .stretch } });
         defer ui.close();
+        p.dv.dockArea(ui, .left);
         p.dv.dockArea(ui, .center);
+        p.dv.dropOverlay(ui);
     }
 
     fn tab(ctx: *anyopaque, r: PanelRef) view.TabInfo {
@@ -261,4 +264,74 @@ test "dock view: overflowing strip keeps the active tab in view; the list menu a
     try testing.expectEqual(ps[0], f.active(g));
     const a = try f.t.rectOf(.{ .role = .tab, .name = "a.zig" });
     try testing.expect(a.x >= strip.x - 0.5);
+}
+
+/// Presses tab `name`, drags it to `to` through `via` and releases.
+fn dragTab(f: *Fx, name: []const u8, via: []const @import("../core/geom.zig").Vec2, release: bool) !void {
+    const r = try f.t.rectOf(.{ .role = .tab, .name = name });
+    const from: @import("../core/geom.zig").Vec2 = .{ .x = r.x + 20, .y = r.y + r.h / 2 };
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = from } });
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = from } });
+    for (via) |p| {
+        f.t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+        _ = f.t.settle();
+    }
+    if (release) f.t.win.dispatch(.{ .pointer_up = .{ .pos = via[via.len - 1] } });
+    _ = f.t.settle();
+}
+
+test "drag to dock: reorder in the strip, split on an edge, dock to a side area, cancel" {
+    var f: Fx = undefined;
+    try f.init(1000);
+    defer f.deinit();
+    const g = f.center();
+    const ps = try f.open(g, 3);
+    defer gpa.free(ps);
+    f.rebuild();
+    // Reorder: a past c.
+    const c = try f.t.rectOf(.{ .role = .tab, .name = "c.zig" });
+    try dragTab(&f, "a.zig", &.{ .{ .x = c.x + 10, .y = c.y + 10 }, .{ .x = c.right() - 5, .y = c.y + 10 } }, true);
+    try testing.expectEqualSlices(PanelRef, &.{ ps[1], ps[2], ps[0] }, f.page.dock.group(g).?.tabs.items);
+    // While dragging over the right edge, the preview covers the right half.
+    try dragTab(&f, "b.zig", &.{ .{ .x = 600, .y = 200 }, .{ .x = 960, .y = 200 } }, false);
+    const pv = try f.t.rectOf(.{ .test_id = "dock_drop_preview" });
+    try testing.expectApproxEqAbs(@as(f32, 500), pv.x, 1);
+    try testing.expectApproxEqAbs(@as(f32, 500), pv.w, 1);
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = 960, .y = 200 } } });
+    _ = f.t.settle();
+    try testing.expect(f.t.find(.{ .test_id = "dock_drop_preview" }) == null);
+    const g2 = f.page.dock.groupOf(ps[1]).?;
+    try testing.expect(g2 != g);
+    try testing.expectEqual(@as(usize, 2), f.t.count(.{ .test_id = "dock_group" }));
+    // One undo step puts it back.
+    try testing.expect(try f.page.dock.undo());
+    try testing.expectEqual(g, f.page.dock.groupOf(ps[1]).?);
+    f.rebuild();
+    // The window's left edge docks into the left area, which then shows.
+    try dragTab(&f, "c.zig", &.{ .{ .x = 300, .y = 200 }, .{ .x = 5, .y = 200 } }, true);
+    try testing.expectEqual(model.Owner{ .area = .left }, f.page.dock.ownerOf(.{ .group = f.page.dock.groupOf(ps[2]).? }).?);
+    try testing.expect(f.t.find(.{ .name = "content c.zig" }) != null);
+    // Escape cancels a drag.
+    try dragTab(&f, "a.zig", &.{ .{ .x = 600, .y = 200 }, .{ .x = 960, .y = 200 } }, false);
+    try testing.expect(f.t.find(.{ .test_id = "dock_drop_preview" }) != null);
+    f.t.press(.escape, .{});
+    try testing.expect(f.t.find(.{ .test_id = "dock_drop_preview" }) == null);
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = .{ .x = 960, .y = 200 } } });
+    _ = f.t.settle();
+    try testing.expectEqual(g, f.page.dock.groupOf(ps[0]).?);
+    try f.page.dock.validate();
+}
+
+test "drag to dock: outside the window floats" {
+    var f: Fx = undefined;
+    try f.init(800);
+    defer f.deinit();
+    const g = f.center();
+    const ps = try f.open(g, 2);
+    defer gpa.free(ps);
+    f.rebuild();
+    try dragTab(&f, "a.zig", &.{ .{ .x = 300, .y = 200 }, .{ .x = 900, .y = 100 } }, true);
+    try testing.expectEqual(@as(usize, 1), f.page.dock.floating.items.len);
+    try testing.expectEqual(@as(f32, 900), f.page.dock.floating.items[0].rect.x);
+    try f.page.dock.validate();
 }
