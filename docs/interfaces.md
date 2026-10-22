@@ -3645,3 +3645,57 @@ Conflict texts live in the changeset's arena.
 
 ### Stability
 Unstable until the app binds it.
+
+## zg_review.overlay (OverlayFs, AgentView)
+
+### Defined in
+`packages/review/src/overlay/{overlay_fs,agent_view}.zig` (E12.F02.S01.T01); see `packages/review/docs/contracts.md` and `docs/rebase.md`.
+
+### Implemented by
+E12.F02.S01.T01.
+
+### Consumed by
+E10 file tools through the app's `Files` adapter (`read_file`, `edit_file`, `glob`, `grep`), and review UI previews (`changeset` and `all_pending` views).
+
+### Signature
+```zig
+pub const ViewSpec = union(enum) { disk, agent: struct { session: u128, agent: u32 = 0 }, changeset: ChangesetId, all_pending };
+pub const OverlayFs = struct {
+    q: *const Queue, files: Files, docs: ?DocSource = null, lister: ?Lister = null, o: Options = .{ .subagents_share_view = true },
+    pub fn read(fs, arena, view, path) !?Read;      // Read{ text, executable, base: ?BaseRef, includes_pending, others_pending, stale }
+    pub fn stat(fs, arena, view, path) !?Stat;      // Stat{ size, executable, pending }
+    pub fn listDir(fs, arena, view, dir) ![]DirEntry;   // DirEntry{ name, kind: file|directory }, sorted
+    pub fn visible(fs, view, cs: *const Changeset) bool;
+};
+pub const DocSource = struct { ctx, snapshot: fn (ctx, arena, path) anyerror!?[]const u8 };
+pub const Lister = struct { ctx, list: fn (ctx, arena, dir) anyerror![]const DirEntry };
+pub fn agentView(fs: *const OverlayFs, ref: AgentRef, conflicts: ?*const ConflictIndex) AgentView;
+pub const AgentView = struct {
+    pub fn readText(v, arena, path) !?Read;
+    pub fn baseFor(v, arena, path) !?[]const u8;
+    pub fn listDir(v, arena, dir) ![]DirEntry;
+    pub fn stat(v, arena, path) !?Stat;
+    pub fn pendingWarning(v, gpa, path) !?[]u8;
+};
+```
+Deviations from the spec text:
+- `agentView` takes the `OverlayFs` and an optional ConflictIndex rather
+  than the queue, DocumentRegistry and `Io`. Open documents come in
+  through the `DocSource` port, the disk through `Files`, and directories
+  through `Lister` (E08 PathStore in the app).
+- `Read` replaces `AgentRead`: no `edits_version`, the base is null for
+  a missing file, and `includes_pending` is a list.
+- A change whose base moved is merged in the view (`stale`) instead of
+  waiting on a Rebaser event.
+- Not done: `Materializer`, virtual proposal documents, the LRU cache,
+  synthetic mtimes, and the `bench-review-agentview` bench. Directories
+  emptied by pending deletes are still listed.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+Everything returned is in the caller's arena.
+
+### Stability
+Unstable until E10 binds it.
