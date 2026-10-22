@@ -1,0 +1,25 @@
+.{
+    .windows = .{
+        .{ .id = "main", .rect = .{ 40, 30, 1280, 800 }, .monitor = "DP-1", .scale = 1, .maximized = false },
+    },
+    .panels = .{
+        .{ .ref = 2, .kind = "editor", .state = "src/main.zig" },
+        .{ .ref = 3, .kind = "editor", .state = "build.zig" },
+        .{ .ref = 5, .kind = "terminal" },
+    },
+    .groups = .{
+        .{ .id = 1, .tabs = .{ 2, 3 }, .active = 1 },
+        .{ .id = 4, .tabs = .{5} },
+    },
+    .areas = .{
+        .{},
+        .{},
+        .{ .root = .{ .group = 4 }, .size = 300 },
+        .{ .root = .{ .group = 1 } },
+        .{ .visible = false },
+    },
+    .focused = 1,
+    .ui_state = .{
+        .{ .key = "explorer.collapsed", .value = "docs" },
+    },
+}

@@ -30,6 +30,7 @@
         .zg_syntax = .{ .path = "packages/syntax" },
         .zg_gui = .{ .path = "packages/gui" },
         .zg_review = .{ .path = "packages/review" },
+        .zg_install = .{ .path = "packages/install" },
         // pkgtool:insert
     },
     .paths = .{

@@ -269,7 +269,7 @@ test "undo restores the split and keeps panels opened since" {
 }
 
 /// Applies op `op` with arguments drawn from `r` to `m`; tracks live panels.
-fn randomOp(m: *DockModel, live: *std.ArrayList(PanelRef), r: std.Random) !void {
+pub fn randomOp(m: *DockModel, live: *std.ArrayList(PanelRef), r: std.Random) !void {
     const groups = m.groups.keys();
     const pick_g = groups[r.uintLessThan(usize, groups.len)];
     const has = live.items.len > 0;

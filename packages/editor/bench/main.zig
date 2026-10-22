@@ -357,6 +357,37 @@ fn register(b: *bench.Bench) !void {
     try registerDecorations(b, text);
     try registerAiOverlays(b, text);
     try registerAgentEdit(b, text);
+    try registerCursors(b, text);
+}
+
+const CursorBench = struct { doc: *zg_editor.model.document.Document, sels: *zg_editor.model.edit.selection.SelectionSet };
+
+/// Typing with `n` carets spread over a 100k-line document: one
+/// ChangeSet per keystroke, applied, with every caret placed after its
+/// text (edit pipeline without syntax).
+fn registerCursors(b: *bench.Bench, text: []const u8) !void {
+    const edit = zg_editor.model.edit;
+    inline for (.{ .{ "editor.edit.type_1k_cursors", 1_000 }, .{ "editor.edit.type_10k_cursors", 10_000 } }) |c| {
+        const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
+        defer doc.deinit();
+        var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(0));
+        defer sels.deinit();
+        const lines = doc.tree.lineCount() - 1;
+        const carets = try b.gpa.alloc(edit.selection.Selection, c[1]);
+        defer b.gpa.free(carets);
+        for (carets, 0..) |*sel, i| sel.* = .caret(doc.tree.lineStart(i * lines / c[1]) + 5);
+        try sels.set(carets, 0);
+        var cb: CursorBench = .{ .doc = doc, .sels = &sels };
+        try b.run(c[0], &cb, typeCursors);
+    }
+}
+
+fn typeCursors(c: *CursorBench, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        _ = zg_editor.model.edit.runner.typeText(c.doc, c.sels, "x", .{ .user = 0 }) catch unreachable;
+        c.doc.endFrame();
+    }
 }
 
 const AgentBench = struct {
