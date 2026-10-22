@@ -53,6 +53,15 @@ pub const ObjectFormat = enum {
     }
 };
 
+/// Hex digit values; 0x80 marks a non-hex byte.
+const hex_table: [256]u8 = blk: {
+    var t: [256]u8 = @splat(0x80);
+    for ("0123456789", 0..) |c, i| t[c] = i;
+    for ("abcdef", 10..) |c, i| t[c] = i;
+    for ("ABCDEF", 10..) |c, i| t[c] = i;
+    break :blk t;
+};
+
 /// An object ID. Bytes past `format.len()` are always zero, so `Oid`s
 /// compare and hash correctly with `std.meta.eql` and `std.hash.autoHash`.
 pub const Oid = struct {
@@ -81,7 +90,14 @@ pub const Oid = struct {
     pub fn parseHex(format: ObjectFormat, text: []const u8) ParseError!Oid {
         if (text.len != format.hexLen()) return error.InvalidOid;
         var o = zero(format);
-        _ = std.fmt.hexToBytes(o.bytes[0..format.len()], text) catch return error.InvalidOid;
+        var bad: u8 = 0;
+        for (o.bytes[0..format.len()], 0..) |*b, i| {
+            const hi = hex_table[text[2 * i]];
+            const lo = hex_table[text[2 * i + 1]];
+            bad |= (hi | lo) & 0x80;
+            b.* = (hi << 4) | (lo & 0x0f);
+        }
+        if (bad != 0) return error.InvalidOid;
         return o;
     }
 
