@@ -39,5 +39,6 @@
         .{ "zg_review", "zg_scm" }, // seeded by E00.F03.S01.T03 (E12 review applies changesets through zg_scm)
         .{ "zg_agents", "zg_ai" }, // seeded by E00.F03.S01.T03 (E13 agents drive the zg_ai loop)
         .{ "zg_dap", "zg_lsp" }, // E07.F06.S01.T01 (DapConnection reuses the zg_lsp transports, server processes and script engine)
+        .{ "zg_vulkan", "zg_platform" }, // E02 epic (#3): the renderer targets zg_platform SurfaceTarget/Presenter types (E02.F06.S01.T01)
     },
 }
