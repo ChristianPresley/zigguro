@@ -1,0 +1,1 @@
+{"source":{"name":"main.zig","path":"/home/dev/proj/src/main.zig"},"breakpoints":[{"line":12},{"line":20,"condition":"i > 3","hitCondition":"2","logMessage":"i = {i}"}],"sourceModified":false}
