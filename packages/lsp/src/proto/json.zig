@@ -191,12 +191,17 @@ pub fn parseUnionFromValue(comptime U: type, a: Allocator, v: Value, options: Pa
     const fields = @typeInfo(U).@"union".fields;
     var best: ?usize = null;
     var best_score: usize = 0;
+    var best_known: usize = 0;
     inline for (fields, 0..) |f, i| {
         if (valueMatches(f.type, v)) {
             const s = specificity(f.type);
-            if (best == null or s > best_score) {
+            // Ties go to the alternative that declares more of the
+            // object's keys (registration options carry `documentSelector`).
+            const k = knownKeys(f.type, v);
+            if (best == null or s > best_score or (s == best_score and k > best_known)) {
                 best = i;
                 best_score = s;
+                best_known = k;
             }
         }
     }
@@ -304,6 +309,24 @@ fn literalEql(comptime F: type, want: F, got: Value) bool {
 
 /// How specific a matching alternative is: required properties count one,
 /// literal properties two.
+/// How many keys of object `v` are fields of struct `T` (0 otherwise).
+fn knownKeys(comptime T: type, v: Value) usize {
+    if (v != .object) return 0;
+    switch (@typeInfo(T)) {
+        .optional => |o| return knownKeys(o.child, v),
+        .pointer => |p| return if (p.size == .one) knownKeys(p.child, v) else 0,
+        .@"struct" => |st| {
+            if (T == Value or comptime isMap(T)) return 0;
+            var n: usize = 0;
+            inline for (st.fields) |f| {
+                if (v.object.get(f.name) != null) n += 1;
+            }
+            return n;
+        },
+        else => return 0,
+    }
+}
+
 fn specificity(comptime T: type) usize {
     switch (@typeInfo(T)) {
         .optional => |o| return specificity(o.child),
