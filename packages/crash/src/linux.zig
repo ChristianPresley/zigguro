@@ -8,7 +8,12 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const zg_core = @import("zg_core");
+const format = @import("format.zig");
+const capture = @import("capture.zig");
 const linux = std.os.linux;
+const CpuContextPtr = std.debug.CpuContextPtr;
+const Native = std.debug.cpu_context.Native;
 
 /// The only `std.os.linux` functions a `cp_*` function may call. All are
 /// async-signal-safe (signal-safety(7)); `sigaction` and `sigprocmask`
@@ -412,28 +417,12 @@ fn cp_parseDec(s: []const u8) ?u32 {
     return std.math.cast(u32, v);
 }
 
-/// Formats `v` in decimal into `buf`.
-pub fn cp_fmtDec(buf: []u8, v: u64) []const u8 {
-    var tmp: [20]u8 = undefined;
-    var i: usize = tmp.len;
-    var x = v;
-    while (true) {
-        i -= 1;
-        tmp[i] = @intCast('0' + x % 10);
-        x /= 10;
-        if (x == 0) break;
-    }
-    const n = @min(buf.len, tmp.len - i);
-    @memcpy(buf[0..n], tmp[i..][0..n]);
-    return buf[0..n];
-}
-
 /// Reads `/proc/self/task/<tid>/comm` (without the newline) into `buf`.
 pub fn cp_threadName(tid: u32, buf: []u8) []const u8 {
     var path: [64]u8 = undefined;
     const prefix = "/proc/self/task/";
     @memcpy(path[0..prefix.len], prefix);
-    const d = cp_fmtDec(path[prefix.len..], tid);
+    const d = capture.cp_fmtDec(path[prefix.len..], tid);
     const suffix = "/comm\x00";
     @memcpy(path[prefix.len + d.len ..][0..suffix.len], suffix);
     const name = cp_readFile(linux.AT.FDCWD, @ptrCast(&path), buf);
@@ -441,9 +430,246 @@ pub fn cp_threadName(tid: u32, buf: []u8) []const u8 {
 }
 
 // ---------------------------------------------------------------------------
+// OS layer for capture.zig
+
+/// Bytes below the stack pointer copied into STACK (the x86_64 red zone).
+pub const red_zone = 128;
+pub const max_modules = 256;
+pub const max_threads = 128;
+pub const max_named_threads = 64;
+
+var crash_dirfd: i32 = -1;
+var state_dirfd: i32 = -1;
+var report_maps: [128 * 1024]u8 = undefined;
+var report_maps_len: usize = 0;
+var modules: [max_modules]ModuleSlot = undefined;
+var report_tids: [max_threads]u32 = undefined;
+var report_dirents: [8 * 1024]u8 align(8) = undefined;
+var comm_buf: [16]u8 = undefined;
+
+/// Opens the directories, reads the kernel release and installs the
+/// signal handlers and the panic hook.
+pub fn installOs(opts: capture.Options) capture.InstallError!void {
+    crash_dirfd = try openDirP(opts.crash_dir);
+    if (opts.state_dir) |sd| {
+        state_dirfd = openDirP(sd) catch -1;
+        // The boot marker's directory must exist before a crash.
+        if (state_dirfd >= 0) _ = linux.mkdirat(state_dirfd, "update", 0o700);
+    }
+    const rel = cp_readFile(linux.AT.FDCWD, "/proc/sys/kernel/osrelease", &capture.os_release_buf);
+    capture.os_release_len = std.mem.trimEnd(u8, rel, "\n").len;
+
+    for ([_]linux.SIG{ .ABRT, .TRAP, .SYS }) |sig| {
+        const act: linux.Sigaction = .{
+            .handler = .{ .sigaction = onSignal },
+            .mask = linux.sigemptyset(),
+            .flags = linux.SA.SIGINFO | linux.SA.ONSTACK | linux.SA.RESETHAND,
+        };
+        _ = linux.sigaction(sig, &act, null);
+    }
+    // Replace std's fault handler: it uses SA_RESETHAND, so a second
+    // thread faulting before the first one finished its report would kill
+    // the process mid-write. Ours stays installed; later faults wait in
+    // `cp_enter`, and `cp_reraise` restores the default action itself.
+    for ([_]linux.SIG{ .SEGV, .ILL, .BUS, .FPE }) |sig| {
+        const act: linux.Sigaction = .{
+            .handler = .{ .sigaction = onFault },
+            .mask = linux.sigemptyset(),
+            .flags = linux.SA.SIGINFO | linux.SA.ONSTACK,
+        };
+        _ = linux.sigaction(sig, &act, null);
+    }
+    zg_core.report.setCrashHook(capture.onPanic);
+}
+
+/// `mkdir -p` then open as a directory fd.
+fn openDirP(path: []const u8) capture.InstallError!i32 {
+    var z: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len == 0 or path.len >= z.len) return error.NameTooLong;
+    @memcpy(z[0..path.len], path);
+    var i: usize = 1;
+    while (i <= path.len) : (i += 1) {
+        if (i == path.len or path[i] == '/') {
+            z[i] = 0;
+            _ = linux.mkdirat(linux.AT.FDCWD, @ptrCast(&z), 0o700);
+            if (i < path.len) z[i] = '/';
+        }
+    }
+    z[path.len] = 0;
+    return cp_open(linux.AT.FDCWD, @ptrCast(&z), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0) orelse
+        error.CrashDirUnavailable;
+}
+
+/// std's SEGV/ILL/BUS/FPE handler calls this (via `capture.handleSegfault`)
+/// for faults before `install`.
+pub fn handleSegfault(addr: ?usize, name: []const u8, opt_ctx: ?CpuContextPtr) noreturn {
+    if (!capture.installed) std.debug.defaultHandleSegfault(addr, name, opt_ctx);
+    std.Options.debug_io.vtable.crashHandler(std.Options.debug_io.userdata);
+    const c = cp_classify(name);
+    const tid = cp_tid();
+    if (capture.cp_enter(tid)) {
+        capture.cp_write(&.{ .kind = c.kind, .os_code = @intFromEnum(c.sig), .fault = addr, .ctx = opt_ctx, .tid = tid });
+        capture.cp_done();
+    }
+    cp_reraise(c.sig);
+    std.process.abort();
+}
+
+const Classified = struct { kind: format.ReportKind, sig: linux.SIG };
+
+fn cp_classify(name: []const u8) Classified {
+    if (std.mem.eql(u8, name, "Illegal instruction")) return .{ .kind = .illegal_instruction, .sig = .ILL };
+    if (std.mem.eql(u8, name, "Bus error")) return .{ .kind = .bus_error, .sig = .BUS };
+    if (std.mem.eql(u8, name, "Arithmetic exception")) return .{ .kind = .arithmetic, .sig = .FPE };
+    // "Segmentation fault" and "General protection exception".
+    return .{ .kind = .segfault, .sig = .SEGV };
+}
+
+fn onSignal(sig: linux.SIG, info: *const linux.siginfo_t, uctx: ?*anyopaque) callconv(.c) void {
+    std.Options.debug_io.vtable.crashHandler(std.Options.debug_io.userdata);
+    const kind: format.ReportKind = switch (sig) {
+        .ABRT => .abort,
+        .TRAP => .trap,
+        .SYS => .bad_syscall,
+        else => .unknown,
+    };
+    const ctx: ?Native = std.debug.cpu_context.fromPosixSignalContext(uctx);
+    const tid = cp_tid();
+    if (capture.cp_enter(tid)) {
+        capture.cp_write(&.{ .kind = kind, .os_code = @intFromEnum(sig), .si_code = info.code, .ctx = if (ctx) |*c| c else null, .tid = tid });
+        capture.cp_done();
+    }
+    // SA_RESETHAND restored the default action; the signal is blocked
+    // until we return, then it terminates the process.
+    _ = linux.tgkill(linux.getpid(), linux.gettid(), sig);
+}
+
+/// SEGV/ILL/BUS/FPE after `install` (std's handler before it, through
+/// `handleSegfault`).
+fn onFault(sig: linux.SIG, info: *const linux.siginfo_t, uctx: ?*anyopaque) callconv(.c) void {
+    std.Options.debug_io.vtable.crashHandler(std.Options.debug_io.userdata);
+    const kind: format.ReportKind = switch (sig) {
+        .ILL => .illegal_instruction,
+        .BUS => .bus_error,
+        .FPE => .arithmetic,
+        else => .segfault,
+    };
+    // x86_64 reports no address for a general protection fault (SI_KERNEL).
+    const si_kernel = 0x80;
+    const fault: ?usize = if (builtin.cpu.arch == .x86_64 and sig == .SEGV and info.code == si_kernel)
+        null
+    else
+        @intFromPtr(info.fields.sigfault.addr);
+    const ctx: ?Native = std.debug.cpu_context.fromPosixSignalContext(uctx);
+    const tid = cp_tid();
+    if (capture.cp_enter(tid)) {
+        capture.cp_write(&.{ .kind = kind, .os_code = @intFromEnum(sig), .si_code = info.code, .fault = fault, .ctx = if (ctx) |*c| c else null, .tid = tid });
+        capture.cp_done();
+    }
+    cp_reraise(sig);
+}
+
+/// An open report file.
+pub const Report = struct {
+    fd: i32,
+
+    fn cp_write(ctx: *anyopaque, bytes: []const u8) bool {
+        const r: *Report = @ptrCast(@alignCast(ctx));
+        return cp_writeAll(r.fd, bytes);
+    }
+
+    fn cp_sync(ctx: *anyopaque) void {
+        const r: *Report = @ptrCast(@alignCast(ctx));
+        cp_fsync(r.fd);
+    }
+};
+
+/// Creates `name` (NUL-terminated in its buffer) in the crash directory.
+pub fn cp_createReport(name: []const u8) ?Report {
+    const z: [*:0]const u8 = @ptrCast(name.ptr);
+    std.debug.assert(name.ptr[name.len] == 0);
+    const fd = cp_open(crash_dirfd, z, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true }, 0o600) orelse return null;
+    return .{ .fd = fd };
+}
+
+pub fn cp_reportSink(r: *Report) format.RawSink {
+    return .{ .ctx = r, .write = Report.cp_write, .sync = Report.cp_sync };
+}
+
+pub fn cp_closeReport(r: *Report) void {
+    cp_close(r.fd);
+}
+
+/// MODULES from /proc/self/maps (kept for `cp_writeStack`).
+pub fn cp_writeModules(w: *format.Writer) void {
+    const maps = cp_readFile(linux.AT.FDCWD, "/proc/self/maps", &report_maps);
+    report_maps_len = maps.len;
+    const n = cp_collectModules(maps, &modules);
+    var s = w.section(.modules);
+    s.writeInt(u32, @intCast(n));
+    s.writeInt(u32, 0);
+    for (modules[0..n]) |*m| {
+        const is_vdso = std.mem.eql(u8, m.path, "[vdso]");
+        const id: ?[]const u8 = if (is_vdso or !m.have_base or !m.base_readable) null else cp_buildIdFromMemory(m.base, m.base_map_end);
+        format.writeModule(&s, .{
+            .base = m.base,
+            .size = m.end - m.base,
+            .id_kind = if (id != null) .gnu_build_id else .none,
+            .id = id orelse "",
+            .path = m.path[0..@min(m.path.len, std.math.maxInt(u16))],
+        });
+    }
+    s.end();
+}
+
+/// STACK: `[sp - red_zone, sp + window)` clamped to sp's mapping.
+pub fn cp_writeStack(w: *format.Writer, sp: u64, _: *const capture.Crash) void {
+    if (sp == 0) return;
+    const m = cp_findMapping(report_maps[0..report_maps_len], @intCast(sp)) orelse return;
+    if (!m.readable) return;
+    const start = @max(m.start, @as(usize, @intCast(sp)) -| red_zone);
+    const end = @min(m.end, @as(usize, @intCast(sp)) +| capture.stack_window);
+    capture.cp_stackSection(w, start, end);
+}
+
+/// THREADS from /proc/self/task with comm names.
+pub fn cp_writeThreads(w: *format.Writer, _: *const capture.Crash) void {
+    const n = cp_listThreads(&report_dirents, &report_tids);
+    var s = w.section(.threads);
+    s.writeInt(u32, @intCast(n));
+    s.writeInt(u32, 0);
+    for (report_tids[0..n], 0..) |tid, i| {
+        const name = if (i < max_named_threads) cp_threadName(tid, &comm_buf) else "";
+        s.writeInt(u64, tid);
+        s.write(&.{@intCast(name.len)});
+        s.write(name);
+        s.alignData();
+    }
+    s.end();
+}
+
+/// `<state>/update/boot-crashed` holding the crashed version.
+pub fn cp_writeBootMarker(version: []const u8) void {
+    if (state_dirfd < 0) return;
+    const fd = cp_open(state_dirfd, "update/boot-crashed", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600) orelse return;
+    _ = cp_writeAll(fd, version);
+    cp_fsync(fd);
+    cp_close(fd);
+}
+
+pub fn cp_writeStderr(bytes: []const u8) void {
+    _ = cp_writeAll(2, bytes);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 
 const testing = std.testing;
+
+test "linux: classify" {
+    try testing.expectEqual(format.ReportKind.segfault, cp_classify("General protection exception").kind);
+    try testing.expectEqual(linux.SIG.FPE, cp_classify("Arithmetic exception").sig);
+}
 
 test "linux: maps parser" {
     const fixture =
@@ -531,11 +757,8 @@ test "linux: thread list and names" {
     try testing.expect(cp_threadName(cp_tid(), &name_buf).len > 0);
 }
 
-test "linux: clock, decimal formatting" {
+test "linux: clock, decimal parsing" {
     try testing.expect(cp_nowMs() > 1_700_000_000_000);
-    var b: [20]u8 = undefined;
-    try testing.expectEqualStrings("0", cp_fmtDec(&b, 0));
-    try testing.expectEqualStrings("18446744073709551615", cp_fmtDec(&b, std.math.maxInt(u64)));
     try testing.expectEqual(@as(?u32, 4242), cp_parseDec("4242"));
     try testing.expectEqual(@as(?u32, null), cp_parseDec("."));
 }
