@@ -27,12 +27,14 @@ const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
+const zg_update = @import("zg_update");
 const zg_platform = @import("zg_platform");
 const zg_gui = @import("zg_gui");
 const zg_vulkan = @import("zg_vulkan");
 const Welcome = @import("welcome.zig").Welcome;
 const Workbench = @import("workbench.zig").Workbench;
 const fonts = @import("fonts.zig");
+const early_update = @import("startup/early_update_check.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -55,6 +57,10 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var rt: zg_core.Runtime = undefined;
     try rt.init(min, .{});
     defer _ = rt.deinit();
+    // Before GPU and window init: apply a staged update or roll back one
+    // that cannot start (may re-execute the process).
+    var boot = early_update.run(&rt, min);
+    defer boot.deinit(rt.io);
 
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
@@ -111,7 +117,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
         const frames = frames_arg orelse {
-            try host.run();
+            try runInteractive(&rt, &host, &boot);
             return 0;
         };
         var seen: u64 = 0;
@@ -162,6 +168,22 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     }
     try w.flush();
     return 0;
+}
+
+/// Runs until the window closes. In a managed install the version counts
+/// as healthy 30 s after the window opened, or at a clean quit.
+fn runInteractive(rt: *zg_core.Runtime, host: *zg_gui.Host, boot: *early_update.Boot) !void {
+    const h = if (boot.health) |*h| h else return host.run();
+    h.markFirstFrame(0);
+    var timer = rt.io.concurrent(healthTimer, .{ rt.io, h }) catch null;
+    try host.run();
+    if (timer) |*t| t.cancel(rt.io) catch {};
+    h.onCleanQuit();
+}
+
+fn healthTimer(io: std.Io, h: *zg_update.boot_health.BootHealth) std.Io.Cancelable!void {
+    try io.sleep(.fromMilliseconds(zg_update.boot_health.healthy_after_ms), .awake);
+    h.markHealthy();
 }
 
 /// The value after flag `name`, if given (owned).
