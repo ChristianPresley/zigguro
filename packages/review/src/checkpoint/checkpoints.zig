@@ -134,7 +134,46 @@ pub const Checkpoints = struct {
 
     /// The sink the store restores checkpoints through.
     pub fn sink(c: *Checkpoints) model.CheckpointSink {
-        return .{ .ctx = c, .restore = sinkRestore };
+        return .{ .ctx = c, .restore = sinkRestore, .reserve = sinkReserve };
+    }
+
+    fn sinkReserve(ctx: *anyopaque, next: u64) void {
+        const c: *Checkpoints = @ptrCast(@alignCast(ctx));
+        c.mutex.lockUncancelable(c.io);
+        defer c.mutex.unlock(c.io);
+        c.next_id = @max(c.next_id, next);
+    }
+
+    /// The list GC (`store.gc.collect`) prunes.
+    pub fn gcList(c: *Checkpoints) model.CheckpointList {
+        return .{ .ctx = c, .list = gcListAll, .forget = gcForget, .next_id = gcNextId };
+    }
+
+    fn gcListAll(ctx: *anyopaque, gpa: Allocator, out: *std.ArrayList(Checkpoint)) Allocator.Error!void {
+        const c: *Checkpoints = @ptrCast(@alignCast(ctx));
+        c.mutex.lockUncancelable(c.io);
+        defer c.mutex.unlock(c.io);
+        try out.appendSlice(gpa, c.list.items);
+    }
+
+    fn gcForget(ctx: *anyopaque, ids: []const u64) void {
+        const c: *Checkpoints = @ptrCast(@alignCast(ctx));
+        c.mutex.lockUncancelable(c.io);
+        defer c.mutex.unlock(c.io);
+        var w: usize = 0;
+        for (c.list.items) |x| {
+            if (std.mem.indexOfScalar(u64, ids, x.id) != null) continue;
+            c.list.items[w] = x;
+            w += 1;
+        }
+        c.list.shrinkRetainingCapacity(w);
+    }
+
+    fn gcNextId(ctx: *anyopaque) u64 {
+        const c: *Checkpoints = @ptrCast(@alignCast(ctx));
+        c.mutex.lockUncancelable(c.io);
+        defer c.mutex.unlock(c.io);
+        return c.next_id;
     }
 
     fn sinkRestore(ctx: *anyopaque, cp: *const Checkpoint) anyerror!void {
