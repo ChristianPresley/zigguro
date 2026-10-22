@@ -1,6 +1,6 @@
 //! zg_platform benchmarks (`zig build bench`): event ring push/pop and
 //! cross-thread wake round trips (E01.F01 budgets: ring < 30 ns per push+pop,
-//! wake < 100 µs p99).
+//! wake < 100 µs p99), and PTY spawn (E01.F06: < 5 ms on Linux).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -23,6 +23,17 @@ fn register(b: *bench.Bench) !void {
     try b.run("ring: push + pop one event", ring, ringPushPop);
     try b.run("ring: push 256 then popMany", ring, ringBatch);
     try b.run("wake: cross-thread round trip", b.io, wakeRoundTrip);
+    if (@import("builtin").os.tag == .linux) try b.run("pty: spawn /bin/true and wait", b, ptySpawnTrue);
+}
+
+fn ptySpawnTrue(b: *bench.Bench, s: *State) void {
+    var env: std.process.Environ.Map = .init(b.gpa);
+    defer env.deinit();
+    for (0..s.iterations()) |_| {
+        var p = zg_platform.process.Pty.spawn(b.gpa, b.io, .{ .argv = &.{"/bin/true"}, .env = &env }) catch unreachable;
+        _ = p.wait() catch unreachable;
+        p.close();
+    }
 }
 
 const move: Event = .{ .pointer_move = .{ .win = @enumFromInt(1), .pos_px = .{ 1, 2 }, .mods = .{}, .time_ns = 0 } };
