@@ -693,3 +693,64 @@ after it returns. `send` duplicates the fds it is given, so callers keep
 
 ### Stability
 Experimental until the E01 PR merges.
+
+## zg_platform.x11.Conn
+
+### Defined in
+`packages/platform/src/x11/conn.zig`, with `auth.zig` (DISPLAY,
+Xauthority), `setup.zig`, `proto.zig` (comptime request serializer, core
+requests, replies, errors), `ext.zig` and `atoms.zig`; the test server is
+`packages/platform/src/x11/testing/fake_server.zig` (E01.F05.S01.T01).
+It reuses `wayland/wire/socket.zig` and `fdqueue.zig` for SCM_RIGHTS.
+
+### Implemented by
+E01.F05.S01.T01.
+
+### Consumed by
+The X11 backend (E01.F05.S02/S03): windows, input (XKB, XInput2),
+selections, and the DRI3/Present presenter.
+
+### Signature
+```zig
+pub fn connect(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, opts: Options) Error!*Conn;
+pub fn fromFd(gpa: Allocator, io: std.Io, fd: i32, cookie: ?auth.Cookie, opts: Options) Error!*Conn;
+pub fn request(self: *Conn, comptime R: type, req: R, fds: []const i32) Error!Cookie(R);
+pub fn reply(self: *Conn, cookie: Cookie(R)) Error!R.Reply;   // error.X11Error sets last_error
+pub fn checked(self: *Conn, comptime R: type, req: R, fds: []const i32) Error!void; // request + sync
+pub fn sync(self: *Conn) Error!void;                         // GetInputFocus round trip
+pub fn flush(self: *Conn) Error!void;
+pub fn pollEvent(self: *Conn) Error!?[]const u8;             // 32 bytes, or 32 + 4n for XGE
+pub fn waitEvent(self: *Conn) Error![]const u8;
+pub fn newXid(self: *Conn) Error!u32;
+pub fn extension(self: *const Conn, name: []const u8) ?ext.ExtInfo;
+pub fn internAtoms(self: *Conn, comptime names: []const []const u8) Error!AtomTable(names);
+pub fn screen(self: *const Conn) *const setup.Screen;
+pub fn pollFd(self: *const Conn) i32;
+// auth
+pub fn parseDisplay(s: []const u8) error{InvalidDisplay}!Display;
+pub fn readXauthority(gpa: Allocator, io: std.Io, path: []const u8, display: u32, hostname: []const u8, out_bytes: *?[]u8) !?Cookie;
+```
+A request type is a struct whose fields are serialized in declaration
+order (little-endian, `[]const u8` padded to 4, `ValueList(T)` as mask plus
+values); a field named `data` goes in header byte 1. It declares `opcode`,
+or `extension` and `minor`, and a `Reply` with
+`decode(bytes, *FdQueue) !Reply` when it has one. The spec's
+`readXauthority(io, path, display, hostname)` gained `gpa` and `out_bytes`
+because the cookie views the file contents.
+
+### Threading
+The platform thread owns reading (`reply`, `pollEvent`, `waitEvent`,
+`checked`, `sync`). `request`, `flush` and `newXid` lock, so a render
+thread may send.
+
+### Ownership/lifetime
+Reply and event bytes (and views decoded from them) are valid until the
+next `reply` or `pollEvent`/`waitEvent` respectively. `request` duplicates
+the fds it is given. Fds the server sends with replies wait in `in_fds`
+for the caller to pop. Errors for requests nobody waits on are logged at
+debug, counted in `async_errors` and kept in `last_error`. Steady state
+allocates nothing per request, reply or event.
+
+### Stability
+Experimental until the E01 PR merges. Remote (TCP) displays and the
+XC-MISC id range fallback are not implemented (P2).
