@@ -1,0 +1,7 @@
+1| variable:a operator::= string:`raw \n no escapes`
+2| variable:b operator::= string:`multi
+3| string:line "raw"
+4| string:string`
+5| variable:c operator::= number:1
+6| variable:d operator::= string:``
+7| variable:e operator::= string:`// not a comment`
