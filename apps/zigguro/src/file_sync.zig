@@ -13,6 +13,11 @@
 //! - `revert` reloads from disk even when the buffer is dirty; the reload
 //!   is one undo step, so nothing is lost.
 //!
+//! - With `enableUndoFile`, each save also writes the undo history
+//!   (`undo_file`, keyed by the file's absolute path and tied to the
+//!   saved text's hash) on a worker, and opening the same unchanged text
+//!   later restores it.
+//!
 //! One operation runs per file at a time; another asked meanwhile is
 //! refused with `error.Busy`. Every outcome reaches `on_done` on the UI
 //! thread.
@@ -27,6 +32,8 @@ const Document = zg_editor.model.document.Document;
 const UndoTree = zg_editor.model.edit.undo.UndoTree;
 const save_mod = zg_editor.model.buffer.save;
 const external = zg_editor.model.buffer.external;
+const undo_file = zg_editor.model.edit.undo_file;
+const log = std.log.scoped(.file_sync);
 
 pub const FileState = save_mod.FileState;
 pub const SaveOptions = save_mod.SaveOptions;
@@ -68,6 +75,13 @@ pub const FileSync = struct {
     on_done: ?DoneHook = null,
     /// An operation is running.
     busy: bool = false,
+    /// Where the undo history is kept (`enableUndoFile`).
+    undo_store: ?UndoStore = null,
+    /// An undo file is being written; `undo_next` waits for it.
+    undo_writing: bool = false,
+    undo_next: ?[]u8 = null,
+
+    pub const UndoStore = struct { dir: Io.Dir, key: [32]u8 };
 
     /// Binds `doc` to `path` (relative to `dir`), whose state on disk was
     /// `disk` when it was read (null: not on disk yet).
@@ -93,12 +107,33 @@ pub const FileSync = struct {
 
     /// Waits for a running operation, then frees `fs`.
     pub fn destroy(fs: *FileSync) void {
-        if (fs.app) |app| while (fs.busy) {
+        if (fs.app) |app| while (fs.busy or fs.undo_writing) {
             app.joinWork();
             _ = app.drainMessages();
         };
+        if (fs.undo_next) |b| fs.gpa.free(b);
         fs.gpa.free(fs.path);
         fs.gpa.destroy(fs);
+    }
+
+    /// Keeps the undo history in `dir` after each save, keyed by the
+    /// file's absolute path `abs_path`, unless privacy rules exclude the
+    /// file (`undo_file.shouldPersist`). When the history saved there
+    /// belongs to `text` (the document as just read, before any edit), it
+    /// replaces the undo tree. Reads on the calling thread; returns
+    /// whether a history came back.
+    pub fn enableUndoFile(fs: *FileSync, dir: Io.Dir, abs_path: []const u8, text: []const u8) bool {
+        if (!undo_file.shouldPersist(abs_path, text.len, .{})) return false;
+        const key = undo_file.pathKey(abs_path);
+        fs.undo_store = .{ .dir = dir, .key = key };
+        const u = fs.undo orelse return false;
+        const restored = undo_file.read(fs.io, dir, key, undo_file.contentHash(text), text.len, fs.gpa) catch |e| {
+            log.warn("undo history of {s}: {t}", .{ fs.path, e });
+            return false;
+        } orelse return false;
+        u.deinit();
+        u.* = restored;
+        return true;
     }
 
     /// Starts saving the document.
@@ -132,6 +167,18 @@ pub const FileSync = struct {
         app.spawn(runOp, .{op});
     }
 
+    /// UI thread: writes `bytes` (an encoded undo file, owned) after the
+    /// one being written, if any.
+    fn writeUndo(fs: *FileSync, bytes: []u8) void {
+        if (fs.undo_writing) {
+            if (fs.undo_next) |b| fs.gpa.free(b);
+            fs.undo_next = bytes;
+            return;
+        }
+        fs.undo_writing = true;
+        fs.app.?.spawn(runUndoWrite, .{ fs, bytes });
+    }
+
     fn done(fs: *FileSync, o: Outcome) void {
         fs.busy = false;
         if (fs.on_done) |h| h.f(h.ctx, fs, o);
@@ -142,7 +189,13 @@ pub const FileSync = struct {
 const Op = struct {
     fs: *FileSync,
     kind: union(enum) {
-        save: struct { job: save_mod.SaveJob, normalized: bool, result: anyerror!save_mod.DiskState = error.Pending },
+        save: struct {
+            job: save_mod.SaveJob,
+            normalized: bool,
+            result: anyerror!save_mod.DiskState = error.Pending,
+            /// `undo_file.contentHash` of the saved text (with an undo store).
+            hash: [32]u8 = undefined,
+        },
         probe: struct { force: bool, result: anyerror!external.Probe = error.Pending },
     },
 };
@@ -151,7 +204,10 @@ const Op = struct {
 fn runOp(op: *Op) void {
     const io = op.fs.io;
     switch (op.kind) {
-        .save => |*s| s.result = s.job.run(io),
+        .save => |*s| {
+            s.result = s.job.run(io);
+            if (op.fs.undo_store != null) s.hash = textHash(&s.job.snap);
+        },
         .probe => |*p| p.result = external.probe(op.fs.gpa, io, &op.fs.file),
     }
     op.fs.app.?.post(.{ .ctx = op, .f = finish }) catch {
@@ -159,6 +215,45 @@ fn runOp(op: *Op) void {
         free(op);
         op.fs.busy = false;
     };
+}
+
+/// `undo_file.contentHash` of a snapshot's text, chunk by chunk.
+fn textHash(snap: *const zg_editor.model.snapshot.Snapshot) [32]u8 {
+    var h = std.crypto.hash.Blake3.init(.{});
+    var it = snap.tree.chunks(0);
+    while (it.next()) |c| h.update(c);
+    var out: [32]u8 = undefined;
+    h.final(&out);
+    return out;
+}
+
+/// Worker: writes an undo file atomically.
+fn runUndoWrite(fs: *FileSync, bytes: []u8) void {
+    const st = fs.undo_store.?;
+    const name = undo_file.fileName(st.key);
+    writeAtomic(fs.io, st.dir, &name, bytes) catch |e| log.warn("undo history of {s}: {t}", .{ fs.path, e });
+    fs.gpa.free(bytes);
+    fs.app.?.post(.{ .ctx = fs, .f = undoWritten }) catch {
+        fs.undo_writing = false;
+    };
+}
+
+fn writeAtomic(io: Io, dir: Io.Dir, name: []const u8, bytes: []const u8) !void {
+    var af = try dir.createFileAtomic(io, name, .{ .replace = true });
+    defer af.deinit(io);
+    try af.file.writeStreamingAll(io, bytes);
+    try af.file.sync(io);
+    try af.replace(io);
+}
+
+/// UI thread: an undo file was written; starts the next.
+fn undoWritten(ctx: *anyopaque, _: *zg_gui.App) void {
+    const fs: *FileSync = @ptrCast(@alignCast(ctx));
+    fs.undo_writing = false;
+    if (fs.undo_next) |b| {
+        fs.undo_next = null;
+        fs.writeUndo(b);
+    }
 }
 
 fn free(op: *Op) void {
@@ -178,6 +273,13 @@ fn finish(ctx: *anyopaque, _: *zg_gui.App) void {
             defer s.job.deinit();
             const disk = s.result catch |e| break :blk .{ .save_failed = e };
             save_mod.commit(fs.doc, &fs.file, &s.job, disk, fs.undo);
+            if (fs.undo_store != null) if (fs.undo) |u| {
+                const len = s.job.snap.len();
+                if (undo_file.encode(fs.gpa, u, s.hash, len, undo_file.default_max_bytes)) |bytes|
+                    fs.writeUndo(bytes)
+                else |e|
+                    log.warn("undo history of {s}: {t}", .{ fs.path, e });
+            };
             break :blk .{ .saved = .{ .bytes = disk.size, .normalized = s.normalized } };
         },
         .probe => |*p| blk: {
@@ -324,4 +426,50 @@ test "file sync: save, external change, conflict, overwrite and revert" {
     try f.tmp.dir.deleteFile(testing.io, "a.txt");
     try f.fs.check();
     try testing.expectEqual(Outcome.deleted, f.settle());
+}
+
+test "file sync: the undo history is written on save and restored on open" {
+    const gpa = testing.allocator;
+    var f: Fx = undefined;
+    try f.init("hello\n");
+    defer f.deinit();
+    var undo_dir = try f.tmp.dir.createDirPathOpen(testing.io, "undo", .{});
+    defer undo_dir.close(testing.io);
+    try testing.expect(!f.fs.enableUndoFile(undo_dir, "/work/a.txt", "hello\n"));
+
+    // Two undoable edits, then a save.
+    for ([_][]const u8{ "one ", "two " }) |w| {
+        var cs = try zg_editor.model.edit.change_set.ChangeSet.fromEdits(gpa, f.doc.len(), &.{.{ .range = .{ .start = 0, .end = 0 }, .text = w }});
+        errdefer cs.deinit();
+        var inv = try cs.invert(f.doc.tree, gpa);
+        errdefer inv.deinit();
+        try f.doc.applyChangeSet(&cs, .{ .user = 0 });
+        try f.undo.record(cs, inv, &.{}, &.{}, .{ .origin = .{ .user = 0 }, .timestamp = .{ .nanoseconds = 1 } });
+        f.undo.breakGroup();
+    }
+    try f.fs.save(.{});
+    try testing.expectEqual(std.meta.Tag(Outcome).saved, std.meta.activeTag(f.settle()));
+    // The undo file is written after the save reports.
+    f.app.joinWork();
+    _ = f.app.drainMessages();
+    try testing.expect(!f.fs.undo_writing);
+
+    // Reopening the saved text brings the history back, at the saved state.
+    var undo2: UndoTree = .init(gpa, .{});
+    defer undo2.deinit();
+    const fs2 = try FileSync.init(gpa, testing.io, &f.app, f.doc, &undo2, f.tmp.dir, "a.txt", .{});
+    defer fs2.destroy();
+    try testing.expect(fs2.enableUndoFile(undo_dir, "/work/a.txt", "two one hello\n"));
+    try testing.expect(undo2.isAtSaved());
+    try testing.expect(undo2.canUndo());
+    // Other text (changed elsewhere since): not restored.
+    var undo3: UndoTree = .init(gpa, .{});
+    defer undo3.deinit();
+    const fs3 = try FileSync.init(gpa, testing.io, &f.app, f.doc, &undo3, f.tmp.dir, "a.txt", .{});
+    defer fs3.destroy();
+    try testing.expect(!fs3.enableUndoFile(undo_dir, "/work/a.txt", "changed\n"));
+    try testing.expect(!undo3.canUndo());
+    // Secret files are never written.
+    try testing.expect(!fs3.enableUndoFile(undo_dir, "/work/.env", "changed\n"));
+    try testing.expect(fs3.undo_store == null or !std.mem.eql(u8, &fs3.undo_store.?.key, &undo_file.pathKey("/work/.env")));
 }
