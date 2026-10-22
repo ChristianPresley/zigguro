@@ -15,18 +15,17 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",    "text.cache_hit",
-    "text.cache_screen",    "text.cells_row_200",
-    "text.cff_outline",     "text.fontdb_load_3k",
-    "text.gamma",           "text.gvar_apply",
-    "text.hit_test",        "text.integrate_gpix",
-    "text.itemize_200col",  "text.layout_200col",
-    "text.lcd",             "text.measure_hit",
-    "text.raster_14px",     "text.raster_64px_cjk",
-    "text.raster_lcd_14px", "text.registry_get",
-    "text.sdf_48px",        "text.shape_code_line_200",
-    "text.shape_latin_1k",  "text.shape_word_cache_hit",
-    "text.wrap_10kb",
+    "text.atlas_insert",         "text.cache_hit",
+    "text.cache_screen",         "text.cells_row_200",
+    "text.cff_outline",          "text.fontdb_load_3k",
+    "text.gamma",                "text.hit_test",
+    "text.integrate_gpix",       "text.itemize_200col",
+    "text.layout_200col",        "text.lcd",
+    "text.measure_hit",          "text.raster_14px",
+    "text.raster_64px_cjk",      "text.raster_lcd_14px",
+    "text.registry_get",         "text.sdf_48px",
+    "text.shape_code_line_200",  "text.shape_latin_1k",
+    "text.shape_word_cache_hit", "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -120,6 +119,27 @@ fn register(b: *bench.Bench) !void {
     var bold = try vt.FaceInstance.init(b.gpa, &jb, &.{.{ .tag = zg_text.ot.tag("wght"), .value = 700 }});
     defer bold.deinit(b.gpa);
     try b.run("text.var_advance", AdvanceCtx{ .inst = &bold, .gids = &ascii_gids }, varAdvance);
+
+    // One JetBrains Mono ASCII glyph outlined at wght=700 (glyf + gvar).
+    try b.run("text.gvar_apply", VarOutlineCtx{ .inst = &bold, .gids = &ascii_gids, .gpa = b.gpa }, gvarOutline);
+}
+
+const VarOutlineCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16, gpa: std.mem.Allocator };
+
+fn gvarOutline(ctx: VarOutlineCtx, s: *State) void {
+    var scratch: zg_text.ot.variation.OutlineScratch = .{};
+    defer scratch.deinit(ctx.gpa);
+    var path: zg_text.outline.Path = .{};
+    defer path.deinit(ctx.gpa);
+    for (ctx.gids) |gid| ctx.inst.outline(ctx.gpa, gid, &scratch, &path) catch unreachable;
+    var k: usize = 0;
+    for (0..s.iterations()) |_| {
+        path.reset();
+        ctx.inst.outline(ctx.gpa, ctx.gids[k], &scratch, &path) catch unreachable;
+        bench.doNotOptimizeAway(path.points.items.len);
+        k += 1;
+        if (k == ctx.gids.len) k = 0;
+    }
 }
 
 const AdvanceCtx = struct { inst: *const zg_text.ot.variation.FaceInstance, gids: []const u16 };
