@@ -15,6 +15,7 @@
 //! | `scm(push)` | SCM actions |
 //! | `ui(open_uri:vscode:*)`, `ui(clipboard_read)` | UI effects |
 //! | `task(explore)` | subagent types |
+//! | `secret(OPENAI_*)` | secrets requested by name |
 //!
 //! Claude Code spellings (`Bash`, `Read`, `Edit`, `Write`, `WebFetch`,
 //! `WebSearch`, `Glob`, `Grep`) are accepted as aliases.
@@ -45,7 +46,7 @@ pub const Source = struct {
 pub const ParseError = error{ EmptyRule, UnbalancedParen, BadToolName, BadPattern, BadDomain, UnsupportedSpecifier, OutOfMemory };
 
 /// How a tool's specifier is interpreted.
-pub const SpecKind = enum { none, path, command, domain, scm, ui, task };
+pub const SpecKind = enum { none, path, command, domain, scm, ui, task, secret };
 
 /// Associates a tool name with its specifier kind; E10/E11 can pass more
 /// through `Context.tool_kinds`.
@@ -66,6 +67,7 @@ pub const builtin_tool_kinds = [_]ToolKind{
     .{ .name = "scm", .kind = .scm },
     .{ .name = "ui", .kind = .ui },
     .{ .name = "task", .kind = .task },
+    .{ .name = "secret", .kind = .secret },
 };
 
 /// Claude Code tool names accepted as aliases.
@@ -153,6 +155,8 @@ pub const Specifier = union(enum) {
     /// `*`-glob over `open_uri:<uri>`, `clipboard_read`, `clipboard_write`, `paste_control`.
     ui: []const u8,
     task: []const u8,
+    /// Secret name glob (`secret(OPENAI_*)`).
+    secret: []const u8,
     /// Uninterpretable: deny/ask guard the exact literal, allow never matches.
     raw: []const u8,
 };
@@ -259,6 +263,7 @@ fn interpret(arena: Allocator, sk: SpecKind, body: []const u8, ctx: Context) Par
         .scm => .{ .scm = try arena.dupe(u8, body) },
         .ui => .{ .ui = try arena.dupe(u8, body) },
         .task => .{ .task = try arena.dupe(u8, body) },
+        .secret => .{ .secret = try arena.dupe(u8, body) },
     };
 }
 
@@ -285,6 +290,8 @@ pub const Target = union(enum) {
     /// `open_uri:<uri>`, `clipboard_read`, ...
     ui: []const u8,
     task: []const u8,
+    /// A secret's name.
+    secret: []const u8,
 
     fn literal(t: Target) []const u8 {
         return switch (t) {
@@ -292,7 +299,7 @@ pub const Target = union(enum) {
             .path => |p| p.abs,
             .command => |c| c.text,
             .host => |h| h.host,
-            .scm, .ui, .task => |s| s,
+            .scm, .ui, .task, .secret => |s| s,
         };
     }
 };
@@ -325,6 +332,10 @@ pub fn specMatches(r: *const Rule, t: Target) bool {
         },
         .task => |s| switch (t) {
             .task => |a| matchStar(s, a),
+            else => false,
+        },
+        .secret => |s| switch (t) {
+            .secret => |a| matchStar(s, a),
             else => false,
         },
     };
@@ -454,6 +465,7 @@ test "rules: parse table" {
         .{ .text = "ui(open_uri:vscode:*)", .tool = "ui", .spec = .ui },
         .{ .text = "ui(clipboard_read)", .tool = "ui", .spec = .ui },
         .{ .text = "task(explore)", .tool = "task", .spec = .task },
+        .{ .text = "secret(OPENAI_*)", .tool = "secret", .spec = .secret },
         .{ .text = "  read_file  ", .tool = "read_file", .spec = .none },
         // Unusable specifiers fall back to raw.
         .{ .text = "web_fetch(github.com)", .tool = "web_fetch", .spec = .raw },
