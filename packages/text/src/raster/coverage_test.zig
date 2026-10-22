@@ -351,8 +351,8 @@ test "fuzz: raster-path" {
     }.one, .{ .corpus = @import("zg_core").testkit.fuzz.corpus(@import("zg_corpus"), "raster-path") });
 }
 
-/// Input: byte 0 = size (px = 1 + b), byte 1 = subpixel quarter and the
-/// oblique flag; then records of 1 verb byte plus its points as raw f32
+/// Input: byte 0 = size (px = 1 + b), byte 1 = subpixel quarter (bits
+/// 0-1), oblique, bold, stem darkening (bits 2-4) and mode (bits 5-6); then records of 1 verb byte plus its points as raw f32
 /// bits (so huge, NaN, infinite and denormal coordinates all occur). Any
 /// path must give a bitmap or `TooLarge`, never a crash.
 fn fuzzPath(input: []const u8) !void {
@@ -394,10 +394,18 @@ fn fuzzPath(input: []const u8) !void {
         .px_per_em = 1 + @as(f32, @floatFromInt(input[0])),
         .subpixel_x = @as(f32, @floatFromInt(input[1] & 3)) * 0.25,
         .synth_oblique = input[1] & 4 != 0,
+        .synth_bold = input[1] & 8 != 0,
+        .stem_darkening = input[1] & 16 != 0,
+        .mode = switch ((input[1] >> 5) & 3) {
+            0, 1 => .gray,
+            2 => .lcd_rgb,
+            else => .lcd_bgr,
+        },
     };
     const bm = r.rasterizePath(&p, 64, params) catch |e| switch (e) {
         error.TooLarge => return,
         else => return e,
     };
-    try testing.expect(bm.pixels.len == @as(usize, bm.width) * bm.height);
+    const bpp: usize = if (bm.format == .lcd_rgb8x3) 3 else 1;
+    try testing.expect(bm.pixels.len == @as(usize, bm.width) * bm.height * bpp);
 }
