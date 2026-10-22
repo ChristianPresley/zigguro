@@ -17,6 +17,10 @@ pub const glyf = @import("glyf.zig");
 pub const cff = @import("cff.zig");
 pub const cff_charstring = @import("cff_charstring.zig");
 pub const variation = @import("var/root.zig");
+/// CBLC/CBDT colour bitmap strikes.
+pub const cbdt = @import("cbdt.zig");
+/// sbix bitmap strikes.
+pub const sbix = @import("sbix.zig");
 
 /// A glyph index; 0 is `.notdef`.
 pub const GlyphId = reader.GlyphId;
