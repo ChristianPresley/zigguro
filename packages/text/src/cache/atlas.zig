@@ -81,7 +81,7 @@ pub const AtlasEntry = struct {
 pub const GlyphQuad = extern struct {
     /// x, y, w, h in pixels.
     dst: [4]f32,
-    /// x, y, w, h in texels of the page.
+    /// u0, v0, u1, v1: the atlas rectangle normalised to the page size.
     uv: [4]f32,
     page: u16,
     format: AtlasFormat,
@@ -95,15 +95,18 @@ comptime {
     std.debug.assert(@offsetOf(GlyphQuad, "format") == 34);
 }
 
-/// The quad for `e` with the pen at (`pen_x`, `baseline_y`), the bitmap
-/// drawn at `scale` (1 for pixel-exact glyphs; SDF and downscaled strikes
-/// use others).
-pub fn quadFor(e: AtlasEntry, pen_x: f32, baseline_y: f32, scale: f32) GlyphQuad {
+/// The quad for `e` (on pages of `page_size` texels) with the pen at
+/// (`pen_x`, `baseline_y`), the bitmap drawn at `scale` (1 for pixel-exact
+/// glyphs; SDF and downscaled strikes use others).
+pub fn quadFor(e: AtlasEntry, page_size: u16, pen_x: f32, baseline_y: f32, scale: f32) GlyphQuad {
     const w: f32 = @floatFromInt(e.w);
     const h: f32 = @floatFromInt(e.h);
+    const x: f32 = @floatFromInt(e.x);
+    const y: f32 = @floatFromInt(e.y);
+    const inv = 1.0 / @as(f32, @floatFromInt(@max(1, page_size)));
     return .{
         .dst = .{ pen_x + @as(f32, @floatFromInt(e.left)) * scale, baseline_y + @as(f32, @floatFromInt(e.top)) * scale, w * scale, h * scale },
-        .uv = .{ @floatFromInt(e.x), @floatFromInt(e.y), w, h },
+        .uv = .{ x * inv, y * inv, (x + w) * inv, (y + h) * inv },
         .page = e.page,
         .format = formatOf(e.format),
     };

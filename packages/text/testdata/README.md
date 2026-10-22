@@ -113,6 +113,23 @@ area average. The test compares pixels away from the marked edges to ±2
 and the whole glyph through its alpha total and centroid; the exceptions,
 each with its reason, are `exceptions` in `colr_test.zig`.
 
+## Shaping goldens
+
+`golden/shape/*.zon` hold HarfBuzz's output for UTF-8 strings: per glyph the
+gid, cluster (byte offset), x advance, x offset and y offset in font units,
+in visual order. Sets: `code_ligatures` (JetBrains Mono and Fira Code
+operators, `liga=0,calt=0`, stylistic sets, a bold instance), `gpos_kern`
+(Inter and Source Serif kerning, fractions, CFF2 at wght=650), `gpos_marks`
+(precomposed and decomposed mark stacks), `driver` (ignorables, variation
+selectors, `.notdef`, space fallbacks, U+2011, RTL Latin) and `random`
+(seeded code-punctuation and accented strings). `src/shape/shaper_test.zig`
+compares every case exactly. Producer: `provenance/gen_shape_golden.py`, run
+with uharfbuzz 0.56 (HarfBuzz 14.6):
+
+```
+python3 testdata/provenance/gen_shape_golden.py testdata/fonts testdata/golden/shape
+```
+
 ## text-dump
 
 From `packages/text`:
