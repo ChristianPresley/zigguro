@@ -1,0 +1,4 @@
+1| punctuation.delimiter:| punctuation.delimiter:| punctuation.delimiter:|
+2| punctuation.delimiter:| :--- | ----: |
+3| punctuation.delimiter:| markup.code:`a` punctuation.delimiter:| markup.bold:**1** punctuation.delimiter:|
+4| punctuation.delimiter:| string.escape:\| punctuation.delimiter:| punctuation.delimiter:|

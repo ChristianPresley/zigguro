@@ -1,0 +1,11 @@
+# Heading one
+## Heading two ##
+###### Six
+####### not a heading
+#not a heading either
+
+Setext one
+==========
+
+Setext two
+----------

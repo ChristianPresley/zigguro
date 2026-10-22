@@ -1,0 +1,21 @@
+1| punctuation.delimiter:``` label:zig
+2| keyword.storage:const variable:x punctuation.delimiter:: type.builtin:u32 operator:= number:1 punctuation.delimiter:; comment:// comment
+3| punctuation.delimiter:```
+4|
+5| punctuation.delimiter:~~~ label:python
+6| keyword.storage:def function:f punctuation.bracket:( punctuation.bracket:) punctuation.delimiter:: keyword.control:return string:" string:s"
+7| punctuation.delimiter:~~~
+8|
+9| punctuation.delimiter:``` label:unknown-lang
+10| markup.code:raw text <b>
+11| punctuation.delimiter:```
+12|
+13| punctuation.delimiter:```` label:md
+14| punctuation.delimiter:``` label:js
+15| variable:nested
+16| punctuation.delimiter:```
+17| punctuation.delimiter:````
+18|
+19| punctuation.delimiter:```
+20| markup.code:plain fence
+21| punctuation.delimiter:```

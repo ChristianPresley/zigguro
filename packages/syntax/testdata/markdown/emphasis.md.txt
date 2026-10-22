@@ -1,0 +1,5 @@
+*em* and _em_ and **strong** and __strong__
+***both*** and ~~struck~~ text
+snake_case_word stays plain, as does 2 * 3 * 4
+**unclosed strong
+a \*literal\* star and \_underscore\_

@@ -1,0 +1,6 @@
+Inline `code` and ``code with ` tick`` here.
+
+    indented code block
+    second line
+
+Unclosed `tick stays text

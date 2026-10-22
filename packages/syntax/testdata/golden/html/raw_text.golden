@@ -1,0 +1,5 @@
+1| punctuation:< tag:textarea attribute:name operator:= string:"t" punctuation:> string.escape:&amp; punctuation:</ tag:textarea punctuation:>
+2| punctuation:< tag:title punctuation:> string.escape:&amp; punctuation:</ tag:title punctuation:>
+3| punctuation:< tag:textarea punctuation:>
+4|
+5| punctuation:</ tag:textarea punctuation:>

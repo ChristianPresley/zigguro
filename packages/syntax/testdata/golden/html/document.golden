@@ -1,0 +1,11 @@
+1| keyword:<!DOCTYPE html>
+2| punctuation:< tag:html attribute:lang operator:= string:"en" punctuation:>
+3| punctuation:< tag:head punctuation:>
+4| punctuation:< tag:meta attribute:charset operator:= string:"utf-8" punctuation:>
+5| punctuation:< tag:title punctuation:> string.escape:&amp; punctuation:</ tag:title punctuation:>
+6| punctuation:</ tag:head punctuation:>
+7| punctuation:< tag:body punctuation:>
+8| punctuation:< tag:h1 attribute:id operator:= string:"top" punctuation:> punctuation:</ tag:h1 punctuation:>
+9| punctuation:< tag:p punctuation:> punctuation:< tag:em punctuation:> punctuation:</ tag:em punctuation:> string.escape:&mdash; punctuation:</ tag:p punctuation:>
+10| punctuation:</ tag:body punctuation:>
+11| punctuation:</ tag:html punctuation:>

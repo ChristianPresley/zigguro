@@ -1,0 +1,5 @@
+<template id="row">
+  <tr><td class="name"></td><td>{{ value }}</td></tr>
+</template>
+<svg viewBox="0 0 10 10"><path d="M0 0L10 10"/></svg>
+<my-element some-prop="1"></my-element>

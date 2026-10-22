@@ -1,0 +1,5 @@
+1| punctuation:> markup.italic:*text*
+2| punctuation:> punctuation:>
+3| punctuation:>
+4| punctuation:> punctuation:-
+5| punctuation:> punctuation.delimiter:```

@@ -1,0 +1,4 @@
+1| keyword:<!DOCTYPE html>
+2| keyword:<!doctype html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+3| keyword:<?xml version="1.0" encoding="UTF-8"?>
+4| string.special:<![CDATA[ raw <data> ]]>
