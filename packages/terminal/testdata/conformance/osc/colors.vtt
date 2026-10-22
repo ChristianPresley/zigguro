@@ -1,0 +1,88 @@
+# Palette and dynamic colour queries and changes: OSC 4, 10, 11, 12,
+# 104 and 110-112.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
+
+@case OSC 4 query reports a palette entry
+@size 10x2
+@send "\e]4;1;?^G"
+@expect-reply "\e]4;1;rgb:cdcd/0000/0000^G"
+
+@case OSC 4 query replies with the request's terminator
+@size 10x2
+@send "\e]4;1;?\e\\"
+@expect-reply "\e]4;1;rgb:cdcd/0000/0000\e\\"
+
+@case OSC 4 sets an entry with rgb:
+@size 10x2
+@send "\e]4;1;rgb:12/34/56^G\e]4;1;?^G"
+@expect-reply "\e]4;1;rgb:1212/3434/5656^G"
+
+@case OSC 4 sets an entry with #rrggbb
+@size 10x2
+@send "\e]4;2;#abcdef^G\e]4;2;?^G"
+@expect-reply "\e]4;2;rgb:abab/cdcd/efef^G"
+
+@case OSC 4 queries a 256-colour cube entry
+@size 10x2
+@send "\e]4;196;?^G"
+@expect-reply "\e]4;196;rgb:ffff/0000/0000^G"
+
+@case OSC 4 queries a grey ramp entry
+@size 10x2
+@send "\e]4;232;?^G"
+@expect-reply "\e]4;232;rgb:0808/0808/0808^G"
+
+@case OSC 4 handles several pairs
+@size 10x2
+@send "\e]4;0;?;15;?^G"
+@expect-reply "\e]4;0;rgb:0000/0000/0000^G\e]4;15;rgb:ffff/ffff/ffff^G"
+
+@case OSC 104 resets one entry
+@size 10x2
+@send "\e]4;1;#000000^G\e]104;1^G\e]4;1;?^G"
+@expect-reply "\e]4;1;rgb:cdcd/0000/0000^G"
+
+@case OSC 104 without params resets the palette
+@size 10x2
+@send "\e]4;1;#000000;2;#000000^G\e]104^G\e]4;2;?^G"
+@expect-reply "\e]4;2;rgb:0000/cdcd/0000^G"
+
+@case OSC 10 reports the foreground
+@size 10x2
+@send "\e]10;?^G"
+@expect-reply "\e]10;rgb:e5e5/e5e5/e5e5^G"
+
+@case OSC 11 reports the background
+@size 10x2
+@send "\e]11;?^G"
+@expect-reply "\e]11;rgb:0000/0000/0000^G"
+
+@case OSC 12 reports the cursor colour as the foreground when unset
+@size 10x2
+@send "\e]12;?^G"
+@expect-reply "\e]12;rgb:e5e5/e5e5/e5e5^G"
+
+@case OSC 10 sets the foreground
+@size 10x2
+@send "\e]10;#102030^G\e]10;?^G"
+@expect-reply "\e]10;rgb:1010/2020/3030^G"
+
+@case OSC 10 with two specs sets the background too
+@size 10x2
+@send "\e]10;#010101;#020202^G\e]11;?^G"
+@expect-reply "\e]11;rgb:0202/0202/0202^G"
+
+@case OSC 110 resets the foreground
+@size 10x2
+@send "\e]10;#102030^G\e]110^G\e]10;?^G"
+@expect-reply "\e]10;rgb:e5e5/e5e5/e5e5^G"
+
+@case OSC 111 resets the background
+@size 10x2
+@send "\e]11;#102030^G\e]111^G\e]11;?^G"
+@expect-reply "\e]11;rgb:0000/0000/0000^G"
+
+@case An invalid colour spec is ignored
+@size 10x2
+@send "\e]10;nonsense^G\e]10;?^G"
+@expect-reply "\e]10;rgb:e5e5/e5e5/e5e5^G"
