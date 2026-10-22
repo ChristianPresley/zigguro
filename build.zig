@@ -159,6 +159,15 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Generated terminal reference tables (packages/terminal/docs/).
+    inline for (packages.all, 0..) |p, i| {
+        if (comptime std.mem.eql(u8, p.name, "zg_terminal")) {
+            const gen = b.addRunArtifact(deps[i].artifact("zg_terminal-docs"));
+            gen.addArg(b.pathFromRoot("packages/terminal/docs"));
+            b.step("docs-terminal-modes", "Regenerate packages/terminal/docs/{modes,xtgettcap}.md").dependOn(&gen.step);
+        }
+    }
+
     // Formatting.
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "build", "packages", "apps", "tools" }, .check = true });
     b.step("fmt-check", "Fail if any file is not zig fmt clean").dependOn(&fmt.step);
