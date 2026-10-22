@@ -4,8 +4,8 @@
 4|
 5|
 6|
-7|
+7| markup.heading.1:Setext one
 8| markup.heading.1:==========
 9|
-10|
+10| markup.heading.2:Setext two
 11| markup.heading.2:----------

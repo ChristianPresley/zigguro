@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const parse = @import("parse.zig");
+const use_table = @import("use_table.zig");
 const e = @import("ucd_enums");
 const Props = e.Props;
 const Aux = e.Aux;
@@ -39,6 +40,13 @@ pub const files = [_][]const u8{
     "emoji/emoji-variation-sequences.txt",
 };
 
+/// Microsoft's USE override files, read after `files` (they live under
+/// `ucd/ms-use/`, not in the UCD version directory).
+pub const ms_use_files = use_table.files;
+
+/// Contents of `ms_use_files`, in order.
+pub const MsUseInputs = use_table.Inputs;
+
 /// Index of `name` in `files` (comptime).
 pub fn fileIndex(comptime name: []const u8) usize {
     inline for (files, 0..) |f, i| if (comptime std.mem.eql(u8, f, name)) return i;
@@ -72,7 +80,7 @@ pub const Diag = struct {
 };
 
 /// Build errors.
-pub const Error = error{ UnknownPropertyValue, BadFirstLast, OutOfMemory } || parse.Error;
+pub const Error = error{ UnknownPropertyValue, BadFirstLast, OutOfMemory, UseCategory } || parse.Error;
 
 /// Everything the generator emits, as plain uncompressed data.
 pub const Ucd = struct {
@@ -138,7 +146,7 @@ fn applyBool(text: []const u8, name: []const u8, out: anytype, comptime setter: 
 
 /// Builds every table from `in`. On `error.UnknownPropertyValue`, `diag`
 /// names the file, line, value and enum.
-pub fn build(gpa: std.mem.Allocator, in: *const Inputs, diag: *Diag) Error!Ucd {
+pub fn build(gpa: std.mem.Allocator, in: *const Inputs, ms: *const MsUseInputs, diag: *Diag) Error!Ucd {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -313,6 +321,21 @@ pub fn build(gpa: std.mem.Allocator, in: *const Inputs, diag: *Diag) Error!Ucd {
             const v = try lookup(e.JoiningType, l.field(1), diag, "ArabicShaping.txt", l.number);
             for (props[l.lo .. @as(usize, l.hi) + 1]) |*x| x.jt = v;
         }
+    }
+
+    // Universal Shaping Engine classes (needs gc, script, the Indic
+    // categories and Default_Ignorable_Code_Point).
+    {
+        var ud: use_table.Diag = .{};
+        use_table.apply(a, .{
+            .isc = in[fileIndex("IndicSyllabicCategory.txt")],
+            .ipc = in[fileIndex("IndicPositionalCategory.txt")],
+            .arabic_shaping = in[fileIndex("ArabicShaping.txt")],
+            .dcp = dcp,
+        }, ms, props, aux, &ud) catch |err| {
+            diag.* = .{ .file = "ms-use", .value = std.fmt.allocPrint(a, "U+{X:0>4}: {s}", .{ ud.cp, ud.reason }) catch "", .enum_name = "UseCategory" };
+            return err;
+        };
     }
 
     // Brackets and mirroring.

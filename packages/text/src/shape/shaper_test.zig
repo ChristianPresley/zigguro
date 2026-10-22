@@ -47,6 +47,11 @@ const GoldenCase = struct {
 /// Shapes every case of `testdata/golden/shape/<set>.zon` and compares
 /// with HarfBuzz's output; returns the number of mismatching cases.
 fn checkGolden(set: []const u8, verbose: bool) !usize {
+    return checkGoldenFont(set, null, verbose);
+}
+
+/// `checkGolden` over the cases of font `only` (all when null).
+fn checkGoldenFont(set: []const u8, only: ?[]const u8, verbose: bool) !usize {
     const gpa = testing.allocator;
     var path_buf: [128]u8 = undefined;
     const src = try fonts.readTestdataZ(gpa, try std.fmt.bufPrint(&path_buf, "golden/shape/{s}.zon", .{set}));
@@ -59,6 +64,7 @@ fn checkGolden(set: []const u8, verbose: bool) !usize {
     defer arena.deinit();
     var failures: usize = 0;
     for (cases) |cs| {
+        if (only) |f| if (!std.mem.eql(u8, f, cs.font)) continue;
         _ = arena.reset(.retain_capacity);
         var l: Loaded = undefined;
         l.bytes = try fonts.font(gpa, cs.font);
@@ -113,6 +119,14 @@ test "shape golden: random" {
 
 test "shape golden: arabic" {
     try testing.expectEqual(@as(usize, 0), try checkGolden("arabic", true));
+}
+
+test "shape golden: javanese prebase vowels (USE)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("use", "NotoSansJavanese-Subset.ttf", true));
+}
+
+test "shape golden: tibetan stacking (USE)" {
+    try testing.expectEqual(@as(usize, 0), try checkGoldenFont("use", "NotoSerifTibetan-Subset.ttf", true));
 }
 
 const shape_cache = @import("shape_cache.zig");

@@ -48,7 +48,11 @@ pub const hover_grace_ms: u64 = 1500;
 /// could not be recorded).
 pub fn toast(app: *App, t: Toast) ToastId {
     const id = app.notifications.post(t, app.now_ms) catch return .none;
-    for (app.windows.items) |w| _ = hostFor(app, w);
+    for (app.windows.items) |w| {
+        _ = hostFor(app, w);
+        // Screen readers hear it; errors interrupt.
+        if (w.a11y) |tree| tree.announce(t.title, t.severity == .error_);
+    }
     refresh(app);
     return id;
 }

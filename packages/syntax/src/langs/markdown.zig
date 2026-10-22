@@ -11,12 +11,16 @@
 //! Inline spans are matched within the line with simple delimiter rules:
 //! code spans by equal backtick runs, `**`/`__` strong and `*`/`_`
 //! emphasis to the next matching closer on the line (`_` only at word
-//! boundaries), links and images, autolinks and bare URLs, inline HTML,
+//! boundaries), GFM `~~`/`~` strikethrough to the next run of the same
+//! length, links and images, autolinks and bare URLs, inline HTML,
 //! escapes and character references. Deviations from CommonMark: no
 //! nested emphasis inside a span, no spans across lines, HTML blocks of
 //! every type end at a blank line, closing fences may sit at any
-//! indentation (so fences inside list items close), and setext underlines
-//! highlight only the underline (the paragraph line is already lexed).
+//! indentation (so fences inside list items close), and a setext heading
+//! colours its underline and only the last line of its paragraph (the
+//! lexer looks one line ahead through `Scanner.next`, so the highlighter
+//! relexes the line above each edit; earlier lines of a multi-line
+//! heading stay paragraph text).
 //!
 //! State (`mode`): bits 0-2 the block (normal, fenced code, front matter,
 //! HTML block), bit 3 "the previous line was paragraph text", bit 4 "a
@@ -54,6 +58,7 @@ pub const Kind = struct {
     pub const rule: u16 = 22 | atomic;
     pub const pipe: u16 = 23 | atomic;
     pub const comment: u16 = 24;
+    pub const strikethrough: u16 = 25 | atomic;
 };
 
 /// Blocks (`mode` bits 0-2).
@@ -102,6 +107,23 @@ fn closesFence(line: []const u8, c: u8, len: usize) bool {
     while (i < line.len and (line[i] == ' ' or line[i] == '\t' or line[i] == '>')) i += 1;
     const n = runAt(line, i, c);
     return n >= len and isBlank(line[i + n ..]);
+}
+
+/// The heading level index (0 for `=`, 1 for `-`) when `line` is a setext
+/// underline: block quote markers, at most 3 spaces of indentation, a run
+/// of `=` or `-`, then only blanks.
+fn setextLevel(line: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < line.len and line[i] == '>') {
+        i += 1;
+        if (i < line.len and line[i] == ' ') i += 1;
+    }
+    var indent: usize = 0;
+    while (i < line.len and line[i] == ' ') : (i += 1) indent += 1;
+    if (indent > 3 or i >= line.len or (line[i] != '=' and line[i] != '-')) return null;
+    const n = runAt(line, i, line[i]);
+    if (!isBlank(line[i + n ..])) return null;
+    return if (line[i] == '=') 0 else 1;
 }
 
 fn fenceOf(mode: u16) struct { u8, usize } {
@@ -265,7 +287,9 @@ const Lexer = struct {
                 l.emit(start, Kind.marker, .punctuation);
                 continue;
             }
-            if ((c == '-' or c == '*' or c == '+') and (s.peekAt(1) == null or s.peekAt(1) == ' ' or s.peekAt(1) == '\t') and !isThematicBreak(s.rest())) {
+            if ((c == '-' or c == '*' or c == '+') and (s.peekAt(1) == null or s.peekAt(1) == ' ' or s.peekAt(1) == '\t') and !isThematicBreak(s.rest()) and
+                !(paragraph_before and c == '-' and isBlank(s.rest()[1..])))
+            {
                 s.advance();
                 l.emit(start, Kind.marker, .punctuation);
                 l.taskBox();
@@ -315,7 +339,7 @@ const Lexer = struct {
             }
         }
         // Setext underlines, thematic breaks.
-        if (paragraph_before and (r[0] == '=' or r[0] == '-')) {
+        if (paragraph_before and indent < 4 and (r[0] == '=' or r[0] == '-')) {
             const n = runAt(r, 0, r[0]);
             if (isBlank(r[n..])) {
                 l.rest(Kind.heading + @as(u16, if (r[0] == '=') 0 else 1), if (r[0] == '=') .markup_heading_1 else .markup_heading_2);
@@ -342,6 +366,12 @@ const Lexer = struct {
             l.paragraph(true);
             return;
         }
+        // The text line of a setext heading (the next line underlines it).
+        if (l.s.next) |next| if (setextLevel(next)) |lvl| {
+            l.rest(Kind.heading + @as(u16, @intCast(lvl)), heading_hls[lvl]);
+            l.paragraph(true);
+            return;
+        };
         l.table = r[0] == '|';
         l.inline_();
         l.paragraph(true);
@@ -385,6 +415,7 @@ const Lexer = struct {
                     } else l.text(start + n);
                 },
                 '*', '_' => l.emphasis(c),
+                '~' => l.strikethrough(),
                 '!' => if (start + 1 < line.len and line[start + 1] == '[') {
                     if (!l.link(start, start + 1)) l.text(start + 1);
                 } else l.text(start + 1),
@@ -421,7 +452,7 @@ const Lexer = struct {
         var i = min_end;
         while (i < line.len) : (i += 1) {
             const c = line[i];
-            if (std.mem.indexOfScalar(u8, "\\`*_![<&|", c) != null) break;
+            if (std.mem.indexOfScalar(u8, "\\`*_~![<&|", c) != null) break;
             if ((c == 'h' or c == 'w') and !isWordByte(line[i - 1])) break;
         }
         s.pos = @intCast(i);
@@ -447,6 +478,28 @@ const Lexer = struct {
             if (m >= want and right_ok and p > after) {
                 s.pos = @intCast(p + @min(m, n));
                 l.emit(start, if (want == 2) Kind.strong else Kind.emphasis, if (want == 2) .markup_bold else .markup_italic);
+                return;
+            }
+            k = p + m;
+        }
+        l.text(after);
+    }
+
+    /// GFM strikethrough: a run of one or two `~` not followed by a blank,
+    /// closed on this line by a run of the same length not preceded by one.
+    fn strikethrough(l: *Lexer) void {
+        const s = l.s;
+        const line = s.line;
+        const start = s.pos;
+        const n = runAt(line, start, '~');
+        const after = start + n;
+        if (n > 2 or after >= line.len or isSpaceB(line[after])) return l.text(after);
+        var k = after;
+        while (std.mem.indexOfScalarPos(u8, line, k, '~')) |p| {
+            const m = runAt(line, p, '~');
+            if (m == n and !isSpaceB(line[p - 1])) {
+                s.pos = @intCast(p + m);
+                l.emit(start, Kind.strikethrough, .markup_strikethrough);
                 return;
             }
             k = p + m;
@@ -622,6 +675,7 @@ pub const markdown_language: language.Language = .{
     .lexer = .{ .lexLineFn = lexLine },
     .injection_end = injectionEnd,
     .resync = resync,
+    .lookahead = true,
     .decl_keywords = &.{},
     .edit_rules = .{
         .block_comment = .{ .open = "<!--", .close = "-->" },

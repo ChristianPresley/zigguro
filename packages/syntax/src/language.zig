@@ -136,6 +136,10 @@ pub const Language = struct {
     brackets: []const BracketPair = &.{},
     /// Fold by indentation (Python, YAML) instead of by brackets.
     fold_by_indent: bool = false,
+    /// The lexer looks at the next line (`Scanner.next`), so a line's
+    /// tokens also depend on the line after it (Markdown setext headings).
+    /// The highlighter then relexes the line above every edit too.
+    lookahead: bool = false,
     /// Words that start a declaration line, for the fallback outline and
     /// scopes.
     decl_keywords: []const DeclKeyword = &default_decl_keywords,

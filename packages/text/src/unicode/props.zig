@@ -27,6 +27,7 @@ pub const JoiningType = e.JoiningType;
 pub const QuickCheck = e.QuickCheck;
 pub const IndicSyllabic = e.IndicSyllabic;
 pub const IndicPositional = e.IndicPositional;
+pub const UseCategory = e.UseCategory;
 
 /// The Unicode version of the tables.
 pub const unicode_version = t.unicode_version;
@@ -149,6 +150,12 @@ pub const IndicCategories = struct { syllabic: IndicSyllabic, positional: IndicP
 pub fn indicCategories(cp: u21) IndicCategories {
     const x = aux(cp);
     return .{ .syllabic = x.isc, .positional = x.ipc };
+}
+
+/// The Universal Shaping Engine class of `cp` (Microsoft's overrides
+/// applied; `.O` outside the scripts USE handles).
+pub fn useCategory(cp: u21) UseCategory {
+    return aux(cp).use;
 }
 
 /// True if `cp` starts a sequence in emoji-variation-sequences.txt.

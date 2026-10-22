@@ -17,8 +17,10 @@
 //! Tooltips live in `tooltip.zig` (the window's `Tips` opens them at the
 //! tooltip layer).
 //!
-//! Not yet: enter/exit animations (waiting on E04.F08.S03.T01), a11y
-//! hiding of the inert tree (E04.F09).
+//! Assistive technology sees only the topmost modal overlay (the
+//! `A11yTree` leaves the inert background out).
+//!
+//! Not yet: enter/exit animations (waiting on E04.F08.S03.T01).
 
 const std = @import("std");
 const geom = @import("../core/geom.zig");

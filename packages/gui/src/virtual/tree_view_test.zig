@@ -115,7 +115,7 @@ test "tree view: APG arrows open, close and walk the tree" {
 
     const sem = try t.semanticsSnapshot(gpa);
     defer gpa.free(sem);
-    try testing.expect(std.mem.indexOf(u8, sem, "tree \"Explorer\" focused") != null);
+    try testing.expect(std.mem.indexOf(u8, sem, "tree \"Explorer\" rows=7 focused") != null);
     try testing.expect(std.mem.indexOf(u8, sem, "treeitem \"lib\" expanded=true level=2") != null);
     try testing.expect(std.mem.indexOf(u8, sem, "treeitem \"a.zig\" selected level=3") != null);
     try testing.expect(std.mem.indexOf(u8, sem, "treeitem \"docs\" expanded=false level=1") != null);
