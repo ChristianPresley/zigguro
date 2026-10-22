@@ -367,11 +367,22 @@ pub inline fn clearCell(p: *Page, c: *Cell, with: Cell) void {
 /// Clears `cs` (a slice of one row of this page). Rows without styles,
 /// graphemes or links take the memset fast path.
 pub fn clearCells(p: *Page, r: *Row, cs: []Cell, with: Cell) void {
-    if (r.styled or r.has_grapheme or r.has_hyperlink) {
+    if (r.has_grapheme or r.has_hyperlink) {
         for (cs) |*c| p.clearCell(c, with);
-    } else {
-        fill.fill(Cell, cs, with);
+        return;
     }
+    if (r.styled) {
+        // Only style references: release them once per run of equal ids.
+        var i: usize = 0;
+        while (i < cs.len) {
+            const id = cs[i].style;
+            var j = i + 1;
+            while (j < cs.len and cs[j].style == id) j += 1;
+            if (id != 0) p.releaseStyle(id, @intCast(j - i));
+            i = j;
+        }
+    }
+    fill.fill(Cell, cs, with);
 }
 
 /// Moves cell `src` to `dst` within this page; `dst` must hold no references.
