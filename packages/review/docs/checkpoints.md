@@ -50,6 +50,15 @@ store. So a checkpoint only needs to know which applies came after it.
 
 `dry_run` works as for restore.
 
+## Retention
+
+`store.gc.collect` drops a checkpoint unless it is pinned, was taken
+within `decided_days`, or is among the newest `keep_last_n`. It keeps the
+`History` records after the oldest kept checkpoint (and those of kept
+changesets), and the blobs those records name. A dropped checkpoint can
+no longer be restored. The next checkpoint id is journaled, so ids are
+never reused.
+
 ## In the app
 
 `apps/zigguro/src/agent/review_glue.zig` binds this to the workbench

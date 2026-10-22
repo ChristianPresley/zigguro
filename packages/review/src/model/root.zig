@@ -68,6 +68,7 @@ pub const Recorder = history.Recorder;
 pub const Checkpoint = checkpoint.Checkpoint;
 pub const CheckpointRecorder = checkpoint.CheckpointRecorder;
 pub const CheckpointSink = checkpoint.CheckpointSink;
+pub const CheckpointList = checkpoint.CheckpointList;
 
 test {
     @import("std").testing.refAllDecls(@This());

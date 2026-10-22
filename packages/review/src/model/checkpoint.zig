@@ -32,6 +32,21 @@ pub const CheckpointRecorder = struct {
 pub const CheckpointSink = struct {
     ctx: *anyopaque,
     restore: *const fn (ctx: *anyopaque, c: *const Checkpoint) anyerror!void,
+    /// Ids below `next` are taken (kept by a compaction that dropped old
+    /// checkpoints).
+    reserve: ?*const fn (ctx: *anyopaque, next: u64) void = null,
+};
+
+/// The checkpoints as GC sees them (`checkpoint.Checkpoints.gcList`).
+pub const CheckpointList = struct {
+    ctx: *anyopaque,
+    /// Copies of every checkpoint, oldest first; labels live as long as
+    /// the list's owner.
+    list: *const fn (ctx: *anyopaque, gpa: std.mem.Allocator, out: *std.ArrayList(Checkpoint)) std.mem.Allocator.Error!void,
+    /// Drops the checkpoints with these ids.
+    forget: *const fn (ctx: *anyopaque, ids: []const u64) void,
+    /// The next id it will hand out.
+    next_id: *const fn (ctx: *anyopaque) u64,
 };
 
 test {
