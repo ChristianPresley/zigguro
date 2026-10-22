@@ -40,6 +40,13 @@ pub fn applyAtAccel(c: *Ctx, acc: *const digest.LookupAccel, i: usize) Allocator
     for (acc.subtables) |sa| {
         if (!digest.has(sa.digest, gid)) continue;
         if (!c.budget.take()) return null;
+        if (sa.pair_classes) |pc| {
+            // The digest is the coverage, so the glyph is covered.
+            if (sa.digest.len != 0 and gid < pc.first.len) {
+                if (applyPairClasses(c, sa.data, pc, i)) |next| return next;
+                continue;
+            }
+        }
         if (try applySubtable(c, sa.kind, sa.data, i)) |next| return next;
     }
     return null;
@@ -69,13 +76,11 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
     c.nesting_left = skippy.max_nesting;
     const filter = if (acc) |a| a.digest else c.lookup_digest;
     var i: usize = 0;
-    while (i < c.buf.len()) {
-        if (c.budget.exhausted) return;
-        if (!digest.has(filter, c.buf.infos.items[i].gid) or !c.applicable(i)) {
-            i += 1;
-            continue;
-        }
+    while (true) {
+        i = c.nextCandidate(filter, i);
+        if (i >= c.buf.len()) return;
         const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+        if (c.budget.exhausted) return;
         if (applied) |next| {
             i = if (next <= i) i + 1 else next;
         } else i += 1;
@@ -244,6 +249,35 @@ fn applyPair(c: *Ctx, st: []const u8, i: usize) ?usize {
         },
         else => return null,
     }
+}
+
+/// PairPos format 2 at covered glyph `i` with dense class tables.
+fn applyPairClasses(c: *Ctx, st: []const u8, pc: digest.PairClasses, i: usize) ?usize {
+    const infos = c.buf.infos.items;
+    var it = Skippy.init(c, false);
+    it.reset(i, 1);
+    const j = it.peekNext() orelse blk: {
+        if (!it.next(null)) return null;
+        break :blk it.idx;
+    };
+    const g2 = infos[j].gid;
+    const vf1 = readAt(u16, st, 4) catch return null;
+    const vf2 = readAt(u16, st, 6) catch return null;
+    const n1 = readAt(u16, st, 12) catch return null;
+    const n2 = readAt(u16, st, 14) catch return null;
+    const k1: u16 = pc.first[infos[i].gid];
+    if (g2 >= pc.second.len) return applyPair(c, st, i);
+    const k2: u16 = pc.second[g2];
+    if (k1 >= n1 or k2 >= n2) return null;
+    const len1 = valueSize(vf1);
+    const len2 = valueSize(vf2);
+    const rec_size = len1 + len2;
+    const rec = reader.subLen(st, 16 + (@as(usize, k1) * n2 + k2) * rec_size, rec_size) catch return null;
+    const pos = c.buf.pos.items;
+    const a = applyValue(c, st, rec, vf1, &pos[i]);
+    const b = applyValue(c, st, rec[len1..], vf2, &pos[j]);
+    if (a or b) c.buf.unsafeToBreak(i, j + 1);
+    return if (len2 != 0) j + 1 else j;
 }
 
 fn applyCursive(c: *Ctx, st: []const u8, j: usize) ?usize {
