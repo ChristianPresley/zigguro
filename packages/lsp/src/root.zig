@@ -36,6 +36,11 @@ pub const client = struct {
     pub const trace = @import("client/trace.zig");
     pub const transcript = @import("client/transcript.zig");
 };
+/// Document-bound request scheduling for the feature services.
+pub const sync = struct {
+    pub const scheduler = @import("sync/scheduler.zig");
+    pub const timer_wheel = @import("sync/timer_wheel.zig");
+};
 /// Test support shared with zg_dap: the scripted-peer engine behind the
 /// fake language server and debug adapter.
 pub const testing = struct {
@@ -54,4 +59,5 @@ test {
     _ = @import("client/client_test.zig");
     _ = @import("client/server_requests_test.zig");
     _ = @import("client/progress_test.zig");
+    _ = @import("sync/scheduler_test.zig");
 }
