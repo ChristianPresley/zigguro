@@ -138,6 +138,30 @@ const BigList = struct {
     }
 };
 
+/// A 50-column, million-row table; cells read "r<row>c<col>".
+const BigTable = struct {
+    table: zg_gui.virtual.Table = undefined,
+    bufs: [512][24]u8 = undefined,
+    next: usize = 0,
+
+    fn rowCount(_: *anyopaque) u64 {
+        return 1_000_000;
+    }
+    fn cellText(p: *anyopaque, row: u64, col: u32) []const u8 {
+        const self: *BigTable = @ptrCast(@alignCast(p));
+        const b = &self.bufs[self.next];
+        self.next = (self.next + 1) % self.bufs.len;
+        return std.fmt.bufPrint(b, "r{d}c{d}", .{ row, col }) catch "";
+    }
+    const vt: zg_gui.virtual.TableSource.VTable = .{ .row_count = rowCount, .cell_text = cellText };
+
+    pub fn build(self: *BigTable, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .w = .{ .px = 800 }, .h = .{ .px = 600 } } });
+        defer ui.close();
+        self.table.build(ui);
+    }
+};
+
 const ScrollCtx = struct { t: *TestApp, node: zg_gui.core.ids.NodeId, step: f32 };
 
 /// One frame per one-step scroll, bouncing between the ends.
@@ -309,6 +333,18 @@ fn register(b: *bench.Bench) !void {
         defer t.deinit();
         var c: ScrollCtx = .{ .t = t, .node = v.node, .step = 20 };
         try b.run("gui.virtual.scroll_frame_1m", &c, scrollFrame);
+    }
+    {
+        var cols: [50]zg_gui.virtual.Column = undefined;
+        var names: [50][8]u8 = undefined;
+        for (&cols, 0..) |*c, i| c.* = .{ .id = @intCast(i), .title = try std.fmt.bufPrint(&names[i], "col {d}", .{i}), .width = 90, .frozen = i == 0 };
+        var v: BigTable = .{};
+        v.table = .init(b.gpa, .{ .ptr = &v, .vtable = &BigTable.vt }, .{ .columns = &cols });
+        defer v.table.deinit();
+        const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
+        defer t.deinit();
+        var c: ScrollCtx = .{ .t = t, .node = v.table.list, .step = 24 };
+        try b.run("gui.table_50cols_1M", &c, scrollFrame);
     }
     {
         const text = try b.gpa.alloc(u8, 10_000);

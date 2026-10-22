@@ -72,4 +72,5 @@ test {
     _ = @import("widgets/quick_pick_test.zig");
     _ = @import("virtual/flat_tree.zig");
     _ = @import("virtual/tree_view_test.zig");
+    _ = @import("virtual/table_test.zig");
 }

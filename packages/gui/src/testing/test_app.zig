@@ -306,6 +306,11 @@ pub const TestApp = struct {
             if (info.expanded) |e| try out.print(gpa, " expanded={}", .{e});
             if (info.selected) |e| if (e) try out.appendSlice(gpa, " selected");
             if (info.level > 0) try out.print(gpa, " level={d}", .{info.level});
+            if (info.row_count > 0) try out.print(gpa, " rows={d}", .{info.row_count});
+            if (info.col_count > 0) try out.print(gpa, " cols={d}", .{info.col_count});
+            if (info.row_index > 0) try out.print(gpa, " row={d}", .{info.row_index});
+            if (info.col_index > 0) try out.print(gpa, " col={d}", .{info.col_index});
+            if (info.sort != .none) try out.print(gpa, " sort={t}", .{info.sort});
             if (info.disabled) try out.appendSlice(gpa, " disabled");
             if (t.win.focus == n) try out.appendSlice(gpa, " focused");
             try out.append(gpa, '\n');
