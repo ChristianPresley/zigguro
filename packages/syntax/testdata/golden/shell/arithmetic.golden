@@ -1,0 +1,5 @@
+1| variable:x operator:= punctuation:$ punctuation.bracket:( punctuation.bracket:( number:1 operator:+ number:2 operator:* number:3 punctuation.bracket:) punctuation.bracket:)
+2| punctuation.bracket:( punctuation.bracket:( variable:count operator:++ punctuation.bracket:) punctuation.bracket:)
+3| function.builtin:echo punctuation:$ punctuation.bracket:( punctuation.bracket:( punctuation.bracket:( punctuation.bracket:) operator:/ number:2 punctuation.bracket:) punctuation.bracket:)
+4| variable:y operator:= punctuation:$ punctuation.bracket:( punctuation.bracket:( number:16#ff operator:+ punctuation:$ punctuation.bracket:( function:nproc punctuation.bracket:) punctuation.bracket:) punctuation.bracket:)
+5| function.builtin:let string:"z = x + 1"
