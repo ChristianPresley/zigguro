@@ -2060,3 +2060,52 @@ Unstable until E07 implements the sink. Edits whose edges fall between the
 CR and LF of a CRLF are sent as one widened replacement, since LSP positions
 cannot address that point. A rename is sent as close + open (LSP has no
 text-document rename).
+
+## zg_editor.model.decorations (DecorationStore)
+
+### Defined in
+`packages/editor/src/model/decorations/store.zig`, `interval_tree.zig` (E05.F05).
+
+### Implemented by
+E05.F05.S01.T01.
+
+### Consumed by
+E07 (diagnostics, inlay hints), E09 (SCM marks), E12 (ghost text, pending edits, review), F06 find,
+F04 bracket matches, F05 display map and `EditorView`.
+
+### Signature
+```zig
+pub const DecorationId = enum(u64) { _ }; pub const OwnerId = enum(u32) { _ };
+pub const StickMode = enum { shrink, grow_both, grow_start, grow_end, point_left, point_right };
+pub const Kind = union(enum) { highlight: StyleRef, text_style: StyleRef, underline: UnderlineStyle, strike, gutter: GutterMark,
+    overview: OverviewMark, inline_before: InlineText, inline_after: InlineText, block_above: BlockSpec, block_below: BlockSpec, hidden };
+pub const KindMask = std.EnumSet(std.meta.Tag(Kind));
+pub const Decoration = struct { range: Range, owner: OwnerId, z: i16 = 0, stick: StickMode = .shrink, kind: Kind, hover: ?u64 = null };
+pub const DecoRef = struct { id: DecorationId, range: Range, deco: *const Decoration };
+pub const DecorationStore = struct {
+    inline_generation: u64,   // bumped when inline/block/hidden decorations change (display map rebuild)
+    pub fn init(gpa, doc: *const Document) DecorationStore;
+    pub fn listener(s) document.Listener;   // subscribe it to the document
+    pub fn registerOwner(s, name, default_z: i16) !OwnerId;
+    pub fn add(s, d: Decoration) !DecorationId; pub fn remove(s, id) void; pub fn get(s, id) ?DecoRef;
+    pub fn query(s, r: Range, filter: KindMask, gpa, out: *ArrayList(DecoRef)) !void; // touching r; by start, z, owner
+    pub fn setOwnerDecorations(s, owner, version: u64, decos: []const Decoration) !void; // atomic replace, mapped from version
+    pub fn clearOwner(s, owner) void; pub fn ownerCount(s, owner) usize;
+    pub fn onChange(s, ev: *const ChangeEvent) void;   // O(log n + k), never allocates
+};
+pub fn mapRange(r: Range, stick: StickMode, a: u64, b: u64, n: u64) ?Range; // one replace [a,b) -> n bytes
+```
+
+### Threading
+UI thread only, alongside its `Document`.
+
+### Ownership/lifetime
+The store copies inline texts. `DecoRef.deco` pointers are valid until the
+next mutation of the store. Ids of removed decorations (including shrink
+decorations whose text was deleted) are never reused.
+
+### Stability
+Unstable until the display map (E05.F05.S02) consumes it. Positions inside a
+replaced span collapse to its start; a left-biased edge then stays before the
+inserted text and a right-biased edge moves after it (`shrink`: start right,
+end left; `grow_both`: start left, end right).
