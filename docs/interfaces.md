@@ -868,7 +868,7 @@ import libraries from `extern "dll"` itself, so `build.zig` needs no
 `packages/platform/src/wayland/backend.zig`, with `window.zig`
 (configure, state and scale bookkeeping), `output.zig` (`wl_output` to
 `MonitorInfo`), `scale.zig` (1/120 scale arithmetic) and `shm.zig` (the
-interim CPU presenter); the weston launcher for integration tests is
+`wl_shm` presenter, over `linux/memfd.zig`); the weston launcher for integration tests is
 `wayland/testing/weston.zig` (E01.F04.S01.T01).
 
 ### Implemented by
@@ -923,6 +923,18 @@ every present asks for feedback (`InitOptions.presentation_feedback`),
 reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
 a discarded frame has `flags = PresentFlags.discarded` and
 `presented_ns = 0`.
+
+Shared memory (E01.F04.S04.T02, `wayland/shm.zig`, `linux/memfd.zig`):
+CPU buffers from `allocCpuBuffer` are carved from per-window pools, each
+one memfd sealed against shrinking (`F_SEAL_SHRINK`) with one
+`wl_shm_pool`; rows are padded to 64 bytes (`memfd.stride32`) and
+buffers start 64-byte aligned. A ring of 3 buffers is the expected
+steady state. A pool with no live buffers grows in place
+(`wl_shm_pool.resize`); otherwise a new pool takes over and the old one
+is destroyed once its last buffer goes. A presented buffer is busy until
+`wl_buffer.release`; `releaseBuffer` on a busy buffer defers its
+destruction to that release. `importBuffer(.shm)` wraps a caller's memfd
+in its own pool. Cursor images use the same memfds.
 
 Input (E01.F04.S02.T02, `wayland/seat.zig`): the first `wl_seat` (v5–9)
 gives keyboard, pointer and touch as its capabilities come and go.
@@ -982,7 +994,11 @@ Without it, the Xcursor theme from `XCURSOR_THEME`/`XCURSOR_SIZE`/
 thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
-shows the default arrow. Animated cursors show their first frame.
+shows the default arrow. Animated cursors (every frame of the nearest
+size is uploaded once) step on a timerfd in the platform thread's epoll
+while the pointer is over a window showing them, waiting each frame's
+delay (at least 10 ms); `leave` or another cursor stops them. Manual
+checklist: `docs/manual-tests/wayland-cursors.md`.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
 Activation, dialogs and URIs return `error.Unsupported`.
 

@@ -231,6 +231,43 @@ test "repl exit command" {
     try testing.expectEqual(@as(usize, 0), h.sp.requests().len);
 }
 
+test "repl /plan: refused until the plan is approved" {
+    const plan_mode = @import("../plan/plan_mode.zig");
+    var h: Harness = undefined;
+    try h.init(&.{
+        script.tools(&.{.{ "t1", "run", "{\"command\":\"make\"}" }}),
+        script.tools(&.{.{ "p1", "exit_plan_mode", "{\"plan\":\"# Build\\n1. Run make.\"}" }}),
+        script.tools(&.{.{ "t2", "run", "{\"command\":\"make\"}" }}),
+        script.text("Done."),
+    });
+    defer h.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var ws_buf: [64]u8 = undefined;
+    const ws = try std.fmt.bufPrint(&ws_buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    var answers: std.Io.Reader = .fixed("y\n");
+    var cli: plan_mode.CliApprover = .{ .in = &answers, .out = &h.err.writer };
+    var pm: plan_mode.PlanMode = .init(testing.allocator, undefined, ws, cli.approver(), .{});
+    defer pm.deinit();
+    const specs = [_]proto.ToolSpec{ h.tool.spec(), pm.specs()[0] };
+    const tools: deps.StaticTools = .{ .specs = &specs };
+    h.manager.deps.tools = tools.tools();
+
+    var o = try h.options(&.{ "--allowed-tools", "run" });
+    o.env.plan_mode = &pm;
+    var in: std.Io.Reader = .fixed("/plan\nbuild it\n");
+    try testing.expectEqual(.ok, try repl.runRepl(io, testing.allocator, h.manager, o, &h.out.writer, &in));
+    try testing.expect(std.mem.indexOf(u8, h.stderr(), "plan mode: read-only") != null);
+    // The first run was refused in plan mode, the one after approval ran.
+    try testing.expectEqual(@as(u32, 1), h.tool.calls.load(.acquire));
+    try testing.expectEqual(plan_mode.PermissionMode.default, pm.mode);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const path = try plan_mode.planPath(arena.allocator(), ws, ts.session_id);
+    const saved = try std.Io.Dir.cwd().readFileAlloc(io, path, arena.allocator(), .limited(1 << 16));
+    try testing.expectEqualStrings("# Build\n1. Run make.", saved);
+}
+
 test "streamed approval times out" {
     var clock: @import("../provider/ratelimit.zig").FakeClock = .init(0);
     const Sink = struct {

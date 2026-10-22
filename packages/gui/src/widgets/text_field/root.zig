@@ -9,6 +9,8 @@ pub const model = @import("model.zig");
 pub const undo = @import("undo.zig");
 /// The `commands.zig` module.
 pub const commands = @import("commands.zig");
+/// The `ime.zig` module.
+pub const ime = @import("ime.zig");
 /// The `view.zig` module.
 pub const view = @import("view.zig");
 

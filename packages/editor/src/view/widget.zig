@@ -8,6 +8,11 @@
 //!
 //! Keys the widget does not handle (Ctrl+S, Ctrl+P, ...) bubble to the
 //! window's key handler (the E15 keymap).
+//!
+//! IME: while focused, the widget reports the primary caret and its line
+//! to the platform IME after every input it handles (the window resends
+//! only changes), so the candidate window follows the caret; commits
+//! arrive as text. Inline preedit is not drawn yet.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -281,7 +286,33 @@ pub const Editor = struct {
         const r = ec.rect();
         sync(v, ec.textSystem(), .{ .w = r.w, .h = r.h });
         const handled = handle(ec, v, state, ev) catch true;
+        switch (ev.*) {
+            .focus_lost => ec.setIme(null),
+            .focus_gained, .text => reportIme(ec, v),
+            .key => |k| if (k.action != .release) reportIme(ec, v),
+            .pointer_down, .pointer_up => if (handled) reportIme(ec, v),
+            else => {},
+        }
         return handled;
+    }
+
+    /// Tells the IME where the primary caret is (window coordinates) and
+    /// the text of its line.
+    fn reportIme(ec: *EventCx, v: *EditorView) void {
+        if (v.opts.read_only) return ec.setIme(null);
+        const r = ec.rect();
+        const o = origin(v);
+        const head = v.primarySel().head;
+        const p = v.posOf(head);
+        const caret: Rect = .{ .x = r.x + o.x + p.x, .y = r.y + o.y + p.y, .w = caret_w, .h = v.lineHeight() };
+        // At most the IME's limit around the caret, not a whole long line.
+        const lr = v.lineRange(v.lineOf(head));
+        const half = zg_gui.w.text_field.ime.max_surrounding / 2;
+        const lo = @max(lr.start, head -| half);
+        const line = v.text(.{ .start = lo, .end = @min(lr.end, head + half) });
+        const col: u32 = @intCast(@min(head - lo, line.len));
+        const w = zg_gui.w.text_field.ime.window(line, col);
+        ec.setIme(.{ .caret = caret, .surrounding = .{ .text = line[w[0]..w[1]], .cursor_byte = col - w[0], .anchor_byte = col - w[0] } });
     }
 
     fn handle(ec: *EventCx, v: *EditorView, state: *State, ev: *const InputEvent) !bool {

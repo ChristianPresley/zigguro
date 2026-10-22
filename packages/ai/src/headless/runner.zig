@@ -153,7 +153,11 @@ pub const Runner = struct {
             r.agent = try r.mgr.create(cfg);
         }
         r.session_text = proto.agent_ref.format(r.agent.ref.session);
-        r.agent.setPlanMode(r.opts.permission_mode == .plan);
+        if (env.plan_mode) |pm| {
+            pm.agent = r.agent;
+            pm.targets.mode_sink = .{ .ctx = &r.perm, .set = setPermMode };
+            pm.setMode(r.opts.permission_mode);
+        } else r.agent.setPlanMode(r.opts.permission_mode == .plan);
 
         r.seen_seq = r.agent.bus.lastSeq();
         // Inline: output keeps event order with permission prompts written
@@ -176,6 +180,19 @@ pub const Runner = struct {
                 .permission_mode = modeName(r.opts.permission_mode),
             } });
         }
+    }
+
+    fn setPermMode(ctx: *anyopaque, mode: args_mod.PermissionMode) void {
+        const p: *permission.HeadlessPermission = @ptrCast(@alignCast(ctx));
+        p.setMode(mode);
+    }
+
+    /// REPL `/plan`: plan mode from the next turn. False when this run has
+    /// no `exit_plan_mode` to leave it again.
+    pub fn enterPlanMode(r: *Runner) bool {
+        const pm = r.opts.env.plan_mode orelse return false;
+        pm.enter();
+        return true;
     }
 
     fn fail(r: *Runner, e: SetupError, comptime fmt: []const u8, a: anytype) SetupError {

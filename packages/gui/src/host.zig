@@ -78,6 +78,8 @@ pub const HostWindow = struct {
     /// The platform reported the window fully hidden.
     occluded: bool = false,
     frames: u64 = 0,
+    /// The `Window.ime.serial` last sent to the platform.
+    ime_sent: u32 = 0,
     /// The renderer texture of each glyph atlas page.
     pages: std.ArrayList(r2d.TextureId) = .empty,
 
@@ -287,6 +289,17 @@ pub const Host = struct {
             const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .text_utf8, .data = h.app.clipboard.get() }};
             try h.platform.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &items } });
         }
+        for (h.windows.items) |hw| if (hw.win.ime.serial != hw.ime_sent) {
+            hw.ime_sent = hw.win.ime.serial;
+            const im = &hw.win.ime;
+            try h.platform.submit(.{ .set_ime_state = .{
+                .win = hw.id,
+                .enabled = im.enabled,
+                .purpose = im.purpose,
+                .caret_rect_px = pxRect(im.caret, hw.win.scale),
+                .surrounding = im.surrounding(),
+            } });
+        };
         var i: usize = 0;
         while (i < h.windows.items.len) {
             const hw = h.windows.items[i];
@@ -431,5 +444,15 @@ pub fn pacingFor(r: zg_vulkan.r2d.Renderer) Pacing {
         // A swapchain without present waits: the compositor's frame events
         // still pace best.
         else => .{ .mode = .platform_frame, .waiter = null },
+    };
+}
+
+/// `r` (logical) in physical pixels.
+fn pxRect(r: geom.Rect, scale: f32) zg_platform.types.PxRect {
+    return .{
+        .x = @intFromFloat(@round(r.x * scale)),
+        .y = @intFromFloat(@round(r.y * scale)),
+        .w = @intFromFloat(@max(0, @round(r.w * scale))),
+        .h = @intFromFloat(@max(0, @round(r.h * scale))),
     };
 }

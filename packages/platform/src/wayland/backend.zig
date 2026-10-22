@@ -83,6 +83,7 @@ const csd = @import("csd.zig");
 const xcursor = @import("../linux/xcursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 const pipe_transfer = @import("../linux/pipe_transfer.zig");
+const memfd = @import("../linux/memfd.zig");
 const Keymap = @import("../xkb/keymap.zig").Keymap;
 const compose = @import("../xkb/compose.zig");
 
@@ -147,15 +148,31 @@ const Slot = struct {
     const Hit = struct { f: window_api.HitTestFn, ctx: *anyopaque };
 };
 
-/// A theme cursor ready to attach: frame 0 of the nearest size (animated
-/// cursors show their first frame).
+/// A theme cursor ready to attach: every frame of the nearest size.
 const CachedCursor = struct {
     shape: CursorShape,
     size_px: u32,
-    /// Null when the theme has no such cursor.
-    buffer: ?wl.wl_buffer.Id,
-    hot: [2]u32 = .{ 0, 0 },
+    /// Empty when the theme has no such cursor.
+    frames: []CursorFrame = &.{},
 };
+
+/// One frame of a theme cursor.
+const CursorFrame = struct {
+    buffer: wl.wl_buffer.Id,
+    hot: [2]u32,
+    delay_ms: u32,
+};
+
+/// The animated cursor being shown: its cache key and current frame.
+const CursorAnim = struct {
+    shape: CursorShape,
+    size_px: u32,
+    frame: usize = 0,
+};
+
+/// Shortest frame time for animated cursors; themes with 0 delays still
+/// step at this rate.
+const min_cursor_delay_ms: u32 = 10;
 
 /// The Wayland backend.
 pub const WaylandBackend = struct {
@@ -195,6 +212,10 @@ pub const WaylandBackend = struct {
     compose_env: ?std.process.Environ.Map = null,
     /// Key repeat timer (timerfd), or -1.
     repeat_fd: i32 = -1,
+    /// Animated cursor timer (timerfd), or -1.
+    cursor_timer_fd: i32 = -1,
+    /// The animated cursor on screen, if any. Guarded by the mutex.
+    cursor_anim: ?CursorAnim = null,
 
     mutex: Io.Mutex = .init,
     slots: std.ArrayList(*Slot) = .empty,
@@ -370,6 +391,11 @@ pub const WaylandBackend = struct {
             b.repeat_fd = @intCast(tfd);
             try b.watch(b.repeat_fd, 2);
         } else log.warn("timerfd_create failed; no key repeat", .{});
+        const cfd = linux.timerfd_create(.MONOTONIC, .{ .CLOEXEC = true, .NONBLOCK = true });
+        if (linux.errno(cfd) == .SUCCESS) {
+            b.cursor_timer_fd = @intCast(cfd);
+            try b.watch(b.cursor_timer_fd, 3);
+        } else log.warn("timerfd_create failed; cursors do not animate", .{});
         b.thread = try std.Thread.spawn(.{}, threadMain, .{b});
         return b;
     }
@@ -634,6 +660,7 @@ pub const WaylandBackend = struct {
         b.transfers.deinit();
         if (b.epfd >= 0) _ = linux.close(b.epfd);
         if (b.repeat_fd >= 0) _ = linux.close(b.repeat_fd);
+        if (b.cursor_timer_fd >= 0) _ = linux.close(b.cursor_timer_fd);
         b.freeState();
         b.gpa.destroy(b);
     }
@@ -667,6 +694,7 @@ pub const WaylandBackend = struct {
         b.offers.deinit(gpa);
         b.ime.deinit(gpa);
         b.finished.deinit(gpa);
+        for (b.cursor_cache.items) |e| gpa.free(e.frames);
         b.cursor_cache.deinit(gpa);
         if (b.cursor_theme) |*t| t.deinit(gpa);
         b.cursor_theme = null;
@@ -876,6 +904,7 @@ pub const WaylandBackend = struct {
             for (evs[0..rc]) |e| switch (e.data.u64) {
                 1 => b.thread_wake.consume(),
                 2 => b.onRepeatTimer(),
+                3 => b.onCursorTimer(),
                 else => |tag| if (pipe_transfer.Transfers.owns(tag)) b.serviceTransfers(tag),
             };
         }
@@ -1040,7 +1069,8 @@ pub const WaylandBackend = struct {
                 b.lock();
                 defer b.unlock();
                 for (b.slots.items) |s| if (s.presenter.byObject(obj)) |buf| {
-                    try s.presenter.released.append(b.gpa, @enumFromInt(buf.handle));
+                    try s.presenter.onRelease(buf);
+                    try c.flush();
                     return;
                 };
             },
@@ -1164,7 +1194,10 @@ pub const WaylandBackend = struct {
                         // A new enter serial: the cursor must be set again.
                         b.cursor_dirty = true;
                     },
-                    .leave => try st.ptrLeave(out),
+                    .leave => {
+                        b.stopCursorAnimLocked();
+                        try st.ptrLeave(out);
+                    },
                     .motion => |m| if (b.focusWindow(st.ptr_focus)) |w| st.ptrMotion(toPx(w, m.surface_x, m.surface_y)),
                     .button => |bt| st.ptrButton(bt.serial, bt.button, bt.state == .pressed),
                     .axis => |a| st.ptrAxis(axisOf(a.axis), a.value.toF64()),
@@ -1331,13 +1364,19 @@ pub const WaylandBackend = struct {
         b.lock();
         defer b.unlock();
         if (b.cursorCached(req.shape, req.size_px) == null) {
-            var entry: CachedCursor = .{ .shape = req.shape, .size_px = req.size_px, .buffer = null };
+            var list: std.ArrayList(CursorFrame) = .empty;
+            errdefer list.deinit(b.gpa);
             if (frames) |f| {
-                const img = f.frames[0];
-                entry.buffer = try b.cursorBuffer(img);
-                entry.hot = .{ img.hot_x, img.hot_y };
+                try list.ensureTotalCapacity(b.gpa, f.frames.len);
+                for (f.frames) |img| list.appendAssumeCapacity(.{
+                    .buffer = try b.cursorBuffer(img),
+                    .hot = .{ img.hot_x, img.hot_y },
+                    .delay_ms = img.delay_ms,
+                });
             } else log.info("no {t} cursor in theme {s}", .{ req.shape, b.cursor_theme.?.name });
-            try b.cursor_cache.append(b.gpa, entry);
+            const owned = try list.toOwnedSlice(b.gpa);
+            errdefer b.gpa.free(owned);
+            try b.cursor_cache.append(b.gpa, .{ .shape = req.shape, .size_px = req.size_px, .frames = owned });
         }
         // Focus or shape may have moved on meanwhile.
         const now = b.cursorRequestLocked() orelse return;
@@ -1363,45 +1402,92 @@ pub const WaylandBackend = struct {
         const c = b.conn;
         const ptr = b.pointer orelse return;
         defer c.flush() catch {};
+        b.stopCursorAnimLocked();
         if (req.shape == .hidden) return wl.wl_pointer.setCursor(c, ptr, req.serial, null, 0, 0);
         if (b.cursor_device) |d| return wl.wp_cursor_shape_device_v1.setShape(c, d, req.serial, cursor_mod.protocolShape(req.shape).?);
         // A shape the theme lacks falls back to the default arrow.
         var e = b.cursorCached(req.shape, req.size_px) orelse return;
-        if (e.buffer == null) {
+        if (e.frames.len == 0) {
             if (req.shape == .default) return;
             e = b.cursorCached(.default, req.size_px) orelse {
                 b.cursor_dirty = true;
                 if (b.find(b.seat.ptr_focus.?)) |s| s.cursor = .default;
                 return;
             };
-            if (e.buffer == null) return;
+            if (e.frames.len == 0) return;
         }
+        try b.showCursorFrameLocked(e.frames[0], req);
+        if (e.frames.len > 1) {
+            b.cursor_anim = .{ .shape = e.shape, .size_px = e.size_px };
+            b.armCursorTimer(e.frames[0].delay_ms);
+        }
+    }
+
+    /// Attaches `f` to the cursor surface and points the cursor at it.
+    fn showCursorFrameLocked(b: *WaylandBackend, f: CursorFrame, req: CursorRequest) !void {
+        const c = b.conn;
+        const ptr = b.pointer orelse return;
         const surf = b.cursor_surface orelse blk: {
             const sf = try c.newIdVersion(wl.wl_surface, c.version(@intFromEnum(b.compositor)), null);
             try wl.wl_compositor.createSurface(c, b.compositor, sf);
             b.cursor_surface = sf;
             break :blk sf;
         };
-        try wl.wl_surface.attach(c, surf, e.buffer.?, 0, 0);
+        try wl.wl_surface.attach(c, surf, f.buffer, 0, 0);
         if (c.version(@intFromEnum(surf)) >= 3) try wl.wl_surface.setBufferScale(c, surf, req.scale);
         try wl.wl_surface.damageBuffer(c, surf, 0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
         try wl.wl_surface.commit(c, surf);
+        // Frames may move the hotspot, so the cursor is set every frame.
         const k: u32 = @intCast(req.scale);
-        try wl.wl_pointer.setCursor(c, ptr, req.serial, surf, @intCast(e.hot[0] / k), @intCast(e.hot[1] / k));
+        try wl.wl_pointer.setCursor(c, ptr, req.serial, surf, @intCast(f.hot[0] / k), @intCast(f.hot[1] / k));
+    }
+
+    /// Stops cursor animation. Mutex held.
+    fn stopCursorAnimLocked(b: *WaylandBackend) void {
+        if (b.cursor_anim == null) return;
+        b.cursor_anim = null;
+        b.armCursorTimer(0);
+    }
+
+    /// Fires the cursor timer once after `delay_ms` (at least
+    /// `min_cursor_delay_ms`), or disarms it for 0.
+    fn armCursorTimer(b: *WaylandBackend, delay_ms: u32) void {
+        if (b.cursor_timer_fd < 0) return;
+        const zero: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        const value = if (b.cursor_anim == null) zero else msSpec(@max(delay_ms, min_cursor_delay_ms));
+        const spec: linux.itimerspec = .{ .it_interval = zero, .it_value = value };
+        _ = linux.timerfd_settime(b.cursor_timer_fd, .{}, &spec, null);
+    }
+
+    /// Shows the next frame of the animated cursor while the pointer is
+    /// still on a window showing it.
+    fn onCursorTimer(b: *WaylandBackend) void {
+        var n: u64 = 0;
+        const rc = linux.read(b.cursor_timer_fd, std.mem.asBytes(&n), @sizeOf(u64));
+        if (linux.errno(rc) != .SUCCESS or n == 0) return;
+        b.lock();
+        defer b.unlock();
+        if (b.cursor_anim == null) return;
+        const anim = &b.cursor_anim.?;
+        const req = b.cursorRequestLocked() orelse return b.stopCursorAnimLocked();
+        const e = b.cursorCached(anim.shape, anim.size_px) orelse return b.stopCursorAnimLocked();
+        if (req.size_px != anim.size_px or e.frames.len < 2) return b.stopCursorAnimLocked();
+        anim.frame = (anim.frame + 1) % e.frames.len;
+        const f = e.frames[anim.frame];
+        b.showCursorFrameLocked(f, req) catch |err| log.warn("animating the cursor: {t}", .{err});
+        b.conn.flush() catch {};
+        b.armCursorTimer(f.delay_ms);
     }
 
     /// An shm buffer holding `img` (premultiplied ARGB). Mutex held.
     fn cursorBuffer(b: *WaylandBackend, img: xcursor.CursorImage) !wl.wl_buffer.Id {
         const bytes = std.mem.sliceAsBytes(img.pixels);
-        const fd_rc = linux.memfd_create("zg-cursor", linux.MFD.CLOEXEC);
-        if (linux.errno(fd_rc) != .SUCCESS) return error.SystemResources;
-        const fd: i32 = @intCast(fd_rc);
-        defer _ = linux.close(fd);
-        if (linux.errno(linux.ftruncate(fd, @intCast(bytes.len))) != .SUCCESS) return error.SystemResources;
-        if (linux.pwrite(fd, bytes.ptr, bytes.len, 0) != bytes.len) return error.SystemResources;
+        // The compositor keeps its own mapping of the sealed memfd.
+        var m = try memfd.Memfd.fromBytes("zg-cursor", bytes);
+        defer m.deinit();
         const c = b.conn;
         const pool = try c.newIdVersion(wl.wl_shm_pool, c.version(@intFromEnum(b.shm)), null);
-        try wl.wl_shm.createPool(c, b.shm, pool, fd, @intCast(bytes.len));
+        try wl.wl_shm.createPool(c, b.shm, pool, m.fd, @intCast(m.mem.len));
         const buffer = try c.newIdVersion(wl.wl_buffer, c.version(@intFromEnum(pool)), null);
         try wl.wl_shm_pool.createBuffer(c, pool, buffer, 0, @intCast(img.width), @intCast(img.height), @intCast(img.width * 4), .argb8888);
         try wl.wl_shm_pool.destroy(c, pool);
@@ -2111,6 +2197,10 @@ const Peer = struct {
     last_geometry: [4]i32 = .{ -1, -1, -1, -1 },
     last_mode: ?u32 = null,
     last_edges: ?u32 = null,
+    /// The newest `wl_shm_pool.create_buffer` (offset, width, height,
+    /// stride) and pool size (`create_pool` or `resize`).
+    last_shm_buffer: [4]i32 = .{ -1, -1, -1, -1 },
+    last_pool_size: ?i32 = null,
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -2205,6 +2295,12 @@ const Peer = struct {
             if (f.type == wl.zwp_text_input_v3.ContentPurpose) p.last_purpose = @intFromEnum(v);
             if (f.type == wl.zxdg_toplevel_decoration_v1.Mode) p.last_mode = @intFromEnum(v);
             if (f.type == wl.xdg_toplevel.ResizeEdge) p.last_edges = @intFromEnum(v);
+            if (@TypeOf(payload) == @FieldType(wl.wl_shm_pool.Request, "create_buffer")) {
+                inline for (.{ "offset", "width", "height", "stride" }, 0..) |n, i| if (comptime std.mem.eql(u8, f.name, n)) {
+                    p.last_shm_buffer[i] = v;
+                };
+            }
+            if (comptime std.mem.eql(u8, f.name, "size") and f.type == i32) p.last_pool_size = v;
             if (@TypeOf(payload) == @FieldType(wl.xdg_surface.Request, "set_window_geometry")) {
                 inline for (.{ "x", "y", "width", "height" }, 0..) |n, i| if (comptime std.mem.eql(u8, f.name, n)) {
                     p.last_geometry[i] = v;
@@ -2957,6 +3053,67 @@ test "cursor: the Xcursor fallback attaches a buffer with the hotspot at scale 2
     try testing.expectEqual([2]i32{ 5, 3 }, rig.peer.last_hotspot);
 }
 
+test "cursor: an animated theme cursor steps its frames and stops on leave" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Two 24 px frames, 20 ms each, with hotspots (2, 3) and (7, 9).
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const px = 24 * 24 * 4;
+    const second = 16 + 2 * 12 + 36 + px;
+    const header = [_]u32{ 0x72756358, 16, 0x10000, 2, 0xfffd0002, 24, 40, 0xfffd0002, 24, second };
+    const frames = [_][9]u32{
+        .{ 36, 0xfffd0002, 24, 1, 24, 24, 2, 3, 20 },
+        .{ 36, 0xfffd0002, 24, 1, 24, 24, 7, 9, 20 },
+    };
+    var bb: [4]u8 = undefined;
+    for (header) |v| {
+        std.mem.writeInt(u32, &bb, v, .little);
+        try file.appendSlice(testing.allocator, &bb);
+    }
+    for (frames) |fr| {
+        for (fr) |v| {
+            std.mem.writeInt(u32, &bb, v, .little);
+            try file.appendSlice(testing.allocator, &bb);
+        }
+        try file.appendNTimes(testing.allocator, 0xff, px);
+    }
+    try tmp.dir.createDirPath(testing.io, "icons/test/cursors");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "icons/test/cursors/left_ptr", .data = file.items });
+    var root: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &root);
+    const icons = try std.fmt.allocPrint(testing.allocator, "{s}/icons", .{root[0..n]});
+    defer testing.allocator.free(icons);
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("XCURSOR_PATH", icons);
+    try env.put("XCURSOR_THEME", "test");
+
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s, .environ_map = &env }, &.{}, &seat_globals, null);
+    defer rig.stop();
+    _ = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const ptr = rig.peer.id(wl.wl_pointer);
+    const win_surface = rig.peer.id(wl.wl_surface);
+    try wl.wl_pointer.server.enter(fc, ptr, 41, win_surface, .fromInt(5), .fromInt(5));
+    try wl.wl_pointer.server.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+    try testing.expectEqual([2]i32{ 2, 3 }, rig.peer.last_hotspot);
+    _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+    try testing.expectEqual([2]i32{ 7, 9 }, rig.peer.last_hotspot);
+    try testing.expectEqual(@as(?u32, 41), rig.peer.last_serial);
+    _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+    try testing.expectEqual([2]i32{ 2, 3 }, rig.peer.last_hotspot);
+
+    // Off the window, the animation stops.
+    try wl.wl_pointer.server.leave(fc, ptr, 42, win_surface);
+    try wl.wl_pointer.server.frame(fc, ptr);
+    // A frame already in flight may still arrive; after that, none.
+    _ = rig.peer.waitFor(wl.wl_pointer, .set_cursor, 60 * std.time.ns_per_ms) catch {};
+    try testing.expectError(error.Timeout, rig.peer.waitFor(wl.wl_pointer, .set_cursor, 150 * std.time.ns_per_ms));
+}
+
 /// Waits for a `drop` event in `phase`; other events are dropped.
 fn expectDrop(p: Platform, phase: clipboard.DropPhase) !clipboard.DropEvent {
     const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
@@ -3410,4 +3567,93 @@ test "decorations: title-bar press moves with its serial, margins resize, double
     try testing.expect(pb.pressed);
     try testing.expectEqual([2]f32{ 100, 200 }, pb.pos_px);
     try testing.expectEqual(@as(u8, 1), pb.clicks);
+}
+
+test "shm: buffers share a pool with 64-byte rows; a busy buffer is destroyed at its release" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 100, .h = 50 });
+    const serial = try rig.peer.configure(100, 50, &.{});
+    _ = try expectEvent(p, .window_configure, win);
+    const pr = try p.cpuPresenter(win);
+    const argb = @import("shm.zig").fourcc_argb8888;
+
+    const a = try pr.allocCpuBuffer(100, 50, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual(448, a.stride);
+    try testing.expectEqual(448 * 50, a.pixels.len);
+    try testing.expectEqual([4]i32{ 0, 100, 50, 448 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(@as(?i32, 3 * 448 * 50), rig.peer.last_pool_size);
+    const bb = try pr.allocCpuBuffer(100, 50, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 448 * 50, 100, 50, 448 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(1, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    @memset(a.pixels, 0xff);
+
+    // Presented, then released by the app: kept until the compositor
+    // releases it, and never reported back.
+    try pr.present(a.handle, &.{}, .none, .{ .win = win, .serial = serial });
+    _ = try rig.peer.waitFor(wl.wl_surface, .commit, std.time.ns_per_s);
+    const a_obj = rig.peer.id(wl.wl_buffer);
+    _ = a_obj;
+    pr.releaseBuffer(a.handle);
+    try testing.expectEqual(0, countIn(&rig.peer, wl.wl_buffer, .destroy));
+    var first: ?u32 = null;
+    var it = rig.peer.ids.iterator();
+    while (it.next()) |e| if (std.mem.eql(u8, e.value_ptr.*, wl.wl_buffer.name)) {
+        if (first == null or e.key_ptr.* < first.?) first = e.key_ptr.*;
+    };
+    try wl.wl_buffer.server.release(rig.peer.fc, @enumFromInt(first.?));
+    _ = try rig.peer.waitFor(wl.wl_buffer, .destroy, std.time.ns_per_s);
+    var got: [4]surface.BufferHandle = undefined;
+    try testing.expectEqual(0, pr.pollReleased(&got));
+    // An idle buffer goes at once.
+    pr.releaseBuffer(bb.handle);
+    _ = try rig.peer.waitFor(wl.wl_buffer, .destroy, std.time.ns_per_s);
+}
+
+test "shm: an empty pool grows in place; one with live buffers is replaced" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 100, .h = 50 });
+    const pr = try p.cpuPresenter(win);
+    const argb = @import("shm.zig").fourcc_argb8888;
+    var bufs: [3]surface.CpuBuffer = undefined;
+    for (&bufs) |*x| x.* = try pr.allocCpuBuffer(100, 50, argb);
+    for (bufs) |x| pr.releaseBuffer(x.handle);
+    // Empty: the next, larger buffer resizes the same pool.
+    const big = try pr.allocCpuBuffer(200, 100, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .resize, std.time.ns_per_s);
+    try testing.expectEqual(@as(?i32, 3 * 832 * 100), rig.peer.last_pool_size);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 0, 200, 100, 832 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(1, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    // Not empty: a bigger one needs a new pool; the old one goes with its
+    // last buffer.
+    const huge = try pr.allocCpuBuffer(400, 300, argb);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual(2, countIn(&rig.peer, wl.wl_shm, .create_pool));
+    pr.releaseBuffer(big.handle);
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .destroy, std.time.ns_per_s);
+    pr.releaseBuffer(huge.handle);
+}
+
+test "shm: importBuffer(.shm) wraps the caller's memfd" {
+    var rig: Rig = undefined;
+    try rig.start(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{});
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 64, .h = 32 });
+    const pr = try p.cpuPresenter(win);
+    var m = try memfd.Memfd.create("zg-test", 4096 + 256 * 32);
+    defer m.deinit();
+    const h = try pr.importBuffer(&.{ .width = 64, .height = 32, .fourcc = @import("shm.zig").fourcc_xrgb8888, .modifier = 0, .kind = .shm, .planes = &.{.{ .fd = m.fd, .offset = 4096, .stride = 256 }} });
+    _ = try rig.peer.waitFor(wl.wl_shm_pool, .create_buffer, std.time.ns_per_s);
+    try testing.expectEqual([4]i32{ 4096, 64, 32, 256 }, rig.peer.last_shm_buffer);
+    try testing.expectEqual(@as(?i32, 4096 + 256 * 32), rig.peer.last_pool_size);
+    pr.releaseBuffer(h);
 }

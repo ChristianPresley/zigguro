@@ -13,6 +13,7 @@ const exit_codes = @import("exit_codes.zig");
 const signals = @import("signals.zig");
 const sj = @import("stream_json.zig");
 const todos_mod = @import("../plan/todos.zig");
+const plan_mode = @import("../plan/plan_mode.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -91,6 +92,9 @@ pub const Env = struct {
     base_permission: ?deps.Permission = null,
     /// `todo_write` lists; a resumed session's list is restored into it.
     todos: ?*todos_mod.TodoStore = null,
+    /// `exit_plan_mode`, registered with a placeholder agent: the runner
+    /// attaches the run's agent and keeps the permission mode in step.
+    plan_mode: ?*plan_mode.PlanMode = null,
 };
 
 pub const usage_text =

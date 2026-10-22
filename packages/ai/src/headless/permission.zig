@@ -205,6 +205,11 @@ pub const HeadlessPermission = struct {
         h.arena.deinit();
     }
 
+    /// Switches the mode, as plan approval does mid-turn.
+    pub fn setMode(h: *HeadlessPermission, mode: args_mod.PermissionMode) void {
+        @atomicStore(args_mod.PermissionMode, &h.opts.mode, mode, .release);
+    }
+
     pub fn permission(h: *HeadlessPermission) deps.Permission {
         return .{ .ctx = h, .check = check, .check_hinted = checkHinted };
     }
@@ -231,22 +236,23 @@ pub const HeadlessPermission = struct {
         for (h.disallowed, h.opts.disallowed) |r, text| if (r.matches(sa, spec.name, input_json))
             return .{ .deny = h.keep(io, "denied by --disallowed-tools rule {s}", .{text}) };
         if (h.opts.base) |b| return b.decide(io, agent, spec, input_json, hint);
+        const mode = @atomicLoad(args_mod.PermissionMode, &h.opts.mode, .acquire);
         const e = spec.effectiveEffects();
         const read_only = e.read_only and !e.writes_workspace and !e.executes and !e.network;
-        if (h.opts.mode == .plan) {
+        if (mode == .plan) {
             // Plan mode outranks allow rules: read-only commands and the
             // plan-mode tools run, everything else is refused.
             if (!readonly.planAllows(spec, input_json)) return .{ .deny = "plan mode is read-only" };
             if (hint != .hook_ask) return .allow;
         }
         if (hint != .hook_ask) {
-            if (h.opts.mode == .bypass_permissions) return .allow;
+            if (mode == .bypass_permissions) return .allow;
             for (h.allowed) |r| if (r.matches(sa, spec.name, input_json)) return .allow;
             if (read_only) return .allow;
         }
         if (hint == .hook_allow) return .allow;
-        if (hint != .hook_ask and h.opts.mode == .accept_edits and !e.executes and !e.network and !e.open_world) return .allow;
-        if (h.opts.mode != .dont_ask) if (h.opts.broker) |b| {
+        if (hint != .hook_ask and mode == .accept_edits and !e.executes and !e.network and !e.open_world) return .allow;
+        if (mode != .dont_ask) if (h.opts.broker) |b| {
             const reason = h.keep(io, "{s} needs approval", .{spec.name});
             const a = try b.ask(spec.name, input_json, reason);
             if (a.allow) return if (a.updated_input) |u| .{ .allow_edited = u } else .allow;

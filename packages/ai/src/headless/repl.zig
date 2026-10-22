@@ -1,7 +1,8 @@
 //! `zg agent` without `-p` on a terminal (E10.F10.S01.T01): a line REPL.
 //! The terminal provides line editing; Ctrl-D exits. SIGINT cancels the
 //! running turn and keeps the REPL; SIGTERM ends it. Slash commands come
-//! with E10.F09.S04.T01; until then only `/exit` and `/quit` are known.
+//! with E10.F09.S04.T01; until then only `/exit`, `/quit` and `/plan`
+//! (plan mode until a plan is approved) are known.
 
 const std = @import("std");
 const AgentManager = @import("../loop/Manager.zig");
@@ -42,6 +43,10 @@ pub fn runRepl(io: Io, gpa: Allocator, mgr: *AgentManager, opts: args_mod.Headle
         if (line[0] == '/') {
             const cmd = line[1 .. std.mem.indexOfAny(u8, line, " \t") orelse line.len];
             if (std.mem.eql(u8, cmd, "exit") or std.mem.eql(u8, cmd, "quit")) break;
+            if (std.mem.eql(u8, cmd, "plan")) {
+                if (r.enterPlanMode()) r.note("plan mode: read-only until you approve a plan", .{}) else r.note("plan mode needs exit_plan_mode, which this run does not have", .{});
+                continue;
+            }
             r.note("unknown command /{s}", .{cmd});
             continue;
         }
