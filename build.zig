@@ -8,6 +8,7 @@
 const std = @import("std");
 const zg_build = @import("zg_build");
 const packages = @import("build/packages.zig");
+const release_resources = @import("build/release_resources.zig");
 
 /// Tier-1 cross targets built by `zig build cross`.
 const cross_targets = [_][]const u8{
@@ -51,6 +52,13 @@ pub fn build(b: *std.Build) void {
     // Apps.
     const zigguro_exe = addApp(b, "zigguro", f.target, f.optimize, &mods, options);
     const zg_exe = addApp(b, "zg", f.target, f.optimize, &mods, options);
+    // Manifest, VERSIONINFO and icon on Windows (E17.F01.S01.T02).
+    const res: release_resources.Values = .{
+        .version = zg_build.versionWithMetadata(b, f),
+        .segment_heap = b.option(bool, "segment-heap", "Windows: opt into the segment heap in the app manifest") orelse false,
+    };
+    release_resources.addWindowsResources(b, zigguro_exe, .app_gui, res);
+    release_resources.addWindowsResources(b, zg_exe, .app_cli, res);
     b.installArtifact(zigguro_exe);
     b.installArtifact(zg_exe);
 
@@ -220,6 +228,8 @@ pub fn build(b: *std.Build) void {
     const release_host = b.dependency("zg_release", host_args).module("zg_release");
     const release_tool = addToolImports(b, "zg-release", "tools/release/src/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "zg_release", .module = release_host },
+        .{ .name = "zg_text", .module = b.dependency("zg_text", host_args).module("zg_text") },
+        .{ .name = "zg_logo", .module = b.createModule(.{ .root_source_file = b.path("packaging/icons/logo.zig") }) },
     });
     b.installArtifact(release_tool);
     const release_run = b.addRunArtifact(release_tool);
@@ -235,6 +245,57 @@ pub fn build(b: *std.Build) void {
     const notices_check_step = b.step("notices-check", "Fail if a third-party data file has no packaging/notices entry");
     notices_check_step.dependOn(&notices_check.step);
     test_step.dependOn(notices_check_step);
+
+    // `zig build test-build-resources` (E17.F01.S01.T02): the PE resources
+    // of a fixture exe of every kind cross-built for Windows, and of the
+    // apps themselves when -Dtarget is Windows.
+    {
+        const pe_check = b.addExecutable(.{ .name = "pe-check", .root_module = b.createModule(.{
+            .root_source_file = b.path("build/test/pe_check.zig"),
+            .target = b.graph.host,
+        }) });
+        const pe_tests = b.addTest(.{ .name = "pe-check", .root_module = pe_check.root_module, .filters = test_filters });
+        tools_test_step.dependOn(&b.addRunArtifact(pe_tests).step);
+        const step = b.step("test-build-resources", "Check the manifest, VERSIONINFO and icon of Windows executables");
+        const fv = (@import("packages/release/src/version.zig").Version.parse(res.version) catch unreachable).winFileVersion();
+        const v4 = b.fmt("{d}.{d}.{d}.{d}", .{ fv[0], fv[1], fv[2], fv[3] });
+        const needles = [_][]const u8{ "PerMonitorV2", "longPathAware", "UTF-8", "asInvoker" };
+        const win = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows });
+        inline for (.{ release_resources.ExeKind.app_gui, .app_cli, .setup }) |kind| {
+            const fx = b.addExecutable(.{ .name = "fixture-" ++ @tagName(kind), .root_module = b.createModule(.{
+                .root_source_file = b.path("build/test/resources_fixture.zig"),
+                .target = win,
+                .optimize = .ReleaseSmall,
+            }) });
+            release_resources.addWindowsResources(b, fx, kind, res);
+            const run = b.addRunArtifact(pe_check);
+            run.addArtifactArg(fx);
+            run.addArg(v4);
+            run.addArgs(&needles);
+            if (kind == .setup) run.addArg("Microsoft.Windows.Common-Controls");
+            step.dependOn(&run.step);
+        }
+        if (f.target.result.os.tag == .windows) inline for (.{ zigguro_exe, zg_exe }) |exe| {
+            const run = b.addRunArtifact(pe_check);
+            run.addArtifactArg(exe);
+            run.addArg(v4);
+            run.addArgs(&needles);
+            step.dependOn(&run.step);
+        };
+    }
+
+    // Application icons (E17.F01.S01.T03): `zig build icons` regenerates
+    // packaging/icons/out; `zig build test` fails when it is stale.
+    inline for (.{ false, true }) |check| {
+        const run = b.addRunArtifact(release_tool);
+        run.setCwd(b.path("."));
+        run.addArgs(&.{ "icongen", "--out", "packaging/icons/out" });
+        if (check) run.addArgs(&.{ "--check", "true" });
+        run.has_side_effects = true;
+        const step = if (check) b.step("icons-check", "Fail if packaging/icons/out is stale") else b.step("icons", "Regenerate packaging/icons/out from packaging/icons/logo.zig");
+        step.dependOn(&run.step);
+        if (check) test_step.dependOn(step);
+    }
 
     // `zig build package -Dtarget=<t> -Doptimize=ReleaseFast -Dversion=<v>
     // -Dsource-date-epoch=<s>`: dist tree in zig-out/dist/<t>, archives in
