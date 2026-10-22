@@ -66,6 +66,15 @@ with `zg_text` points at a bug in one of them. `zig build` never runs it.
   line by line.
 - Regenerate `zg_core.testkit.golden` files with `zig build test-text -Dupdate-golden`.
 
+## Terminal cell goldens
+
+`golden/cells/procedural_WxH.pgm` hold every procedural glyph (box
+drawing, blocks, braille, Powerline, sextants) drawn at a W×H cell, 32 per
+row in `box_drawing.id` order, produced by `sheet()` in
+`src/layout/cells_test.zig` and checked by eye. The test compares them
+byte for byte; after a deliberate drawing change, delete the files and run
+the tests twice per size to write new ones.
+
 ## Outline goldens
 
 `golden/glyf/*.zon` hold fontTools `BasePen` paths for selected glyphs (the
