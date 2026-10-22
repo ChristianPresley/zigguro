@@ -16,6 +16,7 @@
 //!
 //! Layers: `beginLayer` .. `endLayer` record content into an offscreen
 //! layer (layer-local coordinates, no nesting); `drawLayer` composites it.
+//! `beginScrollLayer` records a wraparound layer (see `layers.zig`).
 //! Damage: `addDamage` lists changed physical rectangles (at most 64, more
 //! means everything); `damageAll` repaints everything. A list without
 //! damage repaints nothing unless the renderer itself needs a full frame.
@@ -25,6 +26,7 @@ const types = @import("types.zig");
 const prim_mod = @import("prim.zig");
 const f16p = @import("f16.zig");
 const Color = @import("color.zig").Color;
+const LayerKind = @import("layers.zig").LayerKind;
 
 const Allocator = std.mem.Allocator;
 const Prim = prim_mod.Prim;
@@ -65,6 +67,10 @@ pub const LayerUse = struct {
     size: Size,
     /// Whether the content is recorded this frame (`beginLayer` returned true).
     drawn: bool,
+    /// Plain or wraparound addressing.
+    kind: LayerKind = .plain,
+    /// Wrap origin of a scroll layer in texels.
+    origin: [2]i32 = .{ 0, 0 },
     /// Range of `layer_damage` holding the content damage (empty = all).
     damage_start: u32 = 0,
     /// End of the damage range.
@@ -309,13 +315,35 @@ pub fn popClip(self: *DrawList) void {
 /// when it must be repainted, and returns true; returns false when the
 /// renderer still holds it and `content_damage` is empty, in which case the
 /// caller skips the content and does not call `endLayer`. `content_damage`
-/// limits the repaint (empty = everything). Layers do not nest.
+/// limits the repaint (empty = everything); a renderer that no longer
+/// holds the layer repaints all of it, so draw the whole content when
+/// `layerCached` is false. Layers do not nest.
 pub fn beginLayer(self: *DrawList, id: LayerId, size: Size, content_damage: []const PxRect) bool {
+    return self.beginLayerKind(id, size, .plain, .{ 0, 0 }, content_damage);
+}
+
+/// `beginLayer` for a scroll layer: content pixel (x, y) is kept at texel
+/// `((x + origin[0]) mod w, (y + origin[1]) mod h)`. After scrolling the
+/// content by d, pass `layers.scrolledOrigin(origin, d, size)` and the
+/// exposed strips (`layers.scrollDamage`) as damage; the rest of the
+/// texture is reused. `drawLayer` samples it with wraparound.
+pub fn beginScrollLayer(self: *DrawList, id: LayerId, size: Size, origin: [2]i32, content_damage: []const PxRect) bool {
+    return self.beginLayerKind(id, size, .scroll, origin, content_damage);
+}
+
+/// Whether the renderer holds complete content for layer `id` of `size`.
+pub fn layerCached(self: *const DrawList, id: LayerId, size: Size) bool {
+    return if (self.layer_query) |q| q.isValid(q.ctx, id, size) else false;
+}
+
+fn beginLayerKind(self: *DrawList, id: LayerId, size: Size, kind: LayerKind, origin: [2]i32, content_damage: []const PxRect) bool {
     std.debug.assert(self.open_layer == 0);
-    const cached = content_damage.len == 0 and if (self.layer_query) |q| q.isValid(q.ctx, id, size) else false;
+    const cached = content_damage.len == 0 and self.layerCached(id, size);
     const idx = self.useLayer(id, size) orelse return false;
-    if (cached) return false;
     const l = &self.layers.items[idx];
+    l.kind = kind;
+    l.origin = if (kind == .scroll) .{ @mod(origin[0], @as(i32, @intCast(@max(size.w, 1)))), @mod(origin[1], @as(i32, @intCast(@max(size.h, 1)))) } else .{ 0, 0 };
+    if (cached) return false;
     l.drawn = true;
     l.damage_start = @intCast(self.layer_damage.items.len);
     self.layer_damage.appendSlice(self.gpa, content_damage) catch {
@@ -346,18 +374,21 @@ pub fn endLayer(self: *DrawList) void {
 }
 
 /// Composites layer `id` into `dst`, showing the layer from `scroll_px`
-/// (physical layer pixels) at `opacity`.
+/// (physical content pixels) at `opacity`. A scroll layer must be begun
+/// earlier in the frame, which sets its wrap origin.
 pub fn drawLayer(self: *DrawList, id: LayerId, dst: RectF, scroll_px: Vec2, opacity: f32) void {
     const idx = for (self.layers.items, 0..) |l, i| {
         if (l.id == id) break i;
     } else self.useLayer(id, .{ .w = 0, .h = 0 }) orelse return;
+    const l = self.layers.items[idx];
     const b = self.phys(dst);
     self.push(.{
         .bounds = b,
         .kind = .layer,
-        .uv = .{ scroll_px.x, scroll_px.y, 0, 0 },
+        .uv = .{ scroll_px.x + @as(f32, @floatFromInt(l.origin[0])), scroll_px.y + @as(f32, @floatFromInt(l.origin[1])), 0, 0 },
         .color0 = Color.white.withOpacity(opacity).premul().toU32(),
         .params = @intCast(idx),
+        .flags = .{ .wrap = l.kind == .scroll },
     });
 }
 
@@ -628,6 +659,24 @@ test "drawlist: layers record ranges and honour the cache" {
     try testing.expectEqual(@as(u16, 2), dl.prims.items[0].layer_z);
     try testing.expectEqual(@as(u32, 1), dl.prims.items[2].params);
     try testing.expectEqual(@as(u16, 0), dl.prims.items[2].layer_z);
+}
+
+test "drawlist: scroll layers carry the wrap origin" {
+    var dl = testList();
+    defer dl.deinit();
+    const dmg = [_]PxRect{.{ .x = 0, .y = 17, .w = 20, .h = 3 }};
+    try testing.expect(dl.beginScrollLayer(@enumFromInt(5), .{ .w = 20, .h = 20 }, .{ 0, 43 }, &dmg));
+    dl.rect(.{ .x = 0, .y = 17, .w = 20, .h = 3 }, Color.white, .{});
+    dl.endLayer();
+    dl.drawLayer(@enumFromInt(5), .{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .y = 2.5 }, 1);
+    const l = dl.layers.items[0];
+    try testing.expectEqual(LayerKind.scroll, l.kind);
+    try testing.expectEqual([2]i32{ 0, 3 }, l.origin);
+    const p = dl.prims.items[1];
+    try testing.expect(p.flags.wrap);
+    try testing.expectEqual(@as(f32, 5.5), p.uv[1]);
+    // Without a renderer nothing is cached.
+    try testing.expect(!dl.layerCached(@enumFromInt(5), .{ .w = 20, .h = 20 }));
 }
 
 test "drawlist: damage clips and overflows to full" {
