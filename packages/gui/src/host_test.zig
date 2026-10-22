@@ -9,6 +9,7 @@ const view_mod = @import("core/view.zig");
 const text = @import("paint/text.zig");
 const controls = @import("widgets/controls.zig");
 const Host = @import("host.zig").Host;
+const FontText = @import("paint/font_text.zig").FontText;
 
 const Headless = zg_platform.headless.Headless;
 
@@ -91,4 +92,46 @@ test "host keeps the app clipboard in sync with the platform" {
     _ = try host.pump();
     try std.testing.expectEqualStrings("from elsewhere", app.clipboard.get());
     try std.testing.expect(app.now_ms > 0);
+}
+
+const Label = struct {
+    pub fn build(_: *Label, ui: *ui_mod.Ui) void {
+        ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .bg = .{ .token = .bg_base }, .padding = .all(10) } });
+        defer ui.close();
+        ui.text("Hello, zigguro", .{});
+    }
+};
+
+test "host draws real glyphs through FontText" {
+    const gpa = std.testing.allocator;
+    const fonts = try @import("paint/font_text_test.zig").TestFonts.load(gpa);
+    defer fonts.deinit(gpa);
+    const ft = try FontText.create(gpa, .{ .ui = fonts.ui, .mono = fonts.mono });
+    defer ft.destroy();
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), ft.system(), .{ .fonts = ft });
+    defer host.deinit();
+    var v: Label = .{};
+    const hw = try host.open(.{ .title = "text", .size = .{ .w = 200, .h = 40 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(u64, 1), hw.frames);
+    try std.testing.expect(hw.pages.items.len == 1);
+
+    // The text row has light (foreground) pixels; the area below has none.
+    const f = hl.lastFrame(hw.id).?;
+    const bg = app.theme.color(.bg_base);
+    var lit: u32 = 0;
+    for (10..28) |y| for (10..120) |x| {
+        const p = pixel(f, @intCast(x), @intCast(y));
+        if (@as(u32, p[0]) + p[1] + p[2] > @as(u32, bg.r) + bg.g + bg.b + 120) lit += 1;
+    };
+    try std.testing.expect(lit > 60);
+    for (32..40) |y| for (10..190) |x| {
+        try std.testing.expectEqualSlices(u8, &.{ bg.r, bg.g, bg.b }, pixel(f, @intCast(x), @intCast(y))[0..3]);
+    };
 }

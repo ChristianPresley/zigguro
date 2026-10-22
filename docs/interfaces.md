@@ -1807,6 +1807,67 @@ destroys and recreates the whole `Gpu`.
 Internal to E02 except `writeReport`'s JSON schema (golden-tested) and
 `CreateOptions`, which the app fills from `EnvOverrides` and E15 settings.
 
+## zg_vulkan.mem (GPU memory, uploads, textures)
+
+### Defined in
+`packages/vulkan/src/mem/` (E02.F03): `tlsf.zig`, `types.zig`,
+`DeviceMemory.zig`, `UploadRing.zig`, `Uploader.zig`, `Texture.zig`,
+`barriers.zig`.
+
+### Implemented by
+E02. `findMemoryType`, `flushRange`, `blockSizeFor` and the ring's `Bump`
+are pure and unit-tested; the rest is tested on lavapipe.
+
+### Consumed by
+E02's Vulkan backend (instance data, layers, swapchain/dmabuf ring) and,
+through `Uploader.writeRegion`, the glyph atlas and image uploads that
+E03/E04/E08 feed via the renderer.
+
+### Signature
+```zig
+pub const DeviceMemory = struct {
+    pub fn init(gpu: *Gpu, gpa: Allocator, opts: Options) DeviceMemory;
+    pub fn deinit(self: *DeviceMemory) void;                     // logs leaks by name
+    pub fn allocFor(self, req: Request, usage: Usage, linear: bool, name: [:0]const u8) Error!Allocation;
+    pub fn createBuffer(self, info: vk.BufferCreateInfo, usage: Usage, name: [:0]const u8) Error!Buffer;
+    pub fn createImage(self, info: vk.ImageCreateInfo, usage: Usage, name: [:0]const u8, export_dmabuf: bool) Error!Image;
+    pub fn free(self, a: Allocation) void;
+    pub fn flush(self, a: Allocation, off: u64, len: u64) vk.Error!void;
+    pub fn invalidate(self, a: Allocation, off: u64, len: u64) vk.Error!void;
+    pub fn budget(self) []const HeapBudget;
+    pub fn stats(self) Stats;
+    pub fn nextFrame(self) void;                                 // releases blocks empty for 3 frames
+    pub fn reportLeaks(self, w: *std.Io.Writer) !usize;
+};
+pub const UploadRing = struct { init(mem, frames_in_flight: u8, bytes_per_frame: u64), beginFrame(slot: u8), alloc(len, alignment) !Slice,
+    endFrame(cb, dd) !void, gpuBuffer() vk.Buffer, resize(bytes_per_frame) !void };
+pub const Uploader = struct { init(gpa, mem, ring), writeRegion(tex, Rect16, pixels, row_pitch) !void, writeBuffer(dst, off, bytes) !void,
+    record(cb, dd) !void, retire() void, pendingBytes() u64 };
+pub const Texture = struct { image: Image, view: vk.ImageView, format: Format, width: u32, height: u32, slot: u32, access: barriers.Access,
+    pub fn create(mem, w, h, fmt: Format, use: enum { sampled, render_target }, name) !Texture; pub fn destroy(self, mem) void };
+```
+Deviations from the spec text: `DeviceMemory.init` cannot fail;
+`Allocation` also carries `block`, `linear` and `id`; frames in flight are
+`u8`; copies use `vkCmdCopyBufferToImage`/`vkCmdCopyBuffer` (core 1.0,
+no `VK_KHR_copy_commands2` needed on 1.2 devices) with all regions of a
+texture in one call; ring growth is `resize`, which the owner calls once
+every slot has retired (E02.F04 timeline); staging buffers are freed by
+`Uploader.retire` when the frame completes; `VK_EXT_memory_priority` is
+not used yet (it needs the `memoryPriority` feature); bands of uploads
+over 4 MiB and the async transfer queue are not implemented yet.
+
+### Threading
+`DeviceMemory` methods lock one `std.Io.Mutex` (render thread plus a
+texture worker). `UploadRing` and `Uploader` belong to the render thread.
+
+### Ownership/lifetime
+Every allocation is freed through `DeviceMemory.free` (or
+`destroyBuffer`/`destroyImage`/`Texture.destroy`) before `deinit`.
+Ring slices are valid until their slot is reused.
+
+### Stability
+Internal to E02.
+
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in

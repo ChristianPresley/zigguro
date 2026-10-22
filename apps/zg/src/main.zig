@@ -1,11 +1,13 @@
-//! zg: the headless CLI agent and SCM CLI (works without the GUI). Until the
-//! owning epics land this only initialises the zg_core runtime and handles
-//! `--version` (through zg_release, before the runtime starts).
+//! zg: the headless CLI agent and SCM CLI (works without the GUI).
+//! `zg agent` runs the AI harness (E10.F10); `--version` is answered by
+//! zg_release before the runtime starts. Other subcommands arrive with
+//! their epics.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
 const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
+const cmd_agent = @import("cmd_agent.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -27,12 +29,17 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     try rt.init(min, .{});
     defer _ = rt.deinit();
 
+    var arena: std.heap.ArenaAllocator = .init(rt.gpa);
+    defer arena.deinit();
+    const argv = try min.args.toSlice(arena.allocator());
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "agent")) return cmd_agent.run(&rt, min, argv[2..]);
+
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
     const w = &out.interface;
-    try w.print("zg {s}: nothing to run yet; see GitHub issue #1198 for the plan\n", .{zg_release.current.version_string});
+    try w.print("zg {s}\n\nUsage: zg agent [flags]   run the AI agent (zg agent --help)\n", .{zg_release.current.version_string});
     try w.flush();
-    return 0;
+    return if (argv.len >= 2) 2 else 0;
 }
 
 /// Crash reports go to `<state>/crashes` (E17.F05); `install` copies the
