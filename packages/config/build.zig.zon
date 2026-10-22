@@ -6,6 +6,7 @@
     .dependencies = .{
         .zg_build = .{ .path = "../build" },
         .zg_core = .{ .path = "../core" },
+        .zg_jsonrpc = .{ .path = "../jsonrpc" },
     },
     .paths = .{
         "build.zig",
@@ -14,5 +15,6 @@
         "bench",
         "fuzz",
         "testdata",
+        "docs",
     },
 }
