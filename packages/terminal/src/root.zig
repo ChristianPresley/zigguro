@@ -8,6 +8,8 @@ const std = @import("std");
 
 /// VT/xterm byte-stream parser.
 pub const vt = @import("vt.zig");
+/// Screen model: cells, pages, page list, screens.
+pub const screen = @import("screen.zig");
 
 test {
     std.testing.refAllDecls(@This());
