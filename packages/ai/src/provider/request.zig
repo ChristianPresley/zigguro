@@ -38,6 +38,10 @@ pub const ToolDecl = struct {
     cache_break: bool = false,
     strict: bool = false,
     defer_loading: bool = false,
+    /// `provider_native` tools (e.g. Anthropic `web_search`) are passed
+    /// through verbatim from `raw_json` by the provider that owns them.
+    kind: enum { function, provider_native } = .function,
+    raw_json: ?[]const u8 = null,
 };
 
 /// Cache time-to-live of explicit breakpoints.
@@ -90,6 +94,8 @@ pub const Response = struct {
     usage: proto.Usage,
     request_id: ?[]const u8 = null,
     rate_limit: ?RateLimitSnapshot = null,
+    /// The output limit cut a tool_use block, which was dropped.
+    truncated_tool_use: bool = false,
 };
 
 /// Degradation notices produced by `adaptForCaps`.
