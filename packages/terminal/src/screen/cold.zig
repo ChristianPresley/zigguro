@@ -161,8 +161,15 @@ const Enc = struct {
     bgs: std.ArrayList(u32) = .empty,
     lks: std.ArrayList(u32) = .empty,
     text: std.ArrayList(u8) = .empty,
+    /// Style table index by (page, page-local style id), so a style is
+    /// looked up in `styles` once per page rather than once per cell.
+    style_cache: std.AutoHashMapUnmanaged(struct { usize, u32 }, u32) = .empty,
+    /// `styles` index by the style's bytes.
+    style_index: std.AutoHashMapUnmanaged(u128, u32) = .empty,
 
     fn deinit(e: *Enc) void {
+        e.style_cache.deinit(e.gpa);
+        e.style_index.deinit(e.gpa);
         e.out.deinit(e.gpa);
         e.styles.deinit(e.gpa);
         e.links.deinit(e.gpa);
@@ -174,10 +181,22 @@ const Enc = struct {
         e.text.deinit(e.gpa);
     }
 
+    /// The style table index of cell `c` on `page` (0 = default style).
+    fn cellStyle(e: *Enc, page: *const Page, c: Cell) !u32 {
+        if (c.style == 0) return 0;
+        const gop = try e.style_cache.getOrPut(e.gpa, .{ @intFromPtr(page.buf.ptr), c.style });
+        if (!gop.found_existing) gop.value_ptr.* = 1 + try e.styleIndex(page.styleOf(c).*);
+        return gop.value_ptr.*;
+    }
+
     fn styleIndex(e: *Enc, s: Style) !u32 {
-        for (e.styles.items, 0..) |x, i| if (x.eql(s)) return @intCast(i);
-        try e.styles.append(e.gpa, s);
-        return @intCast(e.styles.items.len - 1);
+        const gop = try e.style_index.getOrPut(e.gpa, @bitCast(s));
+        if (!gop.found_existing) {
+            errdefer _ = e.style_index.remove(@bitCast(s));
+            try e.styles.append(e.gpa, s);
+            gop.value_ptr.* = @intCast(e.styles.items.len - 1);
+        }
+        return gop.value_ptr.*;
     }
 
     fn linkIndex(e: *Enc, l: Link) !u32 {
@@ -309,6 +328,9 @@ fn encodeLine(e: *Enc, lines: *std.ArrayList(u8), start: Pin, n: u64) !struct { 
     var run_len: u32 = 0;
     var run_style: u32 = 0;
     var run_attrs: u8 = 0;
+    // The page-local style id and page `run_style` was looked up for.
+    var run_style_id: u32 = 0;
+    var run_page: ?*const Page = null;
     // Current link run.
     var lk_start: u32 = 0;
     var lk_len: u32 = 0;
@@ -334,7 +356,9 @@ fn encodeLine(e: *Enc, lines: *std.ArrayList(u8), start: Pin, n: u64) !struct { 
         for (cs[0..end]) |*c| {
             if (c.wide == .spacer_head) continue;
             // Style run.
-            const sidx: u32 = if (c.style == 0) 0 else 1 + try e.styleIndex(page.styleOf(c.*).*);
+            const sidx: u32 = if (c.style == run_style_id and page == run_page) run_style else try e.cellStyle(page, c.*);
+            run_style_id = c.style;
+            run_page = page;
             const attrs = attrsOf(c.*);
             if (run_len > 0 and (sidx != run_style or attrs != run_attrs)) {
                 try e.runs.appendSlice(gpa, &.{ run_len, run_style, run_attrs });
