@@ -1,5 +1,6 @@
 //! Overlays, popovers and dialogs (E04.F05.S03.T01): placement, light
-//! dismiss, Escape, modality, focus, and `confirm`.
+//! dismiss, Escape, modality, focus, `confirm`, and tooltips (delay,
+//! warm-up, keyboard focus, hiding, placement).
 
 const std = @import("std");
 const geom = @import("../core/geom.zig");
@@ -8,6 +9,7 @@ const view_mod = @import("../core/view.zig");
 const controls = @import("controls.zig");
 const overlay = @import("overlay.zig");
 const dialog = @import("dialog.zig");
+const tooltip = @import("tooltip.zig");
 const TestApp = @import("../testing/test_app.zig").TestApp;
 
 const Ui = ui_mod.Ui;
@@ -288,4 +290,92 @@ test "stack orders by layer" {
     try expectEqual(dlg, s.topModal().?.id);
     try expect(s.remove(dlg) != null);
     try expect(s.topModal() == null);
+}
+
+const Tipped = struct {
+    pub fn build(_: *Tipped, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .column, .gap = 20, .padding = .all(40), .w = .{ .pct = 100 }, .h = .{ .pct = 100 } } });
+        defer ui.close();
+        _ = controls.button(ui, .{ .label = "Save" });
+        tooltip.tooltipLast(ui, "Save the file (Ctrl+S)", .{});
+        _ = controls.button(ui, .{ .label = "Open" });
+        tooltip.tooltipLast(ui, "Open a file", .{});
+        _ = controls.button(ui, .{ .label = "Plain" });
+        ui.open(.{ .style = .{ .h = .{ .px = 200 }, .w = .{ .px = 300 } }, .hit = true, .label = "Canvas" });
+        tooltip.tooltip(ui, "A large area", .{});
+        ui.close();
+    }
+};
+
+fn tipText(t: *TestApp) ?[]const u8 {
+    if (t.find(.{ .test_id = "tooltip" }) == null) return null;
+    return t.win.tips.text.items;
+}
+
+fn hoverCentre(t: *TestApp, name: []const u8) !void {
+    const r = try t.rectOf(.{ .name = name });
+    t.moveTo(.{ .x = r.x + r.w / 2, .y = r.y + r.h / 2 });
+}
+
+test "tooltip delay and warm-up" {
+    var v: Tipped = .{};
+    const t = try TestApp.init(std.testing.allocator, .{ .root = AnyView.of(&v) });
+    defer t.deinit();
+    _ = t.settle();
+    try hoverCentre(t, "Save");
+    t.advance(499);
+    try expect(tipText(t) == null);
+    t.advance(1);
+    try std.testing.expectEqualStrings("Save the file (Ctrl+S)", tipText(t).?);
+    try expect(t.find(.{ .role = .tooltip, .name = "Save the file (Ctrl+S)" }) != null);
+    // Above the button.
+    const tip = try t.rectOf(.{ .test_id = "tooltip" });
+    const save = try t.rectOf(.{ .name = "Save" });
+    try expect(tip.bottom() <= save.y);
+    // Moving to the next button within 300 ms shows its tooltip at once.
+    try hoverCentre(t, "Open");
+    try std.testing.expectEqualStrings("Open a file", tipText(t).?);
+    // A node without a tooltip closes it; after the warm-up the delay is back.
+    try hoverCentre(t, "Plain");
+    try expect(tipText(t) == null);
+    t.advance(400);
+    try hoverCentre(t, "Save");
+    try expect(tipText(t) == null);
+    t.advance(500);
+    try expect(tipText(t) != null);
+    // A press hides it, and it stays hidden while the pointer rests.
+    t.win.dispatch(.{ .pointer_down = .{ .pos = t.win.pointer } });
+    t.win.dispatch(.{ .pointer_up = .{ .pos = t.win.pointer } });
+    _ = t.settle();
+    t.advance(1000);
+    try expect(tipText(t) == null);
+}
+
+test "tooltip never covers pointer" {
+    var v: Tipped = .{};
+    const t = try TestApp.init(std.testing.allocator, .{ .root = AnyView.of(&v) });
+    defer t.deinit();
+    _ = t.settle();
+    const area = try t.rectOf(.{ .name = "Canvas" });
+    const p: geom.Vec2 = .{ .x = area.x + 100, .y = area.y + 60 };
+    t.moveTo(p);
+    t.advance(500);
+    const tip = try t.rectOf(.{ .test_id = "tooltip" });
+    try std.testing.expectApproxEqAbs(p.y + tooltip.pointer_offset, tip.y, 0.5);
+    try expect(!tip.contains(p));
+}
+
+test "tooltip on keyboard focus" {
+    var v: Tipped = .{};
+    const t = try TestApp.init(std.testing.allocator, .{ .root = AnyView.of(&v) });
+    defer t.deinit();
+    _ = t.settle();
+    t.press(.tab, .{});
+    t.advance(500);
+    try std.testing.expectEqualStrings("Save the file (Ctrl+S)", tipText(t).?);
+    // A key hides it; the next focus shows its own after the delay.
+    t.press(.tab, .{});
+    try expect(tipText(t) == null);
+    t.advance(500);
+    try std.testing.expectEqualStrings("Open a file", tipText(t).?);
 }

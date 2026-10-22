@@ -38,6 +38,14 @@ pub const notification_center = @import("notification_center.zig");
 pub const toast_mod = @import("toast.zig");
 /// The `status_bar.zig` module.
 pub const status_bar = @import("status_bar.zig");
+/// The `tooltip.zig` module.
+pub const tooltip_mod = @import("tooltip.zig");
+/// The `roving.zig` module.
+pub const roving = @import("roving.zig");
+/// The `toolbar.zig` module.
+pub const toolbar_mod = @import("toolbar.zig");
+/// The `breadcrumbs.zig` module.
+pub const breadcrumbs_mod = @import("breadcrumbs.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -97,6 +105,18 @@ pub const NotificationCenter = notification_center.NotificationCenter;
 pub const statusBar = status_bar.statusBar;
 /// See `status_bar.StatusItem`.
 pub const StatusItem = status_bar.StatusItem;
+/// See `tooltip.tooltip`.
+pub const tooltip = tooltip_mod.tooltip;
+/// See `tooltip.tooltipLast`.
+pub const tooltipLast = tooltip_mod.tooltipLast;
+/// See `toolbar.toolbar`.
+pub const toolbar = toolbar_mod.toolbar;
+/// See `toolbar.ToolItem`.
+pub const ToolItem = toolbar_mod.ToolItem;
+/// See `breadcrumbs.breadcrumbs`.
+pub const breadcrumbs = breadcrumbs_mod.breadcrumbs;
+/// See `breadcrumbs.Crumb`.
+pub const Crumb = breadcrumbs_mod.Crumb;
 /// See `quick_pick.openQuickPick`.
 pub const openQuickPick = quick_pick.openQuickPick;
 /// See `quick_pick.QpItem`.

@@ -1,0 +1,4 @@
+1| comment:# This is a full-line comment
+2| property:key operator:= string:"value" comment:# This is a comment at the end of a line
+3| property:another operator:= string:"# This is not a comment"
+4| comment:#[not.a.table]

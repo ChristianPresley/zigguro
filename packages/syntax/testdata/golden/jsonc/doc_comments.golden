@@ -1,0 +1,5 @@
+1| comment:/**
+2| comment: * Workspace file.
+3| comment: * @version 2
+4| comment: */
+5| punctuation.bracket:{ property:"folders" punctuation.delimiter:: punctuation.bracket:[ punctuation.bracket:{ property:"path" punctuation.delimiter:: string:"." punctuation.bracket:} punctuation.bracket:] punctuation.bracket:}

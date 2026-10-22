@@ -1,0 +1,10 @@
+1| punctuation.bracket:{
+2| property:"version" punctuation.delimiter:: string:"0.2.0" punctuation.delimiter:,
+3| property:"configurations" punctuation.delimiter:: punctuation.bracket:[
+4| punctuation.bracket:{
+5| property:"name" punctuation.delimiter:: string:"Debug" punctuation.delimiter:,
+6| property:"type" punctuation.delimiter:: string:"lldb" punctuation.delimiter:,
+7| property:"args" punctuation.delimiter:: punctuation.bracket:[ string:"--verbose" punctuation.bracket:] punctuation.delimiter:, comment:// flags
+8| punctuation.bracket:} punctuation.delimiter:,
+9| punctuation.bracket:]
+10| punctuation.bracket:}

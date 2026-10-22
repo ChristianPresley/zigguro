@@ -1,0 +1,9 @@
+1| function:greet punctuation.bracket:( punctuation.bracket:)
+2| function.builtin:echo string:"Hello,  variable.builtin:$1 string:"
+3| punctuation.bracket:}
+4| keyword.storage:function function:cleanup
+5| function:rm string:" variable:$tmp string:"
+6| keyword.control:return number:0
+7| punctuation.bracket:}
+8| keyword.storage:function function:build punctuation.bracket:( punctuation.bracket:) string:" variable.builtin:$@ string:" punctuation.delimiter:; punctuation.bracket:}
+9| function:greet

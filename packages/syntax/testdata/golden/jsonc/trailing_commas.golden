@@ -1,0 +1,4 @@
+1| punctuation.bracket:{
+2| property:"list" punctuation.delimiter:: punctuation.bracket:[ number:1 punctuation.delimiter:, number:2 punctuation.delimiter:, number:3 punctuation.delimiter:, punctuation.bracket:] punctuation.delimiter:,
+3| property:"obj" punctuation.delimiter:: punctuation.bracket:{ property:"a" punctuation.delimiter:: number:1 punctuation.delimiter:, punctuation.bracket:} punctuation.delimiter:,
+4| punctuation.bracket:}

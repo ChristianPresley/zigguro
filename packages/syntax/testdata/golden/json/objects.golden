@@ -1,0 +1,6 @@
+1| punctuation.bracket:{
+2| property:"name" punctuation.delimiter:: string:"zigguro" punctuation.delimiter:,
+3| property:"version" punctuation.delimiter:: string:"0.1.0" punctuation.delimiter:,
+4| property:"private" punctuation.delimiter:: constant.builtin:true punctuation.delimiter:,
+5| property:"count" punctuation.delimiter:: number:3
+6| punctuation.bracket:}

@@ -1,0 +1,7 @@
+{
+  "quote": "say \"hi\"",
+  "path": "C:\\temp\\file",
+  "unicode": "caf\u00e9 \ud83d\ude00",
+  "controls": "tab\there\nnewline",
+  "key \"escaped\"": 1
+}

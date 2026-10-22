@@ -1,0 +1,6 @@
+1| property:odt1 operator:= constant:1979-05-27T07:32:00Z
+2| property:odt2 operator:= constant:1979-05-27T00:32:00-07:00
+3| property:odt3 operator:= constant:1979-05-27 07:32:00.999999Z
+4| property:ldt operator:= constant:1979-05-27T07:32:00
+5| property:ld operator:= constant:1979-05-27
+6| property:lt operator:= constant:07:32:00.5

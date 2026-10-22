@@ -1,0 +1,6 @@
+1| punctuation.bracket:{
+2| comment:// strict JSON has no comments
+3| property:"a" punctuation.delimiter:: number:1 punctuation.delimiter:, comment:/* inline */
+4| property:"b" punctuation.delimiter:: comment:/* spans
+5| comment:  two lines */ number:2
+6| punctuation.bracket:}

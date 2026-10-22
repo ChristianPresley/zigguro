@@ -20,6 +20,9 @@ pub const Readback = @import("Readback.zig");
 pub const ShmRing = @import("ShmRing.zig");
 /// The zero-copy dmabuf target for Wayland and X11 presenters.
 pub const ExternalRing = @import("ExternalRing.zig");
+/// The Win32 swapchain target and its parameter choices.
+pub const Swapchain = @import("Swapchain.zig");
+pub const swapchain_choice = @import("swapchain_choice.zig");
 /// DRM fourcc codes and modifier negotiation.
 pub const drm_formats = @import("drm_formats.zig");
 
@@ -31,6 +34,7 @@ test {
     _ = ShmRing;
     _ = ExternalRing;
     _ = drm_formats;
+    _ = Swapchain;
     _ = FramePacer;
     _ = RenderThread;
     _ = @import("gpu_test.zig");

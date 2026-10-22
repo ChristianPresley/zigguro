@@ -1,0 +1,8 @@
+1| property:re operator:= string:'''I [dw]on't need \d{2} apples'''
+2| property:lines operator:= string:'''
+3| string:The first newline is
+4| string:trimmed in raw strings.
+5| string:   All other whitespace
+6| string:   is preserved.
+7| string:'''
+8| property:q operator:= string:'''Here are fifteen quotation marks: """""""""""""""'''

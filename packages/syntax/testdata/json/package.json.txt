@@ -1,0 +1,9 @@
+{
+  "name": "example",
+  "scripts": {
+    "build": "zig build",
+    "test": "zig build test --summary all"
+  },
+  "dependencies": {},
+  "files": ["dist/", "README.md"]
+}
