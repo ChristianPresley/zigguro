@@ -1,0 +1,15 @@
+// Emacs query cases; `.after` is written by oracle.py from GNU Emacs.
+.{
+    .{ .name = "M-% y n", .before = "¦foo foo foo", .keys = "<M-%>foo<CR>bar<CR>yn<CR>", .after = "bar foo foo¦" },
+    .{ .name = "M-% all", .before = "¦a a a", .keys = "<M-%>a<CR>b<CR>!", .after = "b b b¦" },
+    .{ .name = "M-% dot", .before = "¦a a a", .keys = "<M-%>a<CR>b<CR>n.x", .after = "a bx¦ a" },
+    .{ .name = "M-% q", .before = "¦a a a", .keys = "<M-%>a<CR>b<CR>yq", .after = "b a¦ a" },
+    .{ .name = "M-% from point", .before = "a ¦a a", .keys = "<M-%>a<CR>b<CR>!", .after = "a b b¦" },
+    .{ .name = "M-% case preserve", .before = "¦foo Foo FOO", .keys = "<M-%>foo<CR>bar<CR>!", .after = "bar Bar BAR¦" },
+    .{ .name = "M-% region", .before = "¦a a a", .keys = "<C-Space><C-f><C-f><C-f><M-%>a<CR>b<CR>!", .after = "b b¦ a" },
+    .{ .name = "M-% no match", .before = "¦abc", .keys = "<M-%>x<CR>y<CR>z", .after = "z¦abc" },
+    .{ .name = "C-M-% regexp", .before = "¦a1 b22", .keys = "<C-M-%>[0-9]+<CR>N<CR>!", .after = "aN bN¦" },
+    .{ .name = "C-M-% groups", .before = "¦ab cd", .keys = "<C-M-%>\\(.\\)\\(.\\)<CR>\\2\\1<CR>!", .after = "bac ¦d" },
+    .{ .name = "M-% space replaces", .before = "¦xx", .keys = "<M-%>x<CR>y<CR> <Space>", .after = "yy¦" },
+    .{ .name = "M-% undo", .before = "¦a a", .keys = "<M-%>a<CR>b<CR>!<C-/>", .after = "a¦ a" },
+}
