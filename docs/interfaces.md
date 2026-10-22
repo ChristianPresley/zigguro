@@ -975,7 +975,8 @@ presenter: DRI3 pixmaps shown with `PresentPixmap`, MIT-SHM `AttachFd`
 memfds or core `PutImage`), `dri3.zig` (DRI3/Present requests, events
 and the startup probe), `xkb.zig` (XKB requests and events),
 `keymap_from_server.zig` (the server's XKB keymap → `xkb.Keymap`),
-`keymap.zig` (core keycode → keysym table, without XKB) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
+`keymap.zig` (core keycode → keysym table, without XKB), `xinput2.zig`
+(XI2 requests, events and scroll valuators) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
 requests and event codes are in `proto.zig`; selections are in
 `selection.zig` (E01.F05.S02.T01, first part, E01.F05.S03.T01 and
 E01.F05.S03.T02).
@@ -1024,6 +1025,16 @@ Detectable autorepeat is on, so server repeats arrive as `action =
 .repeat` (`Seat.serverRepeat`). Focus out releases held keys. Without
 XKB, keys use the core mapping.
 
+Pointer (E01.F05.S02.T02): with XInput 2.2+, windows select XI2 pointer
+and touch events for the master devices instead of core ones. Positions
+are subpixel (FP16.16), and entering a window also reports
+`pointer_move`. Scroll valuators (from `XIQueryDevice`, re-read on
+DeviceChanged and HierarchyChanged) give `scroll` in lines (one valuator
+increment = one notch, `.wheel` for whole notches, `.continuous`
+otherwise). The baseline resets on enter, and wheel buttons emulated from
+valuators are dropped. Devices without scroll valuators keep wheel buttons
+4–7. TouchBegin/Update/End become `touch`.
+
 Selections (E01.F05.S03.T01, `selection.zig`): CLIPBOARD and PRIMARY on a
 hidden InputOnly window. `clipboard_write` takes ownership with the newest
 event time (an empty item list gives it up). As owner we answer
@@ -1047,8 +1058,7 @@ A window's presenter and its buffers die with `destroyWindow`; `deinit`
 destroys every window and closes the connection.
 
 ### Stability
-Experimental. Not yet: XInput2 (E01.F05.S02.T02: pointer, touch and
-smooth scroll use core events), RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
+Experimental. Not yet: RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, explicit sync (`PresentPixmapSynced`), XFIXES
 update regions (presents update the whole window), MSC-based pacing and
 XDND. Move, resize, window
