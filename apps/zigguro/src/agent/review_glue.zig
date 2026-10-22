@@ -51,6 +51,8 @@ pub const ReviewGlue = struct {
     history: model.History,
     q: *model.Queue,
     cps: Checkpoints,
+    /// Accept, reject and undo from the review panel.
+    applier: zg_review.apply.Applier,
     /// The review panel's rows (read under `mutex`).
     model: *zg_review.queue_view.QueueModel,
     /// What each running turn wrote: the content before its first write.
@@ -65,6 +67,9 @@ pub const ReviewGlue = struct {
         turn: u32,
         /// Path → content before the turn's first write (null: none).
         before: std.StringArrayHashMapUnmanaged(?zg_review.apply.files.Entry) = .empty,
+        /// The history records of its writes, folded into the
+        /// changeset's apply at the end.
+        writes: std.ArrayList(u64) = .empty,
         arena: std.heap.ArenaAllocator,
     };
 
@@ -83,12 +88,14 @@ pub const ReviewGlue = struct {
             .history = .init(gpa, null),
             .q = undefined,
             .cps = undefined,
+            .applier = undefined,
             .model = undefined,
         };
         errdefer g.dir.close(io);
         g.workspace = .{ .dir = g.dir, .io = io };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
         g.cps = .init(gpa, io, g.q, &g.history, g.workspace.files(), null);
+        g.applier = .init(gpa, io, g.q, g.workspace.files(), &g.history);
         g.model = try zg_review.queue_view.QueueModel.init(gpa, g.q, .{});
         return g;
     }
@@ -157,13 +164,16 @@ pub const ReviewGlue = struct {
         const out = try d.vtable.propose(d.ctx, io, arena, abs, p, origin);
         if (out != .applied) return out;
         // The write landed: a failure to record it must not fail the tool.
-        g.record(arena, rel, before, origin.agent) catch |e| log.warn("{s}: agent write not recorded for restore: {t}", .{ rel, e });
-        g.noteTurn(rel, before, origin) catch |e| log.warn("{s}: agent write not recorded for review: {t}", .{ rel, e });
+        const rec = g.record(arena, rel, before, origin.agent) catch |e| blk: {
+            log.warn("{s}: agent write not recorded for restore: {t}", .{ rel, e });
+            break :blk null;
+        };
+        g.noteTurn(rel, before, origin, rec) catch |e| log.warn("{s}: agent write not recorded for review: {t}", .{ rel, e });
         return out;
     }
 
     /// Remembers what `rel` held before the turn's first write. Locked.
-    fn noteTurn(g: *ReviewGlue, rel: []const u8, before: ?zg_review.apply.files.Entry, origin: zfiles.Origin) !void {
+    fn noteTurn(g: *ReviewGlue, rel: []const u8, before: ?zg_review.apply.files.Entry, origin: zfiles.Origin, rec: ?u64) !void {
         const t = for (g.turns.items) |*t| {
             if (std.meta.eql(t.agent.session, origin.agent.session) and t.agent.agent == origin.agent.agent and t.turn == origin.turn) break t;
         } else blk: {
@@ -171,6 +181,7 @@ pub const ReviewGlue = struct {
             break :blk &g.turns.items[g.turns.items.len - 1];
         };
         const a = t.arena.allocator();
+        if (rec) |id| try t.writes.append(a, id);
         if (t.before.contains(rel)) return;
         const copy: ?zg_review.apply.files.Entry = if (before) |b| .{ .bytes = try a.dupe(u8, b.bytes), .executable = b.executable } else null;
         try t.before.put(a, try a.dupe(u8, rel), copy);
@@ -207,10 +218,19 @@ pub const ReviewGlue = struct {
             .created_ms = nowMs(g.io),
         });
         var n: usize = 0;
+        var landed: std.ArrayList(model.ApplyFile) = .empty;
         for (t.before.keys(), t.before.values()) |path, before| {
             const after = try g.workspace.files().read(arena, path);
             if (before == null and after == null) continue;
-            if (before != null and after != null and std.mem.eql(u8, before.?.bytes, after.?.bytes)) continue;
+            if (before != null and after != null and std.mem.eql(u8, before.?.bytes, after.?.bytes) and before.?.executable == after.?.executable) continue;
+            if (after) |x| _ = try g.blobs.blobs().put(x.bytes);
+            try landed.append(arena, .{
+                .path = path,
+                .pre = if (before) |x| model.blobHash(x.bytes) else null,
+                .post = if (after) |x| model.blobHash(x.bytes) else null,
+                .pre_exec = if (before) |x| x.executable else false,
+                .post_exec = if (after) |x| x.executable else false,
+            });
             if (before == null) {
                 try g.q.addCreate(b, path, after.?.bytes);
             } else if (after == null) {
@@ -236,13 +256,17 @@ pub const ReviewGlue = struct {
         if (from == .pending) try model.transition(cs, .applied);
         cs.auto_applied = true;
         cs.decided_ms = nowMs(g.io);
+        // The turn's write records become this changeset's apply, so the
+        // panel can undo it (and a restore reverts it as one).
+        _ = try g.history.fold(t.writes.items, .{ .cs = id, .session = t.agent.session, .created_ms = cs.decided_ms.?, .files = landed.items });
         g.q.persist(id);
         g.q.emit(.{ .state = .{ .cs = id, .from = from, .to = cs.state } });
         return id;
     }
 
-    /// Records the write of `rel` (whose content was `before`). Locked.
-    fn record(g: *ReviewGlue, arena: Allocator, rel: []const u8, before: ?zg_review.apply.files.Entry, agent: zg_ai_proto.AgentRef) !void {
+    /// Records the write of `rel` (whose content was `before`); null when
+    /// nothing changed. Locked.
+    fn record(g: *ReviewGlue, arena: Allocator, rel: []const u8, before: ?zg_review.apply.files.Entry, agent: zg_ai_proto.AgentRef) !?u64 {
         const after = try g.workspace.files().read(arena, rel);
         const b = g.blobs.blobs();
         if (before) |x| _ = try b.put(x.bytes);
@@ -254,13 +278,73 @@ pub const ReviewGlue = struct {
             .pre_exec = if (before) |x| x.executable else false,
             .post_exec = if (after) |x| x.executable else false,
         };
-        if (std.meta.eql(f.pre, f.post) and f.pre_exec == f.post_exec) return;
-        _ = try g.history.record(.{
+        if (std.meta.eql(f.pre, f.post) and f.pre_exec == f.post_exec) return null;
+        return try g.history.record(.{
             .cs = null,
             .session = agent.session,
             .created_ms = nowMs(g.io),
             .files = &.{f},
         });
+    }
+
+    /// What the review panel can do to a changeset.
+    pub const Action = enum {
+        /// Applies what is still open.
+        accept,
+        /// Rejects what is still open; nothing is written.
+        reject,
+        /// Reverts the changeset's last apply and reopens its changes
+        /// for review.
+        undo,
+    };
+
+    pub const ActionResult = union(enum) {
+        ok,
+        /// Nothing was written. `path` (in the caller's arena) changed
+        /// since on the same lines, or the action does not fit the
+        /// changeset's state (`path` empty).
+        refused: struct { path: []const u8, reason: []const u8 },
+        /// A write failed (rolled back when possible).
+        failed: struct { path: []const u8, err: anyerror },
+    };
+
+    /// Runs `act` on changeset `cs`; the caller holds `mutex` (the panel
+    /// builds under it). UI thread.
+    pub fn actLocked(g: *ReviewGlue, arena: Allocator, cs: model.ChangesetId, act: Action) anyerror!ActionResult {
+        const c = g.q.getMut(cs) orelse return .{ .refused = .{ .path = "", .reason = "it is gone" } };
+        switch (act) {
+            .accept, .reject => {
+                if (c.state != .pending and c.state != .partially_applied) return .{ .refused = .{ .path = "", .reason = "it is not open" } };
+                const r = if (act == .accept) try g.applier.acceptAll(cs) else blk: {
+                    var items: std.ArrayList(zg_review.apply.ApplyItem) = .empty;
+                    for (c.files, 0..) |f, i| if (f.state == .pending or f.state == .partially_applied)
+                        try items.append(arena, .{ .file = @intCast(i), .whole_file = .reject });
+                    break :blk try g.applier.apply(.{ .cs = cs, .items = items.items });
+                };
+                return switch (r) {
+                    .ok => .ok,
+                    .failed => |f| .{ .failed = .{ .path = try arena.dupe(u8, f.path), .err = f.err } },
+                };
+            },
+            .undo => {
+                const rec = g.history.lastApplyOf(cs) orelse return .{ .refused = .{ .path = "", .reason = "nothing of it is applied" } };
+                switch (try g.applier.undoApply(arena, rec.id)) {
+                    .ok => {},
+                    .conflicts => |cf| return .{ .refused = .{ .path = cf[0].path, .reason = switch (cf[0].kind) {
+                        .user_edit_overlaps => "changed since on the same lines",
+                        .file_deleted_by_user => "deleted since",
+                        .target_exists => "a file is now where it was deleted",
+                    } } },
+                    .failed => |f| return .{ .failed = .{ .path = f.path, .err = f.err } },
+                }
+                // It is back for review.
+                const back = g.q.getMut(cs).?;
+                back.auto_applied = false;
+                g.q.persist(cs);
+                g.q.emit(.{ .updated = cs });
+                return .ok;
+            },
+        }
     }
 
     /// `abs` relative to the root, `/`-separated; null outside it.
@@ -393,4 +477,66 @@ test "review glue: a turn's writes become one auto-applied changeset" {
     try testing.expectEqualStrings("Turn 3", rows[1].label);
     // A turn that wrote nothing has no changeset.
     try testing.expectEqual(@as(?u64, null), try fs.endTurn(testing.io, s1, 4));
+}
+
+test "review glue: undo, accept and reject a turn from the panel" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root);
+    defer g.destroy();
+    const fs = g.files();
+    const cps = g.checkpoints();
+    const cp = cps.create(cps.ctx, testing.io, s1, 1, "turn 1");
+    const t1: zfiles.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    const abs = (try fs.resolve(testing.io, arena, "a.txt")).abs;
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, t1);
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "two", .new = "TWO" } }, t1);
+    _ = try fs.propose(testing.io, arena, (try fs.resolve(testing.io, arena, "b.txt")).abs, .{ .create = .{ .text = "b\n" } }, t1);
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+    const read = struct {
+        fn f(d: Io.Dir, ar: Allocator, p: []const u8) ![]u8 {
+            return d.readFileAlloc(testing.io, p, ar, .limited(64));
+        }
+    }.f;
+
+    // Undo: the files go back, the changes wait for review.
+    try testing.expect(try g.actLocked(arena, id, .undo) == .ok);
+    try testing.expectEqualStrings("one\ntwo\n", try read(tmp.dir, arena, "a.txt"));
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(testing.io, "b.txt", .{}));
+    try testing.expectEqual(model.State.pending, g.q.get(id).?.state);
+    try testing.expect(!g.q.get(id).?.auto_applied);
+    try testing.expect(try g.actLocked(arena, id, .undo) == .refused);
+
+    // Accept lands them again; a second undo then works too.
+    try testing.expect(try g.actLocked(arena, id, .accept) == .ok);
+    try testing.expectEqualStrings("ONE\nTWO\n", try read(tmp.dir, arena, "a.txt"));
+    try testing.expectEqual(model.State.applied, g.q.get(id).?.state);
+    try testing.expect(try g.actLocked(arena, id, .undo) == .ok);
+
+    // Reject writes nothing and closes it.
+    try testing.expect(try g.actLocked(arena, id, .reject) == .ok);
+    try testing.expectEqual(model.State.rejected, g.q.get(id).?.state);
+    try testing.expectEqualStrings("one\ntwo\n", try read(tmp.dir, arena, "a.txt"));
+
+    // A second turn whose line the user changed since: undo refuses.
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "one", .new = "uno" } }, .{ .agent = s1, .turn = 2, .tool = "edit_file", .tool_call_id = "u" });
+    const id2: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 2)).?);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "UNO\ntwo\n" });
+    const r = try g.actLocked(arena, id2, .undo);
+    try testing.expectEqualStrings("a.txt", r.refused.path);
+    try testing.expectEqualStrings("UNO\ntwo\n", try read(tmp.dir, arena, "a.txt"));
+
+    // The checkpoint before turn 1 still restores the folded turn once.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "uno\ntwo\n" });
+    const rs = g.restore();
+    const out = try rs.restore_to(rs.ctx, testing.io, arena, cp);
+    try testing.expectEqual(@as(usize, 0), out.skipped.len);
+    try testing.expectEqualStrings("one\ntwo\n", try read(tmp.dir, arena, "a.txt"));
 }
