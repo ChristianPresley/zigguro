@@ -14,8 +14,9 @@
 //! middle click pastes PRIMARY at the click point as one undo step.
 //!
 //! Agent prompts install `Props.prompt` (prompt_hooks.zig): typing `@` or
-//! `/` at a word start reports the offset and caret rectangle, and files
-//! dropped from other apps are handed over as paths.
+//! `/` at a word start reports the offset and caret rectangle, files
+//! dropped from other apps are handed over as paths, and Ctrl+V of an
+//! image (a clipboard without text) hands over the PNG bytes.
 //!
 //! Not yet: bidi visual caret movement (waits on E03 `moveVisual`), caret
 //! blink (the caret is steady, so idle frames stay at zero).
@@ -413,6 +414,12 @@ pub const TextField = struct {
             .activate => return true,
             .pointer_leave => return false,
             .drag_files_over => return dropHook(props) != null and !props.read_only,
+            .clipboard_data => |d| {
+                const p = props.prompt orelse return false;
+                const f = p.on_paste_rich orelse return false;
+                if (d.bytes.len > 0 and !props.read_only) _ = f(p.ctx, d.mime.mimeType() orelse "application/octet-stream", d.bytes);
+                return true;
+            },
             .drop_files => |d| {
                 const f = dropHook(props) orelse return false;
                 if (props.read_only) return false;
@@ -473,7 +480,12 @@ pub const TextField = struct {
                 changed = ed.deleteSelection() catch false;
             } else return true,
             .key_v => if (ctrl) {
-                changed = ed.commitText(ec.clipboard()) catch false;
+                const t = ec.clipboard();
+                if (t.len == 0 and !props.read_only) if (props.prompt) |p| if (p.on_paste_rich != null) {
+                    ec.readClipboard(.png);
+                    return true;
+                };
+                changed = ed.commitText(t) catch false;
             } else return true,
             .key_z => if (ctrl) {
                 changed = (if (shift) ed.redoStep() else ed.undoStep()) catch false;
