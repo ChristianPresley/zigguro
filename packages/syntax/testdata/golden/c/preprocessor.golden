@@ -1,0 +1,16 @@
+1| keyword:#define function.macro:MAX number:100
+2| keyword:#define function.macro:MIN punctuation.bracket:( variable:a punctuation.delimiter:, variable:b punctuation.bracket:) punctuation.bracket:( punctuation.bracket:( variable:a punctuation.bracket:) operator:< punctuation.bracket:( variable:b punctuation.bracket:) operator:? punctuation.bracket:( variable:a punctuation.bracket:) punctuation.delimiter:: punctuation.bracket:( variable:b punctuation.bracket:) punctuation.bracket:)
+3| keyword:#define function.macro:STR punctuation.bracket:( variable:x punctuation.bracket:) operator:# variable:x
+4| keyword:#define function.macro:CAT punctuation.bracket:( variable:a punctuation.delimiter:, variable:b punctuation.bracket:) variable:a operator:## variable:b
+5| keyword:#undef function.macro:MAX
+6| keyword:#if function:defined punctuation.bracket:( constant:DEBUG punctuation.bracket:) operator:&& constant:DEBUG operator:> number:1
+7| keyword:#  define function.macro:LOG punctuation.bracket:( operator:... punctuation.bracket:) function:printf punctuation.bracket:( constant:__VA_ARGS__ punctuation.bracket:)
+8| keyword:#elif number:0
+9| keyword:#else
+10| keyword:#endif
+11| keyword:#ifdef constant:_WIN32
+12| keyword:#pragma variable:once
+13| keyword:#error string:"unsupported"
+14| keyword:#endif
+15| keyword:#  line number:42 string:"file.c"
+16| type.builtin:int variable:x operator:= constant:MAX punctuation.delimiter:;
