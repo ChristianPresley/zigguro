@@ -29,6 +29,8 @@ pub const present = @import("present/root.zig");
 pub const VkRenderer = @import("r2d/vk/VkRenderer.zig");
 /// Draw batching of the Vulkan backend.
 pub const vk_batch = @import("r2d/vk/batch.zig");
+/// GPU timestamps of the Vulkan backend.
+pub const GpuTimer = @import("r2d/vk/gpu_timing.zig");
 
 /// Creates the renderer for `opts`: `.vulkan` uses the Vulkan backend
 /// (headless targets for now; `error.VulkanUnavailable` without a usable
@@ -77,6 +79,7 @@ test {
     _ = pipeline;
     _ = present;
     _ = vk_batch;
+    _ = GpuTimer;
     _ = @import("r2d/vk/gpu_test.zig");
     _ = shader_interface;
 }
