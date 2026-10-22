@@ -32,6 +32,20 @@ pub const session = @import("model/session.zig");
 pub const events = @import("scan/events.zig");
 /// An event from the workspace.
 pub const WorkspaceEvent = events.WorkspaceEvent;
+/// Content classification for the indexer.
+pub const content_class = @import("index/content_class.zig");
+/// The indexer plugin interface.
+pub const index_plugin = @import("index/plugin.zig");
+/// See `index_plugin.IndexPlugin`.
+pub const IndexPlugin = index_plugin.IndexPlugin;
+/// The indexer scheduler.
+pub const indexer = @import("index/scheduler.zig");
+/// See `indexer.Scheduler`.
+pub const IndexScheduler = indexer.Scheduler;
+/// The indexer's persistent file cache.
+pub const index_cache = @import("index/cache.zig");
+/// The trigram index.
+pub const trigram = @import("index/trigram/root.zig");
 /// The parallel directory scanner.
 pub const scanner = @import("scan/scanner.zig");
 /// See `scanner.Scanner`.
@@ -52,4 +66,11 @@ test {
     _ = @import("ignore/globset_test.zig");
     _ = @import("paths/path_store_test.zig");
     _ = @import("scan/scanner_test.zig");
+    _ = @import("index/content_class.zig");
+    _ = @import("index/cache.zig");
+    _ = @import("index/scheduler_test.zig");
+    _ = @import("index/trigram/varint.zig");
+    _ = @import("index/trigram/segment.zig");
+    _ = @import("index/trigram/query.zig");
+    _ = @import("index/trigram/index_test.zig");
 }
