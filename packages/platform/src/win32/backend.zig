@@ -17,10 +17,13 @@
 //! `WM_DISPLAYCHANGE`); monitor scales from shcore's `GetDpiForMonitor`.
 //! Inside the modal size/move loop a `WM_TIMER` keeps frames flowing.
 //!
+//! The clipboard (`clipboard.zig`) runs on the platform thread: writes and
+//! reads are posted to the message window, which also receives the
+//! delayed-rendering and `WM_CLIPBOARDUPDATE` messages.
+//!
 //! Not yet here: the custom frame and hit-testing (#219), raw input, pen
-//! and touch (#222), IME (#226), clipboard (#230; `clipboard_read`
-//! answers from our own `clipboard_write`), drag and drop (#232), cursors
-//! and cloaking until the first present.
+//! and touch (#222), IME (#226), drag and drop (#232), cursors and
+//! cloaking until the first present.
 
 const std = @import("std");
 const Io = std.Io;
@@ -47,6 +50,7 @@ const dpi = @import("dpi.zig");
 const L = @import("wide.zig").L;
 const wide = @import("wide.zig");
 const CpuPresenter = @import("cpu_present.zig").CpuPresenter;
+const clip_mod = @import("clipboard.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -72,6 +76,10 @@ const WM_APP_CREATE = WM.APP + 1;
 const WM_APP_DESTROY = WM.APP + 2;
 const WM_APP_WAKE = WM.APP + 3;
 const WM_APP_QUIT = WM.APP + 4;
+/// lParam: a `*ClipWrite` the platform thread frees.
+const WM_APP_CLIP_WRITE = WM.APP + 5;
+/// wParam: the `MimeId`; lParam: the request id.
+const WM_APP_CLIP_READ = WM.APP + 6;
 
 const class_name = L("zigguro.window");
 const msg_class_name = L("zigguro.message");
@@ -111,6 +119,9 @@ const CreateRequest = struct {
 
 const ClipItemOwned = struct { mime: clipboard.MimeId, data: []u8 };
 
+/// A clipboard write on its way to the platform thread.
+const ClipWrite = struct { items: []ClipItemOwned };
+
 /// The Win32 backend.
 pub const Win32Backend = struct {
     gpa: Allocator,
@@ -122,7 +133,12 @@ pub const Win32Backend = struct {
     windows: std.ArrayList(*Window) = .empty,
     next_win: u32 = 1,
     staged: std.ArrayList(Event) = .empty,
-    clip: [2][]ClipItemOwned = .{ &.{}, &.{} },
+    /// Platform thread only.
+    clip: clip_mod.ClipState = undefined,
+    clip_ready: bool = false,
+    /// Payloads over the arena's inline limit, by id. Guarded by the mutex.
+    large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
+    next_large: u32 = 0,
 
     arena: PayloadArena,
     ui_wake: Wake,
@@ -268,31 +284,32 @@ pub const Win32Backend = struct {
                 _ = user32.PostMessageW(b.msg_hwnd, WM_APP_WAKE, 0, 0);
             },
             .clipboard_write => |c| {
+                // Windows has no primary selection.
+                if (c.which == .primary) return;
                 const items = b.gpa.alloc(ClipItemOwned, c.items.len) catch return error.OutOfMemory;
                 var done: usize = 0;
-                errdefer {
-                    for (items[0..done]) |it| b.gpa.free(it.data);
-                    b.gpa.free(items);
-                }
+                errdefer freeClip(b.gpa, items[0..done]);
                 for (c.items, 0..) |it, i| {
                     items[i] = .{ .mime = it.mime, .data = b.gpa.dupe(u8, it.data) catch return error.OutOfMemory };
                     done = i + 1;
                 }
-                b.lock();
-                defer b.unlock();
-                freeClip(b.gpa, b.clip[@intFromEnum(c.which)]);
-                b.clip[@intFromEnum(c.which)] = items;
+                const req = b.gpa.create(ClipWrite) catch return error.OutOfMemory;
+                req.* = .{ .items = items };
+                if (user32.PostMessageW(b.msg_hwnd, WM_APP_CLIP_WRITE, 0, @bitCast(@intFromPtr(req))) == 0) {
+                    b.gpa.destroy(req);
+                    return error.SystemResources;
+                }
             },
             .clipboard_read => |c| {
-                // Only our own selection until the Win32 clipboard (E01.F02.S04.T01).
-                b.lock();
-                defer b.unlock();
-                var data: types.PayloadSlice = .empty;
-                for (b.clip[@intFromEnum(c.which)]) |it| if (it.mime == c.mime) {
-                    data = b.arena.put(it.data) catch .empty;
-                    break;
-                };
-                b.stage(.{ .clipboard_data = .{ .request = c.request, .data = data, .mime = c.mime } });
+                if (c.which == .primary) {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .clipboard_data = .{ .request = c.request, .data = .empty, .mime = c.mime } });
+                    return;
+                }
+                // Read on the platform thread: a large clipboard never
+                // stalls the UI thread.
+                if (user32.PostMessageW(b.msg_hwnd, WM_APP_CLIP_READ, @intFromEnum(c.mime), @bitCast(@as(usize, c.request))) == 0) return error.SystemResources;
             },
             .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
@@ -327,12 +344,36 @@ pub const Win32Backend = struct {
 
     /// See `Platform.VTable.payload`.
     pub fn payload(b: *Win32Backend, s: types.PayloadSlice) []const u8 {
-        if (s.large) return &.{};
-        return b.arena.get(s);
+        if (!s.large) return b.arena.get(s);
+        b.lock();
+        defer b.unlock();
+        return b.large.get(s.off) orelse &.{};
     }
 
-    /// See `Platform.VTable.release`. No large payloads yet.
-    pub fn release(_: *Win32Backend, _: types.PayloadSlice) void {}
+    /// See `Platform.VTable.release`.
+    pub fn release(b: *Win32Backend, s: types.PayloadSlice) void {
+        if (!s.large) return;
+        b.lock();
+        defer b.unlock();
+        if (b.large.fetchRemove(s.off)) |kv| b.gpa.free(kv.value);
+    }
+
+    /// `bytes` as a payload: inline in the arena, else a large payload
+    /// that takes ownership of `bytes`. Mutex held. `bytes` is freed on
+    /// the inline path and on error.
+    fn putOwned(b: *Win32Backend, bytes: []u8) types.PayloadSlice {
+        if (b.arena.put(bytes)) |s| {
+            b.gpa.free(bytes);
+            return s;
+        } else |_| {}
+        const id = b.next_large;
+        b.large.put(b.gpa, id, bytes) catch {
+            b.gpa.free(bytes);
+            return .empty;
+        };
+        b.next_large = (b.next_large + 1) & std.math.maxInt(u30);
+        return .{ .off = @intCast(id), .large = true, .len = @intCast(bytes.len) };
+    }
 
     /// After each CPU present: `Event.present_feedback` stamped now (GDI
     /// gives no scanout time).
@@ -453,7 +494,9 @@ pub const Win32Backend = struct {
         _ = user32.PostMessageW(b.msg_hwnd, WM_APP_QUIT, 0, 0);
         if (b.thread) |th| th.join();
         b.staged.deinit(b.gpa);
-        for (&b.clip) |items| freeClip(b.gpa, items);
+        var it = b.large.valueIterator();
+        while (it.next()) |v| b.gpa.free(v.*);
+        b.large.deinit(b.gpa);
         b.windows.deinit(b.gpa);
         b.arena.deinit(b.gpa);
         b.ui_wake.deinit();
@@ -486,6 +529,8 @@ pub const Win32Backend = struct {
             b.ready.set(b.io);
             return;
         }
+        b.clip = .init(b.gpa, b.msg_hwnd.?);
+        b.clip_ready = true;
         b.ready.set(b.io);
 
         var msg: t.MSG = undefined;
@@ -506,6 +551,14 @@ pub const Win32Backend = struct {
             b.unlock();
             b.destroyOnThread(w orelse break);
         }
+        // Writes still queued behind the quit message.
+        while (user32.PeekMessageW(&msg, b.msg_hwnd, WM_APP_CLIP_WRITE, WM_APP_CLIP_WRITE, msgs.PM_REMOVE) != 0) {
+            const req: *ClipWrite = @ptrFromInt(@as(usize, @bitCast(msg.lParam)));
+            freeClip(b.gpa, req.items);
+            b.gpa.destroy(req);
+        }
+        b.clip_ready = false;
+        b.clip.deinit();
         _ = user32.DestroyWindow(b.msg_hwnd.?);
     }
 
@@ -617,8 +670,39 @@ pub const Win32Backend = struct {
         const raw: usize = @bitCast(user32.GetWindowLongPtrW(hwnd, msgs.GWLP_USERDATA));
         if (raw == 0) return user32.DefWindowProcW(hwnd, msg, wp, lp);
         const b: *Win32Backend = @ptrFromInt(raw);
+        if (b.clip_ready) {
+            var changed = false;
+            if (b.clip.onMessage(msg, wp, &changed)) {
+                if (changed) {
+                    b.lock();
+                    defer b.unlock();
+                    b.stage(.{ .clipboard_changed = .clipboard });
+                }
+                return 0;
+            }
+        }
         switch (msg) {
             WM_APP_CREATE => b.createOnThread(@ptrFromInt(@as(usize, @bitCast(lp)))),
+            WM_APP_CLIP_WRITE => {
+                const req: *ClipWrite = @ptrFromInt(@as(usize, @bitCast(lp)));
+                defer {
+                    freeClip(b.gpa, req.items);
+                    b.gpa.destroy(req);
+                }
+                var items: [16]clipboard.ClipItem = undefined;
+                const n = @min(items.len, req.items.len);
+                for (req.items[0..n], 0..) |it, i| items[i] = .{ .mime = it.mime, .data = it.data };
+                b.clip.write(items[0..n]) catch |err| log.warn("clipboard write failed: {t}", .{err});
+            },
+            WM_APP_CLIP_READ => {
+                const mime: clipboard.MimeId = @enumFromInt(@as(u16, @truncate(wp)));
+                const request: u32 = @truncate(@as(usize, @bitCast(lp)));
+                const bytes = b.clip.read(mime) catch null;
+                b.lock();
+                defer b.unlock();
+                const data = if (bytes) |x| b.putOwned(x) else types.PayloadSlice.empty;
+                b.stage(.{ .clipboard_data = .{ .request = request, .data = data, .mime = mime } });
+            },
             WM_APP_DESTROY => {
                 b.lock();
                 const w = b.find(@enumFromInt(@as(u32, @intCast(wp))));
@@ -1043,4 +1127,94 @@ test "win32: InitOptions.refresh_ns fixes the frame interval" {
     const fr = (try waitFor(p, .frame, win)).frame;
     try testing.expectEqual(@as(u32, 8_000_000), fr.refresh_ns);
     p.destroyWindow(win);
+}
+
+/// Polls until `clipboard_data` for `request` arrives; returns its bytes
+/// (owned by the caller).
+fn readClip(p: Platform, mime: clipboard.MimeId, request: u32) ![]u8 {
+    try p.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = mime, .request = request } });
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 5 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .clipboard_data and e.clipboard_data.request == request) {
+            const d = e.clipboard_data.data;
+            const out = try testing.allocator.dupe(u8, p.payload(d));
+            if (d.large) p.release(d);
+            return out;
+        };
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+test "win32 clipboard: html, uri-list and delayed rendering roundtrip" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    try p.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{
+        .{ .mime = .text_utf8, .data = "line 1\nline ✓" },
+        .{ .mime = .html, .data = "<b>bold ✓</b>" },
+        .{ .mime = .uri_list, .data = "file:///C:/zg%20test/a.txt\r\n" },
+    } } });
+    const text = try readClip(p, .text_utf8, 1);
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings("line 1\r\nline ✓", text);
+    const html = try readClip(p, .html, 2);
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings("<b>bold ✓</b>", html);
+    const uris = try readClip(p, .uri_list, 3);
+    defer testing.allocator.free(uris);
+    try testing.expectEqualStrings("file:///C:/zg%20test/a.txt\r\n", uris);
+    const png = try readClip(p, .png, 4);
+    defer testing.allocator.free(png);
+    try testing.expectEqual(@as(usize, 0), png.len);
+
+    // Over the threshold: rendered on demand, read back as a large payload.
+    const big = try testing.allocator.alloc(u8, clip_mod.delayed_threshold + 1000);
+    defer testing.allocator.free(big);
+    for (big, 0..) |*c, i| c.* = 'a' + @as(u8, @intCast(i % 26));
+    try p.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = big }} } });
+    const got = try readClip(p, .text_utf8, 5);
+    defer testing.allocator.free(got);
+    try testing.expectEqualSlices(u8, big, got);
+}
+
+test "win32 clipboard: another writer raises clipboard_changed, our own write does not" {
+    const kernel32_ = @import("bindings/kernel32.zig");
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    try p.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = "ours" }} } });
+    const ours = try readClip(p, .text_utf8, 7);
+    testing.allocator.free(ours);
+    // Let a listener notification for our write arrive, then drain.
+    var evs: [64]Event = undefined;
+    p.waitEvents(@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 200 * std.time.ns_per_ms);
+    var n = p.pollEvents(&evs);
+    for (evs[0..n]) |e| try testing.expect(e != .clipboard_changed);
+
+    // Another writer: this thread, with no window.
+    try testing.expect(user32.OpenClipboard(null) != 0);
+    _ = user32.EmptyClipboard();
+    const h = kernel32_.GlobalAlloc(kernel32_.GMEM_MOVEABLE, 8).?;
+    const ptr: [*]u8 = @ptrCast(kernel32_.GlobalLock(h).?);
+    @memcpy(ptr[0..8], &[_]u8{ 'x', 0, 'y', 0, 'z', 0, 0, 0 });
+    _ = kernel32_.GlobalUnlock(h);
+    _ = user32.SetClipboardData(clip_mod.CF_UNICODETEXT, @ptrCast(h));
+    _ = user32.CloseClipboard();
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var seen = false;
+    while (!seen) {
+        n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .clipboard_changed and e.clipboard_changed == .clipboard) {
+            seen = true;
+        };
+        if (seen) break;
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+    const theirs = try readClip(p, .text_utf8, 8);
+    defer testing.allocator.free(theirs);
+    try testing.expectEqualStrings("xyz", theirs);
 }
