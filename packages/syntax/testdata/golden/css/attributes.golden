@@ -1,0 +1,4 @@
+1| tag:a punctuation.bracket:[ property:href operator:^= string:"https" punctuation.bracket:] punctuation.bracket:{ property:color punctuation.delimiter:: constant:green punctuation.delimiter:; punctuation.bracket:}
+2| tag:input punctuation.bracket:[ property:type operator:= string:"checkbox" punctuation.bracket:] attribute::checked operator:+ tag:label punctuation.bracket:{ property:font-weight punctuation.delimiter:: constant:bold punctuation.delimiter:; punctuation.bracket:}
+3| punctuation.bracket:[ property:data-state operator:= property:open punctuation.bracket:] punctuation.bracket:{ property:display punctuation.delimiter:: constant:block punctuation.delimiter:; punctuation.bracket:}
+4| tag:abbr punctuation.bracket:[ property:title punctuation.bracket:] punctuation.bracket:{ property:text-decoration punctuation.delimiter:: constant:underline constant:dotted punctuation.delimiter:; punctuation.bracket:}
