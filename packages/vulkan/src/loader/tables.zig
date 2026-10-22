@@ -137,6 +137,7 @@ pub const device_commands = [_]vk.Command{
     .cmd_copy_image,
     .cmd_blit_image,
     .cmd_clear_color_image,
+    .cmd_clear_attachments,
     .cmd_fill_buffer,
     .cmd_update_buffer,
     .cmd_write_timestamp2,
