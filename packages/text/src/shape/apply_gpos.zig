@@ -37,25 +37,61 @@ pub fn applyAt(c: *Ctx, l: Lookup, i: usize) Allocator.Error!?usize {
 /// set misses the glyph are not tried.
 pub fn applyAtAccel(c: *Ctx, acc: *const digest.LookupAccel, i: usize) Allocator.Error!?usize {
     const gid = c.buf.infos.items[i].gid;
+    // The pair's second glyph depends only on the lookup: find it once
+    // for all of its pair subtables.
+    var second: Second = .unknown;
     for (acc.subtables) |sa| {
         if (!digest.has(sa.digest, gid)) continue;
         if (!c.budget.take()) return null;
-        if (sa.pair_classes) |*pc| {
-            // The digest is the coverage, so the glyph is covered.
-            if (sa.digest.len != 0 and gid < pc.first.len) {
-                if (applyPairClasses(c, sa.data, pc, i)) |next| return next;
-                continue;
+        if (sa.kind == 2) {
+            if (sa.pair_classes) |*pc| {
+                // The digest is the coverage, so the glyph is covered.
+                if (sa.digest.len != 0 and gid < pc.first.len) {
+                    if (applyPairClasses(c, sa.data, pc, i, &second)) |next| return next;
+                    continue;
+                }
             }
+            if (gid < sa.pair_sets.len) {
+                const off = sa.pair_sets[gid];
+                if (off != 0) {
+                    if (applyPairSet(c, sa.data, off, i, &second)) |next| return next;
+                    continue;
+                }
+            }
+            if (applyPair(c, sa.data, i, &second)) |next| return next;
+            continue;
         }
         if (try applySubtable(c, sa.kind, sa.data, i)) |next| return next;
     }
     return null;
 }
 
+/// The second glyph of a pair starting at `i`, found on first use.
+const Second = union(enum) {
+    unknown,
+    known: ?usize,
+
+    fn get(s: *Second, c: *Ctx, i: usize) ?usize {
+        switch (s.*) {
+            .known => |j| return j,
+            .unknown => {
+                var it = Skippy.init(c, false);
+                it.reset(i, 1);
+                const j = it.peekNext() orelse if (it.next(null)) it.idx else null;
+                s.* = .{ .known = j };
+                return j;
+            },
+        }
+    }
+};
+
 fn applySubtable(c: *Ctx, kind: u16, st: []const u8, i: usize) Allocator.Error!?usize {
     return switch (kind) {
         1 => applySingle(c, st, i),
-        2 => applyPair(c, st, i),
+        2 => blk: {
+            var second: Second = .unknown;
+            break :blk applyPair(c, st, i, &second);
+        },
         3 => applyCursive(c, st, i),
         4 => applyMarkBase(c, st, i),
         5 => applyMarkLig(c, st, i),
@@ -202,43 +238,20 @@ fn applySingle(c: *Ctx, st: []const u8, i: usize) ?usize {
     return i + 1;
 }
 
-fn applyPair(c: *Ctx, st: []const u8, i: usize) ?usize {
+fn applyPair(c: *Ctx, st: []const u8, i: usize, second_glyph: *Second) ?usize {
     const infos = c.buf.infos.items;
     const ci = cov(st, 2, infos[i].gid) orelse return null;
     const vf1 = readAt(u16, st, 4) catch return null;
     const vf2 = readAt(u16, st, 6) catch return null;
     const len1 = valueSize(vf1);
     const len2 = valueSize(vf2);
-    var it = Skippy.init(c, false);
-    it.reset(i, 1);
-    const j = it.peekNext() orelse blk: {
-        if (!it.next(null)) return null;
-        break :blk it.idx;
-    };
+    const j = second_glyph.get(c, i) orelse return null;
     const pos = c.buf.pos.items;
     switch (readAt(u16, st, 0) catch return null) {
         1 => {
             const n = readAt(u16, st, 8) catch return null;
             if (ci >= n) return null;
-            const set = reader.sub(st, readAt(u16, st, 10 + @as(usize, ci) * 2) catch return null) catch return null;
-            const count = readAt(u16, set, 0) catch return null;
-            const rec_size = 2 + len1 + len2;
-            _ = reader.subLen(set, 2, @as(usize, count) * rec_size) catch return null;
-            const second = infos[j].gid;
-            var lo: usize = 0;
-            var hi: usize = count;
-            while (lo < hi) {
-                const mid = (lo + hi) / 2;
-                const rec = set[2 + mid * rec_size ..][0..rec_size];
-                const g = std.mem.readInt(u16, rec[0..2], .big);
-                if (second < g) hi = mid else if (second > g) lo = mid + 1 else {
-                    const a = applyValue(c, set, rec[2..], vf1, &pos[i]);
-                    const b = applyValue(c, set, rec[2 + len1 ..], vf2, &pos[j]);
-                    if (a or b) c.buf.unsafeToBreak(i, j + 1);
-                    return if (len2 != 0) j + 1 else j;
-                }
-            }
-            return null;
+            return pairSet(c, st, readAt(u16, st, 10 + @as(usize, ci) * 2) catch return null, i, j, vf1, vf2);
         },
         2 => {
             const cd1 = lc.ClassDef.init(st, readAt(u16, st, 8) catch return null) catch return null;
@@ -259,19 +272,51 @@ fn applyPair(c: *Ctx, st: []const u8, i: usize) ?usize {
     }
 }
 
+/// The PairSet at `st[set_off..]` for the first glyph `i` and second
+/// glyph `j`: applies the record for `j` when there is one.
+fn pairSet(c: *Ctx, st: []const u8, set_off: u16, i: usize, j: usize, vf1: u16, vf2: u16) ?usize {
+    const infos = c.buf.infos.items;
+    const pos = c.buf.pos.items;
+    const len1 = valueSize(vf1);
+    const len2 = valueSize(vf2);
+    const set = reader.sub(st, set_off) catch return null;
+    const count = readAt(u16, set, 0) catch return null;
+    const rec_size = 2 + len1 + len2;
+    _ = reader.subLen(set, 2, @as(usize, count) * rec_size) catch return null;
+    const second = infos[j].gid;
+    var lo: usize = 0;
+    var hi: usize = count;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        const rec = set[2 + mid * rec_size ..][0..rec_size];
+        const g = std.mem.readInt(u16, rec[0..2], .big);
+        if (second < g) hi = mid else if (second > g) lo = mid + 1 else {
+            const a = applyValue(c, set, rec[2..], vf1, &pos[i]);
+            const b = applyValue(c, set, rec[2 + len1 ..], vf2, &pos[j]);
+            if (a or b) c.buf.unsafeToBreak(i, j + 1);
+            return if (len2 != 0) j + 1 else j;
+        }
+    }
+    return null;
+}
+
+/// PairPos format 1 at glyph `i` whose PairSet offset came from the
+/// accelerator's table.
+fn applyPairSet(c: *Ctx, st: []const u8, set_off: u16, i: usize, second_glyph: *Second) ?usize {
+    const vf1 = readAt(u16, st, 4) catch return null;
+    const vf2 = readAt(u16, st, 6) catch return null;
+    const j = second_glyph.get(c, i) orelse return null;
+    return pairSet(c, st, set_off, i, j, vf1, vf2);
+}
+
 /// PairPos format 2 at covered glyph `i` with dense class tables.
-fn applyPairClasses(c: *Ctx, st: []const u8, pc: *const digest.PairClasses, i: usize) ?usize {
+fn applyPairClasses(c: *Ctx, st: []const u8, pc: *const digest.PairClasses, i: usize, second_glyph: *Second) ?usize {
     const infos = c.buf.infos.items;
     const k1: usize = pc.first[infos[i].gid];
     if (k1 >= pc.class1_count) return null;
-    var it = Skippy.init(c, false);
-    it.reset(i, 1);
-    const j = it.peekNext() orelse blk: {
-        if (!it.next(null)) return null;
-        break :blk it.idx;
-    };
+    const j = second_glyph.get(c, i) orelse return null;
     const g2 = infos[j].gid;
-    if (g2 >= pc.second.len) return applyPair(c, st, i);
+    if (g2 >= pc.second.len) return applyPair(c, st, i, second_glyph);
     const k2: usize = pc.second[g2];
     if (k2 >= pc.class2_count) return null;
     const len1 = valueSize(pc.value_format1);

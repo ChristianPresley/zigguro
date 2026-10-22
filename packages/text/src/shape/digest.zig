@@ -84,6 +84,10 @@ pub const SubAccel = struct {
     /// PairPos format 2: both class definitions per glyph id, so a pair
     /// costs two loads instead of two searches.
     pair_classes: ?PairClasses = null,
+    /// PairPos format 1: the PairSet offset of each glyph id below its
+    /// length, so the first glyph costs a load instead of a search (0:
+    /// not covered or a null offset; the general path decides).
+    pair_sets: []const u16 = &.{},
 };
 
 /// A PairPos format 2 subtable, parsed: its class tables dense (one byte
@@ -102,6 +106,26 @@ pub const PairClasses = struct {
 /// Fonts with more glyphs than this keep searching the class definitions
 /// (two tables of this many bytes per subtable).
 pub const dense_class_limit = 1 << 14;
+
+fn pairSets(a: Allocator, st: []const u8, num_glyphs: usize) Allocator.Error![]const u16 {
+    if (num_glyphs > dense_class_limit) return &.{};
+    if ((readAt(u16, st, 0) catch return &.{}) != 1) return &.{};
+    const c = lc.Coverage.init(st, readAt(u16, st, 2) catch return &.{}) catch return &.{};
+    const n = readAt(u16, st, 8) catch return &.{};
+    _ = ot.reader.subLen(st, 10, @as(usize, n) * 2) catch return &.{};
+    const sets = try a.alloc(u16, num_glyphs);
+    @memset(sets, 0);
+    // Each covered glyph takes the index a coverage search finds, so a
+    // malformed coverage behaves as it does without the table.
+    var ctx: struct { sets: []u16, st: []const u8, n: u16, c: lc.Coverage } = .{ .sets = sets, .st = st, .n = n, .c = c };
+    c.forEach(&ctx, struct {
+        fn cb(x: *@TypeOf(ctx), g: ot.GlyphId) void {
+            const ci = x.c.index(g) orelse return;
+            if (ci < x.n and g < x.sets.len) x.sets[g] = std.mem.readInt(u16, x.st[10 + @as(usize, ci) * 2 ..][0..2], .big);
+        }
+    }.cb);
+    return sets;
+}
 
 fn pairClasses(a: Allocator, st: []const u8, num_glyphs: usize) Allocator.Error!?PairClasses {
     if (num_glyphs > dense_class_limit) return null;
@@ -161,7 +185,8 @@ pub fn buildAccels(a: Allocator, t: LayoutTable, gpos: bool, num_glyphs: usize) 
             }
             if (set.len == 0) known = false;
             const pc = if (gpos and st.kind == 2) try pairClasses(a, st.data, num_glyphs) else null;
-            subs[n] = .{ .kind = st.kind, .data = st.data, .digest = set, .pair_classes = pc };
+            const ps = if (gpos and st.kind == 2) try pairSets(a, st.data, num_glyphs) else &.{};
+            subs[n] = .{ .kind = st.kind, .data = st.data, .digest = set, .pair_classes = pc, .pair_sets = ps };
             n += 1;
         }
         if (!known) union_set = &.{};

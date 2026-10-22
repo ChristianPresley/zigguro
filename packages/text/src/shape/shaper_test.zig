@@ -251,6 +251,33 @@ test "dense pair classes equal the class definitions" {
     try testing.expect(checked > 0);
 }
 
+test "dense pair sets equal the coverage search" {
+    const digest = @import("digest.zig");
+    const lc = @import("../ot/layout_common.zig");
+    const readAt = ot.reader.readAt;
+    var checked: usize = 0;
+    for ([_][]const u8{ "Inter[opsz,wght].ttf", "SourceSerif4-Regular.otf", "FiraCode-Regular.ttf", "NotoSansArabic-Subset.ttf" }) |name| {
+        var l: Loaded = undefined;
+        try load(&l, name);
+        defer l.deinit();
+        const t = lc.LayoutTable.init(l.face.knownTable(.gpos) orelse continue) catch continue;
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const accels = try digest.buildAccels(arena.allocator(), t, true, l.face.num_glyphs);
+        for (accels) |acc| for (acc.subtables) |sa| {
+            if (sa.pair_sets.len == 0) continue;
+            const cov = try lc.Coverage.init(sa.data, try readAt(u16, sa.data, 2));
+            const n = try readAt(u16, sa.data, 8);
+            for (0..l.face.num_glyphs) |g| {
+                const want: u16 = if (cov.index(@intCast(g))) |ci| (if (ci < n) try readAt(u16, sa.data, 10 + @as(usize, ci) * 2) else 0) else 0;
+                try testing.expectEqual(want, sa.pair_sets[g]);
+            }
+            checked += 1;
+        };
+    }
+    try testing.expect(checked > 0);
+}
+
 test "class definition fill rejects overlapping ranges" {
     const lc = @import("../ot/layout_common.zig");
     // At offset 2, format 2 with two ranges: 5-9 class 1, then 8-12
@@ -263,4 +290,22 @@ test "class definition fill rejects overlapping ranges" {
     const cd = try lc.ClassDef.init(&good, 2);
     try testing.expect(cd.fill(u8, &out));
     for (out, 0..) |k, g| try testing.expectEqual(cd.class(@intCast(g)), k);
+}
+
+test "dense GDEF glyph props equal the class definitions" {
+    const Gdef = @import("../ot/gdef.zig").Gdef;
+    var checked: usize = 0;
+    for ([_][]const u8{ "Inter[opsz,wght].ttf", "SourceSerif4-Regular.otf", "NotoSansArabic-Subset.ttf", "NotoSansDevanagari-Subset.ttf" }) |name| {
+        var l: Loaded = undefined;
+        try load(&l, name);
+        defer l.deinit();
+        const plain = Gdef.init(l.face.knownTable(.gdef) orelse continue) catch continue;
+        var dense = plain;
+        try dense.buildPropsTable(testing.allocator, l.face.num_glyphs);
+        defer testing.allocator.free(dense.props_table);
+        try testing.expectEqual(@as(usize, l.face.num_glyphs), dense.props_table.len);
+        for (0..l.face.num_glyphs) |g| try testing.expectEqual(plain.glyphProps(@intCast(g)), dense.glyphProps(@intCast(g)));
+        checked += 1;
+    }
+    try testing.expect(checked > 0);
 }
