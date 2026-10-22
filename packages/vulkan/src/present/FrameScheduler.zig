@@ -11,6 +11,7 @@ const FrameScheduler = @This();
 
 const std = @import("std");
 const vk = @import("../vk/vk.zig");
+const barriers = @import("../mem/barriers.zig");
 const Gpu = @import("../gpu/Gpu.zig");
 const DeviceMemory = @import("../mem/DeviceMemory.zig");
 const deferred_mod = @import("Deferred.zig");
@@ -118,6 +119,7 @@ pub fn begin(self: *FrameScheduler) !*FrameSlot {
     const d = &self.gpu.ddisp;
     _ = try vk.check(d.reset_command_pool(self.gpu.dev, s.pool, .{}));
     _ = try vk.check(d.begin_command_buffer(s.cb, &.{ .flags = .{ .one_time_submit = true } }));
+    barriers.frameStart(s.cb, d);
     s.frame = self.frame;
     self.frame += 1;
     self.recording = s;
