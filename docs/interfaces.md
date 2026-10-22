@@ -1089,6 +1089,23 @@ and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
 MSC, flip → `zero_copy`, skip → `discarded`). Frame pacing stays on the
 timer.
 
+Window manager (E01.F05.S02.T01, `x11/ewmh.zig`): `WM_PROTOCOLS` also
+lists `_NET_WM_PING`, answered at once by sending the message back to
+the root. A `_NET_WM_STATE` property change re-reads it: maximized (both
+directions) and fullscreen changes stage `window_configure` with a new
+serial, and `_NET_WM_STATE_HIDDEN` marks the window occluded.
+`Decorations.client` windows set `_MOTIF_WM_HINTS` (no decorations) and
+route presses through `set_hit_test`: a left press on `caption` or a
+resize region ungrabs the pointer and sends `_NET_WM_MOVERESIZE` (root
+position of the press, button, source 2), a right press on `caption`
+sends `_GTK_SHOW_WINDOW_MENU` when `_NET_SUPPORTED` lists it, and a
+second left press within 400 ms and 4 px toggles maximize; those presses
+and their releases do not reach the app. `begin_move`, `begin_resize`
+and `show_window_menu` send the same messages from the newest press on
+any window. `activate` sends `_NET_ACTIVE_WINDOW` (source 2 with a
+token, else 1, with the newest server time), mapping a minimized window
+first; `request_attention` adds `_NET_WM_STATE_DEMANDS_ATTENTION`.
+
 Keyboard (E01.F05.S02.T02): with XKB, `XkbGetMap` and `XkbGetNames`
 become the shared `xkb.Keymap`
 (`keymapFromXkbGetMap(gpa, map_reply, names_reply, vmod_names)`), so keys
@@ -1155,10 +1172,9 @@ destroys every window and closes the connection.
 
 ### Stability
 Experimental. Not yet: RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
-`_NET_WM_PING`, cursors, explicit sync (`PresentPixmapSynced`), XFIXES
-update regions (presents update the whole window) and MSC-based pacing.
-Move, resize, window menu, activation, dialogs and URIs return
-`error.Unsupported`.
+cursors, explicit sync (`PresentPixmapSynced`), XFIXES update regions
+(presents update the whole window) and MSC-based pacing. Dialogs and
+URIs return `error.Unsupported`.
 
 ## zg_platform.win32.Win32Backend
 
