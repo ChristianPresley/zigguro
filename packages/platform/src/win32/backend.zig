@@ -225,6 +225,8 @@ const CreateRequest = struct {
     w: *Window,
     title: [:0]const u16,
     size: PxSize,
+    position: ?types.PxPoint = null,
+    topmost: bool = false,
     ok: bool = false,
 };
 
@@ -367,7 +369,7 @@ pub const Win32Backend = struct {
         w.* = .{ .b = b, .id = id, .presenter = .init(b.gpa, b.io), .min_size = opts.min_size, .custom = opts.decorations == .client };
         w.presenter.bind();
         w.presenter.on_present = .{ .ctx = w, .f = onPresented };
-        var req: CreateRequest = .{ .w = w, .title = title, .size = .{ .w = std.math.clamp(opts.size.w, 1, 16384), .h = std.math.clamp(opts.size.h, 1, 16384) } };
+        var req: CreateRequest = .{ .w = w, .title = title, .size = .{ .w = std.math.clamp(opts.size.w, 1, 16384), .h = std.math.clamp(opts.size.h, 1, 16384) }, .position = opts.position, .topmost = opts.always_on_top };
         _ = user32.SendMessageW(b.msg_hwnd.?, WM_APP_CREATE, 0, @bitCast(@intFromPtr(&req)));
         if (!req.ok) {
             w.presenter.deinit();
@@ -438,6 +440,15 @@ pub const Win32Backend = struct {
                 defer b.unlock();
                 const w = b.find(c.win) orelse return error.InvalidWindow;
                 w.min_size = c.size;
+            },
+            .set_position => |c| {
+                const hwnd = try b.hwndOf(c.win);
+                _ = user32.SetWindowPos(hwnd, null, c.pos.x, c.pos.y, 0, 0, msgs.SWP_NOSIZE | msgs.SWP_NOZORDER | msgs.SWP_NOACTIVATE);
+            },
+            .set_always_on_top => |c| {
+                const hwnd = try b.hwndOf(c.win);
+                const after: t.HWND = @ptrFromInt(@as(usize, @bitCast(if (c.on) msgs.HWND_TOPMOST else msgs.HWND_NOTOPMOST)));
+                _ = user32.SetWindowPos(hwnd, after, 0, 0, 0, 0, msgs.SWP_NOMOVE | msgs.SWP_NOSIZE | msgs.SWP_NOACTIVATE);
             },
             .request_state => |c| {
                 const hwnd = try b.hwndOf(c.win);
@@ -845,7 +856,10 @@ pub const Win32Backend = struct {
         var r: t.RECT = .{ .left = 0, .top = 0, .right = @intCast(req.size.w), .bottom = @intCast(req.size.h) };
         // The custom frame has no non-client area: window size = client size.
         if (!w.custom) _ = user32.AdjustWindowRectExForDpi(&r, style, t.FALSE, msgs.WS.EX_APPWINDOW, msgs.default_dpi);
-        const hwnd = user32.CreateWindowExW(msgs.WS.EX_APPWINDOW, class_name, req.title.ptr, style, msgs.CW_USEDEFAULT, msgs.CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, null, null, b.hinstance, w) orelse {
+        const ex_style = msgs.WS.EX_APPWINDOW | if (req.topmost) msgs.WS.EX_TOPMOST else 0;
+        const x = if (req.position) |p| p.x else msgs.CW_USEDEFAULT;
+        const y = if (req.position) |p| p.y else msgs.CW_USEDEFAULT;
+        const hwnd = user32.CreateWindowExW(ex_style, class_name, req.title.ptr, style, x, y, r.right - r.left, r.bottom - r.top, null, null, b.hinstance, w) orelse {
             log.err("CreateWindowExW failed (error {d})", .{kernel32.GetLastError()});
             return;
         };
@@ -1984,6 +1998,34 @@ test "win32 clipboard: another writer raises clipboard_changed, our own write do
     const theirs = try readClip(p, .text_utf8, 8);
     defer testing.allocator.free(theirs);
     try testing.expectEqualStrings("xyz", theirs);
+}
+
+test "win32 placement: initial and later position, always-on-top" {
+    const b = try Win32Backend.init(testing.allocator, testing.io, .{});
+    defer b.deinit();
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg float", .size = .{ .w = 200, .h = 100 }, .position = .{ .x = 30, .y = 40 }, .always_on_top = true });
+    const hwnd = try b.hwndOf(win);
+    // GWL_EXSTYLE.
+    const exStyle = struct {
+        fn get(h: t.HWND) u32 {
+            return @truncate(@as(usize, @bitCast(user32.GetWindowLongPtrW(h, -20))));
+        }
+    }.get;
+    var wr: t.RECT = undefined;
+    _ = user32.GetWindowRect(hwnd, &wr);
+    try testing.expectEqual(@as(i32, 30), wr.left);
+    try testing.expectEqual(@as(i32, 40), wr.top);
+    try testing.expect(exStyle(hwnd) & msgs.WS.EX_TOPMOST != 0);
+
+    try p.submit(.{ .set_position = .{ .win = win, .pos = .{ .x = 120, .y = 70 } } });
+    try p.submit(.{ .set_always_on_top = .{ .win = win, .on = false } });
+    _ = user32.GetWindowRect(hwnd, &wr);
+    try testing.expectEqual(@as(i32, 120), wr.left);
+    try testing.expectEqual(@as(i32, 70), wr.top);
+    try testing.expect(exStyle(hwnd) & msgs.WS.EX_TOPMOST == 0);
+    try p.submit(.{ .set_always_on_top = .{ .win = win, .on = true } });
+    try testing.expect(exStyle(hwnd) & msgs.WS.EX_TOPMOST != 0);
 }
 
 test "win32 custom frame: client = window, hit-test codes, caption buttons" {

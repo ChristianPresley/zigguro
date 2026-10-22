@@ -29,6 +29,15 @@ pub const WindowOptions = struct {
     transparent: bool = false,
     /// Parent window for dialogs and tool windows.
     parent: ?WindowId = null,
+    /// Initial position of the window's outer top-left corner on the
+    /// virtual screen, in physical pixels. Win32 and X11 honour it (an X11
+    /// window manager may still adjust it); Wayland compositors place
+    /// windows themselves and ignore it.
+    position: ?PxPoint = null,
+    /// Keep the window above normal windows (floating tool windows).
+    /// Win32 and X11 (`_NET_WM_STATE_ABOVE`); ignored on Wayland, which
+    /// has no protocol for it.
+    always_on_top: bool = false,
 };
 
 /// Who draws a window's decorations.
@@ -95,6 +104,13 @@ pub const Command = union(enum) {
     set_ime_state: struct { win: WindowId, enabled: bool, purpose: ime.ImePurpose, caret_rect_px: PxRect, surrounding: ?ime.Surrounding },
     /// Change the minimum content size.
     set_min_size: struct { win: WindowId, size: PxSize },
+    /// Move the window's outer top-left corner to `pos` on the virtual
+    /// screen (physical pixels). `error.Unsupported` on Wayland, where
+    /// only the compositor places windows.
+    set_position: struct { win: WindowId, pos: PxPoint },
+    /// Keep the window above normal windows, or stop doing so.
+    /// `error.Unsupported` on Wayland.
+    set_always_on_top: struct { win: WindowId, on: bool },
     /// Ask for a state change; the result arrives as a configure.
     request_state: struct { win: WindowId, op: WindowOp },
     /// Start an interactive move (client-side decorations).
