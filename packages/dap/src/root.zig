@@ -15,4 +15,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("config/variables_test.zig");
     _ = @import("proto/protocol_test.zig");
+    _ = @import("testing/fake_adapter_test.zig");
 }
