@@ -295,6 +295,10 @@ pub const x11 = if (is_linux) struct {
     pub const keymap = @import("x11/keymap.zig");
     /// See `x11/selection.zig`.
     pub const selection = @import("x11/selection.zig");
+    /// See `x11/xkb.zig`.
+    pub const xkb = @import("x11/xkb.zig");
+    /// See `x11/keymap_from_server.zig`.
+    pub const keymap_from_server = @import("x11/keymap_from_server.zig");
 } else struct {};
 
 /// Win32 bindings (user32, kernel32, gdi32, imm32, ole32, shell32, dwmapi,
@@ -464,6 +468,8 @@ test {
         _ = @import("x11/backend.zig");
         _ = @import("x11/dri3.zig");
         _ = @import("x11/selection.zig");
+        _ = @import("x11/xkb.zig");
+        _ = @import("x11/keymap_from_server.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
     _ = @import("fswatch/windows_rdcw.zig");
@@ -555,6 +561,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "x11/dpi.zig", .src = @embedFile("x11/dpi.zig") },
     .{ .path = "x11/keymap.zig", .src = @embedFile("x11/keymap.zig") },
     .{ .path = "x11/selection.zig", .src = @embedFile("x11/selection.zig") },
+    .{ .path = "x11/xkb.zig", .src = @embedFile("x11/xkb.zig") },
+    .{ .path = "x11/keymap_from_server.zig", .src = @embedFile("x11/keymap_from_server.zig") },
     .{ .path = "win32/bindings/types.zig", .src = @embedFile("win32/bindings/types.zig") },
     .{ .path = "win32/bindings/user32.zig", .src = @embedFile("win32/bindings/user32.zig") },
     .{ .path = "win32/bindings/kernel32.zig", .src = @embedFile("win32/bindings/kernel32.zig") },
