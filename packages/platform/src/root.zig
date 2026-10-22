@@ -345,6 +345,12 @@ pub const win32 = struct {
     pub const cf_html = @import("win32/cf_html.zig");
     /// See `win32/hdrop.zig`.
     pub const hdrop = @import("win32/hdrop.zig");
+    /// See `win32/enum_formatetc.zig`.
+    pub const enum_formatetc = @import("win32/enum_formatetc.zig");
+    /// See `win32/data_object.zig`.
+    pub const data_object = @import("win32/data_object.zig");
+    /// See `win32/dnd.zig`.
+    pub const dnd = @import("win32/dnd.zig");
     /// See `win32/frame.zig`.
     pub const frame = @import("win32/frame.zig");
     /// See `win32/cursor.zig`.
@@ -452,6 +458,9 @@ test {
     _ = win32.cpu_present;
     _ = win32.cf_html;
     _ = win32.hdrop;
+    _ = win32.enum_formatetc;
+    _ = win32.data_object;
+    _ = win32.dnd;
     _ = win32.frame;
     _ = win32.cursor;
     _ = win32.ime;
