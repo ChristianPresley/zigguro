@@ -34,6 +34,7 @@
         .zg_update = 2,
         .zg_crash = 2,
         .zg_install = 2,
+        .zg_codeintel = 5,
         // pkgtool:insert
     },
     .allow_same_layer = .{

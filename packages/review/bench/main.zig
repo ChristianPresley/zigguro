@@ -28,6 +28,7 @@ fn register(b: *bench.Bench) !void {
     try registerApprovals(b);
     try registerReanchor(b);
     try pipeline.register(b);
+    try registerComplete(b);
 }
 
 const Reanchor = struct {
@@ -159,6 +160,45 @@ fn registerHunks(b: *bench.Bench) !void {
                 const hs = model.deriveHunks(x.gpa, x.base, &x.lines, &x.cs, .{}) catch unreachable;
                 bench.doNotOptimizeAway(hs.len);
                 x.gpa.free(hs);
+            }
+        }
+    }.f);
+}
+
+const Complete = struct {
+    text: []const u8,
+    nb: zg_review.assist.complete.NeighbourIndex,
+    arena: std.heap.ArenaAllocator,
+};
+
+/// Build a completion request at the middle of a 100,000-line file with
+/// 20 neighbour documents of 2,000 lines (budget < 2 ms; window sets are
+/// already built, as they are after the first request).
+fn registerComplete(b: *bench.Bench) !void {
+    const complete = zg_review.assist.complete;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(b.gpa);
+    try text.appendSlice(b.gpa, "const std = @import(\"std\");\n");
+    for (0..100_000) |i| try text.print(b.gpa, "    const v{d} = compute(input{d}, \"line\");\n", .{ i, i % 97 });
+    var c: Complete = .{ .text = text.items, .nb = .init(b.gpa), .arena = .init(b.gpa) };
+    defer c.nb.deinit();
+    defer c.arena.deinit();
+    var doc: std.ArrayList(u8) = .empty;
+    defer doc.deinit(b.gpa);
+    for (0..20) |d| {
+        doc.clearRetainingCapacity();
+        for (0..2_000) |i| try doc.print(b.gpa, "fn f{d}_{d}(input{d}: u32) u32 {{ return compute(input{d}); }}\n", .{ d, i, (i + d) % 97, i % 13 });
+        try c.nb.note(d + 1, "n.zig", doc.items, false);
+    }
+    var warm: [3]complete.Snippet = undefined;
+    _ = try c.nb.top(&.{1}, 0, &warm);
+    try b.run("review.complete.build_request_100k", &c, struct {
+        fn f(x: *Complete, st: *bench.State) void {
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                _ = x.arena.reset(.retain_capacity);
+                const req = complete.buildRequest(x.arena.allocator(), x.text, x.text.len / 2, .{ .path = "src/big.zig", .language = "zig", .neighbours = &x.nb, .doc = 99 }) catch unreachable;
+                bench.doNotOptimizeAway(req.prefix.len);
             }
         }
     }.f);

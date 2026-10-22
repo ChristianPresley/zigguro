@@ -1,0 +1,58 @@
+// FIM prompt templates for raw-completion providers (OpenAI-style
+// /v1/completions). Token strings are data, taken from each model card;
+// add entries for other models. Providers that apply the template on the
+// server (llama.cpp /infill, Ollama `suffix`) take structured fields and
+// need none of these.
+.{
+    // Qwen2.5-Coder model card and technical report (arXiv:2409.12186),
+    // "Fill in the middle" and "Repository-level code completion".
+    .{
+        .name = "qwen2.5-coder",
+        .order = .psm,
+        .prefix_tok = "<|fim_prefix|>",
+        .suffix_tok = "<|fim_suffix|>",
+        .middle_tok = "<|fim_middle|>",
+        .file_sep_tok = "<|file_sep|>",
+        .repo_tok = "<|repo_name|>",
+        .eot = .{ "<|endoftext|>", "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>" },
+    },
+    // StarCoder2 model card (bigcode/starcoder2), tokenizer special tokens.
+    .{
+        .name = "starcoder2",
+        .order = .psm,
+        .prefix_tok = "<fim_prefix>",
+        .suffix_tok = "<fim_suffix>",
+        .middle_tok = "<fim_middle>",
+        .file_sep_tok = "<file_sep>",
+        .repo_tok = "<repo_name>",
+        .eot = .{ "<|endoftext|>", "<file_sep>" },
+    },
+    // Code Llama paper (arXiv:2308.12950) and model card, infilling format.
+    .{
+        .name = "codellama",
+        .order = .psm,
+        .prefix_tok = "<PRE> ",
+        .suffix_tok = " <SUF>",
+        .middle_tok = " <MID>",
+        .eot = .{" <EOT>"},
+    },
+    // DeepSeek-Coder model card (deepseek-ai/deepseek-coder), code insertion.
+    .{
+        .name = "deepseek-coder",
+        .order = .psm,
+        .prefix_tok = "<｜fim▁begin｜>",
+        .suffix_tok = "<｜fim▁hole｜>",
+        .middle_tok = "<｜fim▁end｜>",
+        .eot = .{"<|EOT|>"},
+    },
+    // CodeGemma model card (google/codegemma), FIM tokens.
+    .{
+        .name = "codegemma",
+        .order = .psm,
+        .prefix_tok = "<|fim_prefix|>",
+        .suffix_tok = "<|fim_suffix|>",
+        .middle_tok = "<|fim_middle|>",
+        .file_sep_tok = "<|file_separator|>",
+        .eot = .{ "<|file_separator|>", "<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>" },
+    },
+}

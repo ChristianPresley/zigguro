@@ -92,19 +92,14 @@ pub fn exists(io: std.Io, objects_dir: std.Io.Dir, id: Oid) bool {
     return true;
 }
 
+/// The zlib level for loose objects: best speed, as git's
+/// `core.looseCompression` defaults to (packs use zlib's default).
+pub const default_level: flate.Compress.Options = .level_1;
+
 /// Compresses "<type> <len>\0" ++ data as a zlib stream into `out`.
 pub fn encode(gpa: Allocator, out: *std.Io.Writer, t: ObjectType, data: []const u8, level: flate.Compress.Options) (Allocator.Error || std.Io.Writer.Error)!void {
-    const window = try gpa.alloc(u8, flate.max_window_len);
-    defer gpa.free(window);
-    const comp = try gpa.create(flate.Compress);
-    defer gpa.destroy(comp);
-    // Compress needs room for its bit writer; this grows allocating writers.
-    _ = try out.writableSliceGreedy(16);
-    comp.* = try .init(out, window, .zlib, level);
     var hbuf: [32]u8 = undefined;
-    try comp.writer.writeAll(object.header(&hbuf, t, data.len));
-    try comp.writer.writeAll(data);
-    try comp.finish();
+    try zlib.compress(gpa, out, &.{ object.header(&hbuf, t, data.len), data }, level);
 }
 
 /// Writes a loose object atomically with mode 0444 and returns its ID.
@@ -120,7 +115,7 @@ pub fn writeLoose(gpa: Allocator, io: std.Io, objects_dir: std.Io.Dir, fmt: Obje
     defer af.deinit(io);
     var wbuf: [16 * 1024]u8 = undefined;
     var fw = af.file.writer(io, &wbuf);
-    encode(gpa, &fw.interface, t, data, .default) catch |e| switch (e) {
+    encode(gpa, &fw.interface, t, data, default_level) catch |e| switch (e) {
         error.WriteFailed => return fw.err orelse error.WriteFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };

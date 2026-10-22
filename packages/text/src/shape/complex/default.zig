@@ -7,6 +7,7 @@ const Script = @import("../../unicode/root.zig").Script;
 const ot = @import("../../ot/root.zig");
 const arabic = @import("arabic.zig");
 const use = @import("use.zig");
+const indic = @import("indic.zig");
 const khmer = @import("khmer.zig");
 const myanmar = @import("myanmar.zig");
 
@@ -18,7 +19,7 @@ pub const shaper: ComplexShaper = .{ .name = "default" };
 /// uses the Arabic shaper; Syriac only when the font has a script record
 /// other than `DFLT`. The USE scripts use USE unless the font only has
 /// `DFLT` or `latn` for them; the Indic scripts use USE with their `xxx3`
-/// tags and the default shaper otherwise until the Indic shaper lands.
+/// tags and the Indic shaper otherwise.
 /// Khmer always uses its shaper; Myanmar uses its shaper unless the font
 /// only has `DFLT`, `latn` or the old `mymr` tag.
 pub fn select(script: Script, chosen_gsub: ?ot.Tag) *const ComplexShaper {
@@ -28,7 +29,7 @@ pub fn select(script: Script, chosen_gsub: ?ot.Tag) *const ComplexShaper {
         .Syrc => if (chosen_gsub) |t| (if (t != ot.tag("DFLT")) &arabic.shaper else &shaper) else &shaper,
         .Khmr => &khmer.shaper,
         .Mymr => if (chosen_gsub) |t| (if (generic or t == ot.tag("mymr")) &shaper else &myanmar.shaper) else &myanmar.shaper,
-        .Beng, .Deva, .Gujr, .Guru, .Knda, .Mlym, .Orya, .Taml, .Telu => if (chosen_gsub) |t| (if (!generic and t & 0xFF == '3') &use.shaper else &shaper) else &shaper,
+        .Beng, .Deva, .Gujr, .Guru, .Knda, .Mlym, .Orya, .Taml, .Telu => if (generic) &shaper else if (chosen_gsub) |t| (if (t & 0xFF == '3') &use.shaper else &indic.shaper) else &indic.shaper,
         else => if (isUseScript(script) and !generic) &use.shaper else &shaper,
     };
 }

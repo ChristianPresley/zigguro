@@ -243,8 +243,8 @@ const Walker = struct {
         return op_mod.read(Tree, w.store, w.arena, tid);
     }
 
-    /// Mirrors `TreeMerger.mergeAt`, so decided paths line up with the
-    /// paths the merger asks about.
+    /// Mirrors `TreeMerger.merge3` (the same directory rule), so decided
+    /// paths line up with the paths the merger asks about.
     fn walk(w: *Walker, prefix: []const u8, base: ?ObjectId, left: ObjectId, right: ObjectId) anyerror!void {
         if (left.eql(right)) return;
         if (base) |b| if (b.eql(left) or b.eql(right)) return;

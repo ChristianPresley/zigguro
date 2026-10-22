@@ -166,7 +166,7 @@ test "dotted circle insertion" {
     try use.findSyllables(gpa, &b);
     try testing.expectEqual(@intFromEnum(use.SyllableType.standard), dotted.syllableType(b.infos.items[0]));
     try testing.expectEqual(@intFromEnum(use.SyllableType.broken), dotted.syllableType(b.infos.items[2]));
-    try testing.expect(try dotted.insertDottedCircles(&b, &face, @intFromEnum(use.SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R)));
+    try testing.expect(try dotted.insertDottedCircles(&b, &face, @intFromEnum(use.SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R), 0));
     try testing.expectEqual(@as(usize, 4), b.len());
     const dc = b.infos.items[2];
     try testing.expectEqual(dotted.dotted_circle, dc.cp);
@@ -176,7 +176,7 @@ test "dotted circle insertion" {
     // No broken syllable left to fix: nothing more is inserted.
     for (b.infos.items) |*gi| gi.shaper = @intFromEnum(use.useCategory(gi.cp));
     try use.findSyllables(gpa, &b);
-    try testing.expect(!try dotted.insertDottedCircles(&b, &face, @intFromEnum(use.SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R)));
+    try testing.expect(!try dotted.insertDottedCircles(&b, &face, @intFromEnum(use.SyllableType.broken), @intFromEnum(C.B), @intFromEnum(C.R), 0));
 }
 
 test "use shaper selection" {
@@ -185,7 +185,9 @@ test "use shaper selection" {
     try testing.expectEqualStrings("default", default.select(.Java, ot.tag("DFLT")).name);
     try testing.expectEqualStrings("default", default.select(.Bali, ot.tag("latn")).name);
     try testing.expectEqualStrings("use", default.select(.Deva, ot.tag("dev3")).name);
-    try testing.expectEqualStrings("default", default.select(.Deva, ot.tag("dev2")).name);
+    try testing.expectEqualStrings("indic", default.select(.Deva, ot.tag("dev2")).name);
+    try testing.expectEqualStrings("indic", default.select(.Taml, null).name);
+    try testing.expectEqualStrings("default", default.select(.Beng, ot.tag("DFLT")).name);
     try testing.expectEqualStrings("use", default.select(.Nkoo, null).name);
     try testing.expectEqualStrings("arabic", default.select(.Arab, null).name);
 }
