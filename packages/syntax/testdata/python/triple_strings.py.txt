@@ -1,0 +1,9 @@
+def f():
+    """Docstring on
+    several lines with 'quotes' and "quotes"
+    and an escaped \""" inside.
+    """
+    s = '''single
+triple'''
+    return s
+x = """one line"""
