@@ -57,10 +57,21 @@ Any other escape, or a caret before anything else, is a syntax error.
 | `@expect-cell ROW,COL ATTR...` | Cell attributes, see below | `@expect-cell 1,1 bold fg=1` |
 | `@expect-title "..."` | The window title | `@expect-title "vim"` |
 | `@expect-mark L at ROW` | The next shell mark with letter L is on 1-based active row ROW | `@expect-mark A at 1` |
+| `@key NAME [WORD...]` | Encode a key event with the terminal's current modes, see below | `@key up ctrl` |
+| `@mouse KIND BUTTON ROW,COL [WORD...]` | Encode a mouse event, see below | `@mouse press left 3,5 shift` |
+| `@paste "..."` | Encode a paste (bracketed when mode 2004 is set; controls stripped) | `@paste "a\nb"` |
+| `@focus in\|out` | Encode a focus change (sent only with mode 1004) | `@focus in` |
+| `@expect-input "..."` | The bytes the input steps produced since the last matching `@expect-input` | `@expect-input "\e[1;5A"` |
 
 Screen rows show exactly one entry per cell: `·` is an empty cell (also the filler left when a wide character wraps), `‹` is the right half of a wide character, and a cell with combining marks shows the whole cluster. For example, `日` followed by `x` on a 5-column row is `|日‹x··|`.
 
 Mark letters follow OSC 133: `A` prompt start, `B` input start, `C` command executed, `D` command finished, `E` command line (OSC 633), `P` property, `W` working directory, `M` bookmark.
+
+### Input events
+
+`@key` names a key by a letter or digit (`a`, `7`) or by its tag in `src/input/keys.zig` (`up`, `page_down`, `f5`, `kp_enter`, `left_shift`). The other words are modifiers (`shift`, `ctrl`, `alt`, `super`, `alt_gr`, `caps_lock`, `num_lock`), an action (`press`, the default, `repeat` or `release`), `text="..."` (what the layout typed; a text key without Ctrl, Alt or Super otherwise types its US-layout character), and `shifted=C` / `base=C` for kitty alternate keys.
+
+`@mouse` takes a kind (`press`, `release`, `motion`, `wheel`), a button (`left`, `middle`, `right`, `none` for motion without a button, `up`, `down`, `wheel_left`, `wheel_right`, `b8`-`b11`) and a 1-based cell, then modifiers, `px=X,Y` for pixel reports and `held=BUTTON` for buttons held during motion. A wheel event with no tracking mode goes through alternate scroll (mode 1007).
 
 ### Cell attributes
 
@@ -87,7 +98,7 @@ The first directory under `testdata/conformance/` is the case's category. Each c
 | osc | 40 | E06.F02.S02.T04 |
 | unicode | 40 | E06.F03.S01 |
 | reflow | 40 | E06.F03.S02 |
-| input | 40 | E06.F04 (with `@key` steps) |
+| input | 40 | E06.F04 |
 | marks | 25 | E06.F06 |
 
 ## Adding cases
