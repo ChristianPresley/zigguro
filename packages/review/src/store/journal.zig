@@ -21,6 +21,8 @@ pub const Kind = enum(u8) {
     remove = 2,
     /// A checkpoint (F04).
     checkpoint = 3,
+    /// A `History` record: what an apply, undo or restore wrote.
+    apply = 4,
     _,
 };
 

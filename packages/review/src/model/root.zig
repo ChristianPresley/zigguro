@@ -9,6 +9,8 @@ pub const blobs = @import("blobs.zig");
 pub const batch = @import("batch.zig");
 pub const events = @import("events.zig");
 pub const queue = @import("queue.zig");
+pub const merge3 = @import("merge3.zig");
+pub const history = @import("history.zig");
 
 pub const ChangesetId = ids.ChangesetId;
 pub const ChangeSetId = ids.ChangeSetId;
@@ -53,6 +55,12 @@ pub const Submitter = queue.Submitter;
 pub const SubmitOptions = queue.SubmitOptions;
 pub const Filter = queue.Filter;
 pub const Journal = queue.Journal;
+
+pub const History = history.History;
+pub const Apply = history.Apply;
+pub const ApplyFile = history.ApplyFile;
+pub const ApplyKind = history.ApplyKind;
+pub const Recorder = history.Recorder;
 
 test {
     @import("std").testing.refAllDecls(@This());

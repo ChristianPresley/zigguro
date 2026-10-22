@@ -108,6 +108,8 @@ pub const Sink = struct {
         theme: *const fn (*anyopaque) *const theme_mod.Theme,
         clipboardGet: *const fn (*anyopaque) []const u8,
         clipboardSet: *const fn (*anyopaque, []const u8) void,
+        primaryGet: *const fn (*anyopaque) ?[]const u8,
+        primarySet: *const fn (*anyopaque, []const u8) void,
         nowMs: *const fn (*anyopaque) u64,
         setIme: *const fn (*anyopaque, ids.NodeId, ?ImeRequest) void,
         allocator: *const fn (*anyopaque) std.mem.Allocator,
@@ -188,6 +190,17 @@ pub const EventCx = struct {
     /// Puts `s` on the clipboard.
     pub fn setClipboard(ec: *EventCx, s: []const u8) void {
         ec.sink.vtable.clipboardSet(ec.sink.ptr, s);
+    }
+
+    /// The PRIMARY selection text (X11 and Wayland: the last text
+    /// selected anywhere), or null where the desktop has none (Windows).
+    pub fn primary(ec: *EventCx) ?[]const u8 {
+        return ec.sink.vtable.primaryGet(ec.sink.ptr);
+    }
+
+    /// Makes `s` the PRIMARY selection (ignored where there is none).
+    pub fn setPrimary(ec: *EventCx, s: []const u8) void {
+        ec.sink.vtable.primarySet(ec.sink.ptr, s);
     }
 
     /// Milliseconds on the app's monotonic clock.

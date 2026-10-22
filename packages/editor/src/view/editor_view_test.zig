@@ -193,6 +193,31 @@ test "view: copy, cut and paste, including whole lines" {
     try testing.expectEqualStrings("one\ntwo\n", f.t.app.clipboard.get());
 }
 
+test "view: selections become PRIMARY; middle click pastes it" {
+    var f: Fx = undefined;
+    try f.init("hello world\nsecond line\n");
+    defer f.deinit();
+    f.t.app.has_primary = true;
+    // A double click selects "world" and publishes it on release.
+    try f.clickAt(0, 7, 2, no_mods);
+    try testing.expectEqualStrings("world", f.t.app.primary.get());
+    try testing.expectEqualStrings("", f.t.app.clipboard.get());
+    // Shift+End from a caret selects to the end of the line.
+    try f.clickAt(1, 7, 1, no_mods);
+    f.press(.{ .key = .end, .mods = .{ .shift = true } });
+    try testing.expectEqualStrings("line", f.t.app.primary.get());
+
+    // Middle click at (0, 0) pastes PRIMARY there, one undo step.
+    f.t.app.primary.replace(gpa, ">> ");
+    const p = try f.pointAt(0, 0);
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = p, .button = .middle } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = p, .button = .middle } });
+    _ = f.t.settle();
+    try f.expectText(">> hello world\nsecond line\n");
+    f.press(.{ .key = .key_z, .mods = .{ .ctrl = true } });
+    try f.expectText("hello world\nsecond line\n");
+}
+
 test "view: alt-click adds carets that type and paste together" {
     var f: Fx = undefined;
     try f.init("a\nb\nc");

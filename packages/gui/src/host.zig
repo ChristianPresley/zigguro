@@ -18,7 +18,8 @@
 //! - appearance changes switch the app theme;
 //! - the app clipboard is kept in sync with the system clipboard (local
 //!   writes go out as `clipboard_write`; a `clipboard_changed` is read
-//!   back into `App.clipboard`);
+//!   back into `App.clipboard`), and `App.primary` with the PRIMARY
+//!   selection the same way when the desktop has one;
 //! - `App.now_ms` is refreshed from the awake clock on every pump;
 //! - with a runtime attached to the app (`App.attachRuntime`), the Host
 //!   binds the UI thread with a waker that wakes the platform, and drains
@@ -142,6 +143,8 @@ pub const HostWindow = struct {
 
 /// The request id of the Host's own clipboard reads.
 const clipboard_request: u32 = 0x4704_0001;
+/// The request id of the Host's PRIMARY selection reads.
+const primary_request: u32 = 0x4704_0002;
 
 /// Drives windows of one `App` on one `Platform`.
 pub const Host = struct {
@@ -304,11 +307,8 @@ pub const Host = struct {
         }
         for (h.windows.items) |hw| hw.win.tick(h.app.now_ms);
         h.app.flushEffects();
-        if (h.app.clipboard.pending_write) {
-            h.app.clipboard.pending_write = false;
-            const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .text_utf8, .data = h.app.clipboard.get() }};
-            try h.platform.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &items } });
-        }
+        try h.flushClipboard(&h.app.clipboard, .clipboard);
+        if (h.app.has_primary) try h.flushClipboard(&h.app.primary, .primary);
         for (h.windows.items) |hw| {
             for (hw.win.window_ops.items) |op| try h.platform.submit(.{ .request_state = .{ .win = hw.id, .op = op } });
             hw.win.window_ops.clearRetainingCapacity();
@@ -342,6 +342,13 @@ pub const Host = struct {
         return total;
     }
 
+    fn flushClipboard(h: *Host, c: *app_mod.Clipboard, which: zg_platform.clipboard.Selection) !void {
+        if (!c.pending_write) return;
+        c.pending_write = false;
+        const items = [_]zg_platform.clipboard.ClipItem{.{ .mime = .text_utf8, .data = c.get() }};
+        try h.platform.submit(.{ .clipboard_write = .{ .which = which, .items = &items } });
+    }
+
     fn wakePlatform(ctx: ?*anyopaque) void {
         const p: *Platform = @ptrCast(@alignCast(ctx.?));
         p.wake();
@@ -366,11 +373,18 @@ pub const Host = struct {
                 return;
             },
             .clipboard_changed => |which| {
-                if (which == .clipboard) try h.platform.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = clipboard_request } });
+                switch (which) {
+                    .clipboard => try h.platform.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = clipboard_request } }),
+                    .primary => if (h.app.has_primary) try h.platform.submit(.{ .clipboard_read = .{ .which = .primary, .mime = .text_utf8, .request = primary_request } }),
+                }
                 return;
             },
             .clipboard_data => |d| {
-                if (d.request == clipboard_request and d.mime == .text_utf8) h.app.clipboard.replace(h.gpa, h.platform.payload(d.data));
+                if (d.mime == .text_utf8) switch (d.request) {
+                    clipboard_request => h.app.clipboard.replace(h.gpa, h.platform.payload(d.data)),
+                    primary_request => h.app.primary.replace(h.gpa, h.platform.payload(d.data)),
+                    else => {},
+                };
                 if (d.data.large) h.platform.release(d.data);
                 return;
             },

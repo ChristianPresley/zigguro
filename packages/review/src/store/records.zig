@@ -1,5 +1,6 @@
 //! JSON records of the review journal (E12.F01.S02.T01): a changeset
-//! snapshot (everything but blob contents) and its decoder.
+//! snapshot (everything but blob contents), an apply record
+//! (E12.F02.S03.T02), and their decoders.
 //!
 //! Edits are inlined as `[[start, end, "text"], ...]`; when their texts
 //! exceed `inline_limit` they go to a blob holding the same JSON and the
@@ -7,6 +8,7 @@
 //! reads base texts.
 
 const std = @import("std");
+const proto = @import("zg_ai_proto");
 const model = @import("../model/root.zig");
 
 const Allocator = std.mem.Allocator;
@@ -42,6 +44,57 @@ pub fn writeChangeset(w: *std.Io.Writer, cs: *const Changeset, blobs: model.Blob
     for (cs.files) |*f| try writeFile(&s, f, blobs, scratch);
     try s.endArray();
     try s.endObject();
+}
+
+/// Writes a `History` record: hashes only, contents are blobs.
+pub fn writeApply(w: *std.Io.Writer, a: *const model.Apply) Stringify.Error!void {
+    var s: Stringify = .{ .writer = w };
+    try s.beginObject();
+    try field(&s, "id", a.id);
+    try field(&s, "kind", @tagName(a.kind));
+    if (a.cs) |x| try field(&s, "cs", @intFromEnum(x));
+    if (a.undoes) |x| try field(&s, "undoes", x);
+    if (a.session) |x| try field(&s, "session", &proto.agent_ref.format(x));
+    try field(&s, "created_ms", a.created_ms);
+    try s.objectField("files");
+    try s.beginArray();
+    for (a.files) |f| {
+        try s.beginObject();
+        try field(&s, "path", f.path);
+        if (f.pre) |h| try field(&s, "pre", &hex(h));
+        if (f.post) |h| try field(&s, "post", &hex(h));
+        if (f.pre_exec) try field(&s, "pre_exec", true);
+        if (f.post_exec) try field(&s, "post_exec", true);
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.endObject();
+}
+
+/// Decodes `writeApply`'s record; strings are allocated in `arena`.
+pub fn readApply(arena: Allocator, v: Value) Error!model.Apply {
+    const o = try obj(v);
+    const fs = try arr(get(o, "files") orelse return error.InvalidRecord);
+    const files = try arena.alloc(model.ApplyFile, fs.items.len);
+    for (fs.items, files) |fv, *f| {
+        const fo = try obj(fv);
+        f.* = .{
+            .path = try dupe(arena, get(fo, "path")),
+            .pre = if (get(fo, "pre")) |x| try unhex(x) else null,
+            .post = if (get(fo, "post")) |x| try unhex(x) else null,
+            .pre_exec = if (get(fo, "pre_exec")) |x| try boolean(x) else false,
+            .post_exec = if (get(fo, "post_exec")) |x| try boolean(x) else false,
+        };
+    }
+    return .{
+        .id = try int(u64, get(o, "id")),
+        .kind = try enumOf(model.ApplyKind, get(o, "kind")),
+        .cs = if (get(o, "cs")) |x| @enumFromInt(try int(u64, x)) else null,
+        .undoes = if (get(o, "undoes")) |x| try int(u64, x) else null,
+        .session = if (get(o, "session")) |x| proto.agent_ref.parse(try str(x)) catch return error.InvalidRecord else null,
+        .created_ms = try int(i64, get(o, "created_ms")),
+        .files = files,
+    };
 }
 
 fn field(s: *Stringify, name: []const u8, v: anytype) Stringify.Error!void {
@@ -348,4 +401,33 @@ test "store: changeset record round trip" {
     const id = try q.commitBatch(b, .{ .checkpoint = 4, .presentation = .inline_ });
     q.getMut(id).?.files[0].hunks[0].decision = .rejected;
     try roundTrip(q, &mem, id);
+}
+
+test "records: apply record round trip" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const files = [_]model.ApplyFile{
+        .{ .path = "a/b.txt", .pre = model.blobHash("x"), .post = model.blobHash("y"), .post_exec = true },
+        .{ .path = "gone.txt", .pre = model.blobHash("z"), .post = null, .pre_exec = true },
+    };
+    const in: model.Apply = .{ .id = 4, .kind = .undo, .cs = @enumFromInt(9), .undoes = 2, .session = 77, .created_ms = 1234, .files = &files };
+    var aw: std.Io.Writer.Allocating = .init(a);
+    try writeApply(&aw.writer, &in);
+    const v = try std.json.parseFromSliceLeaky(Value, a, aw.written(), .{});
+    const out = try readApply(a, v);
+    try testing.expectEqual(in.id, out.id);
+    try testing.expectEqual(in.kind, out.kind);
+    try testing.expectEqual(in.cs, out.cs);
+    try testing.expectEqual(in.undoes, out.undoes);
+    try testing.expectEqual(in.session, out.session);
+    try testing.expectEqual(in.created_ms, out.created_ms);
+    try testing.expectEqual(@as(usize, 2), out.files.len);
+    for (files, out.files) |x, y| {
+        try testing.expectEqualStrings(x.path, y.path);
+        try testing.expectEqual(x.pre, y.pre);
+        try testing.expectEqual(x.post, y.post);
+        try testing.expectEqual(x.pre_exec, y.pre_exec);
+        try testing.expectEqual(x.post_exec, y.post_exec);
+    }
 }
