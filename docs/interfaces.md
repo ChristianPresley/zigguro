@@ -1067,6 +1067,27 @@ time. While we own a selection, reads answer from our copy. XFIXES owner
 changes by other clients become `clipboard_changed`. Answers over 64 KiB
 are large payloads (`Platform.release`).
 
+Drag and drop (E01.F05.S03.T03, `xdnd.zig`): XDND v5 (v3 and later
+peers). Every window carries `XdndAware`. As a target, `XdndEnter`
+(types inline or from `XdndTypeList`) starts a drag, and the first
+`XdndPosition` stages `drop{enter}` with the offered formats; later
+positions stage `over`. `allowed` is the one action the position asks
+for (copy when none). Each position is answered with `XdndStatus` from
+the last `set_drop_effect`, and a new answer sends a status at once.
+`XdndDrop` reads the accepted format from `XdndSelection` through
+`selection.zig`, stages `drop` with the bytes and the performed action,
+and sends `XdndFinished`. A refused drop, a failed read and `XdndLeave`
+stage `leave`; a drag quiet for 30 s ends the same way. As a source,
+`start_drag` owns `XdndSelection` with the items, publishes
+`XdndTypeList` when there are more than three targets, and grabs the
+pointer (XIGrabDevice with XI2, GrabPointer without) on the dispatching
+thread. Pointer motion finds the target under the pointer: the first
+`XdndAware` window from the top level down, honoring `XdndProxy`. It
+sends enter, leave and positions, with one position in flight. Release
+drops on an accepting target (after the status of the last position),
+or leaves. `XdndFinished`, or 10 s without it, ends the drag with
+`source_finished`. Escape cancels it. Drag icons are not drawn yet.
+
 ### Threading
 No platform thread: the UI thread reads and translates X events in
 `pollEvents` and `waitEvents`. `submit`, `wake` and presenter calls may
@@ -1079,9 +1100,9 @@ destroys every window and closes the connection.
 ### Stability
 Experimental. Not yet: RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
 `_NET_WM_PING`, cursors, explicit sync (`PresentPixmapSynced`), XFIXES
-update regions (presents update the whole window), MSC-based pacing and
-XDND. Move, resize, window
-menu, drag, activation, dialogs and URIs return `error.Unsupported`.
+update regions (presents update the whole window) and MSC-based pacing.
+Move, resize, window menu, activation, dialogs and URIs return
+`error.Unsupported`.
 
 ## zg_platform.win32.Win32Backend
 
