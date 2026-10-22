@@ -156,6 +156,12 @@ pub const EventCx = struct {
         ec.sink.vtable.repaint(ec.sink.ptr, ec.node);
     }
 
+    /// Repaints another node (widgets whose look depends on shared state,
+    /// such as a selection spanning several nodes).
+    pub fn repaintNode(ec: *EventCx, n: ids.NodeId) void {
+        ec.sink.vtable.repaint(ec.sink.ptr, n);
+    }
+
     /// Moves keyboard focus to this node.
     pub fn focus(ec: *EventCx) void {
         ec.sink.vtable.focus(ec.sink.ptr, ec.node);
@@ -184,6 +190,11 @@ pub const EventCx = struct {
     /// The node's absolute rectangle from the last paint.
     pub fn rect(ec: *EventCx) geom.Rect {
         return ec.sink.vtable.nodeRect(ec.sink.ptr, ec.node);
+    }
+
+    /// Another node's absolute rectangle from the last paint.
+    pub fn rectOf(ec: *EventCx, n: ids.NodeId) geom.Rect {
+        return ec.sink.vtable.nodeRect(ec.sink.ptr, n);
     }
 
     /// Re-measures and lays the node out again (its content size changed
