@@ -6,6 +6,7 @@ test {
     _ = @import("agent/approvals.zig");
     _ = @import("agent/editor_files.zig");
     _ = @import("agent/review_glue.zig");
+    _ = @import("agent/review_agent_port.zig");
     _ = @import("agent/panel.zig");
     _ = @import("agent/plan_card.zig");
     _ = @import("agent/pane_approvals.zig");
