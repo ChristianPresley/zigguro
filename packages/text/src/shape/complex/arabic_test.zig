@@ -1,5 +1,6 @@
 //! Arabic-joining shaper tests: joining actions from crafted sequences,
-//! mark reordering, shaper selection and a shaped Arabic run.
+//! mark reordering, shaper selection, a shaped Arabic run and the
+//! presentation-form fallback. Shaped goldens are in `shaper_test.zig`.
 
 const std = @import("std");
 const testing = std.testing;
@@ -11,6 +12,7 @@ const ot = @import("../../ot/root.zig");
 const FaceInstance = @import("../../ot/var/instance.zig").FaceInstance;
 const fonts = @import("../../testing/fonts.zig");
 const shaper_mod = @import("../shaper.zig");
+const fallback = @import("arabic_fallback.zig");
 
 /// Runs joining over `text` and checks one action per code point.
 fn expectForms(text: []const u21, want: []const Action) !void {
@@ -87,4 +89,51 @@ test "arabic: rtl clusters monotone after reversal" {
     // last character's.
     for (1..run.len()) |i| try testing.expect(run.clusters[i - 1] >= run.clusters[i]);
     try testing.expectEqual(@as(u32, 0), run.clusters[run.len() - 1]);
+}
+
+fn planFor(gpa: std.mem.Allocator, font: []const u8, script: @import("../../unicode/root.zig").Script, check: *const fn (p: *const @import("../plan.zig").ShapePlan) anyerror!void) !void {
+    const bytes = try fonts.font(gpa, font);
+    defer gpa.free(bytes);
+    var face = try ot.Face.init(bytes, 0);
+    var inst = try FaceInstance.init(gpa, &face, &.{});
+    defer inst.deinit(gpa);
+    var s = shaper_mod.Shaper.init(gpa);
+    defer s.deinit();
+    try check(try s.plan(&inst, script, ot.tag("dflt"), .rtl, &.{}));
+}
+
+test "arabic: fallback lookups only without GSUB forms" {
+    try planFor(testing.allocator, "NotoSansArabic-Subset.ttf", .Arab, struct {
+        fn check(p: *const @import("../plan.zig").ShapePlan) !void {
+            try testing.expect(p.shaper_data == null);
+        }
+    }.check);
+    try planFor(testing.allocator, "NotoSansArabicNoForms-Subset.ttf", .Arab, struct {
+        fn check(p: *const @import("../plan.zig").ShapePlan) !void {
+            const fb: *const fallback.Fallback = @ptrCast(@alignCast(p.shaper_data.?));
+            // The four forms and the lam-alef ligatures; the font maps no
+            // three-letter or shadda ligature.
+            try testing.expectEqual(@as(u16, 5), fb.count);
+            try testing.expectEqual(@as(u16, 5), fb.gsub.lookup_count);
+            try testing.expectEqual(p.mask1(ot.tag("init")), fb.masks[0]);
+            try testing.expectEqual(p.mask1(ot.tag("rlig")), fb.masks[4]);
+        }
+    }.check);
+}
+
+test "arabic: fallback tables" {
+    // Every form is a presentation form, and every ligature joins forms.
+    for (fallback.shaping) |s| for (s.forms) |f| {
+        try testing.expect(f == 0 or (f >= 0xFB50 and f <= 0xFEFC));
+    };
+    try testing.expectEqual(@as(usize, 76), fallback.shaping.len);
+    try testing.expectEqual(@as(usize, 58), fallback.ligatures_2.len);
+    try testing.expectEqual(@as(usize, 3), fallback.ligatures_3.len);
+    // LAM initial + ALEF final -> LAM WITH ALEF ISOLATED.
+    for (fallback.ligatures_2) |l| {
+        if (l.first == 0xFEDF and l.components[0] == 0xFE8E) {
+            try testing.expectEqual(@as(u16, 0xFEFB), l.ligature);
+            break;
+        }
+    } else return error.TestUnexpectedResult;
 }
