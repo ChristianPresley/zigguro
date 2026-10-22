@@ -176,6 +176,21 @@ pub const dbus = struct {
     pub const Bus = if (@import("builtin").os.tag == .linux) conn.Bus else void;
 };
 
+/// xdg-desktop-portal clients: file dialogs, opening URIs, appearance
+/// settings (Linux).
+pub const portal = if (is_linux) struct {
+    /// See `portal/request.zig`.
+    pub const request = @import("portal/request.zig");
+    /// See `portal/file_chooser.zig`.
+    pub const file_chooser = @import("portal/file_chooser.zig");
+    /// See `portal/open_uri.zig`.
+    pub const open_uri = @import("portal/open_uri.zig");
+    /// See `portal/settings.zig`.
+    pub const settings = @import("portal/settings.zig");
+    /// See `portal/window_handle.zig`.
+    pub const window_handle = @import("portal/window_handle.zig");
+} else struct {};
+
 /// The transport between the platform and UI threads, used by backends.
 pub const queue = struct {
     /// See `queue/event_ring.zig`.
@@ -246,10 +261,12 @@ test {
     _ = @import("xkb/resolve.zig");
     inline for (wayland.protocol.interfaces) |I| std.testing.refAllDecls(I);
     std.testing.refAllDecls(wayland.wire);
+    std.testing.refAllDecls(portal);
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
         _ = @import("wayland/wire/fuzz.zig");
+        _ = @import("portal/fake_portal.zig");
     }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
@@ -297,6 +314,12 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "xkb/keysym_data.zig", .src = @embedFile("xkb/keysym_data.zig") },
     .{ .path = "xkb/evdev.zig", .src = @embedFile("xkb/evdev.zig") },
     .{ .path = "xkb/compose.zig", .src = @embedFile("xkb/compose.zig") },
+    .{ .path = "portal/request.zig", .src = @embedFile("portal/request.zig") },
+    .{ .path = "portal/file_chooser.zig", .src = @embedFile("portal/file_chooser.zig") },
+    .{ .path = "portal/open_uri.zig", .src = @embedFile("portal/open_uri.zig") },
+    .{ .path = "portal/settings.zig", .src = @embedFile("portal/settings.zig") },
+    .{ .path = "portal/window_handle.zig", .src = @embedFile("portal/window_handle.zig") },
+    .{ .path = "portal/fake_portal.zig", .src = @embedFile("portal/fake_portal.zig") },
     .{ .path = "xkb/compose_parser.zig", .src = @embedFile("xkb/compose_parser.zig") },
     .{ .path = "wayland/wire/connection.zig", .src = @embedFile("wayland/wire/connection.zig") },
     .{ .path = "wayland/wire/socket.zig", .src = @embedFile("wayland/wire/socket.zig") },
