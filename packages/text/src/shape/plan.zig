@@ -83,6 +83,9 @@ pub const ComplexShaper = struct {
     name: []const u8,
     /// Adds the shaper's features and pauses after `rvrn`/direction ones.
     collectFeatures: ?*const fn (b: *PlanBuilder) Allocator.Error!void = null,
+    /// Adjusts the common features after they are added (before the
+    /// user's).
+    overrideFeatures: ?*const fn (b: *PlanBuilder) Allocator.Error!void = null,
     /// Called once the plan is compiled (masks known).
     dataInit: ?*const fn (plan: *ShapePlan) void = null,
     /// Sets per-glyph feature masks before GSUB.
@@ -94,6 +97,8 @@ pub const ComplexShaper = struct {
     /// False: decompose every character the font can draw decomposed, even
     /// when it has the composed one (HarfBuzz's "no short circuit" mode).
     normalize_short_circuit: bool = true,
+    /// Replaces canonical decomposition (null: decompose).
+    decompose: ?@import("normalize.zig").DecomposeFn = null,
     /// Replaces canonical composition when recomposing (null: compose).
     compose: ?@import("normalize.zig").ComposeFn = null,
     zero_marks: ZeroMarks = .gdef_late,
@@ -140,6 +145,11 @@ pub const PlanBuilder = struct {
         var f = flags;
         f.global = true;
         try b.addFeature(t, f, value);
+    }
+
+    /// Turns `t` off globally (unless the user turns it on).
+    pub fn disableFeature(b: *PlanBuilder, t: Tag) Allocator.Error!void {
+        try b.addFeature(t, .global_on, 0);
     }
 
     /// Ends the current stage of table `table` (0 GSUB, 1 GPOS).
@@ -359,6 +369,7 @@ pub const ShapePlan = struct {
         if (complex.collectFeatures) |f| try f(&b);
         inline for (common_features) |cf| try b.addFeature(tag(cf[0]), cf[1], 1);
         inline for (horizontal_features) |hf| try b.addFeature(tag(hf[0]), hf[1], 1);
+        if (complex.overrideFeatures) |f| try f(&b);
         var ranged: std.ArrayList(Feature) = .empty;
         for (user) |f| {
             try b.addFeature(f.tag, if (f.isGlobal()) .global_on else .none, f.value);

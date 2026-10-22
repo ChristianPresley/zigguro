@@ -188,7 +188,7 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
     }
 
     if (p.complex.preprocessText) |f| try f(p, b);
-    try normalize.normalize(face, b, .{ .reorder = p.complex.reorderMarks, .short_circuit = p.complex.normalize_short_circuit, .compose = p.complex.compose });
+    try normalize.normalize(face, b, .{ .reorder = p.complex.reorderMarks, .short_circuit = p.complex.normalize_short_circuit, .decompose = p.complex.decompose, .compose = p.complex.compose });
     setupMasks(p, b);
 
     // GSUB.
