@@ -294,3 +294,25 @@ test "segment: record header roundtrip" {
     try t.expectError(error.CorruptSegment, readRecord(bytes, bytes.len - 1));
     try t.expectError(error.CorruptSegment, readRecord(bytes, 3));
 }
+
+test "fuzz: scm-segment" {
+    try std.testing.fuzz({}, struct {
+        fn one(_: void, s: *std.testing.Smith) anyerror!void {
+            var buf: [4096]u8 = undefined;
+            const input = buf[0..s.slice(&buf)];
+            // Index files: parse, verify, look up every entry.
+            if (SegmentIndex.parse(input)) |ix| {
+                _ = ix.verifyChecksum();
+                _ = ix.verifyOrder();
+                for (0..ix.count) |k| _ = ix.find(ix.id(@intCast(k)));
+            } else |_| {}
+            // Segment files: walk the records from the header on.
+            _ = parseSegmentHeader(input) catch return;
+            var off: u64 = segment_header_len;
+            while (readRecord(input, off)) |r| {
+                if (r.end <= off) return error.NoProgress;
+                off = r.end;
+            } else |_| {}
+        }
+    }.one, .{ .corpus = @import("zg_core").testkit.fuzz.corpus(@import("zg_corpus"), "scm-segment") });
+}
