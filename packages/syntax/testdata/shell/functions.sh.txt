@@ -1,0 +1,9 @@
+greet() {
+  echo "Hello, $1"
+}
+function cleanup {
+  rm -f "$tmp"
+  return 0
+}
+function build() { make "$@"; }
+greet world
