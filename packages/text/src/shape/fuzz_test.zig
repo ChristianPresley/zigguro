@@ -52,6 +52,7 @@ fn fill(b: *Buffer, p: Parsed) !void {
 
 fn expectMonotonic(b: *const Buffer) !void {
     const infos = b.infos.items;
+    if (infos.len < 2) return; // GSUB may delete every glyph
     for (1..infos.len) |i| try testing.expect(infos[i - 1].cluster <= infos[i].cluster);
 }
 
