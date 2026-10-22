@@ -21,6 +21,7 @@
         .zg_release = .{ .path = "packages/release" },
         .zg_update = .{ .path = "packages/update" },
         .zg_crash = .{ .path = "packages/crash" },
+        .zg_config = .{ .path = "packages/config" },
         // pkgtool:insert
     },
     .paths = .{
