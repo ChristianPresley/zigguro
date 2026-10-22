@@ -1,0 +1,6 @@
+# The server dies right after the handshake.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1}}}
+> initialized
+> textDocument/didOpen
+! exit 3

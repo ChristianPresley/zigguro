@@ -29,6 +29,7 @@ fn register(b: *bench.Bench) !void {
     try registerReanchor(b);
     try pipeline.register(b);
     try registerComplete(b);
+    try registerScheduler(b);
 }
 
 const Reanchor = struct {
@@ -199,6 +200,33 @@ fn registerComplete(b: *bench.Bench) !void {
                 _ = x.arena.reset(.retain_capacity);
                 const req = complete.buildRequest(x.arena.allocator(), x.text, x.text.len / 2, .{ .path = "src/big.zig", .language = "zig", .neighbours = &x.nb, .doc = 99 }) catch unreachable;
                 bench.doNotOptimizeAway(req.prefix.len);
+            }
+        }
+    }.f);
+}
+
+/// 10,000 simulated keystrokes through the completion scheduler: an edit,
+/// a poll at the deadline, a started request and a typed-through check
+/// (the UI thread's share of keystroke to request; budget < 3 ms p99 for
+/// the whole path).
+fn registerScheduler(b: *bench.Bench) !void {
+    const sched = zg_review.assist.complete.scheduler;
+    var s: sched.Scheduler = .init(b.gpa, .{});
+    defer s.deinit();
+    try s.open(1, 0);
+    try b.run("review.complete.scheduler_10k_keys", &s, struct {
+        fn f(x: *sched.Scheduler, st: *bench.State) void {
+            var out: [4]sched.Trigger = undefined;
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                var now: u64 = 0;
+                for (0..10_000) |k| {
+                    now += 35 * std.time.ns_per_ms;
+                    _ = x.onEdit(1, .{ .origin = .user, .inserted = 1, .version = k }, now);
+                    const n = x.poll(now + x.debounceNs(1), &out);
+                    if (n > 0) _ = x.started(out[0], k);
+                    bench.doNotOptimizeAway(x.typed(1, "a", "abc"));
+                }
             }
         }
     }.f);
