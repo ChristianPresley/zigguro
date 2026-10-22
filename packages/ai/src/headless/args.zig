@@ -82,6 +82,10 @@ pub const Env = struct {
     /// Durations and the approval timeout.
     clock: ratelimit.Clock = .real,
     permission_timeout_ms: u64 = 5 * 60 * 1000,
+    /// The clock the permission broker times out on; `clock` when null.
+    /// Tests that fake `clock` but answer prompts set it to `.real`, so the
+    /// timeout timer cannot race the answer and move fake time.
+    permission_clock: ?ratelimit.Clock = null,
     /// The E16 engine, consulted before the flag rules.
     base_permission: ?deps.Permission = null,
 };

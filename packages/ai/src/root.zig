@@ -130,12 +130,19 @@ pub const tools = struct {
     pub const registry = @import("tools/registry.zig");
     pub const toolset = @import("tools/toolset.zig");
     pub const search_tools = @import("tools/search_tools.zig");
+    pub const read_tracker = @import("tools/read_tracker.zig");
     /// Built-in tools.
     pub const builtin = struct {
         pub const terminal_host = @import("tools/builtin/terminal_host.zig");
         pub const fake_host = @import("tools/builtin/fake_host.zig");
         pub const run = @import("tools/builtin/run.zig");
         pub const process_host = @import("tools/builtin/process_host.zig");
+        pub const files = @import("tools/builtin/files.zig");
+        pub const read = @import("tools/builtin/read.zig");
+        pub const edit = @import("tools/builtin/edit.zig");
+        pub const write = @import("tools/builtin/write.zig");
+        pub const disk_files = @import("tools/builtin/disk_files.zig");
+        pub const fake_files = @import("tools/builtin/fake_files.zig");
     };
     pub const ToolRegistry = registry.ToolRegistry;
     pub const ToolSource = registry.ToolSource;
@@ -145,6 +152,8 @@ pub const tools = struct {
         _ = @import("tools/registry_test.zig");
         _ = @import("tools/builtin/run_test.zig");
         _ = @import("tools/builtin/process_host_test.zig");
+        _ = @import("tools/builtin/read_test.zig");
+        _ = @import("tools/builtin/edit_test.zig");
     }
 };
 /// Cassettes and the eval runner (E10.F10.S02).

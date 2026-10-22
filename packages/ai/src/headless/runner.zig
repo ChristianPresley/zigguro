@@ -82,7 +82,7 @@ pub const Runner = struct {
         r.start_ms = env.clock.now(io);
         if (opts.permission_prompts == .stream) {
             r.broker = .init(gpa, io, r, emitFromBroker);
-            r.broker.?.clock = env.clock;
+            r.broker.?.clock = env.permission_clock orelse env.clock;
             r.broker.?.timeout_ms = env.permission_timeout_ms;
         }
         r.perm.deinit();
