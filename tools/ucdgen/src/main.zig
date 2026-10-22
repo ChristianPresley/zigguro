@@ -3,6 +3,9 @@
 //!   ucdgen --version 18.0.0 --manifest <manifest.zon> <file>... <out-dir>
 //!       Files are given in `tables.files` order. Each is checked against its
 //!       SHA-256 in the manifest; writes <out-dir>/ucd.bin and ucd_tables.zig.
+//!   ucdgen regex --version 18.0.0 --manifest <manifest.zon> <file>... <out-dir>
+//!       Files in `emit_regex.files` order; writes <out-dir>/regex_tables.zig
+//!       for zg_regex.
 //!   ucdgen enums <PropertyValueAliases.txt>
 //!       Prints the enum block of src/enums.zig.
 //!   ucdgen fetch --version <v> --dest <dir> [--update-manifest] [--base-url <url>]
@@ -14,6 +17,7 @@ const emit = @import("emit.zig");
 const enums_gen = @import("enums_gen.zig");
 const lib = @import("lib.zig");
 const fetch = @import("fetch.zig");
+const emit_regex = @import("emit_regex.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
@@ -30,6 +34,8 @@ pub fn main(init: std.process.Init) !u8 {
         try fw.interface.flush();
         return 0;
     }
+
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "regex")) return emit_regex.main(arena, io, args[2..], verifySubset);
 
     if (args.len >= 2 and std.mem.eql(u8, args[1], "fetch")) return fetchCmd(gpa, io, init.environ_map, args[2..]);
 
@@ -122,6 +128,31 @@ fn fetchCmd(gpa: std.mem.Allocator, io: std.Io, environ: *const std.process.Envi
     return 0;
 }
 
+/// Checks `inputs` (named by `names`) against the manifest at `path`.
+fn verifySubset(arena: std.mem.Allocator, io: std.Io, path: []const u8, names: []const []const u8, inputs: []const []const u8) !bool {
+    const src = try std.Io.Dir.cwd().readFileAllocOptions(io, path, arena, .limited(1 << 20), .of(u8), 0);
+    const manifest = std.zon.parse.fromSliceAlloc([]const lib.ManifestEntry, arena, src, null, .{}) catch {
+        std.debug.print("ucdgen: cannot parse manifest {s}\n", .{path});
+        return false;
+    };
+    for (names, inputs) |rel, data| {
+        const want = for (manifest) |m| {
+            if (std.mem.eql(u8, m.file, rel)) break m.sha256;
+        } else {
+            std.debug.print("ucdgen: {s} is not listed in the manifest\n", .{rel});
+            return false;
+        };
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+        const got = std.fmt.bytesToHex(digest, .lower);
+        if (!std.mem.eql(u8, &got, want)) {
+            std.debug.print("ucdgen: checksum mismatch for {s}: manifest {s}, file {s}\n", .{ rel, want, &got });
+            return false;
+        }
+    }
+    return true;
+}
+
 fn usageFetch() u8 {
     std.debug.print("usage: ucdgen fetch --version <v> --dest <dir> [--update-manifest] [--base-url <url>]\n", .{});
     return 2;
@@ -141,6 +172,7 @@ test {
     _ = @import("enums_gen.zig");
     _ = @import("lib.zig");
     _ = @import("fetch.zig");
+    _ = @import("emit_regex.zig");
     _ = @import("file_list.zig");
 }
 
