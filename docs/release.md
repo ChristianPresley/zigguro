@@ -75,6 +75,10 @@ It installs into `%LOCALAPPDATA%\Programs\zigguro` (or `--dir`) without administ
 | 4 | the embedded payload is damaged or not the expected build |
 | 5 | bad arguments, or a helper without payload asked to install |
 
+### Uninstall
+
+Apps & features runs `<root>\app\zigguro-setup.exe --uninstall` (`--silent` for the quiet uninstall string; add `--remove-user-data` to also delete settings and data). The helper copies itself to `%TEMP%\zigguro-uninstall-<rand>.exe`, starts the copy and exits; the copy waits for it, asks for confirmation (and whether to delete settings and data), reverses the receipt in reverse order (restoring overwritten values, deleting only keys it created that are empty, removing exactly its PATH entry and shortcuts), deletes the install root and finally has `cmd` delete the copy. A missing or corrupt receipt falls back to every registration setup can make for that root. Settings and data (`%APPDATA%\zigguro`, `%LOCALAPPDATA%\zigguro\{data,state,cache}`) are deleted only when each path ends in `zigguro` or `zigguro\data|state|cache`, so a misconfigured environment can never point it at a user folder. A root holding neither `receipt.zon` nor `app\zigguro.exe` is refused (exit 5).
+
 Then:
 
 - `zg-release sums --dir zig-out/release` writes `SHA256SUMS` (`sha256sum -c` compatible).

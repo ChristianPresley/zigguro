@@ -584,4 +584,58 @@ fn register(b: *bench.Bench) !void {
             std.debug.print("  zig 100k after idle: {d} tokens, {d:.1} bytes/token\n", .{ toks, @as(f64, @floatFromInt(h.store.memoryBytes())) / @as(f64, @floatFromInt(toks)) });
         }
     }
+
+    // Semantic tokens laid over lexical ones for a 100-line viewport.
+    {
+        const sub: []const []const u8 = lines[0..1000];
+        var h: syntax.Highlighter = try .init(gpa, &syntax.langs.zig.zig_language, &reg);
+        defer h.deinit();
+        const src = syntax.LineSource.fromSlice(&sub);
+        try h.reset(src);
+        _ = try h.idle(src, null);
+        var names: syntax.HighlightNames = .init(gpa);
+        defer names.deinit();
+        var legend = try (syntax.SemanticLegend{ .types = &.{ "variable", "function", "type", "property" }, .modifiers = &.{ "readonly", "declaration" } }).compile(gpa, &names);
+        defer legend.deinit();
+        var o: syntax.SemanticOverlay = try .init(gpa, sub.len, 1);
+        defer o.deinit();
+        o.enc = .utf8;
+        // A four-byte token every eight bytes, as a dense server would send.
+        var data: std.ArrayList(u32) = .empty;
+        defer data.deinit(gpa);
+        var last_line: u32 = 0;
+        for (sub, 0..) |l, li| {
+            var col: u32 = 0;
+            var first = true;
+            while (col + 4 <= l.len) : (col += 8) {
+                const dl: u32 = if (first) @as(u32, @intCast(li)) - last_line else 0;
+                try data.appendSlice(gpa, &.{ dl, if (first) col else 8, 4, col % 4, col % 3 });
+                first = false;
+            }
+            if (!first) last_line = @intCast(li);
+        }
+        _ = try o.applyFull(1, null, data.items, &legend, src);
+        try b.run("syntax.semantic.merge_viewport_100", MergeCtx{ .h = &h, .o = &o, .lines = sub }, mergeViewport);
+    }
+}
+
+const MergeCtx = struct {
+    h: *syntax.Highlighter,
+    o: *syntax.SemanticOverlay,
+    lines: []const []const u8,
+};
+
+/// Merges semantic and lexical tokens for lines 400..499.
+fn mergeViewport(ctx: MergeCtx, s: *bench.State) void {
+    var out: std.ArrayList(syntax.Token) = .empty;
+    defer out.deinit(std.heap.page_allocator);
+    var it: u64 = 0;
+    while (it < s.iterations()) : (it += 1) {
+        var n: usize = 0;
+        for (400..500) |line| {
+            ctx.o.mergeLine(line, ctx.h.tokens(line), @intCast(ctx.lines[line].len), &out, std.heap.page_allocator) catch unreachable;
+            n += out.items.len;
+        }
+        bench.doNotOptimizeAway(n);
+    }
 }
