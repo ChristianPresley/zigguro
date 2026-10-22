@@ -1,0 +1,19 @@
+# Indexed children of a large array fetched in pages of 100.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsVariablePaging": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event stopped {"reason": "step", "threadId": 1}
+> scopes {"frameId": 1000}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 1, "expensive": false}]}}
+> variables {"variablesReference": 1}
+< {"body": {"variables": [{"name": "items", "value": "[1000]u32", "variablesReference": 2, "indexedVariables": 1000}]}}
+> variables {"variablesReference": 2, "filter": "indexed", "start": 0, "count": 100}
+< {"body": {"variables": [{"name": "[0]", "value": "0", "variablesReference": 0}, {"name": "[99]", "value": "99", "variablesReference": 0}]}}
+> variables {"variablesReference": 2, "filter": "indexed", "start": 100, "count": 100}
+< {"body": {"variables": [{"name": "[100]", "value": "100", "variablesReference": 0}, {"name": "[199]", "value": "199", "variablesReference": 0}]}}
+> disconnect
+< {}
