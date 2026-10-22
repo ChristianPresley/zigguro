@@ -322,3 +322,23 @@ test "anthropic stream replays from a cassette" {
     defer testing.allocator.free(text);
     try testing.expect(std.mem.indexOf(u8, text, "sk-ant-test-key") == null);
 }
+
+test "match any entries serve unmatched requests in order" {
+    var tmp: Tmp = .init();
+    defer tmp.dir.cleanup();
+    try tmp.dir.dir.writeFile(io, .{ .sub_path = "any.jsonl", .data =
+        \\{"match":"any","method":"POST","url":"https://x/v1","status":200,"chunks":[{"dt_ms":0,"text":"first"}]}
+        \\{"match":"any","method":"POST","url":"https://x/v1","status":201,"chunks":[{"dt_ms":0,"text":"second"}]}
+        \\
+    });
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const c = try Cassette.open(io, testing.allocator, tmp.path("any.jsonl"), .replay, .{});
+    defer c.deinit();
+    const t = c.transport(null);
+    try testing.expectEqualStrings("first", (try send(t, arena.allocator(), .{ .url = "https://x/v1", .body = "{\"a\":1}" })).body);
+    const r = try send(t, arena.allocator(), .{ .url = "https://x/other" });
+    try testing.expectEqualStrings("second", r.body);
+    try testing.expectEqual(@as(u16, 201), r.head.status);
+    try testing.expectError(error.Aborted, send(t, arena.allocator(), .{ .url = "https://x/v1" }));
+}
