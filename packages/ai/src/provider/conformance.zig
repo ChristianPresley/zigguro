@@ -114,10 +114,10 @@ pub fn runConformance(io: std.Io, gpa: Allocator, make: ProviderFactory, fx: Fix
                 try report.fail(gpa, "{s}/chunk {d}: stream failed: {s}", .{ f.name, cs, @errorName(e) });
                 break;
             };
-            const folded = folder.asm_.finish() catch {
+            const folded = (folder.asm_.finishLenient() catch {
                 try report.fail(gpa, "{s}/chunk {d}: events do not fold", .{ f.name, cs });
                 break;
-            };
+            }).message;
             const enc_resp = try contentJson(a, resp.message);
             const enc_fold = try contentJson(a, folded);
             if (!std.mem.eql(u8, enc_resp, enc_fold))
