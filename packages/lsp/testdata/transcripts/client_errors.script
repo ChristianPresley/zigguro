@@ -1,0 +1,18 @@
+# Error responses as the client maps them, and a request left unanswered
+# until the client times out and cancels it.
+> initialize
+< {"id": $1, "result": {"capabilities": {"hoverProvider": true, "definitionProvider": true}, "offsetEncoding": "utf-8"}}
+> initialized
+> textDocument/hover
+< {"id": $1, "error": {"code": -32801, "message": "content modified"}}
+> textDocument/hover
+< {"id": $1, "error": {"code": -32802, "message": "server cancelled"}}
+> textDocument/hover
+< {"id": $1, "error": {"code": -32603, "message": "boom"}}
+> textDocument/hover
+< {"id": $1, "result": {"contents": 42}}
+> textDocument/definition
+> $/cancelRequest
+> shutdown
+< {"id": $1, "result": null}
+> exit
