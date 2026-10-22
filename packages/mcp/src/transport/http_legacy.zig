@@ -147,13 +147,15 @@ fn vRequest(ptr: *anyopaque, req: Transport.OutgoingRequest, sink: *Transport.Re
 
 fn vNotify(ptr: *anyopaque, n: Transport.OutgoingNotification) Transport.SendError!void {
     const self: *HttpLegacyTransport = @ptrCast(@alignCast(ptr));
-    return self.start(.{
+    const req: Transport.OutgoingRequest = .{
         .id = .null,
         .method = .ping,
         .method_str = n.method_str,
         .body = n.body,
         .revision = n.revision,
-    }, null, null);
+    };
+    if (n.ordered) return self.postNow(req);
+    return self.start(req, null, null);
 }
 
 fn vRespond(ptr: *anyopaque, body: []const u8, revision: protocol.Revision) Transport.SendError!void {
@@ -281,6 +283,39 @@ fn dropSession(self: *HttpLegacyTransport) void {
 
 fn start(self: *HttpLegacyTransport, req: Transport.OutgoingRequest, id: ?RequestId, sink: ?*Transport.RequestSink) Transport.SendError!void {
     self.rt.assertNotUi();
+    const call = try self.newCall(req, id, sink);
+    errdefer self.freeCall(call);
+
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    if (self.closed) return error.Closed;
+    try self.calls.append(self.gpa, call);
+    // The task cannot finish before `future` is set: it takes `mutex` last.
+    call.future = self.io.concurrent(runCall, .{call}) catch {
+        _ = self.calls.pop();
+        return error.ConcurrencyUnavailable;
+    };
+}
+
+/// Posts a notification on the caller's task and returns once the server
+/// accepted it, so that later messages cannot overtake it.
+fn postNow(self: *HttpLegacyTransport, req: Transport.OutgoingRequest) Transport.SendError!void {
+    self.rt.assertNotUi();
+    {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closed) return error.Closed;
+    }
+    const call = try self.newCall(req, null, null);
+    defer self.freeCall(call);
+    perform(call) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Closed,
+    };
+}
+
+/// A call record owning copies of `req`'s strings.
+fn newCall(self: *HttpLegacyTransport, req: Transport.OutgoingRequest, id: ?RequestId, sink: ?*Transport.RequestSink) Allocator.Error!*Call {
     const call = try self.gpa.create(Call);
     call.* = .{ .t = self, .arena = .init(self.gpa), .id = null, .req = undefined, .sink = sink };
     errdefer {
@@ -300,16 +335,7 @@ fn start(self: *HttpLegacyTransport, req: Transport.OutgoingRequest, id: ?Reques
         else => i,
     };
     call.req.id = call.id orelse .null;
-
-    self.mutex.lockUncancelable(self.io);
-    defer self.mutex.unlock(self.io);
-    if (self.closed) return error.Closed;
-    try self.calls.append(self.gpa, call);
-    // The task cannot finish before `future` is set: it takes `mutex` last.
-    call.future = self.io.concurrent(runCall, .{call}) catch {
-        _ = self.calls.pop();
-        return error.ConcurrencyUnavailable;
-    };
+    return call;
 }
 
 fn freeCall(self: *HttpLegacyTransport, c: *Call) void {
