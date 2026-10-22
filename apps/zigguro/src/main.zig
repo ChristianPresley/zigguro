@@ -22,6 +22,7 @@
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
@@ -35,7 +36,9 @@ const fonts = @import("fonts.zig");
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
     // Crash reports in every mode (std enables it only with runtime safety).
-    .enable_segfault_handler = true,
+    // std's Windows handler is a vectored one that would run before
+    // zg_crash's unhandled-exception filter.
+    .enable_segfault_handler = builtin.os.tag != .windows,
     .signal_stack_size = 256 * 1024,
 };
 pub const panic = std.debug.FullPanic(zg_core.report.panicHandler);
