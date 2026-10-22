@@ -86,6 +86,7 @@ pub fn create(gpa: Allocator, io: std.Io, opts: r2d.RendererOptions) !*SwRendere
     errdefer gpa.destroy(self);
     const scratch = try gpa.alloc(raster.Scratch, n);
     errdefer gpa.free(scratch);
+    for (scratch) |*sc| sc.luts = .{};
     self.* = .{ .gpa = gpa, .io = io, .opts = opts, .size = opts.size, .threads = n, .scratch = scratch };
     try self.textures.append(gpa, null);
     return self;
@@ -490,6 +491,7 @@ test "sw: scalar vs vector shading identical" {
     @memset(&s1.g, 0.2);
     @memset(&s1.b, 0.3);
     @memset(&s1.a, 1);
+    s1.luts = .{};
     s8.* = s1.*;
     for (dl.prims.items) |*p| {
         raster.shadePrim(1, tile, p, &ctx, s1);
