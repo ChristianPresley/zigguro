@@ -2045,6 +2045,54 @@ borrows its inputs for one call.
 Unstable: embedded languages (script in HTML, code fences) use the host language's rules
 until the injection map is queryable by position.
 
+## zg_editor.model.edit line operations and clipboard (line_ops, clipboard)
+
+### Defined in
+`packages/editor/src/model/edit/{line_ops.zig, clipboard.zig}` (E05.F02.S03.T02); goldens in
+`packages/editor/testdata/golden/line_ops/cases.txt`. Shared golden helpers:
+`packages/editor/src/model/edit/golden_testing.zig`.
+
+### Implemented by
+E05.F02.S03.T02.
+
+### Consumed by
+`EditorView` (E05.F05.S02.T04 moves `PlatformClip` to and from the E01 clipboards) and E15
+keybindings (`line_ops.command_ids`), E05.F09 Vim/Emacs registers.
+
+### Signature
+```zig
+pub const LineOp = enum { move_up, move_down, duplicate_up, duplicate_down, join, sort_asc, sort_desc,
+    sort_unique, reverse, transpose_chars, transpose_lines, delete_line, indent, outdent, upper, lower,
+    title, trim_trailing_ws };
+pub const command_ids: std.enums.EnumArray(LineOp, []const u8);     // editor.moveLinesUp, ...
+pub fn lineOp(doc, sels, op: LineOp, ctx: EditCtx) !bool;          // one change; false when nothing to do
+// clipboard.zig
+pub const Clipboard = struct { gpa: Allocator, pieces: [][]u8, linewise: bool }; // deinit, joined(gpa, eol)
+pub const PlatformClip = struct { text: []u8, private: []u8 };                  // deinit(gpa)
+pub const private_mime = "application/x-zigguro-multicursor";
+pub fn copy(doc, sels: *const SelectionSet, gpa) !Clipboard;   // only carets: their lines (linewise)
+pub fn cut(doc, sels, gpa, ctx) !Clipboard;
+pub fn paste(doc, sels, cb: *const Clipboard, ctx) !bool;       // N pieces to N selections, else joined
+pub fn reindent(a, text, target_cols: u32, first: bool, ctx) ![]const u8;
+pub fn encodePlatform(cb: *const Clipboard, gpa) !PlatformClip;   // private = JSON {v, linewise, pieces}
+pub fn decodePlatform(text, private: ?[]const u8, gpa) !Clipboard; // private ignored unless it matches text
+pub fn documentEol(t: *const PieceTree) []const u8;
+```
+`EditCtx` gains `reindent_on_paste`. Move and duplicate leave the block's own text in place
+(the neighbouring line is deleted and re-inserted, or a copy inserted beside it), so
+decorations and anchors on moved lines follow them; each line keeps its EOL. Sort, reverse
+and transpose_lines rewrite the block and keep selections on their line numbers. Pasted
+text takes the document's EOL.
+
+### Threading
+Owner (UI) thread, with the Document.
+
+### Ownership/lifetime
+A `Clipboard` owns its pieces; the view keeps the last one for paste and frees it.
+
+### Stability
+Unstable: case transforms are locale-independent; sort is byte order (numeric sort is P2).
+
 ## zg_editor.model.diff
 
 ### Defined in
