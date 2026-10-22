@@ -32,6 +32,10 @@ pub const StreamError = error{
     Protocol,
     /// Operation not supported by this provider.
     Unsupported,
+    /// The connection ended before the final event.
+    StreamTruncated,
+    /// No bytes arrived within the idle timeout.
+    StreamStalled,
 };
 
 /// Failures of `count_tokens`.
@@ -108,7 +112,7 @@ pub fn isContextOverflow(message: []const u8) bool {
 /// True for failures worth retrying (by `RetryPolicy`).
 pub fn retryable(e: StreamError) bool {
     return switch (e) {
-        error.Network, error.Timeout, error.RateLimited, error.Overloaded, error.ServerError => true,
+        error.Network, error.Timeout, error.RateLimited, error.Overloaded, error.ServerError, error.StreamTruncated, error.StreamStalled => true,
         else => false,
     };
 }
