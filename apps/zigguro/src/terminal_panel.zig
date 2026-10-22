@@ -7,6 +7,7 @@
 //! shows why no shell started (ConPTY arrives with #267).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_gui = @import("zg_gui");
 const zg_platform = @import("zg_platform");
 const zg_terminal = @import("zg_terminal");
@@ -80,10 +81,14 @@ pub const TerminalPanel = struct {
         return p.note[0..p.note_len];
     }
 
-    /// Spawns `$SHELL` (or /bin/sh) on a PTY and starts reading it.
+    /// Spawns `$SHELL` (or /bin/sh) on a PTY and starts reading it; on
+    /// Windows, `%COMSPEC%` (or cmd.exe) on a ConPTY.
     pub fn start(p: *TerminalPanel) void {
         if (p.pty != null) return;
-        const shell = p.env.get("SHELL") orelse "/bin/sh";
+        const shell = if (builtin.os.tag == .windows)
+            p.env.get("COMSPEC") orelse "cmd.exe"
+        else
+            p.env.get("SHELL") orelse "/bin/sh";
         const argv = [_][]const u8{shell};
         p.pty = Pty.spawn(p.gpa, p.io, .{
             .argv = &argv,

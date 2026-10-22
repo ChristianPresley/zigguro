@@ -437,7 +437,11 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, b: Backend, opts: InitOpt
 pub fn detectBackend(env: *const std.process.Environ.Map) Backend;
 pub fn isForced(opts: InitOptions) bool; // opts.backend or a valid ZG_PLATFORM
 // InitOptions.environ_map is `?*std.process.Environ.Map` (mutable: Wayland consumes WAYLAND_SOCKET)
+// InitOptions.raw_mouse: bool = false — also stage Event.pointer_relative (Win32 only)
 pub const Event = union(enum(u8)) { ... }; // @sizeOf(Event) <= 64, asserted
+// New variants go at the end, so recorded .zgtrace tags keep their values:
+//   pointer_pressure: { win, pressure: f32 }            // pen tip 0..1, before its pointer_move
+//   pointer_relative: { win, dx: f32, dy: f32, time_ns } // raw mouse counts
 ```
 
 Backend selection: `ZG_PLATFORM` (`wayland`, `x11`, `win32`, `headless`)
@@ -1002,7 +1006,10 @@ for the software renderer, `cpuPresenter`; E04 through `zg_gui.Host`.
 
 ### Signature
 ```zig
-pub const InitOptions = struct { refresh_ns: ?u32 = null }; // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+pub const InitOptions = struct {
+    refresh_ns: ?u32 = null, // null: from DwmGetCompositionTimingInfo, 60 Hz fallback
+    raw_mouse: bool = false, // RegisterRawInputDevices (mouse, focus window) → Event.pointer_relative
+};
 pub fn init(gpa: Allocator, io: std.Io, opts: InitOptions) !*Win32Backend; // spawns the platform thread, waits for its message window
 pub fn platform(b: *Win32Backend) Platform;
 // cpu_present.zig
@@ -1020,7 +1027,11 @@ auto-repeat becomes one `repeat` per count (at most 32).
 releases every held key. Alt, Alt+Space and Alt+F4 keep their system
 meaning; F10 and Alt+letter do not. Wheel notches are `scroll` lines
 with forward negative; sub-notch deltas (precision touchpads) report
-`source = .continuous`. A window created on a non-96 DPI monitor is resized for that
+`source = .continuous`. Touch (`WM_POINTER*`, `pointer.zig`) stages
+`touch` events and still reaches `DefWindowProcW`, so Windows promotes the
+primary touch to mouse messages; pens stage `pointer_pressure` then
+`pointer_move`, with contact as the left button (right with the barrel
+button held at contact). A window created on a non-96 DPI monitor is resized for that
 DPI before it is shown. Each CPU present stages `Event.present_feedback`
 (stamped when the blit returns, `flags = 0`). `monitors` reports each
 monitor's effective DPI (shcore `GetDpiForMonitor`) and the DWM refresh
@@ -1067,7 +1078,8 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 
 ### Stability
 Experimental. Not yet: a theme or backdrop command (the system theme
-and no backdrop are used), raw input, pen and touch, TSF and
+and no backdrop are used), pen tilt and eraser, `GetRawInputBuffer`
+batching, TSF and
 `set_ime_state.surrounding`, bitmap clipboard formats (`CF_DIB`), OLE
 drag and drop, cloaking until the first present, the high-resolution
 waitable pacing timer and per-monitor refresh rates.
@@ -2270,7 +2282,7 @@ E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
 ### Signature
 ```zig
 pub const VkRenderer = struct {
-    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless targets for now
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*VkRenderer;              // headless and external (shm) targets for now
     pub fn createWithGpu(gpa, io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer;
     pub fn destroy(self: *VkRenderer) void;
     pub fn renderer(self: *VkRenderer) r2d.Renderer;
@@ -2280,18 +2292,37 @@ pub const VkRenderer = struct {
 pub const Batch = struct { pipeline: enum(u1) { prim, text_subpixel }, first: u32, count: u32 };
 pub fn buildBatches(gpa, prims: []const Prim, clips: []const ClipRect, rect: ?PxRect, dual_src: bool, out: *std.ArrayList(Batch)) !void;
 pub const Readback = struct {
-    pub const Sink = union(enum) { headless: *HeadlessSink, memory: *CpuImage };
+    pub const Sink = union(enum) { headless: *HeadlessSink, shm: *Presenter, memory: *CpuImage };
     pub fn init(gpu, mem, sched, sink, window) Readback;  pub fn deinit(self) void;
     pub fn acquire(self, extent: Size) !Acquired;             // { image: *Texture, age: u32 }
     pub fn recordCopy(self, fs: *FrameSlot, rects: []const PxRect) !void;   // before submit
     pub fn present(self, fs: *const FrameSlot) void;          // after submit
     pub fn poll(self) void;  pub fn waitIdle(self) void;  pub fn setSink(self, sink: Sink) void;
 };
+pub const ExternalRing = struct {                             // present/ExternalRing.zig (E02.F04.S02.T01)
+    pub fn init(gpu, mem, sched, presenter: *Presenter) InitError!ExternalRing;   // error.ExportUnsupported -> use Readback(.shm)
+    pub fn deinit(self) void;
+    pub fn acquire(self, extent: Size) AcquireError!Acquired;   // { image: *Texture, age, index }; error.NoFreeBuffer skips the frame
+    pub fn beginRendering(self, cb, a: Acquired) void;           // UNDEFINED or acquire from FOREIGN -> COLOR_ATTACHMENT
+    pub fn endRendering(self, cb, a: Acquired) void;             // release to FOREIGN in GENERAL
+    pub fn signalFor(self, fs) ?vk.SemaphoreSubmitInfo;          // SYNC_FD semaphore for the submit
+    pub fn present(self, fs, a: Acquired, damage: []const PxRect) AcquireError!void;
+    pub fn abandon(self, a: Acquired) void;  pub fn onFeedbackChanged(self) void;
+};
+pub fn drm_formats.vkFormatToFourcc(f: vk.Format, opaque_alpha: bool) ?u32;
+pub fn drm_formats.negotiate(fourcc: u32, compositor: []const FormatModifier, device: []const DeviceModifier, out: []u64) usize;
+pub const ShmRing = struct {                                  // present/ShmRing.zig
+    pub fn init(presenter: *Presenter) ShmRing;  pub fn deinit(self) void;
+    pub fn submit(self, back: *const CpuImage, damage: []const PxRect, full: bool) void;
+    pub fn flush(self, back: *const CpuImage) bool;  pub fn pending(self) bool;
+};
 ```
 Deviations from the spec text:
 - Readback keeps one offscreen image rather than one per frame slot. Frames on one queue are ordered, so the image's age is 1 after the first frame.
 - The copy is split into `recordCopy` (before submit) and `present` (after submit).
-- The shm presenter sink, async delivery of copies over 1 MiB, layers (E02.F06.S03), the swapchain and dmabuf targets, GPU timing and async device creation are not implemented yet.
+- The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
+- `ExternalRing` exists but `VkRenderer` does not use it yet: every `.external` target goes through the shm sink. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
+- Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
 ### Threading

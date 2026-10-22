@@ -86,7 +86,7 @@ pub fn initBackend(gpa: std.mem.Allocator, io: std.Io, backend: Backend, opts: I
             return b.platform();
         },
         .win32 => if (is_windows) {
-            const b = win32.Win32Backend.init(gpa, io, .{}) catch |err| {
+            const b = win32.Win32Backend.init(gpa, io, .{ .raw_mouse = opts.raw_mouse }) catch |err| {
                 log.info("Win32 backend unavailable: {t}", .{err});
                 return if (err == error.OutOfMemory) error.OutOfMemory else error.BackendUnavailable;
             };
@@ -121,6 +121,8 @@ pub const process = struct {
     pub const Pty = pty.Pty;
     /// See `process/env.zig`.
     pub const env = @import("process/env.zig");
+    /// Windows command lines and environment blocks (builds everywhere).
+    pub const cmdline_windows = @import("process/cmdline_windows.zig");
     /// Linux process spawning without a PTY.
     pub const spawn_linux = if (@import("builtin").os.tag == .linux) @import("process/spawn_linux.zig") else struct {};
 };
@@ -321,6 +323,8 @@ pub const win32 = struct {
     pub const cursor = @import("win32/cursor.zig");
     /// See `win32/ime.zig`.
     pub const ime = @import("win32/ime.zig");
+    /// See `win32/pointer.zig`.
+    pub const pointer = @import("win32/pointer.zig");
     /// See `win32/backend.zig`.
     pub const Win32Backend = if (is_windows) @import("win32/backend.zig").Win32Backend else void;
     /// See `win32/backend.zig`.
@@ -461,6 +465,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "process/env.zig", .src = @embedFile("process/env.zig") },
     .{ .path = "process/spawn_linux.zig", .src = @embedFile("process/spawn_linux.zig") },
     .{ .path = "process/pty_linux.zig", .src = @embedFile("process/pty_linux.zig") },
+    .{ .path = "process/pty_windows.zig", .src = @embedFile("process/pty_windows.zig") },
+    .{ .path = "process/cmdline_windows.zig", .src = @embedFile("process/cmdline_windows.zig") },
     .{ .path = "dbus/signature.zig", .src = @embedFile("dbus/signature.zig") },
     .{ .path = "dbus/marshal.zig", .src = @embedFile("dbus/marshal.zig") },
     .{ .path = "dbus/variant.zig", .src = @embedFile("dbus/variant.zig") },
@@ -529,6 +535,7 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "win32/frame.zig", .src = @embedFile("win32/frame.zig") },
     .{ .path = "win32/cursor.zig", .src = @embedFile("win32/cursor.zig") },
     .{ .path = "win32/ime.zig", .src = @embedFile("win32/ime.zig") },
+    .{ .path = "win32/pointer.zig", .src = @embedFile("win32/pointer.zig") },
     .{ .path = "win32/backend.zig", .src = @embedFile("win32/backend.zig") },
 };
 

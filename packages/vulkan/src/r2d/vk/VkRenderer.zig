@@ -26,8 +26,9 @@
 //! Layers not used in a frame are evicted least recently used first once
 //! they exceed `RendererOptions.layer_budget_bytes`.
 //!
-//! Targets today: headless and in-memory Readback. The Win32 swapchain,
-//! the Linux dmabuf ring follow.
+//! Targets today: Readback to a headless sink, to memory, or to an
+//! external presenter's shm buffers. The Win32 swapchain and the Linux
+//! dmabuf ring follow.
 
 const VkRenderer = @This();
 
@@ -128,11 +129,12 @@ timer: ?GpuTimer = null,
 /// The latest durations read back (from frames_in_flight frames ago).
 last_gpu: ?GpuTimer.Durations = null,
 
-/// Creates a Vulkan device for `opts` and a renderer on it. Headless
-/// targets only for now (`error.Unsupported` otherwise).
+/// Creates a Vulkan device for `opts` and a renderer on it. Headless and
+/// external (shm readback) targets for now (`error.Unsupported`
+/// otherwise).
 pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !*VkRenderer {
     switch (opts.target) {
-        .headless => {},
+        .headless, .external => {},
         else => return error.Unsupported,
     }
     const gpu = try Gpu.create(gpa, io, .{
@@ -152,6 +154,9 @@ pub fn create(gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) !*V
 pub fn createWithGpu(gpa: std.mem.Allocator, io: std.Io, gpu: *Gpu, opts: r2d.RendererOptions) !*VkRenderer {
     const sink: Readback.Sink = switch (opts.target) {
         .headless => |s| .{ .headless = s },
+        // Until the dmabuf ring lands, external presenters get shm
+        // buffers filled by readback.
+        .external => |p| .{ .shm = p },
         else => return error.Unsupported,
     };
     const self = try gpa.create(VkRenderer);

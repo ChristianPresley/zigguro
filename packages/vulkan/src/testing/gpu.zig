@@ -10,7 +10,12 @@ fn quiet(_: std.log.Level, _: []const u8) void {}
 /// A device with validation on, or `error.SkipZigTest` when the machine
 /// has no usable Vulkan driver.
 pub fn gpuOrSkip() !*Gpu {
-    return Gpu.create(std.testing.allocator, std.testing.io, .{ .instance = .{ .validation = .on }, .log_emit = quiet }) catch |err| switch (err) {
+    return gpuForOrSkip(.headless);
+}
+
+/// Like `gpuOrSkip`, with the device extensions of `surface` targets.
+pub fn gpuForOrSkip(surface: @FieldType(@import("../gpu/instance.zig").InstanceOptions, "surface")) !*Gpu {
+    return Gpu.create(std.testing.allocator, std.testing.io, .{ .instance = .{ .validation = .on, .surface = surface }, .log_emit = quiet }) catch |err| switch (err) {
         error.VulkanNotInstalled, error.Unsupported, error.NoSuitableDevice, error.LoaderTooOld, error.IncompatibleDriver => return error.SkipZigTest,
         else => return err,
     };
