@@ -253,3 +253,41 @@ test "gpu: vk renderer: layer memory stays within the budget" {
     vr.readback.waitIdle();
     try validation.expectNoValidationErrors(gpu);
 }
+
+test "gpu: vk renderer: gpu timestamps reach FrameStats without waiting" {
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const vr = try newRenderer(gpu, &sink);
+    defer vr.destroy();
+    if (vr.timer == null) return error.SkipZigTest;
+    const r = vr.renderer();
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+    dl.layer_query = r.layerQuery();
+    var got: ?u64 = null;
+    var frame: u32 = 0;
+    while (frame < 8) : (frame += 1) {
+        dl.reset(.{ .w = 256, .h = 256 }, 1);
+        dl.damageAll();
+        if (dl.beginLayer(@enumFromInt(1), .{ .w = 64, .h = 64 }, &.{.{ .x = 0, .y = 0, .w = 64, .h = 64 }})) {
+            dl.rect(.{ .x = 0, .y = 0, .w = 64, .h = 64 }, r2d.Color.white, .{});
+            dl.endLayer();
+        }
+        dl.rect(.{ .x = 0, .y = 0, .w = 256, .h = 256 }, r2d.Color.black, r2d.Radii.all(8));
+        dl.drawLayer(@enumFromInt(1), .{ .x = 8, .y = 8, .w = 64, .h = 64 }, .{}, 1);
+        const s = try r.render(&dl);
+        if (s.gpu_ns) |ns| got = ns;
+    }
+    // Available within frames_in_flight frames.
+    try testing.expect(got != null and got.? > 0);
+    const g = vr.last_gpu.?;
+    // Every zone ran and fits inside the frame.
+    try testing.expect(g.uploads_ns > 0 and g.layers_ns > 0 and g.main_ns > 0);
+    try testing.expect(g.uploads_ns <= g.frame_ns and g.layers_ns <= g.frame_ns and g.main_ns <= g.frame_ns);
+    try testing.expect(g.uploads_ns + g.layers_ns + g.main_ns <= g.frame_ns);
+    vr.readback.waitIdle();
+    try validation.expectNoValidationErrors(gpu);
+}
