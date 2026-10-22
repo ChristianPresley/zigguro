@@ -21,6 +21,11 @@
 //! unit guessed when the view opened) and pair-aware delete. Their changes
 //! are captured from the document's change events and recorded as one undo
 //! step each.
+//!
+//! Modal input (`mode`, e.g. a `VimState`): the widget offers keys to the
+//! mode first (`modeKey`); keys it passes through get the normal
+//! handling. The mode edits through a `modes.Host` built from the view
+//! and records its own undo steps; the caret takes its shape.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -35,6 +40,7 @@ const multi = @import("../model/edit/multi_cursor.zig");
 const gutter = @import("gutter.zig");
 const smart = @import("../model/edit/smart_edit.zig");
 const indent_mod = @import("../model/edit/indent.zig");
+const modes = @import("../modes.zig");
 
 const Allocator = std.mem.Allocator;
 const Document = document.Document;
@@ -150,6 +156,8 @@ pub const EditorView = struct {
     indent_unit: ?indent_mod.IndentUnit = null,
     /// Collects the changes of a running model command (`runSmart`).
     capture: ?*Capture = null,
+    /// A modal input handler (Vim) offered every key first. Not owned.
+    mode: ?modes.ModeHandler = null,
     /// The SCM bar's hunks (a dirty diff); none: no bar. Not owned.
     scm: ?gutter.ScmGutterSource = null,
     on_change: ?ChangeHook = null,
@@ -842,6 +850,47 @@ pub const EditorView = struct {
     }
 
     const SmartOp = union(enum) { type_char: u21, newline, delete_left };
+
+    /// Offers `k` to the mode; true when it took it (the view then shows
+    /// what it did). Read-only views have no mode.
+    pub fn modeKey(v: *EditorView, k: modes.Key) !bool {
+        const m = v.mode orelse return false;
+        if (v.opts.read_only) return false;
+        var tokens: syntax_mod.SyntaxTokens = undefined;
+        var host: modes.Host = .{
+            .doc = v.doc,
+            .sels = &v.sels,
+            .undo = &v.undo,
+            .edit = v.smartCtx(&tokens),
+            .move = .{ .display = v.displayMap(), .page_rows = @intFromFloat(@max(1, @floor(v.viewport.h / v.lineHeight()) - 1)), .lang = if (v.syntax) |ds| ds.lang else null, .tab_size = v.opts.tab_size },
+            .brackets = if (v.syntax) |ds| &ds.brackets else null,
+        };
+        // The mode moves the selections and records undo itself.
+        const r = blk: {
+            v.in_edit = true;
+            defer v.in_edit = false;
+            break :blk try m.handleKey(k, &host);
+        };
+        if (r == .passthrough) return false;
+        v.syncSaved();
+        v.revealPrimary();
+        v.touch();
+        // The mode line may have changed without a caret move.
+        if (v.on_caret) |h| h.f(h.ctx, v);
+        return true;
+    }
+
+    /// How the caret is drawn: the mode's shape, else a bar.
+    pub fn caretShape(v: *const EditorView) modes.mode.CaretShape {
+        const m = v.mode orelse return .bar;
+        return m.caretShape();
+    }
+
+    /// The mode's status ("-- INSERT --"), or "" without one.
+    pub fn modeStatus(v: *const EditorView) []const u8 {
+        const m = v.mode orelse return "";
+        return m.statusText();
+    }
 
     /// Runs a `smart_edit` command and records what it changed as one
     /// undo step.
