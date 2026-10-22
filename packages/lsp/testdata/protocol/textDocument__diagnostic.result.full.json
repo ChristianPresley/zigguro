@@ -1,0 +1,1 @@
+{"kind":"full","resultId":"r2","items":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"expected ';'","severity":1}],"relatedDocuments":{"file:///home/dev/proj/b.c":{"kind":"unchanged","resultId":"r1"}}}
