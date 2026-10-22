@@ -194,7 +194,10 @@ On Linux devices with calibrated timestamps, `gpu_start_ns` places the frame
 on the CPU monotonic clock.
 
 With no window damage and no layer redrawn, nothing is submitted. Targets
-today are headless and in-memory readback. The whole scene corpus,
+today are readback to a headless sink, to memory, or to an external
+presenter's shm buffers (`present/ShmRing.zig`: up to three
+`allocCpuBuffer` buffers, buffer-age repaint from a CPU backbuffer, latest
+frame wins when the compositor holds them all). The whole scene corpus,
 multi-frame damage and layer scenes included, matches the software goldens
 on lavapipe (`zig build test-vulkan-gpu`, CI job `vulkan`).
 

@@ -5,12 +5,14 @@
 //!
 //! - `.headless`: a persistent CPU backbuffer is patched and handed to
 //!   E01's `HeadlessSink.write` with the frame's rects;
+//! - `.shm`: the backbuffer is patched the same way, then `ShmRing`
+//!   copies it into a released `allocCpuBuffer` buffer of an external
+//!   presenter (buffer-age repaint) and presents the frame's rects;
 //! - `.memory`: the rects are copied into a caller-owned `CpuImage`
 //!   (tests and the parity runner).
 //!
 //! One offscreen image is kept (frames on one queue are ordered), so its
-//! age is 1 after the first frame and 0 after creation or resize. The
-//! shm presenter sink lands with the Linux presentation targets.
+//! age is 1 after the first frame and 0 after creation or resize.
 
 const Readback = @This();
 
@@ -25,6 +27,7 @@ const barriers = @import("../mem/barriers.zig");
 const CpuImage = @import("../testing/CpuImage.zig");
 const FrameScheduler = @import("FrameScheduler.zig");
 const Damage = @import("Damage.zig");
+const ShmRing = @import("ShmRing.zig");
 const rect = @import("../r2d/rect.zig");
 
 const PxRect = rect.PxRect;
@@ -32,6 +35,8 @@ const Size = rect.Size;
 
 pub const Sink = union(enum) {
     headless: *platform.surface.HeadlessSink,
+    /// An external presenter without dmabuf (wl_shm, MIT-SHM).
+    shm: *platform.surface.Presenter,
     memory: *CpuImage,
 };
 
@@ -54,6 +59,8 @@ const Pending = struct {
     buffer: ?types.Buffer = null,
     regions: [Damage.RectList.capacity]Region = undefined,
     len: u8 = 0,
+    /// The image size when the copy was recorded.
+    extent: Size = .{ .w = 0, .h = 0 },
     /// The timeline value after which the copy is readable (0 = nothing
     /// pending).
     value: u64 = 0,
@@ -69,8 +76,10 @@ format: Texture.Format,
 image: ?Texture = null,
 extent: Size = .{ .w = 0, .h = 0 },
 pending: [FrameScheduler.max_frames_in_flight]Pending = @splat(.{}),
-/// The headless sink's persistent backbuffer.
+/// The headless and shm sinks' persistent backbuffer.
 back: ?CpuImage = null,
+/// The shm sink's presenter buffers.
+shm: ?ShmRing = null,
 /// Bytes delivered so far (tests and the trace counter).
 copied_bytes: u64 = 0,
 
@@ -78,10 +87,18 @@ copied_bytes: u64 = 0,
 /// memory sink gets its image's channel order.
 pub fn init(gpu: *Gpu, mem: *DeviceMemory, sched: *FrameScheduler, sink: Sink, window: platform.types.WindowId) Readback {
     const format: Texture.Format = switch (sink) {
-        .headless => .bgra8_unorm,
+        .headless, .shm => .bgra8_unorm,
         .memory => |img| if (img.order == .bgra) .bgra8_unorm else .rgba8_unorm,
     };
-    return .{ .gpu = gpu, .mem = mem, .sched = sched, .sink = sink, .window = window, .format = format };
+    return .{
+        .gpu = gpu,
+        .mem = mem,
+        .sched = sched,
+        .sink = sink,
+        .window = window,
+        .format = format,
+        .shm = if (sink == .shm) ShmRing.init(sink.shm) else null,
+    };
 }
 
 /// Delivers what is complete; the GPU must be idle or the scheduler about
@@ -91,6 +108,7 @@ pub fn deinit(self: *Readback) void {
     for (&self.pending) |*p| if (p.buffer) |b| self.mem.destroyBuffer(b);
     if (self.image) |*img| img.destroy(self.mem);
     if (self.back) |*b| b.deinit(self.gpu.gpa);
+    if (self.shm) |*r| r.deinit();
     self.* = undefined;
 }
 
@@ -99,7 +117,8 @@ pub fn vkFormat(self: *const Readback) vk.Format {
     return self.format.vkFormat();
 }
 
-/// Switches to a new memory sink (same channel order) or back.
+/// Switches to a memory sink (same channel order) or back to the sink
+/// given to `init`.
 pub fn setSink(self: *Readback, sink: Sink) void {
     self.waitIdle();
     self.sink = sink;
@@ -128,6 +147,7 @@ pub fn recordCopy(self: *Readback, fs: *FrameScheduler.FrameSlot, rects: []const
     const img = &self.image.?;
     const packed_regions = packRegions(rects, &p.regions);
     p.len = @intCast(packed_regions.regions.len);
+    p.extent = self.extent;
     if (p.len == 0) return;
     if (p.buffer == null or p.buffer.?.size < packed_regions.bytes) {
         if (p.buffer) |b| self.sched.deferDestroy(.{ .buffer = b });
@@ -160,10 +180,13 @@ pub fn present(self: *Readback, fs: *const FrameScheduler.FrameSlot) void {
     p.value = fs.timeline_value;
 }
 
-/// Delivers every copy whose frame has completed, oldest first. Never
-/// waits.
+/// Delivers every copy whose frame has completed, oldest first, and
+/// presents an shm frame that waited for a free buffer. Never waits.
 pub fn poll(self: *Readback) void {
     const done = self.sched.completed();
+    defer if (self.shm) |*r| {
+        if (r.pending() and self.back != null and self.sink == .shm) _ = r.flush(&self.back.?);
+    };
     while (true) {
         var oldest: ?*Pending = null;
         for (&self.pending) |*p| if (p.value != 0 and p.value <= done and (oldest == null or p.value < oldest.?.value)) {
@@ -189,11 +212,11 @@ fn deliver(self: *Readback, p: *Pending) void {
     const src = b.mappedSlice() orelse return;
     const dst: *CpuImage = switch (self.sink) {
         .memory => |img| img,
-        .headless => blk: {
-            if (self.back == null or self.back.?.width != self.extent.w or self.back.?.height != self.extent.h) {
+        .headless, .shm => blk: {
+            if (self.back == null or self.back.?.width != p.extent.w or self.back.?.height != p.extent.h) {
                 if (self.back) |*bb| bb.deinit(self.gpu.gpa);
                 self.back = null;
-                self.back = CpuImage.initOrder(self.gpu.gpa, self.extent.w, self.extent.h, .bgra) catch return;
+                self.back = CpuImage.initOrder(self.gpu.gpa, p.extent.w, p.extent.h, .bgra) catch return;
             }
             break :blk &self.back.?;
         },
@@ -215,6 +238,10 @@ fn deliver(self: *Readback, p: *Pending) void {
     }
     switch (self.sink) {
         .headless => |sink| sink.write(sink.ptr, self.window, rects[0..n], dst.pixels, dst.stride),
+        .shm => if (n != 0) {
+            const full = n == 1 and std.meta.eql(rects[0], rect.full(.{ .w = dst.width, .h = dst.height }));
+            self.shm.?.submit(dst, rects[0..n], full);
+        },
         .memory => {},
     }
 }

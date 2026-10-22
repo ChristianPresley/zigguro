@@ -291,3 +291,88 @@ test "gpu: vk renderer: gpu timestamps reach FrameStats without waiting" {
     vr.readback.waitIdle();
     try validation.expectNoValidationErrors(gpu);
 }
+
+/// An shm presenter: heap buffers, and the compositor releases a buffer
+/// when the next one is presented.
+const ShmPresenter = struct {
+    bufs: [8][]u8 = undefined,
+    n: u32 = 0,
+    last: ?u32 = null,
+    presents: u32 = 0,
+    release_next: ?platform.surface.BufferHandle = null,
+
+    fn drm(_: *anyopaque) ?platform.surface.DrmDevice {
+        return null;
+    }
+    fn formats(_: *anyopaque, _: []platform.surface.FormatModifier) usize {
+        return 0;
+    }
+    fn sync(_: *anyopaque) platform.surface.SyncMode {
+        return .cpu_only;
+    }
+    fn import(_: *anyopaque, _: *const platform.surface.BufferDesc) anyerror!platform.surface.BufferHandle {
+        return error.Unsupported;
+    }
+    fn present(ctx: *anyopaque, buf: platform.surface.BufferHandle, _: []const r2d.PxRect, _: platform.surface.SyncPoint, _: ?platform.surface.ConfigureAck) anyerror!void {
+        const f: *ShmPresenter = @ptrCast(@alignCast(ctx));
+        if (f.last) |l| f.release_next = @enumFromInt(l);
+        f.last = @intFromEnum(buf);
+        f.presents += 1;
+    }
+    fn release(_: *anyopaque, _: platform.surface.BufferHandle) void {}
+    fn poll(ctx: *anyopaque, out: []platform.surface.BufferHandle) usize {
+        const f: *ShmPresenter = @ptrCast(@alignCast(ctx));
+        const h = f.release_next orelse return 0;
+        f.release_next = null;
+        out[0] = h;
+        return 1;
+    }
+    fn alloc(ctx: *anyopaque, w: u32, h: u32, _: u32) anyerror!platform.surface.CpuBuffer {
+        const f: *ShmPresenter = @ptrCast(@alignCast(ctx));
+        f.bufs[f.n] = try testing.allocator.alloc(u8, w * h * 4);
+        @memset(f.bufs[f.n], 0);
+        f.n += 1;
+        return .{ .handle = @enumFromInt(f.n - 1), .pixels = f.bufs[f.n - 1], .stride = w * 4 };
+    }
+    const vtable: platform.surface.PresenterVTable = .{ .drmDevice = drm, .formats = formats, .syncMode = sync, .importBuffer = import, .present = present, .releaseBuffer = release, .pollReleased = poll, .allocCpuBuffer = alloc };
+};
+
+test "gpu: vk renderer: shm presenter gets exact pixels with buffer-age copies" {
+    const gpa = testing.allocator;
+    const gpu = try testing_gpu.gpuOrSkip();
+    defer gpu.destroy();
+    var fake: ShmPresenter = .{};
+    defer for (fake.bufs[0..fake.n]) |b| gpa.free(b);
+    var pr: platform.surface.Presenter = .{ .ptr = &fake, .vtable = &ShmPresenter.vtable };
+    const vr = try VkRenderer.createWithGpu(gpa, testing.io, gpu, .{ .target = .{ .external = &pr } });
+    defer vr.destroy();
+    // Reference: the same frames fully redrawn into memory.
+    var counter: CountingSink = .{};
+    var sink: platform.surface.HeadlessSink = .{ .ptr = &counter, .write = CountingSink.write };
+    const ref = try newRenderer(gpu, &sink);
+    defer ref.destroy();
+    var want = try CpuImage.initOrder(gpa, 200, 100, .bgra);
+    defer want.deinit(gpa);
+    var dl = r2d.DrawList.init(gpa);
+    defer dl.deinit();
+
+    for (0..12) |i| {
+        dl.reset(.{ .w = 200, .h = 100 }, 1);
+        if (i == 0) dl.damageAll() else dl.addDamage(.{ .x = @intCast(8 + (i % 20) * 8 - 8), .y = 40, .w = 16, .h = 12 });
+        keystrokeScene(&dl, @intCast(i));
+        const before = vr.readback.shm.?.written_bytes;
+        _ = try vr.render(&dl);
+        vr.readback.waitIdle();
+        const written = vr.readback.shm.?.written_bytes - before;
+        // Keystroke frames copy their cells and the buffer's history only.
+        if (i >= 3) try testing.expect(written < 64 * 1024 and written <= 3 * 16 * 12 * 4);
+
+        dl.damageAll();
+        _ = try ref.renderToImage(&dl, &want);
+        try testing.expectEqual(@as(u32, @intCast(i + 1)), fake.presents);
+        try testing.expectEqualSlices(u8, want.pixels, fake.bufs[fake.last.?]);
+    }
+    // Two buffers alternate: one on screen, one being filled.
+    try testing.expectEqual(@as(u32, 2), fake.n);
+    try validation.expectNoValidationErrors(gpu);
+}
