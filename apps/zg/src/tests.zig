@@ -5,4 +5,5 @@ test {
     _ = @import("review_render.zig");
     _ = @import("review_cli_test.zig");
     _ = @import("review_hooks.zig");
+    _ = @import("cmd_scm.zig");
 }
