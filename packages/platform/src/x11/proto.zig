@@ -247,6 +247,63 @@ pub const GetAtomName = struct {
     };
 };
 
+/// GrabPointer (26).
+pub const GrabPointer = struct {
+    /// The major opcode.
+    pub const opcode = 26;
+    data: bool = false, // owner-events
+    grab_window: u32,
+    event_mask: u16,
+    /// 0 Synchronous, 1 Asynchronous.
+    pointer_mode: u8 = 1,
+    keyboard_mode: u8 = 1,
+    confine_to: u32 = 0,
+    cursor: u32 = 0,
+    time: u32 = 0,
+
+    /// 0 Success; otherwise AlreadyGrabbed, InvalidTime, NotViewable or
+    /// Frozen.
+    pub const Reply = struct {
+        status: u8,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .status = b[1] };
+        }
+    };
+};
+
+/// UngrabPointer (27).
+pub const UngrabPointer = struct {
+    /// The major opcode.
+    pub const opcode = 27;
+    time: u32 = 0,
+};
+
+/// TranslateCoordinates (40).
+pub const TranslateCoordinates = struct {
+    /// The major opcode.
+    pub const opcode = 40;
+    src_window: u32,
+    dst_window: u32,
+    src_x: i16,
+    src_y: i16,
+
+    /// The point in `dst_window` and the child of it containing the
+    /// point (0 for none).
+    pub const Reply = struct {
+        same_screen: bool,
+        child: u32,
+        x: i16,
+        y: i16,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .same_screen = b[1] != 0, .child = u32At(b, 8), .x = @bitCast(u16At(b, 12)), .y = @bitCast(u16At(b, 14)) };
+        }
+    };
+};
+
 /// SetInputFocus (42).
 pub const SetInputFocus = struct {
     /// The major opcode.
@@ -758,6 +815,8 @@ pub const Atom = struct {
     pub const resource_manager: u32 = 23;
     /// STRING.
     pub const string: u32 = 31;
+    /// WINDOW.
+    pub const window: u32 = 33;
     /// WM_NAME.
     pub const wm_name: u32 = 39;
     /// WM_NORMAL_HINTS.
