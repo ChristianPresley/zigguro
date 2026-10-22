@@ -271,6 +271,15 @@ test "ratelimit_headers_parsed" {
     try testing.expect(decode.rateLimitFrom(hs[6..]) == null);
 }
 
+test "ratelimit_reset_headers_take_the_earliest" {
+    const hs = [_]request.Header{
+        .{ .name = "anthropic-ratelimit-requests-reset", .value = "2026-10-22T06:31:00Z" },
+        .{ .name = "anthropic-ratelimit-tokens-reset", .value = "2026-10-22T06:30:00Z" },
+    };
+    const r = decode.rateLimitFrom(&hs).?;
+    try testing.expectEqual(@as(?i64, 1_792_650_600_000), r.reset_at_ms);
+}
+
 test "count_tokens and list_models over the fake transport" {
     const routes = [_]fake.Route{
         .{ .url_contains = "/v1/messages/count_tokens", .body = "{\"input_tokens\":14}" },
