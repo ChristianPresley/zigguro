@@ -71,10 +71,10 @@ pub fn build(b: *std.Build) void {
     // Repository tools (std-only Zig programs under tools/).
     const tools_test_step = b.step("test-tools", "Run the tests of tools/*");
     test_step.dependOn(tools_test_step);
-    const pkgtool = addTool(b, "pkgtool", "tools/pkgtool/main.zig", test_filters, tools_test_step);
-    const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, tools_test_step);
-    const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, tools_test_step);
-    const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, tools_test_step);
+    const pkgtool = addTool(b, "pkgtool", "tools/pkgtool/main.zig", test_filters, f.optimize, tools_test_step);
+    const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, f.optimize, tools_test_step);
+    const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, f.optimize, tools_test_step);
+    const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
 
     const zig_pin = b.addRunArtifact(zig_verify);
     zig_pin.setCwd(b.path("."));
@@ -222,19 +222,25 @@ fn addTool(
     comptime name: []const u8,
     comptime root: []const u8,
     filters: []const []const u8,
+    test_optimize: std.builtin.OptimizeMode,
     tests_step: *std.Build.Step,
 ) *std.Build.Step.Compile {
-    // Tools see the package table and the zg_build API (for comptime checks).
-    const mod = b.createModule(.{
+    // Tests follow -Doptimize (the 0.16.0 test runner does not compile
+    // under Debug --fuzz); the tool binaries stay Debug.
+    const t = b.addTest(.{ .name = name, .root_module = toolModule(b, root, test_optimize), .filters = filters });
+    tests_step.dependOn(&b.addRunArtifact(t).step);
+    return b.addExecutable(.{ .name = name, .root_module = toolModule(b, root, .Debug) });
+}
+
+/// Tools see the package table and the zg_build API (for comptime checks).
+fn toolModule(b: *std.Build, comptime root: []const u8, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
         .root_source_file = b.path(root),
         .target = b.graph.host,
-        .optimize = .Debug,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "zg_packages", .module = b.createModule(.{ .root_source_file = b.path("build/packages.zig") }) },
             .{ .name = "zg_build_api", .module = b.createModule(.{ .root_source_file = b.path("packages/build/build.zig") }) },
         },
     });
-    const t = b.addTest(.{ .name = name, .root_module = mod, .filters = filters });
-    tests_step.dependOn(&b.addRunArtifact(t).step);
-    return b.addExecutable(.{ .name = name, .root_module = mod });
 }
