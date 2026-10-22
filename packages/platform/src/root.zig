@@ -115,12 +115,40 @@ pub const xkb = struct {
     pub const parser = @import("xkb/parser.zig");
 };
 
-/// The Wayland client: generated protocol bindings (`wl_gen`).
+/// The Wayland client: generated protocol bindings (`wl_gen`) and the
+/// wire connection (Linux).
 pub const wayland = struct {
     /// Typed encoders and decoders for every vendored protocol, generated
     /// at build time by zg_build's `wayland_scanner`.
     pub const protocol = @import("wl_gen");
+    /// See `wayland/wire/connection.zig`.
+    pub const wire = if (is_linux) struct {
+        /// See `wayland/wire/connection.zig`.
+        pub const Connection = @import("wayland/wire/connection.zig").Connection;
+        /// See `wayland/wire/connection.zig`.
+        pub const Error = @import("wayland/wire/connection.zig").Error;
+        /// See `wayland/wire/connection.zig`.
+        pub const DisplayError = @import("wayland/wire/connection.zig").DisplayError;
+        /// See `wayland/wire/connection.zig`.
+        pub const display_id = @import("wayland/wire/connection.zig").display_id;
+        /// See `wayland/wire/objects.zig`.
+        pub const Handler = @import("wayland/wire/objects.zig").Handler;
+        /// See `wayland/wire/fdqueue.zig`.
+        pub const FdQueue = @import("wayland/wire/fdqueue.zig").FdQueue;
+        /// See `wayland/wire/registry.zig`.
+        pub const Registry = @import("wayland/wire/registry.zig").Registry;
+        /// See `wayland/wire/registry.zig`.
+        pub const Global = @import("wayland/wire/registry.zig").Global;
+        /// See `wayland/wire/registry.zig`.
+        pub const RemoveCallback = @import("wayland/wire/registry.zig").RemoveCallback;
+        /// See `wayland/wire/marshal.zig`.
+        pub const marshal = @import("wayland/wire/marshal.zig");
+    } else struct {};
+    /// See `wayland/testing/fake_compositor.zig`.
+    pub const testing = if (is_linux) @import("wayland/testing/fake_compositor.zig") else struct {};
 };
+
+const is_linux = @import("builtin").os.tag == .linux;
 
 /// A minimal D-Bus client for portals, notifications and AT-SPI (Linux).
 pub const dbus = struct {
@@ -209,6 +237,12 @@ test {
     std.testing.refAllDecls(xkb);
     _ = @import("xkb/resolve.zig");
     inline for (wayland.protocol.interfaces) |I| std.testing.refAllDecls(I);
+    std.testing.refAllDecls(wayland.wire);
+    if (is_linux) {
+        _ = @import("wayland/wire/socket.zig");
+        _ = @import("wayland/wire/objects.zig");
+        _ = @import("wayland/wire/fuzz.zig");
+    }
     if (@import("builtin").os.tag == .linux) _ = @import("fswatch/linux_inotify.zig");
 }
 
@@ -254,6 +288,13 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "xkb/keysyms.zig", .src = @embedFile("xkb/keysyms.zig") },
     .{ .path = "xkb/keysym_data.zig", .src = @embedFile("xkb/keysym_data.zig") },
     .{ .path = "xkb/evdev.zig", .src = @embedFile("xkb/evdev.zig") },
+    .{ .path = "wayland/wire/connection.zig", .src = @embedFile("wayland/wire/connection.zig") },
+    .{ .path = "wayland/wire/socket.zig", .src = @embedFile("wayland/wire/socket.zig") },
+    .{ .path = "wayland/wire/fdqueue.zig", .src = @embedFile("wayland/wire/fdqueue.zig") },
+    .{ .path = "wayland/wire/marshal.zig", .src = @embedFile("wayland/wire/marshal.zig") },
+    .{ .path = "wayland/wire/objects.zig", .src = @embedFile("wayland/wire/objects.zig") },
+    .{ .path = "wayland/wire/registry.zig", .src = @embedFile("wayland/wire/registry.zig") },
+    .{ .path = "wayland/testing/fake_compositor.zig", .src = @embedFile("wayland/testing/fake_compositor.zig") },
 };
 
 test "init starts the headless backend" {
