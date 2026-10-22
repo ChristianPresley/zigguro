@@ -29,9 +29,16 @@
 //! Either way the platform thread applies the focused window's shape
 //! after each pointer enter or `set_cursor`.
 //!
-//! Drag-and-drop, IME, decorations and activation come with their own
-//! tasks (E01.F04.S03); until then the related commands are accepted and
-//! ignored (IME, hit test) or return `error.Unsupported`.
+//! IME (E01.F04.S03.T01, `text_input.zig`): one `zwp_text_input_v3` on
+//! the seat. `set_ime_state` is stored per window and sent while the text
+//! input is on that window's surface (and again after each `enter`);
+//! event batches become `ime_delete_surrounding`, `text_input` and
+//! `ime_preedit` at `done`. Keys the IME did not consume still arrive as
+//! `wl_keyboard.key` and pass through.
+//!
+//! Decorations and activation come with their own tasks; until then the
+//! related commands are accepted and ignored (hit test) or return
+//! `error.Unsupported`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -66,6 +73,7 @@ const seat_mod = @import("seat.zig");
 const data_device = @import("data_device.zig");
 const dnd = @import("dnd.zig");
 const cursor_mod = @import("cursor.zig");
+const text_input = @import("text_input.zig");
 const xcursor = @import("../linux/xcursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
 const pipe_transfer = @import("../linux/pipe_transfer.zig");
@@ -106,7 +114,7 @@ pub const InitOptions = struct {
 const ring_capacity = 4096;
 
 /// Which interface a handler serves.
-const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source };
+const Kind = enum { wm_base, xdg_surface, toplevel, surface, frac, frame, buffer, output, dmabuf, dmabuf_feedback, presentation, pres_feedback, seat, keyboard, pointer, touch, data_device, data_offer, data_source, primary_device, primary_offer, primary_source, text_input };
 
 /// Keymaps larger than this are refused.
 const max_keymap_bytes = 16 * 1024 * 1024;
@@ -123,6 +131,8 @@ const Slot = struct {
     presenter: ShmPresenter,
     /// The shape `set_cursor` asked for over this window.
     cursor: CursorShape = .default,
+    /// The latest `set_ime_state`.
+    ime: text_input.Want = .{},
 };
 
 /// A theme cursor ready to attach: frame 0 of the nearest size (animated
@@ -213,6 +223,11 @@ pub const WaylandBackend = struct {
     cursor_cache: std.ArrayList(CachedCursor) = .empty,
     /// The platform thread re-applies the cursor. Guarded by the mutex.
     cursor_dirty: bool = false,
+    /// IME: the manager, the seat's text input and its state. Guarded by
+    /// the mutex.
+    ti_manager: ?wl.zwp_text_input_manager_v3.Id = null,
+    text_input: ?wl.zwp_text_input_v3.Id = null,
+    ime: text_input.State = .{},
 
     ring: EventRing(ring_capacity),
     arena: PayloadArena,
@@ -294,7 +309,13 @@ pub const WaylandBackend = struct {
         b.primary_manager = try registry.bind(wl.zwp_primary_selection_device_manager_v1, 1, 1, null);
         b.cursor_manager = try registry.bind(wl.wp_cursor_shape_manager_v1, 1, 2, null);
         if (b.cursor_manager == null) b.cursor_theme = try cursor_mod.Theme.fromEnv(gpa, opts.environ_map);
+        b.ti_manager = try registry.bind(wl.zwp_text_input_manager_v3, 1, 1, null);
         if (b.seat_id) |sid| {
+            if (b.ti_manager) |m| {
+                const ti = try conn.newIdVersion(wl.zwp_text_input_v3, 1, b.handler(.text_input));
+                try wl.zwp_text_input_manager_v3.getTextInput(conn, m, ti, sid);
+                b.text_input = ti;
+            }
             if (b.data_manager) |m| {
                 const d = try conn.newIdVersion(wl.wl_data_device, conn.version(@intFromEnum(m)), b.handler(.data_device));
                 try wl.wl_data_device_manager.getDataDevice(conn, m, d, sid);
@@ -430,6 +451,8 @@ pub const WaylandBackend = struct {
         const w = &s.win;
         if (b.seat.kb_focus == w.id) b.armRepeat(.disarm);
         b.seat.forget(w.id);
+        if (b.ime.focus == w.id) b.ime.focus = null;
+        s.ime.deinit(b.gpa);
         if (w.frame_cb) |cb| c.setHandler(@intFromEnum(cb), null);
         var i: usize = 0;
         while (i < b.pres_pending.items.len) {
@@ -611,6 +634,7 @@ pub const WaylandBackend = struct {
         if (b.compose_env) |*e| e.deinit();
         b.compose_env = null;
         b.offers.deinit(gpa);
+        b.ime.deinit(gpa);
         b.finished.deinit(gpa);
         b.cursor_cache.deinit(gpa);
         if (b.cursor_theme) |*t| t.deinit(gpa);
@@ -701,7 +725,11 @@ pub const WaylandBackend = struct {
                     b.thread_wake.signal();
                 }
             },
-            .set_ime_state => |t| _ = try b.lookup(t.win),
+            .set_ime_state => |t| {
+                const s = b.find(t.win) orelse return error.InvalidWindow;
+                try s.ime.set(b.gpa, t.enabled, t.purpose, t.caret_rect_px, t.surrounding);
+                if (b.ime.focus == t.win) try b.sendIme(s);
+            },
             .set_hit_test => |t| _ = try b.lookup(t.win),
             .set_min_size => |t| {
                 const w = try b.lookup(t.win);
@@ -1179,6 +1207,31 @@ pub const WaylandBackend = struct {
                     .target, .dnd_drop_performed, .dnd_finished, .action => {},
                 }
             },
+            .text_input => {
+                const ev = try wl.zwp_text_input_v3.decodeEvent(opcode, body, fds);
+                b.lock();
+                defer b.unlock();
+                const out: Sink = .{ .b = b };
+                switch (ev) {
+                    .enter => |e| {
+                        const w = b.byObject("surface", @intFromEnum(e.surface)) orelse return;
+                        b.ime.onEnter(b.gpa, w.id);
+                        try b.sendIme(b.find(w.id).?);
+                        try c.flush();
+                    },
+                    .leave => try b.ime.onLeave(b.gpa, out),
+                    .preedit_string => |pe| try b.ime.onPreedit(b.gpa, pe.text, pe.cursor_begin, pe.cursor_end),
+                    .commit_string => |cs| try b.ime.onCommit(b.gpa, cs.text),
+                    .delete_surrounding_text => |d| b.ime.onDelete(d.before_length, d.after_length),
+                    .done => |d| if (try b.ime.onDone(b.gpa, out, d.serial)) {
+                        // The IME answered an older state: send ours again.
+                        if (b.focusWindow(b.ime.focus)) |w| {
+                            try b.sendIme(b.find(w.id).?);
+                            try c.flush();
+                        }
+                    },
+                }
+            },
             .primary_source => {
                 const ev = try wl.zwp_primary_selection_source_v1.decodeEvent(opcode, body, fds);
                 b.lock();
@@ -1189,6 +1242,12 @@ pub const WaylandBackend = struct {
                 }
             },
         }
+    }
+
+    /// Sends `s`'s IME state (its window has the text input). Mutex held.
+    fn sendIme(b: *WaylandBackend, s: *Slot) !void {
+        const ti = b.text_input orelse return;
+        try b.ime.send(b.gpa, b.conn, ti, &s.ime, s.win.effectiveScale120());
     }
 
     // ---- cursors (E01.F04.S02.T04, platform thread) ----
@@ -1877,6 +1936,11 @@ const Peer = struct {
     /// The newest `hotspot_x`/`hotspot_y` and `scale` arguments.
     last_hotspot: [2]i32 = .{ -1, -1 },
     last_scale: ?i32 = null,
+    /// The newest `set_content_type` purpose, `set_surrounding_text`
+    /// cursor and `set_cursor_rectangle` origin.
+    last_purpose: ?u32 = null,
+    last_ime_cursor: ?i32 = null,
+    last_rect: [2]i32 = .{ -1, -1 },
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -1968,6 +2032,12 @@ const Peer = struct {
             if (comptime std.mem.eql(u8, f.name, "hotspot_x")) p.last_hotspot[0] = v;
             if (comptime std.mem.eql(u8, f.name, "hotspot_y")) p.last_hotspot[1] = v;
             if (comptime std.mem.eql(u8, f.name, "scale") and f.type == i32) p.last_scale = v;
+            if (f.type == wl.zwp_text_input_v3.ContentPurpose) p.last_purpose = @intFromEnum(v);
+            if (@TypeOf(payload) == @FieldType(wl.zwp_text_input_v3.Request, "set_surrounding_text") and comptime std.mem.eql(u8, f.name, "cursor")) p.last_ime_cursor = v;
+            if (@TypeOf(payload) == @FieldType(wl.zwp_text_input_v3.Request, "set_cursor_rectangle")) {
+                if (comptime std.mem.eql(u8, f.name, "x")) p.last_rect[0] = v;
+                if (comptime std.mem.eql(u8, f.name, "y")) p.last_rect[1] = v;
+            }
             inline for (wl.interfaces) |J| if (f.type == J.Id) {
                 const n = @intFromEnum(v);
                 if (!p.ids.contains(n)) try p.ids.put(testing.allocator, n, J.name);
@@ -2890,4 +2960,125 @@ test "dnd: a private type round-trips between our own windows" {
     try testing.expectEqual(clipboard.DragActions{ .move = true }, dr.allowed);
     try wl.wl_data_source.server.dndFinished(fc, src);
     _ = try expectDrop(p, .source_finished);
+}
+
+/// `seat_globals` and the text input manager.
+const ime_globals = seat_globals ++ [_]fake.Global{.{ .name = 10, .interface = "zwp_text_input_manager_v3", .version = 1 }};
+
+/// IME events, with their texts copied.
+const ImeSeen = struct { tag: Event.Tag, text: [16]u8 = undefined, len: usize = 0, a: i32 = 0, b: i32 = 0 };
+
+/// Collects `n` IME events (`ime_preedit`, `text_input`,
+/// `ime_delete_surrounding`) in order.
+fn collectIme(p: Platform, out: []ImeSeen) !void {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var got: usize = 0;
+    var evs: [32]Event = undefined;
+    while (got < out.len) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| {
+            var s: ImeSeen = .{ .tag = std.meta.activeTag(e) };
+            const text: []const u8 = switch (e) {
+                .ime_preedit => |x| blk: {
+                    s.a = x.cursor_begin;
+                    s.b = x.cursor_end;
+                    break :blk p.payload(x.text);
+                },
+                .text_input => |x| p.payload(x.text),
+                .ime_delete_surrounding => |x| blk: {
+                    s.a = @intCast(x.before_bytes);
+                    s.b = @intCast(x.after_bytes);
+                    break :blk "";
+                },
+                else => continue,
+            };
+            s.len = @min(text.len, s.text.len);
+            @memcpy(s.text[0..s.len], text[0..s.len]);
+            if (got == out.len) return error.TooManyEvents;
+            out[got] = s;
+            got += 1;
+        }
+        if (got >= out.len) break;
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+fn countRequests(peer: *const Peer, comptime tag: std.meta.Tag(wl.zwp_text_input_v3.Request)) usize {
+    var n: usize = 0;
+    for (peer.log.items) |s| {
+        if (std.mem.eql(u8, s.iface, wl.zwp_text_input_v3.name) and s.opcode == @intFromEnum(tag)) n += 1;
+    }
+    return n;
+}
+
+test "text input: enable on enter, done order, serial mismatch resend, leave, disable" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &ime_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const ti = rig.peer.id(wl.zwp_text_input_v3);
+    const surf = rig.peer.id(wl.wl_surface);
+    const S = wl.zwp_text_input_v3.server;
+
+    // Before the text input enters the window nothing is sent.
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = true, .purpose = .password, .caret_rect_px = .{ .x = 30, .y = 40, .w = 2, .h = 20 }, .surrounding = .{ .text = "héllo", .cursor_byte = 3, .anchor_byte = 3 } } });
+    try testing.expectEqual(null, try rig.peer.next(50 * std.time.ns_per_ms));
+
+    // Enter: enable, the state, commit 1.
+    try S.enter(fc, ti, surf);
+    _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .commit, std.time.ns_per_s);
+    try testing.expectEqual(1, countRequests(&rig.peer, .enable));
+    try testing.expectEqual(@intFromEnum(wl.zwp_text_input_v3.ContentPurpose.password), rig.peer.last_purpose.?);
+    try testing.expectEqual(3, rig.peer.last_ime_cursor.?);
+    try testing.expectEqual([2]i32{ 30, 40 }, rig.peer.last_rect);
+
+    // A batch for our state: delete, commit, then the new preedit.
+    try S.deleteSurroundingText(fc, ti, 1, 0);
+    try S.commitString(fc, ti, "你");
+    try S.preeditString(fc, ti, "hao", 0, 3);
+    try S.done(fc, ti, 1);
+    var seen: [3]ImeSeen = undefined;
+    try collectIme(p, &seen);
+    try testing.expectEqual(Event.Tag.ime_delete_surrounding, seen[0].tag);
+    try testing.expectEqual(1, seen[0].a);
+    try testing.expectEqual(Event.Tag.text_input, seen[1].tag);
+    try testing.expectEqualStrings("你", seen[1].text[0..seen[1].len]);
+    try testing.expectEqual(Event.Tag.ime_preedit, seen[2].tag);
+    try testing.expectEqualStrings("hao", seen[2].text[0..seen[2].len]);
+    try testing.expectEqual(3, seen[2].b);
+
+    // A stale serial: the commit still applies, the preedit ends, and the
+    // state goes out again without a second enable.
+    try S.commitString(fc, ti, "好");
+    try S.done(fc, ti, 0);
+    var two: [2]ImeSeen = undefined;
+    try collectIme(p, &two);
+    try testing.expectEqual(Event.Tag.text_input, two[0].tag);
+    try testing.expectEqual(Event.Tag.ime_preedit, two[1].tag);
+    try testing.expectEqual(0, two[1].len);
+    _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .commit, std.time.ns_per_s);
+    try testing.expectEqual(1, countRequests(&rig.peer, .enable));
+    try testing.expectEqual(2, countRequests(&rig.peer, .commit));
+
+    // Leave clears a shown preedit.
+    try S.preeditString(fc, ti, "x", 1, 1);
+    try S.done(fc, ti, 2);
+    var one: [1]ImeSeen = undefined;
+    try collectIme(p, &one);
+    try S.leave(fc, ti, surf);
+    try collectIme(p, &one);
+    try testing.expectEqual(Event.Tag.ime_preedit, one[0].tag);
+    try testing.expectEqual(0, one[0].len);
+
+    // Entering again enables again; disabling sends disable and commit.
+    try S.enter(fc, ti, surf);
+    _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .commit, std.time.ns_per_s);
+    try testing.expectEqual(2, countRequests(&rig.peer, .enable));
+    try p.submit(.{ .set_ime_state = .{ .win = win, .enabled = false, .purpose = .normal, .caret_rect_px = .{ .x = 0, .y = 0, .w = 0, .h = 0 }, .surrounding = null } });
+    _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .disable, std.time.ns_per_s);
+    _ = try rig.peer.waitFor(wl.zwp_text_input_v3, .commit, std.time.ns_per_s);
+    try testing.expectEqual(4, countRequests(&rig.peer, .commit));
 }

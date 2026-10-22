@@ -14,6 +14,10 @@
 //! whole UI stack without a display; `--screenshot FILE` then writes the
 //! last frame as a binary PPM.
 //!
+//! The renderer is chosen by `zg_vulkan.createRenderer`; `ZG_RENDERER=
+//! vulkan|software|auto` overrides it, and `--doctor-gpu [--json]` prints
+//! the GPU report (`zg doctor gpu`) and exits.
+//!
 //! Text is drawn with system fonts through `zg_gui.FontText` (see
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
 
@@ -23,6 +27,7 @@ const zg_release = @import("zg_release");
 const zg_crash = @import("zg_crash");
 const zg_platform = @import("zg_platform");
 const zg_gui = @import("zg_gui");
+const zg_vulkan = @import("zg_vulkan");
 const Welcome = @import("welcome.zig").Welcome;
 const Workbench = @import("workbench.zig").Workbench;
 const fonts = @import("fonts.zig");
@@ -53,6 +58,13 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
     var env = try min.environ.createMap(rt.gpa);
     defer env.deinit();
+    // `ZG_RENDERER`, `ZG_GPU`, `ZG_VK_*` for every renderer.
+    zg_vulkan.setProcessEnv(.fromMap(&env));
+    if (hasFlag(min, rt.gpa, "--doctor-gpu")) {
+        try zg_vulkan.writeGpuReport(rt.gpa, rt.io, w, if (hasFlag(min, rt.gpa, "--json")) .json else .text);
+        try w.flush();
+        return 0;
+    }
     const backend = zg_platform.detectBackend(&env);
 
     var app = zg_gui.App.init(rt.gpa);

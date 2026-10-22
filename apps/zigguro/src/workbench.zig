@@ -479,6 +479,9 @@ pub const Workbench = struct {
             host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
             const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            p.plans = &host.plans;
+            p.plan_mode = &host.plan_mode;
+            host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
             wb.agent = host;
             wb.agent_panel = p;
         }
