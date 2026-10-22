@@ -10,6 +10,7 @@ const std = @import("std");
 pub const contracts = @import("contracts.zig");
 pub const audit = @import("audit/root.zig");
 pub const policy = @import("policy/root.zig");
+pub const egress = @import("egress/root.zig");
 pub const testing = @import("testing/fakes.zig");
 pub const enforcement = @import("testing/enforcement.zig");
 
