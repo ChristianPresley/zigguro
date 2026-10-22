@@ -308,6 +308,17 @@ pub const Workbench = struct {
         return std.mem.eql(u8, a, abs);
     }
 
+    /// Whether the review root's `rel` is open in an editor (the review
+    /// panel leaves those files alone).
+    fn reviewFileOpen(ctx: *anyopaque, rel: []const u8) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const host = wb.agent orelse return false;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ host.review.root, rel }) catch return true;
+        defer wb.gpa.free(abs);
+        for (wb.files.items) |f| if (f.path) |p| if (wb.samePath(p, abs)) return true;
+        return false;
+    }
+
     /// Breadcrumb dropdowns run `file.open` from event handling: switch
     /// at the next build.
     fn onChromeAction(ctx: ?*anyopaque, action: zg_gui.w.menu.ActionId, arg: ?[]const u8) void {
@@ -552,6 +563,7 @@ pub const Workbench = struct {
         if (wb.review_panel == null) {
             const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
             wb.review_panel = p;
         }
         if (wb.review_ref == null) wb.review_ref = try wb.dock.addPanel(kind_review, null);
