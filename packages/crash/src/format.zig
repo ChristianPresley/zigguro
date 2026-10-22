@@ -202,8 +202,11 @@ pub const SectionBuilder = struct {
     pub fn write(s: *SectionBuilder, bytes: []const u8) void {
         const n = @min(bytes.len, s.remaining());
         if (n < bytes.len) s.truncated = true;
-        s.crc.update(bytes[0..n]);
+        // Hash the copy, not the source: a crash handler copies live
+        // memory (its own stack) that changes under it.
+        const at = s.w.end;
         s.w.append(bytes[0..n]);
+        s.crc.update(s.w.buf[at..][0..n]);
         s.len += @intCast(n);
     }
 
