@@ -49,4 +49,5 @@ test {
     _ = @import("paint/draw_list_test.zig");
     _ = @import("host_test.zig");
     _ = @import("widgets/scroll_test.zig");
+    _ = @import("widgets/text_field/text_field_test.zig");
 }
