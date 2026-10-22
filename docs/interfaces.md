@@ -4227,3 +4227,53 @@ Each thread owns its strings (an arena) until `dropTarget` or `deinit`;
 
 ### Stability
 Unstable until the comments UI binds it.
+
+## zg_review.feedback (Feedback, AgentPort)
+
+### Defined in
+`packages/review/src/feedback/{feedback.zig, message.zig}` (E12.F03.S03.T02); see `packages/review/docs/comments.md`.
+
+### Implemented by
+E12.F03.S03.T02. `AgentPort` is implemented by the apps over E10's agents.
+
+### Consumed by
+The hunk review view (Request fix, interdiff), `zg review`.
+
+### Signature
+```zig
+pub const AgentPort = struct {
+    ctx: *anyopaque,
+    status: *const fn (ctx, SessionId) AgentStatus,                 // running, idle, ended, unknown
+    submit: *const fn (ctx, SessionId, msg: *const FeedbackMessage, mode: SubmitMode) anyerror!void,   // steer, new_turn
+    resumeSession: *const fn (ctx, SessionId) anyerror!void,
+    newSession: *const fn (ctx, msg: *const FeedbackMessage) anyerror!SessionId,
+    estimate: ?message.Estimate = null,
+};
+pub const FeedbackMessage = struct { text, context: []const ContextItem, revises: ChangesetId, quotes_dropped: bool };
+pub const Feedback = struct {
+    pub fn init(gpa, q: *Queue, comments: *CommentStore, port: AgentPort, o: Options{ max_tokens = 4000 }) Feedback;
+    pub fn requestFix(f, cs, threads: []const ThreadId, extra: []const u8, now_ms: i64) !Delivery;   // steered, new_turn, ask_resume
+    pub fn finishEnded(f, choice: EndedChoice, now_ms: i64) !void;                               // resume_session, new_session, cancel
+    pub fn listener(f) model.Listener;                                                            // notes events
+    pub fn pump(f) void;                                                                          // handles them
+    pub fn onSubmitted(f, cs) !void;
+    pub fn onUpdated(f, cs) !void;
+    pub fn interdiff(f, older, newer, path, arena) !?InterdiffDocs;
+    pub fn waitingOn(f, cs) bool;
+};
+pub fn message.compose(arena, cs, label, threads, extra, texts: ?TextOf, o) !FeedbackMessage;
+```
+Deviations from the spec text:
+- The previous proposal is `FileChange.previous`, journaled with the
+  changeset snapshot, not a separate `revision` record.
+- An ended session returns `ask_resume`; the UI calls `finishEnded`.
+- `submit` and `newSession` take the message by pointer.
+
+### Threading
+The queue's owner thread.
+
+### Ownership/lifetime
+The message passed to the port lives until the call returns.
+
+### Stability
+Unstable until the review view binds it.

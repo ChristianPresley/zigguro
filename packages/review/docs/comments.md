@@ -130,3 +130,46 @@ the `m`/`r`/`R` keys, and Markdown rendering of the comment bodies.
 
 The store is used on the queue's owner thread. Agents' replies are
 posted there.
+
+## Fix requests and revisions
+
+`Feedback` (E12.F03.S03.T02, `feedback/feedback.zig`) sends review
+threads to the agent that made a changeset and follows its revision.
+The app implements `AgentPort` over E10's agents; zg_review never
+imports zg_ai.
+
+**The message** (`feedback/message.zig`) is deterministic Markdown: a
+header naming the changeset, then one numbered item per thread with
+its label, location (1-based lines; "(removed lines)" for the base
+side), a fenced quote of the proposed lines (at most 40, with the middle
+cut), the comment and its replies. Then the extra request, if any, and
+the ask to revise. Each thread is also a `range` context item. When the
+text is over `max_tokens` (E10's estimator, `review.feedbackMaxTokens`,
+default 4,000) the quotes are dropped and the locations and comments
+stay. See `feedback/testdata/feedback_3_threads.md`.
+
+**Delivery** follows the session's status: `running` steers the running
+turn, `idle` starts a new turn, and `ended` returns `ask_resume`. The UI
+then asks whether to resume the session or start a new one with the
+message (`finishEnded`). The threads are marked `sent`.
+
+**Revisions.** The request waits for the agent's next change:
+
+- When the edits fold into the changeset itself (it was still
+  undecided), its proposed texts change. `revision` goes up, and each
+  changed file keeps its previous proposal as a blob in
+  `FileChange.previous`, which is journaled with the changeset.
+- When a new changeset of the same session touches one of its files
+  (the old one was partly decided), the new one `supersedes` it and the
+  open threads are copied onto it (`copied_from`).
+
+Either way the threads are re-anchored to the new text. A sent thread
+whose lines changed is tagged `maybe_addressed`.
+
+**Interdiff.** `interdiff(older, newer, path)` returns the texts to
+diff: the previous proposal against the current one when `older ==
+newer`, otherwise the superseded changeset's proposal against its
+successor's.
+
+The queue listener only notes events; the owner calls `pump` after the
+queue changes. Requests that are still waiting live in memory.
