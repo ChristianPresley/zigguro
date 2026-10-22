@@ -1,0 +1,15 @@
+1| keyword.storage:let variable:a operator:= number:42 punctuation.delimiter:;
+2| keyword.storage:let variable:b operator:= number:1_000_000 punctuation.delimiter:;
+3| keyword.storage:let variable:c operator:= number:0xFF_u8 punctuation.delimiter:;
+4| keyword.storage:let variable:d operator:= number:0o777 punctuation.delimiter:;
+5| keyword.storage:let variable:e operator:= number:0b1010_1010 punctuation.delimiter:;
+6| keyword.storage:let variable:f operator:= number:3.14 punctuation.delimiter:;
+7| keyword.storage:let variable:g operator:= number:1e10 punctuation.delimiter:;
+8| keyword.storage:let variable:h operator:= number:2.5E-3f64 punctuation.delimiter:;
+9| keyword.storage:let variable:i operator:= number:1u32 operator:+ number:2i64 operator:+ number:3usize punctuation.delimiter:;
+10| keyword.storage:let variable:j operator:= number:1.0f32 punctuation.delimiter:;
+11| keyword.storage:let variable:k operator:= number:0 operator:.. number:10 punctuation.delimiter:;
+12| keyword.storage:let variable:l operator:= number:1 operator:..= number:5 punctuation.delimiter:;
+13| keyword.storage:let variable:m operator:= number:1 punctuation.delimiter:. function:max punctuation.bracket:( number:2 punctuation.bracket:) punctuation.delimiter:;
+14| keyword.storage:let variable:n operator:= variable:t punctuation.delimiter:. number:0.1 punctuation.delimiter:;
+15| keyword.storage:let variable:o operator:= number:1. punctuation.delimiter:;
