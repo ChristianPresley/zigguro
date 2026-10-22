@@ -596,6 +596,7 @@ pub const c_language: language.Language = .{
     .resync = resync,
     .edit_rules = edit_rules,
     .brackets = &brackets,
+    .word_chars = &.{'#'},
 };
 
 /// C++ (C++23).
@@ -608,4 +609,5 @@ pub const cpp_language: language.Language = .{
     .resync = resync,
     .edit_rules = edit_rules,
     .brackets = &brackets,
+    .word_chars = &.{'#'},
 };
