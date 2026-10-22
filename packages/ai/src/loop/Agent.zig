@@ -16,6 +16,7 @@ const scheduler = @import("scheduler.zig");
 const dp = @import("deps.zig");
 const iq = @import("input_queue.zig");
 const turn = @import("turn.zig");
+const request = @import("../provider/request.zig");
 const registry = @import("../models/registry.zig");
 const ledger = @import("../models/ledger.zig");
 const estimate = @import("../models/estimate.zig");
@@ -321,6 +322,7 @@ pub fn swapTranscript(a: *Agent, msgs: []const proto.Message, seqs: []const u64,
     }
     // The bus lock is never taken under the agent lock.
     a.bus.startAt(last_seq);
+    if (a.deps.context.forget) |f| f(a.deps.context.ctx, 0);
 }
 
 /// Replaces the known checkpoints (a resume).
@@ -350,6 +352,38 @@ pub fn truncate(a: *Agent, len: usize) error{Busy}!void {
     if (a.running) return error.Busy;
     a.transcript.items.len = @min(a.transcript.items.len, len);
     a.seqs.items.len = @min(a.seqs.items.len, len);
+    if (a.deps.context.forget) |f| f(a.deps.context.ctx, @intCast(len));
+}
+
+/// Summarizes the conversation now (`/compact [focus]`): the history is
+/// replaced by a summary and durable context, as an automatic compaction
+/// would, and the session log records it. Only while the agent is idle;
+/// `error.NoCompaction` without a compaction seam.
+pub fn compact(a: *Agent, focus: ?[]const u8) !turn.Compacted {
+    {
+        a.mutex.lockUncancelable(a.io);
+        defer a.mutex.unlock(a.io);
+        if (a.running) return error.Busy;
+        a.running = true;
+    }
+    defer {
+        {
+            a.mutex.lockUncancelable(a.io);
+            defer a.mutex.unlock(a.io);
+            a.running = false;
+        }
+        // Input queued meanwhile starts its turn now.
+        a.group_mutex.lockUncancelable(a.io);
+        defer a.group_mutex.unlock(a.io);
+        a.ensureRunning() catch {};
+    }
+    return turn.compactNow(a, focus);
+}
+
+/// The request the next model call would send (`/context`). Only while
+/// the agent is idle; slices live in `arena`.
+pub fn nextRequest(a: *Agent, arena: Allocator) !request.Request {
+    return turn.nextRequest(a, arena);
 }
 
 /// Turns plan mode on or off for this agent's tool calls. The toolset
