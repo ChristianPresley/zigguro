@@ -1,0 +1,1 @@
+main@origin | "a b"@up | ws@ | @-- | heads(::x-) ~ ancestors(y, 3)
