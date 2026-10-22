@@ -153,9 +153,13 @@ test "gives up after max attempts and forwards the error" {
     const req: request.Request = .{ .model = "m", .messages = &.{} };
     try testing.expectError(error.Overloaded, p.stream(io, arena.allocator(), &req, collect(&evs)));
     try testing.expectEqual(@as(usize, 2), sp.requests().len);
-    try testing.expectEqual(@as(usize, 2), evs.items.len);
-    try testing.expect(evs.items[0] == .message_start);
-    try testing.expectEqual(@as(u16, 529), evs.items[1].provider_error.status);
+    // The retry notice, then the final attempt only.
+    try testing.expectEqual(@as(usize, 3), evs.items.len);
+    try testing.expectEqual(@as(u8, 2), evs.items[0].retrying.attempt);
+    try testing.expectEqual(@as(?u16, 529), evs.items[0].retrying.status);
+    try testing.expectEqualStrings("Overloaded", evs.items[0].retrying.err);
+    try testing.expect(evs.items[1] == .message_start);
+    try testing.expectEqual(@as(u16, 529), evs.items[2].provider_error.status);
 }
 
 test "mid_stream_error_not_retried_after_content" {
