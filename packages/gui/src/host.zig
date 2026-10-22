@@ -1,11 +1,17 @@
 //! `Host`: runs zg_gui windows on a real platform and renderer. It owns
-//! the platform windows, one `r2d.DrawList` and `Renderer` per window, and
-//! the event pump:
+//! the platform windows, a `Renderer` per window and the event pump:
 //!
+//! - each window renders on its own `RenderThread` (E02.F04.S03): the UI
+//!   thread records a `DrawList` and posts it, never waiting for the GPU;
+//!   the frame and configure events are forwarded to the thread's
+//!   `FramePacer`. Without concurrency (`std.Io` that cannot spawn) or with
+//!   `Options.render_thread = false`, the UI thread renders itself;
 //! - platform events are routed to their window (`handlePlatformEvent`);
 //! - a window that wants a frame asks the platform with `request_frame`
-//!   and renders when the platform's `frame` event arrives (frame pacing
+//!   and records when the platform's `frame` event arrives (frame pacing
 //!   comes from the compositor, so idle windows cost nothing);
+//! - a render thread that lost layer content wakes the UI, which repaints
+//!   that window in full;
 //! - appearance changes switch the app theme;
 //! - the app clipboard is kept in sync with the system clipboard (local
 //!   writes go out as `clipboard_write`; a `clipboard_changed` is read
@@ -16,7 +22,8 @@
 //!   the mailbox (worker results) on every pump;
 //! - window timers run on every pump, and `run` sleeps until the earliest;
 //! - with a `FontText`, the glyph atlas is uploaded to every window's
-//!   renderer (one texture per atlas page) before it renders.
+//!   renderer (one texture per atlas page) before it renders; uploads go
+//!   through the render thread's queue, ahead of the list that uses them.
 //!
 //! The app (`apps/zigguro`) creates the platform and calls `run`; tests
 //! drive `pump` against the headless backend.
@@ -34,6 +41,7 @@ const FontText = @import("paint/font_text.zig").FontText;
 const zg_text = @import("zg_text");
 
 const r2d = zg_vulkan.r2d;
+const RenderThread = zg_vulkan.present.RenderThread;
 const Platform = zg_platform.Platform;
 const WindowId = zg_platform.types.WindowId;
 const Event = zg_platform.event.Event;
@@ -43,13 +51,24 @@ const Window = window_mod.Window;
 /// `zg_vulkan.createRenderer`, which falls back to software).
 pub const RendererFactory = *const fn (gpa: std.mem.Allocator, io: std.Io, opts: r2d.RendererOptions) anyerror!r2d.Renderer;
 
+/// Where a window's lists go.
+pub const Output = union(enum) {
+    /// Rendered on the UI thread.
+    direct: r2d.Renderer,
+    /// Posted to a render thread that owns the renderer.
+    thread: *RenderThread,
+};
+
 /// One platform window and what draws it.
 pub const HostWindow = struct {
     id: WindowId,
     win: *Window,
-    list: r2d.DrawList,
+    /// The list being recorded: `own_list`, or one from the render thread.
+    list: *r2d.DrawList,
+    /// The list of a `.direct` output.
+    own_list: r2d.DrawList,
     dlc: DrawListCanvas,
-    renderer: r2d.Renderer,
+    out: Output,
     /// A `request_frame` is outstanding.
     frame_requested: bool = false,
     /// The platform reported the window fully hidden.
@@ -57,6 +76,57 @@ pub const HostWindow = struct {
     frames: u64 = 0,
     /// The renderer texture of each glyph atlas page.
     pages: std.ArrayList(r2d.TextureId) = .empty,
+
+    fn createTexture(hw: *HostWindow, desc: r2d.TextureDesc) !r2d.TextureId {
+        return switch (hw.out) {
+            .direct => |r| r.createTexture(desc),
+            .thread => |rt| rt.createTexture(desc),
+        };
+    }
+
+    fn updateTexture(hw: *HostWindow, id: r2d.TextureId, rect: r2d.PxRect, pixels: []const u8, row_pitch: u32) !void {
+        return switch (hw.out) {
+            .direct => |r| r.updateTexture(id, rect, pixels, row_pitch),
+            .thread => |rt| rt.updateTexture(id, rect, pixels, row_pitch),
+        };
+    }
+
+    fn resize(hw: *HostWindow, size: r2d.Size, scale: f32) void {
+        switch (hw.out) {
+            .direct => |r| r.resize(size, scale),
+            .thread => |rt| rt.onPlatformFrame(.{ .configure = .{ .size = size, .scale = scale } }),
+        }
+    }
+
+    /// Renders or posts the recorded list.
+    fn submit(hw: *HostWindow) !void {
+        switch (hw.out) {
+            .direct => |r| _ = try r.render(hw.list),
+            .thread => |rt| {
+                hw.list = rt.post(hw.list);
+                hw.dlc.list = hw.list;
+            },
+        }
+    }
+
+    /// Waits until the posted frames have rendered (false on timeout).
+    pub fn flush(hw: *HostWindow, timeout_ns: u64) bool {
+        return switch (hw.out) {
+            .direct => true,
+            .thread => |rt| rt.waitIdle(timeout_ns),
+        };
+    }
+
+    fn deinitOutput(hw: *HostWindow) void {
+        switch (hw.out) {
+            .direct => |r| {
+                for (hw.pages.items) |t| if (t != .none) r.destroyTexture(t);
+                r.deinit();
+            },
+            // The renderer goes with its textures.
+            .thread => |rt| rt.shutdown(),
+        }
+    }
 };
 
 /// The request id of the Host's own clipboard reads.
@@ -79,17 +149,22 @@ pub const Host = struct {
     /// The app's runtime was bound to this thread.
     rt_bound: bool = false,
     atlas_updates: std.ArrayList(zg_text.cache.AtlasUpdate) = .empty,
+    render_thread: bool,
 
     /// Options for `init`.
     pub const Options = struct {
         renderer: RendererFactory = zg_vulkan.createRenderer,
         /// Set when `text_sys` is this `FontText`'s system.
         fonts: ?*FontText = null,
+        /// Render on a thread per window (falls back to the UI thread when
+        /// the `Io` cannot spawn one).
+        render_thread: bool = true,
     };
 
-    /// A host for `app` on `platform`; text goes through `text_sys`.
+    /// A host for `app` on `platform`; text goes through `text_sys`. The
+    /// Host must not move once a window is open.
     pub fn init(gpa: std.mem.Allocator, io: std.Io, app: *app_mod.App, platform: Platform, text_sys: text.TextSystem, opts: Options) Host {
-        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts };
+        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread };
     }
 
     /// Closes every window.
@@ -127,17 +202,34 @@ pub const Host = struct {
         errdefer h.platform.destroyWindow(id);
         const hw = try h.gpa.create(HostWindow);
         errdefer h.gpa.destroy(hw);
-        hw.* = .{ .id = id, .win = undefined, .list = .init(h.gpa), .dlc = undefined, .renderer = undefined };
-        errdefer hw.list.deinit();
-        hw.dlc = .init(&hw.list);
-        hw.renderer = h.make_renderer(h.gpa, h.io, .{ .target = try h.platform.surfaceTarget(id), .window = id }) catch |err| switch (err) {
+        hw.* = .{ .id = id, .win = undefined, .list = undefined, .own_list = .init(h.gpa), .dlc = undefined, .out = undefined };
+        errdefer hw.own_list.deinit();
+        const renderer = h.make_renderer(h.gpa, h.io, .{ .target = try h.platform.surfaceTarget(id), .window = id }) catch |err| switch (err) {
             // The software renderer cannot draw to a native target such as
             // a Win32 HWND (that needs a swapchain): use the platform's CPU
             // presenter instead.
             error.Unsupported => try h.make_renderer(h.gpa, h.io, .{ .target = .{ .external = try h.platform.cpuPresenter(id) }, .window = id }),
             else => return err,
         };
-        errdefer hw.renderer.deinit();
+        hw.out = .{ .direct = renderer };
+        if (h.render_thread) {
+            const notify: RenderThread.Notify = .{ .ctx = &h.platform, .wake_ui = wakeFromRenderer };
+            if (RenderThread.spawn(h.gpa, h.io, renderer, .{ .pacing = .platform_frame, .notify = notify })) |rt| {
+                hw.out = .{ .thread = rt };
+            } else |err| switch (err) {
+                error.ConcurrencyUnavailable => {},
+                else => {
+                    renderer.deinit();
+                    return err;
+                },
+            }
+        }
+        errdefer hw.deinitOutput();
+        hw.list = switch (hw.out) {
+            .direct => &hw.own_list,
+            .thread => |rt| rt.firstList(),
+        };
+        hw.dlc = .init(hw.list);
         hw.win = try h.app.openWindow(.{ .size = opts.size, .scale = scale, .root = opts.root, .text = h.text_sys, .canvas = hw.dlc.canvas() });
         errdefer h.app.closeWindow(hw.win);
         try h.windows.append(h.gpa, hw);
@@ -153,10 +245,9 @@ pub const Host = struct {
             break;
         };
         h.app.closeWindow(hw.win);
-        for (hw.pages.items) |t| if (t != .none) hw.renderer.destroyTexture(t);
+        hw.deinitOutput();
         hw.pages.deinit(h.gpa);
-        hw.renderer.deinit();
-        hw.list.deinit();
+        hw.own_list.deinit();
         h.platform.destroyWindow(hw.id);
         h.gpa.destroy(hw);
     }
@@ -198,6 +289,7 @@ pub const Host = struct {
                 h.close(hw);
                 continue;
             }
+            if (hw.out == .thread and hw.out.thread.takeRedraw()) hw.win.themeChanged(false);
             if (!hw.frame_requested and !hw.occluded and hw.win.wantsFrame()) {
                 try h.platform.submit(.{ .request_frame = hw.id });
                 hw.frame_requested = true;
@@ -210,6 +302,18 @@ pub const Host = struct {
     fn wakePlatform(ctx: ?*anyopaque) void {
         const p: *Platform = @ptrCast(@alignCast(ctx.?));
         p.wake();
+    }
+
+    fn wakeFromRenderer(ctx: *anyopaque) void {
+        wakePlatform(ctx);
+    }
+
+    /// Waits until every window's posted frames have rendered (tests and
+    /// screenshots). False when `timeout_ns` passed first.
+    pub fn flush(h: *Host, timeout_ns: u64) bool {
+        var ok = true;
+        for (h.windows.items) |hw| ok = hw.flush(timeout_ns) and ok;
+        return ok;
     }
 
     fn handle(h: *Host, ev: Event) !void {
@@ -233,10 +337,11 @@ pub const Host = struct {
         const hw = h.find(id) orelse return;
         hw.win.handlePlatformEvent(ev, h.platform);
         switch (ev) {
-            .window_configure => |c| hw.renderer.resize(.{ .w = c.size.w, .h = c.size.h }, c.scale.factor),
+            .window_configure => |c| hw.resize(.{ .w = c.size.w, .h = c.size.h }, c.scale.factor),
             .window_occluded => |o| hw.occluded = o.occluded,
             .frame => {
                 hw.frame_requested = false;
+                if (hw.out == .thread) hw.out.thread.onPlatformFrame(.frame);
                 if (h.fonts) |ft| {
                     ft.scale = hw.win.scale;
                     ft.frame +%= 1;
@@ -258,7 +363,7 @@ pub const Host = struct {
                     }
                 }
                 if (st.presented) {
-                    _ = try hw.renderer.render(&hw.list);
+                    try hw.submit();
                     hw.frames += 1;
                 }
             },
@@ -281,13 +386,13 @@ pub const Host = struct {
             for (h.atlas_updates.items) |u| {
                 while (hw.pages.items.len <= u.page) try hw.pages.append(h.gpa, .none);
                 if (hw.pages.items[u.page] == .none) {
-                    hw.pages.items[u.page] = try hw.renderer.createTexture(.{
+                    hw.pages.items[u.page] = try hw.createTexture(.{
                         .width = u.page_size,
                         .height = u.page_size,
                         .format = if (u.format == .r8) .r8 else .rgba8,
                     });
                 }
-                try hw.renderer.updateTexture(hw.pages.items[u.page], .{ .x = u.rect.x, .y = u.rect.y, .w = u.rect.w, .h = u.rect.h }, u.pixels, u.row_pitch);
+                try hw.updateTexture(hw.pages.items[u.page], .{ .x = u.rect.x, .y = u.rect.y, .w = u.rect.w, .h = u.rect.h }, u.pixels, u.row_pitch);
             }
         }
     }

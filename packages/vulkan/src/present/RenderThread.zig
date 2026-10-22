@@ -16,6 +16,12 @@
 //! latest-wins loses its layer content: those layers are dropped from the
 //! table and destroyed after the next frame, and the UI is woken with
 //! `needs_full_redraw` so it repaints them in full.
+//!
+//! Textures: the renderer is only touched here, so the UI queues texture
+//! work (`createTexture`, `updateTexture`, `destroyTexture`). The queue is
+//! applied in order before the next frame renders, so a list posted after
+//! an upload sees it. `createTexture` waits for its id (at most one
+//! frame); the others return at once.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -27,13 +33,17 @@ const DrawList = r2d.DrawList;
 const Renderer = r2d.Renderer;
 const LayerId = r2d.LayerId;
 const Size = r2d.Size;
+const TextureId = r2d.TextureId;
+const TextureDesc = r2d.TextureDesc;
+const PxRect = r2d.PxRect;
 
 const log = std.log.scoped(.zg_vulkan);
 
 const RenderThread = @This();
 
 /// Wakes the UI thread (e.g. `platform.wake`) after a frame that needs
-/// its attention: a lost layer or a renderer that wants a full redraw.
+/// its attention: lost layer content or a failed render. (A renderer's
+/// own full repaint needs nothing: a list holds the whole frame.)
 pub const Notify = struct { ctx: *anyopaque, wake_ui: *const fn (*anyopaque) void };
 
 /// Platform events E04 forwards.
@@ -61,6 +71,20 @@ const Slot = struct {
 
 const CachedLayer = struct { id: LayerId, size: Size, seq: u64 };
 
+/// A `createTexture` waiting for the render thread.
+const CreateReq = struct {
+    desc: TextureDesc,
+    result: r2d.RenderError!TextureId = error.InvalidArgument,
+    done: Io.Event = .unset,
+};
+
+/// Queued texture work; `update` owns a copy of its pixels.
+const TexOp = union(enum) {
+    create: *CreateReq,
+    update: struct { id: TextureId, rect: PxRect, pixels: []u8, row_pitch: u32 },
+    destroy: TextureId,
+};
+
 gpa: std.mem.Allocator,
 io: Io,
 renderer: Renderer,
@@ -75,7 +99,8 @@ wake: Io.Event = .unset,
 quit: std.atomic.Value(bool) = .init(false),
 frame_signal: std.atomic.Value(bool) = .init(false),
 has_configure: std.atomic.Value(bool) = .init(false),
-/// Guards `configure`, `cached`, `lost`, `last_stats` and `presented`.
+/// Guards `configure`, `cached`, `lost`, `last_stats`, `presented` and
+/// `ops`.
 lock: Io.Mutex = .init,
 configure: struct { size: Size, scale: f32 } = .{ .size = .{ .w = 0, .h = 0 }, .scale = 1 },
 cached: std.ArrayList(CachedLayer) = .empty,
@@ -85,6 +110,15 @@ last_stats: r2d.FrameStats = .{},
 presented: [2]u64 = .{ 0, 0 },
 /// Frames rendered (render thread).
 frames: u64 = 0,
+/// Texture work queued by the UI.
+ops: std.ArrayList(TexOp) = .empty,
+/// The batch being applied (render thread).
+ops_work: std.ArrayList(TexOp) = .empty,
+/// The `seq` of the last list rendered (lists dropped by latest-wins
+/// count as done once a newer one renders).
+done_seq: std.atomic.Value(u64) = .init(0),
+/// A frame asked the UI for a full repaint (see `takeRedraw`).
+redraw: std.atomic.Value(bool) = .init(false),
 pacer: FramePacer,
 future: ?Io.Future(void) = null,
 
@@ -115,11 +149,84 @@ pub fn shutdown(self: *RenderThread) void {
     self.quit.store(true, .release);
     self.wake.set(self.io);
     if (self.future) |*f| f.await(self.io);
+    // The thread has stopped: apply what is left here (frees the copies).
+    self.applyOps();
     self.renderer.deinit();
     for (&self.slots) |*s| s.dl.deinit();
     self.cached.deinit(self.gpa);
     self.lost.deinit(self.gpa);
+    self.ops.deinit(self.gpa);
+    self.ops_work.deinit(self.gpa);
     self.gpa.destroy(self);
+}
+
+/// Creates a texture on the render thread and waits for its id. UI
+/// thread.
+pub fn createTexture(self: *RenderThread, desc: TextureDesc) r2d.RenderError!TextureId {
+    var req: CreateReq = .{ .desc = desc };
+    try self.queue(.{ .create = &req });
+    req.done.waitUncancelable(self.io);
+    return req.result;
+}
+
+/// Queues an upload of `pixels` (copied) into `rect` of `id`; it lands
+/// before the next posted list renders. UI thread.
+pub fn updateTexture(self: *RenderThread, id: TextureId, rect: PxRect, pixels: []const u8, row_pitch: u32) r2d.RenderError!void {
+    const copy = self.gpa.dupe(u8, pixels) catch return error.OutOfMemory;
+    errdefer self.gpa.free(copy);
+    try self.queue(.{ .update = .{ .id = id, .rect = rect, .pixels = copy, .row_pitch = row_pitch } });
+}
+
+/// Queues the destruction of `id`. UI thread.
+pub fn destroyTexture(self: *RenderThread, id: TextureId) void {
+    self.queue(.{ .destroy = id }) catch {
+        // Out of memory: the texture lives until the renderer goes.
+    };
+}
+
+fn queue(self: *RenderThread, op: TexOp) error{OutOfMemory}!void {
+    self.lock.lockUncancelable(self.io);
+    const r = self.ops.append(self.gpa, op);
+    self.lock.unlock(self.io);
+    try r;
+    self.wake.set(self.io);
+}
+
+/// Applies the queued texture work in order. Render thread (or the UI
+/// after the thread stopped).
+fn applyOps(self: *RenderThread) void {
+    self.lock.lockUncancelable(self.io);
+    std.mem.swap(std.ArrayList(TexOp), &self.ops, &self.ops_work);
+    self.lock.unlock(self.io);
+    for (self.ops_work.items) |op| switch (op) {
+        .create => |req| {
+            req.result = self.renderer.createTexture(req.desc);
+            req.done.set(self.io);
+        },
+        .update => |u| {
+            self.renderer.updateTexture(u.id, u.rect, u.pixels, u.row_pitch) catch |err| log.err("texture upload failed: {t}", .{err});
+            self.gpa.free(u.pixels);
+        },
+        .destroy => |id| self.renderer.destroyTexture(id),
+    };
+    self.ops_work.clearRetainingCapacity();
+}
+
+/// Whether a frame asked for a full repaint since the last call (a lost
+/// layer or a renderer that needs one). UI thread.
+pub fn takeRedraw(self: *RenderThread) bool {
+    return self.redraw.swap(false, .acq_rel);
+}
+
+/// Waits until every list posted so far has rendered, or `timeout_ns`
+/// passes (returns false). UI thread; for tests and screenshots.
+pub fn waitIdle(self: *RenderThread, timeout_ns: u64) bool {
+    const start = zg_core.time.nowNs(self.io);
+    while (self.done_seq.load(.acquire) < self.post_seq) {
+        if (zg_core.time.nowNs(self.io) - start > timeout_ns) return false;
+        self.io.sleep(.fromMicroseconds(200), .awake) catch {};
+    }
+    return true;
 }
 
 /// The list the UI fills first (later ones come from `post`).
@@ -238,6 +345,7 @@ fn run(self: *RenderThread) void {
     while (true) {
         self.wake.reset();
         if (self.quit.load(.acquire)) return;
+        self.applyOps();
         if (self.has_configure.swap(false, .acq_rel)) {
             self.lock.lockUncancelable(io);
             const c = self.configure;
@@ -264,7 +372,10 @@ fn run(self: *RenderThread) void {
         }
         if (self.pacer.waitReady(null) == .lost) log.warn("present wait reported a lost surface", .{});
         const slot = self.pending.swap(null, .acq_rel) orelse continue;
+        // Uploads queued before this list was posted land first.
+        self.applyOps();
         self.renderOne(slot);
+        self.done_seq.store(slot.seq, .release);
         self.release(slot);
     }
 }
@@ -272,14 +383,16 @@ fn run(self: *RenderThread) void {
 fn renderOne(self: *RenderThread, slot: *Slot) void {
     const io = self.io;
     const start = zg_core.time.nowNs(io);
+    var failed = false;
     var s = self.renderer.render(&slot.dl) catch |err| blk: {
         log.err("render failed: {t}", .{err});
+        failed = true;
         break :blk r2d.FrameStats{ .needs_full_redraw = true };
     };
     self.frames += 1;
     self.pacer.frameDone(start, s.present_id != 0);
 
-    var wake_ui = s.needs_full_redraw;
+    var wake_ui = failed;
     self.lock.lockUncancelable(io);
     // Layers the renderer dropped (evicted, failed) that no newer list has
     // drawn are no longer cached.
@@ -299,7 +412,10 @@ fn renderOne(self: *RenderThread, slot: *Slot) void {
     }
     self.last_stats = s;
     self.lock.unlock(io);
-    if (wake_ui) if (self.notify) |n| n.wake_ui(n.ctx);
+    if (wake_ui) {
+        self.redraw.store(true, .release);
+        if (self.notify) |n| n.wake_ui(n.ctx);
+    }
 }
 
 fn release(self: *RenderThread, slot: *Slot) void {
@@ -325,14 +441,20 @@ const FakeRenderer = struct {
     last_damage_len: std.atomic.Value(u32) = .init(0),
     destroyed: std.atomic.Value(u32) = .init(0),
     valid: std.atomic.Value(bool) = .init(true),
+    textures: std.atomic.Value(u32) = .init(0),
+    uploads: std.atomic.Value(u32) = .init(0),
+    last_upload: std.atomic.Value(u8) = .init(0),
+    /// `uploads` when the last frame rendered.
+    uploads_at_render: std.atomic.Value(u32) = .init(0),
+    tex_destroyed: std.atomic.Value(u32) = .init(0),
 
     fn renderer(self: *FakeRenderer) Renderer {
         return .{ .ptr = self, .vtable = &.{
             .render = render,
             .resize = resize,
-            .createTexture = createTexture,
-            .updateTexture = updateTexture,
-            .destroyTexture = destroyTexture,
+            .createTexture = fakeCreate,
+            .updateTexture = fakeUpdate,
+            .destroyTexture = fakeDestroy,
             .destroyLayer = destroyLayer,
             .backend = backend,
             .deinit = deinit,
@@ -349,15 +471,23 @@ const FakeRenderer = struct {
         self.last_prims.store(@intCast(dl.prims.items.len), .release);
         self.last_damage_full.store(dl.damage_full, .release);
         self.last_damage_len.store(dl.damage_len, .release);
+        self.uploads_at_render.store(self.uploads.load(.acquire), .release);
         _ = self.rendered.fetchAdd(1, .acq_rel);
         return .{ .present_id = 1 };
     }
     fn resize(_: *anyopaque, _: Size, _: f32) void {}
-    fn createTexture(_: *anyopaque, _: r2d.TextureDesc) r2d.RenderError!r2d.TextureId {
-        return error.InvalidArgument;
+    fn fakeCreate(p: *anyopaque, d: r2d.TextureDesc) r2d.RenderError!r2d.TextureId {
+        if (d.width == 0) return error.InvalidArgument;
+        return @enumFromInt(cast(p).textures.fetchAdd(1, .acq_rel) + 1);
     }
-    fn updateTexture(_: *anyopaque, _: r2d.TextureId, _: r2d.PxRect, _: []const u8, _: u32) r2d.RenderError!void {}
-    fn destroyTexture(_: *anyopaque, _: r2d.TextureId) void {}
+    fn fakeUpdate(p: *anyopaque, _: r2d.TextureId, _: r2d.PxRect, px: []const u8, _: u32) r2d.RenderError!void {
+        const self = cast(p);
+        self.last_upload.store(px[0], .release);
+        _ = self.uploads.fetchAdd(1, .acq_rel);
+    }
+    fn fakeDestroy(p: *anyopaque, _: r2d.TextureId) void {
+        _ = cast(p).tex_destroyed.fetchAdd(1, .acq_rel);
+    }
     fn destroyLayer(p: *anyopaque, _: LayerId) void {
         _ = cast(p).destroyed.fetchAdd(1, .acq_rel);
     }
@@ -487,4 +617,54 @@ test "mailbox: dropped layer content is redrawn" {
     try waitFor(io, &fake.destroyed, 1);
     // The UI's next frame repaints the layer in full.
     try testing.expect(!dl.layerCached(id, lsz));
+}
+
+test "textures: queued in order, applied before the next frame" {
+    const io = testing.io;
+    var fake: FakeRenderer = .{ .io = io };
+    const rt = spawn(testing.allocator, io, fake.renderer(), .{}) catch |e| switch (e) {
+        error.ConcurrencyUnavailable => return error.SkipZigTest,
+        else => return e,
+    };
+    defer rt.shutdown();
+    const t = try rt.createTexture(.{ .width = 4, .height = 4, .format = .r8 });
+    try testing.expectEqual(@as(u32, 1), @intFromEnum(t));
+    try testing.expectError(error.InvalidArgument, rt.createTexture(.{ .width = 0, .height = 4, .format = .r8 }));
+    // Hold the thread in a frame; uploads queued meanwhile land before
+    // the next list renders.
+    fake.gate.reset();
+    var dl = rt.firstList();
+    dl.reset(.{ .w = 8, .h = 8 }, 1);
+    dl.damageAll();
+    dl = rt.post(dl);
+    fake.entered.waitUncancelable(io);
+    var px = [_]u8{7} ** 16;
+    try rt.updateTexture(t, .{ .x = 0, .y = 0, .w = 4, .h = 4 }, &px, 4);
+    px[0] = 9; // the queue holds a copy
+    try rt.updateTexture(t, .{ .x = 0, .y = 0, .w = 4, .h = 4 }, &px, 4);
+    dl.reset(.{ .w = 8, .h = 8 }, 1);
+    dl.damageAll();
+    dl = rt.post(dl);
+    fake.gate.set(io);
+    try testing.expect(rt.waitIdle(5 * std.time.ns_per_s));
+    try testing.expectEqual(@as(u32, 2), fake.uploads_at_render.load(.acquire));
+    try testing.expectEqual(@as(u8, 9), fake.last_upload.load(.acquire));
+    rt.destroyTexture(t);
+    try testing.expect(rt.waitIdle(5 * std.time.ns_per_s));
+}
+
+test "textures: work queued at shutdown is still applied" {
+    const io = testing.io;
+    var fake: FakeRenderer = .{ .io = io };
+    const rt = spawn(testing.allocator, io, fake.renderer(), .{}) catch |e| switch (e) {
+        error.ConcurrencyUnavailable => return error.SkipZigTest,
+        else => return e,
+    };
+    const t = try rt.createTexture(.{ .width = 2, .height = 2, .format = .r8 });
+    const px = [_]u8{1} ** 4;
+    try rt.updateTexture(t, .{ .x = 0, .y = 0, .w = 2, .h = 2 }, &px, 2);
+    rt.destroyTexture(t);
+    rt.shutdown();
+    try testing.expectEqual(@as(u32, 1), fake.uploads.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), fake.tex_destroyed.load(.acquire));
 }
