@@ -12,6 +12,8 @@ pub const search = @import("model/search.zig");
 pub const document = @import("model/document.zig");
 /// Cross-thread snapshots.
 pub const snapshot = @import("model/snapshot.zig");
+/// Highlighting and structure for documents.
+pub const syntax = @import("model/syntax.zig");
 /// The per-document change log.
 pub const change_log = @import("model/change_log.zig");
 
