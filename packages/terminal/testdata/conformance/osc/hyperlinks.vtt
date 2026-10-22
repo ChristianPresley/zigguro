@@ -1,0 +1,61 @@
+# OSC 8 hyperlinks: opening, closing, ids, and which cells carry links.
+@cite https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
+
+@case OSC 8 links the printed cells
+@size 10x2
+@send "\e]8;;https://a.example/^Gab\e]8;;^Gc"
+@expect-cell 1,1 link=https://a.example/
+@expect-cell 1,2 link=https://a.example/
+@expect-cell 1,3 nolink
+
+@case OSC 8 with ST
+@size 10x2
+@send "\e]8;;https://a.example/\e\\x\e]8;;\e\\"
+@expect-cell 1,1 link=https://a.example/
+
+@case OSC 8 with an id
+@size 10x2
+@send "\e]8;id=1;https://a.example/^Gx\e]8;;^G"
+@expect-cell 1,1 link=https://a.example/
+
+@case A new OSC 8 replaces the open link
+@size 10x2
+@send "\e]8;;https://a.example/^Ga\e]8;;https://b.example/^Gb\e]8;;^G"
+@expect-cell 1,1 link=https://a.example/
+@expect-cell 1,2 link=https://b.example/
+
+@case Cells printed before OSC 8 have no link
+@size 10x2
+@send "a\e]8;;https://a.example/^Gb"
+@expect-cell 1,1 nolink
+@expect-cell 1,2 link=https://a.example/
+
+@case Overwriting a linked cell drops the link
+@size 10x2
+@send "\e]8;;https://a.example/^Ga\e]8;;^G\rb"
+@expect-cell 1,1 nolink char=b
+
+@case Erasing a linked cell drops the link
+@size 10x2
+@send "\e]8;;https://a.example/^Gab\e]8;;^G\e[1;1H\e[K"
+@expect-cell 1,1 nolink
+
+@case A link without a scheme is ignored
+@size 10x2
+@send "\e]8;;notaurl^Gx\e]8;;^G"
+@expect-cell 1,1 nolink
+
+@case A link spans a line wrap
+@size 3x2
+@send "\e]8;;https://a.example/^Gabcd\e]8;;^G"
+@expect-cell 2,1 link=https://a.example/
+
+@case RIS closes the open link
+@size 10x2
+@send "\e]8;;https://a.example/^G\ecx"
+@expect-cell 1,1 nolink
+
+@case A wide character carries the link
+@size 10x2
+@send "\e]8;;https://a.example/^G日\e]8;;^G"
+@expect-cell 1,1 link=https://a.example/ wide
