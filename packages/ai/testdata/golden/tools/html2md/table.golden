@@ -1,0 +1,12 @@
+## Release matrix
+
+| Target | Status | Notes |
+| --- | --- | --- |
+| x86_64-linux | **green** | CI on every push |
+| aarch64-macos | green | a   pipe |
+| x86_64-windows | red | see [#42](https://example.com/issues/42) |
+
+Ragged:
+
+one
+two | cells

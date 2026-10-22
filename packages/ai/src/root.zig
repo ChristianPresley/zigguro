@@ -149,6 +149,9 @@ pub const tools = struct {
         pub const write = @import("tools/builtin/write.zig");
         pub const disk_files = @import("tools/builtin/disk_files.zig");
         pub const fake_files = @import("tools/builtin/fake_files.zig");
+        pub const html2md = @import("tools/builtin/html2md.zig");
+        pub const web_fetch = @import("tools/builtin/web_fetch.zig");
+        pub const web_search = @import("tools/builtin/web_search.zig");
     };
     pub const ToolRegistry = registry.ToolRegistry;
     pub const ToolSource = registry.ToolSource;
@@ -162,6 +165,8 @@ pub const tools = struct {
         _ = @import("tools/builtin/process_host_test.zig");
         _ = @import("tools/builtin/read_test.zig");
         _ = @import("tools/builtin/edit_test.zig");
+        _ = @import("tools/builtin/html2md_test.zig");
+        _ = @import("tools/builtin/web_test.zig");
     }
 };
 /// Cassettes and the eval runner (E10.F10.S02).

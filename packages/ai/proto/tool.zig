@@ -71,6 +71,13 @@ pub const ToolHandler = struct {
     call: *const fn (ctx: *anyopaque, c: *ToolCall) ToolError!ToolOutput,
 };
 
+/// A provider's own (server) tool, such as Anthropic `web_search`.
+pub const Native = struct {
+    provider: message.ProviderId,
+    /// The tool's declaration, sent to that provider verbatim.
+    json: []const u8,
+};
+
 /// Declares one tool.
 pub const ToolSpec = struct {
     name: []const u8,
@@ -84,6 +91,9 @@ pub const ToolSpec = struct {
     /// Loaded only when found through `tool_search`.
     defer_loading: bool = false,
     origin: Origin = .builtin,
+    /// Set for a provider's own tool: declared only to models of that
+    /// provider, run by the provider, never by the handler.
+    native: ?Native = null,
 
     /// Effects with `read_only` folded in.
     pub fn effectiveEffects(s: ToolSpec) Effects {

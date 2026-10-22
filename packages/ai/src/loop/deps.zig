@@ -180,8 +180,8 @@ pub const ContextBuilder = struct {
 };
 
 fn basicBuild(_: *anyopaque, _: Io, arena: Allocator, v: *const ContextView) anyerror!request.Request {
-    const decls = try arena.alloc(request.ToolDecl, v.tools.len);
-    for (v.tools, decls) |t, *d| d.* = .{ .name = t.name, .description = t.description, .input_schema_json = t.input_schema_json, .defer_loading = t.defer_loading };
+    var decls: std.ArrayList(request.ToolDecl) = .empty;
+    for (v.tools) |*t| if (request.declFor(t, v.model.provider)) |d| try decls.append(arena, d);
     const sys: []const request.SystemPart = if (v.system_append) |s| blk: {
         const p = try arena.alloc(request.SystemPart, 1);
         p[0] = .{ .text = s };
@@ -191,7 +191,7 @@ fn basicBuild(_: *anyopaque, _: Io, arena: Allocator, v: *const ContextView) any
         .model = v.model.id,
         .system = sys,
         .messages = v.transcript,
-        .tools = decls,
+        .tools = decls.items,
         .max_output_tokens = v.max_output_tokens,
         .thinking = v.profile.thinking,
         .effort = v.profile.effort,

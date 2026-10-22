@@ -53,6 +53,9 @@ pub const Request = struct {
     body: ?[]const u8 = null,
     retry: RetryPolicy = .idempotent_only,
     accept_encoding_gzip: bool = true,
+    /// False returns a redirect response as it is (its body discarded),
+    /// so the caller decides whether to follow it.
+    follow_redirects: bool = true,
 };
 
 /// Response headers copied out of the connection buffer.
@@ -305,6 +308,7 @@ pub const Client = struct {
     /// Requests with credentials follow up to `max_redirects` redirects
     /// here, dropping the credentials when the origin changes.
     fn attemptFollowing(self: *Client, gpa: Allocator, uri0: std.Uri, req0: Request, sink: ?BodySink, can_retry: bool, streamed: *bool) !Response {
+        if (!req0.follow_redirects) return self.attemptOnce(gpa, uri0, req0, sink, can_retry, streamed, true);
         const has_credentials = for (req0.headers) |h| {
             if (isCredential(h.name)) break true;
         } else false;
@@ -718,6 +722,25 @@ test "http: redirect to another host drops Authorization" {
     });
     defer r.deinit(testing.allocator);
     try testing.expectEqualStrings("clean", r.body);
+}
+
+test "http: follow_redirects false returns the redirect" {
+    const io = testing.io;
+    var srv: TestServer = .{ .server = undefined, .port = 0, .max = 1, .handler = struct {
+        fn h(_: *TestServer, req: *std.http.Server.Request) !void {
+            try req.respond("moved", .{ .status = .found, .extra_headers = &.{.{ .name = "location", .value = "https://elsewhere.example/x" }}, .keep_alive = false });
+        }
+    }.h };
+    try srv.start(io);
+    defer srv.stop(io);
+    var f: Fixture = undefined;
+    try f.init(test_cfg);
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var r = try f.client.send(testing.allocator, .{ .url = srv.url(&buf, "/start"), .follow_redirects = false });
+    defer r.deinit(testing.allocator);
+    try testing.expectEqual(std.http.Status.found, r.status);
+    try testing.expectEqualStrings("https://elsewhere.example/x", r.headers.get("location").?);
 }
 
 test "http: cancellation mid-stream" {

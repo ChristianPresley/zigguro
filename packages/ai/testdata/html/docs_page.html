@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Allocators - Zig docs</title><style>body{color:red}</style><script>var x = "<p>not me</p>";</script></head>
+<body>
+<nav><a href="/">Home</a> <a href="/docs">Docs</a></nav>
+<main>
+<h1>Allocators</h1>
+<p>Zig has <em>no</em> default allocator. Pass one in, as <code>std.mem.Allocator</code>.</p>
+<h2 id="arena">Arena</h2>
+<p>An arena frees everything at once:</p>
+<pre><code class="language-zig">var arena = std.heap.ArenaAllocator.init(gpa);
+defer arena.deinit();
+const a = arena.allocator();
+</code></pre>
+<p>See <a href="../std/heap.html#ArenaAllocator">ArenaAllocator</a> and <a href="https://ziglang.org/">the site</a>.</p>
+</main>
+<footer>&copy; 2026 Zig Software Foundation</footer>
+</body>
+</html>

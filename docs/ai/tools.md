@@ -192,3 +192,39 @@ turns them on. Each adapter:
 
 Calls lock the paths named in `path`, `file_path`, `file`, `uri` or
 `paths`. Mutating SCM tools take the `.scm` lock.
+
+## Web tools
+
+**`web_fetch`** (`tools/builtin/web_fetch.zig`) fetches one URL:
+
+- Only https. An http URL is upgraded and other schemes are refused.
+- The E16 domain policy (`DomainPolicy`) decides each host before any
+  request.
+- Requests go through the `Transport` seam, so cassettes record them. A
+  call has a 20 s timeout and a 10 MiB body cap.
+- Redirects are followed on the same host only. A redirect to another
+  host is returned to the model, which must call again, so an allowed
+  domain cannot redirect the fetch somewhere else.
+- HTML becomes Markdown through `html2md.zig`, which keeps the main
+  content and drops navigation, footers, forms and scripts. Text and JSON
+  stay as they are. A PDF becomes a document part when the model accepts
+  documents. Anything else is described, not shown.
+- `max_chars` (default 100,000) cuts the result. With `prompt`, the page
+  goes to the `assist` model with the question, and only the answer
+  returns.
+- Pages are cached for 15 minutes (LRU, 32 MiB).
+
+**`web_search`** (`tools/builtin/web_search.zig`) has three backends:
+
+- `provider_native` declares the provider's own search tool, verbatim, to
+  that provider's models only (`request.declFor` with `ToolSpec.native`).
+  Other models do not see the tool.
+- `http_json` calls a search API the user configured. A URL template, the
+  headers and a mapping from the JSON answer to title, URL and snippet
+  describe it. `allowed_domains` and `blocked_domains` filter the
+  results.
+- `disabled` registers nothing.
+
+Every web result starts with `[untrusted web content from <host>]` and
+only ever travels as a tool result, never in the system prompt. `zg agent`
+registers `web_fetch` and the native search.
