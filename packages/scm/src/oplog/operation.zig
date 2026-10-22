@@ -11,6 +11,7 @@ const enc = @import("../store/encode.zig");
 const store_mod = @import("../store/store.zig");
 const gc_mod = @import("../store/gc.zig");
 const view_mod = @import("view.zig");
+const view_delta = @import("view_delta.zig");
 const ObjectId = id_mod.ObjectId;
 const Kind = id_mod.Kind;
 const Extra = object.Extra;
@@ -98,8 +99,10 @@ pub const Operation = struct {
     }
 };
 
-/// Reads and decodes a `T` object (`Operation` or `View`) into `arena`.
+/// Reads and decodes a `T` object (`Operation` or `View`, its patches
+/// applied) into `arena`.
 pub fn read(comptime T: type, s: *Store, arena: Allocator, id: ObjectId) !T {
+    if (T == view_mod.View) return view_delta.read(s, arena, id);
     const r = try s.read(id);
     defer r.release();
     if (r.kind != T.kind) return error.WrongKind;
@@ -107,10 +110,11 @@ pub fn read(comptime T: type, s: *Store, arena: Allocator, id: ObjectId) !T {
     return enc.decode(T, arena, bytes) catch error.CorruptObject;
 }
 
-/// GC edges for operations and views (pass as `EdgeOptions.extra_edges`):
-/// an operation keeps its parents and view, a view every commit it
-/// names.
-pub fn gcEdges(_: ?*anyopaque, kind: Kind, bytes: []const u8, sink: *gc_mod.RootSink) anyerror!void {
+/// GC edges for operations and views (pass as `EdgeOptions.extra_edges`,
+/// with the `*Store` as `extra_ctx`): an operation keeps its parents and
+/// view, a view every commit it names and, when stored as a patch, its
+/// base view.
+pub fn gcEdges(ctx: ?*anyopaque, kind: Kind, bytes: []const u8, sink: *gc_mod.RootSink) anyerror!void {
     var arena_state: std.heap.ArenaAllocator = .init(sink.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -121,7 +125,13 @@ pub fn gcEdges(_: ?*anyopaque, kind: Kind, bytes: []const u8, sink: *gc_mod.Root
             try sink.add(o.view);
         },
         .view => {
-            const v = try enc.decode(view_mod.View, arena, bytes);
+            var v = try enc.decode(view_mod.View, arena, bytes);
+            if (view_delta.deltaOf(v)) |d| {
+                try sink.add(d.base);
+                const s: *Store = @ptrCast(@alignCast(ctx orelse return error.DeltaViewNeedsStore));
+                const full = try view_delta.resolve(s, arena, bytes, 0);
+                v = try enc.decode(view_mod.View, arena, full.bytes);
+            }
             try view_mod.forEachCommit(v, sink, struct {
                 fn add(s: *gc_mod.RootSink, id: ObjectId) anyerror!void {
                     try s.add(id);
