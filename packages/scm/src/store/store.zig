@@ -166,6 +166,9 @@ pub const Store = struct {
     /// Last `seg/GEN` value seen.
     gen: std.atomic.Value(u64) = .init(0),
     last_check_ns: std.atomic.Value(u64) = .init(0),
+    pin_mutex: std.Io.Mutex = .init,
+    /// Pinned IDs with counts; GC treats them as roots.
+    pins: std.AutoHashMapUnmanaged(ObjectId, u32) = .empty,
 
     /// Opens (creating if needed) the store rooted at `dir`. Maps every
     /// published segment; nothing beyond headers is parsed.
@@ -183,6 +186,7 @@ pub const Store = struct {
 
     /// Unmaps everything. Every `ObjectRef` must have been released.
     pub fn close(s: *Store) void {
+        s.pins.deinit(s.gpa);
         for (s.segments.items) |sg| sg.release();
         s.segments.deinit(s.gpa);
         s.cache.deinit();
@@ -368,6 +372,73 @@ pub const Store = struct {
         return .{ .store = s };
     }
 
+    /// Keeps `id` alive across GC until a matching `unpin`.
+    pub fn pin(s: *Store, id: ObjectId) Allocator.Error!void {
+        s.pin_mutex.lockUncancelable(s.io);
+        defer s.pin_mutex.unlock(s.io);
+        const gop = try s.pins.getOrPut(s.gpa, id);
+        gop.value_ptr.* = if (gop.found_existing) gop.value_ptr.* + 1 else 1;
+    }
+
+    pub fn unpin(s: *Store, id: ObjectId) void {
+        s.pin_mutex.lockUncancelable(s.io);
+        defer s.pin_mutex.unlock(s.io);
+        const v = s.pins.getPtr(id) orelse return;
+        v.* -= 1;
+        if (v.* == 0) _ = s.pins.remove(id);
+    }
+
+    /// The pinned IDs, copied into `gpa` memory.
+    pub fn pinned(s: *Store, gpa: Allocator) Allocator.Error![]ObjectId {
+        s.pin_mutex.lockUncancelable(s.io);
+        defer s.pin_mutex.unlock(s.io);
+        const out = try gpa.alloc(ObjectId, s.pins.count());
+        var it = s.pins.keyIterator();
+        var i: usize = 0;
+        while (it.next()) |k| : (i += 1) out[i] = k.*;
+        return out;
+    }
+
+    /// The current segments, newest first, each retained. Free with
+    /// `releaseSnapshot`.
+    pub fn snapshot(s: *Store, gpa: Allocator) Allocator.Error![]*Segment {
+        s.lock.lockSharedUncancelable(s.io);
+        defer s.lock.unlockShared(s.io);
+        const out = try gpa.dupe(*Segment, s.segments.items);
+        for (out) |sg| sg.retain();
+        return out;
+    }
+
+    pub fn releaseSnapshot(gpa: Allocator, segs: []*Segment) void {
+        for (segs) |sg| sg.release();
+        gpa.free(segs);
+    }
+
+    /// Removes `old` from the store and deletes their files, index first so
+    /// the segment is unpublished before its data goes. A file that cannot
+    /// be deleted yet (still mapped on Windows) is left for the next GC.
+    pub fn retire(s: *Store, old: []const *Segment) void {
+        s.lock.lockUncancelable(s.io);
+        var i: usize = 0;
+        while (i < s.segments.items.len) {
+            const sg = s.segments.items[i];
+            const gone = for (old) |o| {
+                if (o == sg) break true;
+            } else false;
+            if (gone) {
+                _ = s.segments.orderedRemove(i);
+                sg.release();
+            } else i += 1;
+        }
+        s.lock.unlock(s.io);
+        for (old) |sg| {
+            var nb: [64]u8 = undefined;
+            s.seg_dir.deleteFile(s.io, std.fmt.bufPrint(&nb, "{s}.zgi", .{sg.stem}) catch continue) catch {};
+            s.seg_dir.deleteFile(s.io, std.fmt.bufPrint(&nb, "{s}.zgs", .{sg.stem}) catch continue) catch {};
+        }
+        s.bumpGen();
+    }
+
     /// Number of published segments currently mapped.
     pub fn segmentCount(s: *Store) usize {
         s.lock.lockSharedUncancelable(s.io);
@@ -409,6 +480,8 @@ pub const WriteBatch = struct {
     window: []u8 = &.{},
     scratch: std.Io.Writer.Allocating = undefined,
     fail_at: FailPoint = .none,
+    /// Existing objects this batch deduplicated against (pinned).
+    pinned: std.ArrayList(ObjectId) = .empty,
 
     const buffer_len = 256 << 10;
 
@@ -468,13 +541,35 @@ pub const WriteBatch = struct {
         s.assertNotUi();
         const id = id_mod.hashObject(kind, bytes);
         if (b.seen.contains(id)) return id;
-        if (s.contains(id)) return id;
+        if (s.contains(id)) {
+            // Keep the existing copy alive for GC until the batch ends.
+            try b.seen.ensureUnusedCapacity(s.gpa, 1);
+            try b.pinned.ensureUnusedCapacity(s.gpa, 1);
+            try s.pin(id);
+            b.seen.putAssumeCapacity(id, {});
+            b.pinned.appendAssumeCapacity(id);
+            return id;
+        }
+        try b.append(id, kind, 0, bytes, bytes.len, s.opts.deflate_on_write);
+        return id;
+    }
+
+    /// Copies a record from another segment (compaction and GC), deflating
+    /// it when `compress` is set and that pays. Does not check the store,
+    /// which still holds the source.
+    pub fn copyRecord(b: *WriteBatch, id: ObjectId, rec: seg.Record, compress: bool) !void {
+        if (b.seen.contains(id)) return;
+        try b.append(id, rec.kind, rec.flags, rec.payload, rec.raw_len, compress and !rec.deflated());
+    }
+
+    fn append(b: *WriteBatch, id: ObjectId, kind: Kind, flags_in: u8, bytes: []const u8, raw_len: usize, try_deflate: bool) !void {
+        const s = b.store;
         if (b.file == null) try b.begin();
         try b.seen.put(s.gpa, id, {});
         try b.entries.ensureUnusedCapacity(s.gpa, 1);
         var payload = bytes;
-        var flags: u8 = 0;
-        if (s.opts.deflate_on_write and bytes.len >= s.opts.compress_min and bytes.len <= s.opts.compress_max and
+        var flags = flags_in;
+        if (try_deflate and bytes.len >= s.opts.compress_min and bytes.len <= s.opts.compress_max and
             try b.worthDeflating(bytes))
         {
             const z = try b.deflate(bytes);
@@ -487,12 +582,16 @@ pub const WriteBatch = struct {
         const start = b.offset;
         var hdr_buf: [32]u8 = undefined;
         var hw: std.Io.Writer = .fixed(&hdr_buf);
-        seg.writeRecordHeader(&hw, kind, flags, payload.len, bytes.len) catch unreachable;
+        seg.writeRecordHeader(&hw, kind, flags, payload.len, raw_len) catch unreachable;
         w.writeAll(hw.buffered()) catch return b.fw.err orelse error.WriteFailed;
         w.writeAll(payload) catch return b.fw.err orelse error.WriteFailed;
         b.offset += hw.end + payload.len;
         b.entries.appendAssumeCapacity(.{ .id = id, .kind = kind, .offset = start });
-        return id;
+    }
+
+    /// The stem of the segment this batch writes, once it has one.
+    pub fn segmentStem(b: *const WriteBatch) ?[]const u8 {
+        return if (b.names != null) b.stem() else null;
     }
 
     /// Publishes the batch: segment, then index. Durable when it returns.
@@ -535,6 +634,9 @@ pub const WriteBatch = struct {
         if (b.window.len > 0) gpa.free(b.window);
         b.wbuf = &.{};
         b.window = &.{};
+        for (b.pinned.items) |id| b.store.unpin(id);
+        b.pinned.deinit(gpa);
+        b.pinned = .empty;
         b.seen.deinit(gpa);
         b.entries.deinit(gpa);
         b.seen = .empty;
