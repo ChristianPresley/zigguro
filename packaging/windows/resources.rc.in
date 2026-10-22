@@ -1,0 +1,33 @@
+// zigguro Windows resources (E17.F01.S01.T02), filled in by
+// build/release_resources.zig. Numeric literals only: no SDK headers.
+
+1 ICON "zigguro.ico"
+
+1 VERSIONINFO
+FILEVERSION @V1@,@V2@,@V3@,@V4@
+PRODUCTVERSION @V1@,@V2@,@V3@,@V4@
+FILEFLAGSMASK 0x3F
+FILEFLAGS @FLAGS@
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "@PUBLISHER@"
+      VALUE "FileDescription", "@DESCRIPTION@"
+      VALUE "FileVersion", "@VERSION@"
+      VALUE "InternalName", "@NAME@"
+      VALUE "OriginalFilename", "@NAME@.exe"
+      VALUE "ProductName", "@PRODUCT@"
+      VALUE "ProductVersion", "@VERSION@"
+      VALUE "LegalCopyright", "Copyright @PUBLISHER@. Licensed under the Apache License 2.0."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
