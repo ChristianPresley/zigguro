@@ -225,7 +225,7 @@ test "view: alt-click adds carets that type and paste together" {
     try f.clickAt(0, 1, 1, no_mods);
     try f.clickAt(1, 1, 1, .{ .key = .unknown, .mods = .{ .alt = true } });
     try f.clickAt(2, 1, 1, .{ .key = .unknown, .mods = .{ .alt = true } });
-    try testing.expectEqual(@as(usize, 3), f.view.sels.items.len);
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
     f.t.typeText("!");
     try f.expectText("a!\nb!\nc!");
     // One clipboard line per caret.
@@ -233,7 +233,64 @@ test "view: alt-click adds carets that type and paste together" {
     f.press(.{ .key = .key_v, .mods = .{ .ctrl = true } });
     try f.expectText("a!1\nb!2\nc!3");
     f.press(.{ .key = .escape });
-    try testing.expectEqual(@as(usize, 1), f.view.sels.items.len);
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+}
+
+test "view: multi-cursor keys run the model's commands" {
+    var f: Fx = undefined;
+    try f.init("foo bar\nfoo baz\nfoo");
+    defer f.deinit();
+    // Ctrl+D from a caret selects the word, then its next occurrences.
+    f.view.setSelection(.caret(1));
+    const ctrl_d: zg_gui.input.event.KeyPress = .{ .key = .key_d, .mods = .{ .ctrl = true } };
+    f.press(ctrl_d);
+    f.press(ctrl_d);
+    try testing.expectEqual(@as(usize, 2), f.view.selections().len);
+    // Ctrl+U takes the last one back.
+    f.press(.{ .key = .key_u, .mods = .{ .ctrl = true } });
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+    // Ctrl+Shift+L: every occurrence; typing replaces them all.
+    f.press(.{ .key = .key_l, .mods = .{ .ctrl = true, .shift = true } });
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
+    f.t.typeText("qux");
+    try f.expectText("qux bar\nqux baz\nqux");
+    f.press(.{ .key = .escape });
+    try testing.expectEqual(@as(usize, 1), f.view.selections().len);
+
+    // Ctrl+Alt+Down adds a caret on the next line, same column.
+    f.view.setSelection(.caret(2));
+    f.press(.{ .key = .arrow_down, .mods = .{ .ctrl = true, .alt = true } });
+    try testing.expectEqual(@as(usize, 2), f.view.selections().len);
+    f.t.typeText("_");
+    try f.expectText("qu_x bar\nqu_x baz\nqux");
+
+    // Alt+Shift+I splits a multi-line range into one per line.
+    f.view.selectAll();
+    f.press(.{ .key = .key_i, .mods = .{ .alt = true, .shift = true } });
+    try testing.expectEqual(@as(usize, 3), f.view.selections().len);
+}
+
+test "view: alt-shift drag selects a column" {
+    var f: Fx = undefined;
+    try f.init("abcd\nefgh\nij");
+    defer f.deinit();
+    const from = try f.pointAt(0, 1);
+    const to = try f.pointAt(2, 3);
+    const mods = (zg_gui.input.event.KeyPress{ .key = .unknown, .mods = .{ .alt = true, .shift = true } }).mods;
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = from } });
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = from, .clicks = 1, .mods = mods } });
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = to } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = to, .clicks = 1, .mods = mods } });
+    _ = f.t.settle();
+    const sels = f.view.selections();
+    try testing.expectEqual(@as(usize, 3), sels.len);
+    try testing.expectEqual(@as(u64, 1), sels[0].start());
+    try testing.expectEqual(@as(u64, 3), sels[0].end());
+    // The short last row stops at its end.
+    try testing.expectEqual(@as(u64, 11), sels[2].start());
+    try testing.expectEqual(@as(u64, 12), sels[2].end());
+    f.t.typeText("-");
+    try f.expectText("a-d\ne-h\ni-");
 }
 
 test "view: edits from elsewhere move the carets" {
