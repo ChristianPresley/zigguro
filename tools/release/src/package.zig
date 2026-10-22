@@ -19,6 +19,7 @@ const zg_release = @import("zg_release");
 const args = @import("args.zig");
 const layout = @import("layout.zig");
 const targz = @import("targz.zig");
+const symbols = @import("symbols.zig");
 const ZipWriter = @import("zip_writer.zig").ZipWriter;
 
 const Reader = struct {
@@ -56,8 +57,26 @@ fn writeTarGzFile(gpa: Allocator, io: std.Io, out_dir: std.Io.Dir, path: []const
     try targz.writeTarGz(gpa, &fw.interface, entries, epoch, r, Reader.read);
 }
 
+/// The debug id of each executable at the top of the dist tree.
+fn debugIds(gpa: Allocator, io: std.Io, dist: std.Io.Dir, os: layout.Os) ![]const zg_release.BuildInfo.DebugId {
+    var out: std.ArrayList(zg_release.BuildInfo.DebugId) = .empty;
+    const names: []const []const u8 = switch (os) {
+        .windows => &.{ "zigguro.exe", "zg.exe", "zigguro-setup.exe" },
+        .linux => &.{ "zigguro", "zg" },
+    };
+    for (names) |n| {
+        const bytes = dist.readFileAlloc(io, n, gpa, .limited(1 << 30)) catch continue;
+        defer gpa.free(bytes);
+        var buf: [128]u8 = undefined;
+        const id = symbols.debugId(bytes, &buf) orelse continue;
+        try out.append(gpa, .{ .exe = n, .id = try gpa.dupe(u8, id) });
+    }
+    return out.items;
+}
+
 /// Entries for the symbols tarball: every file under `dir`, sorted, under
-/// `top/`.
+/// `top/`. Each ELF `.debug` file also gets GDB's
+/// `.build-id/<xx>/<rest>.debug` link.
 fn symbolEntries(gpa: Allocator, io: std.Io, dir: std.Io.Dir, top: []const u8) ![]layout.Entry {
     var list: std.ArrayList(layout.Entry) = .empty;
     try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}/", .{top}), .source = .dir, .mode = 0o755 });
@@ -68,7 +87,20 @@ fn symbolEntries(gpa: Allocator, io: std.Io, dir: std.Io.Dir, top: []const u8) !
         std.mem.replaceScalar(u8, rel, '\\', '/');
         switch (e.kind) {
             .directory => try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}/{s}/", .{ top, rel }), .source = .dir, .mode = 0o755 }),
-            .file => try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ top, rel }), .source = .{ .file = rel }, .mode = 0o644 }),
+            .file => {
+                try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ top, rel }), .source = .{ .file = rel }, .mode = 0o644 });
+                if (std.mem.endsWith(u8, rel, ".debug") and std.mem.indexOfScalar(u8, rel, '/') == null) {
+                    const bytes = try dir.readFileAlloc(io, rel, gpa, .limited(1 << 30));
+                    defer gpa.free(bytes);
+                    var buf: [128]u8 = undefined;
+                    if (symbols.debugId(bytes, &buf)) |id| if (id.len > 2) {
+                        const sub = try std.fmt.allocPrint(gpa, "{s}/.build-id/{s}/", .{ top, id[0..2] });
+                        if (!has(list.items, try std.fmt.allocPrint(gpa, "{s}/.build-id/", .{top}))) try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}/.build-id/", .{top}), .source = .dir, .mode = 0o755 });
+                        if (!has(list.items, sub)) try list.append(gpa, .{ .archive_path = sub, .source = .dir, .mode = 0o755 });
+                        try list.append(gpa, .{ .archive_path = try std.fmt.allocPrint(gpa, "{s}{s}.debug", .{ sub, id[2..] }), .source = .{ .symlink = try std.fmt.allocPrint(gpa, "../../{s}", .{rel}) }, .mode = 0o755 });
+                    };
+                }
+            },
             else => {},
         }
     }
@@ -78,6 +110,11 @@ fn symbolEntries(gpa: Allocator, io: std.Io, dir: std.Io.Dir, top: []const u8) !
         }
     }.lt);
     return list.items;
+}
+
+fn has(list: []const layout.Entry, path: []const u8) bool {
+    for (list) |e| if (std.mem.eql(u8, e.archive_path, path)) return true;
+    return false;
 }
 
 /// Sizes found as `icons/<N>.png` in the dist tree.
@@ -110,6 +147,7 @@ pub fn run(ctx: *const args.Context) !u8 {
     defer out.close(io);
 
     const bi: zg_release.BuildInfo = .{
+        .debug_ids = try debugIds(gpa, io, dist, os),
         .version = version,
         .version_string = version_text,
         .channel = std.meta.stringToEnum(zg_release.Channel, o.get("channel") orelse "dev") orelse return error.Usage,
