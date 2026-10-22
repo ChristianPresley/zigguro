@@ -64,6 +64,7 @@ const ShmPresenter = @import("shm.zig").ShmPresenter;
 const dmabuf = @import("dmabuf.zig");
 const seat_mod = @import("seat.zig");
 const data_device = @import("data_device.zig");
+const dnd = @import("dnd.zig");
 const cursor_mod = @import("cursor.zig");
 const xcursor = @import("../linux/xcursor.zig");
 const CursorShape = @import("../api/cursor.zig").CursorShape;
@@ -195,6 +196,12 @@ pub const WaylandBackend = struct {
     /// Pipe transfers in flight. Guarded by the mutex.
     transfers: pipe_transfer.Transfers = undefined,
     finished: std.ArrayList(pipe_transfer.Finished) = .empty,
+    /// Drag and drop: a drag over our windows, a dropped offer being
+    /// read, and a drag we started with its items. Guarded by the mutex.
+    dnd_target: ?dnd.Target = null,
+    dnd_dropped: ?dnd.Dropped = null,
+    dnd_source: ?dnd.Source = null,
+    drag_items: []ClipItemOwned = &.{},
     /// Payloads over the arena's limit, by id. Guarded by the mutex.
     large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
     next_large: u32 = 0,
@@ -595,6 +602,8 @@ pub const WaylandBackend = struct {
         b.feedback.deinit(gpa);
         b.pres_pending.deinit(gpa);
         for (&b.clip) |items| freeClip(gpa, items);
+        freeClip(gpa, b.drag_items);
+        b.drag_items = &.{};
         b.seat.deinit(gpa);
         b.seat.compose = null;
         if (b.compose_table) |*t| t.deinit(gpa);
@@ -739,7 +748,9 @@ pub const WaylandBackend = struct {
                 try b.offerSelection(t.which);
             },
             .clipboard_read => |t| try b.readSelection(t.which, t.mime, t.request),
-            .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
+            .start_drag => |t| try b.startDrag(t.win, t.items, t.allowed),
+            .set_drop_effect => |t| try b.setDropEffect(t.win, t.accept, t.effect),
+            .begin_move, .begin_resize, .show_window_menu, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
         }
     }
 
@@ -806,6 +817,10 @@ pub const WaylandBackend = struct {
         b.transfers.expire(b.nowNs(), &b.finished) catch {};
         for (b.finished.items) |f| {
             if (f.dir != .read) continue;
+            if (f.purpose == .drop) {
+                b.finishDrop(f);
+                continue;
+            }
             const data: types.PayloadSlice = if (f.ok) b.putOwned(f.data) else .empty;
             b.stage(.{ .clipboard_data = .{ .request = f.request, .data = data, .mime = f.mime } }) catch {};
         }
@@ -1114,9 +1129,10 @@ pub const WaylandBackend = struct {
                         try b.offers.add(b.gpa, @intFromEnum(o.id), .clipboard);
                     },
                     .selection => |sel| try b.onSelection(.clipboard, if (sel.id) |i| @intFromEnum(i) else null),
-                    // Drag and drop is E01.F04.S03.T03: drop its offers.
-                    .enter => |e| if (e.id) |i| b.dropOffer(@intFromEnum(i)),
-                    .leave, .motion, .drop => {},
+                    .enter => |e| try b.onDndEnter(e.serial, @intFromEnum(e.surface), e.x, e.y, if (e.id) |i| @intFromEnum(i) else null),
+                    .motion => |m| try b.onDndMotion(m.x, m.y),
+                    .leave => try b.onDndLeave(),
+                    .drop => try b.onDndDrop(),
                 }
             },
             .primary_device => {
@@ -1137,7 +1153,12 @@ pub const WaylandBackend = struct {
                 defer b.unlock();
                 switch (ev) {
                     .offer => |o| try b.offers.addMime(b.gpa, obj, o.mime_type),
-                    .source_actions, .action => {},
+                    .source_actions => |a| if (b.offers.get(obj)) |o| {
+                        o.source_actions = dnd.fromWl(a.source_actions);
+                    },
+                    .action => |a| if (b.offers.get(obj)) |o| {
+                        o.action = dnd.fromWl(a.dnd_action);
+                    },
                 }
             },
             .primary_offer => switch (try wl.zwp_primary_selection_offer_v1.decodeEvent(opcode, body, fds)) {
@@ -1151,6 +1172,7 @@ pub const WaylandBackend = struct {
                 const ev = try wl.wl_data_source.decodeEvent(opcode, body, fds);
                 b.lock();
                 defer b.unlock();
+                if (b.dnd_source) |ds| if (ds.source == obj) return b.onDragSourceEvent(ev);
                 switch (ev) {
                     .send => |sd| b.sendSelection(.clipboard, sd.mime_type, sd.fd),
                     .cancelled => b.dropSource(.clipboard, obj),
@@ -1370,6 +1392,187 @@ pub const WaylandBackend = struct {
             return;
         };
         _ = linux.close(fd);
+    }
+
+    // ---- drag and drop (E01.F04.S03.T03, mutex held) ----
+
+    fn dataDeviceVersion(b: *WaylandBackend) u32 {
+        return if (b.data_dev) |d| b.conn.version(@intFromEnum(d)) else 0;
+    }
+
+    /// `wl_data_device.enter`: a drag (with `offer`, unless it carries no
+    /// data) entered one of our surfaces.
+    fn onDndEnter(b: *WaylandBackend, serial: u32, surf: u32, x: wl.Fixed, y: wl.Fixed, offer: ?u32) !void {
+        b.endDndTarget();
+        const w = b.byObject("surface", surf) orelse {
+            if (offer) |o| b.dropOffer(o);
+            return;
+        };
+        const pos = toPx(w, x, y);
+        b.dnd_target = .{ .offer = offer, .win = w.id, .serial = serial, .pos = pos };
+        var buf: [32]u8 = undefined;
+        var mimes: []const u8 = &.{};
+        var allowed: clipboard.DragActions = .{};
+        if (offer) |id| if (b.offers.get(id)) |o| {
+            mimes = dnd.offeredIds(o.mimes.items, b.dnd_source != null, &buf);
+            // Before v3 the source's actions are unknown: copy.
+            allowed = if (b.dataDeviceVersion() >= 3) o.source_actions else .{ .copy = true };
+        };
+        try b.stage(.{ .drop = .{ .win = w.id, .phase = .enter, .allowed = allowed, .pos_px = pos, .mimes = b.arena.put(mimes) catch .empty } });
+    }
+
+    fn onDndMotion(b: *WaylandBackend, x: wl.Fixed, y: wl.Fixed) !void {
+        const t = &(b.dnd_target orelse return);
+        const s = b.find(t.win) orelse return;
+        t.pos = toPx(&s.win, x, y);
+        try b.stage(.{ .drop = .{ .win = t.win, .phase = .over, .allowed = b.targetActions(t.*), .pos_px = t.pos } });
+    }
+
+    fn onDndLeave(b: *WaylandBackend) !void {
+        const t = b.dnd_target orelse return;
+        b.endDndTarget();
+        try b.stage(.{ .drop = .{ .win = t.win, .phase = .leave, .allowed = .{}, .pos_px = t.pos } });
+    }
+
+    /// Forgets the drag target, destroying its offer.
+    fn endDndTarget(b: *WaylandBackend) void {
+        const t = b.dnd_target orelse return;
+        b.dnd_target = null;
+        if (t.offer) |o| b.dropOffer(o);
+    }
+
+    /// What the source allows (v3), or copy.
+    fn targetActions(b: *WaylandBackend, t: dnd.Target) clipboard.DragActions {
+        if (b.dataDeviceVersion() < 3) return .{ .copy = true };
+        const id = t.offer orelse return .{};
+        return if (b.offers.get(id)) |o| o.source_actions else .{};
+    }
+
+    /// `wl_data_device.drop`: read the accepted type, or leave if we
+    /// accepted nothing.
+    fn onDndDrop(b: *WaylandBackend) !void {
+        const t = b.dnd_target orelse return;
+        const leave: Event = .{ .drop = .{ .win = t.win, .phase = .leave, .allowed = .{}, .pos_px = t.pos } };
+        const answer = t.sent orelse return b.onDndLeave();
+        const mime = answer.mime orelse return b.onDndLeave();
+        const offer_id = t.offer orelse return b.onDndLeave();
+        const o = b.offers.get(offer_id) orelse return b.onDndLeave();
+        // The trailing `leave` must not destroy the offer being read.
+        b.dnd_target = null;
+        const id = data_device.idForMime(mime) orelse .text_utf8;
+        const action: clipboard.DragActions = if (b.dataDeviceVersion() >= 3) o.action else .{ .copy = true };
+        const fds = pipe_transfer.pipe() catch |err| {
+            b.dropOffer(offer_id);
+            try b.stage(leave);
+            return err;
+        };
+        defer _ = linux.close(fds[1]);
+        wl.wl_data_offer.receive(b.conn, @enumFromInt(offer_id), mime, fds[1]) catch |err| {
+            _ = linux.close(fds[0]);
+            b.dropOffer(offer_id);
+            try b.stage(leave);
+            return err;
+        };
+        b.transfers.startDropRead(fds[0], id, b.nowNs() + b.opts.transfer_timeout_ns) catch |err| {
+            b.dropOffer(offer_id);
+            try b.stage(leave);
+            return err;
+        };
+        if (b.dnd_dropped) |old| b.dropOffer(old.offer);
+        b.dnd_dropped = .{ .offer = offer_id, .win = t.win, .pos = t.pos, .action = action };
+        b.thread_wake.signal();
+    }
+
+    /// The dropped payload arrived (or the read failed): `drop` (or
+    /// `leave`), then `finish` (v3, unless the action is ask) and destroy
+    /// the offer.
+    fn finishDrop(b: *WaylandBackend, f: pipe_transfer.Finished) void {
+        const d = b.dnd_dropped orelse {
+            b.gpa.free(f.data);
+            return;
+        };
+        b.dnd_dropped = null;
+        if (f.ok) {
+            const data = b.putOwned(f.data);
+            b.stage(.{ .drop = .{ .win = d.win, .phase = .drop, .allowed = d.action, .pos_px = d.pos, .data = data } }) catch {};
+            if (b.dataDeviceVersion() >= 3 and !d.action.ask) wl.wl_data_offer.finish(b.conn, @enumFromInt(d.offer)) catch {};
+        } else {
+            b.gpa.free(f.data);
+            b.stage(.{ .drop = .{ .win = d.win, .phase = .leave, .allowed = .{}, .pos_px = d.pos } }) catch {};
+        }
+        b.dropOffer(d.offer);
+        b.conn.flush() catch {};
+    }
+
+    /// `Command.set_drop_effect`: tell the compositor what we accept, only
+    /// when it changes.
+    fn setDropEffect(b: *WaylandBackend, win: WindowId, accept: ?clipboard.MimeId, effect: clipboard.DragActions) !void {
+        const t = &(b.dnd_target orelse return);
+        if (t.win != win) return;
+        const offer_id = t.offer orelse return;
+        const o = b.offers.get(offer_id) orelse return;
+        const a = dnd.Target.answerFor(o.mimes.items, accept, effect);
+        if (t.mimeChanged(a)) try wl.wl_data_offer.accept(b.conn, @enumFromInt(offer_id), t.serial, a.mime);
+        if (b.dataDeviceVersion() >= 3 and t.actionsChanged(a)) {
+            try wl.wl_data_offer.setActions(b.conn, @enumFromInt(offer_id), dnd.toWl(a.actions), dnd.preferred(a.actions));
+        }
+        t.sent = a;
+    }
+
+    /// `Command.start_drag`: a source offering `items`, started with the
+    /// serial of the button press that began the drag.
+    fn startDrag(b: *WaylandBackend, win: WindowId, items: []const clipboard.ClipItem, allowed: clipboard.DragActions) !void {
+        const dev = b.data_dev orelse return error.Unsupported;
+        const m = b.data_manager orelse return error.Unsupported;
+        const w = try b.lookup(win);
+        const owned = try b.gpa.alloc(ClipItemOwned, items.len);
+        var done: usize = 0;
+        errdefer {
+            for (owned[0..done]) |it| b.gpa.free(it.data);
+            b.gpa.free(owned);
+        }
+        for (items, 0..) |it, i| {
+            owned[i] = .{ .mime = it.mime, .data = try b.gpa.dupe(u8, it.data) };
+            done = i + 1;
+        }
+        if (b.dnd_source != null) b.endDragSource(.{});
+        const c = b.conn;
+        const src = try c.newIdVersion(wl.wl_data_source, c.version(@intFromEnum(m)), b.handler(.data_source));
+        try wl.wl_data_device_manager.createDataSource(c, m, src);
+        for (items) |it| for (data_device.mimesFor(it.mime)) |mt| try wl.wl_data_source.offer(c, src, mt);
+        if (c.version(@intFromEnum(m)) >= 3) try wl.wl_data_source.setActions(c, src, dnd.toWl(allowed));
+        try wl.wl_data_device.startDrag(c, dev, src, w.surface, null, b.seat.last_button_serial);
+        b.drag_items = owned;
+        b.dnd_source = .{ .source = @intFromEnum(src), .win = win };
+    }
+
+    /// Events of the source of a drag we started.
+    fn onDragSourceEvent(b: *WaylandBackend, ev: wl.wl_data_source.Event) !void {
+        const ds = &b.dnd_source.?;
+        switch (ev) {
+            .send => |sd| {
+                const want = data_device.idForMime(sd.mime_type);
+                for (b.drag_items) |it| if (want != null and it.mime == want.?) {
+                    b.transfers.startWrite(sd.fd, it.data, b.nowNs() + b.opts.transfer_timeout_ns) catch |err| log.warn("drag send: {t}", .{err});
+                    return;
+                };
+                _ = linux.close(sd.fd);
+            },
+            .action => |a| ds.action = dnd.fromWl(a.dnd_action),
+            .target, .dnd_drop_performed => {},
+            .dnd_finished => b.endDragSource(ds.action),
+            .cancelled => b.endDragSource(.{}),
+        }
+    }
+
+    /// Ends our drag: `source_finished` with `action`, then frees it.
+    fn endDragSource(b: *WaylandBackend, action: clipboard.DragActions) void {
+        const ds = b.dnd_source orelse return;
+        b.dnd_source = null;
+        wl.wl_data_source.destroy(b.conn, @enumFromInt(ds.source)) catch {};
+        freeClip(b.gpa, b.drag_items);
+        b.drag_items = &.{};
+        b.stage(.{ .drop = .{ .win = ds.win, .phase = .source_finished, .allowed = action, .pos_px = .{ 0, 0 } } }) catch {};
     }
 
     /// A source's `cancelled`: another client owns the selection now.
@@ -1667,6 +1870,10 @@ const Peer = struct {
     last_mime: [64]u8 = undefined,
     last_mime_len: usize = 0,
     last_serial: ?u32 = null,
+    /// The newest `accept` mime (null = refused) and `set_actions`.
+    last_accept: ?[64]u8 = null,
+    last_accept_len: usize = 0,
+    last_actions: ?u32 = null,
     /// The newest `hotspot_x`/`hotspot_y` and `scale` arguments.
     last_hotspot: [2]i32 = .{ -1, -1 },
     last_scale: ?i32 = null,
@@ -1749,6 +1956,15 @@ const Peer = struct {
                 @memcpy(p.last_mime[0..p.last_mime_len], v[0..p.last_mime_len]);
             }
             if (comptime std.mem.eql(u8, f.name, "serial")) p.last_serial = v;
+            if (comptime std.mem.eql(u8, f.name, "mime_type") and f.type == ?[:0]const u8) {
+                if (v) |m| {
+                    var a: [64]u8 = undefined;
+                    p.last_accept_len = @min(m.len, a.len);
+                    @memcpy(a[0..p.last_accept_len], m[0..p.last_accept_len]);
+                    p.last_accept = a;
+                } else p.last_accept = null;
+            }
+            if (comptime std.mem.eql(u8, f.name, "dnd_actions")) p.last_actions = @bitCast(v);
             if (comptime std.mem.eql(u8, f.name, "hotspot_x")) p.last_hotspot[0] = v;
             if (comptime std.mem.eql(u8, f.name, "hotspot_y")) p.last_hotspot[1] = v;
             if (comptime std.mem.eql(u8, f.name, "scale") and f.type == i32) p.last_scale = v;
@@ -2480,4 +2696,188 @@ test "cursor: the Xcursor fallback attaches a buffer with the hotspot at scale 2
     _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
     try testing.expectEqual(@as(?u32, 88), rig.peer.last_serial);
     try testing.expectEqual([2]i32{ 5, 3 }, rig.peer.last_hotspot);
+}
+
+/// Waits for a `drop` event in `phase`; other events are dropped.
+fn expectDrop(p: Platform, phase: clipboard.DropPhase) !clipboard.DropEvent {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 2 * std.time.ns_per_s;
+    var evs: [32]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == .drop and e.drop.phase == phase) return e.drop;
+        if (@as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
+}
+
+/// Announces a drag offer with `mimes` and copy|move, and enters `surf`.
+fn enterDrag(rig: *Rig, offer_id: u32, mimes: []const [:0]const u8) !void {
+    const fc = rig.peer.fc;
+    try rig.peer.ids.put(testing.allocator, offer_id, wl.wl_data_offer.name);
+    const offer: wl.wl_data_offer.Id = @enumFromInt(offer_id);
+    const dev = rig.peer.id(wl.wl_data_device);
+    try wl.wl_data_device.server.dataOffer(fc, dev, offer);
+    for (mimes) |m| try wl.wl_data_offer.server.offer(fc, offer, m);
+    try wl.wl_data_offer.server.sourceActions(fc, offer, .{ .copy = true, .move = true });
+    try wl.wl_data_device.server.enter(fc, dev, 77, rig.peer.id(wl.wl_surface), .fromInt(10), .fromInt(20), offer);
+}
+
+test "dnd target: enter, accept and actions sent once, motion, drop reads then finish" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const dev = rig.peer.id(wl.wl_data_device);
+    rig.peer.keep_fds = true;
+    const offer_id: u32 = 0xff000001;
+    try enterDrag(&rig, offer_id, &.{ "text/uri-list", "text/plain", "application/x-zigguro-internal" });
+
+    const en = try expectDrop(p, .enter);
+    try testing.expectEqual(win, en.win);
+    try testing.expectEqual([2]f32{ 10, 20 }, en.pos_px);
+    try testing.expectEqual(clipboard.DragActions{ .copy = true, .move = true }, en.allowed);
+    // Another client's private type is not listed.
+    const ids = p.payload(en.mimes);
+    try testing.expectEqual(@as(usize, 4), ids.len);
+    try testing.expectEqual(@intFromEnum(clipboard.MimeId.uri_list), std.mem.readInt(u16, ids[0..2], .little));
+
+    try p.submit(.{ .set_drop_effect = .{ .win = win, .accept = .uri_list, .effect = .{ .copy = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .accept, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
+    try testing.expectEqualStrings("text/uri-list", rig.peer.last_accept.?[0..rig.peer.last_accept_len]);
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .set_actions, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 1), rig.peer.last_actions);
+    // The same answer again sends nothing.
+    const before = rig.peer.log.items.len;
+    try p.submit(.{ .set_drop_effect = .{ .win = win, .accept = .uri_list, .effect = .{ .copy = true } } });
+    try wl.wl_data_device.server.motion(fc, dev, 0, .fromInt(30), .fromInt(40));
+    const ov = try expectDrop(p, .over);
+    try testing.expectEqual([2]f32{ 30, 40 }, ov.pos_px);
+    try rig.b.conn.flush();
+    while (try rig.peer.next(20 * std.time.ns_per_ms)) |_| {}
+    for (rig.peer.log.items[before..]) |s| try testing.expect(!std.mem.eql(u8, s.iface, wl.wl_data_offer.name));
+
+    // Drop: the payload is read through a pipe, then finish and destroy.
+    try wl.wl_data_offer.server.action(fc, @enumFromInt(offer_id), .{ .copy = true });
+    try wl.wl_data_device.server.drop(fc, dev);
+    try wl.wl_data_device.server.leave(fc, dev);
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .receive, std.time.ns_per_s);
+    try testing.expectEqualStrings("text/uri-list", rig.peer.last_mime[0..rig.peer.last_mime_len]);
+    const wfd = rig.peer.kept_fd.?;
+    rig.peer.kept_fd = null;
+    try writeAllPipe(wfd, "file:///tmp/a%20b\r\n");
+    _ = linux.close(wfd);
+    const dr = try expectDrop(p, .drop);
+    try testing.expectEqual(win, dr.win);
+    try testing.expectEqual(clipboard.DragActions{ .copy = true }, dr.allowed);
+    try testing.expectEqualStrings("file:///tmp/a%20b\r\n", p.payload(dr.data));
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .finish, std.time.ns_per_s);
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .destroy, std.time.ns_per_s);
+}
+
+test "dnd target: a drop with nothing accepted is a leave" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const offer_id: u32 = 0xff000001;
+    try enterDrag(&rig, offer_id, &.{"image/png"});
+    _ = try expectDrop(p, .enter);
+    // The app accepts a type the source does not offer: refused.
+    try p.submit(.{ .set_drop_effect = .{ .win = win, .accept = .uri_list, .effect = .{ .copy = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .accept, std.time.ns_per_s);
+    try testing.expectEqual(@as(?[64]u8, null), rig.peer.last_accept);
+    try wl.wl_data_device.server.drop(rig.peer.fc, rig.peer.id(wl.wl_data_device));
+    const lv = try expectDrop(p, .leave);
+    try testing.expectEqual(win, lv.win);
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .destroy, std.time.ns_per_s);
+}
+
+test "dnd source: start_drag offers items, send writes a large payload, finished and cancelled" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const ptr = rig.peer.id(wl.wl_pointer);
+    const surf = rig.peer.id(wl.wl_surface);
+
+    // The drag starts from a button press: its serial starts the drag.
+    try wl.wl_pointer.server.enter(fc, ptr, 8, surf, .fromInt(5), .fromInt(5));
+    try wl.wl_pointer.server.button(fc, ptr, 9, 0, seat_mod.BTN.left, .pressed);
+    try wl.wl_pointer.server.frame(fc, ptr);
+    _ = try expectEvent(p, .pointer_button, win);
+
+    const big = try testing.allocator.alloc(u8, 1024 * 1024);
+    defer testing.allocator.free(big);
+    for (big, 0..) |*c, i| c.* = @truncate(i);
+    try p.submit(.{ .start_drag = .{ .win = win, .items = &.{ .{ .mime = .uri_list, .data = big }, .{ .mime = .zigguro_internal, .data = "tab:3" } }, .allowed = .{ .copy = true, .move = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_source, .set_actions, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 3), rig.peer.last_actions);
+    _ = try rig.peer.waitFor(wl.wl_data_device, .start_drag, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 9), rig.peer.last_serial);
+
+    // The target reads 1 MiB: written in pieces off the UI thread.
+    const src = rig.peer.id(wl.wl_data_source);
+    const sp = try pipe_transfer.pipe();
+    defer _ = linux.close(sp[0]);
+    try wl.wl_data_source.server.send(fc, src, "text/uri-list", sp[1]);
+    _ = linux.close(sp[1]);
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(testing.allocator);
+    try readAllPipe(sp[0], &got);
+    try testing.expectEqualSlices(u8, big, got.items);
+
+    try wl.wl_data_source.server.action(fc, src, .{ .move = true });
+    try wl.wl_data_source.server.dndDropPerformed(fc, src);
+    try wl.wl_data_source.server.dndFinished(fc, src);
+    const fin = try expectDrop(p, .source_finished);
+    try testing.expectEqual(win, fin.win);
+    try testing.expectEqual(clipboard.DragActions{ .move = true }, fin.allowed);
+    _ = try rig.peer.waitFor(wl.wl_data_source, .destroy, std.time.ns_per_s);
+
+    // A second drag that the compositor cancels finishes with no action.
+    try p.submit(.{ .start_drag = .{ .win = win, .items = &.{.{ .mime = .text_utf8, .data = "x" }}, .allowed = .{ .copy = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_device, .start_drag, std.time.ns_per_s);
+    try wl.wl_data_source.server.cancelled(fc, rig.peer.id(wl.wl_data_source));
+    const cn = try expectDrop(p, .source_finished);
+    try testing.expectEqual(clipboard.DragActions{}, cn.allowed);
+}
+
+test "dnd: a private type round-trips between our own windows" {
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &selection_globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    rig.peer.keep_fds = true;
+    try p.submit(.{ .start_drag = .{ .win = win, .items = &.{.{ .mime = .zigguro_internal, .data = "tab:7" }}, .allowed = .{ .move = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_device, .start_drag, std.time.ns_per_s);
+    const src = rig.peer.id(wl.wl_data_source);
+
+    // The compositor offers our own source back to us.
+    const offer_id: u32 = 0xff000002;
+    try enterDrag(&rig, offer_id, &.{"application/x-zigguro-internal"});
+    const en = try expectDrop(p, .enter);
+    try testing.expectEqual(@intFromEnum(clipboard.MimeId.zigguro_internal), std.mem.readInt(u16, p.payload(en.mimes)[0..2], .little));
+    try p.submit(.{ .set_drop_effect = .{ .win = win, .accept = .zigguro_internal, .effect = .{ .move = true } } });
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .set_actions, std.time.ns_per_s);
+    try wl.wl_data_offer.server.action(fc, @enumFromInt(offer_id), .{ .move = true });
+    try wl.wl_data_device.server.drop(fc, rig.peer.id(wl.wl_data_device));
+    _ = try rig.peer.waitFor(wl.wl_data_offer, .receive, std.time.ns_per_s);
+    const rfd = rig.peer.kept_fd.?;
+    rig.peer.kept_fd = null;
+    // Play the compositor: hand the target's pipe to our source.
+    try wl.wl_data_source.server.send(fc, src, "application/x-zigguro-internal", rfd);
+    _ = linux.close(rfd);
+    const dr = try expectDrop(p, .drop);
+    try testing.expectEqualStrings("tab:7", p.payload(dr.data));
+    try testing.expectEqual(clipboard.DragActions{ .move = true }, dr.allowed);
+    try wl.wl_data_source.server.dndFinished(fc, src);
+    _ = try expectDrop(p, .source_finished);
 }

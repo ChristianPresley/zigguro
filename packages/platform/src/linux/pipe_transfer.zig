@@ -23,6 +23,14 @@ pub const Dir = enum(u1) {
     write,
 };
 
+/// What a read is for.
+pub const Purpose = enum(u1) {
+    /// A `clipboard_read` request.
+    selection,
+    /// The payload of a drag-and-drop drop.
+    drop,
+};
+
 /// One transfer in flight.
 pub const Transfer = struct {
     /// Our end of the pipe (owned).
@@ -35,6 +43,7 @@ pub const Transfer = struct {
     /// The app's request id (`.read`), echoed in `Finished`.
     request: u32 = 0,
     mime: MimeId = .text_utf8,
+    purpose: Purpose = .selection,
     /// Monotonic deadline in ns; the transfer fails after it.
     deadline_ns: u64,
 };
@@ -44,6 +53,7 @@ pub const Finished = struct {
     dir: Dir,
     request: u32,
     mime: MimeId,
+    purpose: Purpose = .selection,
     /// `.read` and `ok`: the bytes, owned by the caller. Empty otherwise.
     data: []u8 = &.{},
     /// False on timeout, I/O error or an oversized payload.
@@ -83,6 +93,13 @@ pub const Transfers = struct {
         errdefer _ = linux.close(fd);
         try setNonblock(fd);
         try t.add(.{ .fd = fd, .dir = .read, .request = request, .mime = mime, .deadline_ns = deadline_ns }, linux.EPOLL.IN);
+    }
+
+    /// `startRead` for a drop's payload; it finishes with `purpose = .drop`.
+    pub fn startDropRead(t: *Transfers, fd: i32, mime: MimeId, deadline_ns: u64) !void {
+        errdefer _ = linux.close(fd);
+        try setNonblock(fd);
+        try t.add(.{ .fd = fd, .dir = .read, .mime = mime, .purpose = .drop, .deadline_ns = deadline_ns }, linux.EPOLL.IN);
     }
 
     /// Writes a copy of `data` to `fd` (owned from now on), then closes it.
@@ -159,7 +176,7 @@ pub const Transfers = struct {
         var x = (t.items.fetchSwapRemove(id) orelse return).value;
         _ = linux.epoll_ctl(t.epfd, linux.EPOLL.CTL_DEL, x.fd, null);
         _ = linux.close(x.fd);
-        var f: Finished = .{ .dir = x.dir, .request = x.request, .mime = x.mime, .ok = ok };
+        var f: Finished = .{ .dir = x.dir, .request = x.request, .mime = x.mime, .purpose = x.purpose, .ok = ok };
         if (ok and x.dir == .read) {
             f.data = x.buf.toOwnedSlice(t.gpa) catch blk: {
                 f.ok = false;

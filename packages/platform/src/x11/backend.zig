@@ -21,7 +21,12 @@
 //! keys go through the Wayland seat's keyboard logic for text, compose
 //! and chords. Without XKB, the core keymap in `keymap.zig`.
 //!
-//! Not yet here (later E01.F05 tasks): XInput2 (#245), RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
+//! Pointer (E01.F05.S02.T02): with XInput 2.2+, `xinput2.zig` events
+//! replace core pointer events: subpixel positions, smooth scrolling from
+//! scroll valuators (emulated wheel buttons are dropped) and touch.
+//! Without XI2, core events and wheel buttons.
+//!
+//! Not yet here (later E01.F05 tasks): RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
 //! XDND (#253).
 
 const std = @import("std");
@@ -51,6 +56,7 @@ const Presenter = present_mod.Presenter;
 const dri3 = @import("dri3.zig");
 const selection = @import("selection.zig");
 const xkb_ext = @import("xkb.zig");
+const xinput2 = @import("xinput2.zig");
 const seat_mod = @import("../wayland/seat.zig");
 const compose = @import("../xkb/compose.zig");
 
@@ -156,6 +162,12 @@ pub const X11Backend = struct {
     compose_table: ?compose.ComposeTable = null,
     /// Loads compose rules off the UI thread at startup.
     compose_thread: ?std.Thread = null,
+    /// XInput2's major opcode, or null without XI 2.2.
+    xi_opcode: ?u8 = null,
+    /// Scroll valuators. Guarded by the mutex.
+    scrolling: xinput2.Scrolling = .{},
+    /// The last pointer position, to tell scroll-only motion apart.
+    ptr_pos: [2]f32 = .{ -1, -1 },
     scale: f32 = 1.0,
     path: present_mod.Path,
     /// The MIT-SHM event base, for ShmCompletion.
@@ -224,6 +236,8 @@ pub const X11Backend = struct {
         if (b.xkb_event == null) try b.loadKeymap();
         errdefer b.keymap.deinit(gpa);
         errdefer b.seat.deinit(gpa);
+        b.enableXi2();
+        errdefer b.scrolling.deinit(gpa);
         b.sel = try .init(gpa, conn);
         errdefer b.sel.deinit();
         b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
@@ -254,6 +268,25 @@ pub const X11Backend = struct {
         b.seat.setKeymap(b.gpa, km);
         const st = (try b.conn.reply(try b.conn.request(xkb_ext.GetState, .{}, &.{}))).state;
         b.seat.modifiers(0, st.base, st.latched, st.locked, st.group);
+    }
+
+    /// Turns on XInput 2.2+ pointer and touch events, when the server
+    /// has them, and reads the scroll valuators.
+    fn enableXi2(b: *X11Backend) void {
+        const info = b.conn.extension("XInputExtension") orelse return;
+        const v = b.conn.reply(b.conn.request(xinput2.QueryVersion, .{}, &.{}) catch return) catch return;
+        if (!v.atLeast(2, 2)) return;
+        b.loadScrollValuators() catch |err| {
+            log.warn("XIQueryDevice failed: {t}", .{err});
+            return;
+        };
+        _ = b.conn.request(xinput2.SelectEvents, .{ .window = b.conn.screen().root, .device_id = xinput2.Device.all, .mask = 1 << xinput2.EventType.hierarchy_changed }, &.{}) catch return;
+        b.xi_opcode = info.major_opcode;
+    }
+
+    fn loadScrollValuators(b: *X11Backend) !void {
+        const r = try b.conn.reply(try b.conn.request(xinput2.QueryDevice, .{}, &.{}));
+        try b.scrolling.load(b.gpa, r.bytes);
     }
 
     /// Starts loading compose rules (XCOMPOSEFILE, ~/.XCompose, the
@@ -396,6 +429,7 @@ pub const X11Backend = struct {
         }, &.{});
         _ = try c.request(proto.CreateGC, .{ .cid = w.gc, .drawable = w.xid, .values = .{ .values = .{ .graphics_exposures = 0 } } }, &.{});
         if (b.gpu != null) _ = try c.request(dri3.PresentSelectInput, .{ .eid = try c.newXid(), .window = w.xid, .event_mask = dri3.EventMask.complete | dri3.EventMask.idle }, &.{});
+        if (b.xi_opcode != null) _ = try c.request(xinput2.SelectEvents, .{ .window = w.xid, .device_id = xinput2.Device.all_master, .mask = xinput2.windowMask(true) }, &.{});
         const a = &b.atoms;
         try b.setAtoms(w.xid, a.get("WM_PROTOCOLS"), &.{a.get("WM_DELETE_WINDOW")});
         try b.setAtoms(w.xid, a.get("_NET_WM_WINDOW_TYPE"), &.{a.get("_NET_WM_WINDOW_TYPE_NORMAL")});
@@ -697,6 +731,7 @@ pub const X11Backend = struct {
         if (b.compose_thread) |t| t.join();
         b.keymap.deinit(b.gpa);
         b.seat.deinit(b.gpa);
+        b.scrolling.deinit(b.gpa);
         if (b.compose_table) |*t| t.deinit(b.gpa);
         if (b.gpu) |*g| g.deinit(b.gpa);
         b.conn.deinit();
@@ -740,6 +775,13 @@ pub const X11Backend = struct {
         };
         if (b.gpu) |g| if (code == proto.generic_event and ev[1] == g.present_opcode) return b.onPresentEvent(ev);
         if (b.xkb_event) |base| if (code == base) return b.onXkbEvent(ev);
+        if (b.xi_opcode) |op| if (code == proto.generic_event and ev[1] == op) return b.onXiEvent(ev);
+        // With XI2 the server sends XI2 pointer events instead of core
+        // ones; ignore any core stragglers.
+        if (b.xi_opcode != null) switch (code) {
+            proto.EventCode.button_press, proto.EventCode.button_release, proto.EventCode.motion_notify, proto.EventCode.enter_notify, proto.EventCode.leave_notify => return,
+            else => {},
+        };
         switch (code) {
             proto.EventCode.key_press, proto.EventCode.key_release => b.onKey(ev, code == proto.EventCode.key_press),
             proto.EventCode.button_press, proto.EventCode.button_release => b.onButton(ev, code == proto.EventCode.button_press),
@@ -881,11 +923,71 @@ pub const X11Backend = struct {
         } } });
     }
 
+    /// An XInput2 event. Mutex held.
+    fn onXiEvent(b: *X11Backend, ev: []const u8) void {
+        if (ev.len < 12) return;
+        switch (u16At(ev, 8)) {
+            xinput2.EventType.hierarchy_changed, xinput2.EventType.device_changed => {
+                // Replies may queue more events; the dispatch loop picks
+                // them up.
+                b.loadScrollValuators() catch |err| log.warn("XIQueryDevice failed: {t}", .{err});
+                b.scrolling.reset();
+            },
+            xinput2.EventType.enter, xinput2.EventType.leave => {
+                const cr = xinput2.decodeCrossing(ev) orelse return;
+                const w = b.byXid(cr.window) orelse return;
+                b.stage(.{ .pointer_enter_leave = .{ .win = w.id, .entered = cr.entered } });
+                if (cr.entered) {
+                    // As on Wayland, entering also reports the position.
+                    b.scrolling.reset();
+                    b.ptr_pos = cr.pos;
+                    b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = cr.pos, .mods = .{}, .time_ns = b.nowNs() } });
+                }
+            },
+            else => {
+                const e = xinput2.decodeDeviceEvent(ev) orelse return;
+                const w = b.byXid(e.window) orelse return;
+                const mods = modsFromState(e.mods);
+                switch (e.evtype) {
+                    xinput2.EventType.motion => {
+                        // Emulated motion comes from touches we already get.
+                        if (e.flags & xinput2.pointer_emulated != 0) return;
+                        const d = b.scrolling.delta(&e);
+                        if (d[0] != 0 or d[1] != 0) {
+                            const whole = @floor(d[0]) == d[0] and @floor(d[1]) == d[1];
+                            b.stage(.{ .scroll = .{ .win = w.id, .dx = @floatCast(d[0]), .dy = @floatCast(d[1]), .unit = .lines, .source = if (whole) .wheel else .continuous, .phase = .none } });
+                        }
+                        if (e.pos[0] == b.ptr_pos[0] and e.pos[1] == b.ptr_pos[1]) return;
+                        b.ptr_pos = e.pos;
+                        b.stage(.{ .pointer_move = .{ .win = w.id, .pos_px = e.pos, .mods = mods, .time_ns = b.nowNs() } });
+                    },
+                    xinput2.EventType.button_press, xinput2.EventType.button_release => {
+                        // Wheel buttons emulated from scroll valuators: the
+                        // valuators already scrolled.
+                        if (e.flags & xinput2.pointer_emulated != 0) return;
+                        b.pointerButton(w, @intCast(@min(e.detail, 255)), e.evtype == xinput2.EventType.button_press, e.pos, mods);
+                    },
+                    xinput2.EventType.touch_begin, xinput2.EventType.touch_update, xinput2.EventType.touch_end => {
+                        const phase: types.Phase = switch (e.evtype) {
+                            xinput2.EventType.touch_begin => .begin,
+                            xinput2.EventType.touch_update => .update,
+                            else => .end,
+                        };
+                        b.stage(.{ .touch = .{ .win = w.id, .id = @bitCast(e.detail), .phase = phase, .pos_px = e.pos } });
+                    },
+                    else => {},
+                }
+            },
+        }
+    }
+
     fn onButton(b: *X11Backend, ev: []const u8, pressed: bool) void {
         const w = b.byXid(u32At(ev, 12)) orelse return;
-        const detail = ev[1];
-        const pos = eventPos(ev);
-        const mods = modsFromState(u16At(ev, 28));
+        b.pointerButton(w, ev[1], pressed, eventPos(ev), modsFromState(u16At(ev, 28)));
+    }
+
+    /// A button press or release; 4–7 are wheel notches. Mutex held.
+    fn pointerButton(b: *X11Backend, w: *Window, detail: u8, pressed: bool, pos: [2]f32, mods: keys_api.Mods) void {
         const now = b.nowNs();
         switch (detail) {
             4, 5, 6, 7 => {
@@ -1331,4 +1433,64 @@ test "Xvfb: XKB keys via XTEST (Shift, Caps Lock)" {
     try collectKeys(p, &caps);
     try testing.expectEqual(@as(u32, 'A'), caps[0].keysym);
     try testing.expect(caps[0].mods.caps_lock and !caps[0].mods.shift);
+}
+
+test "Xvfb: XInput2 pointer via XTEST (motion, buttons, wheel)" {
+    var x = XvfbForTest.start(7) catch return error.SkipZigTest;
+    defer x.stop();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    if (b.xi_opcode == null or b.conn.extension("XTEST") == null) return error.SkipZigTest;
+    const p = b.platform();
+    const win = try p.createWindow(.{ .title = "zg pointer", .size = .{ .w = 64, .h = 48 } });
+    _ = try waitFor(p, .window_configure, win);
+    const root = b.conn.screen().root;
+    _ = try b.conn.request(XTestFakeInput, .{ .type = 6, .detail = 0, .root = root, .root_x = 10, .root_y = 12 }, &.{});
+    for ([_]struct { u8, u8 }{ .{ 4, 1 }, .{ 5, 1 }, .{ 4, 4 }, .{ 5, 4 } }) |s| {
+        _ = try b.conn.request(XTestFakeInput, .{ .type = s[0], .detail = s[1] }, &.{});
+    }
+    try b.conn.sync();
+
+    var moved = false;
+    var presses: usize = 0;
+    var releases: usize = 0;
+    var scrolls: usize = 0;
+    var dy: f32 = 0;
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 3 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        for (evs[0..n]) |e| switch (e) {
+            .pointer_move => |m| if (m.pos_px[0] == 10 and m.pos_px[1] == 12) {
+                moved = true;
+            },
+            .pointer_button => |pb| {
+                try testing.expectEqual(types.Button.left, pb.button);
+                if (pb.pressed) {
+                    presses += 1;
+                    try testing.expectEqual(@as(u8, 1), pb.clicks);
+                } else releases += 1;
+            },
+            .scroll => |sc| {
+                scrolls += 1;
+                dy += sc.dy;
+                try testing.expectEqual(event_api.ScrollUnit.lines, sc.unit);
+            },
+            else => {},
+        };
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (moved and presses == 1 and releases == 1 and dy <= -1) {
+            // Let duplicates arrive, if any.
+            try b.conn.sync();
+            const m = p.pollEvents(&evs);
+            for (evs[0..m]) |e| if (e == .scroll) {
+                scrolls += 1;
+            };
+            break;
+        }
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(@min(deadline, now + 5 * std.time.ns_per_ms));
+    }
+    try testing.expectEqual(@as(usize, 1), scrolls);
+    try testing.expectEqual(@as(f32, -1), dy);
 }
