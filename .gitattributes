@@ -1,0 +1,5 @@
+# Check out text as LF everywhere: tests embed fixtures and minisign
+# signatures cover exact bytes, so CRLF conversion on Windows breaks them.
+* text=auto eol=lf
+*.minisig -text
+*.pub -text
