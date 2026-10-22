@@ -1,0 +1,6 @@
+const text =
+    \\first line with "quotes"
+    \\second \n not an escape
+;
+const one = \\single
+;

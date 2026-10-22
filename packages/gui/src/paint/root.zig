@@ -6,6 +6,8 @@ const std = @import("std");
 pub const canvas = @import("canvas.zig");
 /// The `paint_cx.zig` module.
 pub const paint_cx = @import("paint_cx.zig");
+/// The `font_text.zig` module.
+pub const font_text = @import("font_text.zig");
 /// The `draw_list.zig` module.
 pub const draw_list = @import("draw_list.zig");
 /// The `text.zig` module.
@@ -15,6 +17,8 @@ pub const text = @import("text.zig");
 pub const Canvas = canvas.Canvas;
 /// See `paint_cx.PaintCx`.
 pub const PaintCx = paint_cx.PaintCx;
+/// See `font_text.FontText`.
+pub const FontText = font_text.FontText;
 /// See `draw_list.DrawListCanvas`.
 pub const DrawListCanvas = draw_list.DrawListCanvas;
 /// See `text.TextSystem`.

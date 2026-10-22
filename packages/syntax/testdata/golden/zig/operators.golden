@@ -1,0 +1,8 @@
+1| variable:x operator:+%= number:1 punctuation.delimiter:;
+2| variable:y operator:<<|= number:2 punctuation.delimiter:;
+3| variable:z operator:= variable:a operator:++ variable:b operator:** variable:c punctuation.delimiter:;
+4| variable:w operator:= variable:p operator:.* operator:+ variable:q punctuation.delimiter:. operator:? punctuation.delimiter:;
+5| variable:v operator:= variable:a operator:-| variable:b operator:*% variable:c operator:+| variable:d punctuation.delimiter:;
+6| variable:u operator:= variable:a operator:>> number:1 operator:<< number:2 operator:>= number:3 operator:<= number:4 operator:!= number:5 operator:== number:6 punctuation.delimiter:;
+7| variable:t operator:= punctuation.delimiter:. punctuation.bracket:{ punctuation.delimiter:. variable:a operator:= number:1 punctuation.delimiter:, punctuation.delimiter:. variable:b operator:= operator:& variable:x punctuation.delimiter:, punctuation.delimiter:. variable:c operator:= operator:! variable:y punctuation.delimiter:, punctuation.delimiter:. variable:d operator:= operator:~ variable:z punctuation.bracket:} punctuation.delimiter:;
+8| variable:s operator:= keyword.storage:fn punctuation.bracket:( punctuation.bracket:) type.builtin:void operator:=> punctuation.bracket:{ punctuation.bracket:} punctuation.delimiter:;

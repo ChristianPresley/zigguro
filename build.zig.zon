@@ -27,6 +27,7 @@
         .zg_regex = .{ .path = "packages/regex" },
         .zg_editor = .{ .path = "packages/editor" },
         .zg_vulkan = .{ .path = "packages/vulkan" },
+        .zg_syntax = .{ .path = "packages/syntax" },
         .zg_gui = .{ .path = "packages/gui" },
         // pkgtool:insert
     },

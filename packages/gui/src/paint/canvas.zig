@@ -102,6 +102,9 @@ pub const Op = union(enum) {
     gradient: struct { r: Rect, p0: Vec2, p1: Vec2, c0: Color, c1: Color, radii: Radii },
     glyphs: struct { start: u32, len: u32, color: Color, aa: TextAa },
     image: struct { tex: TextureId, dst: Rect, uv: Rect, tint: Color, radii: Radii },
+    /// Clips the node's following ops to `r` until `pop_clip`.
+    push_clip: struct { r: Rect, radii: Radii },
+    pop_clip,
 };
 
 /// A half-open range of ops (and the glyph quads they reference).
@@ -174,6 +177,8 @@ pub const OpList = struct {
             .shadow => |x| c.shadow(x.r.translate(offset), x.radii, x.sigma, x.spread, x.color),
             .gradient => |x| c.linearGradient(x.r.translate(offset), x.p0.add(offset), x.p1.add(offset), x.c0, x.c1, x.radii),
             .image => |x| c.image(x.tex, x.dst.translate(offset), x.uv, x.tint, x.radii),
+            .push_clip => |x| c.pushClip(x.r.translate(offset), x.radii),
+            .pop_clip => c.popClip(),
             .glyphs => |x| {
                 const src = l.quads.items[x.start..][0..x.len];
                 if (offset.x == 0 and offset.y == 0) {

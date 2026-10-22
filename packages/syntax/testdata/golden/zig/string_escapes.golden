@@ -1,0 +1,6 @@
+1| keyword.storage:const variable:a operator:= string:"plain" punctuation.delimiter:;
+2| keyword.storage:const variable:b operator:= string:"tab string.escape:\t string:here string.escape:\n string:" punctuation.delimiter:;
+3| keyword.storage:const variable:c operator:= string:"hex  string.escape:\x41 string: and  string.escape:\u{263A} string: end" punctuation.delimiter:;
+4| keyword.storage:const variable:d operator:= string:"quote  string.escape:\" string: and  string.escape:\\ string: backslash" punctuation.delimiter:;
+5| keyword.storage:const variable:e operator:= string:"" punctuation.delimiter:;
+6| keyword.storage:const variable:f operator:= string:"unterminated

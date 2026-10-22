@@ -1,0 +1,7 @@
+const std = @import("std");
+const T = @This();
+const n = @intCast(@as(u64, 3));
+const s = @sizeOf(T) + @alignOf(u8);
+comptime {
+    @compileLog(n, s);
+}

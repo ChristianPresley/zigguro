@@ -7,6 +7,8 @@ const zg_platform = @import("zg_platform");
 const geom = @import("../core/geom.zig");
 const ids = @import("../core/ids.zig");
 const response = @import("../core/response.zig");
+const text = @import("../paint/text.zig");
+const theme_mod = @import("../theme/theme.zig");
 
 const keys = zg_platform.keys;
 
@@ -73,6 +75,12 @@ pub const Sink = struct {
         release: *const fn (*anyopaque) void,
         setCursor: *const fn (*anyopaque, zg_platform.cursor.CursorShape) void,
         nodeRect: *const fn (*anyopaque, ids.NodeId) geom.Rect,
+        relayout: *const fn (*anyopaque, ids.NodeId) void,
+        textSystem: *const fn (*anyopaque) text.TextSystem,
+        theme: *const fn (*anyopaque) *const theme_mod.Theme,
+        clipboardGet: *const fn (*anyopaque) []const u8,
+        clipboardSet: *const fn (*anyopaque, []const u8) void,
+        nowMs: *const fn (*anyopaque) u64,
     };
 };
 
@@ -124,6 +132,37 @@ pub const EventCx = struct {
     /// The node's absolute rectangle from the last paint.
     pub fn rect(ec: *EventCx) geom.Rect {
         return ec.sink.vtable.nodeRect(ec.sink.ptr, ec.node);
+    }
+
+    /// Re-measures and lays the node out again (its content size changed
+    /// without a rebuild), and repaints it.
+    pub fn relayout(ec: *EventCx) void {
+        ec.sink.vtable.relayout(ec.sink.ptr, ec.node);
+    }
+
+    /// The window's text system (for hit-testing text).
+    pub fn textSystem(ec: *EventCx) text.TextSystem {
+        return ec.sink.vtable.textSystem(ec.sink.ptr);
+    }
+
+    /// The active theme.
+    pub fn theme(ec: *EventCx) *const theme_mod.Theme {
+        return ec.sink.vtable.theme(ec.sink.ptr);
+    }
+
+    /// The clipboard text.
+    pub fn clipboard(ec: *EventCx) []const u8 {
+        return ec.sink.vtable.clipboardGet(ec.sink.ptr);
+    }
+
+    /// Puts `s` on the clipboard.
+    pub fn setClipboard(ec: *EventCx, s: []const u8) void {
+        ec.sink.vtable.clipboardSet(ec.sink.ptr, s);
+    }
+
+    /// Milliseconds on the app's monotonic clock.
+    pub fn nowMs(ec: *EventCx) u64 {
+        return ec.sink.vtable.nowMs(ec.sink.ptr);
     }
 
     /// `p` relative to the node's top-left corner.
