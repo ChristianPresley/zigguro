@@ -23,10 +23,15 @@
 //! after `InitOptions.transfer_timeout_ns` with empty data. While we own
 //! a selection, reads are answered from our own copy.
 //!
-//! Cursors, drag-and-drop, IME, decorations and activation come with
-//! their own tasks (E01.F04.S02, E01.F04.S03); until then the related
-//! commands are accepted and ignored (cursor, IME, hit test) or return
-//! `error.Unsupported`.
+//! Cursors (E01.F04.S02.T04, `cursor.zig`): `wp_cursor_shape_device_v1`
+//! when offered, else the Xcursor theme (`linux/xcursor.zig`) on a cursor
+//! surface, loaded on the platform thread and cached per shape and size.
+//! Either way the platform thread applies the focused window's shape
+//! after each pointer enter or `set_cursor`.
+//!
+//! Drag-and-drop, IME, decorations and activation come with their own
+//! tasks (E01.F04.S03); until then the related commands are accepted and
+//! ignored (IME, hit test) or return `error.Unsupported`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -59,6 +64,9 @@ const ShmPresenter = @import("shm.zig").ShmPresenter;
 const dmabuf = @import("dmabuf.zig");
 const seat_mod = @import("seat.zig");
 const data_device = @import("data_device.zig");
+const cursor_mod = @import("cursor.zig");
+const xcursor = @import("../linux/xcursor.zig");
+const CursorShape = @import("../api/cursor.zig").CursorShape;
 const pipe_transfer = @import("../linux/pipe_transfer.zig");
 const Keymap = @import("../xkb/keymap.zig").Keymap;
 const compose = @import("../xkb/compose.zig");
@@ -112,6 +120,18 @@ const PresPending = struct { obj: u32, win: WindowId };
 const Slot = struct {
     win: Window,
     presenter: ShmPresenter,
+    /// The shape `set_cursor` asked for over this window.
+    cursor: CursorShape = .default,
+};
+
+/// A theme cursor ready to attach: frame 0 of the nearest size (animated
+/// cursors show their first frame).
+const CachedCursor = struct {
+    shape: CursorShape,
+    size_px: u32,
+    /// Null when the theme has no such cursor.
+    buffer: ?wl.wl_buffer.Id,
+    hot: [2]u32 = .{ 0, 0 },
 };
 
 /// The Wayland backend.
@@ -178,6 +198,14 @@ pub const WaylandBackend = struct {
     /// Payloads over the arena's limit, by id. Guarded by the mutex.
     large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
     next_large: u32 = 0,
+    /// Cursors: the protocol path, or the theme fallback.
+    cursor_manager: ?wl.wp_cursor_shape_manager_v1.Id = null,
+    cursor_device: ?wl.wp_cursor_shape_device_v1.Id = null,
+    cursor_theme: ?cursor_mod.Theme = null,
+    cursor_surface: ?wl.wl_surface.Id = null,
+    cursor_cache: std.ArrayList(CachedCursor) = .empty,
+    /// The platform thread re-applies the cursor. Guarded by the mutex.
+    cursor_dirty: bool = false,
 
     ring: EventRing(ring_capacity),
     arena: PayloadArena,
@@ -257,6 +285,8 @@ pub const WaylandBackend = struct {
         b.seat_id = try registry.bind(wl.wl_seat, 5, 9, b.handler(.seat));
         b.data_manager = try registry.bind(wl.wl_data_device_manager, 1, 3, null);
         b.primary_manager = try registry.bind(wl.zwp_primary_selection_device_manager_v1, 1, 1, null);
+        b.cursor_manager = try registry.bind(wl.wp_cursor_shape_manager_v1, 1, 2, null);
+        if (b.cursor_manager == null) b.cursor_theme = try cursor_mod.Theme.fromEnv(gpa, opts.environ_map);
         if (b.seat_id) |sid| {
             if (b.data_manager) |m| {
                 const d = try conn.newIdVersion(wl.wl_data_device, conn.version(@intFromEnum(m)), b.handler(.data_device));
@@ -573,6 +603,9 @@ pub const WaylandBackend = struct {
         b.compose_env = null;
         b.offers.deinit(gpa);
         b.finished.deinit(gpa);
+        b.cursor_cache.deinit(gpa);
+        if (b.cursor_theme) |*t| t.deinit(gpa);
+        b.cursor_theme = null;
         var it = b.large.valueIterator();
         while (it.next()) |v| gpa.free(v.*);
         b.large.deinit(gpa);
@@ -650,7 +683,15 @@ pub const WaylandBackend = struct {
             .set_title => |t| try b.sendTitle((try b.lookup(t.win)).toplevel, t.title),
             // Cursor shapes and the IME arrive with E01.F04.S02 and the
             // text-input task; the window must exist.
-            .set_cursor => |t| _ = try b.lookup(t.win),
+            .set_cursor => |t| {
+                const s = b.find(t.win) orelse return error.InvalidWindow;
+                if (s.cursor == t.shape) return;
+                s.cursor = t.shape;
+                if (b.seat.ptr_focus == t.win) {
+                    b.cursor_dirty = true;
+                    b.thread_wake.signal();
+                }
+            },
             .set_ime_state => |t| _ = try b.lookup(t.win),
             .set_hit_test => |t| _ = try b.lookup(t.win),
             .set_min_size => |t| {
@@ -726,7 +767,10 @@ pub const WaylandBackend = struct {
         defer moving.deinit(b.gpa);
         var evs: [16]linux.epoll_event = undefined;
         while (!b.stopping.load(.acquire)) {
-            if (!b.dead.load(.acquire)) b.pump() catch |err| b.fail(err);
+            if (!b.dead.load(.acquire)) {
+                b.pump() catch |err| b.fail(err);
+                b.updateCursor() catch |err| log.warn("setting the cursor: {t}", .{err});
+            }
             // Move staged events out under the lock, push them without it.
             b.lock();
             b.finishTransfersLocked(null);
@@ -1024,6 +1068,8 @@ pub const WaylandBackend = struct {
                     .enter => |e| {
                         const w = b.byObject("surface", @intFromEnum(e.surface)) orelse return;
                         try st.ptrEnter(out, w.id, e.serial, toPx(w, e.surface_x, e.surface_y));
+                        // A new enter serial: the cursor must be set again.
+                        b.cursor_dirty = true;
                     },
                     .leave => try st.ptrLeave(out),
                     .motion => |m| if (b.focusWindow(st.ptr_focus)) |w| st.ptrMotion(toPx(w, m.surface_x, m.surface_y)),
@@ -1121,6 +1167,103 @@ pub const WaylandBackend = struct {
                 }
             },
         }
+    }
+
+    // ---- cursors (E01.F04.S02.T04, platform thread) ----
+
+    /// Applies the focused window's cursor if something changed. Theme
+    /// files are read without the mutex.
+    fn updateCursor(b: *WaylandBackend) !void {
+        b.lock();
+        if (!b.cursor_dirty) return b.unlock();
+        b.cursor_dirty = false;
+        const req = b.cursorRequestLocked() orelse return b.unlock();
+        if (req.shape == .hidden or b.cursor_device != null or b.cursorCached(req.shape, req.size_px) != null) {
+            defer b.unlock();
+            return b.applyCursorLocked(req);
+        }
+        b.unlock();
+        // Load outside the lock; the next `updateCursor` uses the cache.
+        var frames = b.cursor_theme.?.load(b.gpa, b.io, req.shape, req.size_px);
+        defer if (frames) |*f| f.deinit(b.gpa);
+        b.lock();
+        defer b.unlock();
+        if (b.cursorCached(req.shape, req.size_px) == null) {
+            var entry: CachedCursor = .{ .shape = req.shape, .size_px = req.size_px, .buffer = null };
+            if (frames) |f| {
+                const img = f.frames[0];
+                entry.buffer = try b.cursorBuffer(img);
+                entry.hot = .{ img.hot_x, img.hot_y };
+            } else log.info("no {t} cursor in theme {s}", .{ req.shape, b.cursor_theme.?.name });
+            try b.cursor_cache.append(b.gpa, entry);
+        }
+        // Focus or shape may have moved on meanwhile.
+        const now = b.cursorRequestLocked() orelse return;
+        try b.applyCursorLocked(now);
+    }
+
+    const CursorRequest = struct { shape: CursorShape, serial: u32, scale: i32, size_px: u32 };
+
+    fn cursorRequestLocked(b: *WaylandBackend) ?CursorRequest {
+        if (b.pointer == null) return null;
+        const s = b.find(b.seat.ptr_focus orelse return null) orelse return null;
+        const k = scale.integerScale(s.win.effectiveScale120());
+        const base = if (b.cursor_theme) |t| t.size else 24;
+        return .{ .shape = s.cursor, .serial = b.seat.last_enter_serial, .scale = k, .size_px = base * @as(u32, @intCast(k)) };
+    }
+
+    fn cursorCached(b: *WaylandBackend, shape: CursorShape, size_px: u32) ?*CachedCursor {
+        for (b.cursor_cache.items) |*e| if (e.shape == shape and e.size_px == size_px) return e;
+        return null;
+    }
+
+    fn applyCursorLocked(b: *WaylandBackend, req: CursorRequest) !void {
+        const c = b.conn;
+        const ptr = b.pointer orelse return;
+        defer c.flush() catch {};
+        if (req.shape == .hidden) return wl.wl_pointer.setCursor(c, ptr, req.serial, null, 0, 0);
+        if (b.cursor_device) |d| return wl.wp_cursor_shape_device_v1.setShape(c, d, req.serial, cursor_mod.protocolShape(req.shape).?);
+        // A shape the theme lacks falls back to the default arrow.
+        var e = b.cursorCached(req.shape, req.size_px) orelse return;
+        if (e.buffer == null) {
+            if (req.shape == .default) return;
+            e = b.cursorCached(.default, req.size_px) orelse {
+                b.cursor_dirty = true;
+                if (b.find(b.seat.ptr_focus.?)) |s| s.cursor = .default;
+                return;
+            };
+            if (e.buffer == null) return;
+        }
+        const surf = b.cursor_surface orelse blk: {
+            const sf = try c.newIdVersion(wl.wl_surface, c.version(@intFromEnum(b.compositor)), null);
+            try wl.wl_compositor.createSurface(c, b.compositor, sf);
+            b.cursor_surface = sf;
+            break :blk sf;
+        };
+        try wl.wl_surface.attach(c, surf, e.buffer.?, 0, 0);
+        if (c.version(@intFromEnum(surf)) >= 3) try wl.wl_surface.setBufferScale(c, surf, req.scale);
+        try wl.wl_surface.damageBuffer(c, surf, 0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+        try wl.wl_surface.commit(c, surf);
+        const k: u32 = @intCast(req.scale);
+        try wl.wl_pointer.setCursor(c, ptr, req.serial, surf, @intCast(e.hot[0] / k), @intCast(e.hot[1] / k));
+    }
+
+    /// An shm buffer holding `img` (premultiplied ARGB). Mutex held.
+    fn cursorBuffer(b: *WaylandBackend, img: xcursor.CursorImage) !wl.wl_buffer.Id {
+        const bytes = std.mem.sliceAsBytes(img.pixels);
+        const fd_rc = linux.memfd_create("zg-cursor", linux.MFD.CLOEXEC);
+        if (linux.errno(fd_rc) != .SUCCESS) return error.SystemResources;
+        const fd: i32 = @intCast(fd_rc);
+        defer _ = linux.close(fd);
+        if (linux.errno(linux.ftruncate(fd, @intCast(bytes.len))) != .SUCCESS) return error.SystemResources;
+        if (linux.pwrite(fd, bytes.ptr, bytes.len, 0) != bytes.len) return error.SystemResources;
+        const c = b.conn;
+        const pool = try c.newIdVersion(wl.wl_shm_pool, c.version(@intFromEnum(b.shm)), null);
+        try wl.wl_shm.createPool(c, b.shm, pool, fd, @intCast(bytes.len));
+        const buffer = try c.newIdVersion(wl.wl_buffer, c.version(@intFromEnum(pool)), null);
+        try wl.wl_shm_pool.createBuffer(c, pool, buffer, 0, @intCast(img.width), @intCast(img.height), @intCast(img.width * 4), .argb8888);
+        try wl.wl_shm_pool.destroy(c, pool);
+        return buffer;
     }
 
     // ---- selections (E01.F04.S03.T02, mutex held) ----
@@ -1259,8 +1402,15 @@ pub const WaylandBackend = struct {
             const p = try c.newIdVersion(wl.wl_pointer, ver, b.handler(.pointer));
             try wl.wl_seat.getPointer(c, sid, p);
             b.pointer = p;
+            if (b.cursor_manager) |m| {
+                const d = try c.newIdVersion(wl.wp_cursor_shape_device_v1, c.version(@intFromEnum(m)), null);
+                try wl.wp_cursor_shape_manager_v1.getPointer(c, m, d, p);
+                b.cursor_device = d;
+            }
         } else if (!caps.pointer) if (b.pointer) |p| {
             try b.seat.ptrLeave(out);
+            if (b.cursor_device) |d| try wl.wp_cursor_shape_device_v1.destroy(c, d);
+            b.cursor_device = null;
             try wl.wl_pointer.release(c, p);
             b.pointer = null;
         };
@@ -1517,6 +1667,9 @@ const Peer = struct {
     last_mime: [64]u8 = undefined,
     last_mime_len: usize = 0,
     last_serial: ?u32 = null,
+    /// The newest `hotspot_x`/`hotspot_y` and `scale` arguments.
+    last_hotspot: [2]i32 = .{ -1, -1 },
+    last_scale: ?i32 = null,
 
     const FeedbackScript = struct { table_fd: i32, size: u32, dev: [8]u8, indices: []const u8 };
 
@@ -1596,6 +1749,9 @@ const Peer = struct {
                 @memcpy(p.last_mime[0..p.last_mime_len], v[0..p.last_mime_len]);
             }
             if (comptime std.mem.eql(u8, f.name, "serial")) p.last_serial = v;
+            if (comptime std.mem.eql(u8, f.name, "hotspot_x")) p.last_hotspot[0] = v;
+            if (comptime std.mem.eql(u8, f.name, "hotspot_y")) p.last_hotspot[1] = v;
+            if (comptime std.mem.eql(u8, f.name, "scale") and f.type == i32) p.last_scale = v;
             inline for (wl.interfaces) |J| if (f.type == J.Id) {
                 const n = @intFromEnum(v);
                 if (!p.ids.contains(n)) try p.ids.put(testing.allocator, n, J.name);
@@ -2262,4 +2418,66 @@ test "selection: a read with no answer times out with empty data" {
     const cd = try expectEvent(p, .clipboard_data, null);
     try testing.expectEqual(@as(u32, 9), cd.request);
     try testing.expectEqual(@as(u32, 0), cd.data.len);
+}
+
+test "cursor: set_shape uses the last enter serial; hidden clears the cursor" {
+    const globals = seat_globals ++ [_]fake.Global{.{ .name = 10, .interface = "wp_cursor_shape_manager_v1", .version = 2 }};
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s }, &.{}, &globals, null);
+    defer rig.stop();
+    const p = rig.b.platform();
+    const win = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    const ptr = rig.peer.id(wl.wl_pointer);
+    _ = rig.peer.id(wl.wp_cursor_shape_device_v1);
+    try wl.wl_pointer.server.enter(fc, ptr, 77, rig.peer.id(wl.wl_surface), .fromInt(1), .fromInt(1));
+    try wl.wl_pointer.server.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.wp_cursor_shape_device_v1, .set_shape, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .text } });
+    _ = try rig.peer.waitFor(wl.wp_cursor_shape_device_v1, .set_shape, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 77), rig.peer.last_serial);
+    try p.submit(.{ .set_cursor = .{ .win = win, .shape = .hidden } });
+    _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+}
+
+test "cursor: the Xcursor fallback attaches a buffer with the hotspot at scale 2" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A 48 px cursor (24 at scale 2) with its hotspot at (10, 6).
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const header = [_]u32{ 0x72756358, 16, 0x10000, 1, 0xfffd0002, 48, 28, 36, 0xfffd0002, 48, 1, 48, 48, 10, 6, 0 };
+    for (header) |v| {
+        var bb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bb, v, .little);
+        try file.appendSlice(testing.allocator, &bb);
+    }
+    try file.appendNTimes(testing.allocator, 0xff, 48 * 48 * 4);
+    try tmp.dir.createDirPath(testing.io, "icons/test/cursors");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "icons/test/cursors/left_ptr", .data = file.items });
+    var root: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &root);
+    const icons = try std.fmt.allocPrint(testing.allocator, "{s}/icons", .{root[0..n]});
+    defer testing.allocator.free(icons);
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("XCURSOR_PATH", icons);
+    try env.put("XCURSOR_THEME", "test");
+
+    var rig: Rig = undefined;
+    try rig.startWith(.{ .ack_timeout_ns = 10 * std.time.ns_per_s, .environ_map = &env }, &.{}, &seat_globals, null);
+    defer rig.stop();
+    _ = try rig.window(.{ .w = 320, .h = 240 });
+    const fc = rig.peer.fc;
+    try wl.wp_fractional_scale_v1.server.preferredScale(fc, rig.peer.id(wl.wp_fractional_scale_v1), 240);
+    const ptr = rig.peer.id(wl.wl_pointer);
+    const win_surface = rig.peer.id(wl.wl_surface);
+    try wl.wl_pointer.server.enter(fc, ptr, 88, win_surface, .fromInt(5), .fromInt(5));
+    try wl.wl_pointer.server.frame(fc, ptr);
+    _ = try rig.peer.waitFor(wl.wl_surface, .set_buffer_scale, std.time.ns_per_s);
+    try testing.expectEqual(@as(?i32, 2), rig.peer.last_scale);
+    _ = try rig.peer.waitFor(wl.wl_pointer, .set_cursor, std.time.ns_per_s);
+    try testing.expectEqual(@as(?u32, 88), rig.peer.last_serial);
+    try testing.expectEqual([2]i32{ 5, 3 }, rig.peer.last_hotspot);
 }

@@ -210,6 +210,8 @@ pub const wayland = struct {
     pub const seat = @import("wayland/seat.zig");
     /// See `wayland/data_device.zig`.
     pub const data_device = @import("wayland/data_device.zig");
+    /// See `wayland/cursor.zig`.
+    pub const cursor = @import("wayland/cursor.zig");
     /// See `wayland/dmabuf.zig`.
     pub const dmabuf = if (is_linux) @import("wayland/dmabuf.zig") else struct {};
 };
@@ -222,6 +224,8 @@ pub const linux_util = struct {
     pub const pipe_transfer = if (is_linux) @import("linux/pipe_transfer.zig") else struct {};
     /// See `linux/uri_list.zig`.
     pub const uri_list = @import("linux/uri_list.zig");
+    /// See `linux/xcursor.zig`.
+    pub const xcursor = @import("linux/xcursor.zig");
 };
 const is_windows = @import("builtin").os.tag == .windows;
 
@@ -444,6 +448,8 @@ test {
     _ = wayland.seat;
     _ = wayland.data_device;
     _ = linux_util.uri_list;
+    _ = linux_util.xcursor;
+    _ = wayland.cursor;
     if (is_linux) {
         _ = @import("wayland/wire/socket.zig");
         _ = @import("wayland/wire/objects.zig");
@@ -528,6 +534,8 @@ const documented_sources = [_]struct { path: []const u8, src: []const u8 }{
     .{ .path = "wayland/data_device.zig", .src = @embedFile("wayland/data_device.zig") },
     .{ .path = "linux/pipe_transfer.zig", .src = @embedFile("linux/pipe_transfer.zig") },
     .{ .path = "linux/uri_list.zig", .src = @embedFile("linux/uri_list.zig") },
+    .{ .path = "linux/xcursor.zig", .src = @embedFile("linux/xcursor.zig") },
+    .{ .path = "wayland/cursor.zig", .src = @embedFile("wayland/cursor.zig") },
     .{ .path = "wayland/window.zig", .src = @embedFile("wayland/window.zig") },
     .{ .path = "wayland/output.zig", .src = @embedFile("wayland/output.zig") },
     .{ .path = "wayland/scale.zig", .src = @embedFile("wayland/scale.zig") },
