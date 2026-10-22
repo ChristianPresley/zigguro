@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Spec index
+    url: https://github.com/ChristianPresley/zigguro/issues/1198
+    about: Every spec ID and its issue number, plus the rules for picking up a task.

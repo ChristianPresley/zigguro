@@ -1,0 +1,155 @@
+# PR gate for main. Required checks: lint, test (8 cells), cross,
+# bench-smoke, fuzz-smoke (see docs/ci.md). Only GitHub-maintained actions.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
+      - run: zig build fmt-check
+      - run: zig build check-layers
+      - run: zig build prlint -- --docs
+      - name: prlint (pull request title, branch and commits)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git log --format='%B%x00' "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/commits.txt"
+          zig build prlint -- --title "$PR_TITLE" --branch "$HEAD_REF" --commits "$RUNNER_TEMP/commits.txt"
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm]
+        optimize: [Debug, ReleaseSafe]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - if: runner.os == 'Linux'
+        run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      # The aarch64-windows zig 0.16.0 exits at once on `zig build` (no
+      # output; exit 1 under pwsh, SIGSEGV under Git Bash), while `zig
+      # version` works. Until that is fixed upstream, windows-11-arm runs the
+      # x86_64 toolchain under emulation; `cross` still builds aarch64-windows.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/setup-zig.ps1 -Dest "$HOME\zig-toolchain" ${{ matrix.os == 'windows-11-arm' && '-Arch x86_64' || '' }}
+      - if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.optimize }}-${{ hashFiles('**/build.zig.zon') }}
+      - if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\zig
+          key: zig-cache-test-${{ runner.os }}-${{ runner.arch }}-${{ matrix.optimize }}-${{ hashFiles('**/build.zig.zon') }}
+      - name: zig build test
+        shell: bash
+        run: zig build test -Doptimize=${{ matrix.optimize }} --test-timeout 120s --summary line
+      - name: zig build test-ci-scripts
+        if: runner.os == 'Linux' && matrix.optimize == 'Debug'
+        run: zig build test-ci-scripts --summary line
+      - name: zig build test-core -Dtracing=zones
+        if: matrix.os == 'ubuntu-24.04' && matrix.optimize == 'Debug'
+        run: zig build test-core -Dtracing=zones --summary line
+
+  cross:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-cross-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
+      - run: zig build cross -Doptimize=ReleaseFast -Dversion="$(git describe --always --dirty)" --summary line
+
+  bench-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-bench-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
+      - run: zig build bench -Dbench-quick --summary line
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ github.sha }}
+          path: zig-out/bench-results
+
+  fuzz-smoke:
+    # --fuzz is Linux-only in Zig 0.16 (the build runner rejects Windows).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/zig-toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/zig-toolchain.txt') }}
+      - run: .github/scripts/setup-zig.sh --dest ~/zig-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-cache-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/build.zig.zon') }}
+      # ReleaseSafe: Debug --fuzz fails to compile the 0.16.0 test runner.
+      - run: zig build test -Doptimize=ReleaseSafe --fuzz=10K --summary line

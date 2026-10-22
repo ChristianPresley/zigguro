@@ -1,0 +1,11 @@
+.{
+    .name = .diamond_b,
+    .version = "0.0.0",
+    .fingerprint = 0xa05366fcdd1718e7,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../../.." },
+        .diamond_c = .{ .path = "../c" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

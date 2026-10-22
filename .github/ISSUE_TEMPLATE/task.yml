@@ -1,0 +1,62 @@
+name: Task
+description: A task an independent agent can implement without asking questions.
+title: "[EXX] Task: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: Follow the issue templates in the spec conventions. Refer to other work by spec ID (e.g. E05.F02.S01).
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+    validations:
+      required: true
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+    validations:
+      required: true
+  - type: textarea
+    id: interface
+    attributes:
+      label: Interface
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation notes
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: size
+    attributes:
+      label: Size
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+    validations:
+      required: true

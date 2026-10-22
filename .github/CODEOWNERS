@@ -1,0 +1,19 @@
+# Code owners. The last matching pattern wins, so specific paths follow `*`.
+# Epic ownership is listed in docs/ownership.md; while the project has one
+# maintainer, every path is owned by @ChristianPresley.
+*                     @ChristianPresley
+
+# E00: build graph, CI, tooling and shared runtime packages
+/build.zig            @ChristianPresley
+/build.zig.zon        @ChristianPresley
+/build/               @ChristianPresley
+/.github/             @ChristianPresley
+/tools/               @ChristianPresley
+/docs/                @ChristianPresley
+/packages/build/      @ChristianPresley
+/packages/core/       @ChristianPresley
+/packages/jsonrpc/    @ChristianPresley
+/packages/net/        @ChristianPresley
+
+# Apps (composition roots)
+/apps/                @ChristianPresley

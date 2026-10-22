@@ -1,0 +1,23 @@
+.{
+    .name = .zigguro,
+    .version = "0.0.0",
+    .fingerprint = 0xe552a768f0933326,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "packages/build" },
+        .zg_core = .{ .path = "packages/core" },
+        .zg_jsonrpc = .{ .path = "packages/jsonrpc" },
+        .zg_net = .{ .path = "packages/net" },
+        // pkgtool:insert
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "build",
+        "packages",
+        "apps",
+        "tools",
+        "LICENSE",
+        "README.md",
+    },
+}

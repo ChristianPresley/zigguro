@@ -1,0 +1,50 @@
+name: Story
+description: A user story within a feature.
+title: "[EXX] Story: "
+labels: ["story"]
+body:
+  - type: markdown
+    attributes:
+      value: Follow the issue templates in the spec conventions. Refer to other work by spec ID (e.g. E05.F02.S01).
+  - type: textarea
+    id: story
+    attributes:
+      label: Story
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+    validations:
+      required: true
