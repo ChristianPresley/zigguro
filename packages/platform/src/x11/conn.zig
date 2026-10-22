@@ -539,7 +539,7 @@ fn connectLocal(n: u32) Error!i32 {
 const testing = std.testing;
 
 test "Xvfb: setup, BIG-REQUESTS, XKEYBOARD, atoms and a mapped window" {
-    var x = XvfbForTest.start() catch return error.SkipZigTest;
+    var x = XvfbForTest.start(0) catch return error.SkipZigTest;
     defer x.stop();
     var env: std.process.Environ.Map = .init(testing.allocator);
     defer env.deinit();
@@ -571,39 +571,69 @@ test "Xvfb: setup, BIG-REQUESTS, XKEYBOARD, atoms and a mapped window" {
     try c.sync();
 }
 
-/// A private Xvfb; an absent Xvfb skips.
-const XvfbForTest = struct {
+/// A private Xvfb for tests; an absent Xvfb skips. `-noreset` keeps the
+/// server up between clients (by default it regenerates when the last
+/// one leaves, and a client connecting then fails its handshake).
+pub const XvfbForTest = struct {
     child: std.process.Child,
     name_buf: [16]u8,
     name_len: usize,
-    sock_buf: [32]u8,
-    sock_len: usize,
 
-    fn start() !XvfbForTest {
+    /// Starts Xvfb on a free display number derived from `seed` and the
+    /// pid. Parallel test processes can pick the same number: the lock
+    /// file must name our child, or the next number is tried. The server
+    /// is ready once its socket accepts a connection (the socket file
+    /// exists from bind(), before it listens).
+    pub fn start(seed: u32) !XvfbForTest {
         var x: XvfbForTest = undefined;
-        const n = 40 + @as(u32, @intCast(linux.getpid())) % 400;
-        x.name_len = (try std.fmt.bufPrint(&x.name_buf, ":{d}", .{n})).len;
-        x.sock_len = (try std.fmt.bufPrint(&x.sock_buf, "/tmp/.X11-unix/X{d}", .{n})).len;
-        x.child = try std.process.spawn(testing.io, .{
-            .argv = &.{ "Xvfb", x.display(), "-nolisten", "tcp", "-screen", "0", "640x480x24" },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
+        const pid: u32 = @intCast(linux.getpid());
+        var attempt: u32 = 0;
+        while (attempt < 8) : (attempt += 1) {
+            const n = 450 + (seed * 37 + attempt * 101 + pid) % 400;
+            var lock_buf: [32]u8 = undefined;
+            const lock = try std.fmt.bufPrint(&lock_buf, "/tmp/.X{d}-lock", .{n});
+            if (Io.Dir.cwd().access(testing.io, lock, .{})) |_| continue else |_| {}
+            x.name_len = (try std.fmt.bufPrint(&x.name_buf, ":{d}", .{n})).len;
+            x.child = try std.process.spawn(testing.io, .{
+                .argv = &.{ "Xvfb", x.display(), "-nolisten", "tcp", "-noreset", "-screen", "0", "640x480x24" },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            });
+            switch (try x.waitReady(n, lock)) {
+                .ready => return x,
+                .taken => x.child.kill(testing.io),
+            }
+        }
+        return error.XvfbDidNotStart;
+    }
+
+    fn waitReady(x: *XvfbForTest, n: u32, lock: []const u8) !enum { ready, taken } {
         errdefer x.child.kill(testing.io);
+        const want: i64 = x.child.id.?;
         var tries: usize = 0;
         while (tries < 300) : (tries += 1) {
-            if (Io.Dir.cwd().access(testing.io, x.sock_buf[0..x.sock_len], .{})) |_| return x else |_| {}
+            var buf: [32]u8 = undefined;
+            if (Io.Dir.cwd().readFile(testing.io, lock, &buf)) |text| {
+                const owner = std.fmt.parseInt(i64, std.mem.trim(u8, text, " \n"), 10) catch -1;
+                if (owner > 0 and owner != want) return .taken;
+                if (owner == want) if (connectLocal(n)) |sock| {
+                    _ = linux.close(sock);
+                    return .ready;
+                } else |_| {};
+            } else |_| {}
             try testing.io.sleep(.fromMilliseconds(10), .awake);
         }
         return error.XvfbDidNotStart;
     }
 
-    fn display(x: *const XvfbForTest) []const u8 {
+    /// The `DISPLAY` value.
+    pub fn display(x: *const XvfbForTest) []const u8 {
         return x.name_buf[0..x.name_len];
     }
 
-    fn stop(x: *XvfbForTest) void {
+    /// Stops Xvfb.
+    pub fn stop(x: *XvfbForTest) void {
         x.child.kill(testing.io);
     }
 };

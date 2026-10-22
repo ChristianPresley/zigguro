@@ -1471,47 +1471,8 @@ fn eventPos(ev: []const u8) [2]f32 {
 const testing = std.testing;
 const conformance = @import("../testing/conformance.zig");
 
-/// A private Xvfb; an absent Xvfb skips. `-noreset` keeps the server up
-/// between clients (by default it regenerates when the last one leaves,
-/// and a client connecting then fails its handshake).
-pub const XvfbForTest = struct {
-    child: std.process.Child,
-    name_buf: [16]u8,
-    name_len: usize,
-    sock_buf: [32]u8,
-    sock_len: usize,
-
-    /// Starts Xvfb on a display number derived from `seed` and the pid.
-    pub fn start(seed: u32) !XvfbForTest {
-        var x: XvfbForTest = undefined;
-        const n = 450 + (seed * 37 + @as(u32, @intCast(linux.getpid()))) % 400;
-        x.name_len = (try std.fmt.bufPrint(&x.name_buf, ":{d}", .{n})).len;
-        x.sock_len = (try std.fmt.bufPrint(&x.sock_buf, "/tmp/.X11-unix/X{d}", .{n})).len;
-        x.child = try std.process.spawn(testing.io, .{
-            .argv = &.{ "Xvfb", x.display(), "-nolisten", "tcp", "-noreset", "-screen", "0", "640x480x24" },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-        errdefer x.child.kill(testing.io);
-        var tries: usize = 0;
-        while (tries < 300) : (tries += 1) {
-            if (Io.Dir.cwd().access(testing.io, x.sock_buf[0..x.sock_len], .{})) |_| return x else |_| {}
-            try testing.io.sleep(.fromMilliseconds(10), .awake);
-        }
-        return error.XvfbDidNotStart;
-    }
-
-    /// The `DISPLAY` value.
-    pub fn display(x: *const XvfbForTest) []const u8 {
-        return x.name_buf[0..x.name_len];
-    }
-
-    /// Stops Xvfb.
-    pub fn stop(x: *XvfbForTest) void {
-        x.child.kill(testing.io);
-    }
-};
+/// A private Xvfb; an absent Xvfb skips.
+pub const XvfbForTest = conn_mod.XvfbForTest;
 
 const Harness = struct {
     io: Io,
@@ -1675,6 +1636,8 @@ test "Xvfb: selections between two clients (text, 10 MB INCR, PRIMARY, changes)"
     defer testing.allocator.free(big);
     for (big, 0..) |*c, i| c.* = 'a' + @as(u8, @intCast(i % 26));
     try pa.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .html, .data = big }} } });
+    // A round trip: the server has A as owner before B asks.
+    try a.conn.sync();
     try pb.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .html, .request = 4 } });
     const lg = try waitBoth(pb, pa, .clipboard_data);
     try testing.expect(lg.data.large);
@@ -1682,6 +1645,10 @@ test "Xvfb: selections between two clients (text, 10 MB INCR, PRIMARY, changes)"
     pb.release(lg.data);
 
     try pa.submit(.{ .clipboard_write = .{ .which = .primary, .items = &.{.{ .mime = .text_utf8, .data = "sel" }} } });
+
+    // A round trip: the server has A as owner before B asks.
+
+    try a.conn.sync();
     try pb.submit(.{ .clipboard_read = .{ .which = .primary, .mime = .text_utf8, .request = 5 } });
     try testing.expectEqualStrings("sel", pb.payload((try waitBoth(pb, pa, .clipboard_data)).data));
 
@@ -1916,6 +1883,8 @@ test "Xvfb: XDND between two clients (enter, status, drop, finished)" {
     // The target maps second, so it stacks above the source at (0, 0).
     const wa = try pa.createWindow(.{ .title = "zg drag source", .size = .{ .w = 200, .h = 200 } });
     _ = try waitFor(pa, .window_configure, wa);
+    // A round trip: the server has mapped A's window before B's.
+    try a.conn.sync();
     const wb = try pb.createWindow(.{ .title = "zg drop target", .size = .{ .w = 50, .h = 50 } });
     _ = try waitFor(pb, .window_configure, wb);
     try b.conn.sync();

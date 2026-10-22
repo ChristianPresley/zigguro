@@ -1016,10 +1016,16 @@ pub const TestDaemon = struct {
             d.tmp.cleanup();
             return false;
         };
-        // Wait for the socket to appear.
+        // Wait until the socket accepts connections: it exists from
+        // bind(), before the daemon listens, and a connect in between is
+        // refused (seen under load).
+        const path = addr["unix:path=".len..];
         var tries: usize = 0;
-        while (tries < 200) : (tries += 1) {
-            if (d.tmp.dir.access(testing.io, "bus", .{})) |_| return true else |_| {}
+        while (tries < 500) : (tries += 1) {
+            if (connectUnix(.{ .path = path })) |sock| {
+                closeFd(sock);
+                return true;
+            } else |_| {}
             try testing.io.sleep(.fromMilliseconds(10), .awake);
         }
         d.stop();
