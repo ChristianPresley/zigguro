@@ -21,12 +21,20 @@ pub const RemoveCallback = struct {
     on_remove: *const fn (ctx: *anyopaque, global: Global) void,
 };
 
+/// Told about globals announced after `Registry.init` (outputs and seats
+/// plugged in).
+pub const AddCallback = struct {
+    ctx: *anyopaque,
+    on_add: *const fn (ctx: *anyopaque, global: Global) void,
+};
+
 /// The registry of one connection.
 pub const Registry = struct {
     conn: *Connection,
     id: wl.wl_registry.Id,
     globals: std.ArrayList(Global) = .empty,
     remove_cb: ?RemoveCallback = null,
+    add_cb: ?AddCallback = null,
 
     /// Gets the registry and waits (one roundtrip) for the initial globals.
     pub fn init(conn: *Connection) !*Registry {
@@ -83,6 +91,11 @@ pub const Registry = struct {
         r.remove_cb = cb;
     }
 
+    /// Sets the callback for globals added from now on.
+    pub fn onGlobalAdd(r: *Registry, cb: ?AddCallback) void {
+        r.add_cb = cb;
+    }
+
     fn onEvent(ctx: *anyopaque, _: *Connection, _: u32, opcode: u16, body: []const u32, fds: *FdQueue) anyerror!void {
         const r: *Registry = @ptrCast(@alignCast(ctx));
         switch (try wl.wl_registry.decodeEvent(opcode, body, fds)) {
@@ -90,6 +103,7 @@ pub const Registry = struct {
                 const iface = try r.conn.gpa.dupe(u8, g.interface);
                 errdefer r.conn.gpa.free(iface);
                 try r.globals.append(r.conn.gpa, .{ .name = g.name, .interface = iface, .version = g.version });
+                if (r.add_cb) |cb| cb.on_add(cb.ctx, r.globals.items[r.globals.items.len - 1]);
             },
             .global_remove => |g| {
                 for (r.globals.items, 0..) |x, i| if (x.name == g.name) {
