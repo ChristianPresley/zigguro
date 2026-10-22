@@ -169,6 +169,8 @@ pub extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi
 pub extern "user32" fn AddClipboardFormatListener(HWND) callconv(.winapi) BOOL;
 /// Unsubscribes a window from WM_CLIPBOARDUPDATE.
 pub extern "user32" fn RemoveClipboardFormatListener(HWND) callconv(.winapi) BOOL;
+/// The window that owns the clipboard.
+pub extern "user32" fn GetClipboardOwner() callconv(.winapi) ?HWND;
 
 /// Starts a timer.
 pub extern "user32" fn SetTimer(?HWND, id: usize, ms: UINT, proc: ?t.TIMERPROC) callconv(.winapi) usize;
