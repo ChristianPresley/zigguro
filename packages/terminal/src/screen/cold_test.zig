@@ -266,3 +266,57 @@ test "a linked wide character round-trips without linking its spacer" {
     defer pl.deinit();
     try expectSameRows(&t.primary.pages, &pl);
 }
+
+test "a spacer head whose wide character was erased round-trips as a blank" {
+    // Found by the cold_roundtrip fuzz target: EL erased the wrapped 日,
+    // leaving a spacer head the decoder could not place.
+    var t = try Terminal.init(testing.allocator, .{ .cols = 2, .rows = 4 });
+    defer t.deinit();
+    t.feed("bcxyz日\x1b[Kxyz");
+    var cp = try encodeAll(&t, .{ .deflate = false });
+    defer cp.deinit(testing.allocator);
+    var pl = try decodeAt(&cp, 2);
+    defer pl.deinit();
+    try expectSameRows(&t.primary.pages, &pl);
+}
+
+test "replay: cold_roundtrip finding with a stale spacer head" {
+    var s: std.testing.Smith = .{ .in = @embedFile("testdata/cold_stale_spacer_head.bin") };
+    try fuzzRoundtrip({}, &s);
+}
+
+test "a wrapped row whose text was erased keeps its row" {
+    // Found by the cold_roundtrip fuzz target: the second 🙂 wrapped to a
+    // new row and EL erased it, leaving a blank continuation row.
+    var t = try Terminal.init(testing.allocator, .{ .cols = 2, .rows = 4 });
+    defer t.deinit();
+    t.feed("e\u{301}日🙂\x1b[K🙂\x1b[K");
+    var cp = try encodeAll(&t, .{ .deflate = false });
+    defer cp.deinit(testing.allocator);
+    var pl = try decodeAt(&cp, 2);
+    defer pl.deinit();
+    try expectSameRows(&t.primary.pages, &pl);
+}
+
+test "replay: cold_roundtrip finding with a blank continuation row" {
+    var s: std.testing.Smith = .{ .in = @embedFile("testdata/cold_blank_continuation.bin") };
+    try fuzzRoundtrip({}, &s);
+}
+
+test "a wide character whose head is overwritten by a spacer head releases the head above" {
+    // Found by the cold_roundtrip fuzz target: after a tab the second 日
+    // does not fit, and its spacer head lands on the first 日's tail.
+    var t = try Terminal.init(testing.allocator, .{ .cols = 2, .rows = 4 });
+    defer t.deinit();
+    t.feed("e日\t日🙂");
+    var cp = try encodeAll(&t, .{ .deflate = false });
+    defer cp.deinit(testing.allocator);
+    var pl = try decodeAt(&cp, 2);
+    defer pl.deinit();
+    try expectSameRows(&t.primary.pages, &pl);
+}
+
+test "replay: cold_roundtrip finding with an overwritten wide head" {
+    var s: std.testing.Smith = .{ .in = @embedFile("testdata/cold_overwritten_wide_head.bin") };
+    try fuzzRoundtrip({}, &s);
+}
