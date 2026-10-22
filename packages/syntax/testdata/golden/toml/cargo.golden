@@ -1,0 +1,12 @@
+1| type:[package]
+2| property:name operator:= string:"demo"
+3| property:version operator:= string:"0.1.0"
+4| property:edition operator:= string:"2021"
+5|
+6| type:[dependencies]
+7| property:serde operator:= punctuation.bracket:{ property:version operator:= string:"1.0" punctuation.delimiter:, property:features operator:= punctuation.bracket:[ string:"derive" punctuation.bracket:] punctuation.bracket:}
+8| property:tokio operator:= punctuation.bracket:{ property:version operator:= string:"1" punctuation.delimiter:, property:default-features operator:= constant.builtin:false punctuation.bracket:}
+9|
+10| type:[profile.release]
+11| property:lto operator:= constant.builtin:true
+12| property:opt-level operator:= number:3

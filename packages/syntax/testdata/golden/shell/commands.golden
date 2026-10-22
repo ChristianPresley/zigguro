@@ -1,0 +1,5 @@
+1| function:ls
+2| function:grep string:"pattern" operator:| function:sort operator:| function:uniq
+3| function:make number:4 operator:&& function:make operator:|| function.builtin:echo
+4| function.builtin:cd string:" variable:$HOME string:" punctuation.delimiter:; function.builtin:pwd operator:&
+5| function:./configure

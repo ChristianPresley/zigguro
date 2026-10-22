@@ -1,0 +1,7 @@
+{
+  "plain": "hello world",
+  "empty": "",
+  "spaces": "  padded  ",
+  "colon inside": "a: b",
+  "unterminated": "no end
+}

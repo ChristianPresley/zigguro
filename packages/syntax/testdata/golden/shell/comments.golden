@@ -1,0 +1,6 @@
+1| comment:#!/bin/bash
+2| comment:# full line comment
+3| function.builtin:echo comment:# trailing comment
+4| function.builtin:echo
+5| function.builtin:echo string:"# not a comment" string:'# nor this'
+6| variable:x operator:= comment:#comment

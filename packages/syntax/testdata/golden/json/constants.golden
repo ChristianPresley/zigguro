@@ -1,0 +1,2 @@
+1| punctuation.bracket:{ property:"a" punctuation.delimiter:: constant.builtin:true punctuation.delimiter:, property:"b" punctuation.delimiter:: constant.builtin:false punctuation.delimiter:, property:"c" punctuation.delimiter:: constant.builtin:null punctuation.bracket:}
+2| punctuation.bracket:[ constant.builtin:true punctuation.delimiter:, constant.builtin:false punctuation.delimiter:, constant.builtin:null punctuation.delimiter:, invalid:True punctuation.delimiter:, invalid:nil punctuation.delimiter:, invalid:undefined punctuation.bracket:]

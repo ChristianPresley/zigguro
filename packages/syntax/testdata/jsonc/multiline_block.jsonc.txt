@@ -1,0 +1,7 @@
+{
+  /*
+    "disabled": true,
+    "also": [1, 2]
+  */
+  "enabled": false
+}

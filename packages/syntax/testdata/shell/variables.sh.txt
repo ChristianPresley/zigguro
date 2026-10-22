@@ -1,0 +1,8 @@
+NAME=value
+PATH="$PATH:/usr/local/bin"
+COUNT+=1
+export EDITOR=vim
+local x=1 y
+echo $NAME ${NAME} $1 $@ $# $? $$ $! $0
+echo ${NAME:-default} ${#NAME} ${NAME%.txt} ${arr[@]}
+arr=(one "two" three)

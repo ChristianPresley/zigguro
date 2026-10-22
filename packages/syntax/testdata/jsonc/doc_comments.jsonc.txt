@@ -1,0 +1,5 @@
+/**
+ * Workspace file.
+ * @version 2
+ */
+{"folders": [{"path": "."}]}

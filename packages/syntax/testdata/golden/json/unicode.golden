@@ -1,0 +1,5 @@
+1| punctuation.bracket:{
+2| property:"名前" punctuation.delimiter:: string:"テスト" punctuation.delimiter:,
+3| property:"emoji" punctuation.delimiter:: string:"🎉 done" punctuation.delimiter:,
+4| property:"ελληνικά" punctuation.delimiter:: string:"αβγ"
+5| punctuation.bracket:}

@@ -1,0 +1,5 @@
+1| property:basic operator:= string:"I'm a string.  string.escape:\" string:Quoted string.escape:\" string:  string.escape:\u00e9 string:  string.escape:\U0001F600 string:"
+2| property:literal operator:= string:'C:\Users\nodejs\templates'
+3| property:regex operator:= string:'<\i\c*\s*>'
+4| property:empty operator:= string:""
+5| property:bad operator:= string:"unterminated

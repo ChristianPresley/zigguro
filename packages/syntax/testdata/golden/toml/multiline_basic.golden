@@ -1,0 +1,7 @@
+1| property:str operator:= string:"""
+2| string:Roses are red
+3| string:Violets are  string.escape:\" string:blue string.escape:\" string:  string.escape:\
+4| string:  and  string.escape:\t string: tabs"""
+5| property:quotes operator:= string:"""Here are two quotes: "". Done."""
+6| property:five operator:= string:"""""ab"""""
+7| property:after operator:= number:1 comment:# comment

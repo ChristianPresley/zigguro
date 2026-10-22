@@ -1,0 +1,10 @@
+cat <<EOF
+Hello $USER, today is $(date).
+EOF
+cat <<-'END'
+	indented $not_expanded
+	END
+cat <<"DONE" | grep x
+literal ${text}
+DONE
+tr a-z A-Z <<< "here string"
