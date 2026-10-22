@@ -148,8 +148,18 @@ pub const Workbench = struct {
     review_view: ?*ReviewView = null,
     /// Scratch for the review tab's badge.
     review_badge: [12]u8 = undefined,
-    /// Editors use Vim keys (`editor.toggleVim`).
-    vim: bool = false,
+    /// Editors' keys: Vim (`editor.toggleVim`), Emacs
+    /// (`editor.toggleEmacs`) or neither.
+    key_mode: KeyMode = .standard,
+    /// Registers, file marks, the last search and `:set` options every
+    /// editor's Vim state shares (created with the first one).
+    vim_shared: ?*zg_editor.modes.vim.state.Shared = null,
+    /// The Emacs keymap layer while Emacs keys are on.
+    emacs_layer: ?zg_config.zon_load.Doc = null,
+    /// `:w`, `:q`, `C-x` chords and the like, run after the key that sent
+    /// them (the editor that sent `:q` is still handling it).
+    mode_queue: std.ArrayList(ModeAction) = .empty,
+    mode_posted: bool = false,
     /// Polls the review store for other processes' records (`zg review`)
     /// while the review panel exists.
     review_timer: Window.TimerId = .none,
@@ -165,6 +175,9 @@ pub const Workbench = struct {
     /// Where files' undo histories persist (`enableUndoFiles`).
     undo_dir: ?std.Io.Dir = null,
 
+    /// Which keys editors use.
+    const KeyMode = enum { standard, vim, emacs };
+
     /// One open file and its dock panel; the current one is mirrored in
     /// the fields above.
     const OpenFile = struct {
@@ -176,6 +189,8 @@ pub const Workbench = struct {
         sync: ?*FileSync = null,
         /// The editor's Vim state while Vim keys are on.
         vim_state: ?*zg_editor.modes.VimState = null,
+        /// The editor's Emacs state while Emacs keys are on.
+        emacs_state: ?*zg_editor.modes.EmacsState = null,
         /// The document against the file's text, for the gutter's SCM
         /// bar (null: not read from disk).
         diff: ?*diff_model.DiffModel = null,
@@ -260,8 +275,8 @@ pub const Workbench = struct {
         f.doc = wb.docs.get(h).?;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
-        if (wb.vim) wb.setVim(&f, true);
-        errdefer wb.setVim(&f, false);
+        wb.setMode(&f, wb.key_mode);
+        errdefer wb.setMode(&f, .standard);
         if (f.path) |p| {
             const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
@@ -310,7 +325,7 @@ pub const Workbench = struct {
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
         var fm = f;
-        wb.setVim(&fm, false);
+        wb.setMode(&fm, .standard);
         if (f.sync) |x| x.destroy();
         if (f.diff) |m| m.deinit();
         f.view.deinit();
@@ -713,6 +728,9 @@ pub const Workbench = struct {
         wb.detach();
         wb.resolver.deinit();
         if (wb.keymap) |k| k.deinit();
+        if (wb.emacs_layer) |*d| d.deinit();
+        for (wb.mode_queue.items) |q| if (q == .run) if (q.run.text) |t| wb.gpa.free(t);
+        wb.mode_queue.deinit(wb.gpa);
         for (wb.keymap_docs.items) |*d| d.deinit();
         wb.keymap_docs.deinit(wb.gpa);
         wb.reg.deinit();
@@ -722,6 +740,10 @@ pub const Workbench = struct {
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
+        if (wb.vim_shared) |sh| {
+            sh.deinit();
+            wb.gpa.destroy(sh);
+        }
         if (wb.floater) |*fl| fl.deinit();
         wb.dv.deinit();
         wb.dock.deinit();
@@ -780,11 +802,24 @@ pub const Workbench = struct {
         for (zg_config.presets.presetLayers(.vscode)) |src| {
             try wb.keymap_docs.append(wb.gpa, try zg_config.zon_load.loadZon(wb.gpa, src, &wb.diags));
         }
+        try wb.rebuildKeymap();
+    }
+
+    /// Builds the keymap from the preset (plus the Emacs layer while Emacs
+    /// keys are on) and swaps it in.
+    fn rebuildKeymap(wb: *Workbench) !void {
         var inputs: std.ArrayList(zg_config.keymap.LayerInput) = .empty;
         defer inputs.deinit(wb.gpa);
         for (wb.keymap_docs.items) |*d| try inputs.append(wb.gpa, .{ .layer = .preset, .doc = d });
-        wb.keymap = try zg_config.keymap.Keymap.build(wb.gpa, inputs.items, wb.reg, &wb.keys, zg_config.keyspec.Platform.of(@import("builtin").os.tag), &wb.diags);
-        wb.resolver.reload(wb.keymap.?);
+        if (wb.key_mode == .emacs) {
+            if (wb.emacs_layer == null) wb.emacs_layer = try zg_config.zon_load.loadZon(wb.gpa, zg_editor.modes.emacs.keymap_source, &wb.diags);
+            try inputs.append(wb.gpa, .{ .layer = .mode_layer, .doc = &wb.emacs_layer.? });
+        }
+        const km = try zg_config.keymap.Keymap.build(wb.gpa, inputs.items, wb.reg, &wb.keys, zg_config.keyspec.Platform.of(@import("builtin").os.tag), &wb.diags);
+        const old = wb.keymap;
+        wb.keymap = km;
+        wb.resolver.reload(km);
+        if (old) |k| k.deinit();
     }
 
     const Cmd = struct { id: []const u8, title: []const u8, category: []const u8, run: *const fn (wb: *Workbench) anyerror!void };
@@ -805,6 +840,8 @@ pub const Workbench = struct {
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
         .{ .id = "workbench.toggleTheme", .title = "Toggle Light/Dark Theme", .category = "Preferences", .run = toggleTheme },
         .{ .id = "editor.toggleVim", .title = "Toggle Vim Mode", .category = "Preferences", .run = toggleVim },
+        .{ .id = "editor.toggleEmacs", .title = "Toggle Emacs Mode", .category = "Preferences", .run = toggleEmacs },
+        .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
     };
 
@@ -931,25 +968,223 @@ pub const Workbench = struct {
 
     /// Vim keys on or off in every editor.
     fn toggleVim(wb: *Workbench) !void {
-        wb.vim = !wb.vim;
-        for (wb.files.items) |*f| wb.setVim(f, wb.vim);
+        wb.setKeyMode(if (wb.key_mode == .vim) .standard else .vim);
+    }
+
+    /// Emacs keys on or off in every editor.
+    fn toggleEmacs(wb: *Workbench) !void {
+        wb.setKeyMode(if (wb.key_mode == .emacs) .standard else .emacs);
+    }
+
+    fn setKeyMode(wb: *Workbench, m: KeyMode) void {
+        const was = wb.key_mode;
+        wb.key_mode = m;
+        for (wb.files.items) |*f| wb.setMode(f, m);
+        // The Emacs layer joins or leaves the keymap after this key.
+        if ((was == .emacs) != (m == .emacs)) wb.queueModeAction(.rebuild_keymap);
         if (wb.win) |w| w.markAllDirty();
     }
 
-    /// Gives `f`'s editor a Vim state (or takes it away).
-    fn setVim(wb: *Workbench, f: *OpenFile, on: bool) void {
-        if (on == (f.vim_state != null)) return;
-        if (f.vim_state) |vs| {
+    /// Gives `f`'s editor the state of mode `m` (dropping another one).
+    fn setMode(wb: *Workbench, f: *OpenFile, m: KeyMode) void {
+        if (m != .vim) if (f.vim_state) |vs| {
             f.view.mode = null;
             vs.deinit();
             wb.gpa.destroy(vs);
             f.vim_state = null;
+        };
+        if (m != .emacs) if (f.emacs_state) |es| {
+            f.view.mode = null;
+            es.deinit();
+            wb.gpa.destroy(es);
+            f.emacs_state = null;
+        };
+        f.view.mode_actions = .{ .ctx = wb, .runFn = runModeAction };
+        switch (m) {
+            .standard => {},
+            .vim => if (f.vim_state == null) {
+                const sh = wb.vimShared() orelse return;
+                const vs = wb.gpa.create(zg_editor.modes.VimState) catch return;
+                vs.* = .init(wb.gpa);
+                vs.shared = sh;
+                f.vim_state = vs;
+                f.view.mode = vs.handler();
+            },
+            .emacs => if (f.emacs_state == null) {
+                const es = wb.gpa.create(zg_editor.modes.EmacsState) catch return;
+                es.* = .init(wb.gpa);
+                es.kill_ring.clipboard = wb.clipboardPort();
+                f.emacs_state = es;
+                f.view.mode = es.handler();
+            },
+        }
+    }
+
+    fn vimShared(wb: *Workbench) ?*zg_editor.modes.vim.state.Shared {
+        if (wb.vim_shared) |sh| return sh;
+        const sh = wb.gpa.create(zg_editor.modes.vim.state.Shared) catch return null;
+        sh.* = .init(wb.gpa);
+        sh.regs.clipboard = wb.clipboardPort();
+        wb.vim_shared = sh;
+        return sh;
+    }
+
+    /// The app's clipboard and primary selection, for Vim's `+` and `*`
+    /// registers and the Emacs kill ring.
+    fn clipboardPort(wb: *Workbench) zg_editor.modes.mode.ClipboardPort {
+        const F = struct {
+            fn board(w: *Workbench, which: zg_editor.modes.mode.ClipboardPort.Which) ?*zg_gui.core.app.Clipboard {
+                const win = w.win orelse return null;
+                return switch (which) {
+                    .clipboard => &win.app.clipboard,
+                    .primary => if (win.app.has_primary) &win.app.primary else &win.app.clipboard,
+                };
+            }
+            fn get(ctx: *anyopaque, which: zg_editor.modes.mode.ClipboardPort.Which, gpa: std.mem.Allocator) anyerror!?[]u8 {
+                const w: *Workbench = @ptrCast(@alignCast(ctx));
+                const c = board(w, which) orelse return null;
+                if (c.get().len == 0) return null;
+                return try gpa.dupe(u8, c.get());
+            }
+            fn set(ctx: *anyopaque, which: zg_editor.modes.mode.ClipboardPort.Which, text: []const u8) anyerror!void {
+                const w: *Workbench = @ptrCast(@alignCast(ctx));
+                const c = board(w, which) orelse return;
+                c.set(w.gpa, text);
+            }
+        };
+        return .{ .ctx = wb, .getFn = F.get, .setFn = F.set };
+    }
+
+    /// A mode's request, kept until after the key that sent it.
+    const ModeAction = union(enum) {
+        run: struct { action: zg_editor.modes.mode.Action, text: ?[]u8 = null },
+        rebuild_keymap,
+    };
+
+    /// `Host.actions` of every editor: queues `a` (strings copied).
+    fn runModeAction(ctx: *anyopaque, a: zg_editor.modes.mode.Action) anyerror!void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var copy = a;
+        var text: ?[]u8 = null;
+        switch (copy) {
+            .write => |*x| if (x.path) |p| {
+                text = try wb.gpa.dupe(u8, p);
+                x.path = text;
+            },
+            .edit => |*x| if (x.path) |p| {
+                text = try wb.gpa.dupe(u8, p);
+                x.path = text;
+            },
+            .command => |*id| {
+                text = try wb.gpa.dupe(u8, id.*);
+                id.* = text.?;
+            },
+            .quit, .exit => {},
+        }
+        errdefer if (text) |t| wb.gpa.free(t);
+        try wb.mode_queue.append(wb.gpa, .{ .run = .{ .action = copy, .text = text } });
+        wb.postModeQueue();
+    }
+
+    fn queueModeAction(wb: *Workbench, a: ModeAction) void {
+        wb.mode_queue.append(wb.gpa, a) catch return;
+        wb.postModeQueue();
+    }
+
+    fn postModeQueue(wb: *Workbench) void {
+        if (wb.mode_posted) return;
+        const w = wb.win orelse return;
+        w.app.post(.{ .ctx = wb, .f = drainModeQueue }) catch return;
+        wb.mode_posted = true;
+    }
+
+    fn drainModeQueue(ctx: *anyopaque, _: *zg_gui.App) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.mode_posted = false;
+        while (wb.mode_queue.items.len > 0) {
+            const q = wb.mode_queue.orderedRemove(0);
+            switch (q) {
+                .rebuild_keymap => wb.rebuildKeymap() catch |e| wb.notify(.error_, "Keymap: {t}", .{e}),
+                .run => |r| {
+                    defer if (r.text) |t| wb.gpa.free(t);
+                    wb.doModeAction(r.action);
+                },
+            }
+        }
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Runs a mode's file or workbench command on the current editor.
+    fn doModeAction(wb: *Workbench, a: zg_editor.modes.mode.Action) void {
+        switch (a) {
+            .write => |x| {
+                if (x.path) |p| if (wb.path == null or !wb.samePathRel(p, wb.path.?)) {
+                    wb.notify(.warning, "Writing to another file isn't supported yet ({s})", .{p});
+                    return;
+                };
+                wb.startSave(.{ .overwrite = x.force });
+            },
+            .quit => |x| wb.closeEditor(x.force),
+            .exit => if (wb.doc.isDirty()) {
+                // The save runs on a worker; closing waits for :q.
+                wb.startSave(.{});
+                wb.notify(.info, "Saving {s}; :q closes it", .{std.fs.path.basename(wb.path orelse "Untitled")});
+            } else wb.closeEditor(false),
+            .edit => |x| {
+                const p = x.path orelse {
+                    if (x.force) wb.revert() catch {};
+                    return;
+                };
+                const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return;
+                defer wb.gpa.free(abs);
+                wb.openFile(abs) catch |e| wb.notify(.error_, "Can't open {s}: {t}", .{ p, e });
+            },
+            .command => |id| {
+                const cid = wb.reg.lookup(id) orelse {
+                    wb.notify(.info, "{s} isn't available yet", .{id});
+                    return;
+                };
+                wb.reg.execute(cid, null, .keybinding) catch |e| wb.notify(.error_, "{s}: {t}", .{ id, e });
+            },
+        }
+    }
+
+    /// Whether `p` (relative to the working folder or absolute) names `cur`.
+    fn samePathRel(wb: *Workbench, p: []const u8, cur: []const u8) bool {
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return false;
+        defer wb.gpa.free(abs);
+        const cabs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, cur }) catch return false;
+        defer wb.gpa.free(cabs);
+        return wb.samePath(cabs, abs);
+    }
+
+    fn closeEditorCmd(wb: *Workbench) !void {
+        wb.closeEditor(false);
+    }
+
+    /// Closes the current editor's tab; unsaved changes need `force`. The
+    /// last editor stays open.
+    fn closeEditor(wb: *Workbench, force: bool) void {
+        const cp = wb.cur_panel orelse return;
+        const i = for (wb.files.items, 0..) |f, i| {
+            if (f.panel == cp) break i;
+        } else return;
+        if (wb.files.items[i].doc.isDirty() and !force) {
+            wb.notify(.warning, "{s} has unsaved changes (add ! to discard them)", .{std.fs.path.basename(wb.files.items[i].path orelse "Untitled")});
             return;
         }
-        const vs = wb.gpa.create(zg_editor.modes.VimState) catch return;
-        vs.* = .init(wb.gpa);
-        f.vim_state = vs;
-        f.view.mode = vs.handler();
+        if (wb.files.items.len == 1) {
+            wb.notify(.info, "The last editor stays open", .{});
+            return;
+        }
+        const f = wb.files.orderedRemove(i);
+        wb.dock.close(f.panel) catch {};
+        for (wb.dock.closed.items) |c| if (c.panel.state) |st| wb.gpa.free(st);
+        wb.dock.closed.clearRetainingCapacity();
+        wb.closeFile(f);
+        const next = &wb.files.items[@min(i, wb.files.items.len - 1)];
+        wb.showEditor(next) catch {};
+        wb.setCurrent(next.*);
     }
 
     fn selectAll(wb: *Workbench) !void {
@@ -1412,7 +1647,14 @@ pub const Workbench = struct {
         n += 1;
         if (wb.view.mode != null) {
             const ms = wb.view.modeStatus();
-            items[n] = .{ .id = "mode", .text = if (ms.len > 0) ms else "Vim", .priority = 200, .tooltip = "Vim keys are on: Toggle Vim Mode turns them off", .action = "editor.toggleVim" };
+            const emacs = wb.key_mode == .emacs;
+            items[n] = .{
+                .id = "mode",
+                .text = if (ms.len > 0) ms else if (emacs) "Emacs" else "Vim",
+                .priority = 200,
+                .tooltip = if (emacs) "Emacs keys are on: Toggle Emacs Mode turns them off" else "Vim keys are on: Toggle Vim Mode turns them off",
+                .action = if (emacs) "editor.toggleEmacs" else "editor.toggleVim",
+            };
             n += 1;
         }
         if (wb.trust != .trusted) {
@@ -1640,4 +1882,79 @@ test "workbench: Vim mode toggles for every editor and shows its mode" {
     try Workbench.toggleVim(&wb);
     try std.testing.expect(wb.view.mode == null);
     try std.testing.expect(wb.files.items[0].vim_state == null);
+}
+
+test "workbench: Vim and Emacs reach files, editors and the clipboard" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "abc\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "bee\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.txt" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+    try Workbench.toggleVim(&wb);
+    _ = t.settle();
+    try t.click(.{ .role = .textbox });
+    wb.view.setSelection(.caret(0));
+
+    // "+yy copies the line to the system clipboard.
+    t.typeText("\"+yy");
+    _ = t.settle();
+    try std.testing.expectEqualStrings("abc\n", t.app.clipboard.get());
+
+    // :q refuses unsaved changes; :e opens another file; :q closes it.
+    t.typeText("x");
+    _ = t.settle();
+    t.typeText(":q");
+    t.press(.enter, .{});
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name_contains = "unsaved changes" }) != null);
+    try std.testing.expectEqual(@as(usize, 1), wb.files.items.len);
+    t.typeText(":e b.txt");
+    t.press(.enter, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), wb.files.items.len);
+    try std.testing.expectEqualStrings("b.txt", std.fs.path.basename(wb.path.?));
+    // Both editors share registers.
+    try std.testing.expect(wb.files.items[1].vim_state.?.shared == wb.vim_shared.?);
+    try t.click(.{ .role = .textbox });
+    t.typeText(":q");
+    t.press(.enter, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 1), wb.files.items.len);
+    try std.testing.expectEqualStrings("a.txt", std.fs.path.basename(wb.path.?));
+
+    // Emacs: the toggle replaces Vim, the layer joins the keymap, and a
+    // kill reaches the clipboard.
+    try Workbench.toggleEmacs(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.files.items[0].vim_state == null);
+    try std.testing.expect(wb.files.items[0].emacs_state != null);
+    try std.testing.expect(wb.emacs_layer != null);
+    try std.testing.expect(t.find(.{ .name = "Emacs" }) != null);
+    try t.click(.{ .role = .textbox });
+    wb.view.setSelection(.caret(0));
+    t.press(.key_k, .{ .ctrl = true });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("bc", t.app.clipboard.get());
+    try Workbench.toggleEmacs(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.view.mode == null);
 }
