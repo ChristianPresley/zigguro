@@ -13,6 +13,7 @@ const Maxp = @import("maxp.zig").Maxp;
 const Os2 = @import("os2.zig").Os2;
 const Post = @import("post.zig").Post;
 const name_mod = @import("name.zig");
+const glyf_mod = @import("glyf.zig");
 
 const GlyphId = reader.GlyphId;
 const Tag = reader.Tag;
@@ -146,6 +147,15 @@ pub const Face = struct {
             .use_default => f.glyphIndex(cp),
             .glyph => |g| g,
         };
+    }
+
+    /// The `glyf`/`loca` view, or null when the face has no TrueType
+    /// outlines (or they are malformed).
+    pub fn glyf(f: *const Face) ?glyf_mod.Glyf {
+        if (f.outline_kind != .glyf) return null;
+        var g = glyf_mod.Glyf.init(f.knownTable(.glyf).?, f.knownTable(.loca).?, f.loca_long, f.num_glyphs) catch return null;
+        g.hmtx = f.hmtx;
+        return g;
     }
 
     /// Advance width of `gid` (default instance, design units).
