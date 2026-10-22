@@ -963,11 +963,12 @@ presenter: DRI3 pixmaps shown with `PresentPixmap`, MIT-SHM `AttachFd`
 memfds or core `PutImage`), `dri3.zig` (DRI3/Present requests, events
 and the startup probe), `keymap.zig`
 (core keycode → keysym table) and `dpi.zig` (`ZG_SCALE`, `Xft.dpi`);
-requests and event codes are in `proto.zig` (E01.F05.S02.T01, first
-part, and E01.F05.S03.T02).
+requests and event codes are in `proto.zig`; selections are in
+`selection.zig` (E01.F05.S02.T01, first part, E01.F05.S03.T01 and
+E01.F05.S03.T02).
 
 ### Implemented by
-E01.F05.S02.T01 / E01.F05.S03.T02.
+E01.F05.S02.T01 / E01.F05.S03.T01 / E01.F05.S03.T02.
 
 ### Consumed by
 `zg_platform.init` on X11 sessions (and as the fallback from an
@@ -998,6 +999,19 @@ and `WM_NORMAL_HINTS` (min size). `request_state` sends `_NET_WM_STATE`,
 MSC, flip → `zero_copy`, skip → `discarded`). Frame pacing stays on the
 timer.
 
+Selections (E01.F05.S03.T01, `selection.zig`): CLIPBOARD and PRIMARY on a
+hidden InputOnly window. `clipboard_write` takes ownership with the newest
+event time (an empty item list gives it up). As owner we answer
+`TARGETS`, `TIMESTAMP`, `MULTIPLE` (pairs in order, failures set to
+None) and each item's targets (text as `UTF8_STRING`,
+`text/plain;charset=utf-8`, `text/plain`, Latin-1 `STRING` and `TEXT`);
+data over `min(max request, 256 KiB)` goes by INCR. As requestor we ask
+for `TARGETS`, pick the best target, and read plain or INCR answers; a
+read that stalls for 5 s answers with empty data, and reads run one at a
+time. While we own a selection, reads answer from our copy. XFIXES owner
+changes by other clients become `clipboard_changed`. Answers over 64 KiB
+are large payloads (`Platform.release`).
+
 ### Threading
 No platform thread: the UI thread reads and translates X events in
 `pollEvents` and `waitEvents`. `submit`, `wake` and presenter calls may
@@ -1011,8 +1025,7 @@ destroys every window and closes the connection.
 Experimental. Not yet: XInput2 and XKB keymaps (E01.F05.S02.T02; keys
 use the core mapping, and auto-repeat arrives as release/press pairs),
 RandR monitors (one monitor for the screen), `_NET_WM_SYNC_REQUEST`,
-`_NET_WM_PING`, cursors, selections (`clipboard_read` answers only from
-our own `clipboard_write`), explicit sync (`PresentPixmapSynced`), XFIXES
+`_NET_WM_PING`, cursors, explicit sync (`PresentPixmapSynced`), XFIXES
 update regions (presents update the whole window), MSC-based pacing and
 XDND. Move, resize, window
 menu, drag, activation, dialogs and URIs return `error.Unsupported`.

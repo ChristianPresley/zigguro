@@ -281,6 +281,94 @@ pub const GetProperty = struct {
     };
 };
 
+/// DeleteProperty (19).
+pub const DeleteProperty = struct {
+    /// The major opcode.
+    pub const opcode = 19;
+    window: u32,
+    property: u32,
+};
+
+/// ChangeWindowAttributes (2).
+pub const ChangeWindowAttributes = struct {
+    /// The major opcode.
+    pub const opcode = 2;
+    window: u32,
+    values: ValueList(WindowAttributes) = .{},
+};
+
+/// SetSelectionOwner (22); `owner` 0 gives the selection up.
+pub const SetSelectionOwner = struct {
+    /// The major opcode.
+    pub const opcode = 22;
+    owner: u32,
+    selection: u32,
+    time: u32,
+};
+
+/// GetSelectionOwner (23).
+pub const GetSelectionOwner = struct {
+    /// The major opcode.
+    pub const opcode = 23;
+    selection: u32,
+
+    /// The owner window, or 0.
+    pub const Reply = struct {
+        owner: u32,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .owner = u32At(b, 8) };
+        }
+    };
+};
+
+/// ConvertSelection (24): asks the owner to store `target` in
+/// `property` on `requestor`, answered by SelectionNotify.
+pub const ConvertSelection = struct {
+    /// The major opcode.
+    pub const opcode = 24;
+    requestor: u32,
+    selection: u32,
+    target: u32,
+    property: u32,
+    time: u32,
+};
+
+/// XFIXES QueryVersion; required before other XFIXES requests.
+pub const XFixesQueryVersion = struct {
+    /// The extension that owns this request.
+    pub const extension = "XFIXES";
+    /// The minor opcode.
+    pub const minor = 0;
+    client_major: u32 = 5,
+    client_minor: u32 = 0,
+
+    /// The server's version.
+    pub const Reply = struct {
+        major: u32,
+        minor: u32,
+        /// Decodes the reply from its wire bytes.
+        pub fn decode(b: []const u8, _: *FdQueue) DecodeError!Reply {
+            if (b.len < 32) return error.Malformed;
+            return .{ .major = u32At(b, 8), .minor = u32At(b, 12) };
+        }
+    };
+};
+
+/// XFIXES SelectSelectionInput: XFixesSelectionNotify for `selection`.
+pub const XFixesSelectSelectionInput = struct {
+    /// The extension that owns this request.
+    pub const extension = "XFIXES";
+    /// The minor opcode.
+    pub const minor = 2;
+    window: u32,
+    selection: u32,
+    /// Bit 0: SetSelectionOwner; 1: SelectionWindowDestroy; 2:
+    /// SelectionClientClose.
+    event_mask: u32,
+};
+
 /// GetInputFocus (43): also the cheapest round trip (`Conn.sync`).
 pub const GetInputFocus = struct {
     /// The major opcode.
@@ -581,6 +669,14 @@ pub const EventCode = struct {
     pub const map_notify = 19;
     /// ConfigureNotify.
     pub const configure_notify = 22;
+    /// PropertyNotify.
+    pub const property_notify = 28;
+    /// SelectionClear.
+    pub const selection_clear = 29;
+    /// SelectionRequest.
+    pub const selection_request = 30;
+    /// SelectionNotify.
+    pub const selection_notify = 31;
     /// ClientMessage.
     pub const client_message = 33;
     /// MappingNotify.
@@ -621,10 +717,14 @@ pub const EventMask = struct {
 
 /// Predefined atoms.
 pub const Atom = struct {
+    /// PRIMARY.
+    pub const primary: u32 = 1;
     /// ATOM.
     pub const atom: u32 = 4;
     /// CARDINAL.
     pub const cardinal: u32 = 6;
+    /// INTEGER.
+    pub const integer: u32 = 19;
     /// RESOURCE_MANAGER.
     pub const resource_manager: u32 = 23;
     /// STRING.

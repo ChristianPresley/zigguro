@@ -11,9 +11,13 @@
 //! go through the connection's lock. One mutex guards the windows and the
 //! staged events.
 //!
+//! Selections (E01.F05.S03.T01) live in `selection.zig`: CLIPBOARD and
+//! PRIMARY with TARGETS, MULTIPLE, TIMESTAMP and INCR, on a hidden window.
+//! Large answers become large payloads (`Platform.release`).
+//!
 //! Not yet here (later E01.F05 tasks): XInput2 and XKB keymaps (#245),
 //! RandR monitors, _NET_WM_SYNC_REQUEST and _NET_WM_PING, cursors,
-//! selections (#249), DRI3/Present (#251), XDND (#253).
+//! XDND (#253).
 
 const std = @import("std");
 const Io = std.Io;
@@ -39,6 +43,7 @@ const modsFromState = @import("keymap.zig").modsFromState;
 const present_mod = @import("present.zig");
 const Presenter = present_mod.Presenter;
 const dri3 = @import("dri3.zig");
+const selection = @import("selection.zig");
 
 const Event = event_api.Event;
 const Command = window_api.Command;
@@ -111,8 +116,6 @@ const Window = struct {
     clicks: u8 = 0,
 };
 
-const ClipItemOwned = struct { mime: clipboard.MimeId, data: []u8 };
-
 /// The X11 backend.
 pub const X11Backend = struct {
     gpa: Allocator,
@@ -132,7 +135,13 @@ pub const X11Backend = struct {
     windows: std.ArrayList(*Window) = .empty,
     next_win: u32 = 1,
     staged: std.ArrayList(Event) = .empty,
-    clip: [2][]ClipItemOwned = .{ &.{}, &.{} },
+    /// Selections. Guarded by the mutex.
+    sel: selection.Selections = undefined,
+    /// The newest server timestamp seen in an event (0 = CurrentTime).
+    last_time: u32 = 0,
+    /// Payloads over the arena's limit, by id. Guarded by the mutex.
+    large: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
+    next_large: u32 = 0,
 
     arena: PayloadArena,
     ui_wake: Wake,
@@ -175,6 +184,8 @@ pub const X11Backend = struct {
         };
         try b.loadKeymap();
         errdefer b.keymap.deinit(gpa);
+        b.sel = try .init(gpa, conn);
+        errdefer b.sel.deinit();
         b.scale = dpi.envScale(opts.environ_map) orelse b.readXftScale();
         const shm_ok = b.shmUsable();
         b.path = b.pickPath(env, shm_ok);
@@ -403,28 +414,11 @@ pub const X11Backend = struct {
                 w.frame_requested = true;
                 b.ui_wake.signal();
             },
-            .clipboard_write => |t| {
-                const items = try b.gpa.alloc(ClipItemOwned, t.items.len);
-                var done: usize = 0;
-                errdefer {
-                    for (items[0..done]) |it| b.gpa.free(it.data);
-                    b.gpa.free(items);
-                }
-                for (t.items, 0..) |it, i| {
-                    items[i] = .{ .mime = it.mime, .data = try b.gpa.dupe(u8, it.data) };
-                    done = i + 1;
-                }
-                freeClip(b.gpa, b.clip[@intFromEnum(t.which)]);
-                b.clip[@intFromEnum(t.which)] = items;
-            },
+            .clipboard_write => |t| try b.sel.own(t.which, t.items, b.last_time),
             .clipboard_read => |t| {
-                // Only our own selection until X11 selections (E01.F05.S03.T01).
-                var data: types.PayloadSlice = .empty;
-                for (b.clip[@intFromEnum(t.which)]) |it| if (it.mime == t.mime) {
-                    data = b.arena.put(it.data) catch .empty;
-                    break;
-                };
-                b.stage(.{ .clipboard_data = .{ .request = t.request, .data = data, .mime = t.mime } });
+                try b.sel.read(t.which, t.mime, t.request, b.last_time, b.nowNs());
+                b.drainSelections();
+                // Wake `waitEvents` for a local answer or the new deadline.
                 b.ui_wake.signal();
             },
             .begin_move, .begin_resize, .show_window_menu, .start_drag, .set_drop_effect, .activate, .request_attention, .open_dialog, .open_uri => return error.Unsupported,
@@ -467,12 +461,53 @@ pub const X11Backend = struct {
 
     /// See `Platform.VTable.payload`.
     pub fn payload(b: *X11Backend, s: types.PayloadSlice) []const u8 {
-        if (s.large) return &.{};
-        return b.arena.get(s);
+        if (!s.large) return b.arena.get(s);
+        b.lock();
+        defer b.unlock();
+        return b.large.get(s.off) orelse &.{};
     }
 
-    /// See `Platform.VTable.release`. No large payloads yet.
-    pub fn release(_: *X11Backend, _: types.PayloadSlice) void {}
+    /// See `Platform.VTable.release`.
+    pub fn release(b: *X11Backend, s: types.PayloadSlice) void {
+        if (!s.large) return;
+        b.lock();
+        defer b.unlock();
+        if (b.large.fetchRemove(s.off)) |kv| b.gpa.free(kv.value);
+    }
+
+    /// `bytes` as a payload: inline in the arena, else a large payload
+    /// that takes ownership of `bytes`. Mutex held. `bytes` is freed on
+    /// the inline path and on error.
+    fn putOwned(b: *X11Backend, bytes: []u8) types.PayloadSlice {
+        if (b.arena.put(bytes)) |s| {
+            b.gpa.free(bytes);
+            return s;
+        } else |_| {}
+        const id = b.next_large;
+        b.large.put(b.gpa, id, bytes) catch {
+            b.gpa.free(bytes);
+            return .empty;
+        };
+        b.next_large = (b.next_large + 1) & std.math.maxInt(u30);
+        return .{ .off = @intCast(id), .large = true, .len = @intCast(bytes.len) };
+    }
+
+    /// Turns finished selection reads and owner changes into events.
+    /// Mutex held.
+    fn drainSelections(b: *X11Backend) void {
+        for (b.sel.done.items) |d| {
+            const data: types.PayloadSlice = if (d.ok and d.data.len > 0) b.putOwned(d.data) else blk: {
+                b.gpa.free(d.data);
+                break :blk .empty;
+            };
+            b.stage(.{ .clipboard_data = .{ .request = d.request, .data = data, .mime = d.mime } });
+        }
+        b.sel.done.clearRetainingCapacity();
+        for (&b.sel.changed, 0..) |*c, i| if (c.*) {
+            c.* = false;
+            b.stage(.{ .clipboard_changed = @enumFromInt(i) });
+        };
+    }
 
     /// See `Platform.VTable.monitors`: the screen, until RandR monitors.
     pub fn monitors(b: *X11Backend, out: []types.MonitorInfo) usize {
@@ -499,6 +534,8 @@ pub const X11Backend = struct {
         }
         b.lock();
         defer b.unlock();
+        b.sel.expire(b.nowNs());
+        b.drainSelections();
         b.dueFrames(b.nowNs());
         const take = @min(out.len - n, b.staged.items.len);
         for (b.staged.items[0..take], 0..) |e, i| {
@@ -539,8 +576,11 @@ pub const X11Backend = struct {
             {
                 b.lock();
                 defer b.unlock();
+                b.sel.expire(now);
+                b.drainSelections();
                 if (b.staged.items.len > 0) return;
                 if (b.nextFrameNs()) |t| until = if (until) |d| @min(d, t) else t;
+                if (b.sel.nextDeadline()) |t| until = if (until) |d| @min(d, t) else t;
             }
             if (b.wake_pending.load(.acquire)) return;
             if (until) |u| if (now >= u) return;
@@ -571,7 +611,10 @@ pub const X11Backend = struct {
         b.windows.deinit(b.gpa);
         b.unlock();
         b.staged.deinit(b.gpa);
-        for (&b.clip) |items| freeClip(b.gpa, items);
+        b.sel.deinit();
+        var it = b.large.valueIterator();
+        while (it.next()) |v| b.gpa.free(v.*);
+        b.large.deinit(b.gpa);
         b.keymap.deinit(b.gpa);
         if (b.gpu) |*g| g.deinit(b.gpa);
         b.conn.deinit();
@@ -602,6 +645,12 @@ pub const X11Backend = struct {
 
     fn translate(b: *X11Backend, ev: []const u8) void {
         const code = ev[0] & 0x7f;
+        switch (code) {
+            proto.EventCode.key_press...proto.EventCode.leave_notify => b.last_time = u32At(ev, 4),
+            proto.EventCode.property_notify => b.last_time = u32At(ev, 12),
+            else => {},
+        }
+        if (b.sel.handleEvent(ev, b.nowNs())) return b.drainSelections();
         if (b.shm_event) |base| if (code == base) {
             const drawable = u32At(ev, 4);
             if (b.byXid(drawable)) |w| _ = w.presenter.onShmCompletion(u32At(ev, 12));
@@ -779,11 +828,6 @@ pub const X11Backend = struct {
     }
 };
 
-fn freeClip(gpa: Allocator, items: []ClipItemOwned) void {
-    for (items) |it| gpa.free(it.data);
-    gpa.free(items);
-}
-
 fn u16At(b: []const u8, at: usize) u16 {
     return std.mem.readInt(u16, b[at..][0..2], .little);
 }
@@ -958,4 +1002,131 @@ test "Xvfb: a newer present releases the older buffer" {
     }
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expectEqual(a.handle, got[0]);
+}
+
+/// Polls `want` until a `kind` event arrives, letting `other` dispatch
+/// (it answers selection requests) in between.
+fn waitBoth(want: Platform, other: Platform, comptime kind: Event.Tag) !@FieldType(Event, @tagName(kind)) {
+    const deadline = @as(u64, @intCast(Io.Clock.awake.now(testing.io).nanoseconds)) + 5 * std.time.ns_per_s;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = want.pollEvents(&evs);
+        for (evs[0..n]) |e| if (e == kind) return @field(e, @tagName(kind));
+        _ = other.pollEvents(&evs);
+        const now: u64 = @intCast(Io.Clock.awake.now(testing.io).nanoseconds);
+        if (now >= deadline) return error.Timeout;
+        want.waitEvents(now + 2 * std.time.ns_per_ms);
+    }
+}
+
+test "Xvfb: selections between two clients (text, 10 MB INCR, PRIMARY, changes)" {
+    var x = XvfbForTest.start(4) catch return error.SkipZigTest;
+    defer x.stop();
+    const a = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer a.deinit();
+    const b = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer b.deinit();
+    const pa = a.platform();
+    const pb = b.platform();
+
+    try pa.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = "hello" }} } });
+    try testing.expect(b.sel.xfixes_event != null);
+    if (b.sel.xfixes_event != null) try testing.expectEqual(clipboard.Selection.clipboard, try waitBoth(pb, pa, .clipboard_changed));
+    try pb.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 1 } });
+    const small = try waitBoth(pb, pa, .clipboard_data);
+    try testing.expectEqual(@as(u32, 1), small.request);
+    try testing.expectEqualStrings("hello", pb.payload(small.data));
+
+    // The owner answers itself from its copy.
+    try pa.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 2 } });
+    try testing.expectEqualStrings("hello", pa.payload((try waitBoth(pa, pb, .clipboard_data)).data));
+
+    // Not offered: an empty answer.
+    try pb.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .png, .request = 3 } });
+    try testing.expectEqual(@as(u32, 0), (try waitBoth(pb, pa, .clipboard_data)).data.len);
+
+    const big = try testing.allocator.alloc(u8, 10 * 1024 * 1024);
+    defer testing.allocator.free(big);
+    for (big, 0..) |*c, i| c.* = 'a' + @as(u8, @intCast(i % 26));
+    try pa.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .html, .data = big }} } });
+    try pb.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .html, .request = 4 } });
+    const lg = try waitBoth(pb, pa, .clipboard_data);
+    try testing.expect(lg.data.large);
+    try testing.expectEqualSlices(u8, big, pb.payload(lg.data));
+    pb.release(lg.data);
+
+    try pa.submit(.{ .clipboard_write = .{ .which = .primary, .items = &.{.{ .mime = .text_utf8, .data = "sel" }} } });
+    try pb.submit(.{ .clipboard_read = .{ .which = .primary, .mime = .text_utf8, .request = 5 } });
+    try testing.expectEqualStrings("sel", pb.payload((try waitBoth(pb, pa, .clipboard_data)).data));
+
+    // B takes the clipboard: A loses it and reads from B.
+    try pb.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = "from b" }} } });
+    if (a.sel.xfixes_event != null) _ = try waitBoth(pa, pb, .clipboard_changed);
+    // SelectionClear may trail the XFIXES notice.
+    var spins: usize = 0;
+    while (a.sel.owned[0]) : (spins += 1) {
+        if (spins > 2000) return error.Timeout;
+        var evs: [16]Event = undefined;
+        _ = pa.pollEvents(&evs);
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try pa.submit(.{ .clipboard_read = .{ .which = .clipboard, .mime = .text_utf8, .request = 6 } });
+    try testing.expectEqualStrings("from b", pa.payload((try waitBoth(pa, pb, .clipboard_data)).data));
+}
+
+/// Waits on raw connection `r` for SelectionNotify, letting `owner`
+/// dispatch; returns its property.
+fn rawNotify(r: *Conn, owner: Platform) !u32 {
+    var evs: [16]Event = undefined;
+    var tries: usize = 0;
+    while (tries < 2000) : (tries += 1) {
+        _ = owner.pollEvents(&evs);
+        try r.flush();
+        while (try r.pollEvent()) |ev| if (ev[0] & 0x7f == proto.EventCode.selection_notify) return u32At(ev, 20);
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    return error.Timeout;
+}
+
+test "Xvfb: TARGETS lists the required atoms; MULTIPLE converts pairs and marks failures" {
+    var x = XvfbForTest.start(5) catch return error.SkipZigTest;
+    defer x.stop();
+    const a = try X11Backend.init(testing.allocator, testing.io, .{ .display = x.display() });
+    defer a.deinit();
+    const pa = a.platform();
+    try pa.submit(.{ .clipboard_write = .{ .which = .clipboard, .items = &.{.{ .mime = .text_utf8, .data = "multi" }} } });
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    const r = try Conn.connect(testing.allocator, testing.io, &env, .{ .display = x.display() });
+    defer r.deinit();
+    const at = try r.internAtoms(&.{ "CLIPBOARD", "TARGETS", "MULTIPLE", "TIMESTAMP", "UTF8_STRING", "ATOM_PAIR", "image/png", "_T", "_P1", "_P2", "_M" });
+    const rw = try r.newXid();
+    _ = try r.request(proto.CreateWindow, .{ .data = 0, .wid = rw, .parent = r.screen().root, .x = 0, .y = 0, .width = 1, .height = 1, .class = .input_only, .visual = 0 }, &.{});
+
+    _ = try r.request(proto.ConvertSelection, .{ .requestor = rw, .selection = at.get("CLIPBOARD"), .target = at.get("TARGETS"), .property = at.get("_T"), .time = 0 }, &.{});
+    try testing.expectEqual(at.get("_T"), try rawNotify(r, pa));
+    const tp = try r.reply(try r.request(proto.GetProperty, .{ .window = rw, .property = at.get("_T") }, &.{}));
+    try testing.expectEqual(proto.Atom.atom, tp.type);
+    var have: usize = 0;
+    var i: usize = 0;
+    while (i < tp.value.len) : (i += 4) {
+        const v = u32At(tp.value, i);
+        for ([_]u32{ at.get("TARGETS"), at.get("MULTIPLE"), at.get("TIMESTAMP"), at.get("UTF8_STRING") }) |want| {
+            if (v == want) have += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 4), have);
+
+    var pairs: [16]u8 = undefined;
+    for ([_]u32{ at.get("UTF8_STRING"), at.get("_P1"), at.get("image/png"), at.get("_P2") }, 0..) |v, k| std.mem.writeInt(u32, pairs[k * 4 ..][0..4], v, .little);
+    _ = try r.request(proto.ChangeProperty, .{ .window = rw, .property = at.get("_M"), .type = at.get("ATOM_PAIR"), .format = 32, .length = 4, .bytes = &pairs }, &.{});
+    _ = try r.request(proto.ConvertSelection, .{ .requestor = rw, .selection = at.get("CLIPBOARD"), .target = at.get("MULTIPLE"), .property = at.get("_M"), .time = 0 }, &.{});
+    try testing.expectEqual(at.get("_M"), try rawNotify(r, pa));
+    const mp = try r.reply(try r.request(proto.GetProperty, .{ .window = rw, .property = at.get("_M") }, &.{}));
+    try testing.expectEqual(@as(usize, 16), mp.value.len);
+    try testing.expectEqual(at.get("_P1"), u32At(mp.value, 4));
+    try testing.expectEqual(@as(u32, 0), u32At(mp.value, 12));
+    const p1 = try r.reply(try r.request(proto.GetProperty, .{ .window = rw, .property = at.get("_P1") }, &.{}));
+    try testing.expectEqualStrings("multi", p1.value);
 }
