@@ -93,20 +93,39 @@ fn pool(word: u32) []const u21 {
 /// Script_Extensions of `cp`; when it has none, a one-element slice holding
 /// its Script value.
 pub fn scriptExtensions(cp: u21) []const Script {
+    return scriptExtensionsSpan(cp).list orelse singleScript(props(cp).script);
+}
+
+/// The Script_Extensions range holding a code point: its list, or null
+/// when it has none (then `lo..hi` is the whole gap without any), so
+/// callers walking text can skip the search for nearby code points.
+pub const ScxSpan = struct { list: ?[]const Script, lo: u21, hi: u21 };
+
+pub fn scriptExtensionsSpan(cp: u21) ScxSpan {
     const r = sec(u32, t.scx_ranges);
+    const n = r.len / 3;
     var lo: usize = 0;
-    var hi: usize = r.len / 3;
+    var hi: usize = n;
     while (lo < hi) {
         const mid = (lo + hi) / 2;
         if (r[mid * 3 + 1] < cp) lo = mid + 1 else hi = mid;
     }
-    if (lo < r.len / 3 and r[lo * 3] <= cp) {
+    if (lo < n and r[lo * 3] <= cp) {
         const w = r[lo * 3 + 2];
         const scripts: []const Script = @ptrCast(sec(u8, t.scx_pool));
-        return scripts[w >> 8 ..][0 .. w & 0xFF];
+        return .{ .list = scripts[w >> 8 ..][0 .. w & 0xFF], .lo = @intCast(r[lo * 3]), .hi = @intCast(r[lo * 3 + 1]) };
     }
-    const s = @intFromEnum(props(cp).script);
-    return all_scripts[s .. s + 1];
+    return .{
+        .list = null,
+        .lo = if (lo > 0) @intCast(r[(lo - 1) * 3 + 1] + 1) else 0,
+        .hi = if (lo < n) @intCast(r[lo * 3] - 1) else 0x10FFFF,
+    };
+}
+
+/// A one-element slice holding `s`.
+pub fn singleScript(s: Script) []const Script {
+    const i = @intFromEnum(s);
+    return all_scripts[i .. i + 1];
 }
 
 /// The Bidi_Mirroring_Glyph of `cp`, if any.
