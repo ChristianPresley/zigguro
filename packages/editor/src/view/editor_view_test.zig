@@ -274,3 +274,34 @@ test "view: syntax colours and decorations paint" {
     f.t.typeText("pub ");
     try testing.expectEqual(f.doc.version, ds.version);
 }
+
+test "view: the IME follows the primary caret" {
+    var f: Fx = undefined;
+    try f.init("first\nsecond line");
+    defer f.deinit();
+    const im = &f.t.win.ime;
+    // Focus enabled it (the click in init).
+    try testing.expect(im.enabled);
+
+    f.press(.{ .key = .arrow_down });
+    f.press(.{ .key = .end });
+    const s1 = im.serial;
+    try testing.expectEqualStrings("second line", im.surrounding().?.text);
+    try testing.expectEqual(@as(u32, 11), im.surrounding().?.cursor_byte);
+    // The caret rect is where the caret is drawn: line 2, after the text.
+    const want = try f.pointAt(1, 11);
+    try testing.expectApproxEqAbs(want.x, im.caret.x, 1.5);
+    try testing.expect(want.y >= im.caret.y and want.y <= im.caret.y + im.caret.h);
+
+    // End again moves nothing: nothing is resent.
+    f.press(.{ .key = .end });
+    try testing.expectEqual(s1, im.serial);
+
+    f.t.typeText("!");
+    try testing.expect(im.serial != s1);
+    try testing.expectEqualStrings("second line!", im.surrounding().?.text);
+
+    f.t.win.setFocus(.none, false);
+    _ = f.t.settle();
+    try testing.expect(!im.enabled);
+}
