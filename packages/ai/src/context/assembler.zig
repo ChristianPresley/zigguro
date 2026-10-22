@@ -135,7 +135,12 @@ pub const ContextAssembler = struct {
 
     /// The loop seam.
     pub fn builder(a: *ContextAssembler) deps.ContextBuilder {
-        return .{ .ctx = a, .build = buildThunk };
+        return .{ .ctx = a, .build = buildThunk, .forget = forgetThunk };
+    }
+
+    fn forgetThunk(ctx: *anyopaque, from: u32) void {
+        const a: *ContextAssembler = @ptrCast(@alignCast(ctx));
+        a.forgetFrom(from);
     }
 
     fn buildThunk(ctx: *anyopaque, io: Io, arena: Allocator, view: *const deps.ContextView) anyerror!request.Request {

@@ -365,7 +365,13 @@ fn compactHistory(a: *Agent, scratch: Allocator, base: *const request.Request, o
             return false;
         },
     };
-    const trigger = if (overflow) "window_overflow" else "auto_threshold";
+    const ok = applyCompaction(a, scratch, res, if (overflow) "window_overflow" else "auto_threshold");
+    a.setStatus(.thinking);
+    return ok;
+}
+
+/// Swaps in a compacted history and records it in the session log.
+fn applyCompaction(a: *Agent, scratch: Allocator, res: deps.CompactedHistory, trigger: []const u8) bool {
     a.publish(.{ .recovery = .{ .action = "compacted", .detail = trigger } });
     // Cleanup that must not be torn: transcript and log stay consistent.
     const prev = a.io.swapCancelProtection(.blocked);
@@ -381,8 +387,50 @@ fn compactHistory(a: *Agent, scratch: Allocator, base: *const request.Request, o
         s.vtable.sync(s.ctx, a.io) catch {};
     }
     if (res.fallback) a.publish(.{ .warning = "compaction failed; old tool results were cleared instead" });
-    a.setStatus(.thinking);
     return true;
+}
+
+/// The request the agent would send next, built by its context builder
+/// (the plain request when the conversation no longer fits). Slices live
+/// in `arena`. Only while the agent is idle.
+pub fn nextRequest(a: *Agent, arena: Allocator) !request.Request {
+    const model = a.deps.registry.resolve(a.cfg.model) orelse return error.UnknownModel;
+    const profile = a.deps.registry.profile(model.id, a.cfg.role);
+    const view: deps.ContextView = .{
+        .agent = a.ref,
+        .model = model,
+        .profile = profile,
+        .system_append = a.cfg.system_append,
+        .cwd = a.cfg.cwd,
+        .transcript = a.messages(),
+        .tools = a.deps.tools.list(),
+        .max_output_tokens = @min(a.cfg.max_output_tokens orelse profile.max_output orelse default_max_output, model.max_output),
+    };
+    return a.deps.context.build(a.deps.context.ctx, a.io, arena, &view) catch |e| switch (e) {
+        error.ContextOverflow => deps.ContextBuilder.basic.build(deps.ContextBuilder.basic.ctx, a.io, arena, &view),
+        else => e,
+    };
+}
+
+/// What a manual compaction did.
+pub const Compacted = struct { tokens_before: u64, tokens_after: u64, model: []const u8, fallback: bool };
+
+/// `/compact [focus]` on an idle agent (see `Agent.compact`).
+pub fn compactNow(a: *Agent, focus: ?[]const u8) !Compacted {
+    if (a.messages().len == 0) return error.NothingToCompact;
+    const c = a.deps.compaction orelse return error.NoCompaction;
+    var scratch_state: std.heap.ArenaAllocator = .init(a.gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    const base = try nextRequest(a, scratch);
+    a.setStatus(.compacting);
+    defer a.setStatus(.idle);
+    const res = if (c.manual) |f|
+        try f(c.ctx, a.io, scratch, &base, a.messages(), focus)
+    else
+        try c.compact(c.ctx, a.io, scratch, &base, a.messages(), false);
+    if (!applyCompaction(a, scratch, res, "manual")) return error.OutOfMemory;
+    return .{ .tokens_before = res.tokens_before, .tokens_after = res.tokens_after, .model = try a.arena.allocator().dupe(u8, res.model), .fallback = res.fallback };
 }
 
 /// Replaces the history with one user message (plan approval with a

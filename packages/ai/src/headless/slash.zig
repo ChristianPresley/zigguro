@@ -9,6 +9,7 @@ const commands = @import("../ext/commands.zig");
 const skills_mod = @import("../ext/skills.zig");
 const args_mod = @import("args.zig");
 const runner_mod = @import("runner.zig");
+const guarded = @import("../provider/guarded.zig");
 
 const Allocator = std.mem.Allocator;
 const Runner = runner_mod.Runner;
@@ -94,6 +95,10 @@ fn builtin(r: *Runner, arena: Allocator, reg: commands.CommandRegistry, name: []
             };
             r.model_id = try r.arena.allocator().dupe(u8, info.id);
             r.agent.cfg.model = r.model_id;
+            if (r.opts.env.context) |c| {
+                const cm = r.mgr.deps.registry.modelForRole(info, .compaction);
+                if (r.mgr.deps.providers.get(cm)) |p| c.setCompactionModel(p, cm);
+            }
             r.note("model: {s}", .{r.model_id});
         }
     } else if (eql(u8, name, "clear")) {
@@ -102,6 +107,24 @@ fn builtin(r: *Runner, arena: Allocator, reg: commands.CommandRegistry, name: []
             return .failed;
         };
         r.note("conversation cleared", .{});
+    } else if (eql(u8, name, "compact")) {
+        r.note("compacting the conversation...", .{});
+        const res = r.agent.compact(if (args.len > 0) args else null) catch |e| {
+            switch (e) {
+                error.NoCompaction => r.note("this run cannot compact the conversation", .{}),
+                error.NothingToCompact => r.note("nothing to compact yet", .{}),
+                error.Busy => r.note("the agent is busy", .{}),
+                else => r.note("compaction failed: {s}", .{@errorName(e)}),
+            }
+            return .failed;
+        };
+        if (res.fallback) {
+            r.note("the summary failed, so old tool results were cleared instead ({d} -> {d} tokens)", .{ res.tokens_before, res.tokens_after });
+        } else r.note("conversation compacted ({d} -> {d} tokens)", .{ res.tokens_before, res.tokens_after });
+    } else if (eql(u8, name, "context")) {
+        r.say(try contextText(r, arena));
+    } else if (eql(u8, name, "memory")) {
+        r.say(try memoryText(r, arena));
     } else if (eql(u8, name, "cost")) {
         const snap = r.agent.snapshot();
         const u = snap.usage;
@@ -132,4 +155,44 @@ fn builtin(r: *Runner, arena: Allocator, reg: commands.CommandRegistry, name: []
         return .failed;
     }
     return .handled;
+}
+
+/// `/context`: the next request's size against the window, by section
+/// when the run assembles its context.
+fn contextText(r: *Runner, arena: Allocator) ![]const u8 {
+    const req = try r.agent.nextRequest(arena);
+    const info = r.mgr.deps.registry.resolve(r.model_id);
+    const window: u64 = if (info) |m| m.context_window else 0;
+    var out: std.ArrayList(u8) = .empty;
+    if (r.opts.env.context) |c| {
+        const rep = c.report();
+        try out.print(arena, "Context: {d} of {d} tokens ({d}%)\n", .{ rep.total_tokens, window, pct(rep.total_tokens, window) });
+        var w: usize = 0;
+        for (rep.sections) |sec| w = @max(w, sec.name.len);
+        for (rep.sections) |sec| {
+            try out.print(arena, "  {s}", .{sec.name});
+            try out.appendNTimes(arena, ' ', w - sec.name.len + 2);
+            try out.print(arena, "{d}\n", .{sec.tokens});
+        }
+        if (rep.cleared > 0) try out.print(arena, "  ({d} old tool results cleared)\n", .{rep.cleared});
+    } else {
+        const n = guarded.estimateInputTokens(&req);
+        try out.print(arena, "Context: about {d} of {d} tokens ({d}%)\n", .{ n, window, pct(n, window) });
+    }
+    return out.items;
+}
+
+fn pct(n: u64, of: u64) u64 {
+    return if (of == 0) 0 else n * 100 / of;
+}
+
+/// `/memory`: the instruction files in the prompt, with their notes.
+fn memoryText(r: *Runner, arena: Allocator) ![]const u8 {
+    const c = r.opts.env.context orelse return "No memory files are loaded.";
+    const set = c.memorySet();
+    if (set.files.len == 0 and set.notes.len == 0) return "No memory files are loaded.";
+    var out: std.ArrayList(u8) = .empty;
+    for (set.files) |f| try out.print(arena, "{s}  ({s}, {d} tokens{s})\n", .{ f.path, @tagName(f.scope), f.tokens, if (f.truncated) ", truncated" else "" });
+    for (set.notes) |n| try out.print(arena, "note: {s}\n", .{n});
+    return out.items;
 }

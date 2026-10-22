@@ -14,7 +14,18 @@ The code lives in `packages/ai/src/headless/`. The command itself is in
 | `zg agent -p "<prompt>"` | Runs one prompt, prints the answer and exits. |
 | `cat log.txt \| zg agent -p "Why did this fail?"` | Same, with the piped input attached to the prompt as a `<stdin>` block. Input over 1 MiB is saved to a file under the state directory, and the prompt refers to it by path. |
 | `zg agent --input-format stream-json --output-format stream-json` | Reads turns from stdin and writes events to stdout, as described below. |
-| `zg agent` (on a terminal) | A line REPL. Ctrl-D exits. `/exit` and `/quit` also work; other slash commands arrive with E10.F09. |
+| `zg agent` (on a terminal) | A line REPL. Ctrl-D, `/exit` and `/quit` exit. Slash commands are described in [skills.md](skills.md#in-zg-agent). |
+
+## Context
+
+Unless `--bare` is given, the system prompt includes the memory files that
+apply to the working directory. These are `ZIGGURO.md`, `AGENTS.md`,
+`CLAUDE.md` and their local variants, the user and managed files, and
+their rules. The order is described in `packages/ai/src/context/memory.zig`.
+When the conversation nears the model's context window, it is summarized
+by the provider's cheapest model and continues from the summary.
+`/compact [focus]` does the same on request. The wiring is
+`zg_ai.context.ContextStack`.
 
 `--output-format` is `text` (the default; the answer streams to stdout),
 `json` (a single `result` object at the end) or `stream-json`. `zg agent

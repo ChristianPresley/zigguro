@@ -19,6 +19,7 @@ const permission = @import("permission.zig");
 const signals = @import("signals.zig");
 const sj = @import("stream_json.zig");
 const skills_mod = @import("../ext/skills.zig");
+const plan_mode_mod = @import("../plan/plan_mode.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -159,8 +160,15 @@ pub const Runner = struct {
         if (env.plan_mode) |pm| {
             pm.agent = r.agent;
             pm.targets.mode_sink = .{ .ctx = &r.perm, .set = setPermMode };
+            if (env.context) |c| {
+                pm.targets.state = &c.assembler.state;
+                if (c.compactor != null) pm.targets.compaction = &c.loop_compaction;
+            }
             pm.setMode(r.opts.permission_mode);
-        } else r.agent.setPlanMode(r.opts.permission_mode == .plan);
+        } else {
+            r.agent.setPlanMode(r.opts.permission_mode == .plan);
+            if (env.context) |c| c.setMode(plan_mode_mod.promptMode(r.opts.permission_mode));
+        }
         if (env.skills) |sk| {
             if (sk.host) |h| r.skill_shell = .{ .host = h, .policy = r.perm.quietPolicy() };
             if (sk.tool) |t| {
@@ -214,6 +222,7 @@ pub const Runner = struct {
         if (r.opts.env.plan_mode) |pm| return pm.setMode(mode);
         r.perm.setMode(mode);
         r.agent.setPlanMode(mode == .plan);
+        if (r.opts.env.context) |c| c.setMode(plan_mode_mod.promptMode(mode));
     }
 
     /// Output for a slash command, ending with a newline.

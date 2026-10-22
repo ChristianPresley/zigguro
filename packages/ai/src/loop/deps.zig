@@ -174,6 +174,9 @@ pub const ContextView = struct {
 pub const ContextBuilder = struct {
     ctx: *anyopaque,
     build: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, view: *const ContextView) anyerror!request.Request,
+    /// The transcript changed from message `from` on (compaction, rewind,
+    /// resume): state kept per transcript index must be dropped.
+    forget: ?*const fn (ctx: *anyopaque, from: u32) void = null,
 
     /// System text from `system_append`, the whole transcript, every tool.
     pub const basic: ContextBuilder = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .build = basicBuild };
@@ -226,6 +229,8 @@ pub const Compaction = struct {
     /// `base` is the request the agent would send (system prompt, tools);
     /// the result is allocated in `arena` and copied by the loop.
     compact: *const fn (ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, overflow: bool) anyerror!CompactedHistory,
+    /// `/compact [focus]`; `compact` (as an auto compaction) when null.
+    manual: ?*const fn (ctx: *anyopaque, io: Io, arena: Allocator, base: *const request.Request, history: []const proto.Message, focus: ?[]const u8) anyerror!CompactedHistory = null,
 };
 
 /// A compaction as recorded in the session log.

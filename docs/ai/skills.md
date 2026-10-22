@@ -125,6 +125,10 @@ prompt, and the skill's `allowed-tools` are granted for that turn. These
 built-ins work in the REPL:
 
 - `/help`
+- `/compact [focus]`: summarizes the conversation now and continues from
+  the summary
+- `/context`: how much of the window the next request fills, by section
+- `/memory`: the memory files in the system prompt
 - `/plan [prompt]`
 - `/mode <mode>`
 - `/model [id]`

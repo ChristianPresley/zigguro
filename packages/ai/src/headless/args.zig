@@ -17,6 +17,7 @@ const plan_mode = @import("../plan/plan_mode.zig");
 const skills_mod = @import("../ext/skills.zig");
 const skill_tool = @import("../ext/skill_tool.zig");
 const host_mod = @import("../tools/builtin/terminal_host.zig");
+const stack_mod = @import("../context/stack.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -111,6 +112,9 @@ pub const Env = struct {
     plan_mode: ?*plan_mode.PlanMode = null,
     /// Skills and slash commands; null runs without them.
     skills: ?Skills = null,
+    /// Memory files, context assembly and compaction, installed by the
+    /// app; `/context`, `/memory` and `/compact` read it.
+    context: ?*stack_mod.ContextStack = null,
 };
 
 pub const usage_text =
