@@ -2421,8 +2421,10 @@ The `Host` and what it points to belong to the caller.
 
 ### Stability
 Unstable. Gaps: `=`, `!`, `H`/`M`/`L`, blockwise put, counts on Visual
-operators other than shifts; `:s` flag `c`; `\zs`, `\ze`, look-around and
-back references in patterns (reported with their span); `:normal` keys are
+operators other than shifts; `:s` flag `c`; look-around, back references,
+and `\zs`/`\ze` inside a group, twice, or with a top-level `\|` (reported
+with their span); text after `\ze` is consumed, so the next match starts
+after it; `:normal` keys are
 the typed characters (no `<...>` notation); jumping to a file mark in another document (the host has to
 open it); marks on deleted lines move to the deletion instead of being
 dropped, and a mark keeps its place in the text where Vim keeps its column.
