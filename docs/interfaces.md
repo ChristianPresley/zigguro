@@ -3585,3 +3585,63 @@ probe's message, borrowed from the probe.
 
 ### Stability
 Unstable until the app binds it.
+
+## zg_review.rebase (rebaseFile, ConflictIndex)
+
+### Defined in
+`packages/review/src/rebase/{closed_file,conflict_index}.zig` (E12.F02.S02.T01 closed-file part, E12.F02.S04.T01); see `packages/review/docs/rebase.md`.
+
+### Implemented by
+E12.F02.S04.T01.
+
+### Consumed by
+The zigguro app (calls `rebaseApplied` after each apply), E10 (`warningFor` in `read_file` and `edit_file` results), the review queue UI (conflict badges, "Accept in order").
+
+### Signature
+```zig
+pub const RebaseOutcome = union(enum) { unchanged, clean: struct { hunks: u32 }, conflicted: struct { hunks: u32 },
+    stale: enum { base_missing, became_binary, too_large, base_changed }, dropped_empty };
+pub fn rebaseFile(gpa, blobs: Blobs, cs_arena: Allocator, fc: *FileChange, new_base: ?[]const u8,
+    o: Options{ hunk_options, conflict_kind = .external_change, other: ?ChangesetId = null }) !RebaseOutcome;
+pub const ConflictPair = struct { a: HunkRef, b: HunkRef, kind: ConflictKind };
+pub const ConflictKind = enum { overlap, adjacent, same_change, create_create, delete_modify, rename_target };
+pub const whole_file: u32;   // HunkRef.hunk of a whole-file operation
+pub const ConflictIndex = struct {
+    pub fn init(gpa, q: *Queue, o: Options{ history: ?*const History = null, names: ?SessionNames = null }) !*ConflictIndex;
+    pub fn deinit(ci) void;
+    pub fn conflictsOf(ci, cs: ChangesetId) []const ConflictPair;
+    pub fn pendingOnPath(ci, path) []const HunkRef;
+    pub fn warningFor(ci, path, session: ?u128, gpa) !?[]u8;
+    pub fn acceptOrder(ci, set: []const ChangesetId, gpa) ![]ChangesetId;
+    pub fn rebaseApplied(ci) !RebaseReport;                          // owner thread, outside queue events
+    pub fn onApplied(ci, cs: ChangesetId, apply_id: u64) !RebaseReport;
+    stats: Stats{ path_recomputes },
+};
+pub const SessionNames = struct { ctx, name: fn (ctx, session: u128) ?[]const u8 };
+```
+Deviations from the spec text:
+- `onApplied` takes the History apply record, not file indices: the
+  record has what was written. The index queues `applied` events and
+  `rebaseApplied` handles them, because a listener must not change the
+  queue.
+- `init` takes `Options`: the History (for rebase) and session display
+  names (E10's registry) are injected.
+- Sibling rebase runs synchronously through `rebaseFile`; the full
+  `Rebaser` (watcher events, worker threads, open documents) is
+  E12.F02.S02.T01 and not done.
+- `SessionId` is `?u128` (`AgentRef.session`).
+- Conflicted files stay `pending`/`partially_applied`, with the conflict
+  on the hunk, so the Applier can take either answer.
+- Tests live in `src/rebase/conflict_index_test.zig`. The two-agent
+  ScriptedProvider integration test waits for the app binding.
+
+### Threading
+Owner thread of the queue. `rebaseFile` is pure and can run anywhere.
+
+### Ownership/lifetime
+Slices from `conflictsOf` and `pendingOnPath` are valid until the next
+queue event. `warningFor` and `acceptOrder` results belong to the caller.
+Conflict texts live in the changeset's arena.
+
+### Stability
+Unstable until the app binds it.
