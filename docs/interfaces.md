@@ -3258,16 +3258,18 @@ pub const ChangesetStore = struct {
     pub fn flush(s) !void;                                       // any thread: blobs, frames, sync, under the lock
     pub fn load(s, sink: Sink) !LoadReport;                      // { records, truncated_bytes, quarantined }
     pub fn tail(s, sink: Sink) !u32;                             // other processes' new records
-    pub fn queueSink(s, q: *model.Queue) QueueSink;              // restores into a queue
+    pub fn recorder(s) model.Recorder;                           // for History.init: journals apply records
+    pub fn queueSink(s, q: *model.Queue, history: ?*model.History) QueueSink;  // restores into a queue and history
 };
-pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, _ };
+pub const journal.Kind = enum(u8) { changeset = 1, remove = 2, checkpoint = 3, apply = 4, _ };
 pub fn records.writeChangeset(w, cs, blobs, scratch) !void;
 pub fn records.readChangeset(gpa, v: std.json.Value, blobs) !*Changeset;
+pub fn records.writeApply(w, a: *const model.Apply) !void;
+pub fn records.readApply(arena, v: std.json.Value) !model.Apply;
 ```
 Deviations from the spec text:
-- The records are changeset snapshots plus `remove`. The spec's
-  per-event records (`decide`, `apply`, ...) will come with the features
-  that write them.
+- The records are changeset snapshots, `remove` and `apply`. Decisions
+  are in the snapshots; there is no separate `decide` record.
 - `flush` is called by the owner of the store's worker. There is no
   internal worker or fsync window yet.
 - Not implemented yet:
@@ -3289,3 +3291,63 @@ flushes them.
 ### Stability
 Unstable. The frame format is fixed; the record JSON may gain fields
 (unknown fields are ignored).
+
+## zg_review.apply (selection, Files, Applier, History)
+
+### Defined in
+`packages/review/src/apply/{selection,files,applier}.zig` (E12.F02.S03.T01, E12.F02.S03.T02), `packages/review/src/model/{history,merge3}.zig`; see `packages/review/docs/model.md`.
+
+### Implemented by
+E12.F02.S03.T01, E12.F02.S03.T02.
+
+### Consumed by
+The zigguro app and `zg review` (accept and reject), E12 checkpoints (history, preimages, `merge3`).
+
+### Signature
+```zig
+pub const SelectionInput = struct { accept: []const u32 = &.{}, reject: []const u32 = &.{}, edited: []const EditedHunk = &.{} };
+pub const EditedHunk = struct { hunk: u32, text: []const u8 };
+pub fn select(gpa, base: []const u8, lines: *const zg_core.LineIndex, fc: *const FileChange, in: SelectionInput) !SelectionResult;
+    // { selected: ChangeSet (base), remainder: ChangeSet (base ∘ selected), decided: []{ hunk, decision } }
+pub const Files = struct { read(arena, path) !?Entry{ bytes, executable }, write(path, bytes, executable: ?bool) !void, delete(path) !void };
+pub const DirFiles = struct { dir: Io.Dir, io: Io, pub fn files(d) Files };   // atomic replace, keeps permissions
+pub const MemFiles = struct { fail_at: ?u32 = null, ... };                   // tests, one injected fault
+pub const Applier = struct {
+    pub fn init(gpa, io, q: *Queue, files: Files, history: *model.History) Applier;
+    pub fn apply(a, req: ApplyRequest{ cs, items: []const ApplyItem{ file, input, whole_file: ?enum { accept, reject } } }) !ApplyResult;
+    pub fn acceptAll(a, cs: ChangesetId) !ApplyResult;
+};
+pub const ApplyResult = union(enum) { ok: { apply: ?u64, files: u32, hunks: u32 }, failed: { path, err, rolled_back: bool } };
+pub const model.History = struct {
+    pub fn init(gpa, recorder: ?Recorder) History;
+    pub fn record(h, a: Apply) !u64; pub fn restore(h, a: Apply) !void;
+    pub fn get(h, id) ?*const Apply; pub fn items(h) []const Apply; pub fn lastApplyOf(h, cs) ?*const Apply;
+};
+pub const model.Apply = struct { id: u64, kind: enum { apply, undo, restore }, cs: ?ChangesetId, undoes: ?u64,
+    session: ?u128, created_ms: i64, files: []const ApplyFile{ path, pre: ?BlobHash, post: ?BlobHash, pre_exec, post_exec } };
+pub fn model.merge3.merge(gpa, base, ours, theirs, o: Options{ prefer: .ours | .theirs }) !Result{ text, conflicts };
+```
+Deviations from the spec text:
+- `selection.zig` lives in `apply/`, as the spec says; line-level
+  selection inside a hunk is not done yet.
+- The applier is synchronous on the queue's owner thread and returns the
+  result (no ticket). It writes closed files through the `Files` port
+  with its own rollback log; open documents through E05, E08 FileOps
+  transactions, E09 provenance, echo suppression, save-on-accept,
+  undo accept and exclusion between processes come later.
+- A rename is written as the new file plus a delete of the old one.
+- Rebase on `BaseMoved` (E12.F02.S02) does not exist yet: the apply fails
+  and nothing is written.
+- `merge3` is E12's own until E09 `mergeContent` exists.
+
+### Threading
+The applier, `History` and the queue share one owner thread. `select`
+and `merge3` are pure.
+
+### Ownership/lifetime
+`History` copies records into its arena. `ApplyResult.failed.path` is
+owned by the changeset.
+
+### Stability
+Unstable until open-document apply and undo accept land. The apply
+record JSON may gain fields.
