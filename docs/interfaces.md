@@ -993,7 +993,7 @@ DIB-section presenter), `keys.zig` (set-1 scancode → `Key`, virtual key
 first parts; input basics of E01.F02.S02.T01).
 
 ### Implemented by
-E01.F02.S01.T02 / E01.F02.S05.T01 / E01.F02.S04.T01.
+E01.F02.S01.T02 / E01.F02.S01.T03 / E01.F02.S05.T01 / E01.F02.S04.T01.
 
 ### Consumed by
 `zg_platform.init` on Windows; E02 through `surfaceTarget` (`.win32`) or,
@@ -1027,6 +1027,18 @@ from another writer stages `clipboard_changed`; our own writes do not.
 Reads over 64 KiB come back as large payloads freed with `release`.
 Windows has no primary selection: writes to it are ignored and reads
 return empty.
+`Decorations.client` windows get the custom frame (`frame.zig`): the
+client area is the whole window (a maximized one is inset by the resize
+border), `WM_NCHITTEST` answers the DPI-scaled resize band, then the
+`set_hit_test` map. `button_min/max/close` are non-client, so Windows 11
+shows snap layouts on the maximize button; presses on them reach the app
+as pointer events and run minimize, maximize/restore or close on
+release. `begin_move`, `begin_resize` and `show_window_menu` work on
+every window. `set_cursor` covers every `CursorShape`: system `IDC_*`
+cursors, and for the shapes Windows lacks, cursors built from embedded
+masks at 32, 48 or 64 px by DPI (`cursor.zig`). Windows get DWM dark
+mode from the system theme and, when client-decorated, round corners
+(Windows 11).
 
 ### Threading
 Windows belong to the platform thread. The window procedure stages
@@ -1039,11 +1051,11 @@ A window's presenter and its DIB sections die with `destroyWindow`;
 `deinit` stops the thread after it destroys every window.
 
 ### Stability
-Experimental. Not yet: custom frame and hit-testing (E01.F02.S01.T03),
-raw input, pen and touch, IME, bitmap clipboard formats (`CF_DIB`),
-OLE drag and drop,
-cursors, cloaking until the first present, the high-resolution waitable
-pacing timer and per-monitor refresh rates.
+Experimental. Not yet: a theme or backdrop command (the system theme
+and no backdrop are used), raw input, pen and touch, IME, bitmap
+clipboard formats (`CF_DIB`), OLE drag and drop, cloaking until the
+first present, the high-resolution waitable pacing timer and
+per-monitor refresh rates.
 
 ## zg_config.store.SettingsStore and Snapshot
 

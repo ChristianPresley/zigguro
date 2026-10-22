@@ -31,6 +31,16 @@ pub const WM = struct {
     pub const DISPLAYCHANGE: u32 = 0x007E;
     /// WM_NCCREATE.
     pub const NCCREATE: u32 = 0x0081;
+    /// WM_NCCALCSIZE.
+    pub const NCCALCSIZE: u32 = 0x0083;
+    /// WM_NCHITTEST.
+    pub const NCHITTEST: u32 = 0x0084;
+    /// WM_NCMOUSEMOVE.
+    pub const NCMOUSEMOVE: u32 = 0x00A0;
+    /// WM_NCLBUTTONDOWN.
+    pub const NCLBUTTONDOWN: u32 = 0x00A1;
+    /// WM_NCLBUTTONUP.
+    pub const NCLBUTTONUP: u32 = 0x00A2;
     /// WM_KEYDOWN.
     pub const KEYDOWN: u32 = 0x0100;
     /// WM_KEYUP.
@@ -43,6 +53,8 @@ pub const WM = struct {
     pub const SYSKEYUP: u32 = 0x0105;
     /// WM_SYSCHAR.
     pub const SYSCHAR: u32 = 0x0106;
+    /// WM_SYSCOMMAND.
+    pub const SYSCOMMAND: u32 = 0x0112;
     /// WM_TIMER.
     pub const TIMER: u32 = 0x0113;
     /// WM_MOUSEMOVE.
@@ -71,6 +83,8 @@ pub const WM = struct {
     pub const ENTERSIZEMOVE: u32 = 0x0231;
     /// WM_EXITSIZEMOVE.
     pub const EXITSIZEMOVE: u32 = 0x0232;
+    /// WM_NCMOUSELEAVE.
+    pub const NCMOUSELEAVE: u32 = 0x02A2;
     /// WM_MOUSELEAVE.
     pub const MOUSELEAVE: u32 = 0x02A3;
     /// WM_DPICHANGED.
@@ -127,14 +141,24 @@ pub const SW_RESTORE: i32 = 9;
 pub const SIZE_MINIMIZED: usize = 1;
 /// `SIZE_MAXIMIZED` (WM_SIZE wParam).
 pub const SIZE_MAXIMIZED: usize = 2;
+/// `SWP_NOSIZE`.
+pub const SWP_NOSIZE: u32 = 0x0001;
 /// `SWP_NOMOVE`.
 pub const SWP_NOMOVE: u32 = 0x0002;
 /// `SWP_NOZORDER`.
 pub const SWP_NOZORDER: u32 = 0x0004;
 /// `SWP_NOACTIVATE`.
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+/// `SWP_FRAMECHANGED`.
+pub const SWP_FRAMECHANGED: u32 = 0x0020;
 /// `TME_LEAVE`.
 pub const TME_LEAVE: u32 = 0x0002;
+/// `TME_NONCLIENT`.
+pub const TME_NONCLIENT: u32 = 0x0010;
+/// `TPM_RIGHTBUTTON`.
+pub const TPM_RIGHTBUTTON: u32 = 0x0002;
+/// `TPM_RETURNCMD`.
+pub const TPM_RETURNCMD: u32 = 0x0100;
 /// `IDC_ARROW`.
 pub const IDC_ARROW: u16 = 32512;
 /// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, as an integer.
