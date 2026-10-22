@@ -4,6 +4,7 @@ const std = @import("std");
 const zg_core = @import("zg_core");
 const bench = zg_core.bench;
 const throughput = @import("throughput.zig");
+const screen_bench = @import("screen.zig");
 
 pub fn main(min: std.process.Init.Minimal) !u8 {
     return bench.mainFromArgs(min, register);
@@ -11,6 +12,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 fn register(b: *bench.Bench) !void {
     try throughput.register(b);
+    try screen_bench.register(b);
 }
 
 test {
