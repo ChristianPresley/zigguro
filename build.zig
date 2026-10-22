@@ -77,6 +77,15 @@ pub fn build(b: *std.Build) void {
             const wl_fuzz = b.addTest(.{ .name = "fuzz-wl", .root_module = zg_build.testModule(b, f, mods[i]), .filters = &.{"fuzz: wayland"} });
             b.step("fuzz-wl", "Run the Wayland decoder fuzz test (use with --fuzz)").dependOn(&b.addRunArtifact(wl_fuzz).step);
         }
+        // zg_ai also exports the zg_ai_proto leaf module, tested with it.
+        if (comptime std.mem.eql(u8, p.name, "zg_ai")) {
+            const pt = b.addTest(.{ .name = "zg_ai_proto", .root_module = zg_build.testModule(b, f, deps[i].module("zg_ai_proto")), .filters = test_filters });
+            const prun = b.addRunArtifact(pt);
+            prun.skip_foreign_checks = true;
+            one.dependOn(&prun.step);
+            test_step.dependOn(&prun.step);
+            fuzz_step.dependOn(&prun.step);
+        }
     }
     // zg_mcp's stdio tests spawn a fixture server, so they are a separate
     // test binary defined by the package's build.zig.
