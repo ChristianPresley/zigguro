@@ -535,11 +535,14 @@ pub const Workbench = struct {
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
             p.attachChildren(&host.children);
+            // Rewinding code goes through E12's checkpoints.
+            p.restore = host.review.restore();
             if (wb.agent_cmds) |c| {
-                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs };
+                c.target = .{ .agent = host.agent, .plan_mode = &host.plan_mode, .agent_tools = &host.agent_tools, .subagents = host.subagents.defs, .context = &host.context };
                 p.commands = c;
             }
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+            if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
             wb.agent = host;
             wb.agent_panel = p;
         }
@@ -614,6 +617,8 @@ pub const Workbench = struct {
     fn onTrust(ctx: ?*anyopaque, c: zg_security_ui.TrustChoice) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
         wb.trust = if (c == .restricted) .restricted else .trusted;
+        // A trusted folder's MCP servers may start.
+        if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
         if (wb.win) |w| w.markAllDirty();
     }
 

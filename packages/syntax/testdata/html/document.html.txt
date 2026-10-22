@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zigguro &amp; friends</title>
+</head>
+<body>
+  <h1 id="top">Hello, world</h1>
+  <p>Some <em>inline</em> text &mdash; with an entity.</p>
+</body>
+</html>

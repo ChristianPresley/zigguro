@@ -1,0 +1,7 @@
+<div align="center">
+  <img src="logo.png" alt="logo">
+</div>
+
+Text with <kbd>Ctrl</kbd>+<kbd>C</kbd> inline &copy; 2026.
+
+<!-- a comment block -->

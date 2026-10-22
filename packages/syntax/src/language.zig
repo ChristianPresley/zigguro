@@ -36,6 +36,10 @@ pub const LanguageId = enum(u16) {
     dockerfile,
     make,
     _,
+
+    /// A guest pushed by name (`LexState.pushByName`) that the framework
+    /// has not looked up yet; never part of a line's end state.
+    pub const unresolved: LanguageId = @enumFromInt(0xffff);
 };
 
 /// A tier-1 lexer.

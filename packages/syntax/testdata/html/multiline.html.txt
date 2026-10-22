@@ -1,0 +1,8 @@
+<div
+  class="wide"
+  title="a value
+spanning lines"
+  data-x='single
+quoted'>
+  body
+</div>

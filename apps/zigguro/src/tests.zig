@@ -9,6 +9,7 @@ test {
     _ = @import("agent/panel.zig");
     _ = @import("agent/plan_card.zig");
     _ = @import("agent/commands.zig");
+    _ = @import("agent/host.zig");
     _ = @import("path_crumbs.zig");
     _ = @import("review/queue_panel.zig");
     _ = @import("startup/early_update_check.zig");

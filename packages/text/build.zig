@@ -63,6 +63,22 @@ pub fn build(b: *std.Build) void {
     if (b.args) |a| sheet_run.addArgs(a);
     b.step("text-gamma-sheet", "Render a text gamma/contrast contact sheet (args after --)").dependOn(&sheet_run.step);
 
+    // `zig build text-fontscan-report [-- --no-files]`: what font
+    // discovery finds on this machine, for a manual comparison with
+    // fc-list (never run in CI).
+    const scan = b.addExecutable(.{
+        .name = "text-fontscan-report",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("dev/fontscan_report.zig"),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{.{ .name = "zg_text", .module = text }},
+        }),
+    });
+    const scan_run = b.addRunArtifact(scan);
+    if (b.args) |a| scan_run.addArgs(a);
+    b.step("text-fontscan-report", "Print discovered font dirs, aliases and files (args after --)").dependOn(&scan_run.step);
+
     // Maintainer-only: `zig build fetch-ucd -Ducd-version=<v>
     // [-Dupdate-manifest=true]` (run from packages/text) downloads
     // ucd/<v>/ and checks it against ucd/<v>/manifest.zon. Nothing else

@@ -8,6 +8,18 @@
 //! MCP, ...) come through zg_ai's adapters as each package exports them;
 //! none does yet.
 //!
+//! Context as in `zg agent` (zg_ai's `ContextStack`): the memory files
+//! (ZIGGURO.md, AGENTS.md, CLAUDE.md and rules from the home folder and
+//! the workspace) and the environment block go into the system prompt,
+//! and the conversation is compacted by the provider's compaction model
+//! near the window and on `/compact`.
+//!
+//! MCP servers: once the workspace is trusted, `connectMcp` reads the
+//! project's `.mcp.json` (Claude Code), `.vscode/mcp.json` (VS Code) and
+//! `.zigguro/mcp.json`, in that order (a later entry of the same name
+//! wins), connects them on a worker and registers their tools as
+//! `mcp__<server>__<tool>`, as `zg agent --mcp-config` does.
+//!
 //! Providers and keys come from the environment (ANTHROPIC_API_KEY,
 //! OPENAI_API_KEY, GEMINI_API_KEY); ZG_MODEL picks the model (else
 //! "sonnet"). Sessions are not saved yet.
@@ -20,6 +32,7 @@ const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 const zg_security = @import("zg_security");
 const zg_mcp = @import("zg_mcp");
+const zg_mcp_servers = @import("zg_mcp_servers");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
 const ReviewGlue = @import("review_glue.zig").ReviewGlue;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
@@ -56,6 +69,10 @@ pub const AgentHost = struct {
     agent_tools: zg_ai.tools.AgentTools,
     approvals: ToolApprovals,
     mgr: *zg_ai.loop.AgentManager,
+    /// Memory files, reminders, the context assembler and compaction.
+    context: zg_ai.context.ContextStack,
+    /// The workspace roots the context reads (just `cwd`).
+    roots: [1][]const u8,
     /// The workbench's agent.
     agent: *Agent,
     /// Plan mode and its approval cards (in the agent panel).
@@ -67,6 +84,10 @@ pub const AgentHost = struct {
     subagents: zg_ai.subagent.SubagentRunner,
     task: zg_ai.subagent.task_tool.TaskTool,
     children: ChildRelay,
+    /// The project's MCP servers (`connectMcp`).
+    mcp: zg_mcp_servers.Servers,
+    /// The connect running on a worker.
+    mcp_task: ?Io.Future(void) = null,
 
     /// An agent on the working folder whose file tools use the documents
     /// of `docs` and whose approvals go through `port`. UI thread.
@@ -136,7 +157,27 @@ pub const AgentHost = struct {
             .validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate),
         });
         errdefer h.mgr.deinit();
-        h.agent = try h.mgr.create(.{ .model = env.get("ZG_MODEL") orelse "sonnet", .cwd = h.cwd });
+        const model_name = env.get("ZG_MODEL") orelse "sonnet";
+        h.roots = .{h.cwd};
+        try h.context.init(gpa, io, .{
+            .sources = .{
+                .home_dir = env.get("HOME") orelse env.get("USERPROFILE"),
+                .workspace_roots = &h.roots,
+                .cwd = h.cwd,
+            },
+            .env = .{ .cwd = h.cwd, .now_ms = zg_ai.ratelimit.Clock.real.now(io), .workspace_roots = &h.roots, .shell = env.get("SHELL") },
+            .compaction = compaction: {
+                const main_model = h.models.resolve(model_name) orelse break :compaction null;
+                const m = h.models.modelForRole(main_model, .compaction);
+                const p = h.mgr.deps.providers.get(m) orelse break :compaction null;
+                break :compaction .{ .provider = p, .model = m };
+            },
+        });
+        errdefer h.context.deinit();
+        for (h.context.memorySet().notes) |n| log.info("{s}", .{n});
+        // Before the agent: it copies the manager's deps.
+        h.context.install(&h.mgr.deps);
+        h.agent = try h.mgr.create(.{ .model = model_name, .cwd = h.cwd });
         // Undo groups name the agent's session.
         h.files.edits.session = @truncate(h.agent.ref.session);
         // Plan mode: `exit_plan_mode` asks through the panel's plan card.
@@ -158,6 +199,8 @@ pub const AgentHost = struct {
         h.task = try .init(gpa, &h.subagents);
         errdefer h.task.deinit();
         try h.tools.addSource(h.task.source());
+        h.mcp = .init(gpa);
+        h.mcp_task = null;
         h.children = .{ .io = io };
         try h.mgr.subscribeAll(h.children.subscriber());
         return h;
@@ -167,8 +210,10 @@ pub const AgentHost = struct {
     /// stops it). UI thread.
     pub fn destroy(h: *AgentHost) void {
         const gpa = h.gpa;
+        if (h.mcp_task) |*t| t.await(h.io);
         h.subagents.deinit();
         h.mgr.deinit();
+        h.context.deinit();
         h.task.deinit();
         h.defs_arena.deinit();
         h.plan_mode.deinit();
@@ -182,6 +227,7 @@ pub const AgentHost = struct {
         h.processes.deinit();
         h.tools.deinit();
         h.adapters.deinit();
+        h.mcp.deinit();
         h.hub.deinit();
         h.limiter.deinit();
         h.client.deinit();
@@ -190,12 +236,57 @@ pub const AgentHost = struct {
         gpa.destroy(h);
     }
 
+    /// The MCP config files of the project, in load order.
+    pub const mcp_configs = [_][]const u8{ ".mcp.json", ".vscode/mcp.json", ".zigguro/mcp.json" };
+
+    /// Connects the project's MCP servers on a worker (once; only for a
+    /// trusted workspace: the configs start programs). `rt` and `env`
+    /// outlive the host.
+    pub fn connectMcp(h: *AgentHost, rt: *zg_core.Runtime, env: *const std.process.Environ.Map) void {
+        if (h.mcp_task != null) return;
+        h.mcp_task = h.io.concurrent(loadMcp, .{ h, rt, env }) catch {
+            loadMcp(h, rt, env);
+            return;
+        };
+    }
+
+    fn loadMcp(h: *AgentHost, rt: *zg_core.Runtime, env: *const std.process.Environ.Map) void {
+        var arena: std.heap.ArenaAllocator = .init(h.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const paths = projectMcpConfigs(h.io, a, h.cwd) catch return;
+        if (paths.len == 0) return;
+        var warn_buf: Io.Writer.Allocating = .init(a);
+        h.mcp.load(rt, h.client, paths, env, h.cwd, &warn_buf.writer) catch |e| {
+            log.warn("MCP servers: {t}", .{e});
+            return;
+        };
+        var lines = std.mem.splitScalar(u8, warn_buf.written(), '\n');
+        while (lines.next()) |l| if (l.len > 0) log.warn("{s}", .{l});
+        h.adapters.registerAll(&h.tools, &.{ .mcp = h.mcp.exporters.items }, .{ .lsp = false, .tasks = false, .workspace = false, .notes = false, .scm = false }, .{}) catch |e| {
+            log.warn("MCP tools: {t}", .{e});
+            return;
+        };
+        log.info("{d} MCP server(s) connected", .{h.mcp.exporters.items.len});
+    }
+
     fn warn(_: *anyopaque, msg: []const u8) void {
         log.warn("{s}", .{msg});
     }
 
     fn redact(_: *anyopaque, _: []const u8) void {}
 };
+
+/// The MCP config files `root` has, in load order (`AgentHost.mcp_configs`).
+pub fn projectMcpConfigs(io: Io, arena: Allocator, root: []const u8) Allocator.Error![]const []const u8 {
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (AgentHost.mcp_configs) |rel| {
+        const path = try std.fs.path.join(arena, &.{ root, rel });
+        Io.Dir.cwd().access(io, path, .{}) catch continue;
+        try paths.append(arena, path);
+    }
+    return paths.items;
+}
 
 /// No secret store until E16's keychain lands: keys come from the environment.
 const no_secrets: zg_ai.keyref.SecretStore = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .vtable = &.{ .get = getNone, .put = putNone } };
@@ -206,4 +297,22 @@ fn getNone(_: *anyopaque, _: Io, _: []const u8) zg_ai.keyref.SecretError!?[]cons
 
 fn putNone(_: *anyopaque, _: Io, _: []const u8, _: []const u8) zg_ai.keyref.SecretError!void {
     return error.Unavailable;
+}
+
+test "agent host: the project's MCP configs, in load order" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    try std.testing.expectEqual(@as(usize, 0), (try projectMcpConfigs(io, a, root)).len);
+    try tmp.dir.createDirPath(io, ".zigguro");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/mcp.json", .data = "{}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".mcp.json", .data = "{}" });
+    const got = try projectMcpConfigs(io, a, root);
+    try std.testing.expectEqual(@as(usize, 2), got.len);
+    try std.testing.expect(std.mem.endsWith(u8, got[0], ".mcp.json") and !std.mem.endsWith(u8, got[0], "/mcp.json"));
+    try std.testing.expect(std.mem.endsWith(u8, got[1], ".zigguro/mcp.json") or std.mem.endsWith(u8, got[1], ".zigguro\\mcp.json"));
 }

@@ -1,0 +1,3 @@
+1| punctuation:< tag:p punctuation:> string.escape:&lt; string.escape:&gt; string.escape:&amp; string.escape:&quot; string.escape:&quot; string.escape:&#169; string.escape:&#x1F600; string.escape:&nbsp; punctuation:</ tag:p punctuation:>
+2| punctuation:< tag:p punctuation:> punctuation:</ tag:p punctuation:>
+3| punctuation:< tag:p attribute:title operator:= string:"&amp;&lt;" punctuation:> punctuation:</ tag:p punctuation:>

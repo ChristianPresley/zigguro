@@ -1,0 +1,5 @@
+1| punctuation:< tag:template attribute:id operator:= string:"row" punctuation:>
+2| punctuation:< tag:tr punctuation:> punctuation:< tag:td attribute:class operator:= string:"name" punctuation:> punctuation:</ tag:td punctuation:> punctuation:< tag:td punctuation:> punctuation:</ tag:td punctuation:> punctuation:</ tag:tr punctuation:>
+3| punctuation:</ tag:template punctuation:>
+4| punctuation:< tag:svg attribute:viewBox operator:= string:"0 0 10 10" punctuation:> punctuation:< tag:path attribute:d operator:= string:"M0 0L10 10" punctuation:/> punctuation:</ tag:svg punctuation:>
+5| punctuation:< tag:my-element attribute:some-prop operator:= string:"1" punctuation:> punctuation:</ tag:my-element punctuation:>

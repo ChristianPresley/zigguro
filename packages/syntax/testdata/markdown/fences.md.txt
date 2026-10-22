@@ -1,0 +1,21 @@
+```zig
+const x: u32 = 1; // comment
+```
+
+~~~python
+def f(): return "s"
+~~~
+
+```unknown-lang
+raw text <b>
+```
+
+````md
+```js
+nested
+```
+````
+
+```
+plain fence
+```

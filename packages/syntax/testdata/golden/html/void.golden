@@ -1,0 +1,6 @@
+1| punctuation:< tag:br punctuation:>
+2| punctuation:< tag:br punctuation:/>
+3| punctuation:< tag:hr punctuation:/>
+4| punctuation:< tag:img attribute:src operator:= string:"a.png" punctuation:/>
+5| punctuation:< tag:link attribute:rel operator:= string:"stylesheet" attribute:href operator:= string:"s.css" punctuation:>
+6| punctuation:< tag:meta attribute:name operator:= string:"viewport" attribute:content operator:= string:"width=device-width" punctuation:>
