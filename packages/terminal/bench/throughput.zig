@@ -1,10 +1,12 @@
 //! Throughput benchmarks: parser-only over each corpus with `NullHandler`,
-//! whole and in 64 KiB chunks as the session pump feeds it.
-//! Parse+apply benches join once the `Terminal` executor (E06.F02.S02) lands.
+//! whole and in 64 KiB chunks as the session pump feeds it, and parse+apply
+//! through a 200x50 `Terminal` in 64 KiB chunks.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
-const vt = @import("zg_terminal").vt;
+const zg_terminal = @import("zg_terminal");
+const vt = zg_terminal.vt;
+const Terminal = zg_terminal.Terminal;
 const corpus_gen = @import("corpus_gen.zig");
 const bench = zg_core.bench;
 
@@ -28,6 +30,24 @@ fn parseOnly(ctx: *const Ctx, s: *bench.State) void {
         }
     }
     bench.doNotOptimizeAway(h.count);
+}
+
+const ApplyCtx = struct { data: []const u8, term: *Terminal };
+
+fn parseApply(ctx: *const ApplyCtx, s: *bench.State) void {
+    s.setBytes(ctx.data.len);
+    const t = ctx.term;
+    for (0..s.iterations()) |_| {
+        var i: usize = 0;
+        while (i < ctx.data.len) {
+            const n = @min(64 << 10, ctx.data.len - i);
+            t.feed(ctx.data[i..][0..n]);
+            t.clearReplies();
+            t.effects.clear();
+            i += n;
+        }
+    }
+    bench.doNotOptimizeAway(t.screen().cursor.x);
 }
 
 fn scanOnly(data: []const u8, s: *bench.State) void {
@@ -56,5 +76,17 @@ pub fn register(b: *bench.Bench) !void {
         try b.run(try std.fmt.bufPrint(&name, "terminal.throughput.parser.{t}", .{c}), &whole, parseOnly);
         const chunked: Ctx = .{ .data = data.items, .chunk = 64 << 10 };
         try b.run(try std.fmt.bufPrint(&name, "terminal.throughput.parser.{t}.64k", .{c}), &chunked, parseOnly);
+        const apply_name = try std.fmt.bufPrint(&name, "terminal.throughput.apply.{t}", .{c});
+        if (b.opts.filter) |f| if (std.mem.indexOf(u8, apply_name, f) == null) continue;
+        // Steady state: one terminal, scrollback already at its cap.
+        var t = try Terminal.init(gpa, .{ .cols = 200, .rows = 50, .max_scrollback_bytes = 16 << 20 });
+        defer t.deinit();
+        for (0..3) |_| {
+            t.feed(data.items);
+            t.clearReplies();
+            t.effects.clear();
+        }
+        const apply: ApplyCtx = .{ .data = data.items, .term = &t };
+        try b.run(apply_name, &apply, parseApply);
     }
 }
