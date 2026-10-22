@@ -49,9 +49,10 @@ pub const Workbench = struct {
     adapter: zg_config.ui.KeymapAdapter = undefined,
     palette: zg_config.ui.PaletteProvider = undefined,
     win: ?*Window = null,
-    /// The last save result, shown in the status line.
+    /// Scratch for the toast text of a save.
     message: [96]u8 = undefined,
-    message_len: usize = 0,
+    /// Scratch for the status bar's position item.
+    pos_text: [48]u8 = undefined,
     dark: bool = true,
     editor_node: zg_gui.core.NodeId = .none,
     focused: bool = false,
@@ -186,25 +187,26 @@ pub const Workbench = struct {
         }
     }
 
-    fn setMessage(wb: *Workbench, comptime fmt: []const u8, args: anytype) void {
-        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch wb.message[0..0];
-        wb.message_len = s.len;
+    fn notify(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, comptime fmt: []const u8, args: anytype) void {
+        const w = wb.win orelse return;
+        const s = std.fmt.bufPrint(&wb.message, fmt, args) catch return;
+        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = s, .source = "Files" });
     }
 
     /// Writes the document to its file.
     pub fn save(wb: *Workbench) !void {
         const p = wb.path orelse {
-            wb.setMessage("Untitled: start zigguro with a file path to save", .{});
+            wb.notify(.warning, "Untitled: start zigguro with a file path to save", .{});
             return;
         };
         const bytes = try wb.view.allText(wb.gpa);
         defer wb.gpa.free(bytes);
         std.Io.Dir.cwd().writeFile(wb.io, .{ .sub_path = p, .data = bytes }) catch |e| {
-            wb.setMessage("Save failed: {t}", .{e});
+            wb.notify(.error_, "Save failed: {t}", .{e});
             return e;
         };
         wb.doc.saved_version = wb.doc.version;
-        wb.setMessage("Saved {d} bytes", .{bytes.len});
+        wb.notify(.success, "Saved {s} ({d} bytes)", .{ std.fs.path.basename(p), bytes.len });
     }
 
     fn undo(wb: *Workbench) !void {
@@ -288,10 +290,9 @@ pub const Workbench = struct {
         ui.open(.{ .style = .{ .w = .{ .pct = 100 }, .h = .{ .pct = 100 }, .dir = .column, .bg = .{ .token = .bg_base } } });
         defer ui.close();
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
-        const r = zg_editor.view.editor(ui, .{ .view = wb.view, .a11y_label = wb.path orelse "Untitled" });
+        _ = zg_editor.view.editor(ui, .{ .view = wb.view, .a11y_label = wb.path orelse "Untitled" });
         wb.editor_node = ui.lastNode();
         ui.close();
-        if (r.changed) wb.message_len = 0;
         wb.terminal_node = .none;
         if (wb.show_terminal) if (wb.terminal) |t| wb.terminalPanel(ui, t);
         // Focus the editor once it exists.
@@ -299,7 +300,7 @@ pub const Workbench = struct {
             wb.focused = true;
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
-        wb.statusLine(ui);
+        wb.statusBar(ui);
     }
 
     fn focusEditor(ctx: *anyopaque, w: *Window) void {
@@ -320,18 +321,34 @@ pub const Workbench = struct {
         wb.terminal_node = t.view.node;
     }
 
-    fn statusLine(wb: *Workbench, ui: *Ui) void {
-        ui.open(.{ .role = .status, .style = .{ .dir = .row, .gap = 16, .padding = .xy(10, 3), .bg = .{ .token = .bg_elevated }, .shrink = 0 } });
-        defer ui.close();
+    fn statusBar(wb: *Workbench, ui: *Ui) void {
         const name = if (wb.path) |p| std.fs.path.basename(p) else "Untitled";
-        ui.textf("{s}{s}", .{ name, if (wb.doc.isDirty()) " \u{25cf}" else "" }, .{ .wrap = false });
         const head = wb.view.primarySel().head;
         const line = wb.view.lineOf(head);
         const col = head - wb.view.lineRange(line).start;
-        ui.textf("Ln {d}, Col {d}", .{ line + 1, col + 1 }, .{ .color = .fg_muted, .wrap = false });
-        if (wb.view.sels.items.len > 1) ui.textf("{d} selections", .{wb.view.sels.items.len}, .{ .color = .fg_muted, .wrap = false });
-        if (wb.syntax) |s| ui.text(s.lang.name, .{ .color = .fg_muted, .wrap = false });
-        if (wb.trust != .trusted) ui.text("Restricted Mode", .{ .color = .warning, .wrap = false });
-        if (wb.adapter.status()) |st| ui.text(st, .{ .color = .warning, .wrap = false }) else if (wb.message_len > 0) ui.text(wb.message[0..wb.message_len], .{ .color = .fg_muted, .wrap = false });
+        const pos = if (wb.view.sels.items.len > 1)
+            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.sels.items.len }) catch ""
+        else
+            std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
+        var items: [6]zg_gui.w.StatusItem = undefined;
+        var n: usize = 0;
+        items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
+        n += 1;
+        items[n] = .{ .id = "position", .text = pos, .priority = 100 };
+        n += 1;
+        if (wb.trust != .trusted) {
+            items[n] = .{ .id = "trust", .text = "Restricted Mode", .side = .right, .priority = 900, .tone = .warning, .action = "workspace.manageTrust" };
+            n += 1;
+        }
+        if (wb.syntax) |sx| {
+            items[n] = .{ .id = "language", .text = sx.lang.name, .side = .right, .priority = 50 };
+            n += 1;
+        }
+        items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };
+        n += 1;
+        // A dirty file shows a dot after its name.
+        var name_buf: [128]u8 = undefined;
+        if (wb.doc.isDirty()) items[0].text = std.fmt.bufPrint(&name_buf, "{s} \u{25cf}", .{name}) catch name;
+        zg_gui.w.statusBar(ui, items[0..n], .{ .chord = wb.adapter.status() });
     }
 };

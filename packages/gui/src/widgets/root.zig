@@ -32,6 +32,12 @@ pub const quick_pick_matcher = @import("quick_pick/matcher.zig");
 pub const quick_pick_provider = @import("quick_pick/provider.zig");
 /// The `quick_pick/mru.zig` module.
 pub const quick_pick_mru = @import("quick_pick/mru.zig");
+/// The `notification_center.zig` module.
+pub const notification_center = @import("notification_center.zig");
+/// The `toast.zig` module.
+pub const toast_mod = @import("toast.zig");
+/// The `status_bar.zig` module.
+pub const status_bar = @import("status_bar.zig");
 
 /// See `controls.button`.
 pub const button = controls.button;
@@ -75,6 +81,22 @@ pub const contextMenu = menu.contextMenu;
 pub const menuButton = menu.menuButton;
 /// See `menubar.menubar`.
 pub const menubar = menubar_mod.menubar;
+/// See `toast.toast`.
+pub const toast = toast_mod.toast;
+/// See `toast.updateToast`.
+pub const updateToast = toast_mod.updateToast;
+/// See `toast.dismissToast`.
+pub const dismissToast = toast_mod.dismissToast;
+/// See `notification_center.Toast`.
+pub const Toast = notification_center.Toast;
+/// See `notification_center.ToastId`.
+pub const ToastId = notification_center.ToastId;
+/// See `notification_center.NotificationCenter`.
+pub const NotificationCenter = notification_center.NotificationCenter;
+/// See `status_bar.statusBar`.
+pub const statusBar = status_bar.statusBar;
+/// See `status_bar.StatusItem`.
+pub const StatusItem = status_bar.StatusItem;
 /// See `quick_pick.openQuickPick`.
 pub const openQuickPick = quick_pick.openQuickPick;
 /// See `quick_pick.QpItem`.

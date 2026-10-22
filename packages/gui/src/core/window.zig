@@ -867,6 +867,7 @@ pub const Window = struct {
             const target = if (e.opts.anchor) |a| switch (a) {
                 .rect => |r| overlay.place(r, size, vp, e.opts.placement),
                 .top => |f| overlay.atTop(size, vp, f),
+                .corner => |m| overlay.atCorner(size, vp, m),
                 .node => |n| blk: {
                     if (!w.store.valid(n) or w.store.flags(n).hidden) {
                         w.closeOverlay(e.id);
