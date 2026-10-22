@@ -349,6 +349,21 @@ fn collectNames(h: *const syntax.hir.Hir, names: *std.ArrayList(?[]const u8), ar
     }
 }
 
+/// SIMD byte and substring search, shared with the text buffer (E05) and
+/// the workspace scanner (E08).
+pub const simd = struct {
+    /// First index of `b` in `hay[from..]`.
+    pub fn memchr(hay: []const u8, b: u8, from: usize) ?usize {
+        return prefilter.memchr.memchr(b, hay, from);
+    }
+    /// Last index of `b` in `hay[0..to]`.
+    pub fn memrchr(hay: []const u8, b: u8, to: usize) ?usize {
+        return prefilter.memchr.memrchr(b, hay, to);
+    }
+    /// A reusable substring finder.
+    pub const Memmem = prefilter.memmem.Finder;
+};
+
 /// Appends `literal` with every meta character escaped.
 pub const escape = syntax.parse.escape;
 
@@ -433,4 +448,14 @@ test {
     _ = @import("syntax/parse_test.zig");
     _ = @import("testing/backtrack_ref.zig");
     _ = @import("regex_test.zig");
+}
+
+test "simd: memchr, memrchr and memmem" {
+    const hay = "abc,def,ghi" ** 8;
+    try std.testing.expectEqual(@as(?usize, 3), simd.memchr(hay, ',', 0));
+    try std.testing.expectEqual(@as(?usize, 7), simd.memchr(hay, ',', 4));
+    try std.testing.expectEqual(@as(?usize, hay.len - 4), simd.memrchr(hay, ',', hay.len));
+    try std.testing.expectEqual(@as(?usize, null), simd.memchr(hay, '!', 0));
+    const f: simd.Memmem = .init("ghiabc");
+    try std.testing.expectEqual(@as(?usize, 8), f.find(hay, 0));
 }
