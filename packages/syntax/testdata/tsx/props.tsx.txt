@@ -1,0 +1,4 @@
+type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant: "primary" | "secondary";
+};
+const Button = ({ variant, ...rest }: ButtonProps) => <button data-variant={variant} {...rest} />;

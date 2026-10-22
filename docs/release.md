@@ -16,6 +16,12 @@ This document is normative for version numbers, release keys and release archive
 
 `-Dversion`, `-Dchannel`, `-Dcommit`, `-Dsource-date-epoch`, `-Dupdate-mode` and `-Ddistro` are described in [build-options.md](build-options.md). CI passes the commit hash and the commit time; the build never runs git.
 
+## Icons and Windows resources
+
+- The logo is vector data in `packaging/icons/logo.zig` (1024×1024 design space). `zig build icons` rasterizes it into `packaging/icons/out/`: `dev.zigguro.zigguro-<N>.png` for 16, 24, 32, 48, 64, 128, 256 and 512 px, and `zigguro.ico` (16 to 256 px, PNG-embedded). The outputs are committed, and `zig build test` fails through `icons-check` when they are stale.
+- Every Windows executable gets an application manifest, VERSIONINFO and the icon, from the templates in `packaging/windows/` (`build/release_resources.zig`). The manifest declares Windows 10/11, PerMonitorV2 DPI awareness, long paths, the UTF-8 code page and `asInvoker`. The setup executable also depends on Common Controls v6. `-Dsegment-heap` opts into the segment heap.
+- `zig build test-build-resources` checks the resources of a fixture executable of each kind, cross-built for Windows, and of both apps when `-Dtarget` is Windows.
+
 ## Release keys (key ceremony)
 
 Update manifests and `SHA256SUMS` are signed with minisign-compatible Ed25519 keys (prehashed `ED`). A build with `-Dchannel` other than `dev` fails until `packaging/product.zon` lists at least one key:

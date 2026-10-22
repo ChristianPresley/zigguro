@@ -1,0 +1,5 @@
+const ints = [0, 42, 1_000_000];
+const floats = [3.14, .5, 1e10, 2.5E-3];
+const radix = [0xff, 0o17, 0b1010];
+const big = 9007199254740993n;
+const neg = -1;

@@ -1,0 +1,11 @@
+1| keyword.storage:class type:Animal keyword:extends type:Base punctuation.bracket:{
+2| property:#secret operator:= number:1 punctuation.delimiter:;
+3| keyword.storage:static variable:count operator:= number:0 punctuation.delimiter:;
+4| function:constructor punctuation.bracket:( variable:name punctuation.bracket:) punctuation.bracket:{
+5| variable.builtin:super punctuation.bracket:( variable:name punctuation.bracket:) punctuation.delimiter:;
+6| variable.builtin:this punctuation.delimiter:. property:name operator:= variable:name punctuation.delimiter:;
+7| punctuation.bracket:}
+8| keyword:get function:label punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ keyword.control:return variable.builtin:this punctuation.delimiter:. property:#secret punctuation.delimiter:; punctuation.bracket:}
+9| keyword:set function:label punctuation.bracket:( variable:v punctuation.bracket:) punctuation.bracket:{ variable.builtin:this punctuation.delimiter:. property:#secret operator:= variable:v punctuation.delimiter:; punctuation.bracket:}
+10| function:speak punctuation.bracket:( punctuation.bracket:) punctuation.bracket:{ variable:console punctuation.delimiter:. function:log punctuation.bracket:( string:` punctuation:$ punctuation.bracket:{ variable.builtin:this punctuation.delimiter:. property:name punctuation.bracket:} string: speaks` punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}
+11| punctuation.bracket:}

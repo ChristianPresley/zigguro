@@ -1,0 +1,6 @@
+function identity<T>(x: T): T { return x; }
+class Box<T extends object = {}> { constructor(public value: T) {} }
+type Pair<A, B> = [A, B];
+const m = new Map<string, Array<number>>();
+type Elem<T> = T extends (infer U)[] ? U : never;
+type Keys = keyof typeof config;

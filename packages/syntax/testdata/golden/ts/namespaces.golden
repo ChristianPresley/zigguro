@@ -1,0 +1,7 @@
+1| keyword.storage:namespace type:Geometry punctuation.bracket:{
+2| keyword:export keyword.storage:interface type:Point punctuation.bracket:{ variable:x operator:: type.builtin:number punctuation.delimiter:; variable:y operator:: type.builtin:number punctuation.bracket:}
+3| keyword:export keyword.storage:namespace type:Shapes punctuation.bracket:{
+4| keyword:export keyword.storage:const variable:unit operator:= number:1 punctuation.delimiter:;
+5| punctuation.bracket:}
+6| punctuation.bracket:}
+7| keyword.storage:module type:Legacy punctuation.bracket:{ keyword:export keyword.storage:let variable:v operator:= number:0 punctuation.delimiter:; punctuation.bracket:}

@@ -1,0 +1,8 @@
+1| keyword.storage:const variable:page operator:= punctuation.bracket:(
+2| punctuation:< type:Layout punctuation:>
+3| string:     punctuation:< type:Sidebar punctuation:>
+4| string:       punctuation:< type:Nav attribute:items operator:= punctuation.bracket:{ variable:nav punctuation.bracket:} punctuation:/>
+5| string:     punctuation:</ type:Sidebar punctuation:>
+6| string:     punctuation:< type:Main punctuation:> punctuation.bracket:{ variable:content punctuation.bracket:} punctuation:</ type:Main punctuation:>
+7| string:   punctuation:</ type:Layout punctuation:>
+8| punctuation.bracket:) punctuation.delimiter:;

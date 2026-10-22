@@ -1,0 +1,6 @@
+1| keyword:@keyframes constant:spin punctuation.bracket:{
+2| tag:from punctuation.bracket:{ property:transform punctuation.delimiter:: function.builtin:rotate punctuation.bracket:( number:0deg punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}
+3| number:50% punctuation.bracket:{ property:opacity punctuation.delimiter:: number:0.5 punctuation.delimiter:; punctuation.bracket:}
+4| tag:to punctuation.bracket:{ property:transform punctuation.delimiter:: function.builtin:rotate punctuation.bracket:( number:360deg punctuation.bracket:) punctuation.delimiter:; punctuation.bracket:}
+5| punctuation.bracket:}
+6| type:.spinner punctuation.bracket:{ property:animation punctuation.delimiter:: constant:spin number:1s constant:linear constant:infinite punctuation.delimiter:; punctuation.bracket:}

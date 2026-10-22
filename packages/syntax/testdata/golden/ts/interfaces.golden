@@ -1,0 +1,9 @@
+1| keyword.storage:interface type:User punctuation.bracket:{
+2| keyword.storage:readonly variable:id operator:: type.builtin:number punctuation.delimiter:;
+3| variable:name operator:: type.builtin:string punctuation.delimiter:;
+4| variable:email operator:? operator:: type.builtin:string punctuation.delimiter:;
+5| punctuation.bracket:[ variable:key operator:: type.builtin:string punctuation.bracket:] operator:: type.builtin:unknown punctuation.delimiter:;
+6| punctuation.bracket:}
+7| keyword.storage:interface type:Admin keyword:extends type:User punctuation.bracket:{
+8| variable:permissions operator:: type:Set operator:< type.builtin:string operator:> punctuation.delimiter:;
+9| punctuation.bracket:}

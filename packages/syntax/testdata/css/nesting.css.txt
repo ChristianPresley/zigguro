@@ -1,0 +1,8 @@
+.card {
+  padding: 1rem;
+  &:hover { background: #eee; }
+  .title {
+    font-weight: 600;
+  }
+  & + & { margin-top: 1rem; }
+}

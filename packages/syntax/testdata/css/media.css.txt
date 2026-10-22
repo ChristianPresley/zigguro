@@ -1,0 +1,9 @@
+@media screen and (min-width: 768px) {
+  .col { width: 50%; }
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000; }
+}
+@media only print and (max-width: 600px), not screen {
+  body { font-size: 10pt; }
+}

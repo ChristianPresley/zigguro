@@ -139,6 +139,12 @@ the IDE's open documents and against the disk.
 - After an applied edit, `FileTools.diagnostics` (E07, set by the app)
   can report the file's diagnostics. They are appended to the result as
   "Diagnostics after edit: ..." unless `diagnostics_after_edit` is off.
+- The tools read and check files as the calling agent sees them
+  (`Files.read_as` and `Files.kind_as`, optional). Under E12 review that
+  view is `zg_review.overlay.AgentView`: an agent reads and edits its own
+  pending text, its pending creates exist and its pending deletes do not.
+  A read's `notes`, such as "another session has pending changes here",
+  are appended to the `read_file`, `edit_file` and `write_file` results.
 - `ReadTracker` records what each agent has read and at which version.
   An agent must read a file before it edits or replaces it.
 - `zg agent` uses `DiskFiles`, which applies proposals directly. The IDE

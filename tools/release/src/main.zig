@@ -4,6 +4,7 @@
 //!   zg-release sign    --file <f> [--seed-env ZIGGURO_RELEASE_SEED]
 //!                      [--key-id-env ZIGGURO_RELEASE_KEY_ID] [--trusted "<comment>"]
 //!   zg-release verify  --pub <RW...|file> --file <f> [--sig <f.minisig>]
+//!   zg-release icongen --out <dir> [--check true]
 //!
 //! Exit codes: 0 success, 1 verification or operation failure, 2 usage.
 
@@ -37,6 +38,12 @@ pub const notices = @import("notices.zig");
 pub const repro_compare = @import("repro_compare.zig");
 /// Authenticode stripping for repro-compare.
 pub const pe_strip_sig = @import("pe_strip_sig.zig");
+/// PNG writer.
+pub const png = @import("png.zig");
+/// ICO writer.
+pub const ico = @import("ico.zig");
+/// `icongen` subcommand.
+pub const icongen = @import("icongen.zig");
 
 const usage =
     \\usage: zg-release <command> [--option value]...
@@ -46,6 +53,7 @@ const usage =
     \\  package --dist <d> --target <t> --version <v> --epoch <s> --out <d> [--portable true] [--symbols <d>]
     \\  sums    --dir <d> [--out <d>/SHA256SUMS]
     \\  notices --check true | --generate true [--root .] [--out THIRD_PARTY_NOTICES.md]
+    \\  icongen --out <dir> [--check true]
     \\  repro-compare <dirA> <dirB>
     \\
 ;
@@ -60,6 +68,7 @@ const commands = [_]struct { []const u8, Command }{
     .{ "package", package.run },
     .{ "sums", sums.run },
     .{ "notices", notices.run },
+    .{ "icongen", icongen.run },
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -110,4 +119,7 @@ test {
     _ = notices;
     _ = repro_compare;
     _ = pe_strip_sig;
+    _ = png;
+    _ = ico;
+    _ = icongen;
 }

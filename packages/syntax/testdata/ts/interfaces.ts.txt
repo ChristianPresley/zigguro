@@ -1,0 +1,9 @@
+interface User {
+  readonly id: number;
+  name: string;
+  email?: string;
+  [key: string]: unknown;
+}
+interface Admin extends User {
+  permissions: Set<string>;
+}

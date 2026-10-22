@@ -1,0 +1,7 @@
+1| comment:// line comment
+2| comment:/* block comment */
+3| comment:/**
+4| comment: * JSDoc block
+5| comment: * @param {string} name
+6| comment: */
+7| keyword.storage:function function:f punctuation.bracket:( comment:/* inline */ variable:a punctuation.bracket:) punctuation.bracket:{ keyword.control:return variable:a punctuation.delimiter:; punctuation.bracket:} comment:// trailing

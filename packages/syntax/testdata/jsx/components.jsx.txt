@@ -1,0 +1,4 @@
+function App() {
+  return <Layout title="Home"><Header.Nav active /><Main /></Layout>;
+}
+export default App;

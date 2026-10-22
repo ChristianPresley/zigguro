@@ -1,0 +1,7 @@
+1| keyword:@charset string:"utf-8" punctuation.delimiter:;
+2| keyword:@import function.builtin:url punctuation.bracket:( string:"theme.css" punctuation.bracket:) constant:screen punctuation.delimiter:;
+3| keyword:@namespace constant:svg function.builtin:url punctuation.bracket:( string.special:http://www.w3.org/2000/svg punctuation.bracket:) punctuation.delimiter:;
+4| keyword:@supports punctuation.bracket:( property:display punctuation.delimiter:: constant:grid punctuation.bracket:) keyword.operator:and punctuation.bracket:( keyword.operator:not punctuation.bracket:( property:display punctuation.delimiter:: constant:inline-grid punctuation.bracket:) punctuation.bracket:) punctuation.bracket:{
+5| type:.grid punctuation.bracket:{ property:display punctuation.delimiter:: constant:grid punctuation.delimiter:; punctuation.bracket:}
+6| punctuation.bracket:}
+7| keyword:@layer constant:base punctuation.delimiter:, constant:components punctuation.delimiter:;
