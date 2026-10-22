@@ -69,6 +69,17 @@ pub fn writeApply(w: *std.Io.Writer, a: *const model.Apply) Stringify.Error!void
         try s.endObject();
     }
     try s.endArray();
+    if (a.closed.len > 0) {
+        try s.objectField("closed");
+        try s.beginArray();
+        for (a.closed) |c| {
+            try s.beginObject();
+            try field(&s, "cs", @intFromEnum(c.cs));
+            try field(&s, "from", @tagName(c.from));
+            try s.endObject();
+        }
+        try s.endArray();
+    }
     try s.endObject();
 }
 
@@ -88,7 +99,17 @@ pub fn readApply(arena: Allocator, v: Value) Error!model.Apply {
             .post_exec = if (get(fo, "post_exec")) |x| try boolean(x) else false,
         };
     }
+    var closed: []model.Closed = &.{};
+    if (get(o, "closed")) |cv| {
+        const cs = try arr(cv);
+        closed = try arena.alloc(model.Closed, cs.items.len);
+        for (cs.items, closed) |x, *c| {
+            const co = try obj(x);
+            c.* = .{ .cs = @enumFromInt(try int(u64, get(co, "cs"))), .from = try enumOf(model.State, get(co, "from")) };
+        }
+    }
     return .{
+        .closed = closed,
         .id = try int(u64, get(o, "id")),
         .kind = try enumOf(model.ApplyKind, get(o, "kind")),
         .cs = if (get(o, "cs")) |x| @enumFromInt(try int(u64, x)) else null,
@@ -445,7 +466,8 @@ test "records: apply record round trip" {
         .{ .path = "a/b.txt", .from = "old.txt", .pre = model.blobHash("x"), .post = model.blobHash("y"), .post_exec = true },
         .{ .path = "gone.txt", .pre = model.blobHash("z"), .post = null, .pre_exec = true },
     };
-    const in: model.Apply = .{ .id = 4, .kind = .undo, .cs = @enumFromInt(9), .undoes = 2, .session = 77, .created_ms = 1234, .files = &files };
+    const closed = [_]model.Closed{ .{ .cs = @enumFromInt(5), .from = .pending }, .{ .cs = @enumFromInt(6), .from = .partially_applied } };
+    const in: model.Apply = .{ .id = 4, .kind = .undo, .cs = @enumFromInt(9), .undoes = 2, .session = 77, .created_ms = 1234, .files = &files, .closed = &closed };
     var aw: std.Io.Writer.Allocating = .init(a);
     try writeApply(&aw.writer, &in);
     const v = try std.json.parseFromSliceLeaky(Value, a, aw.written(), .{});
@@ -456,6 +478,7 @@ test "records: apply record round trip" {
     try testing.expectEqual(in.undoes, out.undoes);
     try testing.expectEqual(in.session, out.session);
     try testing.expectEqual(in.created_ms, out.created_ms);
+    try testing.expectEqualSlices(model.Closed, &closed, out.closed);
     try testing.expectEqual(@as(usize, 2), out.files.len);
     for (files, out.files) |x, y| {
         try testing.expectEqualStrings(x.path, y.path);
