@@ -1923,6 +1923,71 @@ Ring slices are valid until their slot is reused.
 ### Stability
 Internal to E02.
 
+## tools/spirv and zg_vulkan.shaders (SPIR-V toolchain)
+
+### Defined in
+`tools/spirv/` (E02.F05.S01.T01, T02, T04; ADR 0010): `grammar_gen.zig`
+(tool `spirvgen`), generated `spec.zig`, `builder.zig`, `validate.zig`,
+`disasm.zig` (tool `spirv-dis`), `dsl.zig`; `tools/shaderc/main.zig`;
+shader programs in `packages/vulkan/src/shaders/` (`programs.zig` lists
+them); generated modules in `packages/vulkan/src/shaders/gen/`.
+
+### Implemented by
+E02. Build steps: `zig build spirvgen`, `zig build shaderc`,
+`zig build spirv-dis -- <name>`; `check-gen` (part of `zig build test`)
+fails when `spec.zig` or a generated shader is stale.
+
+### Consumed by
+E02's pipelines (`zg_vulkan.shaders.*` passed to `vkCreateShaderModule`).
+Nothing outside E02.
+
+### Signature
+```zig
+// tools/spirv (module "spirv", build time only)
+pub const Module = struct {
+    pub fn init(gpa, opts: Options) Module;   // Options{ version = .v1_3, caps = &.{.Shader}, extensions }
+    pub fn typeVoid/typeBool/typeInt(bits, signed)/typeFloat(bits)/typeVector(comp, n)/typePointer(sc, pointee)
+        /typeFunction(ret, params)/typeImage(ImageDesc)/typeSampledImage(img)/typeSampler()   // hash-consed
+    pub fn typeStruct(members)/typeRuntimeArray(elem)/typeArray(elem, len)                   // never deduplicated
+    pub fn constant(ty, value)/constantComposite(ty, parts)/constantNull(ty); pub fn variable(ptr_ty, sc) Id;
+    pub fn decorate(target, DecorationArg)/memberDecorate(st, i, DecorationArg)/name/memberName;
+    pub fn function(ret, params) !*Function; pub fn entryPoint(model, f, name, interface); pub fn executionMode(f, ExecutionModeArg);
+    pub fn raw(section, op, operands) !void;  // tests and escapes
+    pub fn finish(m) ![]u32;                  // header + canonical section order; 1.4+ auto-collects interfaces
+};
+pub fn validate(gpa, words: []const u32, env: Env) ![]Issue;   // Issue{ word_offset, opcode, msg }; "{f}" prints "OpX at word N: msg"
+pub fn disassemble(gpa, w: *std.Io.Writer, words: []const u32) !void;
+// dsl: Shader.init(gpa, stage); Val(T) arithmetic/compare/GLSL.std.450 methods; input/output/builtin/position;
+// storageBuffer(E, set, binding).at(i).get("field"); pushConstant(T).get("field"); sampledImageArray(set, binding).sample(i, uv);
+// beginIf(cond) -> If{orElse, end, endVoid}; beginSwitch(T, sel, cases) -> Switch(T){case, end}; local(T); finish() ![]u32.
+pub const Program = struct { name: []const u8, stage: Stage, build: *const fn (*Shader) anyerror!void };
+
+// zg_vulkan.shaders (generated): one declaration per program
+pub const solid_vert: []align(4) const u8;
+pub const solid_frag: []align(4) const u8;
+```
+Deviations from the spec text: the grammar lives in `tools/spirv/data`
+(the notices checker's convention); decorations and execution modes with
+parameters are the generated unions `DecorationArg`/`ExecutionModeArg`
+(the plain `Decoration` enum keeps its grammar name); `disassemble` takes
+an allocator; control flow is the imperative `beginIf`/`beginSwitch`
+pair instead of callback-taking `ifElse`/`switchOn`; samples use
+`OpImageSampleExplicitLod` with Lod 0 (no derivatives in non-uniform
+control flow); and the generated shaders are checked in (ADR 0010)
+rather than written to the build cache.
+
+### Threading
+Build time only; single-threaded.
+
+### Ownership/lifetime
+`finish` and `validate` return caller-owned slices (`freeIssues` for
+issues). The generated shader slices are static.
+
+### Stability
+Internal to E02. The descriptor and push-constant interface of the
+production shaders is frozen by E02.F05.S01.T05 and documented in
+`docs/rendering.md`.
+
 ## zg_syntax (Language, Registry, Highlighter, Structure)
 
 ### Defined in

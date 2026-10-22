@@ -13,3 +13,4 @@ Decisions that affect more than one package. Copy `0000-template.md` to the next
 | [0007](0007-http-stack.md) | HTTP stack on std.http.Client | Accepted | 2026-10-21 |
 | [0008](0008-toolchain-trust.md) | Toolchain trust: pinned and signature-verified Zig | Accepted | 2026-10-21 |
 | [0009](0009-gui-retained-tree.md) | GUI toolkit: declarative build over a retained, keyed node tree | Accepted | 2026-10-22 |
+| [0010](0010-spirv-builder.md) | Shaders are Zig programs over our own SPIR-V builder | Accepted | 2026-10-22 |
