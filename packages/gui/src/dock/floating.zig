@@ -24,8 +24,13 @@
 //!   `restoreRect` puts a saved rect back on that monitor, or centered on
 //!   the primary one when the monitor is gone or the rect is off screen.
 //!   A restored window opens at that place (Win32 and X11; Wayland
-//!   compositors place windows themselves). A new tear-off is placed by
-//!   the system: a window's own screen position is not known.
+//!   compositors place windows themselves). A new tear-off opens where
+//!   the tab was dropped when the source window knows its screen origin
+//!   (`Window.screen_origin_px`: Win32, X11), else where the system puts
+//!   it.
+//! - Dock back returns a panel to the group it left, or to that group's
+//!   area when the group is gone (a single-tab group closes when its tab
+//!   leaves), else the center.
 //! - `FloatingPolicy.always_on_top` keeps floating windows above normal
 //!   ones where the platform can; `setAlwaysOnTop` changes it for open
 //!   windows.
@@ -52,6 +57,10 @@ const DockModel = model.DockModel;
 const DockView = view.DockView;
 const PanelRef = model.PanelRef;
 const GroupId = model.GroupId;
+const Area = model.Area;
+
+/// Where a floating panel came from: its group and that group's area.
+const Home = struct { g: GroupId, area: Area };
 const FloatId = model.FloatId;
 const DropTarget = model.DropTarget;
 const Rect = model.Rect;
@@ -210,7 +219,10 @@ pub const Floater = struct {
     /// Windows asked to close, freed with the Floater.
     closed: std.ArrayList(*FloatWin) = .empty,
     /// Where each floating panel was docked last.
-    last_group: std.AutoHashMapUnmanaged(PanelRef, GroupId) = .empty,
+    last_group: std.AutoHashMapUnmanaged(PanelRef, Home) = .empty,
+    /// Where the next new floating window opens (a tear-off's drop point
+    /// on screen), when known.
+    next_position: ?zg_platform.types.PxPoint = null,
     /// Tells our drags from another process's.
     token: u64,
     /// The tab being dragged between windows, and its source.
@@ -291,11 +303,16 @@ pub const Floater = struct {
     /// Moves `p` into a new floating window of `size` (logical pixels;
     /// at least `min_size`) whose top-left is `screen_pos`, and opens it.
     pub fn tearOff(fl: *Floater, p: PanelRef, screen_pos: Vec2, size: geom.Size) !*Window {
-        const before = fl.dock.groupOf(p);
+        // Remember the group and its area only when it was docked (not
+        // floating); a one-tab group goes away with the move.
+        var home: ?Home = null;
+        if (fl.dock.groupOf(p)) |g| if (fl.dock.ownerOf(.{ .group = g })) |o| switch (o) {
+            .area => |a| home = .{ .g = g, .area = a },
+            .float => {},
+        };
         const r: Rect = .{ .x = screen_pos.x, .y = screen_pos.y, .w = @max(size.w, min_size.w), .h = @max(size.h, min_size.h) };
         try fl.dock.move(p, .{ .float = r });
-        // Remember the group only when it was docked (not floating).
-        if (before) |g| if (fl.docked(g)) try fl.last_group.put(fl.gpa, p, g);
+        if (home) |h| try fl.last_group.put(fl.gpa, p, h);
         try fl.sync();
         const f = fl.dock.floatOf(p) orelse return error.NotFloating;
         return (fl.winOf(f) orelse return error.NotFloating).win;
@@ -333,8 +350,8 @@ pub const Floater = struct {
     }
 
     fn dockHome(fl: *Floater, p: PanelRef) void {
-        const target: DropTarget = if (fl.last_group.get(p)) |g|
-            (if (fl.dock.group(g) != null and fl.docked(g)) .{ .group = .{ .g = g } } else .{ .area = .center })
+        const target: DropTarget = if (fl.last_group.get(p)) |h|
+            (if (fl.dock.group(h.g) != null and fl.docked(h.g)) .{ .group = .{ .g = h.g } } else .{ .area = h.area })
         else
             .{ .area = .center };
         fl.dock.move(p, target) catch {};
@@ -392,6 +409,9 @@ pub const Floater = struct {
                 f.rect = restoreRect(f.rect, f.monitor.get(), mons[0..n]);
                 at.position = physicalAt(f.rect, f.monitor.get(), mons[0..n]);
             }
+            if (f.monitor.len == 0) if (fl.next_position) |np| {
+                at.position = np;
+            };
             if (f.monitor.len == 0) for (mons[0..n]) |*m| if (m.primary or n == 1) {
                 f.monitor.set(m.name());
                 f.scale = m.scale.factor;
@@ -479,7 +499,7 @@ pub const Floater = struct {
 
     /// Tears `p` off from `dv`'s window, dropped at `pos` (that window's
     /// coordinates) with the pointer `grab` into the group.
-    fn tearOffFrom(fl: *Floater, dv: *DockView, p: PanelRef, pos: Vec2, grab: Vec2) void {
+    pub fn tearOffFrom(fl: *Floater, dv: *DockView, p: PanelRef, pos: Vec2, grab: Vec2) void {
         var size: geom.Size = .{ .w = 640, .h = 480 };
         if (fl.dock.groupOf(p)) |g| if (groupRect(dv, g)) |r| {
             size = .{ .w = r.w, .h = r.h };
@@ -487,6 +507,11 @@ pub const Floater = struct {
         // The window's own screen position is unknown: positions are in
         // its coordinates, which is what the platform can place by.
         const at: Vec2 = .{ .x = pos.x - grab.x, .y = pos.y - grab.y };
+        // On screen when the source window knows where it is.
+        if (dv.win) |w| if (w.screen_origin_px) |o| {
+            fl.next_position = .{ .x = o.x + @as(i32, @intFromFloat(@round(at.x * w.scale))), .y = o.y + @as(i32, @intFromFloat(@round(at.y * w.scale))) };
+        };
+        defer fl.next_position = null;
         _ = fl.tearOff(p, at, size) catch {};
     }
 
