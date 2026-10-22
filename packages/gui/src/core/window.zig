@@ -208,6 +208,9 @@ pub const Window = struct {
     /// chrome shows, and the title-bar nodes the hit map is built from
     /// (`dock/chrome.zig`).
     chrome: Chrome = .{},
+    /// The content's origin on screen, physical pixels, from the last
+    /// configure (null where the platform does not say: Wayland).
+    screen_origin_px: ?zg_platform.types.PxPoint = null,
     /// Window state changes the UI asked for (caption buttons); the Host
     /// sends them to the platform.
     window_ops: std.ArrayList(zg_platform.window.WindowOp) = .empty,
@@ -1780,6 +1783,7 @@ pub const Window = struct {
         const inv = 1 / w.scale;
         switch (ev) {
             .window_configure => |c| {
+                w.screen_origin_px = c.screen_origin_px;
                 w.resize(.{ .w = @as(f32, @floatFromInt(c.size.w)) / c.scale.factor, .h = @as(f32, @floatFromInt(c.size.h)) / c.scale.factor }, c.scale.factor);
                 const st = c.state;
                 const tiled = [4]bool{ st.tiled_left, st.tiled_top, st.tiled_right, st.tiled_bottom };

@@ -10,8 +10,9 @@ const proto = @import("zg_ai_proto");
 
 const Allocator = std.mem.Allocator;
 const Stringify = std.json.Stringify;
-const Value = std.json.Value;
 const AgentRef = proto.AgentRef;
+const pull = @import("pull.zig");
+const Pull = pull.Pull;
 
 pub const ScmKind = enum { describe, split, resolve, land };
 
@@ -147,95 +148,122 @@ fn writeRef(s: *Stringify, r: AgentRef) Stringify.Error!void {
     try s.endObject();
 }
 
-pub const ParseError = error{ InvalidProvenance, OutOfMemory };
+pub const ParseError = pull.Error;
 
-/// Parses the object `v` (from `std.json`), copying strings into `arena`.
-pub fn parseProvenanceJson(arena: Allocator, v: Value) ParseError!Provenance {
-    const o = try object(v);
-    const calls_v = try array(o.get("tool_calls") orelse Value{ .array = .init(arena) });
-    const calls = try arena.alloc([]const u8, calls_v.items.len);
-    for (calls, calls_v.items) |*c, x| c.* = try dupe(arena, x);
+/// Reads a provenance object off `p`, copying strings into `arena`.
+/// Keys may come in any order; `null` values count as absent.
+pub fn readProvenance(arena: Allocator, p: *Pull) ParseError!Provenance {
+    var origin: ?Origin = null;
+    var label: ?[]const u8 = null;
+    var rationale: ?[]const u8 = null;
+    var calls: std.ArrayList([]const u8) = .empty;
+    var workspace: ?[]const u8 = null;
+    var lane: ?[]const u8 = null;
+    var created_ms: ?i64 = null;
+    try p.expect(.object_begin);
+    while (try p.key()) |k| {
+        if (try p.isNull()) continue;
+        if (eql(k, "origin")) {
+            origin = try readOrigin(arena, p);
+        } else if (eql(k, "label")) {
+            label = try arena.dupe(u8, try p.str());
+        } else if (eql(k, "rationale")) {
+            rationale = try arena.dupe(u8, try p.str());
+        } else if (eql(k, "tool_calls")) {
+            try p.expect(.array_begin);
+            while (try p.more()) try calls.append(arena, try arena.dupe(u8, try p.str()));
+        } else if (eql(k, "workspace")) {
+            workspace = try arena.dupe(u8, try p.str());
+        } else if (eql(k, "lane")) {
+            lane = try arena.dupe(u8, try p.str());
+        } else if (eql(k, "created_ms")) {
+            created_ms = try p.int(i64);
+        } else try p.skip();
+    }
     return .{
-        .origin = try parseOrigin(arena, o.get("origin") orelse return error.InvalidProvenance),
-        .label = try dupe(arena, o.get("label") orelse return error.InvalidProvenance),
-        .rationale = try optStr(arena, o.get("rationale")),
-        .tool_calls = calls,
-        .workspace = try dupe(arena, o.get("workspace") orelse return error.InvalidProvenance),
-        .lane = try optStr(arena, o.get("lane")),
-        .created_ms = try int(i64, o.get("created_ms") orelse return error.InvalidProvenance),
+        .origin = origin orelse return error.InvalidRecord,
+        .label = label orelse return error.InvalidRecord,
+        .rationale = rationale,
+        .tool_calls = calls.items,
+        .workspace = workspace orelse return error.InvalidRecord,
+        .lane = lane,
+        .created_ms = created_ms orelse return error.InvalidRecord,
     };
 }
 
-fn parseOrigin(arena: Allocator, v: Value) ParseError!Origin {
-    const o = try object(v);
-    const tag_name = try str(o.get("type") orelse return error.InvalidProvenance);
-    const tag = std.meta.stringToEnum(std.meta.Tag(Origin), tag_name) orelse return error.InvalidProvenance;
+/// Parses one provenance object's JSON text (see `readProvenance`).
+pub fn parseProvenanceJson(arena: Allocator, json: []const u8) ParseError!Provenance {
+    var p: Pull = .init(arena, json);
+    const out = try readProvenance(arena, &p);
+    try p.expect(.end);
+    return out;
+}
+
+/// The variant's fields follow its `"type"`, which may come anywhere in
+/// the object: the type is found first, then the object read again.
+fn readOrigin(arena: Allocator, p: *Pull) ParseError!Origin {
+    const text = try p.raw();
+    var scan: Pull = .init(p.a, text);
+    const tag = blk: {
+        try scan.expect(.object_begin);
+        while (try scan.key()) |k| {
+            if (eql(k, "type")) break :blk try scan.enumOf(std.meta.Tag(Origin));
+            try scan.skip();
+        }
+        return error.InvalidRecord;
+    };
     switch (tag) {
         inline else => |t| {
             const P = @FieldType(Origin, @tagName(t));
+            const fields = std.meta.fields(P);
             var out: P = undefined;
-            inline for (std.meta.fields(P)) |f| {
-                const x = o.get(f.name);
-                @field(out, f.name) = switch (f.type) {
-                    AgentRef => try parseRef(arena, x orelse return error.InvalidProvenance),
-                    ?AgentRef => if (x) |r| try parseRef(arena, r) else null,
-                    ScmKind => std.meta.stringToEnum(ScmKind, try str(x orelse return error.InvalidProvenance)) orelse return error.InvalidProvenance,
-                    []const u8 => try dupe(arena, x orelse return error.InvalidProvenance),
-                    u32, u64 => try int(f.type, x orelse return error.InvalidProvenance),
-                    else => @compileError("unhandled origin field " ++ f.name),
+            var seen: [fields.len]bool = @splat(false);
+            var r: Pull = .init(p.a, text);
+            try r.expect(.object_begin);
+            keys: while (try r.key()) |k| {
+                if (try r.isNull()) continue;
+                inline for (fields, 0..) |f, i| if (eql(k, f.name)) {
+                    @field(out, f.name) = switch (f.type) {
+                        AgentRef, ?AgentRef => try readRef(arena, &r),
+                        ScmKind => try r.enumOf(ScmKind),
+                        []const u8 => try arena.dupe(u8, try r.str()),
+                        u32, u64 => try r.int(f.type),
+                        else => @compileError("unhandled origin field " ++ f.name),
+                    };
+                    seen[i] = true;
+                    continue :keys;
                 };
+                try r.skip();
             }
+            inline for (fields, 0..) |f, i| if (!seen[i]) {
+                if (f.type != ?AgentRef) return error.InvalidRecord;
+                @field(out, f.name) = null;
+            };
             return @unionInit(Origin, @tagName(t), out);
         },
     }
 }
 
-fn parseRef(arena: Allocator, v: Value) ParseError!AgentRef {
-    const o = try object(v);
-    return .{
-        .session = proto.agent_ref.parse(try str(o.get("session") orelse return error.InvalidProvenance)) catch return error.InvalidProvenance,
-        .agent = if (o.get("agent")) |a| try int(u32, a) else 0,
-        .tool_call = try optStr(arena, o.get("tool_call")),
-    };
+fn readRef(arena: Allocator, p: *Pull) ParseError!AgentRef {
+    var session: ?@FieldType(AgentRef, "session") = null;
+    var agent: u32 = 0;
+    var tool_call: ?[]const u8 = null;
+    try p.expect(.object_begin);
+    while (try p.key()) |k| {
+        if (try p.isNull()) continue;
+        if (eql(k, "session")) {
+            session = proto.agent_ref.parse(try p.str()) catch return error.InvalidRecord;
+        } else if (eql(k, "agent")) {
+            agent = try p.int(u32);
+        } else if (eql(k, "tool_call")) {
+            tool_call = try arena.dupe(u8, try p.str());
+        } else try p.skip();
+    }
+    return .{ .session = session orelse return error.InvalidRecord, .agent = agent, .tool_call = tool_call };
 }
 
-fn object(v: Value) ParseError!std.json.ObjectMap {
-    return switch (v) {
-        .object => |o| o,
-        else => error.InvalidProvenance,
-    };
-}
-
-fn array(v: Value) ParseError!std.json.Array {
-    return switch (v) {
-        .array => |a| a,
-        else => error.InvalidProvenance,
-    };
-}
-
-fn str(v: Value) ParseError![]const u8 {
-    return switch (v) {
-        .string => |s| s,
-        else => error.InvalidProvenance,
-    };
-}
-
-fn dupe(arena: Allocator, v: Value) ParseError![]const u8 {
-    return arena.dupe(u8, try str(v));
-}
-
-fn optStr(arena: Allocator, v: ?Value) ParseError!?[]const u8 {
-    const x = v orelse return null;
-    if (x == .null) return null;
-    return try dupe(arena, x);
-}
-
-fn int(comptime T: type, v: Value) ParseError!T {
-    return switch (v) {
-        .integer => |i| std.math.cast(T, i) orelse error.InvalidProvenance,
-        .number_string => |s| std.fmt.parseInt(T, s, 10) catch error.InvalidProvenance,
-        else => error.InvalidProvenance,
-    };
+fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
 }
 
 // ---------------------------------------------------------------- tests
@@ -250,8 +278,7 @@ fn roundTrip(p: Provenance, want: []const u8) !void {
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const v = try std.json.parseFromSliceLeaky(Value, arena.allocator(), want, .{});
-    const back = try parseProvenanceJson(arena.allocator(), v);
+    const back = try parseProvenanceJson(arena.allocator(), want);
     var aw2: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw2.deinit();
     try writeProvenanceJson(&aw2.writer, back);
@@ -288,16 +315,25 @@ test "provenance: unknown keys ignored, bad input rejected" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const ok = try std.json.parseFromSliceLeaky(Value, a,
-        \\{"origin":{"type":"code_review","finding":3,"x":1},"label":"L","workspace":"/w","created_ms":1,"future":true}
-    , .{});
-    const p = try parseProvenanceJson(a, ok);
+    const p = try parseProvenanceJson(a,
+        \\{"origin":{"x":[1],"finding":3,"type":"code_review"},"label":"L","workspace":"/w","created_ms":1,"future":{"y":null},"lane":null}
+    );
     try testing.expectEqual(@as(u64, 3), p.origin.code_review.finding);
     try testing.expectEqual(@as(usize, 0), p.tool_calls.len);
-    const bad = try std.json.parseFromSliceLeaky(Value, a,
+    try testing.expectEqual(@as(?[]const u8, null), p.lane);
+    for ([_][]const u8{
         \\{"origin":{"type":"nope"},"label":"L","workspace":"/w","created_ms":1}
-    , .{});
-    try testing.expectError(error.InvalidProvenance, parseProvenanceJson(a, bad));
+        ,
+        \\{"origin":{"type":"code_review"},"label":"L","workspace":"/w","created_ms":1}
+        ,
+        \\{"origin":{"type":"lsp","server":"s"},"workspace":"/w","created_ms":1}
+        ,
+        \\{"origin":{"type":"agent","ref":{"agent":1},"turn":1,"model":"m"},"label":"L","workspace":"/w","created_ms":1}
+    }) |bad| try testing.expectError(error.InvalidRecord, parseProvenanceJson(a, bad));
+    const lsp = try parseProvenanceJson(a,
+        \\{"origin":{"server":"s","type":"lsp"},"label":"L","workspace":"/w","created_ms":1}
+    );
+    try testing.expectEqual(@as(?AgentRef, null), lsp.origin.lsp.agent);
 }
 
 test "provenance: turn label" {

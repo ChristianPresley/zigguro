@@ -334,10 +334,7 @@ test "feedback: the previous proposal survives a store round trip" {
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     try @import("../store/records.zig").writeChangeset(&aw.writer, fx.q.get(id).?, fx.blobs.blobs(), gpa);
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), aw.written(), .{});
-    const back = try @import("../store/records.zig").readChangeset(gpa, v, fx.blobs.blobs());
+    const back = try @import("../store/records.zig").readChangeset(gpa, aw.written(), fx.blobs.blobs());
     defer {
         back.deinit(gpa);
         gpa.destroy(back);

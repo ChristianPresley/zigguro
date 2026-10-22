@@ -50,7 +50,7 @@ pub const ComposeTable = struct {
     pub fn loadDefault(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) !ComposeTable {
         const locale = localeName(env);
         var norm_buf: [128]u8 = undefined;
-        const norm = normalizeLocale(&norm_buf, locale);
+        const norm = composeLocale(normalizeLocale(&norm_buf, locale));
         var file_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         var ctx: IncludeContext = .{ .home = env.get("HOME") };
         for (system_dirs) |dir| {
@@ -276,6 +276,16 @@ pub fn normalizeLocale(out: []u8, locale: []const u8) []const u8 {
     return std.fmt.bufPrint(out, "{s}.UTF-8{s}", .{ locale[0..dot], locale[at..] }) catch locale;
 }
 
+/// The locale whose Compose file applies: the C and POSIX locales use
+/// en_US.UTF-8's, as libxkbcommon does (their own file is Latin-1, which
+/// a UTF-8 client cannot use).
+pub fn composeLocale(norm: []const u8) []const u8 {
+    for ([_][]const u8{ "C", "POSIX", "C.UTF-8" }) |c| {
+        if (std.mem.eql(u8, norm, c)) return "en_US.UTF-8";
+    }
+    return norm;
+}
+
 /// Finds the Compose file for `locale` in `dir/compose.dir` (lines
 /// `<path> <locale>`, first match wins); the path is written to `out`.
 pub fn systemFile(gpa: std.mem.Allocator, io: std.Io, root: []const u8, dir: []const u8, locale: []const u8, out: []u8) !?[]const u8 {
@@ -399,6 +409,10 @@ test "locale names and compose.dir lookup" {
     try testing.expectEqualStrings("de_DE.UTF-8@euro", normalizeLocale(&out, "de_DE.UTF8@euro"));
     try testing.expectEqualStrings("C", normalizeLocale(&out, "C"));
     try testing.expectEqualStrings("ja_JP.eucJP", normalizeLocale(&out, "ja_JP.eucJP"));
+    try testing.expectEqualStrings("en_US.UTF-8", composeLocale("C"));
+    try testing.expectEqualStrings("en_US.UTF-8", composeLocale(normalizeLocale(&out, "C.utf8")));
+    try testing.expectEqualStrings("en_US.UTF-8", composeLocale("POSIX"));
+    try testing.expectEqualStrings("de_DE.UTF-8", composeLocale("de_DE.UTF-8"));
 
     var env: std.process.Environ.Map = .init(testing.allocator);
     defer env.deinit();

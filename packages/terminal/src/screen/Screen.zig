@@ -267,6 +267,20 @@ pub fn splitWide(s: *Screen, p: Pin, x: u16) void {
     }
 }
 
+/// A wide character that wrapped to column 0 of a continuation row leaves
+/// a spacer head at the end of the row above. Once column 0 of `p` holds
+/// anything else that head is an ordinary blank, so cold pages and reflow
+/// see the line as it reads. Callers run this after changing column 0.
+pub fn releaseSpacerHead(s: *Screen, p: Pin) void {
+    if (!p.row().wrap_continuation or p.cells()[0].wide == .wide) return;
+    const above = PageList.prev(p) orelse return;
+    const cs = above.cells();
+    const last = &cs[cs.len - 1];
+    if (last.wide != .spacer_head) return;
+    above.node.page.clearCell(last, .blank);
+    s.markDirty(above.row());
+}
+
 /// Clears cells `[x0, x1)` of active row `y`.
 pub fn eraseCells(s: *Screen, y: u16, x0: u16, x1: u16, o: EraseOpts) void {
     if (x0 >= x1) return;
@@ -283,6 +297,7 @@ pub fn eraseCells(s: *Screen, y: u16, x0: u16, x1: u16, o: EraseOpts) void {
         page.clearCells(r, cs[x0..x1], blank);
     }
     if (x1 == cs.len) r.wrap = false;
+    if (x0 <= 1) s.releaseSpacerHead(p);
     s.markDirty(r);
 }
 
@@ -295,8 +310,10 @@ fn clearRow(s: *Screen, p: Pin, o: EraseOpts) void {
     if (o.selective) {
         for (cs) |*c| if (!c.protected) page.clearCell(c, blank);
         r.wrap = false;
+        s.releaseSpacerHead(p);
     } else {
         page.clearCells(r, cs, blank);
+        s.releaseSpacerHead(p);
         r.* = .{ .cells_off = r.cells_off };
     }
     s.markDirty(r);
@@ -434,6 +451,7 @@ fn eraseRange(s: *Screen, y: u16, left: u16, right: u16, o: EraseOpts) void {
     const p = s.rowPin(y);
     p.node.page.clearCells(p.row(), p.cells()[left .. right + 1], bceCell(o.bce));
     p.row().wrap = false;
+    if (left <= 1) s.releaseSpacerHead(p);
     s.markDirty(p.row());
 }
 
@@ -456,6 +474,7 @@ pub fn insertCells(s: *Screen, y: u16, x: u16, n_in: u16, right: u16, o: EraseOp
     }
     page.clearCells(p.row(), cs[x .. x + n], bceCell(o.bce));
     p.row().wrap = false;
+    if (x <= 1) s.releaseSpacerHead(p);
     s.markDirty(p.row());
 }
 
@@ -475,6 +494,7 @@ pub fn deleteCells(s: *Screen, y: u16, x: u16, n_in: u16, right: u16, o: EraseOp
     while (i + n <= right) : (i += 1) page.moveCell(&cs[i], &cs[i + n]);
     page.clearCells(p.row(), cs[right + 1 - n .. right + 1], bceCell(o.bce));
     p.row().wrap = false;
+    if (x <= 1) s.releaseSpacerHead(p);
     s.markDirty(p.row());
 }
 
