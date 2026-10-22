@@ -1,0 +1,154 @@
+# Erase and edit: ED, EL, ECH, ICH, DCH, IL, DL, background colour
+# erase, selective erase and DECALN.
+@cite https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Functions-using-CSI-_-ordered-by-the-final-character_s_
+
+@case EL 0 erases to the end of the line
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;4H\e[K"
+@expect-screen
+|abc·······|
+|klmnopqrst|
+|uvwxyz····|
+
+@case EL 1 erases to the cursor inclusive
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;4H\e[1K"
+@expect-screen
+|····efghij|
+|klmnopqrst|
+|uvwxyz····|
+
+@case EL 2 erases the line
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;4H\e[2K"
+@expect-screen
+|··········|
+|klmnopqrst|
+|uvwxyz····|
+@expect-cursor 1,4
+
+@case ED 0 erases below
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[2;4H\e[J"
+@expect-screen
+|abcdefghij|
+|klm·······|
+|··········|
+
+@case ED 1 erases above inclusive
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[2;4H\e[1J"
+@expect-screen
+|··········|
+|····opqrst|
+|uvwxyz····|
+
+@case ED 2 erases the screen and keeps the cursor
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[2;4H\e[2J"
+@expect-screen
+@expect-cursor 2,4
+
+@case ED 2 pushes the rows into scrollback
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[2J"
+@expect-scrollback
+|abcdefghij|
+|klmnopqrst|
+|uvwxyz····|
+
+@case ED 3 erases the scrollback
+@size 10x2
+@send "1\r\n2\r\n3\r\n4\e[3J"
+@expect-scrollback
+@expect-screen
+|3·········|
+|4·········|
+
+@case ECH erases characters without moving
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;3H\e[3X"
+@expect-screen
+|ab···fghij|
+|klmnopqrst|
+|uvwxyz····|
+@expect-cursor 1,3
+
+@case ECH stops at the line end
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;8H\e[99X"
+@expect-screen
+|abcdefg···|
+|klmnopqrst|
+|uvwxyz····|
+
+@case DCH shifts the rest left
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;3H\e[2P"
+@expect-screen
+|abefghij··|
+|klmnopqrst|
+|uvwxyz····|
+
+@case ICH shifts the rest right
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;3H\e[2@"
+@expect-screen
+|ab··cdefgh|
+|klmnopqrst|
+|uvwxyz····|
+
+@case IL inserts a blank line and homes the column
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[2;5H\e[L"
+@expect-screen
+|abcdefghij|
+|··········|
+|klmnopqrst|
+@expect-cursor 2,1
+
+@case DL deletes the line
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;5H\e[M"
+@expect-screen
+|klmnopqrst|
+|uvwxyz····|
+|··········|
+
+@case ED uses the current background
+@size 10x3
+@send "\e[44m\e[2J"
+@expect-cell 1,1 bg=4
+@expect-cell 3,10 bg=4
+
+@case EL uses the current background
+@size 10x3
+@send "abcdefghij\r\nklmnopqrst\r\nuvwxyz\e[1;4H\e[41m\e[K"
+@expect-cell 1,10 bg=1
+@expect-cell 1,3 bg=default
+
+@case DECSEL keeps protected characters
+@size 10x3
+@send "\e[1"qab\e[0"qcd\e[1;1H\e[?2K"
+@expect-screen
+|ab········|
+
+@case EL inside a wide character clears all of it
+@size 10x3
+@send "日本\e[1;2H\e[K"
+@expect-screen
+
+@case DECALN fills the screen with E
+@size 10x3
+@send "\e#8"
+@expect-screen
+|EEEEEEEEEE|
+|EEEEEEEEEE|
+|EEEEEEEEEE|
+@expect-cursor 1,1
+
+@case DCH inside a wide character clears it
+@size 10x3
+@send "a日b\e[1;3H\e[P"
+@expect-screen
+|a·b·······|
