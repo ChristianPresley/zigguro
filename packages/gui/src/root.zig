@@ -54,6 +54,7 @@ test {
     _ = @import("host_test.zig");
     _ = @import("widgets/scroll_test.zig");
     _ = @import("widgets/text_field/text_field_test.zig");
+    _ = @import("widgets/text_field/ime_test.zig");
     _ = @import("widgets/overlay_test.zig");
     _ = @import("widgets/menu_test.zig");
     _ = @import("widgets/chrome_test.zig");

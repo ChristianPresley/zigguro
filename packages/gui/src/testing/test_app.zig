@@ -244,6 +244,20 @@ pub const TestApp = struct {
         _ = t.settle();
     }
 
+    /// Sends an IME composition (`s` with target clause
+    /// `[begin, end)`; empty ends it) to the focused node and settles.
+    pub fn imeCompose(t: *TestApp, s: []const u8, begin: i32, end: i32) void {
+        t.win.dispatch(.{ .ime_preedit = .{ .text = s, .cursor_begin = begin, .cursor_end = end } });
+        _ = t.settle();
+    }
+
+    /// Sends an IME delete-surrounding request to the focused node and
+    /// settles.
+    pub fn imeDeleteSurrounding(t: *TestApp, before: u32, after: u32) void {
+        t.win.dispatch(.{ .ime_delete_surrounding = .{ .before = before, .after = after } });
+        _ = t.settle();
+    }
+
     /// The tree as indented lines `kind "name" x,y wxh` (visible nodes).
     pub fn layoutSnapshot(t: *TestApp, gpa: std.mem.Allocator) ![]u8 {
         var out: std.ArrayList(u8) = .empty;

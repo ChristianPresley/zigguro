@@ -868,7 +868,7 @@ import libraries from `extern "dll"` itself, so `build.zig` needs no
 `packages/platform/src/wayland/backend.zig`, with `window.zig`
 (configure, state and scale bookkeeping), `output.zig` (`wl_output` to
 `MonitorInfo`), `scale.zig` (1/120 scale arithmetic) and `shm.zig` (the
-interim CPU presenter); the weston launcher for integration tests is
+`wl_shm` presenter, over `linux/memfd.zig`); the weston launcher for integration tests is
 `wayland/testing/weston.zig` (E01.F04.S01.T01).
 
 ### Implemented by
@@ -923,6 +923,18 @@ every present asks for feedback (`InitOptions.presentation_feedback`),
 reported as `Event.present_feedback` in the `Io.Clock.awake` timebase;
 a discarded frame has `flags = PresentFlags.discarded` and
 `presented_ns = 0`.
+
+Shared memory (E01.F04.S04.T02, `wayland/shm.zig`, `linux/memfd.zig`):
+CPU buffers from `allocCpuBuffer` are carved from per-window pools, each
+one memfd sealed against shrinking (`F_SEAL_SHRINK`) with one
+`wl_shm_pool`; rows are padded to 64 bytes (`memfd.stride32`) and
+buffers start 64-byte aligned. A ring of 3 buffers is the expected
+steady state. A pool with no live buffers grows in place
+(`wl_shm_pool.resize`); otherwise a new pool takes over and the old one
+is destroyed once its last buffer goes. A presented buffer is busy until
+`wl_buffer.release`; `releaseBuffer` on a busy buffer defers its
+destruction to that release. `importBuffer(.shm)` wraps a caller's memfd
+in its own pool. Cursor images use the same memfds.
 
 Input (E01.F04.S02.T02, `wayland/seat.zig`): the first `wl_seat` (v5–9)
 gives keyboard, pointer and touch as its capabilities come and go.
@@ -982,7 +994,11 @@ Without it, the Xcursor theme from `XCURSOR_THEME`/`XCURSOR_SIZE`/
 thread, following `Inherits=` and then `default`, trying the CSS name
 and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
-shows the default arrow. Animated cursors show their first frame.
+shows the default arrow. Animated cursors (every frame of the nearest
+size is uploaded once) step on a timerfd in the platform thread's epoll
+while the pointer is over a window showing them, waiting each frame's
+delay (at least 10 ms); `leave` or another cursor stops them. Manual
+checklist: `docs/manual-tests/wayland-cursors.md`.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too.
 Activation, dialogs and URIs return `error.Unsupported`.
 
@@ -3153,3 +3169,69 @@ A `Changeset` owns its arena (paths, labels, hunks) and every text
 ### Stability
 Unstable until the queue and store land; the provenance JSON is stable
 (golden-tested).
+
+## zg_review.model.Queue (batch submission, Submitter, events)
+
+### Defined in
+`packages/review/src/model/{queue,batch,blobs,events}.zig` (E12.F01.S01.T02).
+
+### Implemented by
+E12.F01.S01.T02.
+
+### Consumed by
+E10 edit tools (batch per turn), E07 ReviewSink, E08 replace and notes, E12 review UI, apply and store.
+
+### Signature
+```zig
+pub const Queue = struct {
+    pub fn init(gpa, io, o: Options{ root, blobs: Blobs, first_id: u64 = 1, wake: ?Wake = null, hunk_options }) !*Queue;
+    pub fn deinit(q) void;
+    pub fn beginBatch(q, prov: Provenance) !BatchId;                                   // any thread
+    pub fn addEdit(q, b, path, base: []const u8, base_version: ?u64, edits: *const ChangeSet) !void;
+    pub fn addCreate(q, b, path, bytes) !void;
+    pub fn addDelete(q, b, path, base: []const u8) !void;
+    pub fn addRename(q, b, from, to) !void;
+    pub fn setExecutable(q, b, path, on: bool) !void;
+    pub fn abortBatch(q, b) void;
+    pub fn commitBatch(q, b, o: SubmitOptions) !ChangesetId;                          // owner thread
+    pub fn drain(q) void;                                                              // owner thread
+    pub fn get(q, id) ?*const Changeset;
+    pub fn getMut(q, id) ?*Changeset;
+    pub fn list(q, f: Filter{ open_only, session }, out: *ArrayList(ChangesetId), gpa) !void;
+    pub fn remove(q, id) void;
+    pub fn subscribe(q, Listener{ ctx, on }) !ListenerId;
+    pub fn submitter(q) *Submitter;
+};
+pub const SubmitOptions = struct { auto_apply: bool = false, presentation: Presentation = .queue, supersedes: ?ChangesetId = null, checkpoint: ?u64 = null };
+pub const Submitter = struct { // any thread; E10 shapes: addCreate(b, path, bytes), commitBatch(b)
+    beginBatch, addEdit, addCreate, setExecutable, addDelete, addRename, abortBatch, commitBatch, commitBatchWith };
+pub const Event = union(enum) { submitted: ChangesetId, updated: ChangesetId, state: { cs, from, to }, removed: ChangesetId };
+pub const Blobs = struct { ctx, vtable: { put(ctx, bytes) !BlobHash, get(ctx, arena, hash) !?[]const u8 } };
+pub const MemBlobs = struct { pub fn init(gpa) MemBlobs; pub fn blobs(m) Blobs; ... };
+```
+Deviations from the spec text:
+- `addEdit` and `addDelete` take the base text instead of a `BaseRef`. The
+  queue hashes and stores it, and derives hunks from it. `BaseRef` is
+  computed from the text.
+- `FileChange.base` records what a delete removes.
+- `Submitter.commitBatch` reserves the id at once. The batch becomes a
+  changeset at the owner's next `drain`, which the `wake` hook requests
+  (the app posts it through `Runtime.post`).
+- Not yet implemented:
+  - `addPending` (E05 PendingChange tokens);
+  - the E07 and E08 port adapters;
+  - streaming plans;
+  - background hunk derivation for large files;
+  - auto-apply, which is fail-closed with no policy.
+
+### Threading
+Changesets, listeners and events belong to the owner thread. Batches and
+committed-but-undrained batches are guarded by an `Io.Mutex`; ids come
+from an atomic counter.
+
+### Ownership/lifetime
+A batch copies every text and ChangeSet it gets. The queue owns its
+changesets until `remove`.
+
+### Stability
+Unstable until the store and the E10 binding land.
