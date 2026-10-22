@@ -24,6 +24,7 @@ const formats = @import("formats.zig");
 
 const NodeId = Schema.NodeId;
 const Node = Schema.Node;
+const ecma = @import("ecma.zig");
 const Dialect = Schema.Dialect;
 
 /// Compile options.
@@ -35,7 +36,9 @@ pub const CompileOptions = struct {
     /// Remote documents; null refuses network references.
     remote: ?Schema.RemoteRefFetcher = null,
     format_assertion: formats.FormatAssertion = .none,
-    regex: ?Schema.RegexEngine = null,
+    /// zg_regex with ECMA-262 compatibility; null keeps every pattern as
+    /// an annotation.
+    regex: ?Schema.RegexEngine = ecma.engine,
     /// `pattern` the engine cannot compile (or no engine): keep it as an
     /// annotation with a warning, or reject the schema.
     unsupported_pattern: enum { annotate, reject } = .annotate,
