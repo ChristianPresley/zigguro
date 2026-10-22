@@ -1,0 +1,17 @@
+1| property:name punctuation.delimiter:: string:CI
+2| property:on punctuation.delimiter::
+3| property:push punctuation.delimiter::
+4| property:branches punctuation.delimiter:: punctuation.bracket:[ string:main punctuation.bracket:]
+5| property:jobs punctuation.delimiter::
+6| property:test punctuation.delimiter::
+7| property:runs-on punctuation.delimiter:: string:${{ matrix.os }}
+8| property:strategy punctuation.delimiter::
+9| property:matrix punctuation.delimiter::
+10| property:os punctuation.delimiter:: punctuation.bracket:[ string:ubuntu-24.04 punctuation.delimiter:, string:windows-2025 punctuation.bracket:]
+11| property:steps punctuation.delimiter::
+12| punctuation.delimiter:- property:uses punctuation.delimiter:: string:actions/checkout@v4
+13| punctuation.delimiter:- property:name punctuation.delimiter:: string:Test
+14| property:run punctuation.delimiter:: operator:|
+15| string:          zig build test
+16| string:          echo "done: ${{ github.sha }}"
+17| punctuation.delimiter:- property:run punctuation.delimiter:: string:echo ok
