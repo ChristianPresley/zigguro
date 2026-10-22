@@ -65,6 +65,14 @@ pub const preview = @import("oplog/preview.zig");
 pub const adopt = @import("oplog/adopt.zig");
 /// Rebasing descendants of rewritten and abandoned commits.
 pub const rebase = @import("oplog/rebase.zig");
+/// AI workflows (F06): the ports other packages implement, and fakes.
+pub const ai = struct {
+    pub const ports = @import("ai/ports.zig");
+    pub const testing = struct {
+        pub const fake_model = @import("ai/testing/fake_model.zig");
+        pub const fake_review = @import("ai/testing/fake_review.zig");
+    };
+};
 
 pub const ObjectId = id.ObjectId;
 pub const ChangeId = id.ChangeId;
@@ -88,6 +96,14 @@ pub const RefTarget = view.RefTarget;
 pub const Operation = operation.Operation;
 pub const OpMeta = operation.OpMeta;
 pub const DetachedOp = preview.DetachedOp;
+pub const ModelPort = ai.ports.ModelPort;
+pub const ReviewPort = ai.ports.ReviewPort;
+pub const ReviewId = ai.ports.ReviewId;
+pub const ReviewStatus = ai.ports.ReviewStatus;
+pub const ReviewDecision = ai.ports.ReviewDecision;
+pub const Proposal = ai.ports.Proposal;
+pub const CheckPort = ai.ports.CheckPort;
+pub const NotificationPort = ai.ports.NotificationPort;
 
 test {
     std.testing.refAllDecls(@This());
@@ -105,4 +121,6 @@ test {
     _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
     _ = @import("oplog/preview_test.zig");
+    _ = @import("ai/testing/fake_model.zig");
+    _ = @import("ai/testing/fake_review.zig");
 }
