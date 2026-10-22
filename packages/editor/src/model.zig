@@ -6,6 +6,8 @@ pub const buffer = @import("model/buffer.zig");
 pub const edit = @import("model/edit.zig");
 /// Line and token diffs.
 pub const diff = @import("model/diff.zig");
+/// Find and replace.
+pub const search = @import("model/search.zig");
 /// Live documents.
 pub const document = @import("model/document.zig");
 /// Cross-thread snapshots.
