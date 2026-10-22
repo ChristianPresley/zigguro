@@ -48,6 +48,12 @@ pub inline fn props(cp: u21) Props {
     return @bitCast(sec(u64, t.props_records)[s2[(block << t.props_shift) | (cp & mask)]]);
 }
 
+/// True when every code point of BMP block `block` (`cp >> 6`, < 1024)
+/// has ccc 0 and NFC_QC=Y, so the NFC quick check can skip it.
+pub inline fn nfcSafeBlock(block: u32) bool {
+    return (sec(u64, t.nfc_safe_bmp)[block >> 6] >> @intCast(block & 63)) & 1 != 0;
+}
+
 /// The less frequently used properties of `cp`.
 pub inline fn aux(cp: u21) Aux {
     if (cp > 0x10FFFF) return .{};
