@@ -81,8 +81,9 @@ pub const WidgetVTable = struct {
     deinitState: *const fn (*anyopaque) void,
     /// Copies props into `blob` (resizing it) and fixes up slices.
     retain: *const fn (gpa: std.mem.Allocator, blob: *Blob, props: *const anyopaque) std.mem.Allocator.Error!void,
-    layoutHash: *const fn (*const anyopaque) u64,
-    paintHash: *const fn (*const anyopaque) u64,
+    /// The props' layout hash and paint hash, in that order. A widget
+    /// without `layoutHash`/`paintHash` hashes its props once for both.
+    hashes: *const fn (*const anyopaque) [2]u64,
     style: ?*const fn (*const anyopaque, *const Theme) Style,
     measure: ?*const fn (*measure_mod.MeasureCx, *const anyopaque, *anyopaque, ?f32) geom.Size,
     paint: ?*const fn (*paint_cx.PaintCx, *const anyopaque, *anyopaque) void,
@@ -146,13 +147,18 @@ pub fn vtableOf(comptime W: type) *const WidgetVTable {
             var off: usize = std.mem.alignForward(usize, @sizeOf(P), 16);
             deepCopy(P, dst, buf, &off);
         }
-        fn layoutHash(p: *const anyopaque) u64 {
+        fn hashes(p: *const anyopaque) [2]u64 {
             const props: *const P = @ptrCast(@alignCast(p));
-            return if (@hasDecl(W, "layoutHash")) W.layoutHash(props) else hash.of(props.*);
-        }
-        fn paintHash(p: *const anyopaque) u64 {
-            const props: *const P = @ptrCast(@alignCast(p));
-            return if (@hasDecl(W, "paintHash")) W.paintHash(props) else hash.of(props.*);
+            const lh = comptime @hasDecl(W, "layoutHash");
+            const ph = comptime @hasDecl(W, "paintHash");
+            if (!lh and !ph) {
+                const h = hash.of(props.*);
+                return .{ h, h };
+            }
+            return .{
+                if (lh) W.layoutHash(props) else hash.of(props.*),
+                if (ph) W.paintHash(props) else hash.of(props.*),
+            };
         }
         fn styleFn(p: *const anyopaque, th: *const Theme) Style {
             return W.style(@ptrCast(@alignCast(p)), th);
@@ -182,8 +188,7 @@ pub fn vtableOf(comptime W: type) *const WidgetVTable {
             .initState = initState,
             .deinitState = deinitState,
             .retain = retainFn,
-            .layoutHash = layoutHash,
-            .paintHash = paintHash,
+            .hashes = hashes,
             .style = if (@hasDecl(W, "style")) styleFn else null,
             .measure = if (@hasDecl(W, "measure")) measureFn else null,
             .paint = if (@hasDecl(W, "paint")) paintFn else null,
