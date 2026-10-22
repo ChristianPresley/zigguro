@@ -3,8 +3,13 @@
 //! line, driven by the E15 keymap (VS Code preset) and command palette.
 //!
 //! Commands: `file.save` (Ctrl+S), `workbench.showCommands`
-//! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `editor.undo`,
-//! `editor.redo`, `editor.selectAll` and `workbench.toggleTheme`.
+//! (Ctrl+Shift+P, F1), `terminal.toggle` (Ctrl+`), `workspace.manageTrust`,
+//! `editor.undo`, `editor.redo`, `editor.selectAll` and
+//! `workbench.toggleTheme`.
+//!
+//! Workspace trust is asked per session until the trust store
+//! (E16.F07.S01.T01) persists it; the status line shows Restricted Mode.
+//! `approvals` is the dialog ApprovalPort for consumers (agents, MCP).
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -12,6 +17,8 @@ const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
 const zg_syntax = @import("zg_syntax");
 const zg_terminal_view = @import("zg_terminal_view");
+const zg_security = @import("zg_security");
+const zg_security_ui = @import("zg_security_ui");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 
 const Ui = zg_gui.Ui;
@@ -54,6 +61,9 @@ pub const Workbench = struct {
     terminal_node: zg_gui.core.NodeId = .none,
     /// Focus the terminal once it is in the tree.
     focus_terminal: bool = false,
+    /// This session's trust in the working folder (until the trust store).
+    trust: zg_security.contracts.TrustState = .unknown,
+    approvals: zg_security_ui.DialogApprovalPort = undefined,
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -97,6 +107,7 @@ pub const Workbench = struct {
         const w = wb.win orelse return;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
+        wb.approvals.deinit();
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
@@ -131,6 +142,7 @@ pub const Workbench = struct {
         wb.palette = .init(wb.gpa, wb.reg, &wb.adapter);
         try wb.palette.registerCommands();
         wb.view.on_change = .{ .ctx = wb, .f = onViewChange };
+        wb.approvals = .init(wb.gpa, wb.io, win);
     }
 
     fn loadKeymap(wb: *Workbench) !void {
@@ -149,6 +161,7 @@ pub const Workbench = struct {
     const commands = [_]Cmd{
         .{ .id = "file.save", .title = "Save", .category = "File", .run = save },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
+        .{ .id = "workspace.manageTrust", .title = "Manage Workspace Trust", .category = "Workspaces", .run = manageTrust },
         .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .run = undo },
         .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .run = redo },
         .{ .id = "editor.selectAll", .title = "Select All", .category = "Selection", .run = selectAll },
@@ -234,6 +247,22 @@ pub const Workbench = struct {
         w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
     }
 
+    /// Asks whether to trust the working folder.
+    pub fn manageTrust(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = std.process.currentPath(wb.io, &buf) catch return;
+        const folder = buf[0..n];
+        const parent = zg_security_ui.trustableParent(folder, wb.env.get("HOME") orelse wb.env.get("USERPROFILE"));
+        _ = try zg_security_ui.askTrust(w, .{ .folder = folder, .parent = parent }, .{ .ctx = wb, .f = onTrust });
+    }
+
+    fn onTrust(ctx: ?*anyopaque, c: zg_security_ui.TrustChoice) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
+        wb.trust = if (c == .restricted) .restricted else .trusted;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     fn focusTerminal(ctx: *anyopaque, w: *Window) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.focus_terminal and !wb.terminal_node.isNone()) w.setFocus(wb.terminal_node, false);
@@ -302,6 +331,7 @@ pub const Workbench = struct {
         ui.textf("Ln {d}, Col {d}", .{ line + 1, col + 1 }, .{ .color = .fg_muted, .wrap = false });
         if (wb.view.sels.items.len > 1) ui.textf("{d} selections", .{wb.view.sels.items.len}, .{ .color = .fg_muted, .wrap = false });
         if (wb.syntax) |s| ui.text(s.lang.name, .{ .color = .fg_muted, .wrap = false });
+        if (wb.trust != .trusted) ui.text("Restricted Mode", .{ .color = .warning, .wrap = false });
         if (wb.adapter.status()) |st| ui.text(st, .{ .color = .warning, .wrap = false }) else if (wb.message_len > 0) ui.text(wb.message[0..wb.message_len], .{ .color = .fg_muted, .wrap = false });
     }
 };
