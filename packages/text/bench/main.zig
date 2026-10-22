@@ -15,15 +15,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "text.atlas_insert",        "text.bidi_200col_ltr", "text.bidi_200col_rtl",      "text.cache_hit",
-    "text.cache_screen",        "text.casefold_ascii",  "text.cells_row_200",        "text.cff_outline",
-    "text.fontdb_load_3k",      "text.gamma",           "text.glyf_outline",         "text.grapheme_ascii",
-    "text.grapheme_mixed",      "text.gvar_apply",      "text.hit_test",             "text.integrate_gpix",
-    "text.itemize_200col",      "text.layout_200col",   "text.lcd",                  "text.linebreak_mixed",
-    "text.measure_hit",         "text.nfc_quickcheck",  "text.nfc_slow_mixed",       "text.raster_14px",
-    "text.raster_64px_cjk",     "text.raster_lcd_14px", "text.registry_get",         "text.sdf_48px",
-    "text.shape_code_line_200", "text.shape_latin_1k",  "text.shape_word_cache_hit", "text.var_advance",
-    "text.width_row_200",       "text.word_mixed",      "text.wrap_10kb",
+    "text.atlas_insert",         "text.bidi_200col_ltr", "text.bidi_200col_rtl",     "text.cache_hit",
+    "text.cache_screen",         "text.casefold_ascii",  "text.cells_row_200",       "text.cff_outline",
+    "text.fontdb_load_3k",       "text.gamma",           "text.glyf_outline",        "text.gvar_apply",
+    "text.hit_test",             "text.integrate_gpix",  "text.itemize_200col",      "text.layout_200col",
+    "text.lcd",                  "text.linebreak_mixed", "text.measure_hit",         "text.nfc_quickcheck",
+    "text.nfc_slow_mixed",       "text.raster_14px",     "text.raster_64px_cjk",     "text.raster_lcd_14px",
+    "text.registry_get",         "text.sdf_48px",        "text.shape_code_line_200", "text.shape_latin_1k",
+    "text.shape_word_cache_hit", "text.var_advance",     "text.width_row_200",       "text.wrap_10kb",
 };
 
 const font_names = [_][]const u8{
@@ -72,6 +71,46 @@ fn register(b: *bench.Bench) !void {
 
     // Unicode property lookups over the same mixed code points.
     try b.run("text.props_lookup", &cps, propsLookup);
+
+    // Segmentation over 1 MiB of ASCII source code and of mixed text.
+    const ascii = try b.gpa.alloc(u8, 1 << 20);
+    defer b.gpa.free(ascii);
+    fill(ascii, &.{ "fn main() void {\n", "    const x = foo(bar, 42);\n", "    // comment here\n", "}\n" });
+    const mixed = try b.gpa.alloc(u8, 1 << 20);
+    defer b.gpa.free(mixed);
+    fill(mixed, &.{ "Hello wörld, ", "日本語のテキスト ", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} ", "مرحبا بالعالم ", "क्षत्रिय ", "can't 3.14\n" });
+    try b.run("text.grapheme_ascii", @as([]const u8, ascii), graphemeCount);
+    try b.run("text.grapheme_mixed", @as([]const u8, mixed), graphemeCount);
+    try b.run("text.word_mixed", @as([]const u8, mixed), wordCount);
+}
+
+fn fill(buf: []u8, pieces: []const []const u8) void {
+    var n: usize = 0;
+    var k: usize = 0;
+    while (n < buf.len) : (k += 1) {
+        const p = pieces[k % pieces.len];
+        if (n + p.len > buf.len) {
+            @memset(buf[n..], ' ');
+            break;
+        }
+        @memcpy(buf[n..][0..p.len], p);
+        n += p.len;
+    }
+}
+
+fn graphemeCount(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_text.unicode.grapheme.count(text));
+}
+
+fn wordCount(text: []const u8, s: *State) void {
+    s.setBytes(text.len);
+    for (0..s.iterations()) |_| {
+        var it = zg_text.unicode.word.WordIterator.init(text);
+        var n: usize = 0;
+        while (it.next()) |_| n += 1;
+        bench.doNotOptimizeAway(n);
+    }
 }
 
 fn propsLookup(cps: *const [4096]u21, s: *State) void {
