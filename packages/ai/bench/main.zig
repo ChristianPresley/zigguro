@@ -103,6 +103,24 @@ fn register(b: *bench.Bench) !void {
             }
         }
     }.f);
+
+    // Budget: < 15 ms on Linux, < 40 ms on Windows: spawn a trivial hook,
+    // feed it the event and read its answer (E10.F09.S03.T01).
+    if (@import("builtin").os.tag != .windows) {
+        var hooks: ai.ext.HookEngine = try .init(b.gpa, b.io, .{});
+        defer hooks.deinit();
+        try hooks.add(&.{.{ .layer = .user, .event = .PreToolUse, .configs = &.{.{ .hooks = &.{.{ .command = "exit 0", .shell = .sh }} }} }});
+        try b.run("ai.hook_spawn_trivial: one PreToolUse hook, spawn to outcome", &hooks, struct {
+            fn f(e: *ai.ext.HookEngine, s: *bench.State) void {
+                var arena: std.heap.ArenaAllocator = .init(e.gpa);
+                defer arena.deinit();
+                for (0..s.iterations()) |_| {
+                    _ = arena.reset(.retain_capacity);
+                    bench.doNotOptimizeAway(e.run(e.io, arena.allocator(), .PreToolUse, .{ .tool_name = "run_command", .tool_input_json = "{\"command\":\"ls\"}" }) catch unreachable);
+                }
+            }
+        }.f);
+    }
 }
 
 /// A parent agent and a runner whose children get an instant answer.

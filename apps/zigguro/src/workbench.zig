@@ -481,6 +481,7 @@ pub const Workbench = struct {
             p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
             p.plans = &host.plans;
             p.plan_mode = &host.plan_mode;
+            p.attachChildren(&host.children);
             host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
             wb.agent = host;
             wb.agent_panel = p;

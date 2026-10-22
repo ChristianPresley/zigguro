@@ -21,6 +21,7 @@ const zg_security = @import("zg_security");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
 const PlanCards = @import("plan_card.zig").PlanCards;
+const ChildRelay = @import("panel.zig").ChildRelay;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -54,6 +55,12 @@ pub const AgentHost = struct {
     /// Plan mode and its approval cards (in the agent panel).
     plans: PlanCards,
     plan_mode: zg_ai.plan.PlanMode,
+    /// Subagents (`.zigguro/agents/*.md`, then the built-ins) through the
+    /// `task` tool; their events reach the panel through `children`.
+    defs_arena: std.heap.ArenaAllocator,
+    subagents: zg_ai.subagent.SubagentRunner,
+    task: zg_ai.subagent.task_tool.TaskTool,
+    children: ChildRelay,
 
     /// An agent on the working folder whose file tools use the documents
     /// of `docs` and whose approvals go through `port`. UI thread.
@@ -123,6 +130,21 @@ pub const AgentHost = struct {
         h.plan_mode = .init(gpa, h.agent, h.cwd, h.plans.approver(), .{ .tools = &h.agent_tools });
         errdefer h.plan_mode.deinit();
         try h.tools.addSource(h.plan_mode.source());
+
+        h.defs_arena = .init(gpa);
+        errdefer h.defs_arena.deinit();
+        const da = h.defs_arena.allocator();
+        var agent_defs: std.ArrayList(zg_ai.subagent.defs.AgentDef) = .empty;
+        const agents_dir = try std.fs.path.join(da, &.{ h.cwd, ".zigguro", "agents" });
+        try zg_ai.subagent.defs.loadDefs(io, da, &.{.{ .dir = agents_dir, .source = .project }}, &agent_defs, null);
+        h.subagents = .init(gpa, io, h.mgr, &h.tools, agent_defs.items, .{});
+        h.subagents.main_tools = &h.agent_tools;
+        errdefer h.subagents.deinit();
+        h.task = try .init(gpa, &h.subagents);
+        errdefer h.task.deinit();
+        try h.tools.addSource(h.task.source());
+        h.children = .{ .io = io };
+        try h.mgr.subscribeAll(h.children.subscriber());
         return h;
     }
 
@@ -130,7 +152,10 @@ pub const AgentHost = struct {
     /// stops it). UI thread.
     pub fn destroy(h: *AgentHost) void {
         const gpa = h.gpa;
+        h.subagents.deinit();
         h.mgr.deinit();
+        h.task.deinit();
+        h.defs_arena.deinit();
         h.plan_mode.deinit();
         h.plans.deinit();
         h.approvals.deinit();

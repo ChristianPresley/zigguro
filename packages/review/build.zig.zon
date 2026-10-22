@@ -1,0 +1,21 @@
+.{
+    .name = .zg_review,
+    .version = "0.0.0",
+    .fingerprint = 0x44b64d7c53935928,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_editor = .{ .path = "../editor" },
+        .zg_ai = .{ .path = "../ai" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+        "docs",
+    },
+}
