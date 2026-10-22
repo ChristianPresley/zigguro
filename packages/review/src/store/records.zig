@@ -5,7 +5,9 @@
 //! Edits are inlined as `[[start, end, "text"], ...]`; when their texts
 //! exceed `inline_limit` they go to a blob holding the same JSON and the
 //! record names it (`edits_blob`). Hunks are stored, so loading never
-//! reads base texts.
+//! reads base texts: `[base_start, base_count, new_start, new_count,
+//! span0, span1, decision, "key"]`, plus a ninth element, the conflict
+//! object, when a rebase marked the hunk.
 
 const std = @import("std");
 const proto = @import("zg_ai_proto");
@@ -230,6 +232,15 @@ fn writeFile(s: *Stringify, f: *const FileChange, blobs: model.Blobs, scratch: A
         for ([_]u64{ h.base_lines.start, h.base_lines.count, h.new_lines.start, h.new_lines.count, h.replace_span[0], h.replace_span[1], @intFromEnum(h.decision) }) |x| try s.write(x);
         var kb: [16]u8 = undefined;
         try s.write(std.fmt.bufPrint(&kb, "{x:0>16}", .{h.key}) catch unreachable);
+        if (h.conflict) |c| {
+            try s.beginObject();
+            try field(s, "kind", @tagName(c.kind));
+            if (c.other) |o| try field(s, "other", @intFromEnum(o));
+            try field(s, "start", c.ours_lines.start);
+            try field(s, "count", c.ours_lines.count);
+            try field(s, "theirs", c.theirs_text);
+            try s.endObject();
+        }
         try s.endArray();
     }
     try s.endArray();
@@ -344,7 +355,7 @@ fn readFile(gpa: Allocator, a: Allocator, v: Value, blobs: model.Blobs) anyerror
     const hunks = try a.alloc(model.Hunk, hs.len);
     for (hunks, hs, 0..) |*h, hv, i| {
         const t = (try arr(hv)).items;
-        if (t.len != 8) return error.InvalidRecord;
+        if (t.len != 8 and t.len != 9) return error.InvalidRecord;
         const dec = try int(u8, t[6]);
         if (dec > @intFromEnum(model.Decision.edited)) return error.InvalidRecord;
         h.* = .{
@@ -355,6 +366,15 @@ fn readFile(gpa: Allocator, a: Allocator, v: Value, blobs: model.Blobs) anyerror
             .decision = @enumFromInt(dec),
             .key = std.fmt.parseInt(u64, try str(t[7]), 16) catch return error.InvalidRecord,
         };
+        if (t.len == 9) {
+            const co = try obj(t[8]);
+            h.conflict = .{
+                .kind = try enumOf(model.ConflictKind, get(co, "kind")),
+                .other = if (get(co, "other")) |x| @enumFromInt(try int(u64, x)) else null,
+                .ours_lines = .{ .start = try int(u32, get(co, "start")), .count = try int(u32, get(co, "count")) },
+                .theirs_text = try dupe(a, get(co, "theirs")),
+            };
+        }
     }
     f.hunks = hunks;
     return f;
@@ -455,6 +475,8 @@ test "store: changeset record round trip" {
     try q.setExecutable(b, "run", true);
     const id = try q.commitBatch(b, .{ .checkpoint = 4, .presentation = .inline_ });
     q.getMut(id).?.files[0].hunks[0].decision = .rejected;
+    try roundTrip(q, &mem, id);
+    q.getMut(id).?.files[0].hunks[0].conflict = .{ .kind = .sibling_changeset, .other = @enumFromInt(3), .ours_lines = .{ .start = 0, .count = 1 }, .theirs_text = "x\n" };
     try roundTrip(q, &mem, id);
 }
 
