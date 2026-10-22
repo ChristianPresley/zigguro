@@ -119,6 +119,15 @@ fn vRequest(ptr: *anyopaque, req: Transport.OutgoingRequest, sink: *Transport.Re
 
 fn vNotify(ptr: *anyopaque, n: Transport.OutgoingNotification) Transport.SendError!void {
     const self: *HttpSseTransport = @ptrCast(@alignCast(ptr));
+    if (n.ordered) {
+        self.rt.assertNotUi();
+        const failure = postOnce(self, n.body) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.Closed,
+        };
+        if (failure != null) return error.Closed;
+        return;
+    }
     return self.post(n.body, null);
 }
 
