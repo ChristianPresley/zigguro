@@ -20,6 +20,8 @@ pub const synthetic_atlas = @import("synthetic_atlas.zig");
 pub const scenes = @import("scenes.zig");
 /// The scene runner.
 pub const parity = @import("parity.zig");
+/// Validation-layer assertions for GPU tests.
+pub const validation = @import("validation.zig");
 
 test {
     _ = CpuImage;
@@ -29,4 +31,5 @@ test {
     _ = synthetic_atlas;
     _ = scenes;
     _ = parity;
+    _ = validation;
 }
