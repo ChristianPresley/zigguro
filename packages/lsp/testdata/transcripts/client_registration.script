@@ -1,0 +1,18 @@
+# Dynamic registration: formatting is registered for zig documents, used,
+# then unregistered. `test/ready` tells the test each step is done.
+> initialize
+< {"id": $1, "result": {"capabilities": {}}}
+> initialized
+< {"id": 900, "method": "client/registerCapability", "params": {"registrations": [{"id": "fmt", "method": "textDocument/formatting", "registerOptions": {"documentSelector": [{"language": "zig"}]}}]}}
+> response {"id": 900, "result": null}
+< {"id": 901, "method": "workspace/configuration", "params": {"items": [{"section": "zig"}, {"section": "zls"}]}}
+> response {"id": 901, "result": [null, null]}
+< event test/ready {"step": 1}
+> textDocument/formatting {"textDocument": {"uri": "file:///w/a.zig"}}
+< {"id": $1, "result": []}
+< {"id": 902, "method": "client/unregisterCapability", "params": {"unregisterations": [{"id": "fmt", "method": "textDocument/formatting"}]}}
+> response {"id": 902, "result": null}
+< event test/ready {"step": 2}
+> shutdown
+< {"id": $1, "result": null}
+> exit
