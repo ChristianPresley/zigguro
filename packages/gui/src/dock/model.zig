@@ -509,6 +509,20 @@ pub const DockModel = struct {
         renormalize(sp.ratios.items);
     }
 
+    /// Sets ratios without an undo step (live splitter drags; call
+    /// `checkpoint` once when the gesture starts).
+    pub fn setRatiosLive(m: *DockModel, s: SplitId, ratios: []const f32) void {
+        const sp = m.splits.getPtr(s) orelse return;
+        if (ratios.len != sp.ratios.items.len) return;
+        @memcpy(sp.ratios.items, ratios);
+        renormalize(sp.ratios.items);
+    }
+
+    /// Records an undo step for a gesture made of live changes.
+    pub fn checkpoint(m: *DockModel) Allocator.Error!void {
+        try m.record();
+    }
+
     /// Shows only `g` in the center, or everything again.
     pub fn toggleMaximize(m: *DockModel, g: GroupId) void {
         if (m.maximized) |cur| {

@@ -49,8 +49,9 @@ The model is one of:
 
 - **A script** (`script`): the model's turns written out: text, tool calls
   (input as JSON text) and token usage. `expect` lists text that must be in
-  the request a turn answers, in its messages or tool results. A harness
-  that drops tool results, history or a compaction summary fails there.
+  the request a turn answers, in its system prompt, messages or tool
+  results. A harness that drops tool results, history or a compaction
+  summary fails there.
   Scripts run as the `cassette` model (200k window, $3/$15 per Mtok).
 - **A cassette** (`cassette`): recorded provider HTTP replayed through the
   real provider. `model` is then a catalog model.
@@ -58,8 +59,9 @@ The model is one of:
   exchanges are recorded into `cassettes/<name>.jsonl` (`record_missing`).
 
 The agent runs headless (`runPrint`) with stream-json output and no memory
-files, with the run, file and command tools rooted in the workspace. A
-scenario also sets `permission_mode` (default `accept-edits`), `max_turns`,
+files, with the file and command tools rooted in the workspace and `task`
+with the built-in subagents. Subagents play the same script, so their
+turns sit between the parent's, in order. A scenario also sets `permission_mode` (default `accept-edits`), `max_turns`,
 `allowed_tools` and `disallowed_tools` (flag syntax), `hooks`
 (`PreToolUse` rules matching a tool and a substring of its input),
 `followup` (a second prompt run with `--continue`) and
@@ -88,6 +90,5 @@ A regression is a scenario that passed in the baseline and fails now, a
 new scenario that fails, or turns or cost grown by more than 25%. Update
 the baseline with `-Deval-update-baseline` after an intended change.
 
-With tool results dropped from the loop, 28 of the 36 scenarios fail.
-Subagent and MCP scenarios wait on the subagent tools (F09) and the MCP
-client wiring (E11).
+With tool results dropped from the loop, 28 of the 36 original scenarios
+fail. MCP scenarios wait on the MCP client wiring (E11).

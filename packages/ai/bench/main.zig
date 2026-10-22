@@ -87,4 +87,70 @@ fn register(b: *bench.Bench) !void {
             }
         }
     }.f);
+
+    // Budget: < 5 ms per subagent, spawn to report (E10.F09.S01.T01).
+    var sub: SubagentBench = undefined;
+    try sub.init(b.gpa, b.io, &reg);
+    defer sub.deinit();
+    try b.run("ai.subagent_spawn: spawn a child, one model call, report", &sub, struct {
+        fn f(x: *SubagentBench, s: *bench.State) void {
+            var arena: std.heap.ArenaAllocator = .init(x.gpa);
+            defer arena.deinit();
+            for (0..s.iterations()) |_| {
+                _ = arena.reset(.retain_capacity);
+                const child = x.runner.spawn(x.parent, ai.subagent.defs.find(x.defs.items, "general").?, "Report.", .{}) catch unreachable;
+                bench.doNotOptimizeAway(x.runner.awaitReport(x.io, arena.allocator(), child) catch unreachable);
+            }
+        }
+    }.f);
 }
+
+/// A parent agent and a runner whose children get an instant answer.
+const SubagentBench = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    provider: ai.Provider,
+    tools: ai.tools.ToolRegistry,
+    main_tools: ai.tools.AgentTools,
+    mgr: *ai.loop.AgentManager,
+    arena: std.heap.ArenaAllocator,
+    defs: std.ArrayList(ai.subagent.defs.AgentDef),
+    runner: ai.subagent.SubagentRunner,
+    parent: *ai.loop.Agent,
+
+    fn init(x: *SubagentBench, gpa: std.mem.Allocator, io: std.Io, reg: *ai.ModelRegistry) !void {
+        x.* = .{ .gpa = gpa, .io = io, .provider = .{ .ptr = x, .vtable = &.{ .stream = answer, .deinit = noop }, .id = .scripted, .caps = .all }, .tools = .init(gpa, io), .main_tools = undefined, .mgr = undefined, .arena = .init(gpa), .defs = .empty, .runner = undefined, .parent = undefined };
+        x.main_tools = .init(gpa, io, &x.tools, .{});
+        x.mgr = try ai.loop.AgentManager.init(gpa, io, .{ .registry = reg, .providers = .fixed(&x.provider), .tools = x.main_tools.tools() });
+        try ai.subagent.defs.loadDefs(io, x.arena.allocator(), &.{}, &x.defs, null);
+        x.runner = .init(gpa, io, x.mgr, &x.tools, x.defs.items, .{});
+        x.parent = try x.mgr.create(.{ .model = "sonnet" });
+    }
+
+    fn deinit(x: *SubagentBench) void {
+        x.runner.deinit();
+        x.mgr.deinit();
+        x.main_tools.deinit();
+        x.tools.deinit();
+        x.arena.deinit();
+    }
+
+    fn noop(_: *anyopaque) void {}
+
+    fn answer(_: *anyopaque, _: std.Io, arena: std.mem.Allocator, _: *const ai.request.Request, sink: ai.events.EventSink) ai.Provider.StreamError!ai.request.Response {
+        const evs = [_]ai.events.StreamEvent{
+            .{ .message_start = .{ .id = "msg", .model = "sonnet" } },
+            .{ .block_start = .{ .index = 0, .kind = .text } },
+            .{ .text_delta = .{ .index = 0, .text = "Done." } },
+            .{ .block_stop = .{ .index = 0 } },
+            .{ .usage = .{ .input = 10, .output = 2 } },
+            .{ .stop = .end_turn },
+        };
+        var asm_: ai.MessageAssembler = .init(arena);
+        for (evs) |e| {
+            asm_.feed(e) catch return error.Protocol;
+            sink.send(e);
+        }
+        return .{ .message = asm_.finish() catch return error.Protocol, .stop = .end_turn, .usage = asm_.usage };
+    }
+};

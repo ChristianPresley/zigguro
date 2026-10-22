@@ -1,0 +1,23 @@
+.{
+    .name = "subagent_explore",
+    .fixture = "notes",
+    .prompt = "Use an explore agent to find what a.txt starts with.",
+    .permission_mode = "default",
+    .script = .{
+        .{ .tools = .{.{ .name = "task", .input = "{\"agent\":\"explore\",\"prompt\":\"What is the first word of a.txt?\"}" }} },
+        // The explore agent, with its own context.
+        .{
+            .tools = .{.{ .name = "read_file", .input = "{\"path\":\"a.txt\"}" }},
+            .expect = .{ "What is the first word of a.txt?", "You are an explore agent" },
+        },
+        .{ .text = "a.txt starts with alpha (a.txt:1).", .expect = .{"alpha"} },
+        // The parent again.
+        .{ .text = "a.txt starts with alpha.", .expect = .{ "a.txt starts with alpha (a.txt:1).", "[agent explore · 1 tool call" } },
+    },
+    .graders = .{
+        .{ .tool_used = "task" },
+        .{ .final_text_matches = "starts with alpha" },
+        .{ .file_unchanged = "a.txt" },
+        .no_permission_denials,
+    },
+}
