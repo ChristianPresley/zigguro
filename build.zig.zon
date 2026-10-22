@@ -26,6 +26,7 @@
         .zg_notes = .{ .path = "packages/notes" },
         .zg_regex = .{ .path = "packages/regex" },
         .zg_editor = .{ .path = "packages/editor" },
+        .zg_gui = .{ .path = "packages/gui" },
         // pkgtool:insert
     },
     .paths = .{
