@@ -6,6 +6,7 @@ const AgentManager = @import("../loop/Manager.zig");
 const args_mod = @import("args.zig");
 const exit_codes = @import("exit_codes.zig");
 const runner = @import("runner.zig");
+const slash = @import("slash.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -23,6 +24,14 @@ pub fn runPrint(io: Io, gpa: Allocator, mgr: *AgentManager, opts: args_mod.Headl
             return .failed;
         },
         else => return e,
+    };
+    // `-p "/name args"` runs a skill.
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    if (opts.prompt) |p| switch (try slash.run(&r, scratch.allocator(), p, false)) {
+        .not_command => {},
+        .prompt => |text| r.opts.prompt = text,
+        .handled, .exit, .failed => return .usage,
     };
     if (opts.streamInput()) {
         try r.streamInput(in);
