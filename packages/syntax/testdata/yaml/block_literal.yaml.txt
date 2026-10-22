@@ -1,0 +1,14 @@
+script: |
+  echo "hello"
+  # not a comment
+
+  exit 0
+keep: |+
+  trailing
+
+strip: |-
+  text
+indented: |2
+    four spaces
+  two
+after: done
