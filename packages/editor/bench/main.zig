@@ -433,19 +433,23 @@ const SmartBench = struct {
     ap: *zg_editor.model.edit.pairs.AutoPairs,
 };
 
-/// Smart typing with 1k carets over a 100k-line Zig document: an
+/// Smart typing with one and 1k carets over a 100k-line Zig document: an
 /// auto-closing `(` typed at each, and Enter (auto-indent) at each. No
 /// syntax tokens, so this is the edit pipeline plus the indent rules.
 fn registerSmart(b: *bench.Bench, text: []const u8) !void {
     const edit = zg_editor.model.edit;
-    inline for (.{ .{ "editor.smart.type_autoclose_1k_cursors", typeAutoClose }, .{ "editor.smart.newline_1k_cursors", newlineCursors } }) |c| {
+    inline for (.{
+        .{ "editor.smart.type_autoclose", typeAutoClose, 1 },
+        .{ "editor.smart.type_autoclose_1k_cursors", typeAutoClose, 1_000 },
+        .{ "editor.smart.newline_1k_cursors", newlineCursors, 1_000 },
+    }) |c| {
         const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
         defer doc.deinit();
         var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(0));
         defer sels.deinit();
         var ap: edit.pairs.AutoPairs = .{ .gpa = b.gpa };
         defer ap.deinit();
-        const n = 1_000;
+        const n = c[2];
         const lines = doc.tree.lineCount() - 1;
         const carets = try b.gpa.alloc(edit.selection.Selection, n);
         defer b.gpa.free(carets);
