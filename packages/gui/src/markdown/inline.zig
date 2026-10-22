@@ -361,7 +361,8 @@ const Parser = struct {
         const ds: u32 = @intCast(d.text_pool.items.len);
         if (prefix) |pre| try d.text_pool.appendSlice(p.gpa, pre);
         try d.text_pool.appendSlice(p.gpa, p.s[a..e]);
-        const i = try d.addInline(.{ .kind = .autolink, .text = p.range(a, e), .dest = .{ ds, @intCast(d.text_pool.items.len) }, .dest_pooled = true, .title = .{ ds, ds } });
+        const dest = d.text_pool.items[ds..];
+        const i = try d.addInline(.{ .kind = .autolink, .text = p.range(a, e), .dest = .{ ds, @intCast(d.text_pool.items.len) }, .dest_pooled = true, .title = .{ ds, ds }, .unsafe = links.isUnsafeDestination(dest) });
         p.append(p.root, i);
     }
 

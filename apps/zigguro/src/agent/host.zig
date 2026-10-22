@@ -19,6 +19,7 @@ const zg_net = @import("zg_net");
 const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 const zg_security = @import("zg_security");
+const zg_mcp = @import("zg_mcp");
 const EditorFiles = @import("editor_files.zig").EditorFiles;
 const ReviewGlue = @import("review_glue.zig").ReviewGlue;
 const ToolApprovals = @import("approvals.zig").ToolApprovals;
@@ -128,6 +129,9 @@ pub const AgentHost = struct {
             .tools = h.agent_tools.tools(),
             .permission = h.approvals.permission(),
             .checkpoints = h.review.checkpoints(),
+            // Tool inputs are checked by E11's JSON Schema validator, as
+            // in `zg agent`.
+            .validator = zg_mcp.schema.toolValidator(zg_ai.schema.validate),
         });
         errdefer h.mgr.deinit();
         h.agent = try h.mgr.create(.{ .model = env.get("ZG_MODEL") orelse "sonnet", .cwd = h.cwd });

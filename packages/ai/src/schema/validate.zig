@@ -2,9 +2,9 @@
 //!
 //! zigguro has exactly one JSON Schema 2020-12 validator, owned by E11
 //! (`packages/mcp/src/schema/`). zg_ai depends only on the small `Validator`
-//! surface here; the E11 adapter is injected at `AgentManager` init once
-//! zg_mcp is on main (E11.F01.S02.T01, PR #1202). Until then `permissive()`
-//! lets every other E10 component run. No keyword logic lives in zg_ai.
+//! surface here; apps inject `zg_mcp.schema.toolValidator(validate)` at
+//! `AgentManager` init. `permissive()` serves tests and hosts without
+//! zg_mcp. No keyword logic lives in zg_ai.
 
 const std = @import("std");
 const proto = @import("zg_ai_proto");
@@ -46,7 +46,8 @@ pub const ErrorList = struct {
 pub const Validator = struct {
     ctx: *anyopaque,
     compile: *const fn (ctx: *anyopaque, arena: Allocator, schema_json: []const u8) CompileError!*const anyopaque,
-    validate: *const fn (ctx: *anyopaque, compiled: *const anyopaque, value: std.json.Value, errs: *ErrorList) bool,
+    /// Error strings must outlive the call: allocate them in `arena`.
+    validate: *const fn (ctx: *anyopaque, compiled: *const anyopaque, arena: Allocator, value: std.json.Value, errs: *ErrorList) bool,
 };
 
 var permissive_ctx: u8 = 0;
@@ -64,7 +65,7 @@ fn permissiveCompile(_: *anyopaque, arena: Allocator, schema_json: []const u8) C
     return &permissive_ctx;
 }
 
-fn permissiveValidate(_: *anyopaque, _: *const anyopaque, value: std.json.Value, errs: *ErrorList) bool {
+fn permissiveValidate(_: *anyopaque, _: *const anyopaque, _: Allocator, value: std.json.Value, errs: *ErrorList) bool {
     if (value == .object) return true;
     errs.add(.{ .pointer = "", .keyword = "type", .message = "expected an object" });
     return false;
@@ -142,7 +143,7 @@ pub const Compiled = struct {
             },
         };
         r.coercions = try coerceNumericStrings(arena, c.schema, &r.value);
-        r.ok = c.validator.validate(c.validator.ctx, c.handle, r.value, &r.errors);
+        r.ok = c.validator.validate(c.validator.ctx, c.handle, arena, r.value, &r.errors);
         return r;
     }
 };

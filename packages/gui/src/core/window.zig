@@ -1347,6 +1347,7 @@ pub const Window = struct {
     }
     fn sinkRepaint(p: *anyopaque, n: NodeId) void {
         const w: *Window = @ptrCast(@alignCast(p));
+        if (!w.store.valid(n)) return;
         w.store.markPaint(n);
         w.needs_frame = true;
     }
@@ -1368,6 +1369,7 @@ pub const Window = struct {
     }
     fn sinkRect(p: *anyopaque, n: NodeId) Rect {
         const w: *Window = @ptrCast(@alignCast(p));
+        if (!w.store.valid(n)) return .{};
         return w.store.absRect(n);
     }
     fn sinkRelayout(p: *anyopaque, n: NodeId) void {

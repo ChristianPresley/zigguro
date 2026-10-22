@@ -12,3 +12,5 @@
   WHATWG host is not reachable from the build environment.
   `tools/mdspec/gen_entities.zig` generates
   `packages/gui/src/markdown/entities_table.zig` from it; that table ships.
+- `showcase.md`: written for zigguro (Apache-2.0); the MarkdownView
+  snapshot corpus (goldens in `testdata/golden/markdown`).

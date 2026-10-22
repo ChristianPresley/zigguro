@@ -1,0 +1,133 @@
+root 0,0 600x1300
+  view 0,0 600x1300
+    box 0,0 600x1300
+      markdown "Markdown" 10,10 580x1087
+        box 10,10 580x38
+          button "▸ Properties" 18,16 564x26
+        md_text "Markdown showcase" 10,62 580x30
+        md_text "Text with emphasis, strong, inline code, strike, a link, an autolink www.example.com and a wikilink. Inline math: e^{i\pi} + 1 = 0." 10,100 580x34
+        md_text "Lists" 10,148 580x25
+        box 10,181 580x93
+          box 10,181 580x17
+            box 10,181 9.8x17
+              text "•" 11,181 7.8x17
+            box 25.8,181 564.2x17
+              md_text "First item" 25.8,181 564.2x17
+          box 10,200 580x36
+            box 10,200 9.8x17
+              text "•" 11,200 7.8x17
+            box 25.8,200 564.2x36
+              md_text "Second item with bold" 25.8,200 564.2x17
+              box 25.8,219 564.2x17
+                box 25.8,219 564.2x17
+                  box 25.8,219 9.8x17
+                    text "◦" 26.8,219 7.8x17
+                  box 41.6,219 548.4x17
+                    md_text "Nested item" 41.6,219 548.4x17
+          box 10,238 580x17
+            box 10,238 9.8x17
+              text "•" 11,238 7.8x17
+            md_task "Task" checked=false 25.8,238 17x17
+            box 48.8,238 541.2x17
+              md_text "An open task" 48.8,238 541.2x17
+          box 10,257 580x17
+            box 10,257 9.8x17
+              text "•" 11,257 7.8x17
+            md_task "Task" checked=true 25.8,257 17x17
+            box 48.8,257 541.2x17
+              md_text "A finished task" 48.8,257 541.2x17
+        box 10,282 580x55
+          box 10,282 580x17
+            box 10,282 17.6x17
+              text "1." 12,282 15.6x17
+            box 33.6,282 556.4x17
+              md_text "One" 33.6,282 556.4x17
+          box 10,301 580x17
+            box 10,301 17.6x17
+              text "2." 12,301 15.6x17
+            box 33.6,301 556.4x17
+              md_text "Two" 33.6,301 556.4x17
+          box 10,320 580x17
+            box 10,320 17.6x17
+              text "3." 12,320 15.6x17
+            box 33.6,320 556.4x17
+              md_text "Ten" 33.6,320 556.4x17
+        md_text "Quotes and callouts" 10,351 580x25
+        box 10,384 580x17
+          box 10,384 3x17
+          box 23,384 567x17
+            md_text "A plain quote on two lines." 23,384 567x17
+        box "Note" 10,409 580x54
+          box 10,415 3x42
+          box 23,415 557x42
+            box 23,415 557x17
+              text "ℹ" 23,415 7.8x17
+              text "Note" 36.8,415 31.2x17
+            md_text "Notes are blue." 23,440 557x17
+        box "Tip" 10,471 580x54
+          box 10,477 3x42
+          box 23,477 557x42
+            box 23,477 557x17
+              text "✦" 23,477 7.8x17
+              text "A useful tip" 36.8,477 93.6x17
+            md_text "Tips are green." 23,502 557x17
+        box "Warning" 10,533 580x54
+          box 10,539 3x42
+          box 23,539 557x42
+            box 23,539 557x17
+              text "⚠" 23,539 7.8x17
+              text "Warning" 36.8,539 54.6x17
+            md_text "Warnings are amber." 23,564 557x17
+        box "Danger" 10,595 580x54
+          box 10,601 3x42
+          box 23,601 557x42
+            box 23,601 557x17
+              text "⚠" 23,601 7.8x17
+              text "Danger" 36.8,601 46.8x17
+            md_text "Danger is red." 23,626 557x17
+        md_text "Code" 10,663 580x25
+        box "Code block" 10,696 580x122
+          box 11,697 578x30
+            text "zig" 21,705 19.8x14
+            box 44.8,712 421.8x0
+            button "Wrap" 470.6,699 55.2x26
+            button "Copy" 529.8,699 55.2x26
+          box 11,727 578x90
+            md_text "const std = @import("std");
+
+pub fn main() void {
+    std.debug.print("hello\n", .{});
+}" 21,729 238.46x80
+        box "Code block" 10,826 580x58
+          box 11,827 578x30
+            text "math" 21,835 26.4x14
+            box 51.4,842 474.4x0
+            button "Copy" 529.8,829 55.2x26
+          box 11,857 578x26
+            md_text "\int_0^1 x^2 \, dx = \frac{1}{3}" 21,859 211.97x16
+        md_text "Table" 10,898 580x25
+        box 10,931 580x77
+          box "Table" 10,931 260.6x77
+            box 11,932 258.6x25
+              box 11,932 140.8x25
+                md_text "Left" 19,936 124.8x17
+              box 151.8,932 62.8x25
+                md_text "Center" 159.8,936 46.8x17
+              box 214.6,932 55x25
+                md_text "Right" 222.6,936 39x17
+            box 11,957 258.6x25
+              box 11,957 140.8x25
+                md_text "a" 19,961 124.8x17
+              box 151.8,957 62.8x25
+                md_text "b" 159.8,961 46.8x17
+              box 214.6,957 55x25
+                md_text "c" 222.6,961 39x17
+            box 11,982 258.6x25
+              box 11,982 140.8x25
+                md_text "longer cell text" 19,986 124.8x17
+              box 151.8,982 62.8x25
+                md_text "2" 159.8,986 46.8x17
+              box 214.6,982 55x25
+                md_text "3.5" 222.6,986 39x17
+        separator 10,1016 580x1
+        md_image "An image" 10,1025 320x72
