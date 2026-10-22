@@ -143,6 +143,20 @@ pub fn forEachPayload(ev: *const Event, ctx: anytype, comptime f: fn (@TypeOf(ct
     }
 }
 
+/// Calls `f(ctx, &slice)` for every `PayloadSlice` inside `ev`, so the
+/// caller can rewrite them (trace replay).
+pub fn forEachPayloadPtr(ev: *Event, ctx: anytype, comptime f: fn (@TypeOf(ctx), *PayloadSlice) void) void {
+    switch (ev.*) {
+        inline else => |*payload| visitMut(@TypeOf(payload.*), payload, ctx, f),
+    }
+}
+
+fn visitMut(comptime T: type, v: *T, ctx: anytype, comptime f: fn (@TypeOf(ctx), *PayloadSlice) void) void {
+    if (T == PayloadSlice) return f(ctx, v);
+    if (@typeInfo(T) != .@"struct" or @typeInfo(T).@"struct".layout == .@"packed") return;
+    inline for (@typeInfo(T).@"struct".fields) |fld| visitMut(fld.type, &@field(v.*, fld.name), ctx, f);
+}
+
 fn visit(comptime T: type, v: *const T, ctx: anytype, comptime f: fn (@TypeOf(ctx), PayloadSlice) void) void {
     if (T == PayloadSlice) return f(ctx, v.*);
     if (@typeInfo(T) != .@"struct" or @typeInfo(T).@"struct".layout == .@"packed") return;
