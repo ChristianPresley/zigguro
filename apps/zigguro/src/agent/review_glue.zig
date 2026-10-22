@@ -48,6 +48,10 @@
 //! journaled to the same store and written at once; `refresh` takes the
 //! threads other processes wrote.
 //!
+//! `feedback` sends review threads to the agent (`bindAgent`, the
+//! workbench agent's port) and links its revision; the glue runs its
+//! `pump` after each turn's changeset and each refresh.
+//!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
 
@@ -84,6 +88,8 @@ pub const ReviewGlue = struct {
     approvals: ?*zg_review.approvals.ApprovalBroker = null,
     /// Review comment threads on the queue's changesets (under `mutex`).
     comments: zg_review.feedback.CommentStore,
+    /// Fix requests to the agent and their revisions (`bindAgent`).
+    feedback: ?zg_review.feedback.Feedback = null,
     history: model.History,
     q: *model.Queue,
     cps: Checkpoints,
@@ -194,6 +200,7 @@ pub const ReviewGlue = struct {
         // The broker outlives the glue (the workbench owns it).
         if (g.approvals) |b| if (g.store != null) b.bind(null, b.opts.id_base);
         if (g.store) |st| st.close();
+        if (g.feedback) |*f| f.deinit();
         g.comments.deinit();
         g.cps.deinit();
         g.q.deinit();
@@ -201,6 +208,16 @@ pub const ReviewGlue = struct {
         g.blobs.deinit();
         g.dir.close(g.io);
         gpa.destroy(g);
+    }
+
+    /// Fix requests go to the agent behind `port` (the workbench agent).
+    /// Once, before agents run.
+    pub fn bindAgent(g: *ReviewGlue, port: zg_review.feedback.AgentPort) !void {
+        g.mutex.lockUncancelable(g.io);
+        defer g.mutex.unlock(g.io);
+        std.debug.assert(g.feedback == null);
+        g.feedback = .init(g.gpa, g.q, &g.comments, port, .{});
+        _ = try g.q.subscribe(g.feedback.?.listener());
     }
 
     /// The `Files` for paths not open in the editor (`EditorFiles.outside`).
@@ -378,7 +395,9 @@ pub const ReviewGlue = struct {
             var t = g.turns.swapRemove(i);
             defer t.arena.deinit();
             defer g.flushLocked();
-            break :blk try g.submitTurn(&t) orelse return null;
+            const id = try g.submitTurn(&t) orelse return null;
+            if (g.feedback) |*f| f.pump();
+            break :blk id;
         };
         if (g.on_change) |h| h.f(h.ctx);
         return @intFromEnum(id);
@@ -669,6 +688,7 @@ pub const ReviewGlue = struct {
             log.warn("review store: reading other processes' records failed: {t}", .{e});
             return false;
         };
+        if (g.feedback) |*f| f.pump();
         return n > 0;
     }
 
