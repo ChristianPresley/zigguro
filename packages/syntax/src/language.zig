@@ -90,6 +90,8 @@ pub const EditRules = struct {
     indent_after: []const []const u8 = &.{},
     /// Line starts (after indentation) that dedent the line, e.g. "}".
     dedent_on: []const []const u8 = &.{},
+    /// Statement keywords after which the next line dedents, e.g. "return".
+    dedent_after: []const []const u8 = &.{},
 };
 
 /// A language definition.
