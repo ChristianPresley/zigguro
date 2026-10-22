@@ -43,6 +43,12 @@ pub const caseMapFull = p.caseMapFull;
 pub const isCased = p.isCased;
 pub const isCaseIgnorable = p.isCaseIgnorable;
 
+/// UAX #29 extended grapheme clusters.
+pub const grapheme = @import("grapheme.zig");
+/// UAX #29 word boundaries.
+pub const word = @import("word.zig");
+
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("decode.zig");
 }
