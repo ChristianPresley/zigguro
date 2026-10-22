@@ -2,3 +2,5 @@ zig-out/
 .zig-cache/
 *.golden.actual
 /bench-results/
+*.actual.png
+*.diff.png
