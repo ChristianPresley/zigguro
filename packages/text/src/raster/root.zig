@@ -19,6 +19,14 @@ pub const sdf = @import("sdf.zig");
 pub const png = @import("png.zig");
 /// Bitmap-strike (CBDT, sbix) glyph rendering.
 pub const bitmap_strikes = @import("bitmap_strikes.zig");
+/// Nonzero coverage for overlapping contours.
+pub const nonzero = @import("nonzero.zig");
+/// Colour-line sampling and gradient geometry for COLRv1.
+pub const gradient = @import("gradient.zig");
+/// The COLRv1 composite modes.
+pub const compose = @import("compose.zig");
+/// COLR v0/v1 colour glyph rendering.
+pub const colr_render = @import("colr_render.zig");
 /// `Rasterizer`, `Bitmap`, `RasterParams` and pixel placement.
 pub const rasterizer = @import("rasterizer.zig");
 
@@ -38,4 +46,5 @@ test {
     _ = @import("sdf_test.zig");
     _ = @import("png_test.zig");
     _ = @import("strike_test.zig");
+    _ = @import("colr_test.zig");
 }
