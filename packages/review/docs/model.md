@@ -107,3 +107,33 @@ const id2 = try q.submitter().commitBatch(b2);     // any thread: visible after 
 - `auto_apply` is ignored until the review policy exists (fail closed).
 - Listeners get `submitted`, `updated`, `state` and `removed` events on
   the owner thread.
+
+## Store
+
+`ChangesetStore` keeps a workspace's review state under `.zigguro/review/`,
+shared by every process working on it:
+
+```
+.zigguro/review/
+  lock                    advisory exclusive lock while appending or repairing
+  journal/00000001.zrj    [len u32][crc32c u32][kind u8][{"p":process,"s":seq,"r":record}]
+  blobs/ab/cdef…          contents by BLAKE3 hash
+```
+
+- The queue's state is the fold of the journal. Each `changeset` record
+  is a full snapshot (later ones win), and `remove` drops one. Hunks are
+  in the snapshot, so a load never reads base texts. Edits are inline
+  unless their texts exceed 16 KiB; then they go to a blob.
+- `append` frames a record in memory on the owner thread. `flush` writes
+  the new blobs (temporary file, sync, link), then the frames, then
+  syncs, all under the lock. Records are durable when `flush` returns.
+- `load` repairs the journal. A torn or corrupt frame at the end of the
+  last segment is cut off. A bad frame in an earlier segment renames
+  that segment to `.bad`, and loading continues.
+- `tail` replays what other processes appended. A `(process, seq)` pair
+  seen twice is ignored, and a frame still being written waits for the
+  next call.
+
+Bind a queue to a store with `.blobs = store.blobs()` and
+`.journal = store.journalPort()`, then call
+`store.load(store.queueSink(q).sink())`.
