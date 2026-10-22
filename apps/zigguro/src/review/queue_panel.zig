@@ -2,7 +2,8 @@
 //! panel over the agent's `ReviewGlue`. It lists what is pending and what
 //! each agent turn changed, grouped by session (or agent, origin, top
 //! directory, none), with a filter box (`state:all path:src/** text`).
-//! A click on a changeset shows its files. An applied changeset can be
+//! The header switches whether agent edits land at once or are held for
+//! review (`ReviewGlue.mode`). A click on a changeset shows its files. An applied changeset can be
 //! undone, which reverts its files and puts its changes back for review;
 //! an open one can be accepted or rejected.
 //!
@@ -173,6 +174,15 @@ pub const QueuePanel = struct {
         }
         ui.close();
 
+        ui.open(.{ .style = .{ .dir = .row, .padding = .xy(8, 0), .shrink = 0 } });
+        const held = p.glue.mode == .review;
+        if (zg_gui.w.button(ui, .{ .label = if (held) "Agent edits: held" else "Agent edits: applied", .variant = .ghost }).clicked) {
+            p.glue.mode = if (held) .auto_apply else .review;
+            p.say(false, "{s}", .{if (held) "Agent edits now land at once (each turn can be undone here)" else "Agent edits now wait here for review"});
+            ui.window().markAllDirty();
+        }
+        ui.close();
+
         ui.open(.{ .style = .{ .dir = .column, .padding = .xy(8, 2), .shrink = 0 } });
         defer ui.close();
         const r = zg_gui.w.textField(ui, .{ .buffer = &p.filter, .placeholder = "Filter: text, state:all, path:src/**, agent:name, conflicts:yes", .a11y_label = "Filter the review queue" });
@@ -338,6 +348,12 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     _ = t.settle();
     try testing.expect(t.find(.{ .name_contains = "Applied Turn 1" }) != null);
     try testing.expectEqualStrings("ONE\ntwo\n", try tmp.dir.readFileAlloc(testing.io, "a.txt", arena_state.allocator(), .limited(64)));
+
+    // The mode switch.
+    try t.click(.{ .role = .button, .name = "Agent edits: applied" });
+    _ = t.settle();
+    try testing.expectEqual(ReviewGlue.Mode.review, g.mode);
+    try testing.expect(t.find(.{ .name = "Agent edits: held" }) != null);
 
     // A filter that matches nothing, then a bad one.
     p.filter.setText("nothing-matches") catch unreachable;
