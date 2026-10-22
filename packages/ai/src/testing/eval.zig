@@ -18,9 +18,11 @@
 //!   exchanges into the scenario's cassette (`record_missing`).
 //!
 //! The agent runs headless through `runPrint` with stream-json output and
-//! no memory files (the `--bare` context), plus the scenario's
-//! permission mode, tool rules and hooks. The transcript gives the tools
-//! used, turns, tokens, cost and permission denials.
+//! no memory files (the `--bare` context), with the run, file and `task`
+//! tools, plus the scenario's permission mode, tool rules and hooks.
+//! Subagents share the script, so their turns are written in order. The
+//! transcript gives the tools used, turns, tokens, cost and permission
+//! denials.
 
 const std = @import("std");
 const proto = @import("zg_ai_proto");
@@ -44,6 +46,9 @@ const run_tools = @import("../tools/builtin/run.zig");
 const files = @import("../tools/builtin/files.zig");
 const disk_files = @import("../tools/builtin/disk_files.zig");
 const compactor = @import("../context/compactor.zig");
+const subagent_defs = @import("../subagent/defs.zig");
+const subagent_runner = @import("../subagent/runner.zig");
+const task_tool = @import("../subagent/task_tool.zig");
 const args = @import("../headless/args.zig");
 const print = @import("../headless/print.zig");
 const store_mod = @import("../session/store.zig");
@@ -66,8 +71,8 @@ pub const ToolUse = struct {
 pub const Turn = struct {
     text: []const u8 = "",
     tools: []const ToolUse = &.{},
-    /// Each must appear in the request this turn answers (its messages'
-    /// text and tool results).
+    /// Each must appear in the request this turn answers (its system
+    /// prompt, messages' text and tool results).
     expect: []const []const u8 = &.{},
     input_tokens: u32 = 1000,
     output_tokens: u32 = 50,
@@ -380,6 +385,15 @@ pub fn runOne(io: Io, gpa: Allocator, a: Allocator, dir: []const u8, s: *const S
     defer agent_tools.deinit();
     const mgr = try AgentManager.init(gpa, io, .{ .registry = &registry, .providers = providers, .tools = agent_tools.tools() });
     defer mgr.deinit();
+    // Subagents: the built-in definitions through `task`.
+    var agent_defs: std.ArrayList(subagent_defs.AgentDef) = .empty;
+    try subagent_defs.loadDefs(io, a, &.{}, &agent_defs, null);
+    var subagents: subagent_runner.SubagentRunner = .init(gpa, io, mgr, &reg, agent_defs.items, .{});
+    defer subagents.deinit();
+    subagents.main_tools = &agent_tools;
+    var task: task_tool.TaskTool = try .init(gpa, &subagents);
+    defer task.deinit();
+    try reg.addSource(task.source());
     var hooks: HookSet = .{ .rules = s.hooks };
     if (s.hooks.len > 0) mgr.deps.hooks = .{ .ctx = &hooks, .pre_tool_use = HookSet.pre };
     var compact: ?compactor.Compactor = null;
@@ -500,8 +514,10 @@ pub fn scriptSteps(a: Allocator, script: []const Turn) Allocator.Error![]const [
     return turns;
 }
 
-/// Whether `needle` appears in the text or tool results of `req`.
+/// Whether `needle` appears in the system prompt, text or tool results
+/// of `req`.
 pub fn requestContains(req: *const request.Request, needle: []const u8) bool {
+    for (req.system) |p| if (std.mem.indexOf(u8, p.text, needle) != null) return true;
     for (req.messages) |m| for (m.content) |b| switch (b) {
         .text => |t| if (std.mem.indexOf(u8, t.text, needle) != null) return true,
         .tool_result => |r| for (r.parts) |c| switch (c) {
