@@ -17,12 +17,13 @@ modification and SHA-256) and its license text under `fonts/LICENSES/`.
 | `SourceHanSansJP-Subset.otf` | CID-keyed CFF (kana + common kanji) |
 | `NotoSansArabic-Subset.ttf` | Arabic joining, marks (P1 goldens) |
 | `NotoSansDevanagari-Subset.ttf` | Indic (P2 goldens) |
+| `NotoColorEmoji-CBDT-Subset.ttf` | CBDT/CBLC bitmap emoji (6 glyphs, 109 ppem strike) |
 | `NotoColorEmoji-COLRv1-Subset.ttf` | COLRv1 emoji incl. ZWJ, keycap, flags |
 | `test_glyphs-glyf_colr_1*.ttf` | googlefonts COLRv1 conformance glyphs (static, variable) |
 
-A CBDT/CBLC test font is hand-built by the bitmap-strike task
-(E03.F03.S03.T04) because upstream Noto Color Emoji CBDT is not reachable as
-a plain file.
+The CBDT font comes from the noto-emoji repository at a pinned commit (the
+manifest's `source`), subset with `--no-layout-closure --layout-features=''`.
+Other CBLC index formats and sbix are covered by tables built in the tests.
 
 Subsets and the Fira Code instance were made once with fontTools 4.x:
 
