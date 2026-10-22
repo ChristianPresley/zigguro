@@ -211,6 +211,49 @@ test "coverage ranges match forEachMapping" {
     try testing.expect(!cov.contains(0x44));
 }
 
+test "coverage fast path equals the per-code-point walk" {
+    const gpa = testing.allocator;
+    const fonts = @import("../testing/fonts.zig");
+    const Face = @import("face.zig").Face;
+    const names = [_][]const u8{
+        "FiraCode-Regular.ttf",           "Inter[opsz,wght].ttf",             "JetBrainsMono[wght].ttf",
+        "NotoColorEmoji-CBDT-Subset.ttf", "NotoColorEmoji-COLRv1-Subset.ttf", "NotoSansArabic-Subset.ttf",
+        "NotoSansDevanagari-Subset.ttf",  "SourceHanSansJP-Subset.otf",       "SourceSerif4-Regular.otf",
+        "SourceSerif4Variable-Roman.otf", "test_glyphs-glyf_colr_1.ttf",      "test_glyphs-glyf_colr_1_variable.ttf",
+    };
+    for (names) |n| {
+        const bytes = try fonts.font(gpa, n);
+        defer gpa.free(bytes);
+        const face = try Face.init(bytes, 0);
+        const c = face.cmap.?;
+        const fast = try c.coverage(gpa);
+        defer fast.deinit(gpa);
+        const slow = try c.coverageSlow(gpa);
+        defer slow.deinit(gpa);
+        try testing.expectEqualSlices([2]u21, slow.ranges, fast.ranges);
+    }
+    // Handcrafted format 4 and 12 tables, with glyph ids past the font's
+    // glyph count cut off.
+    const f4 = format4();
+    defer gpa.free(f4);
+    const f12 = format12(false);
+    defer gpa.free(f12);
+    const f13 = format12(true);
+    defer gpa.free(f13);
+    for ([_][]const u8{ f4, f12, f13 }, [_][2]u16{ .{ 3, 1 }, .{ 3, 10 }, .{ 0, 6 } }) |sub, enc| {
+        const t = table(&.{.{ enc[0], enc[1], sub }});
+        defer gpa.free(t);
+        for ([_]u16{ 2, 3, 40, 500, 0xFFFF }) |ng| {
+            const c = try Cmap.initGlyphs(t, ng);
+            const fast = try c.coverage(gpa);
+            defer fast.deinit(gpa);
+            const slow = try c.coverageSlow(gpa);
+            defer slow.deinit(gpa);
+            try testing.expectEqualSlices([2]u21, slow.ranges, fast.ranges);
+        }
+    }
+}
+
 test "page cache equals slow path on a handcrafted table" {
     const f4 = format4();
     defer testing.allocator.free(f4);
