@@ -199,6 +199,12 @@
       "cost_usd": 0.0075
     },
     {
+      "name": "subagent_explore",
+      "passed": true,
+      "turns": 2,
+      "cost_usd": 0.0075
+    },
+    {
       "name": "write_existing_needs_read",
       "passed": true,
       "turns": 4,

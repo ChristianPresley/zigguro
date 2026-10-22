@@ -130,6 +130,18 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{ .registry = &registry, .providers = .fromHub(hub), .tools = agent_tools.tools() });
     defer mgr.deinit();
 
+    // Subagents: `.zigguro/agents/*.md` in the workspace, then the
+    // built-ins, through the `task` tool.
+    var agent_defs: std.ArrayList(zg_ai.subagent.defs.AgentDef) = .empty;
+    const agents_dir = try std.fs.path.join(arena, &.{ cwd, ".zigguro", "agents" });
+    try zg_ai.subagent.defs.loadDefs(io, arena, &.{.{ .dir = agents_dir, .source = .project }}, &agent_defs, null);
+    var subagents: zg_ai.subagent.SubagentRunner = .init(gpa, io, mgr, &tool_registry, agent_defs.items, .{});
+    defer subagents.deinit();
+    subagents.main_tools = &agent_tools;
+    var task: zg_ai.subagent.task_tool.TaskTool = try .init(gpa, &subagents);
+    defer task.deinit();
+    try tool_registry.addSource(task.source());
+
     // Sessions live under the state directory.
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state = stateDir(min, &env, &state_buf);

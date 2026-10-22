@@ -169,6 +169,18 @@ pub const tools = struct {
         _ = @import("tools/builtin/web_test.zig");
     }
 };
+/// Subagents: definitions, the runner and the `task` tool (E10.F09.S01).
+pub const subagent = struct {
+    pub const defs = @import("subagent/defs.zig");
+    pub const runner = @import("subagent/runner.zig");
+    pub const task_tool = @import("subagent/task_tool.zig");
+    pub const SubagentRunner = runner.SubagentRunner;
+
+    test {
+        _ = @import("subagent/runner_test.zig");
+    }
+};
+
 /// Cassettes and the eval runner (E10.F10.S02).
 pub const testing = struct {
     pub const cassette = @import("testing/cassette.zig");

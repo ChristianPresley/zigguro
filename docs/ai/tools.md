@@ -228,3 +228,37 @@ Calls lock the paths named in `path`, `file_path`, `file`, `uri` or
 Every web result starts with `[untrusted web content from <host>]` and
 only ever travels as a tool result, never in the system prompt. `zg agent`
 registers `web_fetch` and the native search.
+
+## Subagents
+
+`task` (`subagent/task_tool.zig`) runs a subagent on a prompt and returns
+its report. Several `task` calls in one turn run in parallel, at most
+`max_concurrent` (20) at once.
+
+Definitions are Markdown files with frontmatter (`subagent/defs.zig`):
+`.zigguro/agents/*.md` in the workspace first, then the built-ins
+`explore` (read-only, the cheap model), `plan` (read-only, plan mode) and
+`general` (every tool). Keys: `name`, `description`, `tools`,
+`disallowed-tools` (Claude Code names such as `Read` or `Bash` work),
+`model` (`inherit`, `fast` or a model), `permission-mode`, `max-turns`,
+`isolation` (`shared` or `workspace`), `skills`, `background` and
+`effort`. The body is the system prompt, read when the agent starts.
+
+A child (`subagent/runner.zig`):
+
+- sees only its definition's prompt and the delegation prompt, never the
+  parent's history;
+- gets the definition's tools, without `task` at depth 3;
+- runs in the definition's permission mode, else the parent's, and always
+  in plan mode under a plan-mode parent;
+- with `isolation: workspace`, works in its own E09 lane, whose handle the
+  report returns while it has changes;
+- shares the parent's permission engine, hooks and session log; its
+  events reach `AgentManager.subscribeAll` with its own ref, whose
+  `tool_call` is the parent's `task` call.
+
+The report is the child's last answer, cut to 4k tokens, with a trailer:
+`[agent explore · 3 tool calls · 12k tokens · $0.01 · files read: 2]`.
+Cancelling the parent cancels its children. Spawning a child and getting
+its report takes about 1.2 ms besides the model call (bench
+`ai.subagent_spawn`).
