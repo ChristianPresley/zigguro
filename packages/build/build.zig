@@ -152,7 +152,34 @@ pub const PackageSpec = struct {
     bench: ?[]const u8 = null,
     /// Must stay false: zigguro packages never link libc.
     link_libc: bool = false,
+    /// Helper executables that only tests run (fake servers, fake
+    /// adapters). Built for the package target when a test needs them;
+    /// tests read their paths from `@import("zg_test_exes").<name>`.
+    test_exes: []const TestExe = &.{},
 };
+
+/// A helper executable for tests (see `PackageSpec.test_exes`).
+pub const TestExe = struct {
+    /// Executable name and `zg_test_exes` field name.
+    name: []const u8,
+    /// Root source file, relative to the package.
+    root: []const u8,
+    /// Extra imports; the package module itself is always importable
+    /// under the package name.
+    imports: []const std.Build.Module.Import = &.{},
+};
+
+/// Suffix of the module name under which a package exposes its test
+/// executables, e.g. `zg_lsp_test_exes`.
+pub const test_exes_suffix = "_test_exes";
+
+/// Adds the `zg_test_exes` import of package `name` (built by `dep`, or by
+/// `b` itself when `dep` is null) to test module `tm`, if the package
+/// declares test executables. Root builds call this for every package.
+pub fn addTestExes(b: *std.Build, dep: ?*std.Build.Dependency, name: []const u8, tm: *std.Build.Module) void {
+    const owner = if (dep) |d| d.builder else b;
+    if (owner.modules.get(b.fmt("{s}{s}", .{ name, test_exes_suffix }))) |m| tm.addImport("zg_test_exes", m);
+}
 
 /// Creates the public module `spec.name` (importing `zg_options` and, when the
 /// package has `fuzz/corpus/`, `zg_corpus`), a `test` step, and, if
@@ -171,7 +198,26 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
     mod.addImport("zg_options", optionsModule(b, f));
     mod.addImport("zg_corpus", corpusModule(b));
 
-    const tests = b.addTest(.{ .name = spec.name, .root_module = testModule(b, f, mod) });
+    if (spec.test_exes.len > 0) {
+        const o = b.addOptions();
+        for (spec.test_exes) |te| {
+            const exe = b.addExecutable(.{
+                .name = te.name,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(te.root),
+                    .target = f.target,
+                    .optimize = f.optimize,
+                    .imports = te.imports,
+                }),
+            });
+            exe.root_module.addImport(spec.name, mod);
+            o.addOptionPath(te.name, exe.getEmittedBin());
+        }
+        b.modules.put(b.graph.arena, b.fmt("{s}{s}", .{ spec.name, test_exes_suffix }), o.createModule()) catch @panic("OOM");
+    }
+    const tm = testModule(b, f, mod);
+    addTestExes(b, null, spec.name, tm);
+    const tests = b.addTest(.{ .name = spec.name, .root_module = tm });
     const run_tests = b.addRunArtifact(tests);
     run_tests.skip_foreign_checks = true;
     b.step("test", "Run this package's unit tests").dependOn(&run_tests.step);
