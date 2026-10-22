@@ -19,6 +19,7 @@ pub const focus = @import("input/focus.zig");
 pub const Key = keys.Key;
 pub const Mods = keys.Mods;
 pub const KeyInput = key_encode.KeyInput;
+pub const Action = key_encode.Action;
 pub const EncoderState = key_encode.EncoderState;
 pub const encodeKey = key_encode.encodeKey;
 pub const encodeMouse = mouse.encodeMouse;
