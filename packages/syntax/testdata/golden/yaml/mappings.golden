@@ -1,0 +1,10 @@
+1| property:name punctuation.delimiter:: string:zigguro
+2| property:version punctuation.delimiter:: number:1.0
+3| property:nested punctuation.delimiter::
+4| property:key punctuation.delimiter:: string:value
+5| property:other key punctuation.delimiter:: string:with spaces
+6| property:"quoted key" punctuation.delimiter:: number:1
+7| property:'single key' punctuation.delimiter:: number:2
+8| property:empty punctuation.delimiter::
+9| property:url punctuation.delimiter:: string:http://example.com:8080/path
+10| property:time punctuation.delimiter:: string:12:30
