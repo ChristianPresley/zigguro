@@ -1,0 +1,9 @@
+{"seq":1,"type":"turn_started","data":1}
+{"seq":2,"type":"message_committed","data":{"index":0,"role":"user","interrupted":false}}
+{"seq":3,"type":"message_committed","data":{"index":1,"role":"assistant","interrupted":false}}
+{"seq":4,"type":"tool_queued","data":{"id":"t1","name":"task","input_json":"{\"agent\":\"explore\",\"prompt\":\"SUB:where is main\",\"thoroughness\":\"quick\"}"}}
+{"seq":5,"type":"tool_queued","data":{"id":"t2","name":"task","input_json":"{\"agent\":\"explore\",\"prompt\":\"SUB:who calls parse\"}"}}
+{"seq":6,"type":"tool_queued","data":{"id":"t3","name":"task","input_json":"{\"agent\":\"explore\",\"prompt\":\"SUB:what tests exist\"}"}}
+{"seq":7,"type":"message_committed","data":{"index":2,"role":"user","interrupted":false}}
+{"seq":8,"type":"message_committed","data":{"index":3,"role":"assistant","interrupted":false}}
+{"seq":9,"type":"turn_finished","data":{"turn":1,"reason":"end_turn"}}

@@ -951,7 +951,26 @@ after `InitOptions.transfer_timeout_ns` (5 s) answers with empty data.
 `clipboard_changed` fires when another client sets a selection.
 `uri_list` data is the raw `text/uri-list`;
 `zg_platform.linux_util.uri_list.paths` turns it into local paths.
-Drag-and-drop offers are dropped until E01.F04.S03.T03.
+
+Drag and drop (E01.F04.S03.T03, `wayland/dnd.zig`):
+- As a target, `wl_data_device.enter` becomes `drop{enter}`, with the
+  offered types as `MimeId`s and the source's actions.
+  `application/x-zigguro-internal` is listed only while our own drag is
+  in progress. `motion` becomes `drop{over}` and `leave` becomes
+  `drop{leave}`.
+- `Command.set_drop_effect` sends `wl_data_offer.accept(enter serial,
+  type)` and (v3) `set_actions(effect, preferred)`, only when they
+  change. An `accept` type that is not offered refuses the drag.
+- On `drop` with an accepted type, the payload is read through a pipe
+  on the platform thread and becomes `drop{drop, data}`, with `allowed`
+  set to the compositor's final action. After that comes `finish` (v3,
+  unless the action is ask) and the offer is destroyed. A drop with
+  nothing accepted, or a failed read, becomes `drop{leave}`.
+- As a source, `Command.start_drag` creates a `wl_data_source` offering
+  the items, sets the allowed actions (v3) and starts the drag with the
+  newest button serial. `send` writes through the transfers, and
+  `dnd_finished` and `cancelled` become `drop{source_finished}` with the
+  chosen action (empty when cancelled). Drag icons are not sent yet.
 
 Cursors (E01.F04.S02.T04, `wayland/cursor.zig`, `linux/xcursor.zig`):
 `set_cursor` is per window and takes effect while the pointer is over
@@ -964,7 +983,7 @@ and then legacy names, at size × the window's integer scale, and shown
 on a cursor surface with that buffer scale. A shape the theme lacks
 shows the default arrow. Animated cursors show their first frame.
 `zg_platform.linux_util.xcursor` parses Xcursor files for X11 too. Move,
-resize, window menu, drag, activation, dialogs and URIs return
+resize, window menu, activation, dialogs and URIs return
 `error.Unsupported`.
 
 ## zg_platform.x11.X11Backend
@@ -2360,7 +2379,8 @@ E02.
 
 ### Consumed by
 E04 through `r2d.Renderer` (`zg_vulkan.createRenderer` with
-`backend = .vulkan`). Tests use `createWithGpu` and `renderToImage`.
+`backend = .vulkan` wraps it in `Recovering`). Tests use `createWithGpu`
+and `renderToImage`.
 
 ### Signature
 ```zig
@@ -2418,7 +2438,7 @@ Deviations from the spec text:
 - The `.shm` sink patches a CPU backbuffer, then `ShmRing` fills a released `allocCpuBuffer` buffer (up to 3, buffer-age repaint from the backbuffer) and presents the frame's rects with `SyncPoint.none`. When every buffer is held, later frames merge into one pending present (latest wins), sent by the next `poll`. No `ConfigureAck` is passed yet.
 - `.win32` targets get a `Swapchain` (device created with the win32 surface extensions); `Readback` gets `Sink.none` and serves `renderToImage` only. Swapchain frames report `present_id` 1, 2, ... (the FramePacer's ids); minimised windows render nothing and carry their damage. While the surface's extent differs from the list's, the frame draws 1:1 into the image and repaints fully. `FrameScheduler.cancel` abandons a begun frame whose acquire failed. Not yet verified on a Windows GPU (cross-compiles; the Linux CI GPU is lavapipe).
 - `VkRenderer` uses `ExternalRing` for `.external` targets when `init` succeeds, else the shm sink. `create` builds the device with the external-surface extensions and the presenter's `drmDevice`. With every ring image held, `render` returns `FrameStats.skipped` and carries the damage; `renderToImage` renders through readback and makes the next ring frame full. The ring takes `presenter.syncMode()` `.drm_syncobj` as sync_file (E01 rejects syncobj acquires today). On lavapipe (no `VK_EXT_image_drm_format_modifier`) `init` returns `error.ExportUnsupported`.
-- Async delivery of copies over 1 MiB, the swapchain and dmabuf targets and async device creation are not implemented yet.
+- Async delivery of copies over 1 MiB and async device creation are not implemented yet.
 - `createRenderer` keeps `.auto` on the software renderer until the presentation targets land.
 
 ### Threading
@@ -2428,6 +2448,80 @@ Render thread only.
 The renderer owns its device when made by `create`, not with
 `createWithGpu`. Texture ids are descriptor slots; `destroyTexture`
 retires the slot with the next frame.
+
+### Stability
+Internal to E02 behind `r2d.Renderer`.
+
+## zg_vulkan.Recovering (device-loss recovery)
+
+### Defined in
+`packages/vulkan/src/r2d/vk/Recovering.zig` and
+`packages/vulkan/src/r2d/texture_registry.zig` (E02.F02.S02.T01).
+
+### Implemented by
+E02.
+
+### Consumed by
+E04 through `r2d.Renderer`: `zg_vulkan.createRenderer` with
+`backend = .vulkan` returns a `Recovering`. E04's `Host.pacingFor` reads
+its pacing through `zg_vulkan.vulkanPacing`.
+
+### Signature
+```zig
+pub const Recovering = struct {
+    inner: union(enum) { vulkan: *VkRenderer, software: *SwRenderer, none },
+    shadows: TextureRegistry, recovery: gpu.Recovery,
+    pub fn create(gpa, io, opts: r2d.RendererOptions) !*Recovering;   // VkRenderer.create underneath
+    pub fn destroy(self) void;  pub fn renderer(self) r2d.Renderer;
+    pub fn is(r: r2d.Renderer) bool;  pub fn of(r: r2d.Renderer) *Recovering;
+    pub fn presentWaiter(self) ?FramePacer.PresentWaiter;   // follows recreated swapchains
+    pub fn pacerCaps(self) FramePacer.Caps;
+    pub const retry_ns: u64;                                 // 5 s (Win32 retry)
+};
+pub const VkPacing = struct { caps: FramePacer.Caps, waiter: ?FramePacer.PresentWaiter };
+pub fn vulkanPacing(r: r2d.Renderer) ?VkPacing;              // null unless rendering with Vulkan
+pub const TextureRegistry = struct {                         // r2d.TextureRegistry, pure
+    pub fn put(self, gpa, id, desc) !void;  pub fn update(self, id, rect, data, row_pitch) !void;
+    pub fn remove(self, gpa, id) void;  pub fn get(self, id) ?Shadow;  pub fn freeId(self) TextureId;  pub fn bytes(self) u64;
+};
+// Also: VkRenderer.createTextureAt / SwRenderer.createTextureAt(desc, id), VkRenderer.isLost / is / of,
+// DescriptorHeap.allocSlotAt(slot, view, kind), Gpu.drainInjected().
+```
+Behaviour:
+- `DeviceLost` from a frame or texture call, with the device's `lost`
+  latch set, runs `Recovery.onLost`. Teardown destroys the `VkRenderer`;
+  a lost device is not waited on and the pipeline cache file is not
+  rewritten. Recreate builds a new device and renderer and recreates every
+  texture under its old id from the CPU copy.
+- The frame that hit the loss returns `error.DeviceLost`. `RenderThread`
+  then sets `takeRedraw`, and the UI repaints everything, including the
+  layers the new renderer does not have.
+- The third loss within 60 s (`LostPolicy`) switches to `SwRenderer` on
+  the same target with the same texture ids, and the copies are freed.
+  `backend()` then reports `.software`.
+- Win32 has no CPU present path, so the window skips frames
+  (`FrameStats.skipped`) and retries Vulkan every 5 s instead.
+- Present ids continue across recreated swapchains, offset by the
+  presents of the destroyed ones.
+- An injected loss (`ZG_VK_FAULT`) waits for the device before destroying
+  anything, because that device still runs.
+
+Deviations from the spec text:
+- Textures are restored from CPU copies the renderer keeps, not through
+  owner `TextureSource.reupload` callbacks. E03 and E04 need no code for
+  this, at the cost of one CPU copy of each texture while on Vulkan.
+- Teardown is `VkRenderer.destroy` (its own reverse order); the instance
+  is not kept across recreations.
+- The `zg doctor gpu` CLI and the 200 ms recovered-frame measurement are
+  still open.
+
+### Threading
+Render thread only, like any `Renderer`; the present waiter runs on the
+render thread (the pacer).
+
+### Ownership/lifetime
+Owns the current backend and the texture copies. Ids handed out stay
+valid across recreations and the software switch.
 
 ### Stability
 Internal to E02 behind `r2d.Renderer`.
