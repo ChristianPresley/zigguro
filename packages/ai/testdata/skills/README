@@ -1,0 +1,10 @@
+Skill and command fixtures for packages/ai/src/ext/skills_test.zig.
+
+project/  a workspace: .claude/skills holds the Claude Code docs examples
+          (deploy, pr-summary), .zigguro holds zigguro skills and commands,
+          pkg/.zigguro/skills is a nested root.
+user/     the user's configuration directory.
+managed/  the managed (policy) directory.
+
+Collisions: explain (user beats project), deploy (a skill beats a command
+of the same source), review (managed beats project).

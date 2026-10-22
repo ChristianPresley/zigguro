@@ -175,10 +175,20 @@ pub const ext = struct {
     pub const hook_io = @import("ext/hook_io.zig");
     pub const hook_match = @import("ext/hook_match.zig");
     pub const HookEngine = hooks.HookEngine;
+    pub const substitute = @import("ext/substitute.zig");
+    pub const skills = @import("ext/skills.zig");
+    pub const skill_tool = @import("ext/skill_tool.zig");
+    pub const commands = @import("ext/commands.zig");
+    pub const builtin_commands = @import("ext/builtin_commands.zig");
+    pub const SkillIndex = skills.SkillIndex;
+    pub const SkillTool = skill_tool.SkillTool;
     test {
         _ = hook_io;
         _ = hook_match;
+        _ = commands;
         _ = @import("ext/hooks_test.zig");
+        _ = @import("ext/substitute_test.zig");
+        _ = @import("ext/skills_test.zig");
     }
 };
 /// Plan mode, todos and questions to the user (E10.F09.S02).

@@ -58,6 +58,15 @@ pub const Filter = struct {
     session: ?u128 = null,
 };
 
+/// Where the queue records changes (the durable store). Called on the
+/// owner thread; must not block on I/O.
+pub const Journal = struct {
+    ctx: *anyopaque,
+    /// A new or changed changeset (a full snapshot).
+    changeset: *const fn (ctx: *anyopaque, cs: *const Changeset) void,
+    removed: *const fn (ctx: *anyopaque, id: ChangesetId) void,
+};
+
 /// Asks the owner thread to call `drain` (e.g. through `Runtime.post`).
 pub const Wake = struct {
     ctx: *anyopaque,
@@ -71,6 +80,7 @@ pub const Options = struct {
     /// The first id to hand out (the store's highest + 1).
     first_id: u64 = 1,
     wake: ?Wake = null,
+    journal: ?Journal = null,
     hunk_options: hunks_mod.HunkOptions = .{},
 };
 
@@ -82,6 +92,7 @@ pub const Queue = struct {
     root: []const u8,
     blobs: Blobs,
     wake: ?Wake,
+    journal: ?Journal,
     hunk_options: hunks_mod.HunkOptions,
     next_id: std.atomic.Value(u64),
     next_batch: std.atomic.Value(u64) = .init(1),
@@ -106,6 +117,7 @@ pub const Queue = struct {
             .root = try gpa.dupe(u8, o.root),
             .blobs = o.blobs,
             .wake = o.wake,
+            .journal = o.journal,
             .hunk_options = o.hunk_options,
             .next_id = .init(@max(1, o.first_id)),
         };
@@ -232,12 +244,46 @@ pub const Queue = struct {
         }
     }
 
-    /// Drops a changeset from memory (GC of decided ones).
+    /// Drops a changeset (GC of decided ones).
     pub fn remove(q: *Queue, id: ChangesetId) void {
+        if (!q.changesets.contains(id)) return;
+        q.forget(id);
+        if (q.journal) |j| j.removed(j.ctx, id);
+    }
+
+    fn forget(q: *Queue, id: ChangesetId) void {
         const kv = q.changesets.fetchOrderedRemove(id) orelse return;
         kv.value.deinit(q.gpa);
         q.gpa.destroy(kv.value);
         q.emit(.{ .removed = id });
+    }
+
+    /// Records `id`'s current state in the journal (after a review action
+    /// changed it).
+    pub fn persist(q: *Queue, id: ChangesetId) void {
+        const j = q.journal orelse return;
+        if (q.changesets.get(id)) |cs| j.changeset(j.ctx, cs);
+    }
+
+    /// Owner thread: takes `cs` from the store (load or another process's
+    /// append), replacing the changeset with its id. Not journaled.
+    pub fn restore(q: *Queue, cs: *Changeset) Allocator.Error!void {
+        const gop = try q.changesets.getOrPut(q.gpa, cs.id);
+        const replaced = gop.found_existing;
+        if (replaced) {
+            gop.value_ptr.*.deinit(q.gpa);
+            q.gpa.destroy(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = cs;
+        const want = @intFromEnum(cs.id) + 1;
+        var cur = q.next_id.load(.monotonic);
+        while (cur < want) cur = q.next_id.cmpxchgWeak(cur, want, .monotonic, .monotonic) orelse break;
+        q.emit(if (replaced) .{ .updated = cs.id } else .{ .submitted = cs.id });
+    }
+
+    /// Owner thread: another process removed `id`. Not journaled.
+    pub fn restoreRemoved(q: *Queue, id: ChangesetId) void {
+        q.forget(id);
     }
 
     // ------------------------------------------------------ events
@@ -272,15 +318,18 @@ pub const Queue = struct {
             std.log.scoped(.zg_review).warn("folding {f} failed: {t}", .{ id, e });
             break :blk false;
         };
-        q.emit(.{ .submitted = id });
+        var superseded = false;
         if (folded) {
             var all = true;
             for (cs.files) |f| all = all and f.state == .superseded;
             if (all) {
                 cs.state = .superseded;
-                q.emit(.{ .state = .{ .cs = id, .from = .pending, .to = .superseded } });
+                superseded = true;
             }
         }
+        q.persist(id);
+        q.emit(.{ .submitted = id });
+        if (superseded) q.emit(.{ .state = .{ .cs = id, .from = .pending, .to = .superseded } });
     }
 
     /// The changeset for `b`: files in batch order, texts in `blobs`.
@@ -425,6 +474,7 @@ pub const Queue = struct {
         nf.deinitContent();
         nf.hunks = &.{};
         nf.state = .superseded;
+        q.persist(ocs.id);
         q.emit(.{ .updated = ocs.id });
         return true;
     }
