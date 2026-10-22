@@ -16,6 +16,8 @@ modification and SHA-256) and its license text under `fonts/LICENSES/`.
 | `SourceSerif4Variable-Roman.otf` | CFF2 variable (Latin subset) |
 | `SourceHanSansJP-Subset.otf` | CID-keyed CFF (kana + common kanji) |
 | `NotoSansArabic-Subset.ttf` | Arabic joining, marks (P1 goldens) |
+| `NotoSansArabicNoForms-Subset.ttf` | Arabic without GSUB: presentation-form fallback |
+| `NotoSansSyriac-Subset.ttf` | Syriac joining (`fin2`/`fin3`/`med2`), `stch` stretching |
 | `NotoSansDevanagari-Subset.ttf` | Indic (P2 goldens) |
 | `NotoSansJavanese-Subset.ttf` | USE: Javanese pre-base vowels, medials, broken clusters |
 | `NotoSerifTibetan-Subset.ttf` | USE: Tibetan stacking, split vowels |
@@ -141,8 +143,9 @@ operators, `liga=0,calt=0`, stylistic sets, a bold instance), `gpos_kern`
 selectors, `.notdef`, space fallbacks, U+2011, RTL Latin), `random`
 (seeded code-punctuation and accented strings) and `arabic` (Noto Sans
 Arabic joining forms, ZWJ/ZWNJ, tatweel, marks and modifier combining marks,
-Persian letters, digits, feature toggles, Syriac selection, and seeded random
-strings) and `use` (Universal Shaping Engine: Noto Sans Javanese pre-base
+Persian letters, digits, feature toggles, Syriac selection, the
+presentation-form fallback on a copy without GSUB, Noto Sans Syriac `stch`
+abbreviation marks, and seeded random strings) and `use` (Universal Shaping Engine: Noto Sans Javanese pre-base
 vowels, medials and broken clusters, Noto Serif Tibetan stacks and split
 vowels, and seeded random strings of both) and `indic` (the Khmer shaper on
 Noto Sans Khmer coeng stacks and split vowels, the Myanmar shaper on Noto

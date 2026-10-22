@@ -70,6 +70,26 @@ SETS = {
         ("NotoSansArabic-Subset.ttf", "لا بب", {"rlig": 0, "liga": 0}, {}, "rtl", "Arab"),
         ("NotoSansArabic-Subset.ttf", "بسم", {}, {}, "ltr", "Arab"),
         ("NotoSansArabic-Subset.ttf", "\u0710\u0712\u0710 \u0715\u0710", {}, {}, "rtl", "Syrc"),
+        # No GSUB: forms and lam-alef from the presentation forms in cmap.
+        *[("NotoSansArabicNoForms-Subset.ttf", t, {}, {}, "rtl", "Arab") for t in [
+            "بسم الله الرحمن الرحيم",
+            "لا لأ لإ لآ ملا",
+            "مَرْحَبًا بِكُمْ",
+            "شَدَّة دَّ بٌّ",
+            "ب\u200dب ب\u200cب \u200dب\u200d",
+            "بـب ـبـ ـ",
+            "ل\u064eا ب\u0651\u064e",
+        ]],
+        ("NotoSansArabicNoForms-Subset.ttf", "بسم لا", {"init": 0, "rlig": 0}, {}, "rtl", "Arab"),
+        # stch: the Syriac Abbreviation Mark spans the word after it.
+        *[("NotoSansSyriac-Subset.ttf", t, {}, {}, "rtl", "Syrc") for t in [
+            "\u070f\u0712",
+            "\u070f\u072b\u0720\u0721",
+            "\u0710\u070f\u0712\u0713\u0715 \u0717",
+            "\u070f\u0712\u0713\u0715\u0717\u0718\u0719\u071a\u071b\u071d\u071f",
+            "\u0710\u0712\u0710 \u0715\u0710 \u072a\u0710",
+        ]],
+        ("NotoSansSyriac-Subset.ttf", "\u070f\u072b\u0720\u0721", {}, {}, "ltr", "Syrc"),
     ],
     "use": [
         # Javanese: pre-base taling (moves before the base, and after a
@@ -197,6 +217,8 @@ def arabic_random_cases():
             while rng.random() < 0.25:
                 out.append(rng.choice(marks))
         cases.append(("NotoSansArabic-Subset.ttf", "".join(out), {}, {}, "rtl", "Arab"))
+    for case in cases[:15]:
+        cases.append(("NotoSansArabicNoForms-Subset.ttf",) + case[1:])
     return cases
 
 
