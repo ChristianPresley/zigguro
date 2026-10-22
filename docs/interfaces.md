@@ -1151,3 +1151,94 @@ Host method results are allocated in the caller's arena.
 ### Stability
 Experimental until the E15 PR (#1208) merges; the wire protocol is
 versioned by `protocolVersion` and the host keeps the previous version.
+
+## zg_regex.Regex
+
+### Defined in
+`packages/regex/src/root.zig`, `packages/regex/src/input.zig` (E05.F03).
+
+### Implemented by
+E05.F03.S01.T01 – E05.F03.S03.T01.
+
+### Consumed by
+E05.F04 (TextMate-style grammars), E05.F06 (find and replace), E07 (LSP
+patterns), E08 (workspace search, globs), E11 (JSON Schema `pattern`), E15
+(settings validation).
+
+### Signature
+```zig
+pub const Options = struct {
+    case_insensitive: bool = false, multi_line: bool = false, dot_all: bool = false,
+    crlf: bool = false, swap_greed: bool = false, unicode: bool = true,
+    ignore_whitespace: bool = false,
+    literal: bool = false,      // escape the whole pattern
+    whole_word: bool = false,   // wrap in \b{start-half} ... \b{end-half}
+    size_limit: usize = 10 << 20,
+    dfa_cache_bytes: usize = 2 << 20,
+    nest_limit: u32 = 250,
+    diag: ?*Error = null,       // filled on error.Syntax
+};
+pub const CompileError = error{ Syntax, SizeLimitExceeded } || Allocator.Error;
+pub const Match = struct { start: u64, end: u64 };
+pub const Range = struct { start: u64, end: u64 };
+pub const Chunk = struct { base: u64, bytes: []const u8 };
+pub const ChunkSource = struct {
+    ctx: *const anyopaque,
+    chunkAtFn: *const fn (ctx: *const anyopaque, offset: u64) Chunk, // non-empty chunks tiling the haystack
+};
+pub const Input = struct {
+    source: union(enum) { slice: []const u8, chunks: ChunkSource },
+    total_len: u64,
+    span: Range,            // matches lie inside; context outside it is still read for assertions
+    anchored: bool = false,
+    earliest: bool = false,
+    pub fn fromSlice(s: []const u8) Input;
+    pub fn fromChunks(src: ChunkSource, total_len: u64) Input;
+    pub fn withSpan(in: Input, span: Range) Input;
+    pub fn withAnchored(in: Input, anchored: bool) Input;
+};
+pub const Regex = struct {
+    pub fn compile(gpa: Allocator, pattern: []const u8, o: Options) CompileError!Regex;
+    pub fn deinit(re: *Regex, gpa: Allocator) void;
+    pub fn newCache(re: *const Regex, gpa: Allocator) Allocator.Error!Cache;
+    pub fn newCaptures(re: *const Regex, gpa: Allocator) Allocator.Error!Captures;
+    pub fn isMatch(re: *const Regex, cache: *Cache, input: Input) bool;
+    pub fn find(re: *const Regex, cache: *Cache, input: Input) ?Match;
+    pub fn captures(re: *const Regex, cache: *Cache, input: Input, out: *Captures) bool;
+    pub fn findIter(re: *const Regex, cache: *Cache, input: Input) FindIter; // next() ?Match
+    pub fn captureNames(re: *const Regex) []const ?[]const u8;
+    pub fn groupCount(re: *const Regex) usize;
+};
+pub const Captures = struct { pub fn len(c) usize; pub fn get(c, i: usize) ?Match; pub fn deinit(c, gpa) void };
+pub const RegexSet = struct {
+    pub fn compile(gpa: Allocator, patterns: []const []const u8, o: Options) CompileError!RegexSet;
+    pub fn newCache(set: *const RegexSet, gpa: Allocator) Allocator.Error!SetCache;
+    pub fn matches(set: *const RegexSet, cache: *SetCache, input: Input, out: *std.DynamicBitSetUnmanaged) void;
+};
+pub fn escape(out: *std.ArrayList(u8), gpa: Allocator, literal: []const u8) Allocator.Error!void;
+pub fn smartCaseInsensitive(pattern: []const u8) bool;
+pub fn errorMessage(e: Error) []const u8;
+pub const simd = struct {
+    pub fn memchr(hay: []const u8, b: u8, from: usize) ?usize;
+    pub fn memrchr(hay: []const u8, b: u8, to: usize) ?usize;
+    pub const Memmem = struct { pub fn init(needle: []const u8) Memmem; pub fn find(f: *const Memmem, hay: []const u8, from: usize) ?usize };
+};
+```
+
+### Threading
+A compiled `Regex` or `RegexSet` is immutable and may be shared across
+threads. A `Cache` is per thread (or per concurrent search); searches never
+allocate after the cache is created except when the lazy DFA builds states,
+which stays within `dfa_cache_bytes`.
+
+### Ownership/lifetime
+The caller owns the `Regex`, each `Cache` and each `Captures`, and frees them
+with the allocator passed to `compile` / `newCache` / `newCaptures`. A
+`ChunkSource` must stay valid and unchanged for the duration of one search
+call; chunk slices are only read during that call. Offsets are absolute byte
+offsets into the haystack.
+
+### Stability
+Experimental until the E05.F03 pull request merges. Semantics follow Rust
+`regex` (Unicode by default, leftmost-first, no backreferences or
+look-around); see `docs/regex.md`.
