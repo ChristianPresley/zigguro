@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"path":{"type":"string","description":"Workspace-relative folder ('' for the top; prefix the root name in multi-root workspaces)."},"depth":{"type":"integer","minimum":1,"maximum":3,"default":1}},"required":["path"],"additionalProperties":false}
