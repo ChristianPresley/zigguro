@@ -62,6 +62,11 @@
 //! processes' records), so they reach its next request. Decisions are
 //! journaled, so `zg review accept` reaches `zg agent` the same way.
 //!
+//! `Options.provenance` (zg_scm's provenance recorder) hears about every
+//! file the glue writes: an agent's edit as that agent's, an accepted
+//! changeset (or a policy auto-apply) as its origin's, and a reject or an
+//! undo as the user's. The recorder diffs the file at the next snapshot.
+//!
 //! Agent tasks and rewind call in from any thread: `mutex` serializes the
 //! recording and the restore, and owns the queue and the history.
 
@@ -69,6 +74,7 @@ const std = @import("std");
 const zg_ai = @import("zg_ai");
 const zg_ai_proto = zg_ai.proto;
 const zg_review = @import("zg_review");
+const provenance_files = @import("provenance_files.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -88,6 +94,11 @@ pub const ReviewGlue = struct {
     dir: Io.Dir,
     disk: DiskFiles,
     workspace: zg_review.apply.DirFiles,
+    /// The workspace as the applier writes it: each write is reported to
+    /// `Options.provenance` with the actor of the action.
+    recording: provenance_files.RecordingFiles,
+    /// The human at the keyboard (`Options.user`).
+    user: provenance_files.Actor,
     /// Contents when not persisting.
     blobs: model.MemBlobs,
     /// The review store when persisting.
@@ -152,6 +163,11 @@ pub const ReviewGlue = struct {
         persist: bool = false,
         /// Journal these approvals in the store too.
         approvals: ?*zg_review.approvals.ApprovalBroker = null,
+        /// Report every file the glue writes (agent edits, accepted and
+        /// undone changesets) to zg_scm's provenance recorder.
+        provenance: ?provenance_files.Provenance = null,
+        /// The human at the keyboard: rejects and undos are theirs.
+        user: provenance_files.Actor = .{ .kind = .human },
     };
 
     /// The store's directory under the workspace root.
@@ -168,6 +184,8 @@ pub const ReviewGlue = struct {
             .dir = try Io.Dir.cwd().openDir(io, root, .{}),
             .disk = .{ .root = root },
             .workspace = undefined,
+            .recording = undefined,
+            .user = o.user,
             .blobs = .init(gpa),
             .history = .init(gpa, null),
             .q = undefined,
@@ -184,6 +202,7 @@ pub const ReviewGlue = struct {
         errdefer g.dir.close(io);
         errdefer g.blobs.deinit();
         g.workspace = .{ .dir = g.dir, .io = io };
+        g.recording = .{ .inner = g.workspace.files(), .workspace = root, .prov = o.provenance };
         g.q = try model.Queue.init(gpa, io, .{ .root = root, .blobs = g.blobs.blobs() });
         errdefer g.q.deinit();
         g.follow = .init(gpa, g.q, &g.comments);
@@ -197,7 +216,7 @@ pub const ReviewGlue = struct {
             } else |_| g.store_pending = true;
         }
         errdefer if (g.store) |st| st.close();
-        g.applier = .init(gpa, io, g.q, g.workspace.files(), &g.history);
+        g.applier = .init(gpa, io, g.q, g.recording.files(), &g.history);
         g.policy = try g.loadPolicy();
         errdefer g.policy.deinit();
         g.conflicts = try zg_review.rebase.ConflictIndex.init(gpa, g.q, .{ .history = &g.history });
@@ -376,6 +395,7 @@ pub const ReviewGlue = struct {
         const before = try ws.read(arena, rel);
         const out = try d.vtable.propose(d.ctx, io, arena, abs, p, origin);
         if (out != .applied) return out;
+        g.reportWrite(arena, rel, origin);
         // The write landed: a failure to record it must not fail the tool.
         const rec = g.record(arena, rel, before, origin.agent) catch |e| blk: {
             log.warn("{s}: agent write not recorded for restore: {t}", .{ rel, e });
@@ -384,6 +404,25 @@ pub const ReviewGlue = struct {
         g.noteTurn(rel, before, origin, rec) catch |e| log.warn("{s}: agent write not recorded for review: {t}", .{ rel, e });
         g.flushLocked();
         return out;
+    }
+
+    /// Tells provenance that the agent of `origin` wrote `rel`. Locked.
+    fn reportWrite(g: *ReviewGlue, arena: Allocator, rel: []const u8, origin: zfiles.Origin) void {
+        const p = g.recording.prov orelse return;
+        const after = (g.workspace.files().read(arena, rel) catch return) orelse return;
+        var ref = origin.agent;
+        if (ref.tool_call == null and origin.tool_call_id.len > 0) ref.tool_call = origin.tool_call_id;
+        const actor = provenance_files.agentActor(arena, ref, "") catch return;
+        p.report(rel, g.root, actor, after.bytes);
+    }
+
+    /// Who the applier's writes for `act` on `c` are by.
+    fn actorFor(g: *ReviewGlue, arena: Allocator, c: *const model.Changeset, act: Action) ?provenance_files.Actor {
+        if (g.recording.prov == null) return null;
+        return switch (act) {
+            .accept => provenance_files.actorOf(arena, c.prov.origin, g.user) catch null,
+            .reject, .undo => g.user,
+        };
     }
 
     /// Remembers what `rel` held before the turn's first write. Locked.
@@ -554,6 +593,8 @@ pub const ReviewGlue = struct {
         // Comments follow the texts this changed (after any rebase).
         defer g.follow.pump();
         const c = g.q.getMut(cs) orelse return .{ .refused = .{ .path = "", .reason = "it is gone" } };
+        g.recording.actor = g.actorFor(arena, c, act);
+        defer g.recording.actor = null;
         switch (act) {
             .accept, .reject => {
                 if (c.state != .pending and c.state != .partially_applied) return .{ .refused = .{ .path = "", .reason = "it is not open" } };
@@ -706,6 +747,9 @@ pub const ReviewGlue = struct {
         const cs = g.q.get(id) orelse return;
         var ctx: zg_review.policy.PolicyCtx = .of(cs);
         ctx.security = g.probe();
+        // Auto-applied: the agent's lines (a denied file is not written).
+        g.recording.actor = g.actorFor(arena, cs, .accept);
+        defer g.recording.actor = null;
         const r = zg_review.policy.policy.autoApply(g.policy, ctx, &g.applier, id, arena) catch |e| {
             log.warn("review policy on {f} failed: {t}", .{ id, e });
             return;
@@ -1209,3 +1253,49 @@ test "review glue: comments are written at once and another window takes them on
     try testing.expect(a.refresh());
     try testing.expectEqual(@as(usize, 2), a.comments.threadsOf(cs).len);
 }
+
+test "review glue: provenance hears each write with its actor" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+
+    var got: provenance_files.Collect = .init(testing.allocator);
+    defer got.deinit();
+    const g = try ReviewGlue.create(testing.allocator, testing.io, root, .{
+        .provenance = got.provenance(),
+        .user = provenance_files.Actor.human("Dana", "dana@example.com"),
+    });
+    defer g.destroy();
+    const fs = g.files();
+    const abs = (try fs.resolve(testing.io, arena, "a.txt")).abs;
+    _ = try fs.propose(testing.io, arena, abs, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "toolu_9" });
+    const id: model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+
+    // The agent's write.
+    try testing.expectEqual(@as(usize, 1), got.got.items.len);
+    const w = got.got.items[0];
+    try testing.expectEqualStrings("a.txt", w.path);
+    try testing.expectEqual(zg_scm_kind.agent, w.actor.kind);
+    try testing.expectEqualStrings("toolu_9", w.actor.tool_call_id);
+    try testing.expectEqualSlices(u8, &provenance_files.hashOf("ONE\ntwo\n"), &w.hash);
+
+    // Undo is the user's; accepting again is the agent's.
+    try testing.expect(try g.actLocked(arena, id, .undo) == .ok);
+    try testing.expectEqual(@as(usize, 2), got.got.items.len);
+    try testing.expectEqual(zg_scm_kind.human, got.got.items[1].actor.kind);
+    try testing.expectEqualStrings("Dana", got.got.items[1].actor.name);
+    try testing.expectEqualSlices(u8, &provenance_files.hashOf("one\ntwo\n"), &got.got.items[1].hash);
+    try testing.expect(try g.actLocked(arena, id, .accept) == .ok);
+    try testing.expectEqual(@as(usize, 3), got.got.items.len);
+    try testing.expectEqual(zg_scm_kind.agent, got.got.items[2].actor.kind);
+    try testing.expectEqual(@as(usize, 26), got.got.items[2].actor.session_id.len);
+    // No action running: writes through the glue's files are not reported.
+    try testing.expect(g.recording.actor == null);
+}
+
+const zg_scm_kind = @import("zg_scm").prov.record.ActorKind;
