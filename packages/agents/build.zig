@@ -10,6 +10,8 @@ pub fn build(b: *std.Build) void {
     const text = b.dependency("zg_text", f.args()).module("zg_text");
     // Task files reuse the notes frontmatter parser and writer (E13.F03).
     const frontmatter = b.dependency("zg_notes", f.args()).module("zg_frontmatter");
+    // regex_match in data queries (E13.F06.S02.T03).
+    const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_agents",
         .imports = &.{
@@ -20,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_platform", .module = platform },
             .{ .name = "zg_text", .module = text },
             .{ .name = "zg_frontmatter", .module = frontmatter },
+            .{ .name = "zg_regex", .module = regex },
         },
         .bench = "bench/main.zig",
     });

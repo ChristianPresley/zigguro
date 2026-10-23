@@ -12,6 +12,7 @@
         .zg_platform = .{ .path = "../platform" },
         .zg_text = .{ .path = "../text" },
         .zg_notes = .{ .path = "../notes" },
+        .zg_regex = .{ .path = "../regex" },
     },
     .paths = .{
         "build.zig",
