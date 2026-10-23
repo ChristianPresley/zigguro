@@ -38,7 +38,9 @@ pub const NodeFlags = packed struct(u32) {
     rebuild_on_scroll: bool = false,
     /// The node has a context menu (`zg_gui.w.menu.contextMenu`).
     context_menu: bool = false,
-    _pad: u16 = 0,
+    /// The node has an entry in `Window.visuals` (animated transform).
+    visual: bool = false,
+    _pad: u15 = 0,
 };
 
 /// The hot, per-frame fields of a node.
