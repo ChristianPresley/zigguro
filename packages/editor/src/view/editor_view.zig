@@ -94,6 +94,14 @@ pub const ChangeHook = struct {
     f: *const fn (ctx: *anyopaque, v: *EditorView) void,
 };
 
+/// Offered each key press before the mode and the editor's own keys
+/// (inline completions take Tab and Escape this way). Returning true
+/// consumes the key.
+pub const KeyHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *EditorView, k: zg_gui.input.event.KeyPress) bool,
+};
+
 /// Horizontal moves.
 pub const Unit = enum { char, word };
 
@@ -196,6 +204,8 @@ pub const EditorView = struct {
     indent_unit: ?indent_mod.IndentUnit = null,
     /// Collects the changes of a running model command (`runSmart`).
     capture: ?*Capture = null,
+    /// Offered every key press before `mode` (release events are not).
+    key_hook: ?KeyHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
     /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and

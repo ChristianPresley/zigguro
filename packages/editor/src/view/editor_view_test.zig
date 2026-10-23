@@ -114,6 +114,30 @@ test "view: typing, newline keeps indentation, backspace" {
     try testing.expectEqual(f.doc.len(), f.head());
 }
 
+test "view: key hook sees keys first and can consume them" {
+    var f: Fx = undefined;
+    try f.init("a");
+    defer f.deinit();
+    const Hook = struct {
+        seen: u32 = 0,
+        fn onKey(ctx: *anyopaque, _: *EditorView, k: zg_gui.input.event.KeyPress) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            h.seen += 1;
+            return k.key == .tab;
+        }
+    };
+    var h: Hook = .{};
+    f.view.key_hook = .{ .ctx = &h, .f = Hook.onKey };
+    f.view.setSelection(.caret(1));
+    // Tab is consumed (no indent); Enter falls through to the editor.
+    f.press(.{ .key = .tab });
+    try f.expectText("a");
+    f.press(.{ .key = .enter });
+    try f.expectText("a\n");
+    // Presses only; releases are not offered.
+    try testing.expectEqual(@as(u32, 2), h.seen);
+}
+
 test "view: undo groups typing and redo restores it" {
     var f: Fx = undefined;
     try f.init("");
