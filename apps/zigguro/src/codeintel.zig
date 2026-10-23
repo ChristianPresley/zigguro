@@ -3,7 +3,8 @@
 //! ...) as matching files open; the semantic tokens driver, which
 //! colours the editors through their `DocumentSyntax` overlays; and the
 //! diagnostics driver, whose store the agent's edit tools read back
-//! through the settle detector (`agentDiagnostics`).
+//! through the settle detector (`agentDiagnostics`). The agent also gets
+//! language-server tools (`agentTools`: diagnostics, hover, definition).
 //!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
@@ -32,6 +33,7 @@ const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
 const Manager = zg_codeintel.Manager;
 const SemTokDriver = zg_codeintel.features.SemTokDriver;
 const diagnostics = zg_codeintel.diagnostics;
+const LspTools = zg_codeintel.agent.tools.ToolExporter(zg_ai.tools.adapters.foreign);
 
 const log = std.log.scoped(.codeintel);
 
@@ -47,6 +49,7 @@ pub const CodeIntel = struct {
     semtok: SemTokDriver = undefined,
     diags: diagnostics.Store,
     diag: diagnostics.Driver = undefined,
+    lsp_tools: LspTools = undefined,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
     /// A wake call is in the mailbox.
@@ -95,6 +98,7 @@ pub const CodeIntel = struct {
         try ci.diag.init(&ci.mgr, &ci.diags, .{ .pull = .{ .waker = ci.waker() } });
         errdefer ci.diag.deinit();
         try ci.semtok.init(&ci.mgr, &ci.names, .{ .ctx = ci, .get = syntaxOf }, .{ .waker = ci.waker() });
+        ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
 
@@ -125,6 +129,32 @@ pub const CodeIntel = struct {
     /// `destroy`.
     pub fn agentDiagnostics(ci: *CodeIntel) zg_ai.tools.builtin.files.Diagnostics {
         return .{ .ctx = ci.diag.settleDetector(), .after_edit = diagnostics.SettleDetector.afterEdit };
+    }
+
+    /// The agent's language-server tools (`zg_ai`'s foreign exporter for
+    /// `Services.lsp`). Valid until `destroy`; destroy the agent first.
+    pub fn agentTools(ci: *CodeIntel) zg_ai.tools.adapters.foreign.Exporter {
+        return ci.lsp_tools.exporter();
+    }
+
+    /// Agent task: runs `f(arg)` on the UI thread and waits for it.
+    fn runOnUi(ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const Job = struct {
+            f: *const fn (arg: *anyopaque) void,
+            arg: *anyopaque,
+            io: std.Io,
+            done: std.Io.Event = .unset,
+            fn run(c: *anyopaque, _: *zg_gui.App) void {
+                const j: *@This() = @ptrCast(@alignCast(c));
+                j.f(j.arg);
+                j.done.set(j.io);
+            }
+        };
+        var job: Job = .{ .f = f, .arg = arg, .io = ci.mgr.rt.io };
+        ci.app.post(.{ .ctx = &job, .f = Job.run }) catch return false;
+        job.done.waitUncancelable(job.io);
+        return true;
     }
 
     /// Starts (or, when false, keeps holding) the language servers.
@@ -288,5 +318,11 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     defer arena.deinit();
     const ad = ci.agentDiagnostics();
     try testing.expect((try ad.after_edit(ad.ctx, rt.io, arena.allocator(), path)) == null);
+    // The language tools: three read-only tools; the store answers
+    // diagnostics without the UI thread.
+    const tools = ci.agentTools();
+    try testing.expectEqual(@as(usize, 3), (try tools.list(tools.ctx, arena.allocator())).len);
+    const r = try tools.call(tools.ctx, rt.io, arena.allocator(), "lsp_diagnostics", "{\"path\": \"main.zig\"}");
+    try testing.expect(std.mem.indexOf(u8, r.json, "No diagnostics for main.zig") != null);
     ci.close(h);
 }
