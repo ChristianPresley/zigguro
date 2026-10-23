@@ -115,11 +115,17 @@ pub const ProfilePort = struct {
     ctx: *anyopaque,
     resolve: *const fn (ctx: *anyopaque, name: []const u8) ?Profile,
 
-    /// Knows "default" (attended) and "unattended".
+    /// Knows "default" (attended), "unattended" and the profiles shipped
+    /// for automations (E13.F02): `unattended-readonly`,
+    /// `unattended-notes-write` and `unattended-lane-write`, all of which
+    /// never prompt (their tool rules are E16's rule sets).
     pub const builtin: ProfilePort = .{ .ctx = undefined, .resolve = struct {
         fn f(_: *anyopaque, name: []const u8) ?Profile {
             if (std.mem.eql(u8, name, "default")) return .{};
             if (std.mem.eql(u8, name, "unattended")) return .{ .unattended = true };
+            for ([_][]const u8{ "unattended-readonly", "unattended-notes-write", "unattended-lane-write" }) |p| {
+                if (std.mem.eql(u8, name, p)) return .{ .unattended = true };
+            }
             return null;
         }
     }.f };

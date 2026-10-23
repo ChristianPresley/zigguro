@@ -195,6 +195,11 @@ pub fn build(b: *std.Build) void {
         zg_step.dependOn(&run.step);
         test_step.dependOn(&run.step);
         const unit = b.addTest(.{ .name = "zg-app", .root_module = appModule(b, "apps/zg/src/tests.zig", f.target, f.optimize, &mods, options), .filters = test_filters });
+        // Files outside apps/zg the unit tests read (JSON schemas of CLI
+        // output).
+        const unit_fx = b.addOptions();
+        unit_fx.addOptionPath("automation_schema", b.path("docs/formats/automation.schema.json"));
+        unit.root_module.addImport("zg_cli_fixtures", unit_fx.createModule());
         const run_unit = b.addRunArtifact(unit);
         zg_step.dependOn(&run_unit.step);
         test_step.dependOn(&run_unit.step);

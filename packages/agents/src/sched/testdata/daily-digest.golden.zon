@@ -1,0 +1,12 @@
+.{
+    .name = "daily-digest",
+    .description = "Summarize yesterday's merged changes into today's daily note",
+    .triggers = .{.{ .schedule = .{ .cron = "0 9 * * 1-5", .jitter_s = 120 } }},
+    .action = .{ .agent = .{
+        .prompt = "Summarize what merged since {{last_run_at}}.",
+        .agent_def = "writer",
+        .model = "sonnet",
+    } },
+    .profile = "unattended-notes-write",
+    .budgets = .{ .max_cost_micro_usd = 500000, .max_wall_ms = 900000 },
+}

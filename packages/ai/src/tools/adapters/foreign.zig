@@ -34,13 +34,15 @@ pub const Kind = enum {
     workspace,
     notes,
     scm,
+    /// zg_agents: automations, tasks and runs (E13).
+    agents,
     mcp,
 
     /// The default deadline of a call, in ms.
     pub fn deadlineMs(k: Kind) u64 {
         return switch (k) {
             .lsp, .debug => 30_000,
-            .workspace, .notes => 10_000,
+            .workspace, .notes, .agents => 10_000,
             .scm => 60_000,
             .tasks, .mcp => 120_000,
         };

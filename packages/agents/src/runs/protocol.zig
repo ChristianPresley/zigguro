@@ -40,6 +40,11 @@ pub const methods = struct {
     pub const event = "run.event";
     /// -> `Ok`; the host exits once its runs are handed back or done.
     pub const shutdown = "host.shutdown";
+    /// Fires an automation now (E13.F02): `AutomationRunParams` ->
+    /// `AutomationRunResult`.
+    pub const automation_run = "automations.run";
+    /// Re-reads `.zigguro/automations` now: -> `Ok`.
+    pub const automation_reload = "automations.reload";
 };
 
 /// JSON-RPC error codes of this protocol.
@@ -62,6 +67,8 @@ pub const PinParams = struct { id: run.RunId, on: bool = true };
 pub const RemoveParams = struct { id: run.RunId, delete_files: bool = false };
 pub const AdoptParams = struct { ids: []const run.RunId };
 pub const AdoptResult = struct { adopted: u32, failed: u32 };
+pub const AutomationRunParams = struct { name: []const u8 };
+pub const AutomationRunResult = struct { fire_id: u64 };
 pub const SubscribeParams = struct { since: u64 = 0 };
 pub const SubscribeResult = struct { seq: u64 };
 
