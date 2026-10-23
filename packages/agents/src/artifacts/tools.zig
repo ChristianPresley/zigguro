@@ -8,6 +8,7 @@ const zg_ai = @import("zg_ai");
 const store_mod = @import("store.zig");
 const kinds = @import("kinds.zig");
 const runs = @import("../runs/root.zig");
+const chart = @import("../chart/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -25,14 +26,14 @@ pub const schemas = struct {
         "\"kind\":{\"type\":\"string\"," ++ kind_enum ++ "}," ++
         "\"title\":{\"type\":\"string\"}," ++
         "\"content\":{\"type\":\"string\",\"description\":\"Markdown, CSV/JSON table, SVG image, HTML, code or text.\"}," ++
-        "\"spec\":{\"description\":\"Chart spec (kind chart), as an object or JSON text.\"}," ++
+        "\"spec\":{\"description\":\"Chart spec (kind chart), as an object or JSON text.\",\"anyOf\":[" ++ chart.schema.object_json ++ ",{\"type\":\"string\"}]}," ++
         "\"source\":{\"type\":\"string\",\"description\":\"Diagram source (kind diagram).\"}," ++
         "\"language\":{\"type\":\"string\",\"description\":\"Language of kind code.\"}" ++
         "},\"additionalProperties\":false}";
     pub const update = "{\"type\":\"object\",\"required\":[\"id\"],\"properties\":{" ++
         "\"id\":{\"type\":\"string\",\"description\":\"An artifact id like A-0123456789ABC.\"}," ++
         "\"content\":{\"type\":\"string\"}," ++
-        "\"spec\":{\"description\":\"Chart spec, as an object or JSON text.\"}," ++
+        "\"spec\":{\"description\":\"Chart spec, as an object or JSON text.\",\"anyOf\":[" ++ chart.schema.object_json ++ ",{\"type\":\"string\"}]}," ++
         "\"source\":{\"type\":\"string\"}," ++
         "\"note\":{\"type\":\"string\",\"description\":\"What changed in this version.\"}" ++
         "},\"additionalProperties\":false}";
