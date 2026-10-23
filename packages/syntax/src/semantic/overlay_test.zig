@@ -233,8 +233,39 @@ test "semantic: apply and edit without leaks" {
             data.clearRetainingCapacity();
             for (0..r.uintLessThan(usize, 30)) |_| try data.appendSlice(gpa, &.{ r.uintLessThan(u32, 3), r.uintLessThan(u32, 6), 1 + r.uintLessThan(u32, 5), r.uintLessThan(u32, 4), r.uintLessThan(u32, 4) });
             const lines: []const []const u8 = store.items;
-            _ = try o.applyFull(version -| r.uintLessThan(u64, 3), "id", data.items, &f.legend, .fromSlice(&lines));
+            const v = version -| r.uintLessThan(u64, 3);
+            if (r.boolean()) {
+                _ = try o.applyFull(v, "id", data.items, &f.legend, .fromSlice(&lines));
+            } else {
+                // Range results pile up buffers until they are compacted.
+                const first = r.uintLessThan(u64, store.items.len);
+                _ = try o.applyRange(v, first, first + r.uintLessThan(u64, 5), data.items, &f.legend, .fromSlice(&lines));
+            }
         }
         try std.testing.expectEqual(store.items.len, o.lines.items.len);
     }
+}
+
+test "semantic: range results keep other lines' tokens across compaction" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const lines: []const []const u8 = &.{ "aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff", "gggg", "hhhh", "iiii", "jjjj", "kkkk", "llll" };
+    var o: SemanticOverlay = try .init(gpa, lines.len, 1);
+    defer o.deinit();
+    // One range result per line: line i gets a token at column i % 3.
+    for (0..lines.len) |i| {
+        const data = [_]u32{ @intCast(i), @intCast(i % 3), 1, 1, 0 };
+        try std.testing.expect(try o.applyRange(1, i, i + 1, &data, &f.legend, .fromSlice(&lines)));
+    }
+    try std.testing.expect(o.bufs.items.len <= 9);
+    for (0..lines.len) |i| {
+        const c: u32 = @intCast(i % 3);
+        try expectToks(&f, &o, i, &.{.{ c, c + 1, "type" }});
+    }
+    // A full result replaces every buffer with its own.
+    try std.testing.expect(try o.applyFull(1, null, &.{ 2, 1, 2, 1, 0 }, &f.legend, .fromSlice(&lines)));
+    try std.testing.expectEqual(@as(usize, 1), o.bufs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), o.lineTokens(0).len);
+    try expectToks(&f, &o, 2, &.{.{ 1, 3, "type" }});
 }

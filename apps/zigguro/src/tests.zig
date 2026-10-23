@@ -7,6 +7,7 @@ test {
     _ = @import("scm_base.zig");
     _ = @import("agent/editor_files.zig");
     _ = @import("agent/review_glue.zig");
+    _ = @import("agent/provenance_files.zig");
     _ = @import("agent/review_agent_port.zig");
     _ = @import("agent/panel.zig");
     _ = @import("agent/plan_card.zig");
@@ -14,6 +15,7 @@ test {
     _ = @import("file_sync.zig");
     _ = @import("agent/commands.zig");
     _ = @import("agent/host.zig");
+    _ = @import("agent/scm_tools.zig");
     _ = @import("agent/inline_model.zig");
     _ = @import("agent/chat_completion_port.zig");
     _ = @import("agent/mcp_input.zig");

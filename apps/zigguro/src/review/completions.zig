@@ -16,7 +16,8 @@
 //! the ghost can draw, a document listener after the store's, one window
 //! timer armed from the engine's next deadline, and posted callbacks that
 //! bring provider text back to the UI thread. The workbench forwards caret
-//! moves (`onCaret`), keys (`onKey`) and focus.
+//! moves (`onCaret`) and focus; keys arrive through the view's `key_hook`
+//! (`onKey`).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -215,11 +216,15 @@ pub const EditorCompletions = struct {
         errdefer doc.unsubscribe(ec.store_listener.?);
         ec.listener = try doc.subscribe(.{ .ctx = ec, .onChange = onChange });
         view.decorations = store;
+        if (view.key_hook == null) view.key_hook = .{ .ctx = ec, .f = keyHook };
         return ec;
     }
 
     pub fn detach(ec: *EditorCompletions) void {
         if (ec.timer) |t| ec.win.cancelTimer(t);
+        if (ec.view.key_hook) |h| if (h.ctx == @as(*anyopaque, ec)) {
+            ec.view.key_hook = null;
+        };
         ec.doc.unsubscribe(ec.listener);
         ec.ctl.deinit();
         ec.engine.deinit();
@@ -264,6 +269,11 @@ pub const EditorCompletions = struct {
         };
         if (handled) ec.changed();
         return handled;
+    }
+
+    fn keyHook(ctx: *anyopaque, _: *EditorView, k: zg_gui.input.event.KeyPress) bool {
+        const ec: *EditorCompletions = @ptrCast(@alignCast(ctx));
+        return ec.onKey(k);
     }
 
     /// `completions.trigger`.
@@ -488,7 +498,8 @@ test "completions: an editor shows ghost text, Tab accepts it" {
     defer ec.detach();
     try testing.expect(view.decorations != null);
     // Tab with nothing showing falls through.
-    try testing.expect(!ec.onKey(.{ .key = .tab }));
+    const hook = view.key_hook.?;
+    try testing.expect(!hook.f(hook.ctx, view, .{ .key = .tab }));
 
     ec.trigger();
     t.advance(1);
@@ -500,7 +511,7 @@ test "completions: an editor shows ghost text, Tab accepts it" {
     try testing.expectEqualStrings("turn 1;", ec.ctl.text());
     try testing.expectEqualStrings("AI", ec.statusText());
 
-    try testing.expect(ec.onKey(.{ .key = .tab }));
+    try testing.expect(hook.f(hook.ctx, view, .{ .key = .tab }));
     const got = try doc.tree.copyRange(gpa, .{ .start = 0, .end = doc.len() });
     defer gpa.free(got);
     try testing.expectEqualStrings("fn f() u32 {\n    return 1;\n}\n", got);
