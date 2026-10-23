@@ -625,6 +625,11 @@ pub const Editor = struct {
             },
             .key => |k| {
                 if (k.action == .release) return false;
+                if (v.key_hook) |h| if (h.f(h.ctx, v, k)) {
+                    ec.respond(.{ .changed = true });
+                    ec.repaint();
+                    return true;
+                };
                 if (modeKeyOf(k)) |mk| if (try v.modeKey(mk)) {
                     ec.respond(.{ .changed = true });
                     ec.repaint();
