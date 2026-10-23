@@ -15,8 +15,8 @@ const Allocator = std.mem.Allocator;
 /// An HTTP header.
 pub const Header = std.http.Header;
 
-/// HTTP methods providers use.
-pub const Method = enum { GET, POST };
+/// HTTP methods providers and REST clients use.
+pub const Method = enum { GET, POST, PATCH };
 
 /// One outgoing request.
 pub const HttpRequest = struct {
@@ -120,10 +120,11 @@ pub const ZgNet = struct {
             .method = switch (req.method) {
                 .GET => .GET,
                 .POST => .POST,
+                .PATCH => .PATCH,
             },
             .url = req.url,
             .headers = req.headers,
-            .body = if (req.method == .POST) req.body else null,
+            .body = if (req.method != .GET) req.body else null,
             // Model requests are not idempotent; retries are the RetryPolicy's job.
             .retry = .never,
             .follow_redirects = req.follow_redirects,
