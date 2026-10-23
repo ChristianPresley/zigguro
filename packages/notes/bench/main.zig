@@ -5,6 +5,7 @@ const zg_core = @import("zg_core");
 const zg_notes = @import("zg_notes");
 const bench = zg_core.bench;
 const gen = zg_notes.testing.gen;
+const search_model = @import("notes_search_model");
 
 pub fn main(min: std.process.Init.Minimal) !u8 {
     return bench.mainFromArgs(min, register);
@@ -144,6 +145,23 @@ fn register(b: *bench.Bench) !void {
         }
     }.f);
 
+    // Budget: results for a 10 k-note vault appear < 20 ms after the
+    // debounce: parse, retrieve and resolve the first 50 rows with their
+    // snippet text, which render at once (the top 200 follow; measured
+    // as notes/search_view_200) (E08.F06.S03.T02).
+    view_model = try search_model.NoteSearchViewModel.init(.{
+        .gpa = std.heap.smp_allocator,
+        .io = b.io,
+        .ix = sx.ix,
+        .retriever = zg_notes.search.bm25Retriever(sx.s, .{}),
+        .content = .{ .ctx = @constCast(&v10k), .read = readNote },
+        .debounce_ms = 0,
+        .k = 50,
+    });
+    try b.run("notes/search_view", &queries, viewBench);
+    view_model.o.k = 200;
+    try b.run("notes/search_view_200", &queries, viewBench);
+
     // Budget: p95 < 100 ms per read tool call (search_notes, read_note,
     // note_links) on the 10 k vault (E08.F08.S02.T01).
     tools_src = .{
@@ -261,6 +279,18 @@ fn noPropose(ctx: *anyopaque, label: []const u8, tool: []const u8, changes: []co
     return error.Unexpected;
 }
 
+var view_model: *search_model.NoteSearchViewModel = undefined;
+var view_turn: usize = 0;
+
+fn viewBench(qs: *const [20][]const u8, s: *bench.State) void {
+    for (0..s.iterations()) |_| {
+        view_model.setQuery(qs[view_turn % qs.len]);
+        view_turn += 1;
+        if (view_model.parseError() != null) @panic("parse");
+        bench.doNotOptimizeAway(view_model.rows().len);
+    }
+}
+
 const SearchCtx = struct { ix: *zg_notes.NoteIndex, s: *zg_notes.search.SearchIndex, vault: *const gen.Vault };
 var search_ctx: SearchCtx = undefined;
 
@@ -273,7 +303,8 @@ fn readNote(ctx: *anyopaque, gpa: std.mem.Allocator, id: zg_notes.FileId, path: 
 }
 
 fn buildSearch(io: std.Io, v: *const gen.Vault) !SearchCtx {
-    const gpa = std.heap.page_allocator;
+    // The app runs the index on a general-purpose allocator.
+    const gpa = std.heap.smp_allocator;
     const ix = try zg_notes.NoteIndex.init(gpa, io, &.{whole_vault});
     const s = try zg_notes.search.SearchIndex.attach(ix, .{ .content = .{ .ctx = @constCast(v), .read = readNote } });
     for (v.paths, v.notes, 0..) |p, n, i| try ix.indexNote(.{ .index = @intCast(i), .gen = 0 }, .of(0), p, n);
