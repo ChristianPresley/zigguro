@@ -324,6 +324,7 @@ fn runNow(src: *Source, arena: Allocator, input: []const u8, msg: *[]const u8) !
     const id = s.fireNow(in.name) catch |e| switch (e) {
         error.UnknownAutomation => return bad(arena, msg, "no automation named \"{s}\"", .{in.name}),
         error.AlreadyRunning => return bad(arena, msg, "\"{s}\" is already running", .{in.name}),
+        error.Disabled => return bad(arena, msg, "\"{s}\" is disabled or not approved yet", .{in.name}),
         else => return e,
     };
     return std.json.Stringify.valueAlloc(arena, .{ .name = in.name, .fire_id = id }, .{});
