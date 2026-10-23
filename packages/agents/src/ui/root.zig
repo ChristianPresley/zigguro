@@ -16,6 +16,9 @@ pub const automations_view = @import("automations_view.zig");
 /// The task board.
 pub const board = @import("board/board_view.zig");
 
+/// Standalone HTML export of Markdown documents.
+pub const export_html = @import("export_html.zig");
+
 /// Document mode: outline, tracked changes, selection bar and layout.
 pub const doc_mode = struct {
     pub const view = @import("doc_mode/doc_mode_view.zig");
@@ -38,5 +41,6 @@ test {
     _ = @import("automations_view_test.zig");
     _ = @import("board/board_view_test.zig");
     _ = @import("doc_mode/doc_mode_view_test.zig");
+    _ = @import("export_test.zig");
     std.testing.refAllDecls(doc_mode);
 }
