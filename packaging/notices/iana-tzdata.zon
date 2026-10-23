@@ -1,0 +1,17 @@
+// The IANA Time Zone Database (tzdata). tools/tzdata_gen embeds the zones
+// that Windows zones map to in zg_agents (Windows has no zoneinfo files);
+// the scheduler's tests use a few compiled zones. See
+// docs/formats/timezones.md.
+.{
+    .name = "IANA Time Zone Database",
+    .version = "tzdata 2026e",
+    .license_spdx = "LicenseRef-Public-Domain",
+    .source_url = "https://www.iana.org/time-zones",
+    .shipped = true,
+    .paths = .{
+        "tools/tzdata_gen/data/links.txt",
+        "packages/agents/src/sched/tzdata/zones.bin",
+        "packages/agents/src/sched/testdata/tz/**",
+    },
+    .license_text_files = .{},
+}
