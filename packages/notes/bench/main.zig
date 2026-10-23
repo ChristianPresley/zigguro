@@ -108,6 +108,21 @@ fn register(b: *bench.Bench) !void {
         }
     }.f);
 
+    // Budget: opening today's (existing) daily note in the 10 k vault
+    // takes < 50 ms (E08.F07.S02.T01).
+    try ix10k.indexNote(.{ .index = 10_000, .gen = 0 }, .of(0), "daily/2026-10-21.md", "# today\n");
+    try ix10k.commit();
+    daily_ctx = .{ .gpa = std.heap.page_allocator, .io = b.io, .ix = ix10k, .vault = &whole_vault, .files = .{ .ctx = undefined, .read = noRead, .create = noCreate }, .tz = &utc_tz };
+    try b.run("notes/daily_open_10k", &daily_ctx, struct {
+        fn f(c: *zg_notes.daily.NotesCtx, s: *bench.State) void {
+            for (0..s.iterations()) |_| {
+                var o = c.openDaily(.{ .date = .{ .y = 2026, .m = 10, .d = 21 }, .h = 9, .min = 0, .s = 0, .utc_offset_s = 0 }) catch @panic("open");
+                if (o.created) @panic("not found");
+                o.deinit(c.gpa);
+            }
+        }
+    }.f);
+
     // Budget: planning a rename with 500 inbound links takes < 100 ms
     // (E08.F06.S02.T01).
     const rix = try zg_notes.NoteIndex.init(std.heap.page_allocator, b.io, &.{whole_vault});
@@ -128,6 +143,23 @@ fn register(b: *bench.Bench) !void {
             }
         }
     }.f);
+}
+
+var utc_tz: zg_notes.daily.LocalTz = .utc(std.heap.page_allocator);
+var daily_ctx: zg_notes.daily.NotesCtx = undefined;
+
+fn noRead(ctx: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 {
+    _ = ctx;
+    _ = gpa;
+    _ = path;
+    return null;
+}
+
+fn noCreate(ctx: *anyopaque, path: []const u8, bytes: []const u8) anyerror!void {
+    _ = ctx;
+    _ = path;
+    _ = bytes;
+    return error.Unexpected;
 }
 
 const SearchCtx = struct { ix: *zg_notes.NoteIndex, s: *zg_notes.search.SearchIndex, vault: *const gen.Vault };
