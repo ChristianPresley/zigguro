@@ -26,6 +26,7 @@ const revset = @import("../graph/revset.zig");
 const op_mod = @import("../oplog/operation.zig");
 const repo_mod = @import("../oplog/repo.zig");
 const undo_mod = @import("../oplog/undo.zig");
+const prov_index = @import("../prov/index.zig");
 const landing = @import("landing.zig");
 const ObjectId = id_mod.ObjectId;
 const Repo = repo_mod.Repo;
@@ -187,7 +188,19 @@ pub fn ToolExporter(comptime Foreign: type) type {
             const ix = self.src.index;
             const view = ix.acquire();
             defer view.release();
-            const ctx: revset.EvalContext = .{ .graph = view, .view = repo.view(), .store = repo.store, .io = self.src.io, .workspace = self.src.workspace };
+            var ctx: revset.EvalContext = .{ .graph = view, .view = repo.view(), .store = repo.store, .io = self.src.io, .workspace = self.src.workspace };
+            // The provenance revsets get an index of every commit, built
+            // only when the expression names one of them.
+            var pix: prov_index.ProvenanceIndex = .init(self.src.gpa);
+            defer pix.deinit();
+            var q: revset.functions.ProvenanceQuery = undefined;
+            for ([_][]const u8{ "agent(", "human(", "session(" }) |f| {
+                if (std.mem.indexOf(u8, src, f) == null) continue;
+                try pix.addAll(repo.store, view);
+                q = pix.query();
+                ctx.prov = &q;
+                break;
+            }
             var diag: revset.ParseError = .{};
             var it = revset.evaluate(self.src.gpa, &ctx, src, &diag) catch |e| switch (e) {
                 error.OutOfMemory => return e,
