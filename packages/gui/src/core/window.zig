@@ -31,6 +31,9 @@ const box = @import("../widgets/box.zig");
 const overlay = @import("../widgets/overlay.zig");
 const tooltip = @import("../widgets/tooltip.zig");
 const theme_mod = @import("../theme/theme.zig");
+const animator_mod = @import("../anim/animator.zig");
+const visual_mod = @import("../anim/visual.zig");
+const flip_mod = @import("../anim/flip.zig");
 
 const NodeId = ids.NodeId;
 const Rect = geom.Rect;
@@ -38,6 +41,8 @@ const Vec2 = geom.Vec2;
 const Size = geom.Size;
 const Response = response_mod.Response;
 const App = app_mod.App;
+const Visual = visual_mod.Visual;
+const Xform = visual_mod.Xform;
 
 /// Counters of the last frame.
 pub const FrameStats = struct {
@@ -51,6 +56,8 @@ pub const FrameStats = struct {
     nodes_replayed: u32 = 0,
     ops: u32 = 0,
     presented: bool = false,
+    /// Animations still running after this frame's tick.
+    animations: u32 = 0,
     damage_rects: u32 = 0,
     full_damage: bool = false,
 };
@@ -74,12 +81,16 @@ const ViewKey = struct { ptr: usize, vt: usize };
 
 const PendingHook = struct { hook: overlay.CloseHook, id: overlay.OverlayId };
 
+/// A node's visual; `gen` tells a reused slot apart.
+const VisualEntry = struct { gen: u8, v: Visual };
+
 fn viewKey(v: view_mod.AnyView) ViewKey {
     return .{ .ptr = @intFromPtr(v.ptr), .vt = @intFromPtr(v.vtable) };
 }
 
 const Cmd = union(enum) {
-    ops: struct { range: canvas.Range, origin: Vec2 },
+    /// A node's ops at `origin`, scaled and faded by its visual.
+    ops: struct { range: canvas.Range, origin: Vec2, scale: f32 = 1, alpha: f32 = 1 },
     push_clip: struct { r: Rect, radius: f32 },
     pop_clip,
     /// A scrollbar thumb, drawn above the scrolled content.
@@ -238,6 +249,17 @@ pub const Window = struct {
     /// The accessibility tree following this window (`A11yTree.attach`);
     /// updated after each frame that did work.
     a11y: ?*a11y_tree.A11yTree = null,
+
+    /// Animations of this window's node visuals and view values
+    /// (`animate`); ticked at the start of each frame.
+    anim: animator_mod.Animator,
+    /// Node visuals by node index (nodes flagged `visual`).
+    visuals: std.AutoHashMapUnmanaged(u32, VisualEntry) = .empty,
+    /// The predicted present time of the frame being drawn (from the
+    /// platform's `frame` event; 0 when unknown).
+    frame_target_ns: u64 = 0,
+    /// FLIP transitions waiting for the next layout (`flip`).
+    flips: std.ArrayList(flip_mod.Pending) = .empty,
     close_requested: bool = false,
 
     /// See `internal_drop`. `f` answers `enter` and `over` (true
@@ -394,9 +416,11 @@ pub const Window = struct {
             .ui = undefined,
             .frame_arena = .init(gpa),
             .canvas = opts.canvas,
+            .anim = .init(gpa),
         };
         w.engine = .{ .gpa = gpa, .store = &w.store, .mc = .{ .text = opts.text, .theme = app.theme } };
         w.ui = .{ .win = w };
+        w.anim.sink = .{ .ctx = w, .get = animGet, .set = animSet };
         w.store.on_free = .{ .ctx = w, .f = onFree };
         // View id 0 is "no view".
         try w.views.append(gpa, .{ .view = undefined, .alive = false, .dirty = false });
@@ -426,6 +450,9 @@ pub const Window = struct {
         for (w.after_frame.items) |t| t.f(t.ctx, w);
         w.after_frame_due.deinit(gpa);
         w.after_frame.deinit(gpa);
+        w.anim.deinit();
+        w.visuals.deinit(gpa);
+        w.flips.deinit(gpa);
         w.store.on_free = null;
         w.ui.deinit();
         w.engine.deinit();
@@ -517,6 +544,8 @@ pub const Window = struct {
         if (w.active.eql(id)) w.active = .none;
         if (w.focus.eql(id)) w.focus = .none;
         _ = w.responses.remove(id.raw());
+        if (fl.visual) _ = w.visuals.remove(id.index);
+        if (w.anim.isActive()) w.anim.cancelNode(id);
         if (fl.view_root) {
             var it = w.view_map.iterator();
             while (it.next()) |kv| {
@@ -588,6 +617,11 @@ pub const Window = struct {
     pub fn frame(w: *Window) FrameStats {
         w.app.flushEffects();
         w.stats = .{ .frame_no = w.frame_no + 1 };
+        if (w.anim.isActive()) {
+            w.anim.reduced_motion = w.app.reduced_motion;
+            _ = w.anim.tick(w.animNow());
+            w.stats.animations = @intCast(w.anim.count());
+        }
         if (!w.needs_frame and !w.anyDirtyView()) return w.stats;
         w.needs_frame = false;
         w.frame_no += 1;
@@ -632,6 +666,7 @@ pub const Window = struct {
             for (w.store.resized_views.items) |vid| w.markViewDirty(vid);
             w.store.resized_views.clearRetainingCapacity();
         }
+        if (w.flips.items.len > 0) flip_mod.afterLayout(w);
 
         if (w.overlays.items.items.len > 0) w.placeOverlays();
 
@@ -649,6 +684,8 @@ pub const Window = struct {
         if (w.a11y) |t| _ = t.update(w);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         w.after_frame_due.clearRetainingCapacity();
+        // Animations in flight want the next frame too.
+        if (w.anim.isActive()) w.needs_frame = true;
         return w.stats;
     }
 
@@ -702,7 +739,7 @@ pub const Window = struct {
             for (w.store.hot.items(.flags)[1..]) |*f| f.paint_dirty = true;
         }
         const viewport: Rect = .{ .w = w.size.w, .h = w.size.h };
-        w.walkPaint(w.root, .{}, viewport, viewport, false);
+        w.walkPaint(w.root, .{}, viewport, viewport, false, .identity);
         w.cur_ops = 1 - w.cur_ops;
         w.hits.finish(w.gpa, w.size) catch {};
         w.stats.ops = @intCast(new.ops.items.len);
@@ -713,20 +750,41 @@ pub const Window = struct {
     /// Paints `id` and its subtree. `clip` is what shows of it; `cull`
     /// (children of a scroll container) skips subtrees whose box lies
     /// outside `cull_clip` (the clip, or a scroll layer's extent); content
-    /// that overflows its own box there is skipped with it.
-    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip: Rect, cull_clip: Rect, cull: bool) void {
+    /// that overflows its own box there is skipped with it. `origin` is in
+    /// layout space; `xf` (the ancestors' visuals) maps it to the window,
+    /// where `clip`, damage, hits and the stored `abs` live.
+    fn walkPaint(w: *Window, id: NodeId, origin: Vec2, clip_in: Rect, cull_in: Rect, cull: bool, xf: Xform) void {
         const s = &w.store;
         const i = id.index;
         var fl = s.hot.items(.flags)[i];
         const old_abs = s.absRect(id);
         if (fl.hidden) {
             if (fl.painted) {
-                w.addNodeDamage(old_abs.outset(w.ringExtent(fl)), clip, true);
+                w.addNodeDamage(old_abs.outset(w.ringExtent(fl)), clip_in, true);
                 s.hot.items(.flags)[i].painted = false;
             }
             return;
         }
-        const abs = s.relRect(id).translate(origin);
+        const lay = s.relRect(id).translate(origin);
+        var nxf = xf;
+        var clip_frac: f32 = 0;
+        if (fl.visual) {
+            if (w.visuals.get(i)) |e| if (e.gen == id.gen) {
+                nxf = xf.then(e.v, lay);
+                clip_frac = std.math.clamp(e.v.clip, 0, 1);
+            };
+        }
+        const abs = if (nxf.isIdentity()) lay else nxf.rect(lay);
+        // An animated clip hides the bottom of the node (and its subtree).
+        var clip = clip_in;
+        var cull_clip = cull_in;
+        var vis_clip: ?Rect = null;
+        if (clip_frac > 0) {
+            const cr: Rect = .{ .x = abs.x, .y = abs.y, .w = abs.w, .h = abs.h * (1 - clip_frac) };
+            vis_clip = cr;
+            clip = clip.intersect(cr);
+            cull_clip = cull_clip.intersect(cr);
+        }
         if (cull) {
             const ext = w.ringExtent(fl);
             if (abs.outset(ext).intersect(cull_clip).isEmpty()) {
@@ -757,7 +815,7 @@ pub const Window = struct {
                         .ops = new,
                         .theme = w.app.theme,
                         .text_sys = w.text_sys,
-                        .size = .{ .w = abs.w, .h = abs.h },
+                        .size = .{ .w = lay.w, .h = lay.h },
                         .style = &s.cold.items[i].style,
                         .state = w.interaction(id, fl),
                     };
@@ -778,7 +836,8 @@ pub const Window = struct {
         s.hot.items(.flags)[i] = fl;
         s.hot.items(.paint_range)[i] = range;
         s.hot.items(.abs)[i] = abs.toArray();
-        if (!range.isEmpty()) w.cmds.append(w.gpa, .{ .ops = .{ .range = range, .origin = .{ .x = abs.x, .y = abs.y } } }) catch {};
+        if (vis_clip) |cr| w.cmds.append(w.gpa, .{ .push_clip = .{ .r = cr, .radius = 0 } }) catch {};
+        if (!range.isEmpty()) w.cmds.append(w.gpa, .{ .ops = .{ .range = range, .origin = .{ .x = abs.x, .y = abs.y }, .scale = nxf.s, .alpha = nxf.alpha } }) catch {};
         if (fl.hit_testable and !fl.disabled) w.hits.add(w.gpa, abs.intersect(clip), id) catch {};
 
         const st = &s.cold.items[i].style;
@@ -787,11 +846,16 @@ pub const Window = struct {
         if (fl.clips or st.clip) {
             child_clip = clip.intersect(abs);
             child_cull = cull_clip.intersect(abs);
-            w.cmds.append(w.gpa, .{ .push_clip = .{ .r = abs, .radius = st.radius } }) catch {};
+            w.cmds.append(w.gpa, .{ .push_clip = .{ .r = abs, .radius = st.radius * nxf.s } }) catch {};
         }
         const scroll = s.cold.items[i].scroll;
-        const child_origin: Vec2 = .{ .x = abs.x - scroll.x, .y = abs.y - scroll.y };
-        const layered = w.beginLayer(id, abs, scroll, &child_cull);
+        const child_origin: Vec2 = .{ .x = lay.x - scroll.x, .y = lay.y - scroll.y };
+        // A layer holds unscaled, opaque content: none while scaling or
+        // fading.
+        const layered = if (nxf.isTranslate()) w.beginLayer(id, abs, scroll, &child_cull) else blk: {
+            s.cold.items[i].layer = null;
+            break :blk false;
+        };
         // Children in z order (stable for equal z).
         var needs_sort = false;
         var it = s.children(id);
@@ -803,7 +867,7 @@ pub const Window = struct {
         }
         if (!needs_sort) {
             it = s.children(id);
-            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, child_cull, st.scrolls());
+            while (it.next()) |c| w.walkPaint(c, child_origin, child_clip, child_cull, st.scrolls(), nxf);
         } else {
             const start = w.z_scratch.items.len;
             it = s.children(id);
@@ -816,13 +880,14 @@ pub const Window = struct {
             }.lt);
             var k: usize = 0;
             while (start + k < w.z_scratch.items.len and k < kids.len) : (k += 1) {
-                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, child_cull, st.scrolls());
+                w.walkPaint(w.z_scratch.items[start + k], child_origin, child_clip, child_cull, st.scrolls(), nxf);
             }
             w.z_scratch.shrinkRetainingCapacity(start);
         }
         if (layered) w.endLayer(abs, scroll, clip);
         if (st.scrolls()) w.addThumbs(id, abs);
         if (fl.clips or st.clip) w.cmds.append(w.gpa, .pop_clip) catch {};
+        if (vis_clip != null) w.cmds.append(w.gpa, .pop_clip) catch {};
     }
 
     /// Marks `r` (window coordinates; `old`: as painted last time) as
@@ -1046,7 +1111,7 @@ pub const Window = struct {
             var open = false;
             var skip = false;
             for (w.cmds.items) |cmd| switch (cmd) {
-                .ops => |o| if (!skip) ops.replay(o.range, o.origin.add(shift), c, &w.glyph_scratch, w.gpa),
+                .ops => |o| if (!skip) ops.replayX(o.range, o.origin.add(shift), o.scale, o.alpha, c, &w.glyph_scratch, w.gpa),
                 .push_clip => |p| if (!skip) c.pushClip(p.r.translate(shift), .all(p.radius)),
                 .pop_clip => if (!skip) c.popClip(),
                 .thumb => |t| if (!skip) c.rect(t.r.translate(shift), t.color, .all(@min(t.r.w, t.r.h) / 2)),
@@ -1077,13 +1142,107 @@ pub const Window = struct {
         c.begin(w.size, w.scale);
         // Layers are drawn in place.
         for (w.cmds.items) |cmd| switch (cmd) {
-            .ops => |o| ops.replay(o.range, o.origin, c, &w.glyph_scratch, w.gpa),
+            .ops => |o| ops.replayX(o.range, o.origin, o.scale, o.alpha, c, &w.glyph_scratch, w.gpa),
             .push_clip => |p| c.pushClip(p.r, .all(p.radius)),
             .pop_clip => c.popClip(),
             .thumb => |t| c.rect(t.r, t.color, .all(@min(t.r.w, t.r.h) / 2)),
             .layer_begin, .layer_end => {},
         };
         c.end();
+    }
+
+    // -- animation ------------------------------------------------------------
+
+    /// Animates `t` to `to` (see `Animator.animate`); the window keeps
+    /// asking for frames until it settles.
+    pub fn animate(w: *Window, t: animator_mod.AnimTarget, to: f32, how: animator_mod.Motion) animator_mod.AnimId {
+        w.anim.reduced_motion = w.app.reduced_motion;
+        const id = w.anim.animate(t, to, how);
+        if (w.anim.isActive()) w.needs_frame = true;
+        return id;
+    }
+
+    /// Animates node `n`'s translation to `to` (both axes).
+    pub fn animateTranslate(w: *Window, n: NodeId, to: Vec2, how: animator_mod.Motion) void {
+        _ = w.animate(.{ .node_translate_x = n }, to.x, how);
+        _ = w.animate(.{ .node_translate_y = n }, to.y, how);
+    }
+
+    /// Runs FLIP for `nodes`: their current (painted) rects are kept, and
+    /// after the next layout each animates from there to its new place
+    /// (transforms only, no further layout).
+    pub fn flip(w: *Window, nodes: []const NodeId, how: animator_mod.Motion) void {
+        flip_mod.flip(w, nodes, how);
+    }
+
+    /// Node `n`'s visual (the default when it has none).
+    pub fn visualOf(w: *const Window, n: NodeId) Visual {
+        if (!w.store.valid(n) or !w.store.hot.items(.flags)[n.index].visual) return .{};
+        const e = w.visuals.get(n.index) orelse return .{};
+        return if (e.gen == n.gen) e.v else .{};
+    }
+
+    /// Sets node `n`'s visual (repainting what it covers).
+    pub fn setVisual(w: *Window, n: NodeId, v: Visual) void {
+        if (!w.store.valid(n)) return;
+        const fl = &w.store.hot.items(.flags)[n.index];
+        const old = w.visualOf(n);
+        if (v.isDefault()) {
+            if (fl.visual) _ = w.visuals.remove(n.index);
+            fl.visual = false;
+        } else {
+            w.visuals.put(w.gpa, n.index, .{ .gen = n.gen, .v = v }) catch return;
+            fl.visual = true;
+        }
+        // Moving and scaling show up as changed rects; a fade or clip
+        // repaints the node's own box.
+        if (old.opacity != v.opacity or old.clip != v.clip) w.store.markPaint(n);
+        w.store.paint_pending = true;
+        w.needs_frame = true;
+    }
+
+    /// The time animations step to: the frame's predicted present time
+    /// when the platform gave one on our clock, else `App.now_ms`.
+    fn animNow(w: *const Window) u64 {
+        const now = w.app.now_ms * std.time.ns_per_ms;
+        const t = w.frame_target_ns;
+        if (t != 0 and t < now + std.time.ns_per_s and t + std.time.ns_per_s > now) return t;
+        return now;
+    }
+
+    fn animGet(ctx: *anyopaque, t: animator_mod.AnimTarget) f32 {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        return switch (t) {
+            .node_opacity => |n| w.visualOf(n).opacity,
+            .node_translate_x => |n| w.visualOf(n).translate.x,
+            .node_translate_y => |n| w.visualOf(n).translate.y,
+            .node_scale => |n| w.visualOf(n).scale,
+            .node_clip => |n| w.visualOf(n).clip,
+            .value => |v| v.ptr.*,
+        };
+    }
+
+    fn animSet(ctx: *anyopaque, t: animator_mod.AnimTarget, x: f32) void {
+        const w: *Window = @ptrCast(@alignCast(ctx));
+        switch (t) {
+            .value => |v| {
+                if (!w.store.valid(v.node)) return;
+                if (v.rebuild) w.markViewDirty(w.store.hot.items(.view)[v.node.index]) else w.store.markPaint(v.node);
+                w.needs_frame = true;
+            },
+            inline else => |n, tag| {
+                var vis = w.visualOf(n);
+                switch (tag) {
+                    .node_opacity => vis.opacity = x,
+                    .node_translate_x => vis.translate.x = x,
+                    .node_translate_y => vis.translate.y = x,
+                    .node_scale => vis.scale = x,
+                    .node_clip => vis.clip = x,
+                    .value => unreachable,
+                }
+                w.setVisual(n, vis);
+            },
+        }
     }
 
     // -- timers and actions ---------------------------------------------------
@@ -1833,7 +1992,8 @@ pub const Window = struct {
                     w.chromeChanged();
                 }
             },
-            .frame => {
+            .frame => |f| {
+                w.frame_target_ns = f.target_ns;
                 w.needs_frame = true;
             },
             .drop => |d| w.handleDrop(d, payload),
