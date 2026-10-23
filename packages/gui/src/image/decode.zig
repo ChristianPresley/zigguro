@@ -1,13 +1,16 @@
 //! The decode façade (E04.F06.S02.T01): sniffs the format and hands the
 //! bytes to E03's PNG decoder or to the GIF, BMP and JPEG decoders here.
 //! Every decoder returns premultiplied sRGB RGBA8 and checks `Limits`
-//! before it allocates.
+//! before it allocates. JPEGs come out turned upright for their EXIF
+//! orientation; `decodeScaled` uses JPEG's DCT scaling for previews.
 
 const std = @import("std");
 const zg_text = @import("zg_text");
 const image = @import("image.zig");
 const gif = @import("gif.zig");
 const bmp = @import("bmp.zig");
+const jpeg = @import("jpeg.zig");
+const downscale_mod = @import("downscale.zig");
 
 const Allocator = std.mem.Allocator;
 const Image = image.Image;
@@ -35,8 +38,37 @@ pub fn decode(gpa: Allocator, bytes: []const u8, limits: Limits) DecodeError!Ima
         },
         .gif => gif.decodeGif(gpa, bytes, limits),
         .bmp => bmp.decodeBmp(gpa, bytes, limits),
-        .jpeg, .unknown => error.Unsupported,
+        .jpeg => decodeJpegOriented(gpa, bytes, limits, 1),
+        .unknown => error.Unsupported,
     };
+}
+
+fn decodeJpegOriented(gpa: Allocator, bytes: []const u8, limits: Limits, scale: u4) DecodeError!Image {
+    var o: u8 = 1;
+    const img = try jpeg.decodeJpeg(gpa, bytes, limits, scale, &o);
+    return jpeg.orient(gpa, img, o);
+}
+
+/// Decodes at a size whose longer side is at most `max_side`. A JPEG
+/// decodes at the smallest DCT scale (1/2, 1/4, 1/8) still at least
+/// `max_side`, then is box-filtered down; other formats decode in full
+/// first. Animations keep their frames (only the first is scaled).
+pub fn decodeScaled(gpa: Allocator, bytes: []const u8, max_side: u32, limits: Limits) DecodeError!Image {
+    if (bytes.len > limits.max_bytes) return error.TooLarge;
+    var img = if (sniff(bytes) == .jpeg) blk: {
+        const inf = try jpeg.info(bytes);
+        const long = @max(inf.w, inf.h);
+        var scale: u4 = 1;
+        while (scale < 8 and (long + scale * 2 - 1) / (scale * 2) >= max_side) scale *= 2;
+        // The full-size limit applies to the scaled output.
+        var l = limits;
+        l.max_pixels = std.math.maxInt(u64);
+        _ = try image.pixelBytes((inf.w + scale - 1) / scale, (inf.h + scale - 1) / scale, limits);
+        break :blk try decodeJpegOriented(gpa, bytes, l, scale);
+    } else try decode(gpa, bytes, limits);
+    if (@max(img.w, img.h) <= max_side or img.animated()) return img;
+    defer img.deinit(gpa);
+    return downscale_mod.downscale(gpa, &img, max_side);
 }
 
 const testing = std.testing;
