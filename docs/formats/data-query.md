@@ -186,3 +186,54 @@ then shapes the pipeline for execution:
 - **Constant folding.** Operators whose operands are all literals are
   evaluated at plan time.
 - **Top-k.** `sort … | limit k` becomes one `topk` stage.
+
+## Execution
+
+`execute` runs a plan over open datasets and streams the result to a sink
+in batches. The source splits into morsels of 64 k rows that worker
+threads take in turn. Each worker parses only the needed columns, and the
+pushed-down filter's columns first. Rows then flow through the streaming
+stages (`where`, `derive`, `select`, `join`) into the first blocking
+stage (`group`, `sort`, top-k, `limit`, `sample`), whose per-worker
+states merge at the end. Everything after that runs in memory.
+
+### Semantics
+
+- **Nulls** follow SQL. An operator or function of a null gives null.
+  The exceptions are `is null`, `coalesce`, and the three-valued `and`
+  and `or`. `where` keeps a row only when its condition is true, and
+  `x in [..]` with a null in the list is null rather than false.
+- **Errors in values** give null rather than failing the query. That
+  covers division or modulo by zero, integer overflow, the square root
+  or log of a negative number, and a pattern that doesn't compile.
+- **`date_diff(a, b)`** is `b − a`, truncated toward zero, in days
+  unless a unit is given. Months, quarters and years count whole
+  calendar units: a month is whole once the day of month (and time) is
+  reached.
+- **Sorting.** Nulls sort last in both directions, and ties keep their
+  input order.
+- **Groups** come out in the order of their first row. Group keys
+  compare nulls as equal, and `1` equals `1.0`.
+- **Joins.** A left row's matches come in the joined dataset's order.
+  Null keys never match. A `left` join keeps an unmatched row, with
+  nulls on the right.
+- **`sample n`** keeps the n rows whose order hashes lowest, in input
+  order. The same query over the same data always picks the same rows,
+  however many threads run it.
+- **Approximation.** `count_distinct` is exact up to 1 M distinct
+  values per group and a HyperLogLog sketch beyond that. `median` and
+  `p` are exact up to 1 M values per group and a t-digest beyond that.
+  The stats say when a sketch answered.
+
+Every result is deterministic and the same for any thread count: rows
+carry their input order through the stages, and every merge resolves
+ties by it.
+
+### Guards
+
+| Guard | Default | Error |
+| --- | --- | --- |
+| `max_mem`: kept rows, groups, sketches and join tables | 1 GiB | `QueryTooLarge` (add a filter or a limit; nothing spills to disk) |
+| Join table rows | 10 M | `JoinTooLarge` |
+| `max_rows_out` | 1 M | none: the result is cut, and the stats say `truncated` |
+| `cancel` | — | `Canceled`, checked every 1024 rows |
