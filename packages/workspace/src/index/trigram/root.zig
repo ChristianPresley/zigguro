@@ -6,6 +6,8 @@ pub const varint = @import("varint.zig");
 pub const segment = @import("segment.zig");
 /// Queries, literal planning and execution.
 pub const query = @import("query.zig");
+/// Regex planning over zg_regex's HIR.
+pub const regex_plan = @import("regex_plan.zig");
 /// The workspace trigram index.
 pub const index = @import("index.zig");
 /// See `index.TrigramIndex`.
@@ -16,3 +18,7 @@ pub const Trigram = segment.Trigram;
 pub const Query = query.Query;
 /// See `query.planLiteral`.
 pub const planLiteral = query.planLiteral;
+/// See `regex_plan.planRegex`.
+pub const planRegex = regex_plan.planRegex;
+/// See `regex_plan.planPattern`.
+pub const planPattern = regex_plan.planPattern;

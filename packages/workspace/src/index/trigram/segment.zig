@@ -37,19 +37,19 @@ pub inline fn trigramAt(bytes: []const u8, i: usize) Trigram {
 }
 
 /// Extracts the distinct trigrams of a document using a 2^24-bit set
-/// (2 MiB) that is cleared through a touched list, so it is reused per file.
+/// (2 MiB, allocated on first use) that is cleared through the touched
+/// list, so it is reused per file.
 pub const Extractor = struct {
-    bits: []u64,
+    bits: []u64 = &.{},
     touched: std.ArrayList(Trigram) = .empty,
 
-    /// Allocates the bit set.
+    /// An extractor (the set allocates on first use).
     pub fn init(gpa: Allocator) !Extractor {
-        const bits = try gpa.alloc(u64, (1 << 24) / 64);
-        @memset(bits, 0);
-        return .{ .bits = bits };
+        _ = gpa;
+        return .{};
     }
 
-    /// Frees the bit set.
+    /// Frees the set.
     pub fn deinit(e: *Extractor, gpa: Allocator) void {
         gpa.free(e.bits);
         e.touched.deinit(gpa);
@@ -61,18 +61,31 @@ pub const Extractor = struct {
         for (e.touched.items) |t| e.bits[t >> 6] = 0;
         e.touched.clearRetainingCapacity();
         if (bytes.len < 3) return &.{};
-        var t: u32 = @as(u32, fold(bytes[0])) << 8 | fold(bytes[1]);
+        try e.touched.ensureTotalCapacity(gpa, bytes.len - 2);
+        if (e.bits.len == 0) {
+            e.bits = try gpa.alloc(u64, (1 << 24) / 64);
+            @memset(e.bits, 0);
+        }
+        const out = e.touched.allocatedSlice();
+        var n: usize = 0;
+        var t: u32 = @as(u32, fold_table[bytes[0]]) << 8 | fold_table[bytes[1]];
         for (bytes[2..]) |b| {
-            t = (t << 8 | fold(b)) & 0xFF_FFFF;
+            t = (t << 8 | fold_table[b]) & 0xFF_FFFF;
             const w = &e.bits[t >> 6];
             const m = @as(u64, 1) << @as(u6, @truncate(t));
-            if (w.* & m == 0) {
-                w.* |= m;
-                try e.touched.append(gpa, t);
-            }
+            out[n] = t;
+            n += @intFromBool(w.* & m == 0);
+            w.* |= m;
         }
+        e.touched.items.len = n;
         return e.touched.items;
     }
+};
+
+const fold_table: [256]u8 = blk: {
+    var t: [256]u8 = undefined;
+    for (&t, 0..) |*x, i| x.* = std.ascii.toLower(@intCast(i));
+    break :blk t;
 };
 
 /// One document of a segment.
@@ -84,7 +97,7 @@ pub const Doc = struct {
 };
 
 /// Builds a segment in memory. Postings are collected as (trigram, doc)
-/// pairs and grouped at `finish` by a stable two-pass radix sort, which is
+/// pairs and grouped at `finish` by an in-place radix sort, which is
 /// several times faster than a hash map of lists.
 pub const Builder = struct {
     gpa: Allocator,
@@ -137,30 +150,48 @@ pub const Builder = struct {
     /// Serializes the segment. Caller owns the bytes.
     pub fn finish(b: *Builder, gpa: Allocator) ![]u8 {
         const n = b.pairs.items.len;
-        // Stable LSD radix sort by trigram (12 low bits, then 12 high
-        // bits); insertion order, so ascending docs, survives.
-        const keys_buf = try gpa.alloc(u64, n);
-        defer gpa.free(keys_buf);
-        const counts = try gpa.alloc(u32, 4097);
-        defer gpa.free(counts);
-        var src = b.pairs.items;
-        var dst = keys_buf;
-        inline for (.{ 32, 44 }) |shift| {
-            @memset(counts, 0);
-            for (src) |k| counts[@as(usize, @intCast((k >> shift) & 0xFFF)) + 1] += 1;
-            for (1..4097) |d| counts[d] += counts[d - 1];
-            for (src) |k| {
-                const d: usize = @intCast((k >> shift) & 0xFFF);
-                dst[counts[d]] = k;
-                counts[d] += 1;
+        // Stable radix sort by trigram: scatter by the top 12 bits, then
+        // sort each bucket (in cache) by the low 12 bits back into
+        // `pairs`. Insertion order, so ascending docs, survives.
+        const sorted = b.pairs.items;
+        {
+            const scratch = try gpa.alloc(u64, n);
+            defer gpa.free(scratch);
+            const hi = try gpa.alloc(u32, 4097);
+            defer gpa.free(hi);
+            @memset(hi, 0);
+            for (sorted) |k| hi[@as(usize, @intCast((k >> 44) & 0xFFF)) + 1] += 1;
+            for (1..4097) |d| hi[d] += hi[d - 1];
+            const bounds = try gpa.dupe(u32, hi);
+            defer gpa.free(bounds);
+            for (sorted) |k| {
+                const d: usize = @intCast((k >> 44) & 0xFFF);
+                scratch[hi[d]] = k;
+                hi[d] += 1;
             }
-            std.mem.swap([]u64, &src, &dst);
+            var lo: [4097]u32 = undefined;
+            for (0..4096) |d| {
+                const from = bounds[d];
+                const to = bounds[d + 1];
+                if (to - from < 2) {
+                    if (to > from) sorted[from] = scratch[from];
+                    continue;
+                }
+                @memset(&lo, 0);
+                for (scratch[from..to]) |k| lo[@as(usize, @intCast((k >> 32) & 0xFFF)) + 1] += 1;
+                for (1..4097) |x| lo[x] += lo[x - 1];
+                for (scratch[from..to]) |k| {
+                    const x: usize = @intCast((k >> 32) & 0xFFF);
+                    sorted[from + lo[x]] = k;
+                    lo[x] += 1;
+                }
+            }
         }
-        const sorted = src; // two passes: back in `pairs`
 
-        var post: std.ArrayList(u8) = .empty;
-        defer post.deinit(gpa);
-        try post.ensureTotalCapacity(gpa, n + n / 4);
+        // Postings and the table go straight into sized buffers.
+        const post = try gpa.alloc(u8, n * varint.max_len_u32);
+        defer gpa.free(post);
+        var plen: usize = 0;
         var table: std.ArrayList(u8) = .empty;
         defer table.deinit(gpa);
         var keys: usize = 0;
@@ -169,11 +200,17 @@ pub const Builder = struct {
             const t: Trigram = @intCast(sorted[i] >> 32);
             var j = i;
             var prev: u32 = 0;
-            const off = post.items.len;
+            const off = plen;
             while (j < n and sorted[j] >> 32 == t) : (j += 1) {
                 const d: u32 = @truncate(sorted[j]);
                 std.debug.assert(j == i or d > prev);
-                try varint.put(&post, gpa, d - prev);
+                var x = d - prev;
+                while (x >= 0x80) : (x >>= 7) {
+                    post[plen] = @as(u8, @truncate(x)) | 0x80;
+                    plen += 1;
+                }
+                post[plen] = @truncate(x);
+                plen += 1;
                 prev = d;
             }
             var rec: [tri_len]u8 = undefined;
@@ -184,15 +221,16 @@ pub const Builder = struct {
             keys += 1;
             i = j;
         }
+        const post_items = post[0..plen];
 
-        const total = header_len + b.docs.items.len * doc_len + table.items.len + post.items.len + footer_len;
+        const total = header_len + b.docs.items.len * doc_len + table.items.len + post_items.len + footer_len;
         const out = try gpa.alloc(u8, total);
         errdefer gpa.free(out);
         @memcpy(out[0..4], magic);
         std.mem.writeInt(u32, out[4..8], version, .little);
         std.mem.writeInt(u32, out[8..12], @intCast(b.docs.items.len), .little);
         std.mem.writeInt(u32, out[12..16], @intCast(keys), .little);
-        std.mem.writeInt(u64, out[16..24], post.items.len, .little);
+        std.mem.writeInt(u64, out[16..24], post_items.len, .little);
         var p: usize = header_len;
         for (b.docs.items) |d| {
             std.mem.writeInt(u64, out[p..][0..8], d.path_hash, .little);
@@ -201,8 +239,8 @@ pub const Builder = struct {
         }
         @memcpy(out[p..][0..table.items.len], table.items);
         p += table.items.len;
-        @memcpy(out[p..][0..post.items.len], post.items);
-        p += post.items.len;
+        @memcpy(out[p..][0..post_items.len], post_items);
+        p += post_items.len;
         std.mem.writeInt(u64, out[p..][0..8], std.hash.XxHash3.hash(0, out[0..p]), .little);
         return out;
     }

@@ -1,6 +1,6 @@
 //! Trigram queries: a boolean tree over trigrams, planned from a literal
-//! (and, once E05's zg_regex lands, from a regex HIR), and executed against
-//! a reader's posting lists. std only.
+//! (or from a regex HIR, in `regex_plan.zig`), and executed against a
+//! reader's posting lists. std only.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

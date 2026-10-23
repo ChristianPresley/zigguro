@@ -189,6 +189,9 @@ fn register(b: *bench.Bench) !void {
                 for (docs, 0..) |d, k| ix.add(k, .{ .index = @intCast(k), .gen = 1 }, d) catch @panic("oom");
                 ix.flush() catch @panic("oom");
             }
+            var total: usize = 0;
+            for (docs) |d| total += d.len;
+            s.setBytes(total);
         }
     }.f);
     {
