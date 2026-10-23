@@ -241,9 +241,10 @@ workbench gets a window:
 view has none, a document listener after the store's, one window timer
 armed from `nextDeadline`, and `Host.post` through `App.post`. The
 workbench forwards caret moves and registers the palette commands; the
-status bar shows the state and toggles completions on click. Keys go
-through `EditorCompletions.onKey`, which returns false when the ghost does
-not take the key.
+status bar shows the state and toggles completions on click. Keys come
+through the view's `key_hook`, before Vim, Emacs and the built-in bindings;
+`EditorCompletions.onKey` returns false when the ghost does not take the
+key, so Tab still indents.
 
 ## Telemetry
 
