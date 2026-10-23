@@ -143,8 +143,8 @@ pub fn build(b: *std.Build) void {
             }
             test_step.dependOn(check_vk);
         }
-        // zg_terminal and zg_security also export GUI modules, tested with them.
-        inline for (.{ .{ "zg_terminal", "zg_terminal_view" }, .{ "zg_security", "zg_security_ui" } }) |extra| if (comptime std.mem.eql(u8, p.name, extra[0])) {
+        // zg_terminal, zg_security and zg_notes also export GUI modules, tested with them.
+        inline for (.{ .{ "zg_terminal", "zg_terminal_view" }, .{ "zg_security", "zg_security_ui" }, .{ "zg_notes", "zg_notes_ui" } }) |extra| if (comptime std.mem.eql(u8, p.name, extra[0])) {
             const vt = b.addTest(.{ .name = extra[1], .root_module = zg_build.testModule(b, f, deps[i].module(extra[1])), .filters = test_filters });
             const vrun = b.addRunArtifact(vt);
             vrun.skip_foreign_checks = true;
@@ -678,6 +678,7 @@ fn appModule(
     // Extra modules packages export next to their root module.
     imports.append(b.allocator, .{ .name = "zg_terminal_view", .module = mods[comptime packages.indexOf("zg_terminal")].owner.modules.get("zg_terminal_view").? }) catch @panic("OOM");
     imports.append(b.allocator, .{ .name = "zg_security_ui", .module = mods[comptime packages.indexOf("zg_security")].owner.modules.get("zg_security_ui").? }) catch @panic("OOM");
+    imports.append(b.allocator, .{ .name = "zg_notes_ui", .module = mods[comptime packages.indexOf("zg_notes")].owner.modules.get("zg_notes_ui").? }) catch @panic("OOM");
     // The IDE connects MCP servers the way `zg agent --mcp-config` does.
     if (std.mem.startsWith(u8, root, "apps/zigguro/")) {
         const servers = b.createModule(.{ .root_source_file = b.path("apps/zg/src/mcp_servers.zig"), .target = target, .optimize = optimize });
