@@ -6,7 +6,9 @@
 const std = @import("std");
 
 pub const runs = @import("runs/root.zig");
+pub const mission = @import("mission/root.zig");
 
 test {
     _ = runs;
+    _ = mission;
 }
