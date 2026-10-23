@@ -12,7 +12,10 @@ operator still pending counts as normal) or
 normal, then `[reg TYPE] "TEXT"` when the scenario name ends in `+reg`, or
 `[reg:X TYPE] "TEXT"` for each register X when it ends in `+reg:XYZ`.
 Scenarios whose name starts with `mc:` (several cursors) are written by hand
-and left alone.
+and left alone. Those starting with `confirm:` answer the `:s///c` prompt,
+which Vim only asks in a terminal: they run under `script` (util-linux),
+with the keys fed before the state is recorded; when the keys run out
+mid-prompt, Vim reads end of input and stops as if `q` was typed.
 """
 
 import json
@@ -64,7 +67,7 @@ def vim_string(keys):
     return '"' + "".join(out) + '"'
 
 
-def run(before, keys, regs=""):
+def run(before, keys, regs="", tty=False):
     off = before.index(CARET)
     text = before.replace(CARET, "", 1)
     lines = text.split("\n")
@@ -86,10 +89,19 @@ def run(before, keys, regs=""):
                 "'c': getcurpos(), 'v': getpos('v'), 'r': getreg('\"'), 't': getregtype('\"'), "
                 "'x': map(split('" + regs + "', '\\zs'), {_, n -> [getreg(n), getregtype(n)]})})], '" + out + "')\nendfunction\n"
             )
-            f.write("call feedkeys(" + vim_string(keys)[:-1] + "\\<Cmd>call Dump()\\<CR>\", 'tx')\n")
+            if tty:
+                # A <Cmd> queued behind the answers would be read by the prompt.
+                f.write("call feedkeys(" + vim_string(keys) + ", 'tx')\ncall Dump()\n")
+            else:
+                f.write("call feedkeys(" + vim_string(keys)[:-1] + "\\<Cmd>call Dump()\\<CR>\", 'tx')\n")
             f.write("qa!\n")
-        subprocess.run(["vim", "-u", "NONE", "-i", "NONE", "-N", "-n", "-es", "-S", script],
-                       stdin=subprocess.DEVNULL, timeout=20, check=False)
+        if tty:
+            cmd = ["script", "-qc", "vim -u NONE -i NONE -N -n -X -S " + script, "/dev/null"]
+            subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           env=dict(os.environ, TERM="xterm"), timeout=20, check=False)
+        else:
+            subprocess.run(["vim", "-u", "NONE", "-i", "NONE", "-N", "-n", "-es", "-S", script],
+                           stdin=subprocess.DEVNULL, timeout=20, check=False)
         with open(out, encoding="utf-8") as f:
             return json.load(f)
 
@@ -158,7 +170,7 @@ def main():
             after = secs.get("after", "")
             if not name.startswith("mc:"):
                 regs = name.rsplit("+reg:", 1)[1] if "+reg:" in name else ""
-                r = run(secs["before"], secs["keys"], regs)
+                r = run(secs["before"], secs["keys"], regs, name.startswith("confirm:"))
                 after = render(r)
                 if name.endswith("+reg"):
                     after += "\n[reg %s] %s" % (r["t"] if r["t"] in ("v", "V") else "b", json.dumps(r["r"], ensure_ascii=False))

@@ -1,0 +1,10 @@
+# A document over the range threshold: only the visible lines plus one
+# screen above and below are requested, again after scrolling.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1, "semanticTokensProvider": {"legend": {"tokenTypes": ["function"], "tokenModifiers": []}, "full": true, "range": true}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/semanticTokens/range {"range": {"start": {"line": 30, "character": 0}, "end": {"line": 60, "character": 0}}}
+< {"id": $1, "result": {"data": [30, 0, 2, 0, 0]}}
+> textDocument/semanticTokens/range {"range": {"start": {"line": 70, "character": 0}, "end": {"line": 100, "character": 0}}}
+< {"id": $1, "result": {"data": [75, 0, 2, 0, 0]}}

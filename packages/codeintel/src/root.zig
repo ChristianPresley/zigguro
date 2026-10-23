@@ -19,6 +19,12 @@ pub const registry = struct {
     pub const routing = @import("registry/routing.zig");
 };
 
+/// Feature drivers: request results from the routed server and hand
+/// them to the editor.
+pub const features = struct {
+    pub const SemTokDriver = @import("features/semtok.zig");
+};
+
 /// Starts language servers on demand and routes documents and requests
 /// to them.
 pub const Manager = @import("Manager.zig");
@@ -28,4 +34,5 @@ test {
     _ = @import("sync/sink_test.zig");
     _ = @import("registry/registry_test.zig");
     _ = @import("Manager_test.zig");
+    _ = @import("features/semtok_test.zig");
 }
