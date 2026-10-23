@@ -15,6 +15,7 @@ test {
     _ = @import("agent/commands.zig");
     _ = @import("agent/host.zig");
     _ = @import("agent/scm_tools.zig");
+    _ = @import("agent/pending_edits.zig");
     _ = @import("agent/inline_model.zig");
     _ = @import("agent/chat_completion_port.zig");
     _ = @import("agent/mcp_input.zig");
