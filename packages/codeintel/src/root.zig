@@ -25,6 +25,9 @@ pub const features = struct {
     pub const SemTokDriver = @import("features/semtok.zig");
 };
 
+/// LSP language ids for zg_syntax languages.
+pub const language = @import("language.zig");
+
 /// Starts language servers on demand and routes documents and requests
 /// to them.
 pub const Manager = @import("Manager.zig");

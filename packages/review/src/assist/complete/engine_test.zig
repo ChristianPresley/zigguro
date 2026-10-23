@@ -54,7 +54,7 @@ const FakeHost = struct {
     cursor: usize = 19,
     version: u64 = 1,
     mutex: Io.Mutex = .init,
-    queue: std.ArrayList(struct { f: *const fn (*anyopaque) void, arg: *anyopaque }) = .empty,
+    queue: std.ArrayList(*anyopaque) = .empty,
     posted: Io.Event = .unset,
     got: std.ArrayList(Got) = .empty,
     failures: u32 = 0,
@@ -73,11 +73,11 @@ const FakeHost = struct {
         };
     }
 
-    fn post(ctx: *anyopaque, f: *const fn (*anyopaque) void, arg: *anyopaque) void {
+    fn post(ctx: *anyopaque, arg: *anyopaque) void {
         const h: *FakeHost = @ptrCast(@alignCast(ctx));
         h.mutex.lockUncancelable(h.io);
         defer h.mutex.unlock(h.io);
-        h.queue.append(gpa, .{ .f = f, .arg = arg }) catch unreachable;
+        h.queue.append(gpa, arg) catch unreachable;
         h.posted.set(h.io);
     }
 
@@ -100,7 +100,7 @@ const FakeHost = struct {
             const item = if (h.queue.items.len > 0) h.queue.orderedRemove(0) else null;
             h.mutex.unlock(h.io);
             const it = item orelse return;
-            it.f(it.arg);
+            engine_mod.CompletionEngine.runPosted(it);
         }
     }
 

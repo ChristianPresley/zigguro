@@ -50,6 +50,8 @@ const diff_model = zg_editor.model.diff.diff_model;
 const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
+const completions = @import("review/completions.zig");
+const CodeIntel = @import("codeintel.zig").CodeIntel;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -99,6 +101,8 @@ pub const Workbench = struct {
     review_view_ref: ?PanelRef = null,
     /// The current file's panel.
     cur_panel: ?PanelRef = null,
+    /// The completion provider, while attached to a window.
+    completions_svc: ?*completions.Service = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
     pending_open: ?[]u8 = null,
     /// The working folder (absolute).
@@ -174,6 +178,8 @@ pub const Workbench = struct {
     layout_final: bool = false,
     /// Where files' undo histories persist (`enableUndoFiles`).
     undo_dir: ?std.Io.Dir = null,
+    /// Language servers and semantic colours (from `attach`).
+    codeintel: ?*CodeIntel = null,
 
     /// Which keys editors use.
     const KeyMode = enum { standard, vim, emacs };
@@ -185,6 +191,8 @@ pub const Workbench = struct {
         doc: *Document,
         view: *EditorView,
         syntax: ?*DocumentSyntax,
+        /// The document in `docs`, for files with a path.
+        handle: ?zg_editor.model.api.registry.DocHandle = null,
         /// The document's file on disk (null: untitled).
         sync: ?*FileSync = null,
         /// The editor's Vim state while Vim keys are on.
@@ -194,6 +202,8 @@ pub const Workbench = struct {
         /// The document against the file's text, for the gutter's SCM
         /// bar (null: not read from disk).
         diff: ?*diff_model.DiffModel = null,
+        /// Ghost-text completions while a window shows the editor.
+        completions: ?*completions.EditorCompletions = null,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -273,6 +283,7 @@ pub const Workbench = struct {
             break :blk try wb.docs.openFile(abs, bytes);
         } else try wb.docs.openUntitled(bytes);
         f.doc = wb.docs.get(h).?;
+        if (f.path != null) f.handle = h;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
         wb.setMode(&f, wb.key_mode);
@@ -300,6 +311,7 @@ pub const Workbench = struct {
             f.syntax = sx;
             f.view.syntax = sx;
         };
+        if (wb.codeintel) |ci| if (f.handle) |fh| ci.open(fh, f.syntax, f.view);
         return f;
     }
 
@@ -325,7 +337,9 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (f.completions) |c| c.detach();
         var fm = f;
+        if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         wb.setMode(&fm, .standard);
         if (f.sync) |x| x.destroy();
         if (f.diff) |m| m.deinit();
@@ -359,6 +373,7 @@ pub const Workbench = struct {
         if (wb.win != null) {
             nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
             nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+            wb.attachCompletions(nf);
         }
         return nf;
     }
@@ -714,10 +729,14 @@ pub const Workbench = struct {
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        for (wb.files.items) |f| {
+        for (wb.files.items) |*f| {
             f.view.on_change = null;
             f.view.on_caret = null;
+            if (f.completions) |c| c.detach();
+            f.completions = null;
         }
+        if (wb.completions_svc) |svc| svc.destroy();
+        wb.completions_svc = null;
         if (w.app.on_message) |h| if (h.ctx == @as(*anyopaque, wb)) {
             w.app.on_message = null;
         };
@@ -727,6 +746,9 @@ pub const Workbench = struct {
     /// Frees everything (after `detach`).
     pub fn deinit(wb: *Workbench) void {
         wb.detach();
+        // Before the documents: the servers' text sync listens to them.
+        if (wb.codeintel) |ci| ci.destroy();
+        wb.codeintel = null;
         wb.resolver.deinit();
         if (wb.keymap) |k| k.deinit();
         if (wb.emacs_layer) |*d| d.deinit();
@@ -772,6 +794,11 @@ pub const Workbench = struct {
             f.view.on_change = .{ .ctx = wb, .f = onViewChange };
             f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
         }
+        wb.completions_svc = completions.Service.create(wb.rt, wb.env, win.app) catch |e| blk: {
+            log.err("completions: {t}", .{e});
+            break :blk null;
+        };
+        for (wb.files.items) |*f| wb.attachCompletions(f);
         wb.approvals = .init(wb.gpa, wb.io, .{});
         if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
             inb.win = win;
@@ -780,6 +807,12 @@ pub const Workbench = struct {
             wb.approvals_inbox = inb;
         } else |e| log.err("approvals inbox: {t}", .{e});
         wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
+        if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
+            ci.win = win;
+            wb.codeintel = ci;
+            for (wb.files.items) |f| if (f.handle) |h| ci.open(h, f.syntax, f.view);
+            ci.setTrusted(wb.trust == .trusted);
+        } else |e| log.err("language services: {t}", .{e});
         if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
@@ -844,6 +877,11 @@ pub const Workbench = struct {
         .{ .id = "editor.toggleEmacs", .title = "Toggle Emacs Mode", .category = "Preferences", .run = toggleEmacs },
         .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
+        .{ .id = "completions.trigger", .title = "Trigger Inline Completion", .category = "AI", .run = completionTrigger },
+        .{ .id = "completions.acceptLine", .title = "Accept Next Line of Inline Completion", .category = "AI", .run = completionAcceptLine },
+        .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
+        .{ .id = "completions.snooze", .title = "Snooze Inline Completions (5 Minutes)", .category = "AI", .run = completionSnooze },
+        .{ .id = "completions.toggle", .title = "Toggle Inline Completions", .category = "AI", .run = completionToggle },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -949,7 +987,10 @@ pub const Workbench = struct {
             .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
         switch (o) {
-            .saved => |s| wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes }),
+            .saved => |s| {
+                if (wb.codeintel) |ci| ci.saved(fs.doc);
+                wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
+            },
             .save_failed => |e| switch (e) {
                 error.ExternalChangeConflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk; not saved", .{name}),
                 error.Unrepresentable => wb.notify(.error_, "{s}: a character has no encoding in {t}; not saved", .{ name, fs.file.encoding }),
@@ -1172,6 +1213,46 @@ pub const Workbench = struct {
         const cabs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, cur }) catch return false;
         defer wb.gpa.free(cabs);
         return wb.samePath(cabs, abs);
+    }
+
+    /// Ghost-text completions for `f`'s editor (none when no provider is
+    /// configured).
+    fn attachCompletions(wb: *Workbench, f: *OpenFile) void {
+        const svc = wb.completions_svc orelse return;
+        const w = wb.win orelse return;
+        if (f.completions != null) return;
+        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, f.path) catch |e| blk: {
+            log.warn("completions: {t}", .{e});
+            break :blk null;
+        };
+    }
+
+    /// The current editor's completions.
+    fn curCompletions(wb: *Workbench) ?*completions.EditorCompletions {
+        for (wb.files.items) |f| if (f.view == wb.view) return f.completions;
+        return null;
+    }
+
+    fn completionTrigger(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.trigger();
+    }
+
+    fn completionAcceptLine(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| _ = c.acceptLine();
+    }
+
+    fn completionDismiss(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.ctl.dismiss(.escape);
+    }
+
+    fn completionSnooze(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.snooze();
+    }
+
+    fn completionToggle(wb: *Workbench) !void {
+        const svc = wb.completions_svc orelse return wb.notify(.info, "Inline completions need ZG_COMPLETION_URL or a model API key", .{});
+        svc.enabled = !svc.enabled;
+        if (!svc.enabled) for (wb.files.items) |f| if (f.completions) |c| c.ctl.dismiss(.escape);
     }
 
     fn closeEditorCmd(wb: *Workbench) !void {
@@ -1399,6 +1480,8 @@ pub const Workbench = struct {
         wb.trust = if (c == .restricted) .restricted else .trusted;
         // A trusted folder's MCP servers may start.
         if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
+        // So may its language servers.
+        if (wb.codeintel) |ci| ci.setTrusted(wb.trust == .trusted);
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1418,8 +1501,9 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
-    fn onViewChange(ctx: *anyopaque, _: *EditorView) void {
+    fn onViewChange(ctx: *anyopaque, v: *EditorView) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |f| if (f.view == v) if (f.completions) |c| c.onCaret();
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1470,10 +1554,18 @@ pub const Workbench = struct {
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
+        if (wb.codeintel) |ci| ci.frame(wb.currentHandle(), wb.view);
         if (wb.persister) |*p| if (wb.dock.revision != wb.layout_rev and !wb.layout_final) {
             wb.layout_rev = wb.dock.revision;
             p.markDirty();
         };
+    }
+
+    /// The current editor's document, when it has a path.
+    fn currentHandle(wb: *Workbench) ?zg_editor.model.api.registry.DocHandle {
+        const cp = wb.cur_panel orelse return null;
+        const f = wb.fileOf(cp) orelse return null;
+        return f.handle;
     }
 
     /// The room the center keeps when a side area grows.
@@ -1685,6 +1777,10 @@ pub const Workbench = struct {
         const waiting = wb.approvals.pendingCount(.{});
         if (waiting > 0) {
             items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
+            n += 1;
+        }
+        if (wb.curCompletions()) |c| {
+            items[n] = .{ .id = "completions", .text = c.statusText(), .side = .right, .priority = 40, .tooltip = "Inline completions: click to turn them on or off", .action = "completions.toggle" };
             n += 1;
         }
         items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };
