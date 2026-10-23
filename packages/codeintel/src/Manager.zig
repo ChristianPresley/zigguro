@@ -19,6 +19,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const zg_core = @import("zg_core");
 const zg_lsp = @import("zg_lsp");
+const zg_jsonrpc = @import("zg_jsonrpc");
 const zg_editor = @import("zg_editor");
 const Registry = @import("registry/Registry.zig");
 const routing = @import("registry/routing.zig");
@@ -39,6 +40,16 @@ pub const RefreshFeature = zg_lsp.client.host.RefreshFeature;
 pub const RefreshListener = struct {
     ctx: *anyopaque,
     func: *const fn (ctx: *anyopaque, server: *Server, feature: RefreshFeature) void,
+};
+
+/// Diagnostics traffic, for the diagnostics driver.
+pub const DiagnosticsHooks = struct {
+    ctx: *anyopaque,
+    /// `textDocument/publishDiagnostics` from server `server`, on its
+    /// reader thread; `params` is valid during the call.
+    publish: *const fn (ctx: *anyopaque, server: u32, params: []const u8) void,
+    /// `server` was sent version `version` of `h` (UI thread, in `tick`).
+    sent: *const fn (ctx: *anyopaque, server: *Server, h: DocHandle, version: i32) void,
 };
 
 const log = std.log.scoped(.codeintel);
@@ -124,6 +135,7 @@ servers: std.ArrayList(*Server) = .empty,
 open: std.AutoHashMapUnmanaged(DocHandle, OpenDoc) = .empty,
 closing: std.atomic.Value(bool) = .init(false),
 refresh_listeners: std.ArrayList(RefreshListener) = .empty,
+diagnostics: ?DiagnosticsHooks = null,
 
 /// `m` must not move once a document is open.
 pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRegistry, opts: Options) void {
@@ -246,6 +258,13 @@ pub fn onRefresh(m: *Manager, l: RefreshListener) Allocator.Error!void {
     try m.refresh_listeners.append(m.gpa, l);
 }
 
+/// Routes diagnostics traffic to `hooks`. Call before the first
+/// `openDoc` (start-up workers read it).
+pub fn setDiagnosticsHooks(m: *Manager, hooks: DiagnosticsHooks) void {
+    std.debug.assert(m.servers.items.len == 0);
+    m.diagnostics = hooks;
+}
+
 /// The running clients that `f` goes to for `h`, per `routing`; writes a
 /// prefix of `out` and returns its length.
 pub fn clientsFor(m: *Manager, h: DocHandle, f: Feature, out: []*Client) usize {
@@ -339,6 +358,7 @@ fn onReady(m: *Manager, s: *Server) void {
     s.status = .running;
     if (c.state() != .running) return m.onCrashed(s);
     s.sink = .init(m.gpa, .client(c));
+    if (m.diagnostics != null) s.sink.observer = .{ .ctx = s, .sent = onSent };
     const caps = c.caps().?;
     const enc: zg_core.utf8.Encoding = switch (c.encoding()) {
         .utf8 => .utf8,
@@ -524,6 +544,13 @@ fn start(s: *Server) !void {
             .server = s.id,
             .refresh = .{ .ctx = m, .func = onServerRefresh },
         },
+        .notification_handlers = if (m.diagnostics != null)
+            try a.dupe(Client.NamedNotificationHandler, &.{.{
+                .method = "textDocument/publishDiagnostics",
+                .handler = .{ .ctx = s, .func = onPublish },
+            }})
+        else
+            &.{},
     });
     try s.client.?.subscribe(.{ .ctx = s, .on_state = onClientState });
     try s.client.?.start();
@@ -539,6 +566,24 @@ fn onClientState(ctx: ?*anyopaque, _: *Client, st: zg_lsp.client.Client.ClientSt
 fn onServerRefresh(ctx: ?*anyopaque, e: zg_lsp.client.host.RefreshEvent) void {
     const m: *Manager = @ptrCast(@alignCast(ctx.?));
     if (!m.closing.load(.acquire)) m.push(.{ .refresh = e });
+}
+
+fn onPublish(ctx: ?*anyopaque, _: *zg_jsonrpc.Endpoint, n: zg_jsonrpc.message.Notification, _: Allocator) void {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const m = s.mgr;
+    if (m.closing.load(.acquire)) return;
+    const hooks = m.diagnostics orelse return;
+    hooks.publish(hooks.ctx, s.id, if (n.params) |p| p.bytes else "null");
+}
+
+fn onSent(ctx: *anyopaque, uri: []const u8, version: i32) void {
+    const s: *Server = @ptrCast(@alignCast(ctx));
+    const m = s.mgr;
+    const hooks = m.diagnostics orelse return;
+    for (s.docs.items) |h| {
+        const u = m.docs.uri(h) orelse continue;
+        if (std.mem.eql(u8, u, uri)) return hooks.sent(hooks.ctx, s, h, version);
+    }
 }
 
 /// Shuts a client down and frees it with its process.
