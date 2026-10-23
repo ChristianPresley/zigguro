@@ -1472,7 +1472,7 @@ pub const Workbench = struct {
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
         const pe = try wb.gpa.create(PendingEdits);
-        pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc });
+        pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc, .store = decoOfDoc });
         pe.on_change = .{ .ctx = wb, .f = onPendingChange };
         wb.pending_edits = pe;
         host.files.bindPending(pe);
@@ -1590,6 +1590,13 @@ pub const Workbench = struct {
     fn viewOfDoc(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) ?*EditorView {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         for (wb.files.items) |f| if (f.handle) |fh| if (std.meta.eql(fh, h)) return f.view;
+        return null;
+    }
+
+    /// The decoration store of an open document's editor (`PendingEdits`).
+    fn decoOfDoc(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) ?*zg_editor.model.decorations.store.DecorationStore {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |*f| if (f.handle) |fh| if (std.meta.eql(fh, h)) return wb.ensureDeco(f) catch null;
         return null;
     }
 
