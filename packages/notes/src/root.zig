@@ -54,6 +54,14 @@ pub const search = struct {
     pub const hybrid = retriever.hybrid;
     pub const run = exec.search;
 };
+/// Link-preserving renames and heading renames (E08.F06.S02.T01).
+pub const refactor = struct {
+    pub const rename = @import("refactor/rename.zig");
+    pub const link_text = @import("refactor/link_text.zig");
+    pub const heading_rename = @import("refactor/heading_rename.zig");
+    pub const planMoves = rename.planMoves;
+    pub const planHeadingRename = heading_rename.planHeadingRename;
+};
 pub const NoteIndex = index.note_index.NoteIndex;
 pub const IndexView = index.note_index.IndexView;
 /// Synthetic notes for tests and benches.
@@ -69,4 +77,5 @@ test {
     _ = @import("index/note_index_test.zig");
     _ = @import("search/query_test.zig");
     _ = @import("search/exec_test.zig");
+    _ = @import("refactor/rename_test.zig");
 }

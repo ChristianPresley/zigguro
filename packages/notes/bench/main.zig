@@ -107,6 +107,27 @@ fn register(b: *bench.Bench) !void {
             }
         }
     }.f);
+
+    // Budget: planning a rename with 500 inbound links takes < 100 ms
+    // (E08.F06.S02.T01).
+    const rix = try zg_notes.NoteIndex.init(std.heap.page_allocator, b.io, &.{whole_vault});
+    for (0..500) |i| {
+        const p = try std.fmt.allocPrint(a, "f{d}/src{d}.md", .{ i % 20, i });
+        const body = try std.fmt.allocPrint(a, "see [[Target]] and [t](../Projects/Target.md) and [[Projects/Target#H|x]] {d}\n", .{i});
+        try rix.indexNote(.{ .index = @intCast(i), .gen = 0 }, .of(0), p, body);
+    }
+    try rix.indexNote(.{ .index = 500, .gen = 0 }, .of(0), "Projects/Target.md", "# H\n");
+    try rix.commit();
+    const rview = try rix.reader();
+    try b.run("notes/rename_500", rview, struct {
+        fn f(v: *const zg_notes.IndexView, s: *bench.State) void {
+            for (0..s.iterations()) |_| {
+                var plan = zg_notes.refactor.planMoves(s.allocator(), v, &whole_vault, &.{.{ .from = "Projects/Target.md", .to = "Archive/Renamed.md" }}) catch @panic("plan");
+                bench.doNotOptimizeAway(plan.edits.len);
+                plan.deinit();
+            }
+        }
+    }.f);
 }
 
 const SearchCtx = struct { ix: *zg_notes.NoteIndex, s: *zg_notes.search.SearchIndex, vault: *const gen.Vault };
