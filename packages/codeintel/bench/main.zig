@@ -16,6 +16,12 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 fn register(b: *bench.Bench) !void {
     try b.run("codeintel.registry.discover: 6 builtin servers, 6-entry PATH, cold cache", {}, discover);
     try b.run("codeintel.semtok.decode_200k: full result, 20k lines x 10 tokens", {}, decode200k);
+    // The fixture is built once, outside the measured calls.
+    var fx: DiagFixture = undefined;
+    fx.init(std.heap.smp_allocator);
+    defer fx.deinit();
+    try b.run("codeintel.diag.convert_10k: parse and convert a 10k-diagnostic push (worker)", &fx, diagConvert10k);
+    try b.run("codeintel.diag.apply_10k: map 10k diagnostics to bytes and publish (UI)", &fx, diagApply10k);
 }
 
 /// A typical PATH; most builtin servers are absent, so every entry is
@@ -73,3 +79,84 @@ fn decode200k(_: void, s: *State) void {
         bench.doNotOptimizeAway(i);
     }
 }
+
+const diag = zg_codeintel.diagnostics;
+const diag_count = 10_000;
+
+/// A `publishDiagnostics` with one diagnostic on each of 10k lines.
+fn pushJson(gpa: std.mem.Allocator) []u8 {
+    var w: std.Io.Writer.Allocating = .init(gpa);
+    w.writer.writeAll("{\"uri\":\"file:///w/main.zig\",\"version\":1,\"diagnostics\":[") catch unreachable;
+    for (0..diag_count) |i| {
+        if (i > 0) w.writer.writeByte(',') catch unreachable;
+        w.writer.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":6}},\"end\":{{\"line\":{d},\"character\":10}}}},\"severity\":{d},\"source\":\"zls\",\"code\":\"E{d}\",\"message\":\"use of undeclared identifier 'word'\"}}", .{ i, i, i % 4 + 1, i % 8 }) catch unreachable;
+    }
+    w.writer.writeAll("]}") catch unreachable;
+    return w.toOwnedSlice() catch unreachable;
+}
+
+const DiagFixture = struct {
+    gpa: std.mem.Allocator,
+    json: []u8,
+    /// The converted push.
+    template: *diag.Store.Set,
+    /// 10k lines of text.
+    doc: *Document,
+
+    fn init(fx: *DiagFixture, gpa: std.mem.Allocator) void {
+        fx.gpa = gpa;
+        fx.json = pushJson(gpa);
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const p = diag.convert.parsePush(arena.allocator(), fx.json) catch unreachable;
+        fx.template = diag.Store.Set.create(gpa, .{ .server = 0 }) catch unreachable;
+        diag.convert.fromLsp(fx.template, p.diagnostics) catch unreachable;
+        const text = arena.allocator().alloc(u8, (line_text.len + 1) * diag_count) catch unreachable;
+        for (0..diag_count) |i| {
+            @memcpy(text[i * (line_text.len + 1) ..][0..line_text.len], line_text);
+            text[i * (line_text.len + 1) + line_text.len] = '\n';
+        }
+        fx.doc = Document.initBytes(gpa, @enumFromInt(1), text) catch unreachable;
+    }
+
+    fn deinit(fx: *DiagFixture) void {
+        fx.doc.deinit();
+        fx.template.destroy();
+        fx.gpa.free(fx.json);
+    }
+};
+
+/// What the reader thread does per push. Budget: < 10 ms.
+fn diagConvert10k(fx: *DiagFixture, s: *State) void {
+    const gpa = s.allocator();
+    s.setBytes(fx.json.len);
+    for (0..s.iterations()) |_| {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const p = diag.convert.parsePush(arena.allocator(), fx.json) catch unreachable;
+        const set = diag.Store.Set.create(gpa, .{ .server = 0 }) catch unreachable;
+        defer set.destroy();
+        diag.convert.fromLsp(set, p.diagnostics) catch unreachable;
+        bench.doNotOptimizeAway(set.diags.len);
+    }
+}
+
+/// What the UI thread does per push: byte ranges against the document,
+/// replace and commit (copying the converted diagnostics stands in for
+/// taking them from the worker). Budget: < 2 ms.
+fn diagApply10k(fx: *DiagFixture, s: *State) void {
+    const gpa = s.allocator();
+    var st = diag.Store.init(gpa, s.ioHandle(), .posix) catch unreachable;
+    defer st.deinit();
+    for (0..s.iterations()) |_| {
+        const set = diag.Store.Set.create(gpa, .{ .server = 0 }) catch unreachable;
+        set.diags = set.allocator().dupe(diag.Store.Diagnostic, fx.template.diags) catch unreachable;
+        set.counts = fx.template.counts;
+        diag.convert.mapBytes(gpa, set, &fx.doc.tree, .utf16, fx.doc.version) catch unreachable;
+        st.replace("/w/main.zig", .{ .server = 0 }, set) catch unreachable;
+        st.commit();
+    }
+    bench.doNotOptimizeAway(st.current.generation);
+}
+
+const Document = @import("zg_editor").model.document.Document;
