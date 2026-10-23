@@ -2,11 +2,13 @@
 //! (`Recorder.onEdit`, copying and enqueueing the event; budget 20 µs),
 //! with the queue drained every 4096 events as the worker would; and
 //! remapping the manifests of a 20-change stack rebased onto a new parent
-//! (budget 10 ms).
+//! (budget 10 ms); and evaluating `agent(claude)` over 10k changes with
+//! the provenance index (budget 20 ms).
 
 const std = @import("std");
 const zg_core = @import("zg_core");
 const scm = @import("zg_scm");
+const gen_dag = @import("gen_dag.zig");
 const bench = zg_core.bench;
 const State = bench.State;
 
@@ -14,7 +16,7 @@ const recorder = scm.prov.recorder;
 const bench_dir = ".zig-cache/scm-prov-bench";
 
 pub fn register(b: *bench.Bench) !void {
-    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "prov.on_edit prov.remap_rebase_20", f) == null) return;
+    if (b.opts.filter) |f| if (std.mem.indexOf(u8, "prov.on_edit prov.remap_rebase_20 prov.revset_agent_10k", f) == null) return;
     const cwd = std.Io.Dir.cwd();
     cwd.deleteTree(b.io, bench_dir) catch {};
     defer cwd.deleteTree(b.io, bench_dir) catch {};
@@ -24,6 +26,75 @@ pub fn register(b: *bench.Bench) !void {
     defer store.close();
     try b.run("prov.on_edit: record one agent edit (enqueue)", store, onEdit);
     try remapBench(b, store);
+    try agentRevsetBench(b, store);
+}
+
+/// 10k commits; every third has lines by "claude", every fifth by
+/// "helper" (each in one of 50 sessions), the rest by a human.
+fn agentRevsetBench(b: *bench.Bench, store: *scm.Store) !void {
+    const gpa = b.gpa;
+    const io = b.io;
+    const n = 10_000;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const ids = try gen_dag.generate(gpa, store, n, 3);
+    defer gpa.free(ids);
+    var root = try std.Io.Dir.cwd().openDir(io, bench_dir, .{});
+    defer root.close(io);
+    var ix_dir = try root.createDirPathOpen(io, "index", .{ .open_options = .{ .iterate = true } });
+    defer ix_dir.close(io);
+    const ix = try scm.CommitIndex.open(gpa, io, ix_dir, store, .{ .fsync = false });
+    defer ix.close();
+    try ix.ensureIndexed(ids[ids.len - 1 ..]);
+
+    var batch = store.batch();
+    var ctx: scm.prov.remap.RemapContext = .{ .gpa = gpa, .store = store, .batch = &batch };
+    const human = try scm.prov.remap.writeRecord(&ctx, .{ .actor = scm.prov.record.Actor.human("Bob", "bob@example.com"), .created_ms = 0 });
+    var agents: [100]scm.ObjectId = undefined;
+    for (&agents, 0..) |*r, i| {
+        const session = try std.fmt.allocPrint(a, "session-{d}", .{i % 50});
+        const actor = if (i < 50) scm.prov.record.Actor.agent("claude", "anthropic/claude-x", session) else scm.prov.record.Actor.agent("helper", "openai/gpt-y", session);
+        r.* = try scm.prov.remap.writeRecord(&ctx, .{ .actor = actor, .created_ms = 0 });
+    }
+    const manifests = try a.alloc(scm.ObjectId, n);
+    for (manifests, 0..) |*mid, i| {
+        var bld: scm.prov.attribution.Builder = try .initInherited(gpa, 100);
+        defer bld.deinit();
+        const rec = if (i % 3 == 0) agents[i % 50] else if (i % 5 == 0) agents[50 + i % 50] else human;
+        try bld.splice(@intCast(i % 90), 0, 5, rec, false);
+        const fa = try scm.prov.manifest.encodeFile(a, "src/file.zig", scm.id.hashObject(.blob, "x"), try bld.toMap(a));
+        mid.* = try scm.prov.manifest.write(&batch, gpa, .{ .files = &.{fa} });
+    }
+    try batch.commit();
+
+    var pix: scm.prov.index.ProvenanceIndex = .init(gpa);
+    defer pix.deinit();
+    const t0 = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    for (ids, manifests) |c, mid| try pix.addManifest(store, c, mid);
+    const t1 = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    std.debug.print("prov.index_build_10k: index 10k manifests: {d} ms\n", .{@divTrunc(t1 - t0, std.time.ns_per_ms)});
+
+    var heads = [1]scm.ObjectId{ids[ids.len - 1]};
+    var view: scm.View = .empty;
+    view.heads = &heads;
+    view.wc_commits = &.{.{ .workspace = "default", .commit = ids[ids.len - 1] }};
+    const rv = ix.acquire();
+    defer rv.release();
+    const q = pix.query();
+    const rctx: scm.revset.EvalContext = .{ .graph = rv, .view = &view, .store = store, .io = io, .prov = &q };
+    try b.run("prov.revset_agent_10k: evaluate agent(claude) over 10k changes", &rctx, agentRevset);
+}
+
+fn agentRevset(c: *const scm.revset.EvalContext, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var diag: scm.revset.ParseError = .{};
+        var it = scm.revset.evaluate(s.allocator(), c, "agent(claude)", &diag) catch unreachable;
+        defer it.deinit();
+        var k: usize = 0;
+        while (it.next() catch unreachable) |_| k += 1;
+        bench.doNotOptimizeAway(k);
+    }
 }
 
 fn meta(description: []const u8) scm.OpMeta {

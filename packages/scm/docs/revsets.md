@@ -113,7 +113,7 @@ Functions that match text take a pattern:
 | `why(path, line)` | The commits blame reports for that line | `why("src/main.zig", 120)` |
 | `stack([x])` | The stack containing x (default `@`): `(trunk()..x)::` | `stack()` |
 
-`agent()`, `human()` and `session()` need the provenance index (F05). `reviewed()` and `unreviewed()` need the review adapter (E12). `why()` needs history search (F05). Without its provider, a function fails with an "unavailable" error and a message that names the missing provider.
+`agent()`, `human()` and `session()` need the provenance index (F05): `zg_scm.prov.index.ProvenanceIndex`, built from each change's provenance manifest and passed as `EvalContext.prov` through `query()`. The SCM agent tools build it over every indexed commit when an expression uses one of these functions. `reviewed()` and `unreviewed()` need the review adapter (E12). `why()` needs history search (F05). Without its provider, a function fails with an "unavailable" error and a message that names the missing provider.
 
 ## Aliases
 
