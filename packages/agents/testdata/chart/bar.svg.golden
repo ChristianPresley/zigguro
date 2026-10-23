@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="sans-serif">
+<rect x="0" y="0" width="600" height="320" fill="#ffffff"/>
+<text x="300" y="22" font-size="14" fill="#1a1a1a" text-anchor="middle" font-weight="bold">Bars</text>
+<path d="M51.48 274.5 L586 274.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 225.5 L586 225.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 176.5 L586 176.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 127.5 L586 127.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 78.5 L586 78.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 30.5 L586 30.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<clipPath id="c1"><rect x="43.48" y="22" width="550.52" height="260"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M55.298 205.68 L124.022 205.68 L124.022 274 L55.298 274 Z" fill="#4c78a8"/>
+<path d="M131.658 139.8 L200.382 139.8 L200.382 274 L131.658 274 Z" fill="#4c78a8"/>
+<path d="M208.018 169.08 L276.742 169.08 L276.742 274 L208.018 274 Z" fill="#4c78a8"/>
+<path d="M284.378 51.96 L353.102 51.96 L353.102 274 L284.378 274 Z" fill="#4c78a8"/>
+<path d="M360.738 76.36 L429.462 76.36 L429.462 274 L360.738 274 Z" fill="#4c78a8"/>
+<path d="M437.098 144.68 L505.822 144.68 L505.822 274 L437.098 274 Z" fill="#4c78a8"/>
+<path d="M513.458 227.64 L582.182 227.64 L582.182 274 L513.458 274 Z" fill="#4c78a8"/>
+</g>
+<path d="M51.48 274.5 L586 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M89.5 274.5 L89.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="89.66" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">alpha</text>
+<path d="M166.5 274.5 L166.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="166.02" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">beta</text>
+<path d="M242.5 274.5 L242.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="242.38" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">gamma</text>
+<path d="M318.5 274.5 L318.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="318.74" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">delta</text>
+<path d="M395.5 274.5 L395.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="395.1" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">epsilon</text>
+<path d="M471.5 274.5 L471.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="471.46" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">zeta</text>
+<path d="M547.5 274.5 L547.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="547.82" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">eta</text>
+<text x="318.74" y="312" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="text-after-edge" font-weight="bold">k</text>
+<path d="M51.5 30 L51.5 274" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M46.5 274.5 L51.5 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="274" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">0</text>
+<path d="M46.5 225.5 L51.5 225.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="225.2" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">20</text>
+<path d="M46.5 176.5 L51.5 176.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="176.4" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">40</text>
+<path d="M46.5 127.5 L51.5 127.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="127.6" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">60</text>
+<path d="M46.5 78.5 L51.5 78.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="78.8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">80</text>
+<path d="M46.5 30.5 L51.5 30.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="30" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">100</text>
+<text x="13.5" y="152" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="middle" font-weight="bold" transform="rotate(-90 13.5 152)">v</text>
+</svg>

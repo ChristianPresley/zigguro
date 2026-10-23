@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="sans-serif">
+<rect x="0" y="0" width="600" height="320" fill="#ffffff"/>
+<path d="M57.64 274.5 L586 274.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M57.64 220.5 L586 220.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M57.64 167.5 L586 167.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M57.64 114.5 L586 114.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M57.64 61.5 L586 61.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M57.64 8.5 L586 8.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<clipPath id="c1"><rect x="49.64" y="0" width="544.36" height="282"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M79.655 236.815 L123.685 216.588 L167.715 196.36 L211.745 176.133 L255.775 155.906 L299.805 135.679 L343.835 115.451 L387.865 95.224 L431.895 74.997 L475.925 54.77 L519.955 34.542 L563.985 14.315" fill="none" stroke="#4c78a8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M82.178 236.815 C82.178 238.208 81.048 239.338 79.655 239.338 C78.262 239.338 77.132 238.208 77.132 236.815 C77.132 235.421 78.262 234.292 79.655 234.292 C81.048 234.292 82.178 235.421 82.178 236.815 Z" fill="#4c78a8"/>
+<path d="M126.208 216.588 C126.208 217.981 125.078 219.111 123.685 219.111 C122.292 219.111 121.162 217.981 121.162 216.588 C121.162 215.194 122.292 214.064 123.685 214.064 C125.078 214.064 126.208 215.194 126.208 216.588 Z" fill="#4c78a8"/>
+<path d="M170.238 196.36 C170.238 197.754 169.108 198.883 167.715 198.883 C166.322 198.883 165.192 197.754 165.192 196.36 C165.192 194.967 166.322 193.837 167.715 193.837 C169.108 193.837 170.238 194.967 170.238 196.36 Z" fill="#4c78a8"/>
+<path d="M214.268 176.133 C214.268 177.527 213.138 178.656 211.745 178.656 C210.352 178.656 209.222 177.527 209.222 176.133 C209.222 174.74 210.352 173.61 211.745 173.61 C213.138 173.61 214.268 174.74 214.268 176.133 Z" fill="#4c78a8"/>
+<path d="M258.298 155.906 C258.298 157.299 257.168 158.429 255.775 158.429 C254.382 158.429 253.252 157.299 253.252 155.906 C253.252 154.512 254.382 153.382 255.775 153.382 C257.168 153.382 258.298 154.512 258.298 155.906 Z" fill="#4c78a8"/>
+<path d="M302.328 135.679 C302.328 137.072 301.198 138.202 299.805 138.202 C298.411 138.202 297.282 137.072 297.282 135.679 C297.282 134.285 298.411 133.156 299.805 133.156 C301.198 133.156 302.328 134.285 302.328 135.679 Z" fill="#4c78a8"/>
+<path d="M346.358 115.451 C346.358 116.845 345.229 117.975 343.835 117.975 C342.442 117.975 341.312 116.845 341.312 115.451 C341.312 114.058 342.442 112.928 343.835 112.928 C345.229 112.928 346.358 114.058 346.358 115.451 Z" fill="#4c78a8"/>
+<path d="M390.388 95.224 C390.388 96.618 389.258 97.747 387.865 97.747 C386.471 97.747 385.342 96.618 385.342 95.224 C385.342 93.831 386.471 92.701 387.865 92.701 C389.258 92.701 390.388 93.831 390.388 95.224 Z" fill="#4c78a8"/>
+<path d="M434.418 74.997 C434.418 76.39 433.289 77.52 431.895 77.52 C430.502 77.52 429.372 76.39 429.372 74.997 C429.372 73.603 430.502 72.474 431.895 72.474 C433.289 72.474 434.418 73.603 434.418 74.997 Z" fill="#4c78a8"/>
+<path d="M478.448 54.77 C478.448 56.163 477.318 57.293 475.925 57.293 C474.531 57.293 473.402 56.163 473.402 54.77 C473.402 53.376 474.531 52.247 475.925 52.247 C477.318 52.247 478.448 53.376 478.448 54.77 Z" fill="#4c78a8"/>
+<path d="M522.478 34.542 C522.478 35.936 521.349 37.066 519.955 37.066 C518.562 37.066 517.432 35.936 517.432 34.542 C517.432 33.149 518.562 32.019 519.955 32.019 C521.349 32.019 522.478 33.149 522.478 34.542 Z" fill="#4c78a8"/>
+<path d="M566.508 14.315 C566.508 15.709 565.378 16.838 563.985 16.838 C562.591 16.838 561.462 15.709 561.462 14.315 C561.462 12.922 562.591 11.792 563.985 11.792 C565.378 11.792 566.508 12.922 566.508 14.315 Z" fill="#4c78a8"/>
+</g>
+<path d="M57.64 274.5 L586 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M79.5 274.5 L79.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="79.655" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">0</text>
+<path d="M123.5 274.5 L123.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="123.685" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">1</text>
+<path d="M167.5 274.5 L167.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="167.715" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">2</text>
+<path d="M211.5 274.5 L211.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="211.745" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">3</text>
+<path d="M255.5 274.5 L255.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="255.775" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">4</text>
+<path d="M299.5 274.5 L299.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="299.805" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">5</text>
+<path d="M343.5 274.5 L343.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="343.835" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">6</text>
+<path d="M387.5 274.5 L387.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="387.865" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">7</text>
+<path d="M431.5 274.5 L431.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="431.895" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">8</text>
+<path d="M475.5 274.5 L475.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="475.925" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">9</text>
+<path d="M519.5 274.5 L519.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="519.955" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">10</text>
+<path d="M563.5 274.5 L563.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="563.985" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">11</text>
+<text x="321.82" y="312" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="text-after-edge" font-weight="bold">n</text>
+<path d="M57.5 8 L57.5 274" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M52.5 274.5 L57.5 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="274" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">0.1</text>
+<path d="M52.5 220.5 L57.5 220.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="220.8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">1</text>
+<path d="M52.5 167.5 L57.5 167.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="167.6" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">10</text>
+<path d="M52.5 114.5 L57.5 114.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="114.4" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">100</text>
+<path d="M52.5 61.5 L57.5 61.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="61.2" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">1000</text>
+<path d="M52.5 8.5 L57.5 8.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="49.5" y="8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">10k</text>
+<text x="13.5" y="141" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="middle" font-weight="bold" transform="rotate(-90 13.5 141)">Seconds</text>
+</svg>

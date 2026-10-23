@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="sans-serif">
+<rect x="0" y="0" width="600" height="320" fill="#ffffff"/>
+<path d="M51.48 274.5 L531.29 274.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 220.5 L531.29 220.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 167.5 L531.29 167.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 114.5 L531.29 114.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 61.5 L531.29 61.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M51.48 8.5 L531.29 8.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<clipPath id="c1"><rect x="43.48" y="0" width="495.81" height="282"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M79.469 130.36 L103.459 130.36 L103.459 274 L79.469 274 Z" fill="#f58518"/>
+<path d="M103.459 156.96 L127.45 156.96 L127.45 274 L103.459 274 Z" fill="#e45756"/>
+<path d="M55.478 101.1 L79.469 101.1 L79.469 274 L55.478 274 Z" fill="#4c78a8"/>
+<path d="M159.437 119.72 L183.428 119.72 L183.428 274 L159.437 274 Z" fill="#f58518"/>
+<path d="M183.428 85.14 L207.418 85.14 L207.418 274 L183.428 274 Z" fill="#e45756"/>
+<path d="M135.447 162.28 L159.437 162.28 L159.437 274 L135.447 274 Z" fill="#4c78a8"/>
+<path d="M239.406 218.14 L263.396 218.14 L263.396 274 L239.406 274 Z" fill="#f58518"/>
+<path d="M263.396 170.26 L287.387 170.26 L287.387 274 L263.396 274 Z" fill="#e45756"/>
+<path d="M215.415 93.12 L239.406 93.12 L239.406 274 L215.415 274 Z" fill="#4c78a8"/>
+<path d="M319.374 218.14 L343.364 218.14 L343.364 274 L319.374 274 Z" fill="#f58518"/>
+<path d="M343.364 138.34 L367.355 138.34 L367.355 274 L343.364 274 Z" fill="#e45756"/>
+<path d="M295.383 82.48 L319.374 82.48 L319.374 274 L295.383 274 Z" fill="#4c78a8"/>
+<path d="M399.342 74.5 L423.333 74.5 L423.333 274 L399.342 274 Z" fill="#f58518"/>
+<path d="M423.333 141 L447.323 141 L447.323 274 L423.333 274 Z" fill="#e45756"/>
+<path d="M375.352 39.92 L399.342 39.92 L399.342 274 L375.352 274 Z" fill="#4c78a8"/>
+<path d="M479.311 159.62 L503.301 159.62 L503.301 274 L479.311 274 Z" fill="#f58518"/>
+<path d="M503.301 69.18 L527.292 69.18 L527.292 274 L503.301 274 Z" fill="#e45756"/>
+<path d="M455.32 156.96 L479.311 156.96 L479.311 274 L455.32 274 Z" fill="#4c78a8"/>
+</g>
+<path d="M51.48 274.5 L531.29 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M91.5 274.5 L91.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="91.464" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">Jan 2026</text>
+<path d="M171.5 274.5 L171.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="171.432" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">Feb 2026</text>
+<path d="M251.5 274.5 L251.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="251.401" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">Mar 2026</text>
+<path d="M331.5 274.5 L331.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="331.369" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">Apr 2026</text>
+<path d="M411.5 274.5 L411.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="411.338" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">May 2026</text>
+<path d="M491.5 274.5 L491.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="491.306" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">Jun 2026</text>
+<text x="291.385" y="312" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="text-after-edge" font-weight="bold">month (month)</text>
+<path d="M51.5 8 L51.5 274" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M46.5 274.5 L51.5 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="274" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">0</text>
+<path d="M46.5 220.5 L51.5 220.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="220.8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">20</text>
+<path d="M46.5 167.5 L51.5 167.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="167.6" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">40</text>
+<path d="M46.5 114.5 L51.5 114.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="114.4" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">60</text>
+<path d="M46.5 61.5 L51.5 61.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="61.2" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">80</text>
+<path d="M46.5 8.5 L51.5 8.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="43.5" y="8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">100</text>
+<text x="13.5" y="141" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="middle" font-weight="bold" transform="rotate(-90 13.5 141)">revenue</text>
+<text x="547.29" y="19" font-size="11" fill="#1a1a1a" font-weight="bold">region</text>
+<path d="M547.29 28 L557.29 28 L557.29 38 L547.29 38 Z" fill="#4c78a8"/>
+<text x="563.29" y="33" font-size="11" fill="#4d4d4d" dominant-baseline="middle">East</text>
+<path d="M547.29 44 L557.29 44 L557.29 54 L547.29 54 Z" fill="#f58518"/>
+<text x="563.29" y="49" font-size="11" fill="#4d4d4d" dominant-baseline="middle">North</text>
+<path d="M547.29 60 L557.29 60 L557.29 70 L547.29 70 Z" fill="#e45756"/>
+<text x="563.29" y="65" font-size="11" fill="#4d4d4d" dominant-baseline="middle">South</text>
+</svg>

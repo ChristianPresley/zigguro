@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="sans-serif">
+<rect x="0" y="0" width="600" height="320" fill="#ffffff"/>
+<path d="M45.32 274.5 L580 274.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 229.5 L580 229.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 185.5 L580 185.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 141.5 L580 141.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 96.5 L580 96.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 52.5 L580 52.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 8.5 L580 8.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.5 8 L45.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M152.5 8 L152.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M259.5 8 L259.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M366.5 8 L366.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M473.5 8 L473.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M580.5 8 L580.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<clipPath id="c1"><rect x="37.32" y="0" width="550.68" height="282"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M286.426 16.867 L312.16 16.867 L312.16 274 L286.426 274 Z" fill="#4c78a8"/>
+<path d="M152.756 242.967 L178.49 242.967 L178.49 274 L152.756 274 Z" fill="#4c78a8"/>
+<path d="M206.224 172.033 L231.958 172.033 L231.958 274 L206.224 274 Z" fill="#4c78a8"/>
+<path d="M366.628 92.233 L392.362 92.233 L392.362 274 L366.628 274 Z" fill="#4c78a8"/>
+<path d="M232.958 158.733 L258.692 158.733 L258.692 274 L232.958 274 Z" fill="#4c78a8"/>
+<path d="M393.362 109.967 L419.096 109.967 L419.096 274 L393.362 274 Z" fill="#4c78a8"/>
+<path d="M259.692 43.467 L285.426 43.467 L285.426 274 L259.692 274 Z" fill="#4c78a8"/>
+<path d="M313.16 30.167 L338.894 30.167 L338.894 274 L313.16 274 Z" fill="#4c78a8"/>
+<path d="M420.096 216.367 L445.83 216.367 L445.83 274 L420.096 274 Z" fill="#4c78a8"/>
+<path d="M179.49 176.467 L205.224 176.467 L205.224 274 L179.49 274 Z" fill="#4c78a8"/>
+<path d="M339.894 56.767 L365.628 56.767 L365.628 274 L339.894 274 Z" fill="#4c78a8"/>
+<path d="M446.83 238.533 L472.564 238.533 L472.564 274 L446.83 274 Z" fill="#4c78a8"/>
+<path d="M473.564 265.133 L499.298 265.133 L499.298 274 L473.564 274 Z" fill="#4c78a8"/>
+<path d="M126.022 260.7 L151.756 260.7 L151.756 274 L126.022 274 Z" fill="#4c78a8"/>
+<path d="M500.298 265.133 L526.032 265.133 L526.032 274 L500.298 274 Z" fill="#4c78a8"/>
+<path d="M99.288 265.133 L125.022 265.133 L125.022 274 L99.288 274 Z" fill="#4c78a8"/>
+</g>
+<path d="M45.32 274.5 L580 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M45.5 274.5 L45.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="45.32" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">0</text>
+<path d="M152.5 274.5 L152.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="152.256" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">20</text>
+<path d="M259.5 274.5 L259.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="259.192" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">40</text>
+<path d="M366.5 274.5 L366.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="366.128" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">60</text>
+<path d="M473.5 274.5 L473.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="473.064" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">80</text>
+<path d="M580.5 274.5 L580.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="580" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">100</text>
+<text x="312.66" y="312" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="text-after-edge" font-weight="bold">price (binned)</text>
+<path d="M45.5 8 L45.5 274" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M40.5 274.5 L45.5 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="274" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">0</text>
+<path d="M40.5 229.5 L45.5 229.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="229.667" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">10</text>
+<path d="M40.5 185.5 L45.5 185.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="185.333" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">20</text>
+<path d="M40.5 141.5 L45.5 141.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="141" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">30</text>
+<path d="M40.5 96.5 L45.5 96.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="96.667" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">40</text>
+<path d="M40.5 52.5 L45.5 52.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="52.333" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">50</text>
+<path d="M40.5 8.5 L45.5 8.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="8" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">60</text>
+<text x="13.5" y="141" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="middle" font-weight="bold" transform="rotate(-90 13.5 141)">Count of records</text>
+</svg>
