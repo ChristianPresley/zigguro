@@ -29,6 +29,8 @@ pub const markdown = @import("markdown/root.zig");
 pub const a11y = @import("a11y/root.zig");
 /// Animation: springs, tweens, the animator, FLIP and presets.
 pub const anim = @import("anim/root.zig");
+/// Image decoders (PNG, GIF, BMP).
+pub const image = @import("image/root.zig");
 /// Runs windows on a platform and renderer.
 pub const host = @import("host.zig");
 
@@ -80,5 +82,6 @@ test {
     _ = @import("a11y/tree_test.zig");
     _ = @import("a11y/uia_test.zig");
     _ = @import("anim/anim_test.zig");
+    _ = image;
     if (@import("builtin").os.tag == .linux) _ = @import("a11y/atspi/atspi_test.zig");
 }
