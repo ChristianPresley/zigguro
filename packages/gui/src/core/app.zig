@@ -10,6 +10,7 @@ const ids = @import("ids.zig");
 const view = @import("view.zig");
 const window_mod = @import("window.zig");
 const theme_mod = @import("../theme/theme.zig");
+const image_textures = @import("../image/textures.zig");
 const toast_mod = @import("../widgets/toast.zig");
 const NotificationCenter = @import("../widgets/notification_center.zig").NotificationCenter;
 
@@ -116,6 +117,12 @@ pub const App = struct {
     /// Receives mailbox messages that are not `gui_call`s (other
     /// subsystems' kinds).
     on_message: ?MessageHandler = null,
+    /// Images on the GPU (`image.ImageCache` fills it; the Host mirrors
+    /// it into every window's renderer).
+    images: image_textures.ImageTextures = .{},
+    /// Counts frames of every window (bumped as a frame starts work);
+    /// marks what the current frame used (image cache pins).
+    frame_epoch: u64 = 0,
 
     /// The mailbox kind of `post`ed calls ("G\x04" + 0x0100).
     pub const gui_call: u32 = 0x4704_0100;
@@ -163,6 +170,7 @@ pub const App = struct {
         app.entities.deinit();
         app.clipboard.text.deinit(app.gpa);
         app.primary.text.deinit(app.gpa);
+        app.images.deinit(app.gpa);
     }
 
     // -- background work ----------------------------------------------------
