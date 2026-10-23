@@ -133,6 +133,8 @@ mutex: Io.Mutex = .init,
 /// Ascending by id.
 boxes: std.ArrayList(*Box) = .empty,
 version: u64 = 0,
+/// The last id `create` handed out.
+last_id: u128 = 0,
 
 view_mu: Io.Mutex = .init,
 current: *RunsView,
@@ -346,8 +348,17 @@ fn insertPos(r: *RunRegistry, id: RunId) usize {
 }
 
 /// Records a new run (status `queued`) with a fresh id.
+/// Ids are strictly increasing within one registry, so runs created in
+/// the same millisecond keep their creation order.
 pub fn create(r: *RunRegistry, spec: run.RunSpec) Error!RunId {
-    return r.createWithId(RunId.generate(r.io), spec);
+    var id = RunId.generate(r.io);
+    {
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
+        if (id.toInt() <= r.last_id) id = .fromInt(r.last_id + 1);
+        r.last_id = id.toInt();
+    }
+    return r.createWithId(id, spec);
 }
 
 pub fn createWithId(r: *RunRegistry, id: RunId, spec: run.RunSpec) Error!RunId {
