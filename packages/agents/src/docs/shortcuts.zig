@@ -6,6 +6,7 @@
 //! selection.
 
 const std = @import("std");
+const tools = @import("tools.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -34,6 +35,8 @@ pub const Shortcut = struct {
     key: ?[]const u8 = null,
     /// Works without a selection (on the section, or at the cursor).
     needs_selection: bool = true,
+    /// Only these document tools for the request (null: all).
+    tools: ?[]const []const u8 = null,
 };
 
 const reading_levels = [_][]const u8{ "elementary", "middle school", "high school", "college", "graduate" };
@@ -49,6 +52,7 @@ pub const default_shortcuts = [_]Shortcut{
     .{ .id = "change_tone", .label = "Change tone", .template = "Rewrite this passage from \"{{section_title}}\" in a {{choice}} tone. Propose the change with doc_propose_edit.\n\n{{selection}}", .params = &.{.{ .choice = &tones }} },
     .{ .id = "translate", .label = "Translate", .template = "Translate this passage from \"{{section_title}}\" into {{language}}. Propose the change with doc_propose_edit.\n\n{{selection}}", .params = &.{.{ .text = "language" }} },
     .{ .id = "summarize_above", .label = "Summarize above", .template = "Write a short summary of everything above this point in \"{{section_title}}\" and insert it with doc_insert at the cursor.\n\n{{selection}}", .needs_selection = false },
+    .{ .id = "suggest_comments", .label = "Suggest edits as comments", .template = "Review this passage from \"{{section_title}}\" and suggest improvements without changing it: leave each suggestion as a comment with doc_add_comment, quoting the exact words it is about.\n\n{{selection}}", .tools = &tools.comment_only_tools },
     .{ .id = "continue_writing", .label = "Continue writing", .template = "Continue writing \"{{section_title}}\" from where it ends, in the same voice, and insert it with doc_insert.\n\n{{selection}}", .needs_selection = false },
 };
 
