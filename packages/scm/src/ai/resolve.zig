@@ -45,6 +45,10 @@ const mat = @import("../merge/materialize.zig");
 const content_merge = @import("../merge/content_merge.zig");
 const tree_merge = @import("../merge/tree_merge.zig");
 const ports = @import("ports.zig");
+const prov_record = @import("../prov/record.zig");
+const attribution = @import("../prov/attribution.zig");
+const manifest_mod = @import("../prov/manifest.zig");
+const remap = @import("../prov/remap.zig");
 const ObjectId = id_mod.ObjectId;
 const ChangeId = id_mod.ChangeId;
 const Store = store_mod.Store;
@@ -755,9 +759,25 @@ pub const Applied = struct {
     }
 };
 
+/// Who resolved the regions, for the resolved change's provenance:
+/// accepted proposals are the agent's (with the review that accepted
+/// them), edited ones the human's. Lines taken from a side keep that
+/// side's attribution.
+pub const ResolveAttribution = struct {
+    agent: prov_record.Actor,
+    human: prov_record.Actor,
+    review: ?prov_record.ReviewRef = null,
+};
+
 /// Rewrites `set.change` resolved by `decisions` (one per region) in a
 /// detached preview operation, restacking its descendants.
 pub fn applyResolutions(repo: *Repo, set: *const ConflictSet, decisions: []const RegionDecision, meta: op_mod.OpMeta) !Applied {
+    return applyResolutionsWith(repo, set, decisions, meta, null);
+}
+
+/// `applyResolutions`, also writing the resolved change's provenance
+/// manifest when `who` is given (E09.F05.S01.T02).
+pub fn applyResolutionsWith(repo: *Repo, set: *const ConflictSet, decisions: []const RegionDecision, meta: op_mod.OpMeta, who: ?ResolveAttribution) !Applied {
     const choices = try repo.gpa.alloc(?RegionDecision.Choice, set.regions.len);
     defer repo.gpa.free(choices);
     @memset(choices, null);
@@ -775,6 +795,7 @@ pub fn applyResolutions(repo: *Repo, set: *const ConflictSet, decisions: []const
     var tm = tree_merge.TreeMerger.init(repo.gpa, repo.store, m.batch);
     defer tm.deinit();
     var overrides: std.StringHashMapUnmanaged(?TreeEntry) = .empty;
+    var prov = if (who) |w| try Provenance.init(repo, m.batch, a, set, w, meta.end_ms) else null;
 
     var ri: usize = 0;
     for (set.files) |f| {
@@ -786,14 +807,21 @@ pub fn applyResolutions(repo: *Repo, set: *const ConflictSet, decisions: []const
                 .accept, .edit => |text| .{ .name = name, .kind = .file, .id = try tm.putBlob(text) },
                 .keep_conflict => return error.CannotKeepConflict,
             };
+            if (prov) |*pv| switch (choices[ri].?) {
+                .accept, .edit => |text| try pv.wholeFile(f.path, entry.?.id, text, choices[ri].? == .accept),
+                else => {},
+            };
             try overrides.put(a, f.path, entry);
             ri += 1;
             continue;
         }
         var text: std.ArrayList(u8) = .empty;
+        // Result lines written by the resolver: (start, len, accepted).
+        var written: std.ArrayList(Provenance.Span) = .empty;
         for (f.hunks) |h| switch (h) {
             .resolved => |x| try text.appendSlice(a, x),
             .conflict => |cm| {
+                const at = attribution.lineCountOf(text.items);
                 switch (choices[ri].?) {
                     .accept, .edit => |x| try text.appendSlice(a, x),
                     .side => |k| try text.appendSlice(a, if (k < 2) cm.values[2 * k] else return error.BadSide),
@@ -805,10 +833,16 @@ pub fn applyResolutions(repo: *Repo, set: *const ConflictSet, decisions: []const
                         try text.appendSlice(a, aw.written());
                     },
                 }
+                switch (choices[ri].?) {
+                    .accept, .edit => |x| try written.append(a, .{ .start = at, .len = attribution.lineCountOf(x), .accepted = choices[ri].? == .accept }),
+                    else => {},
+                }
                 ri += 1;
             },
         };
-        try overrides.put(a, f.path, .{ .name = name, .kind = f.kind, .id = try tm.putBlob(text.items) });
+        const blob = try tm.putBlob(text.items);
+        try overrides.put(a, f.path, .{ .name = name, .kind = f.kind, .id = blob });
+        if (prov) |*pv| try pv.textFile(f, blob, text.items, written.items);
     }
 
     tm.overrides = &overrides;
@@ -817,12 +851,93 @@ pub fn applyResolutions(repo: *Repo, set: *const ConflictSet, decisions: []const
     var c = try m.readChange(a, set.change);
     c.tree_terms = try a.dupe(ObjectId, &.{tree});
     c.sig = null;
+    if (prov) |*pv| c.provenance = try pv.finish();
     const new = try m.rewriteChange(set.change, c);
     _ = try m.rebaseDescendants(rebase.reparent, null);
     tx_live = false;
     const d = try preview.commitDetached(tx, .proposal);
     return .{ .preview = d, .commit = new };
 }
+
+/// Builds the resolved change's manifest, file by file.
+const Provenance = struct {
+    ctx: remap.RemapContext,
+    arena: Allocator,
+    set: *const ConflictSet,
+    agent_rec: ObjectId,
+    human_rec: ObjectId,
+    /// The conflicted change's manifest and the sides'.
+    old: ?manifest_mod.ProvenanceManifest,
+    sides: [2]?manifest_mod.ProvenanceManifest,
+    parent_tree: ?ObjectId,
+    files: std.ArrayList(manifest_mod.FileAttribution) = .empty,
+    done: std.StringHashMapUnmanaged(void) = .empty,
+
+    const Span = struct { start: u32, len: u32, accepted: bool };
+
+    fn init(repo: *Repo, batch: *store_mod.WriteBatch, a: Allocator, set: *const ConflictSet, w: ResolveAttribution, at_ms: i64) !Provenance {
+        var ctx: remap.RemapContext = .{ .gpa = repo.gpa, .store = repo.store, .batch = batch };
+        const agent_rec = try remap.writeRecord(&ctx, .{ .actor = w.agent, .created_ms = at_ms, .review = w.review });
+        const human_rec = try remap.writeRecord(&ctx, .{ .actor = w.human, .created_ms = at_ms, .review = if (w.review) |r| .{ .review_id = r.review_id, .verbatim = false } else null });
+        var p: Provenance = .{ .ctx = ctx, .arena = a, .set = set, .agent_rec = agent_rec, .human_rec = human_rec, .old = null, .sides = .{ null, null }, .parent_tree = null };
+        if (set.commit.provenance) |id| p.old = try manifest_mod.read(repo.store, a, id);
+        for (&p.sides, set.side_changes) |*sm, sc| {
+            if (sc.provenance) |id| sm.* = try manifest_mod.read(repo.store, a, id);
+        }
+        if (set.commit.parents.len > 0) {
+            const parent = try op_mod.read(Change, repo.store, a, set.commit.parents[0]);
+            if (parent.tree_terms.len == 1) p.parent_tree = parent.tree_terms[0];
+        }
+        return p;
+    }
+
+    fn wholeFile(p: *Provenance, path: []const u8, blob: ObjectId, text: []const u8, accepted: bool) !void {
+        try p.done.put(p.arena, path, {});
+        const n = attribution.lineCountOf(text);
+        if (n == 0) return;
+        const map: attribution.AttributionMap = .{ .runs = try p.arena.dupe(attribution.Run, &.{.{ .start_line = 0, .len = n, .prov = if (accepted) p.agent_rec else p.human_rec }}) };
+        try p.files.append(p.arena, try manifest_mod.encodeFile(p.arena, path, blob, map));
+    }
+
+    /// A text file: side lines keep the sides' attribution, resolver
+    /// lines (`written`) get the agent's or the human's record.
+    fn textFile(p: *Provenance, f: ConflictFile, blob: ObjectId, result: []const u8, written: []const Span) !void {
+        try p.done.put(p.arena, f.path, {});
+        var sides: [2]remap.SideText = undefined;
+        for (&sides, 0..) |*side, k| {
+            var text: std.ArrayList(u8) = .empty;
+            for (f.hunks) |h| switch (h) {
+                .resolved => |x| try text.appendSlice(p.arena, x),
+                .conflict => |cm| try text.appendSlice(p.arena, cm.values[2 * k]),
+            };
+            side.* = .{ .text = text.items };
+            const fa = if (p.sides[k]) |m| m.find(f.path) else null;
+            if (fa) |x| if (f.entries[2 * k]) |e| if (x.blob.eql(e.id)) {
+                const m = try x.map(p.arena);
+                if (m.lineCount() == attribution.lineCountOf(text.items)) side.map = m;
+            };
+        }
+        const parent = try remap.readFile(p.ctx.store, p.arena, p.parent_tree, f.path);
+        const merged = try remap.attributionForMerge(p.ctx.gpa, p.arena, if (parent) |x| x.text else null, &sides, result, attribution.inherited);
+        var b = try attribution.Builder.initFrom(p.ctx.gpa, merged);
+        defer b.deinit();
+        for (written) |w| try b.splice(w.start, w.len, w.len, if (w.accepted) p.agent_rec else p.human_rec, false);
+        const map = try b.toMap(p.arena);
+        if (map.allInherited()) return;
+        try p.files.append(p.arena, try manifest_mod.encodeFile(p.arena, f.path, blob, map));
+    }
+
+    /// The manifest: the resolved files, plus the conflicted change's
+    /// entries for files the resolution did not touch.
+    fn finish(p: *Provenance) !?ObjectId {
+        if (p.old) |m| for (m.files) |fa| {
+            if (!p.done.contains(fa.path)) try p.files.append(p.arena, fa);
+        };
+        if (p.files.items.len == 0) return null;
+        manifest_mod.sortFiles(p.files.items);
+        return try manifest_mod.write(p.ctx.batch, p.ctx.gpa, .{ .files = p.files.items });
+    }
+};
 
 fn findRegion(set: *const ConflictSet, path: []const u8, idx: u32) ?usize {
     for (set.regions, 0..) |r, i| {
