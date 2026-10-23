@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const zg_core = @import("zg_core");
-const fm = @import("frontmatter.zig");
-const w = @import("fm_writer.zig");
+const fm = @import("zg_frontmatter").frontmatter;
+const w = @import("zg_frontmatter").fm_writer;
 
 const testing = std.testing;
 

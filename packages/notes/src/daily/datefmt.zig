@@ -5,7 +5,7 @@
 //! English names only.
 
 const std = @import("std");
-const frontmatter = @import("../vault/frontmatter.zig");
+const frontmatter = @import("zg_frontmatter").frontmatter;
 
 pub const Date = frontmatter.Date;
 pub const DateTime = frontmatter.DateTime;

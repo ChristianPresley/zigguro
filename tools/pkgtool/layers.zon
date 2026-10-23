@@ -44,6 +44,7 @@
         .{ "zg_review", "zg_workspace" }, // E12.F05.S01.T01 (the edit policy uses only the std-only zg_ignore leaf module, for GlobSet)
         .{ "zg_review", "zg_security" }, // E12.F05.S02.T01 (the approvals broker implements zg_security.contracts.ApprovalPort)
         .{ "zg_agents", "zg_ai" }, // seeded by E00.F03.S01.T03 (E13 agents drive the zg_ai loop)
+        .{ "zg_agents", "zg_notes" }, // E13.F03.S01.T01 (task files use only the std+zg_core zg_frontmatter leaf module)
         .{ "zg_dap", "zg_lsp" }, // E07.F06.S01.T01 (DapConnection reuses the zg_lsp transports, server processes and script engine)
         .{ "zg_notes", "zg_ai" }, // E08.F06.S05.T01 (the note AI tools and search view import only the zg_ai_proto leaf module)
         .{ "zg_notes", "zg_workspace" }, // E08.F06.S01.T02 (the note index is an indexer plugin over the workspace PathStore)

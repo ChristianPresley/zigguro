@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const zg_core = @import("zg_core");
-const fm = @import("frontmatter.zig");
+const fm = @import("zg_frontmatter").frontmatter;
 const note = @import("note.zig");
 const tags = @import("tags.zig");
 const vault = @import("vault.zig");

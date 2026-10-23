@@ -8,6 +8,8 @@ pub fn build(b: *std.Build) void {
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
     const platform = b.dependency("zg_platform", f.args()).module("zg_platform");
     const text = b.dependency("zg_text", f.args()).module("zg_text");
+    // Task files reuse the notes frontmatter parser and writer (E13.F03).
+    const frontmatter = b.dependency("zg_notes", f.args()).module("zg_frontmatter");
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_agents",
         .imports = &.{
@@ -17,6 +19,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_jsonrpc", .module = jsonrpc },
             .{ .name = "zg_platform", .module = platform },
             .{ .name = "zg_text", .module = text },
+            .{ .name = "zg_frontmatter", .module = frontmatter },
         },
         .bench = "bench/main.zig",
     });

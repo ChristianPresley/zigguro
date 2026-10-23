@@ -14,7 +14,7 @@ const tag_tree = @import("../index/tag_tree.zig");
 const mentions = @import("../index/mentions.zig");
 const link_text = @import("../refactor/link_text.zig");
 const vault_mod = @import("../vault/vault.zig");
-const frontmatter = @import("../vault/frontmatter.zig");
+const frontmatter = @import("zg_frontmatter").frontmatter;
 const note_mod = @import("../vault/note.zig");
 const extract_mod = @import("../vault/extract.zig");
 
