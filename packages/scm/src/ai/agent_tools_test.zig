@@ -105,6 +105,14 @@ test "scm agent tools: log, show, status, op log and lane submit" {
     try t.expect(!res.isError);
     try t.expect(std.mem.indexOf(u8, res.content[0].text, "add b") == null);
 
+    // No change here has agent lines.
+    res = try callTool(e, arena, "scm_log", "{\"revset\":\"human()\"}");
+    try t.expect(!res.isError);
+    try contains(res.content[0].text, "add b");
+    res = try callTool(e, arena, "scm_log", "{\"revset\":\"agent()\"}");
+    try t.expect(!res.isError);
+    try t.expect(std.mem.indexOf(u8, res.content[0].text, "add b") == null);
+
     res = try callTool(e, arena, "scm_log", "{\"revset\":\"nonsense((\"}");
     try t.expect(res.isError);
     try contains(res.content[0].text, "Revset");
