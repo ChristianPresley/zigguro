@@ -70,6 +70,13 @@ pub const Entry = struct {
     }
 };
 
+/// Called with the index locked, after the note's metadata is in place.
+pub const TextSink = struct {
+    ctx: *anyopaque,
+    update: *const fn (ctx: *anyopaque, id: FileId, e: *const Entry, bytes: []const u8) anyerror!void,
+    remove: *const fn (ctx: *anyopaque, id: FileId) void,
+};
+
 pub const BacklinkRef = struct {
     source: FileId,
     /// Index into the source's `NoteMeta.links`.
@@ -122,6 +129,8 @@ pub const NoteIndex = struct {
     changed: std.ArrayList(Event) = .empty,
     dirty: bool = true,
     listeners: std.ArrayList(Listener) = .empty,
+    /// Receives note text as notes are indexed (the search index).
+    sink: ?TextSink = null,
 
     /// `vaults` is copied (its strings must outlive the index).
     pub fn init(gpa: Allocator, io: Io, vaults: []const Vault) !*NoteIndex {
@@ -205,6 +214,7 @@ pub const NoteIndex = struct {
         ix.mutex.lockUncancelable(ix.io);
         defer ix.mutex.unlock(ix.io);
         try ix.upsert(id, e);
+        if (ix.sink) |sk| try sk.update(sk.ctx, id, e, bytes);
     }
 
     /// Forgets a note or attachment.
@@ -278,6 +288,7 @@ pub const NoteIndex = struct {
             try ix.names.removeNote(gpa, &ix.keys, id, old.meta.aliases);
             if (ix.forward.fetchRemove(idKey(id))) |f| gpa.free(f.value);
             old.release(gpa);
+            if (ix.sink) |sk| sk.remove(sk.ctx, id);
             try ix.reresolve(affected.items, id);
             ix.dirty = true;
             try ix.changed.append(gpa, .{ .note_removed = id });
@@ -538,6 +549,8 @@ pub const NoteIndex = struct {
     pub fn adopt(ix: *NoteIndex, id: FileId, path_hash: u64) !bool {
         ix.mutex.lockUncancelable(ix.io);
         defer ix.mutex.unlock(ix.io);
+        // A persisted note has no text for the search index: re-read it.
+        if (ix.sink != null) return false;
         const kv = ix.loaded.fetchRemove(path_hash) orelse return false;
         try ix.upsert(id, kv.value);
         return true;
