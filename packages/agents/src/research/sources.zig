@@ -173,6 +173,22 @@ pub const SourceLibrary = struct {
         return lib.index.getPtr(id);
     }
 
+    /// The source captured from `url` (under any URL with the same
+    /// dedupe key), if there is one.
+    pub fn lookup(lib: *SourceLibrary, a: Allocator, url: []const u8) Allocator.Error!?SourceId {
+        const id = canon.sourceId(try canon.dedupeKey(a, try canon.canonicalize(a, url)));
+        if (lib.index.contains(id)) return id;
+        for (lib.index.values()) |s| if (std.mem.eql(u8, s.url, url)) return s.id;
+        return null;
+    }
+
+    /// Records the note's latest text after a write through the note
+    /// port (applied or pending).
+    pub fn setNote(lib: *SourceLibrary, id: SourceId, text: []const u8) Allocator.Error!void {
+        const s = lib.index.getPtr(id) orelse return;
+        s.note = try lib.arena.allocator().dupe(u8, text);
+    }
+
     /// Reads every note under the sources folder into the index.
     fn rebuild(lib: *SourceLibrary) !void {
         var dir = lib.vault.openDir(lib.io, lib.o.config.sources_dir, .{ .iterate = true }) catch |e| switch (e) {
@@ -347,7 +363,8 @@ pub const SourceLibrary = struct {
         return true;
     }
 
-    fn readNote(lib: *SourceLibrary, a: Allocator, s: *const Source) !?[]const u8 {
+    /// The note's current text (pending notes come from memory).
+    pub fn readNote(lib: *SourceLibrary, a: Allocator, s: *const Source) !?[]const u8 {
         if (s.note) |n| return n;
         return lib.vault.readFileAlloc(lib.io, s.path, a, .limited(16 << 20)) catch null;
     }
@@ -426,6 +443,12 @@ pub const SourceLibrary = struct {
 /// The `search_result` block for a source (documented fields: type,
 /// source, title, content[] of text blocks, citations.enabled).
 pub fn searchResultJson(a: Allocator, url: []const u8, title: []const u8, bs: []const Block) ![]const u8 {
+    return searchResultJsonCiting(a, url, title, bs, true);
+}
+
+/// `searchResultJson` with citations on or off. The API needs every
+/// search result in one request to agree.
+pub fn searchResultJsonCiting(a: Allocator, url: []const u8, title: []const u8, bs: []const Block, citing: bool) ![]const u8 {
     const Text = struct { type: []const u8 = "text", text: []const u8 };
     const content = try a.alloc(Text, bs.len);
     for (bs, content) |b, *c| c.* = .{ .text = b.text };
@@ -434,9 +457,9 @@ pub fn searchResultJson(a: Allocator, url: []const u8, title: []const u8, bs: []
         source: []const u8,
         title: []const u8,
         content: []const Text,
-        citations: struct { enabled: bool = true } = .{},
+        citations: struct { enabled: bool } = .{ .enabled = true },
     };
-    return std.json.Stringify.valueAlloc(a, R{ .source = url, .title = title, .content = content }, .{});
+    return std.json.Stringify.valueAlloc(a, R{ .source = url, .title = title, .content = content, .citations = .{ .enabled = citing } }, .{});
 }
 
 /// The note's body: after the frontmatter and the "Captured from" line.
