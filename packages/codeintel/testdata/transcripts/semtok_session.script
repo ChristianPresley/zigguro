@@ -1,0 +1,20 @@
+# Full, then delta after an edit, a refresh answered with null (tokens
+# kept), and a ContentModified delta retried once in full.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "semanticTokensProvider": {"legend": {"tokenTypes": ["variable", "function"], "tokenModifiers": ["readonly"]}, "full": {"delta": true}}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/semanticTokens/full
+< {"id": $1, "result": {"resultId": "1", "data": [0, 6, 1, 0, 1]}}
+> textDocument/didChange
+> textDocument/semanticTokens/full/delta {"previousResultId": "1"}
+< {"id": $1, "result": {"resultId": "2", "edits": [{"start": 3, "deleteCount": 2, "data": [1, 0]}]}}
+< {"id": 900, "method": "workspace/semanticTokens/refresh"}
+> response {"id": 900, "result": null}
+> textDocument/semanticTokens/full
+< {"id": $1, "result": null}
+> textDocument/didChange
+> textDocument/semanticTokens/full/delta {"previousResultId": "2"}
+< {"id": $1, "error": {"code": -32801, "message": "content modified"}}
+> textDocument/semanticTokens/full
+< {"id": $1, "result": {"resultId": "3", "data": [0, 6, 1, 0, 0]}}
