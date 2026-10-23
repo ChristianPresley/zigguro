@@ -20,6 +20,8 @@ const cross_targets = [_][]const u8{
 };
 
 pub fn build(b: *std.Build) void {
+    // The inline loops over every package run at comptime.
+    @setEvalBranchQuota(4000);
     const f = zg_build.flags(b);
 
     // Root-only options: never forwarded to b.dependency().
@@ -170,6 +172,16 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(stdio);
         run.skip_foreign_checks = true;
         b.top_level_steps.get("test-mcp").?.step.dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
+
+    // zg_agents' data_run_program tests run a fixture program, so they
+    // are a separate test binary defined by the package's build.zig.
+    {
+        const programs = @import("zg_agents").addProgramTests(b, f, mods[comptime packages.indexOf("zg_agents")], mods[comptime packages.indexOf("zg_ai")], "packages/agents/");
+        const run = b.addRunArtifact(programs);
+        run.skip_foreign_checks = true;
+        b.top_level_steps.get("test-agents").?.step.dependOn(&run.step);
         test_step.dependOn(&run.step);
     }
 
