@@ -11,6 +11,7 @@
         .zg_gui = .{ .path = "../gui" },
         .zg_platform = .{ .path = "../platform" },
         .zg_text = .{ .path = "../text" },
+        .zg_notes = .{ .path = "../notes" },
     },
     .paths = .{
         "build.zig",
