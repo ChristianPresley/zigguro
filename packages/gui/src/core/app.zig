@@ -85,6 +85,11 @@ pub const App = struct {
     theme: *const theme_mod.Theme = &theme_mod.zigguro_dark,
     /// Follow the desktop's light/dark/high-contrast setting.
     follow_system: bool = true,
+    /// Animations are instant (but short fades); from the desktop's
+    /// appearance, and settable by the app (an E15 setting).
+    reduced_motion: bool = false,
+    /// `reduced_motion` follows the desktop.
+    reduced_motion_follows_system: bool = true,
     /// Set when `flushEffects` hit its cycle guard.
     effect_cycle: bool = false,
     /// The text clipboard (kept in sync with the system's by the Host).
@@ -369,8 +374,10 @@ pub const App = struct {
         for (app.windows.items) |w| w.themeChanged(relayout);
     }
 
-    /// Applies a desktop appearance change when `follow_system` is set.
+    /// Applies a desktop appearance change: the theme when `follow_system`
+    /// is set, reduced motion when `reduced_motion_follows_system` is.
     pub fn onAppearance(app: *App, a: zg_platform.event.Appearance) void {
+        if (app.reduced_motion_follows_system) app.reduced_motion = a.reduced_motion;
         if (!app.follow_system) return;
         const want: theme_mod.Theme.Kind = switch (a.contrast) {
             .high => if (a.scheme == .light) .hc_light else .hc_dark,

@@ -27,6 +27,8 @@ pub const testing = @import("testing/root.zig");
 pub const markdown = @import("markdown/root.zig");
 /// Accessibility: the semantic tree, snapshots and actions.
 pub const a11y = @import("a11y/root.zig");
+/// Animation: springs, tweens, the animator, FLIP and presets.
+pub const anim = @import("anim/root.zig");
 /// Runs windows on a platform and renderer.
 pub const host = @import("host.zig");
 
@@ -77,5 +79,6 @@ test {
     _ = @import("virtual/table_test.zig");
     _ = @import("a11y/tree_test.zig");
     _ = @import("a11y/uia_test.zig");
+    _ = @import("anim/anim_test.zig");
     if (@import("builtin").os.tag == .linux) _ = @import("a11y/atspi/atspi_test.zig");
 }

@@ -166,6 +166,14 @@ pub fn hasRtl(bytes: []const u8) bool {
     return false;
 }
 
+/// Bidi classes of ASCII, none of which `needsBidi`.
+const ascii_classes: [128]BC = blk: {
+    @setEvalBranchQuota(100_000);
+    var t: [128]BC = undefined;
+    for (&t, 0..) |*c, cp| c.* = p.props(cp).bidi;
+    break :blk t;
+};
+
 /// Resolves one paragraph of UTF-8 (the caller splits at paragraph
 /// separators). Ill-formed bytes are U+FFFD.
 pub fn resolve(gpa: Allocator, bytes: []const u8, dir: Direction) !Paragraph {
@@ -184,8 +192,14 @@ pub fn resolve(gpa: Allocator, bytes: []const u8, dir: Direction) !Paragraph {
     var k: usize = 0;
     var rtl = false;
     while (i < bytes.len) : (k += 1) {
-        const u = decode.at(bytes, i);
         offsets[k] = @intCast(i);
+        if (bytes[i] < 0x80) {
+            cps[k] = bytes[i];
+            classes[k] = ascii_classes[bytes[i]];
+            i += 1;
+            continue;
+        }
+        const u = decode.at(bytes, i);
         cps[k] = u.cp;
         classes[k] = if (u.valid) p.props(u.cp).bidi else .ON;
         rtl = rtl or needsBidi(classes[k]);
@@ -753,6 +767,10 @@ fn implicitLevels(w: *Work, seq: []const u32) void {
             if (c == .L or c == .EN or c == .AN) w.levels[i] = lv + 1;
         }
     }
+}
+
+test "ascii bidi classes never need bidi" {
+    for (ascii_classes) |c| try std.testing.expect(!needsBidi(c));
 }
 
 test {
