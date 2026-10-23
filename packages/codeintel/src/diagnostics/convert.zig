@@ -9,6 +9,7 @@ const zg_lsp = @import("zg_lsp");
 const Store = @import("Store.zig");
 const zg_core = @import("zg_core");
 const zg_editor = @import("zg_editor");
+const position = @import("../features/position.zig");
 
 const PieceTree = zg_editor.model.buffer.piece_tree.PieceTree;
 
@@ -83,82 +84,23 @@ pub fn severityOf(s: ?protocol.DiagnosticSeverity) Store.Severity {
 }
 
 /// Sets the byte ranges of `set`'s diagnostics from `tree` (document
-/// version `version`), whose columns are in `enc` units.
-///
-/// The diagnostics are sorted by start, so one forward walk over the text
-/// finds their lines: looking up each line on its own costs a scan from
-/// the start of its piece.
+/// version `version`), whose columns are in `enc` units. The diagnostics
+/// are sorted by start, so the starts are found in one forward walk; the
+/// ends walk from their starts.
 pub fn mapBytes(gpa: Allocator, set: *Store.Set, tree: *const PieceTree, enc: zg_core.utf8.Encoding, version: u64) Allocator.Error!void {
-    var starts: Walker = .{ .tree = tree };
-    var ends: Walker = .{ .tree = tree };
-    var scratch: std.ArrayList(u8) = .empty;
-    defer scratch.deinit(gpa);
-    var scratch2: std.ArrayList(u8) = .empty;
-    defer scratch2.deinit(gpa);
+    var starts: position.Mapper = .{ .gpa = gpa, .tree = tree, .enc = enc };
+    defer starts.deinit();
+    var ends: position.Mapper = .{ .gpa = gpa, .tree = tree, .enc = enc };
+    defer ends.deinit();
     for (set.diags) |*d| {
-        const ls = starts.seek(d.start.line);
-        const text = try starts.lineText(gpa, &scratch);
-        const s = ls + zg_core.utf8.columnToByte(text, d.start.character, enc);
-        const e = if (d.end.line == d.start.line)
-            ls + zg_core.utf8.columnToByte(text, d.end.character, enc)
-        else blk: {
-            ends.line = starts.line;
-            ends.start = starts.start;
-            const le = ends.seek(d.end.line);
-            break :blk le + zg_core.utf8.columnToByte(try ends.lineText(gpa, &scratch2), d.end.character, enc);
-        };
+        const s = try starts.byteOf(.{ .line = d.start.line, .character = d.start.character });
+        if (d.end.line != d.start.line) {
+            ends.cursor = starts.cursor;
+            ends.text_line = std.math.maxInt(u64);
+        }
+        const m = if (d.end.line == d.start.line) &starts else &ends;
+        const e = try m.byteOf(.{ .line = d.end.line, .character = d.end.character });
         d.bytes = .{ .start = s, .end = @max(s, e) };
     }
     set.version = version;
 }
-
-/// Finds line starts moving forward through a tree (`\n`, `\r\n` and
-/// `\r` end lines, as in LSP). Lines past the end clamp to the last.
-const Walker = struct {
-    tree: *const PieceTree,
-    line: u64 = 0,
-    start: u64 = 0,
-
-    fn seek(w: *Walker, target: u64) u64 {
-        if (target < w.line) {
-            w.line = @min(target, w.tree.lineCount() - 1);
-            w.start = w.tree.lineStart(w.line);
-            return w.start;
-        }
-        if (target == w.line) return w.start;
-        const len = w.tree.len();
-        var it = w.tree.slice(.{ .start = w.start, .end = len });
-        var off = w.start;
-        while (it.next()) |chunk| {
-            var i: usize = 0;
-            while (std.mem.indexOfAnyPos(u8, chunk, i, "\r\n")) |j| {
-                i = j + 1;
-                // The CR of a CRLF: the LF ends the line.
-                if (chunk[j] == '\r' and off + j + 1 < len and (if (j + 1 < chunk.len) chunk[j + 1] else w.tree.byteAt(off + j + 1)) == '\n') continue;
-                w.line += 1;
-                w.start = off + j + 1;
-                if (w.line == target) return w.start;
-            }
-            off += chunk.len;
-        }
-        return w.start;
-    }
-
-    /// The current line without its terminator.
-    fn lineText(w: *const Walker, gpa: Allocator, scratch: *std.ArrayList(u8)) Allocator.Error![]const u8 {
-        var it = w.tree.slice(.{ .start = w.start, .end = w.tree.len() });
-        const first = it.next() orelse return "";
-        if (std.mem.indexOfAny(u8, first, "\r\n")) |j| return first[0..j];
-        scratch.clearRetainingCapacity();
-        try scratch.appendSlice(gpa, first);
-        while (it.next()) |chunk| {
-            const j = std.mem.indexOfAny(u8, chunk, "\r\n") orelse {
-                try scratch.appendSlice(gpa, chunk);
-                continue;
-            };
-            try scratch.appendSlice(gpa, chunk[0..j]);
-            break;
-        }
-        return scratch.items;
-    }
-};

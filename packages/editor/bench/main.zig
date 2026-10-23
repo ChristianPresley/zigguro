@@ -122,6 +122,24 @@ fn retainRelease(d: *Doc, s: *bench.State) void {
     }
 }
 
+/// `mapPos` through a 1k-replacement set (budget < 100 ns per call, #444).
+fn mapPos1k(d: *Doc, s: *bench.State) void {
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    const gpa = std.heap.smp_allocator;
+    var edits: [1000]buffer.piece_tree.Edit = undefined;
+    const step = d.tree.len() / edits.len;
+    for (&edits, 0..) |*e, k| e.* = .{ .range = .{ .start = k * step, .end = k * step + 3 }, .text = "zz" };
+    var cs = ChangeSet.fromEdits(gpa, d.tree.len(), &edits) catch unreachable;
+    defer cs.deinit();
+    var rng: std.Random.DefaultPrng = .init(444);
+    var pos: [4096]u64 = undefined;
+    for (&pos) |*p| p.* = rng.random().uintLessThan(u64, d.tree.len());
+    var acc: u64 = 0;
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) acc +%= cs.mapPos(pos[i % pos.len], if (i & 1 == 0) .left else .right);
+    bench.doNotOptimizeAway(acc);
+}
+
 /// Undo then redo of one 10k-replacement group (the applies dominate).
 fn undo10k(d: *Doc, s: *bench.State) void {
     const edit = zg_editor.model.edit;
@@ -347,6 +365,7 @@ fn register(b: *bench.Bench) !void {
         .{ "editor.buffer.replace_1k_cursors", replace1k },
         .{ "editor.snapshot.retain_release", retainRelease },
         .{ "editor.undo.10k_group", undo10k },
+        .{ "editor.change_set.map_pos_1k", mapPos1k },
     }) |entry| {
         const d = try Doc.init(b.gpa, text);
         defer d.deinit(b.gpa);
