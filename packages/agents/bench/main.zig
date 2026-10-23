@@ -22,7 +22,9 @@ fn register(b: *bench.Bench) !void {
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
 /// Markdown document after an edit before it (budget 1 ms);
-/// `docs/outline_1mb`: its section outline (no budget; for reference).
+/// `docs/outline_1mb`: its section outline (no budget; for reference);
+/// `docs/diff_50k_words`: the word diff between two versions of a
+/// 50,000-word document with scattered edits (budget 50 ms).
 fn registerDocs(b: *bench.Bench) !void {
     const docs = zg_agents.docs;
     const gpa = std.heap.smp_allocator;
@@ -51,6 +53,29 @@ fn registerDocs(b: *bench.Bench) !void {
                 var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
                 defer arena.deinit();
                 bench.doNotOptimizeAway(docs.sections.outline(arena.allocator(), c.text) catch unreachable);
+            }
+        }
+    }.f);
+
+    var old: std.ArrayList(u8) = .empty;
+    var new: std.ArrayList(u8) = .empty;
+    var w: usize = 0;
+    var p: usize = 0;
+    while (w < 50_000) : (p += 1) {
+        try old.print(gpa, "Paragraph {d} says the quick brown fox jumps over the lazy dog again and again.\n\n", .{p});
+        if (p % 25 == 0) try new.print(gpa, "Paragraph {d} says the quick red fox jumps over the lazy dog again and again.\n\n", .{p}) else try new.print(gpa, "Paragraph {d} says the quick brown fox jumps over the lazy dog again and again.\n\n", .{p});
+        if (p % 40 == 0) try new.print(gpa, "An added paragraph {d}.\n\n", .{p});
+        w += 16;
+    }
+    const Pair = struct { old: []const u8, new: []const u8 };
+    var pair: Pair = .{ .old = old.items, .new = new.items };
+    try b.run("docs/diff_50k_words", &pair, struct {
+        fn f(c: *Pair, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                bench.doNotOptimizeAway(docs.versions.diffWords(arena.allocator(), c.old, c.new) catch unreachable);
             }
         }
     }.f);

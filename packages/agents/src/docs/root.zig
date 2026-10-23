@@ -12,6 +12,8 @@ pub const tools = @import("tools.zig");
 pub const shortcuts = @import("shortcuts.zig");
 pub const tracked = @import("tracked.zig");
 pub const html_sanitize = @import("html_sanitize.zig");
+pub const comments = @import("comments.zig");
+pub const versions = @import("versions.zig");
 
 pub const DocSession = doc_session.DocSession;
 pub const Section = sections.Section;
@@ -20,10 +22,13 @@ pub const ProposeResult = doc_session.ProposeResult;
 pub const DocChange = doc_session.DocChange;
 pub const ChangePort = doc_session.ChangePort;
 pub const TrackedChanges = tracked.TrackedChanges;
+pub const CommentStore = comments.CommentStore;
 
 test {
     _ = @import("sections_test.zig");
     _ = @import("anchors_test.zig");
     _ = @import("tools_test.zig");
     _ = @import("doc_mode_test.zig");
+    _ = @import("comments_test.zig");
+    _ = @import("versions_test.zig");
 }

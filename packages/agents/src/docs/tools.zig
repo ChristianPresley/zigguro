@@ -6,6 +6,12 @@
 //! - `doc_propose_edit`, `doc_insert`: propose changes, each one E12
 //!   changeset of word hunks for the person to review. Nothing writes the
 //!   document directly.
+//! - `doc_add_comment`, `doc_reply`, `doc_list_comments`,
+//!   `doc_resolve_comment`: margin comment threads (E13.F04.S02.T01),
+//!   when the session has a comment store.
+//!
+//! `Source.allow` narrows the tools for one request (the "suggest edits
+//! as comments" shortcut takes the editing tools away).
 //!
 //! The app makes one exporter per session and run (`Source.prov`).
 
@@ -13,6 +19,8 @@ const std = @import("std");
 const zg_ai = @import("zg_ai");
 const doc = @import("doc_session.zig");
 const sections_mod = @import("sections.zig");
+const comments_mod = @import("comments.zig");
+const words = @import("words.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -28,6 +36,16 @@ pub const Source = struct {
     /// Model family for the estimate.
     family: []const u8 = "",
     max_hits: u32 = 50,
+    /// The document's comment threads (the comment tools need them).
+    comments: ?*comments_mod.CommentStore = null,
+    /// Only these tools, for this request (null: all).
+    allow: ?[]const []const u8 = null,
+
+    pub fn allows(src: *const Source, tool: []const u8) bool {
+        const names = src.allow orelse return true;
+        for (names) |t| if (std.mem.eql(u8, t, tool)) return true;
+        return false;
+    }
 };
 
 pub const schemas = struct {
@@ -40,6 +58,11 @@ pub const schemas = struct {
         ",\"old_text\":{\"type\":\"string\",\"description\":\"The exact text to replace, unique within the section (or the document).\"},\"new_text\":{\"type\":\"string\"}," ++ rationale ++ "},\"additionalProperties\":false}";
     pub const insert = "{\"type\":\"object\",\"required\":[\"text\"],\"properties\":{\"after_section\":{\"type\":\"string\",\"description\":\"Insert after this section and its subsections; omit to append to the document.\"}," ++
         "\"at_anchor\":{\"type\":\"integer\"},\"text\":{\"type\":\"string\",\"description\":\"Markdown to insert.\"}," ++ rationale ++ "},\"additionalProperties\":false}";
+    const thread = "\"thread\":{\"type\":\"integer\",\"description\":\"A thread id from doc_list_comments.\"}";
+    pub const add_comment = "{\"type\":\"object\",\"required\":[\"anchor_text\",\"text\"],\"properties\":{\"anchor_text\":{\"type\":\"string\",\"description\":\"The exact text the comment is about.\"},\"text\":{\"type\":\"string\"}},\"additionalProperties\":false}";
+    pub const reply = "{\"type\":\"object\",\"required\":[\"thread\",\"text\"],\"properties\":{" ++ thread ++ ",\"text\":{\"type\":\"string\"},\"proposal\":{\"type\":\"integer\",\"description\":\"A changeset from doc_propose_edit that this reply offers; accepting it resolves the thread.\"}},\"additionalProperties\":false}";
+    pub const list_comments = "{\"type\":\"object\",\"properties\":{\"include_resolved\":{\"type\":\"boolean\"}},\"additionalProperties\":false}";
+    pub const resolve_comment = "{\"type\":\"object\",\"required\":[\"thread\"],\"properties\":{" ++ thread ++ "},\"additionalProperties\":false}";
 };
 
 pub const tool_list = [_]foreign.ForeignTool{
@@ -48,7 +71,15 @@ pub const tool_list = [_]foreign.ForeignTool{
     .{ .name = "doc_search", .description = "Lines of the document containing the text (ignoring case), with their sections.", .input_schema_json = schemas.search, .read_only = true },
     .{ .name = "doc_propose_edit", .description = "Propose replacing old_text with new_text, within a section or the whole document. The person reviews the change; if they have edited the text meanwhile, the current text comes back to retry with.", .input_schema_json = schemas.propose_edit, .mutates = true },
     .{ .name = "doc_insert", .description = "Propose inserting Markdown after a section (or at the end). The person reviews it.", .input_schema_json = schemas.insert, .mutates = true },
+    .{ .name = "doc_add_comment", .description = "Leave a margin comment on some exact text of the document, without changing it.", .input_schema_json = schemas.add_comment },
+    .{ .name = "doc_reply", .description = "Reply in a comment thread, optionally offering a proposed changeset.", .input_schema_json = schemas.reply },
+    .{ .name = "doc_list_comments", .description = "The document's comment threads: the text each is about and its comments.", .input_schema_json = schemas.list_comments, .read_only = true },
+    .{ .name = "doc_resolve_comment", .description = "Mark a comment thread resolved.", .input_schema_json = schemas.resolve_comment },
 };
+
+/// The tools a "suggest edits as comments" request keeps: reading, and
+/// leaving comments.
+pub const comment_only_tools = [_][]const u8{ "doc_outline", "doc_read_section", "doc_search", "doc_list_comments", "doc_add_comment" };
 
 /// Must not move after `exporter`.
 pub const ToolExporter = struct {
@@ -58,8 +89,9 @@ pub const ToolExporter = struct {
         return .{ .name = "docs", .kind = .agents, .ctx = self, .list = listFn, .call = callFn };
     }
 
-    fn listFn(_: *anyopaque, arena: Allocator) anyerror![]const foreign.ForeignTool {
-        return arena.dupe(foreign.ForeignTool, &tool_list);
+    fn listFn(ctx: *anyopaque, arena: Allocator) anyerror![]const foreign.ForeignTool {
+        const self: *ToolExporter = @ptrCast(@alignCast(ctx));
+        return list(&self.src, arena);
     }
 
     fn callFn(ctx: *anyopaque, io: Io, arena: Allocator, tool: []const u8, input_json: []const u8) anyerror!foreign.Result {
@@ -69,6 +101,21 @@ pub const ToolExporter = struct {
         return .{ .json = r.json, .changeset = r.changeset };
     }
 };
+
+/// The tools `src` offers.
+pub fn list(src: *const Source, arena: Allocator) ![]const foreign.ForeignTool {
+    var out: std.ArrayList(foreign.ForeignTool) = .empty;
+    for (tool_list) |t| {
+        if (!src.allows(t.name)) continue;
+        if (src.comments == null and isCommentTool(t.name)) continue;
+        try out.append(arena, t);
+    }
+    return out.items;
+}
+
+fn isCommentTool(name: []const u8) bool {
+    return std.mem.indexOf(u8, name, "comment") != null or std.mem.eql(u8, name, "doc_reply");
+}
 
 pub const Output = struct { json: []const u8, changeset: ?u64 = null, is_error: bool = false, text: []const u8 = "" };
 
@@ -93,11 +140,25 @@ pub fn run(src: *Source, arena: Allocator, tool: []const u8, input_json: []const
 
 fn runTool(src: *Source, a: Allocator, tool: []const u8, input: []const u8, msg: *[]const u8, cs: *?u64) ![]const u8 {
     const eq = std.mem.eql;
+    if (!src.allows(tool)) {
+        msg.* = try std.fmt.allocPrint(a, "{s} is not available for this request", .{tool});
+        return error.BadInput;
+    }
     if (eq(u8, tool, "doc_outline")) return outlineTool(src, a);
     if (eq(u8, tool, "doc_read_section")) return readTool(src, a, input, msg);
     if (eq(u8, tool, "doc_search")) return searchTool(src, a, input, msg);
     if (eq(u8, tool, "doc_propose_edit")) return proposeTool(src, a, input, msg, cs);
     if (eq(u8, tool, "doc_insert")) return insertTool(src, a, input, msg, cs);
+    if (isCommentTool(tool)) {
+        const store = src.comments orelse {
+            msg.* = "comments are not available for this document";
+            return error.BadInput;
+        };
+        if (eq(u8, tool, "doc_add_comment")) return addCommentTool(src, store, a, input, msg);
+        if (eq(u8, tool, "doc_reply")) return replyTool(src, store, a, input, msg);
+        if (eq(u8, tool, "doc_list_comments")) return listCommentsTool(store, a, input, msg);
+        if (eq(u8, tool, "doc_resolve_comment")) return resolveTool(store, a, input, msg);
+    }
     return error.UnknownTool;
 }
 
@@ -217,4 +278,73 @@ fn result(a: Allocator, r: doc.ProposeResult, msg: *[]const u8, cs: *?u64) ![]co
             return error.BadInput;
         },
     }
+}
+
+fn agentAuthor(src: *const Source) comments_mod.Author {
+    return .{ .agent = src.prov.run orelse .zero };
+}
+
+fn addCommentTool(src: *Source, store: *comments_mod.CommentStore, a: Allocator, input: []const u8, msg: *[]const u8) ![]const u8 {
+    const In = struct { anchor_text: []const u8, text: []const u8 };
+    const in = try parse(In, a, input, msg);
+    if (in.anchor_text.len == 0 or in.text.len == 0) {
+        msg.* = "anchor_text and text must not be empty";
+        return error.BadInput;
+    }
+    const snap = try src.session.snapshot(a);
+    const range: [2]u32 = if (std.mem.indexOf(u8, snap.text, in.anchor_text)) |at|
+        .{ @intCast(at), @intCast(at + in.anchor_text.len) }
+    else blk: {
+        var count: u32 = 0;
+        break :blk (try words.findLoose(a, snap.text, in.anchor_text, &count)) orelse {
+            msg.* = "anchor_text is not in the document; quote it exactly";
+            return error.BadInput;
+        };
+    };
+    const id = try store.add(snap.text, .{ .start = range[0], .end = range[1] }, in.text, agentAuthor(src));
+    return std.fmt.allocPrint(a, "Comment added as thread {d}.", .{id});
+}
+
+fn replyTool(src: *Source, store: *comments_mod.CommentStore, a: Allocator, input: []const u8, msg: *[]const u8) ![]const u8 {
+    const In = struct { thread: u32, text: []const u8, proposal: ?u64 = null };
+    const in = try parse(In, a, input, msg);
+    _ = store.replyWith(in.thread, in.text, agentAuthor(src), in.proposal) catch |e| switch (e) {
+        error.NoSuchThread => {
+            msg.* = try std.fmt.allocPrint(a, "no thread {d}; see doc_list_comments", .{in.thread});
+            return error.BadInput;
+        },
+        else => return e,
+    };
+    return std.fmt.allocPrint(a, "Replied in thread {d}.", .{in.thread});
+}
+
+fn listCommentsTool(store: *comments_mod.CommentStore, a: Allocator, input: []const u8, msg: *[]const u8) ![]const u8 {
+    const In = struct { include_resolved: bool = false };
+    const in = try parse(In, a, input, msg);
+    const C = struct { author: []const u8, text: []const u8, proposal: ?u64 = null };
+    const T = struct { thread: u32, quote: []const u8, orphaned: bool, resolved: bool, comments: []const C };
+    var out: std.ArrayList(T) = .empty;
+    for (store.threads()) |t| {
+        if (t.resolved and !in.include_resolved) continue;
+        const cs = try a.alloc(C, t.comments.items.len);
+        for (t.comments.items, cs) |c, *o| o.* = .{ .author = switch (c.author) {
+            .user => |u| if (u.len > 0) u else "user",
+            .agent => "agent",
+        }, .text = c.text, .proposal = c.proposal };
+        try out.append(a, .{ .thread = t.id, .quote = t.quote, .orphaned = t.anchor == null, .resolved = t.resolved, .comments = cs });
+    }
+    return std.json.Stringify.valueAlloc(a, out.items, .{ .emit_null_optional_fields = false });
+}
+
+fn resolveTool(store: *comments_mod.CommentStore, a: Allocator, input: []const u8, msg: *[]const u8) ![]const u8 {
+    const In = struct { thread: u32 };
+    const in = try parse(In, a, input, msg);
+    store.resolve(in.thread) catch |e| switch (e) {
+        error.NoSuchThread => {
+            msg.* = try std.fmt.allocPrint(a, "no thread {d}", .{in.thread});
+            return error.BadInput;
+        },
+        else => return e,
+    };
+    return std.fmt.allocPrint(a, "Thread {d} resolved.", .{in.thread});
 }

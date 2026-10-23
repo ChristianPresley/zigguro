@@ -25,6 +25,8 @@ pub const doc_mode = struct {
     pub const outline = @import("doc_mode/outline.zig");
     pub const selection_bar = @import("doc_mode/selection_bar.zig");
     pub const layout = @import("doc_mode/layout.zig");
+    pub const comments_view = @import("doc_mode/comments_view.zig");
+    pub const versions_view = @import("doc_mode/versions_view.zig");
     pub const DocMode = view.DocMode;
     pub const DocumentMode = layout.DocumentMode;
 };
@@ -42,5 +44,6 @@ test {
     _ = @import("board/board_view_test.zig");
     _ = @import("doc_mode/doc_mode_view_test.zig");
     _ = @import("export_test.zig");
+    _ = @import("doc_mode/comments_view_test.zig");
     std.testing.refAllDecls(doc_mode);
 }
