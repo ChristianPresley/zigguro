@@ -1,0 +1,23 @@
+/* Overrides the base: colours merge, token rules follow the parent's. */
+{
+  "name": "Fixture Child",
+  "include": "./base.json",
+  "colors": {
+    "editor.background": "#fafafa",
+    "sideBar.background": "#eeeeee",
+    "focusBorder": "#0078d4",
+    "notAToken.background": "#123456",
+    "anotherUnknown": "#123",
+    "badge.background": "not a colour"
+  },
+  "tokenColors": [
+    { "scope": "string.quoted", "settings": { "foreground": "#0000ff" } },
+    { "scope": "string - source.json", "settings": { "fontStyle": "bold" } }
+  ],
+  "semanticHighlighting": true,
+  "semanticTokenColors": {
+    "variable.readonly:zig": "#795e26",
+    "*.declaration": { "bold": true },
+    "function": { "foreground": "#795e26", "fontStyle": "underline" }
+  }
+}
