@@ -49,6 +49,14 @@ pub const Sink = struct {
     /// Messages that could not be sent (the server is not running); the
     /// supervisor re-syncs from the documents after a restart.
     dropped: u32 = 0,
+    /// Told after each `didOpen`/`didChange` (diagnostics map reported
+    /// versions to the text that was sent).
+    observer: ?Observer = null,
+
+    pub const Observer = struct {
+        ctx: *anyopaque,
+        sent: *const fn (ctx: *anyopaque, uri: []const u8, version: i32) void,
+    };
 
     pub fn init(gpa: Allocator, out: Out) Sink {
         return .{ .gpa = gpa, .out = out, .body = .init(gpa) };
@@ -172,6 +180,7 @@ pub const Sink = struct {
             };
         }
         gop.value_ptr.* = version;
+        if (s.observer) |o| o.sent(o.ctx, uri, version);
     }
 };
 
