@@ -18,6 +18,8 @@ pub const markdown_highlighter = @import("markdown_highlighter.zig");
 pub const EditorView = editor_view.EditorView;
 /// See `editor_view.Options`.
 pub const Options = editor_view.Options;
+/// See `editor_view.KeyHook`.
+pub const KeyHook = editor_view.KeyHook;
 /// See `widget.Editor`.
 pub const Editor = widget.Editor;
 /// See `widget.editor`.
