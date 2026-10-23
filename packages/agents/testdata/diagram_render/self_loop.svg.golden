@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="189.6" height="100.6" viewBox="0 0 189.6 100.6" font-family="sans-serif">
+<rect x="0" y="0" width="189.6" height="100.6" fill="#ffffff"/>
+<path d="M28.25 41.5 C37.85 67.1 8.092 73.654 17.692 48.054" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M20.15 41.5 L20.15 50.044 L14.532 47.937 Z" fill="#333333"/>
+<path d="M40.4 24.75 C48.733 24.75 73.733 24.75 90.4 24.75 C107.067 24.75 125.067 24.75 133.4 24.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M140.4 24.75 L132.4 27.75 L132.4 21.75 Z" fill="#333333"/>
+<path d="M160.65 41.5 C170.25 67.1 140.492 73.654 150.092 48.054" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M152.55 41.5 L152.55 50.044 L146.932 47.937 Z" fill="#333333"/>
+<path d="M65.4 14 L115.4 14 L115.4 35.5 L65.4 35.5 Z" fill="#ffffff"/>
+<text x="90.4" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">again</text>
+<path d="M131.6 71.1 L181.6 71.1 L181.6 92.6 L131.6 92.6 Z" fill="#ffffff"/>
+<text x="156.6" y="81.85" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">retry</text>
+<path d="M8 8 L40.4 8 L40.4 41.5 L8 41.5 Z" fill="#ececff"/>
+<path d="M8 8 L40.4 8 L40.4 41.5 L8 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="24.2" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">a</text>
+<path d="M140.4 8 L172.8 8 L172.8 41.5 L140.4 41.5 Z" fill="#ececff"/>
+<path d="M140.4 8 L172.8 8 L172.8 41.5 L140.4 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="156.6" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">b</text>
+</svg>

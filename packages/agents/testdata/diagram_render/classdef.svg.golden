@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="213.2" height="49.5" viewBox="0 0 213.2 49.5" font-family="sans-serif">
+<rect x="0" y="0" width="213.2" height="49.5" fill="#ffffff"/>
+<path d="M40.4 24.75 C57.067 24.75 66.733 24.75 83.4 24.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M90.4 24.75 L82.4 27.75 L82.4 21.75 Z" fill="#333333"/>
+<path d="M122.8 24.75 C139.467 24.75 149.133 24.75 165.8 24.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M172.8 24.75 L164.8 27.75 L164.8 21.75 Z" fill="#333333"/>
+<path d="M8 8 L40.4 8 L40.4 41.5 L8 41.5 Z" fill="#ff9966"/>
+<path d="M8 8 L40.4 8 L40.4 41.5 L8 41.5 Z" fill="none" stroke="#333333" stroke-width="3" stroke-linejoin="round"/>
+<text x="24.2" y="24.75" font-size="14" fill="#ffffff" text-anchor="middle" dominant-baseline="middle">a</text>
+<path d="M90.4 8 L122.8 8 L122.8 41.5 L90.4 41.5 Z" fill="#99ccff"/>
+<path d="M90.4 8 L122.8 8 L122.8 41.5 L90.4 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round" stroke-dasharray="4 2"/>
+<text x="106.6" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">b</text>
+<path d="M172.8 8 L205.2 8 L205.2 41.5 L172.8 41.5 Z" fill="#99ccff"/>
+<path d="M172.8 8 L205.2 8 L205.2 41.5 L172.8 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round" stroke-dasharray="4 2"/>
+<text x="189" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">c</text>
+</svg>

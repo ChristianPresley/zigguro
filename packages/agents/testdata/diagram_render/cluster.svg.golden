@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="314.4" height="190.5" viewBox="0 0 314.4 190.5" font-family="sans-serif">
+<rect x="0" y="0" width="314.4" height="190.5" fill="#ffffff"/>
+<path d="M233.6 8 L306.4 8 L306.4 182.5 L233.6 182.5 Z" fill="#9370db" fill-opacity="0.059"/>
+<path d="M233.6 8 L306.4 8 L306.4 182.5 L233.6 182.5 Z" fill="none" stroke="#a89bd0" stroke-width="1" stroke-linejoin="round"/>
+<text x="270" y="20.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">one</text>
+<path d="M8 8 L80.8 8 L80.8 182.5 L8 182.5 Z" fill="#9370db" fill-opacity="0.059"/>
+<path d="M8 8 L80.8 8 L80.8 182.5 L8 182.5 Z" fill="none" stroke="#a89bd0" stroke-width="1" stroke-linejoin="round"/>
+<text x="44.4" y="20.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">two</text>
+<path d="M120.8 8 L193.6 8 L193.6 182.5 L120.8 182.5 Z" fill="#9370db" fill-opacity="0.059"/>
+<path d="M120.8 8 L193.6 8 L193.6 182.5 L120.8 182.5 Z" fill="none" stroke="#a89bd0" stroke-width="1" stroke-linejoin="round"/>
+<text x="157.2" y="20.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">three</text>
+<path d="M177.6 81.351 C201.6 99.117 219.974 112.718 243.974 130.484" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M249.6 134.649 L241.385 132.3 L244.955 127.478 Z" fill="#333333"/>
+<path d="M270 83 C270 99.667 270 109.333 270 126" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M270 133 L267 125 L273 125 Z" fill="#333333"/>
+<path d="M44.4 83 C44.4 99.667 44.4 109.333 44.4 126" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M44.4 133 L41.4 125 L47.4 125 Z" fill="#333333"/>
+<path d="M157.2 83 C157.2 99.667 157.2 109.333 157.2 126" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M157.2 133 L154.2 125 L160.2 125 Z" fill="#333333"/>
+<path d="M136.8 49.5 L177.6 49.5 L177.6 83 L136.8 83 Z" fill="#ececff"/>
+<path d="M136.8 49.5 L177.6 49.5 L177.6 83 L136.8 83 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="157.2" y="66.25" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">c1</text>
+<path d="M249.6 133 L290.4 133 L290.4 166.5 L249.6 166.5 Z" fill="#ececff"/>
+<path d="M249.6 133 L290.4 133 L290.4 166.5 L249.6 166.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="270" y="149.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">a2</text>
+<path d="M249.6 49.5 L290.4 49.5 L290.4 83 L249.6 83 Z" fill="#ececff"/>
+<path d="M249.6 49.5 L290.4 49.5 L290.4 83 L249.6 83 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="270" y="66.25" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">a1</text>
+<path d="M24 49.5 L64.8 49.5 L64.8 83 L24 83 Z" fill="#ececff"/>
+<path d="M24 49.5 L64.8 49.5 L64.8 83 L24 83 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="44.4" y="66.25" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">b1</text>
+<path d="M24 133 L64.8 133 L64.8 166.5 L24 166.5 Z" fill="#ececff"/>
+<path d="M24 133 L64.8 133 L64.8 166.5 L24 166.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="44.4" y="149.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">b2</text>
+<path d="M136.8 133 L177.6 133 L177.6 166.5 L136.8 166.5 Z" fill="#ececff"/>
+<path d="M136.8 133 L177.6 133 L177.6 166.5 L136.8 166.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="157.2" y="149.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">c2</text>
+</svg>

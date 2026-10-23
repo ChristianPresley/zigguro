@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520.367" height="100.813" viewBox="0 0 520.367 100.813" font-family="sans-serif">
+<rect x="0" y="0" width="520.367" height="100.813" fill="#ffffff"/>
+<text x="260.184" y="20.25" font-size="16.1" fill="#1f2328" text-anchor="middle" dominant-baseline="middle" font-weight="bold">Release flow</text>
+<path d="M90.8 56.773 C100.533 55.03 127.424 46.117 149.2 46.313 C170.976 46.509 202.504 54.896 214.547 56.835" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M221.458 57.948 L213.083 59.638 L214.037 53.715 Z" fill="#333333"/>
+<path d="M312.818 64.188 C323.251 64.188 354.551 64.188 375.418 64.188 C396.284 64.188 420.584 64.188 431.018 64.188" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M438.018 64.188 L430.018 67.188 L430.018 61.188 Z" fill="#333333"/>
+<path d="M221.458 70.428 C209.415 72.367 170.976 81.867 149.2 82.063 C127.424 82.259 107.424 74.581 97.69 72.837" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M90.8 71.603 L99.204 70.061 L98.146 75.967 Z" fill="#333333"/>
+<path d="M337.818 53.438 L413.018 53.438 L413.018 74.938 L337.818 74.938 Z" fill="#ffffff"/>
+<text x="375.418" y="64.188" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">approved</text>
+<path d="M115.8 71.313 L182.6 71.313 L182.6 92.813 L115.8 92.813 Z" fill="#ffffff"/>
+<text x="149.2" y="82.063" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">changes</text>
+<path d="M8 47.438 L90.8 47.438 L90.8 80.938 L8 80.938 Z" fill="#ececff"/>
+<path d="M8 47.438 L90.8 47.438 L90.8 80.938 L8 80.938 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="49.4" y="64.188" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Develop</text>
+<path d="M260.209 40.5 L312.817 64.188 L260.209 87.876 L207.6 64.188 Z" fill="#ececff"/>
+<path d="M260.209 40.5 L312.817 64.188 L260.209 87.876 L207.6 64.188 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="260.209" y="64.188" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Review</text>
+<path d="M454.768 47.438 L495.618 47.438 C504.868 47.438 512.368 54.937 512.368 64.188 C512.368 73.439 504.868 80.938 495.618 80.938 L454.768 80.938 C445.517 80.938 438.018 73.439 438.018 64.188 C438.018 54.937 445.517 47.438 454.768 47.438 Z" fill="#ececff"/>
+<path d="M454.768 47.438 L495.618 47.438 C504.868 47.438 512.368 54.937 512.368 64.188 C512.368 73.439 504.868 80.938 495.618 80.938 L454.768 80.938 C445.517 80.938 438.018 73.439 438.018 64.188 C438.018 54.937 445.517 47.438 454.768 47.438 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="475.193" y="64.188" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Ship</text>
+</svg>

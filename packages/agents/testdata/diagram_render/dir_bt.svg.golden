@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="73.4" height="216.5" viewBox="0 0 73.4 216.5" font-family="sans-serif">
+<rect x="0" y="0" width="73.4" height="216.5" fill="#ffffff"/>
+<path d="M40.668 175 C36.556 158.333 34.121 148.463 30.009 131.796" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M28.332 125 L33.161 132.049 L27.336 133.486 Z" fill="#333333"/>
+<path d="M28.332 91.5 C32.444 74.833 34.879 64.963 38.991 48.296" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M40.668 41.5 L41.664 49.986 L35.839 48.549 Z" fill="#333333"/>
+<path d="M48.932 175 C51.677 163.875 65.4 130.5 65.4 108.25 C65.4 86 53.354 59.421 50.609 48.296" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M48.932 41.5 L53.761 48.549 L47.936 49.986 Z" fill="#333333"/>
+<path d="M28.6 175 L61 175 L61 208.5 L28.6 208.5 Z" fill="#ececff"/>
+<path d="M28.6 175 L61 175 L61 208.5 L28.6 208.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="44.8" y="191.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">a</text>
+<path d="M8 91.5 L40.4 91.5 L40.4 125 L8 125 Z" fill="#ececff"/>
+<path d="M8 91.5 L40.4 91.5 L40.4 125 L8 125 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="24.2" y="108.25" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">b</text>
+<path d="M28.6 8 L61 8 L61 41.5 L28.6 41.5 Z" fill="#ececff"/>
+<path d="M28.6 8 L61 8 L61 41.5 L28.6 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="44.8" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">c</text>
+</svg>
