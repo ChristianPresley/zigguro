@@ -15,6 +15,27 @@ fn register(b: *bench.Bench) !void {
     try registerRuns(b);
     try registerMission(b);
     try registerNotify(b);
+    try registerSched(b);
+}
+
+/// `cron/next`: the next fire time of a weekday-office-hours expression
+/// in a fixed zone (budget 2 us).
+fn registerSched(b: *bench.Bench) !void {
+    const sched = zg_agents.sched;
+    const Ctx = struct { c: sched.CronExpr, z: sched.FixedZone };
+    const ctx: Ctx = .{ .c = try sched.CronExpr.parse("*/15 9-17 * * mon-fri"), .z = .{ .offset_s = 5 * 3600 + 1800 } };
+    try b.run("cron/next", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            const zr = c.z.resolver();
+            var t: i64 = 1_790_000_000;
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                // Step by an odd number of minutes to land everywhere.
+                t = (c.c.next(zr, t + 7 * 3600 + 13 * 60) orelse unreachable);
+                bench.doNotOptimizeAway(t);
+            }
+        }
+    }.f);
 }
 
 /// `notify/decide`: the policy and coalescing decision `post` makes
