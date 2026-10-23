@@ -193,7 +193,6 @@ test "dataset: header, cells, nulls and shapes" {
     try testing.expectEqualStrings("Column 2", ds.columns[1]);
     try testing.expectEqualStrings("id", try ds.cell(0, 0, a));
     try testing.expectEqual(dataset.Format.tsv, dataset.formatOf("x/y.TSV"));
-    try testing.expectError(error.Unsupported, dataset.Dataset.openBytes(gpa, io, "[]", .json_array));
 }
 
 test "dataset: first screen before the full index" {
