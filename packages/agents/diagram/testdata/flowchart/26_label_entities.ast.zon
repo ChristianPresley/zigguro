@@ -1,0 +1,13 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A \"quote\" and # hash", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "\xe2\x99\xa5 love & <tags>", .shape = .rect, .classes = .{}, .span = .{ .start = 58, .end = 59 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 91 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

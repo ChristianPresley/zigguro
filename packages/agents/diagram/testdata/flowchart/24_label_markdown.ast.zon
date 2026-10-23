@@ -1,0 +1,11 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "Bold and italic", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "Line one\nline two", .shape = .rect, .classes = .{}, .span = .{ .start = 46, .end = 47 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

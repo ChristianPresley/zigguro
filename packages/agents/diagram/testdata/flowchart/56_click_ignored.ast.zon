@@ -1,0 +1,15 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 21, .end = 22 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 22 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}
+// 3:3: warning: 'click' is not supported and is ignored
+// 4:3: warning: 'click' is not supported and is ignored

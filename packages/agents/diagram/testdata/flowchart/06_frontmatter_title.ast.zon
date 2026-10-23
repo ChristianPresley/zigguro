@@ -1,0 +1,14 @@
+.{
+    .dir = .LR,
+    .title = "Order flow",
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 41, .end = 42 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 47, .end = 48 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 41, .end = 48 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

@@ -1,0 +1,17 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{ "green", "red" }, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{"green"}, .span = .{ .start = 21, .end = 22 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 22 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{
+        .{ .name = "green", .style = .{ .fill = 4288282470, .stroke = 4281545523, .stroke_width = 2 }, .span = .{ .start = 25, .end = 78 } },
+        .{ .name = "red", .style = .{ .fill = 4294941030 }, .span = .{ .start = 82, .end = 111 } },
+        .{ .name = "orange", .style = .{ .fill = 4294941030 }, .span = .{ .start = 82, .end = 111 } },
+    },
+    .link_styles = .{},
+}

@@ -1,0 +1,18 @@
+.{
+    .dir = .TB,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 21, .end = 22 } },
+        .{ .id = "C", .label = "C", .shape = .rect, .classes = .{}, .span = .{ .start = 25, .end = 26 } },
+        .{ .id = "D", .label = "D", .shape = .rect, .classes = .{}, .span = .{ .start = 31, .end = 32 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 22 } },
+        .{ .from = 0, .to = 2, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 26 } },
+        .{ .from = 1, .to = 3, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 21, .end = 32 } },
+        .{ .from = 2, .to = 3, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 25, .end = 32 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

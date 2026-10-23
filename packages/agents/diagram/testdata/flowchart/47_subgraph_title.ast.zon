@@ -1,0 +1,19 @@
+.{
+    .dir = .TB,
+    .nodes = .{
+        .{ .id = "a", .label = "a", .shape = .rect, .classes = .{}, .span = .{ .start = 58, .end = 59 } },
+        .{ .id = "b", .label = "b", .shape = .rect, .classes = .{}, .span = .{ .start = 64, .end = 65 } },
+        .{ .id = "c", .label = "c", .shape = .rect, .classes = .{}, .span = .{ .start = 102, .end = 103 } },
+        .{ .id = "d", .label = "d", .shape = .rect, .classes = .{}, .span = .{ .start = 141, .end = 142 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 58, .end = 65 } },
+    },
+    .subgraphs = .{
+        .{ .id = "ide1", .title = "Integrated Development", .dir = null, .members = .{ 0, 1 }, .children = .{}, .span = .{ .start = 15, .end = 53 } },
+        .{ .id = "subGraph1", .title = "Quoted title", .dir = null, .members = .{2}, .children = .{}, .span = .{ .start = 74, .end = 97 } },
+        .{ .id = "Free text title", .title = "Free text title", .dir = null, .members = .{3}, .children = .{}, .span = .{ .start = 112, .end = 136 } },
+    },
+    .class_defs = .{},
+    .link_styles = .{},
+}

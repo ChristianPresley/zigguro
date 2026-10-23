@@ -1,0 +1,17 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 26, .end = 27 } },
+        .{ .id = "C", .label = "C", .shape = .rect, .classes = .{}, .span = .{ .start = 39, .end = 40 } },
+        .{ .id = "D", .label = "D", .shape = .rect, .classes = .{}, .span = .{ .start = 52, .end = 53 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = "one", .min_len = 0, .span = .{ .start = 15, .end = 27 } },
+        .{ .from = 1, .to = 2, .style = .solid, .head = .arrow, .tail = .none, .label = "two", .min_len = 0, .span = .{ .start = 26, .end = 40 } },
+        .{ .from = 2, .to = 3, .style = .thick, .head = .arrow, .tail = .none, .label = "three", .min_len = 0, .span = .{ .start = 39, .end = 53 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

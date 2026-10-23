@@ -1,0 +1,17 @@
+.{
+    .dir = .TB,
+    .nodes = .{
+        .{ .id = "x", .label = "x", .shape = .rect, .classes = .{}, .span = .{ .start = 34, .end = 35 } },
+        .{ .id = "y", .label = "y", .shape = .rect, .classes = .{}, .span = .{ .start = 61, .end = 62 } },
+        .{ .id = "z", .label = "z", .shape = .rect, .classes = .{}, .span = .{ .start = 67, .end = 68 } },
+    },
+    .edges = .{
+        .{ .from = 1, .to = 2, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 61, .end = 68 } },
+    },
+    .subgraphs = .{
+        .{ .id = "outer", .title = "outer", .dir = null, .members = .{0}, .children = .{1}, .span = .{ .start = 15, .end = 29 } },
+        .{ .id = "inner", .title = "inner", .dir = null, .members = .{ 1, 2 }, .children = .{}, .span = .{ .start = 40, .end = 54 } },
+    },
+    .class_defs = .{},
+    .link_styles = .{},
+}
