@@ -84,6 +84,8 @@ const Op = union(enum) {
     append: struct { id: RunId, line: []u8, sync: bool, close: bool },
     truncate: struct { id: RunId, len: u64 },
     delete: RunId,
+    /// Drops the cached handle so the next append reopens at the end.
+    reopen: RunId,
 };
 
 pub const Retention = struct {
@@ -133,6 +135,8 @@ mutex: Io.Mutex = .init,
 /// Ascending by id.
 boxes: std.ArrayList(*Box) = .empty,
 version: u64 = 0,
+/// The last id `create` handed out.
+last_id: u128 = 0,
 
 view_mu: Io.Mutex = .init,
 current: *RunsView,
@@ -346,8 +350,17 @@ fn insertPos(r: *RunRegistry, id: RunId) usize {
 }
 
 /// Records a new run (status `queued`) with a fresh id.
+/// Ids are strictly increasing within one registry, so runs created in
+/// the same millisecond keep their creation order.
 pub fn create(r: *RunRegistry, spec: run.RunSpec) Error!RunId {
-    return r.createWithId(RunId.generate(r.io), spec);
+    var id = RunId.generate(r.io);
+    {
+        r.mutex.lockUncancelable(r.io);
+        defer r.mutex.unlock(r.io);
+        if (id.toInt() <= r.last_id) id = .fromInt(r.last_id + 1);
+        r.last_id = id.toInt();
+    }
+    return r.createWithId(id, spec);
 }
 
 pub fn createWithId(r: *RunRegistry, id: RunId, spec: run.RunSpec) Error!RunId {
@@ -526,7 +539,7 @@ fn freeOp(r: *RunRegistry, op: Op) void {
     switch (op) {
         .create => |c| r.gpa.free(c.line),
         .append => |a| r.gpa.free(a.line),
-        .truncate, .delete => {},
+        .truncate, .delete, .reopen => {},
     }
 }
 
@@ -614,6 +627,7 @@ fn writeOp(r: *RunRegistry, op: Op) !void {
             try j.file.setLength(r.io, t.len);
             j.off = t.len;
         },
+        .reopen => |id| r.closeFile(id),
         .delete => |id| {
             r.closeFile(id);
             const name = id.text();
@@ -847,6 +861,42 @@ pub fn loadDetail(r: *RunRegistry, id: RunId) !void {
     r.boxes.items[i] = b;
     errdefer r.boxes.items[i] = old;
     try r.publishLocked(old);
+}
+
+/// Re-reads `id`'s journal (another process wrote to it, e.g. before a
+/// host handoff) and replaces or adds its record.
+pub fn refresh(r: *RunRegistry, id: RunId) !void {
+    if (r.dir == null) return;
+    r.flush();
+    var l: Loaded = .{ .id = id, .arena = .init(r.gpa) };
+    defer l.arena.deinit();
+    replayChunk(r, (&l)[0..1]);
+    const rp = l.replay orelse return error.InvalidJournal;
+    const b = try r.newBox(rp.record);
+    r.mutex.lockUncancelable(r.io);
+    defer r.mutex.unlock(r.io);
+    if (r.findLocked(id)) |i| {
+        const old = r.boxes.items[i];
+        r.boxes.items[i] = b;
+        r.publishLocked(old) catch |e| {
+            r.boxes.items[i] = old;
+            destroyBox(r.gpa, b);
+            return e;
+        };
+    } else {
+        const pos = r.insertPos(id);
+        r.boxes.insert(r.gpa, pos, b) catch |e| {
+            destroyBox(r.gpa, b);
+            return e;
+        };
+        r.publishLocked(null) catch |e| {
+            _ = r.boxes.orderedRemove(pos);
+            destroyBox(r.gpa, b);
+            return e;
+        };
+    }
+    if (id.toInt() > r.last_id) r.last_id = id.toInt();
+    r.enqueue(.{ .reopen = id });
 }
 
 /// Whether `id`'s record lacks its journal detail (built from the index).

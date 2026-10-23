@@ -9,4 +9,5 @@ test {
     _ = @import("cmd_scm_ai.zig");
     _ = @import("scm_model.zig");
     _ = @import("scm_tools.zig");
+    _ = @import("cmd_runs.zig");
 }
