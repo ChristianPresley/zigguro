@@ -3,8 +3,12 @@
 //! operations the editor widget (`widget.zig`) runs on it.
 //!
 //! This is the first cut of E05.F05.S02.T02/T04: unwrapped rows (no display
-//! map yet), monospace-style layout through the E04 `TextSystem` with tabs
-//! expanded to `tab_size` columns, and the core editing commands. Every
+//! map yet), laid out through the E04 `TextSystem` with tabs expanded to
+//! `tab_size` columns, and the core editing commands. A system that shapes
+//! (zg_text's `TextLayout`) gives each row's caret stops, so kerning,
+//! ligatures, combining marks and fallback fonts place carets and hit
+//! tests where the glyphs are drawn (`Options.shape_text`); otherwise
+//! rows use per-codepoint advances. Every
 //! edit goes through `Document.applyChangeSet` and the undo tree. Edits
 //! from elsewhere (agents, reload) map the selections through the change.
 //!
@@ -63,6 +67,18 @@ const UndoTree = undo_mod.UndoTree;
 const CoalesceKey = undo_mod.CoalesceKey;
 const TextSystem = zg_gui.paint.TextSystem;
 const TextStyle = zg_gui.paint.text.TextStyle;
+const CaretStop = zg_gui.paint.text.CaretStop;
+
+/// The caret stops of the last shaped row (one entry: rows are measured
+/// many times in a row while painting or hit testing).
+const RowCarets = struct {
+    hash: u64 = 0,
+    len: usize = 0,
+    style: TextStyle = .{},
+    tab_w: f32 = 0,
+    valid: bool = false,
+    stops: std.ArrayList(CaretStop) = .empty,
+};
 const Vec2 = zg_gui.core.Vec2;
 const Size = zg_gui.core.Size;
 const Color = zg_gui.core.Color;
@@ -78,6 +94,8 @@ pub const Options = struct {
     /// Typing, Enter and Backspace follow the language's pair and indent
     /// rules (see the module doc).
     smart_typing: bool = true,
+    /// Shape rows when the text system can (see the module doc).
+    shape_text: bool = true,
 };
 
 /// Maps a decoration's `StyleRef` to a colour (E15 theme tokens); null
@@ -248,6 +266,8 @@ pub const EditorView = struct {
     /// Block decorations by line (`ensureBlocks`), and the running sum of
     /// their heights: `block_cum[i]` is the height of `blocks[0..i]`.
     blocks: std.ArrayList(BlockInfo) = .empty,
+    /// See `RowCarets` (behind a pointer: measuring takes a const view).
+    row_carets: *RowCarets = undefined,
     block_cum: std.ArrayList(f32) = .empty,
     blocks_key: [5]u64 = .{ 0, 0, 0, 0, 0 },
 
@@ -255,7 +275,10 @@ pub const EditorView = struct {
     pub fn init(gpa: Allocator, doc: *Document, opts: Options) !*EditorView {
         const v = try gpa.create(EditorView);
         errdefer gpa.destroy(v);
-        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .sels = try .init(gpa, .caret(0)), .undo = .init(gpa, .{}), .opts = opts, .auto_pairs = .{ .gpa = gpa } };
+        const rc = try gpa.create(RowCarets);
+        errdefer gpa.destroy(rc);
+        rc.* = .{};
+        v.* = .{ .gpa = gpa, .doc = doc, .listener = undefined, .sels = try .init(gpa, .caret(0)), .undo = .init(gpa, .{}), .opts = opts, .auto_pairs = .{ .gpa = gpa }, .row_carets = rc };
         errdefer v.undo.deinit();
         errdefer v.sels.deinit();
         v.listener = try doc.subscribe(.{ .ctx = v, .onChange = onDocChange });
@@ -274,6 +297,8 @@ pub const EditorView = struct {
         v.scratch.deinit(v.gpa);
         v.blocks.deinit(v.gpa);
         v.block_cum.deinit(v.gpa);
+        v.row_carets.stops.deinit(v.gpa);
+        v.gpa.destroy(v.row_carets);
         v.gpa.destroy(v);
     }
 
@@ -353,10 +378,25 @@ pub const EditorView = struct {
 
     /// The editor's text style.
     pub fn textStyle(v: *const EditorView) TextStyle {
-        // Columns, carets and hit testing use per-codepoint advances, so
-        // the text is drawn unshaped to match (until the view lays lines
-        // out with zg_text's TextLayout).
-        return .{ .font = .mono, .size = v.opts.font_size, .shape = false };
+        return .{ .font = .mono, .size = v.opts.font_size, .shape = v.opts.shape_text };
+    }
+
+    /// The caret stops of row text `s` when the text system shapes it,
+    /// else null (per-codepoint advances).
+    fn rowCarets(v: *const EditorView, s: []const u8) ?[]const CaretStop {
+        const ts = v.text_sys orelse return null;
+        const st = v.textStyle();
+        if (!ts.shapes(st) or ts.vtable.carets == null) return null;
+        const tab_w = v.spaceW() * @as(f32, @floatFromInt(v.opts.tab_size));
+        const c = v.row_carets;
+        const h = std.hash.Wyhash.hash(0, s);
+        if (c.valid and c.hash == h and c.len == s.len and c.tab_w == tab_w and std.meta.eql(c.style, st)) return c.stops.items;
+        c.valid = false;
+        const got = ts.carets(st, s, tab_w) orelse return null;
+        c.stops.clearRetainingCapacity();
+        c.stops.appendSlice(v.gpa, got) catch return null;
+        c.* = .{ .hash = h, .len = s.len, .style = st, .tab_w = tab_w, .valid = true, .stops = c.stops };
+        return c.stops.items;
     }
 
     /// Row height in pixels.
@@ -376,6 +416,16 @@ pub const EditorView = struct {
 
     /// The x of byte `col` in line text `s` (tabs to the next stop).
     pub fn xInLine(v: *const EditorView, s: []const u8, col: usize) f32 {
+        if (v.rowCarets(s)) |stops| {
+            // The stop at `col`, or the grapheme it is inside.
+            var lo: usize = 0;
+            var hi: usize = stops.len;
+            while (hi - lo > 1) {
+                const mid = (lo + hi) / 2;
+                if (stops[mid].offset <= col) lo = mid else hi = mid;
+            }
+            return if (stops.len > 0) stops[lo].x else 0;
+        }
         const sw = v.spaceW();
         const tab_w = sw * @as(f32, @floatFromInt(v.opts.tab_size));
         var x: f32 = 0;
@@ -395,6 +445,19 @@ pub const EditorView = struct {
 
     /// The byte column in line text `s` nearest to `x`.
     pub fn colAt(v: *const EditorView, s: []const u8, x: f32) usize {
+        if (v.rowCarets(s)) |stops| {
+            // The nearest stop (right-to-left runs are not monotonic in x).
+            var best: usize = s.len;
+            var best_d = std.math.inf(f32);
+            for (stops) |c| {
+                const d = @abs(c.x - x);
+                if (d < best_d) {
+                    best_d = d;
+                    best = c.offset;
+                }
+            }
+            return best;
+        }
         const sw = v.spaceW();
         const tab_w = sw * @as(f32, @floatFromInt(v.opts.tab_size));
         var cx: f32 = 0;
@@ -652,6 +715,7 @@ pub const EditorView = struct {
 
     /// Width of `s` without tabs.
     fn textWidth(v: *const EditorView, s: []const u8) f32 {
+        if (v.text_sys) |ts| if (ts.shapes(v.textStyle())) return ts.width(v.textStyle(), s);
         var w: f32 = 0;
         var it = (std.unicode.Utf8View.init(s) catch return 0).iterator();
         while (it.nextCodepoint()) |cp| w += v.advance(cp);
