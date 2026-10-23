@@ -23,6 +23,9 @@ pub const artifact_pane = @import("artifact_pane.zig");
 pub const vector_view = @import("vector_view.zig");
 pub const chart_view = @import("chart_view.zig");
 
+/// Data mode: the grid over CSV and JSON datasets.
+pub const data = @import("data/root.zig");
+
 /// Standalone HTML export of Markdown documents.
 pub const export_html = @import("export_html.zig");
 
@@ -56,5 +59,6 @@ test {
     _ = @import("doc_mode/comments_view_test.zig");
     _ = @import("vector_view_test.zig");
     _ = @import("chart_view_test.zig");
+    _ = data;
     std.testing.refAllDecls(doc_mode);
 }
