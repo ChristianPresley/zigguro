@@ -13,6 +13,7 @@ pub const tasks = @import("tasks/root.zig");
 pub const docs = @import("docs/root.zig");
 pub const research = @import("research/root.zig");
 pub const data = @import("data/root.zig");
+pub const artifacts = @import("artifacts/root.zig");
 
 test {
     _ = runs;
@@ -23,4 +24,5 @@ test {
     _ = docs;
     _ = research;
     _ = data;
+    _ = artifacts;
 }
