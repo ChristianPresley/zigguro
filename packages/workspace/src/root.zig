@@ -78,5 +78,6 @@ test {
     _ = @import("index/trigram/segment.zig");
     _ = @import("index/trigram/query.zig");
     _ = @import("index/trigram/index_test.zig");
+    _ = @import("index/trigram/regex_plan_test.zig");
     _ = @import("ai/tools_test.zig");
 }
