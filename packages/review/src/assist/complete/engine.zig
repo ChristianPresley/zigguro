@@ -30,10 +30,18 @@ pub const Snapshot = struct {
     options: context.Options,
 };
 
-/// A completion for the controller (T04).
+/// A completion for the controller (T04). Its pointers are valid during
+/// the call.
 pub const Delivery = struct {
     doc: u64,
     version: u64,
+    request_id: u64,
+    /// The request the text answers (for post-processing).
+    request: *const context.CompletionRequest,
+    /// Where the completion goes: the cursor when the request was made.
+    at: u64,
+    /// The `tick` time that started it, in ns.
+    started_ns: u64,
     /// The completion so far, valid during the call.
     text: []const u8,
     /// Leading bytes of `text` the user has already typed.
@@ -118,7 +126,7 @@ pub const CompletionEngine = struct {
         const r = e.requests.get(id) orelse return;
         const act = e.sched.typed(doc, text, r.shown.items);
         switch (act) {
-            .keep => |n| e.host.deliver(e.host.ctx, .{ .doc = doc, .version = r.version, .text = r.shown.items, .hide = n, .final = false }),
+            .keep => |n| e.host.deliver(e.host.ctx, r.delivery(r.shown.items, n, false)),
             else => e.apply(act),
         }
     }
@@ -150,7 +158,7 @@ pub const CompletionEngine = struct {
     pub fn tick(e: *CompletionEngine, now: u64) !void {
         var due: [8]scheduler.Trigger = undefined;
         const n = e.sched.poll(now, &due);
-        for (due[0..n]) |t| try e.start(t);
+        for (due[0..n]) |t| try e.start(t, now);
     }
 
     /// Requests in flight (tests, status).
@@ -165,27 +173,30 @@ pub const CompletionEngine = struct {
         }
     }
 
-    fn start(e: *CompletionEngine, t: scheduler.Trigger) !void {
+    fn start(e: *CompletionEngine, t: scheduler.Trigger, now: u64) !void {
         const r = try e.gpa.create(Request);
-        r.* = .{ .engine = e, .arena = .init(e.gpa), .doc = t.doc, .version = t.version };
+        r.* = .{ .engine = e, .arena = .init(e.gpa), .doc = t.doc, .version = t.version, .started_ns = now };
         var started = false;
         defer if (!started) r.destroy();
         const arena = r.arena.allocator();
         const snap = (try e.host.snapshot(e.host.ctx, t.doc, arena)) orelse return;
         if (snap.version != t.version) return;
+        r.at = snap.cursor;
         r.key = .of(@truncate(t.doc), snap.text[0..snap.cursor], snap.text[snap.cursor..], e.model_id);
-        if (e.cache.get(r.key)) |hit| {
-            e.host.deliver(e.host.ctx, .{ .doc = t.doc, .version = t.version, .text = hit, .hide = 0, .final = true, .from_cache = true });
-            return;
-        }
         var o = snap.options;
         o.doc = t.doc;
         o.explicit = t.explicit;
         r.req = try context.buildRequest(arena, snap.text, snap.cursor, o);
-
         const id = e.next_id;
         e.next_id += 1;
         r.id = id;
+        if (e.cache.get(r.key)) |hit| {
+            var d = r.delivery(hit, 0, true);
+            d.from_cache = true;
+            e.host.deliver(e.host.ctx, d);
+            return;
+        }
+
         try e.requests.ensureUnusedCapacity(e.gpa, 1);
         r.future = try e.io.concurrent(Request.run, .{r});
         started = true;
@@ -197,7 +208,7 @@ pub const CompletionEngine = struct {
     fn drained(e: *CompletionEngine, r: *Request, final: bool, err: ?anyerror) void {
         if (e.sched.inflight(r.doc) != r.id) return;
         if (!final) {
-            e.host.deliver(e.host.ctx, .{ .doc = r.doc, .version = r.version, .text = r.shown.items, .hide = e.sched.typedLen(r.doc), .final = false });
+            e.host.deliver(e.host.ctx, r.delivery(r.shown.items, e.sched.typedLen(r.doc), false));
             return;
         }
         const hide = e.sched.finished(r.doc, r.id) orelse return;
@@ -206,7 +217,7 @@ pub const CompletionEngine = struct {
             return;
         }
         e.cache.put(r.key, r.shown.items) catch {};
-        e.host.deliver(e.host.ctx, .{ .doc = r.doc, .version = r.version, .text = r.shown.items, .hide = hide, .final = true });
+        e.host.deliver(e.host.ctx, r.delivery(r.shown.items, hide, true));
     }
 };
 
@@ -218,6 +229,8 @@ const Request = struct {
     doc: u64,
     version: u64,
     id: u64 = 0,
+    at: u64 = 0,
+    started_ns: u64 = 0,
     key: cache_mod.CacheKey = undefined,
     req: context.CompletionRequest = undefined,
     future: Io.Future(void) = undefined,
@@ -230,6 +243,10 @@ const Request = struct {
     /// Removed from the engine; the next drain frees it.
     abandoned: bool = false,
     shown: std.ArrayList(u8) = .empty,
+
+    fn delivery(r: *const Request, text: []const u8, hide: u32, final: bool) Delivery {
+        return .{ .doc = r.doc, .version = r.version, .request_id = r.id, .request = &r.req, .at = r.at, .started_ns = r.started_ns, .text = text, .hide = hide, .final = final };
+    }
 
     fn run(r: *Request) void {
         var call_arena: std.heap.ArenaAllocator = .init(r.engine.gpa);
