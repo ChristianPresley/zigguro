@@ -50,6 +50,7 @@ const diff_model = zg_editor.model.diff.diff_model;
 const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
+const CodeIntel = @import("codeintel.zig").CodeIntel;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -174,6 +175,8 @@ pub const Workbench = struct {
     layout_final: bool = false,
     /// Where files' undo histories persist (`enableUndoFiles`).
     undo_dir: ?std.Io.Dir = null,
+    /// Language servers and semantic colours (from `attach`).
+    codeintel: ?*CodeIntel = null,
 
     /// Which keys editors use.
     const KeyMode = enum { standard, vim, emacs };
@@ -185,6 +188,8 @@ pub const Workbench = struct {
         doc: *Document,
         view: *EditorView,
         syntax: ?*DocumentSyntax,
+        /// The document in `docs`, for files with a path.
+        handle: ?zg_editor.model.api.registry.DocHandle = null,
         /// The document's file on disk (null: untitled).
         sync: ?*FileSync = null,
         /// The editor's Vim state while Vim keys are on.
@@ -273,6 +278,7 @@ pub const Workbench = struct {
             break :blk try wb.docs.openFile(abs, bytes);
         } else try wb.docs.openUntitled(bytes);
         f.doc = wb.docs.get(h).?;
+        if (f.path != null) f.handle = h;
         f.view = try EditorView.init(gpa, f.doc, .{});
         errdefer f.view.deinit();
         wb.setMode(&f, wb.key_mode);
@@ -300,6 +306,7 @@ pub const Workbench = struct {
             f.syntax = sx;
             f.view.syntax = sx;
         };
+        if (wb.codeintel) |ci| if (f.handle) |fh| ci.open(fh, f.syntax, f.view);
         return f;
     }
 
@@ -326,6 +333,7 @@ pub const Workbench = struct {
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
         var fm = f;
+        if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         wb.setMode(&fm, .standard);
         if (f.sync) |x| x.destroy();
         if (f.diff) |m| m.deinit();
@@ -727,6 +735,9 @@ pub const Workbench = struct {
     /// Frees everything (after `detach`).
     pub fn deinit(wb: *Workbench) void {
         wb.detach();
+        // Before the documents: the servers' text sync listens to them.
+        if (wb.codeintel) |ci| ci.destroy();
+        wb.codeintel = null;
         wb.resolver.deinit();
         if (wb.keymap) |k| k.deinit();
         if (wb.emacs_layer) |*d| d.deinit();
@@ -780,6 +791,12 @@ pub const Workbench = struct {
             wb.approvals_inbox = inb;
         } else |e| log.err("approvals inbox: {t}", .{e});
         wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
+        if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
+            ci.win = win;
+            wb.codeintel = ci;
+            for (wb.files.items) |f| if (f.handle) |h| ci.open(h, f.syntax, f.view);
+            ci.setTrusted(wb.trust == .trusted);
+        } else |e| log.err("language services: {t}", .{e});
         if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
@@ -949,7 +966,10 @@ pub const Workbench = struct {
             .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
         switch (o) {
-            .saved => |s| wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes }),
+            .saved => |s| {
+                if (wb.codeintel) |ci| ci.saved(fs.doc);
+                wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
+            },
             .save_failed => |e| switch (e) {
                 error.ExternalChangeConflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk; not saved", .{name}),
                 error.Unrepresentable => wb.notify(.error_, "{s}: a character has no encoding in {t}; not saved", .{ name, fs.file.encoding }),
@@ -1399,6 +1419,8 @@ pub const Workbench = struct {
         wb.trust = if (c == .restricted) .restricted else .trusted;
         // A trusted folder's MCP servers may start.
         if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
+        // So may its language servers.
+        if (wb.codeintel) |ci| ci.setTrusted(wb.trust == .trusted);
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1470,10 +1492,18 @@ pub const Workbench = struct {
             ui.win.afterNextFrame(.{ .ctx = wb, .f = focusEditor });
         }
         wb.statusBar(ui);
+        if (wb.codeintel) |ci| ci.frame(wb.currentHandle(), wb.view);
         if (wb.persister) |*p| if (wb.dock.revision != wb.layout_rev and !wb.layout_final) {
             wb.layout_rev = wb.dock.revision;
             p.markDirty();
         };
+    }
+
+    /// The current editor's document, when it has a path.
+    fn currentHandle(wb: *Workbench) ?zg_editor.model.api.registry.DocHandle {
+        const cp = wb.cur_panel orelse return null;
+        const f = wb.fileOf(cp) orelse return null;
+        return f.handle;
     }
 
     /// The room the center keeps when a side area grows.
