@@ -23,6 +23,20 @@ pub const registry = struct {
 /// them to the editor.
 pub const features = struct {
     pub const SemTokDriver = @import("features/semtok.zig");
+    pub const FoldingDriver = @import("features/folding.zig");
+    pub const SelectionDriver = @import("features/selection.zig");
+    pub const LinkDriver = @import("features/links.zig");
+    pub const position = @import("features/position.zig");
+};
+
+/// Diagnostics: the snapshot store, the push/pull driver, editor
+/// decorations and the settle detector behind the agent's edit tools.
+pub const diagnostics = struct {
+    pub const Store = @import("diagnostics/Store.zig");
+    pub const convert = @import("diagnostics/convert.zig");
+    pub const Driver = @import("diagnostics/Driver.zig");
+    pub const Decorator = @import("diagnostics/decorate.zig");
+    pub const SettleDetector = @import("diagnostics/settle.zig");
 };
 
 /// LSP language ids for zg_syntax languages.
@@ -38,4 +52,6 @@ test {
     _ = @import("registry/registry_test.zig");
     _ = @import("Manager_test.zig");
     _ = @import("features/semtok_test.zig");
+    _ = @import("features/features_test.zig");
+    _ = @import("diagnostics/diagnostics_test.zig");
 }

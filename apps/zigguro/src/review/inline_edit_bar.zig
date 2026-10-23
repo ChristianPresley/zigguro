@@ -301,6 +301,8 @@ pub const InlineEditBar = struct {
     confirm_handoff: bool = false,
     /// Why the last start failed (e.g. a secret selection).
     note: []const u8 = "",
+    /// The instruction field's node (last build), for focusing it.
+    field_node: ?zg_gui.core.NodeId = null,
     /// The last state announced.
     announced: ?inline_edit.session.State = null,
     closed: bool = false,
@@ -348,6 +350,7 @@ pub const InlineEditBar = struct {
             .a11y_label = "Inline edit instruction",
             .placeholder = if (st == .ready) "Follow-up instruction (Enter)" else "Edit the selection (Enter) or ask about it (Alt+Enter)",
         });
+        b.field_node = ui.lastNode();
         ui.close();
         if (r.submitted) b.action = .submit;
         if (b.model_label.len > 0) ui.text(b.model_label, .{ .color = .fg_muted, .wrap = false });

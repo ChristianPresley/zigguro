@@ -121,6 +121,39 @@ test "shaped lines: kerning, widths and glyph quads" {
     try testing.expectEqual(@as(f32, 0), ts.width(st, ""));
 }
 
+test "caret stops: graphemes, kerning and tabs" {
+    const gpa = testing.allocator;
+    const fonts = try TestFonts.load(gpa);
+    defer fonts.deinit(gpa);
+    const ft = try FontText.create(gpa, .{ .ui = fonts.ui, .mono = fonts.mono });
+    defer ft.destroy();
+    const ts = ft.system();
+    const st: @import("text.zig").TextStyle = .{ .size = 32 };
+
+    // "AV" kerned: the stop before V is at the shaped glyph, the end at
+    // the shaped width.
+    const av = ts.carets(st, "AV", 0).?;
+    try testing.expectEqual(@as(usize, 3), av.len);
+    try testing.expectEqual(@as(u32, 1), av[1].offset);
+    try testing.expect(av[1].x < ts.advance(st, 'A') - 0.5);
+    try testing.expectApproxEqAbs(ts.width(st, "AV"), av[2].x, 0.01);
+
+    // "e" + combining acute is one grapheme: no stop inside it.
+    const e = ts.carets(st, "e\u{301}x", 0).?;
+    try testing.expectEqual(@as(usize, 3), e.len);
+    try testing.expectEqual(@as(u32, 0), e[0].offset);
+    try testing.expectEqual(@as(u32, 3), e[1].offset);
+
+    // A tab goes to the next stop.
+    const tab = ts.carets(st, "a\tb", 100).?;
+    try testing.expectApproxEqAbs(@as(f32, 100), tab[2].x, 0.5);
+
+    // Unshaped styles have none.
+    var flat = st;
+    flat.shape = false;
+    try testing.expect(ts.carets(flat, "AV", 0) == null);
+}
+
 test "shaped text paints through PaintCx" {
     const gpa = testing.allocator;
     const fonts = try TestFonts.load(gpa);
