@@ -4,7 +4,7 @@
 //! Layout (little-endian): header `{magic "ZGRI", version u16, pad u16,
 //! count u32}`, `count` fixed 96-byte rows, the title string pool, then a
 //! CRC-32 of everything before it. Rows:
-//! `{id[16], kind u8, status u8, pad[6], created i64, started i64,
+//! `{id[16], kind u8, status u8, flags u8 (bit 0 pinned), pad[5], created i64, started i64,
 //! ended i64, cost_micros u64, input_tokens u64, output_tokens u64,
 //! title_off u32, title_len u16, pad[2], revision u64, pad[8]}`;
 //! `started`/`ended` are `minInt(i64)` when unset. Pure.
@@ -30,6 +30,7 @@ pub const Row = struct {
     cost: run.Cost,
     title: []const u8,
     revision: u64,
+    pinned: bool = false,
 
     pub fn of(r: *const run.RunRecord) Row {
         return .{
@@ -42,6 +43,7 @@ pub const Row = struct {
             .cost = r.cost,
             .title = r.spec.title,
             .revision = r.revision,
+            .pinned = r.pinned,
         };
     }
 };
@@ -63,6 +65,7 @@ pub fn encode(gpa: Allocator, rows: []const Row) Allocator.Error![]u8 {
         @memcpy(row[0..16], &r.id.bytes);
         row[16] = @intFromEnum(r.kind);
         row[17] = @intFromEnum(r.status);
+        row[18] = @intFromBool(r.pinned);
         std.mem.writeInt(i64, row[24..32], r.created_ms, .little);
         std.mem.writeInt(i64, row[32..40], r.started_ms orelse none, .little);
         std.mem.writeInt(i64, row[40..48], r.ended_ms orelse none, .little);
@@ -115,6 +118,7 @@ pub fn decode(gpa: Allocator, bytes: []const u8) DecodeError![]Row {
             },
             .title = pool[off..][0..len],
             .revision = std.mem.readInt(u64, row[80..88], .little),
+            .pinned = row[18] & 1 != 0,
         };
     }
     return rows;
@@ -124,7 +128,7 @@ const testing = std.testing;
 
 test "index round trip and corruption" {
     const rows = [_]Row{
-        .{ .id = .fromInt(1), .kind = .task, .status = .completed, .created_ms = 5, .started_ms = 6, .ended_ms = null, .cost = .{ .micros = 9 }, .title = "first", .revision = 3 },
+        .{ .id = .fromInt(1), .kind = .task, .status = .completed, .created_ms = 5, .started_ms = 6, .ended_ms = null, .cost = .{ .micros = 9 }, .title = "first", .revision = 3, .pinned = true },
         .{ .id = .fromInt(2), .kind = .background, .status = .working, .created_ms = 7, .started_ms = null, .ended_ms = null, .cost = .{}, .title = "", .revision = 1 },
     };
     const bytes = try encode(testing.allocator, &rows);
@@ -135,6 +139,7 @@ test "index round trip and corruption" {
     try testing.expectEqualStrings("first", got[0].title);
     try testing.expectEqual(@as(?i64, 6), got[0].started_ms);
     try testing.expectEqual(@as(?i64, null), got[0].ended_ms);
+    try testing.expect(got[0].pinned and !got[1].pinned);
     try testing.expectEqual(run.RunStatus.working, got[1].status);
     try testing.expectEqual(@as(u64, 3), got[0].revision);
 
