@@ -26,6 +26,11 @@ pub const ValidateError = error{
     InvalidView,
     /// An operation's parents repeat.
     InvalidOperation,
+    /// A provenance record's prompt fields do not match its privacy level.
+    InvalidProvenance,
+    /// An attribution map's runs are empty or point past its records, or
+    /// a manifest's files are unsorted.
+    InvalidAttribution,
 };
 
 /// What a tree entry points at.
