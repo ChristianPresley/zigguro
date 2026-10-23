@@ -100,13 +100,19 @@ fn render(gpa: Allocator, l: *const Layout, f: *const Fixture) ![]u8 {
 }
 
 fn expectSameLayout(a: *const Layout, b: *const Layout) !void {
-    try t.expectEqual(a.rows.len, b.rows.len);
+    try t.expectEqual(a.len(), b.len());
     try t.expectEqual(a.width, b.width);
-    for (a.rows, b.rows) |x, y| {
+    var ai = a.iterator();
+    var bi = b.iterator();
+    for (0..a.len()) |i| {
+        const x = ai.next().?;
+        const y = bi.next().?;
         try t.expectEqual(x.node_col, y.node_col);
+        try t.expectEqual(x.node_col, a.row(i).node_col);
         try t.expectEqualSlices(layout.Edge, x.edges_out, y.edges_out);
         try t.expectEqualSlices(layout.Lane, x.edges_through, y.edges_through);
     }
+    try t.expect(ai.next() == null and bi.next() == null);
 }
 
 /// Follows every edge of every commit down the rows to the commit it
@@ -117,7 +123,8 @@ fn checkEdges(gpa: Allocator, l: *const Layout, nodes: []const GraphNodeIn, max_
     defer row_of.deinit(gpa);
     for (nodes, 0..) |n, i| try row_of.put(gpa, n.id, i);
     const ovf = max_columns - 1;
-    for (l.rows, nodes, 0..) |row, n, i| {
+    for (nodes, 0..) |n, i| {
+        const row = l.row(i);
         var reached: std.ArrayList(Pos) = .empty;
         defer reached.deinit(gpa);
         for (row.edges_out) |e| {
@@ -125,10 +132,11 @@ fn checkEdges(gpa: Allocator, l: *const Layout, nodes: []const GraphNodeIn, max_
             if (e.to_col == ovf) continue;
             var col = e.to_col;
             var r = i + 1;
-            const target: Pos = while (r < l.rows.len) : (r += 1) {
-                if (l.rows[r].node_col == col) break nodes[r].id;
+            const target: Pos = while (r < l.len()) : (r += 1) {
+                const below = l.row(r);
+                if (below.node_col == col) break nodes[r].id;
                 var next: ?u16 = null;
-                for (l.rows[r].edges_out) |f| if (f.from_col == col) {
+                for (below.edges_out) |f| if (f.from_col == col) {
                     try t.expect(next == null);
                     next = f.to_col;
                 };
@@ -234,7 +242,8 @@ test "graph_layout: column count minimal on linear stacks" {
     var l = try layout.compute(gpa, &nodes, .{});
     defer l.deinit();
     try t.expectEqual(@as(u16, 1), l.width);
-    for (l.rows) |r| {
+    var it = l.iterator();
+    while (it.next()) |r| {
         try t.expectEqual(@as(u16, 0), r.node_col);
         try t.expectEqual(@as(usize, 0), r.edges_through.len);
     }
@@ -251,10 +260,11 @@ test "graph_layout: max_columns overflow lane" {
     var l = try layout.compute(gpa, &nodes, .{ .max_columns = 3 });
     defer l.deinit();
     try t.expect(l.width <= 3);
-    for (l.rows) |r| try t.expect(r.node_col < 3);
+    var it = l.iterator();
+    while (it.next()) |r| try t.expect(r.node_col < 3);
     // The root is waited for in column 0 throughout; no lane overflows
     // because every head joins it.
-    try t.expectEqual(@as(u16, 0), l.rows[10].node_col);
+    try t.expectEqual(@as(u16, 0), l.row(10).node_col);
 
     // An octopus wider than the columns sends parents to the overflow.
     const ps = [_]Pos{ @enumFromInt(1), @enumFromInt(2), @enumFromInt(3), @enumFromInt(4), @enumFromInt(5) };
@@ -264,7 +274,7 @@ test "graph_layout: max_columns overflow lane" {
     var lo = try layout.compute(gpa, &oct, .{ .max_columns = 3 });
     defer lo.deinit();
     var to_overflow: usize = 0;
-    for (lo.rows[0].edges_out) |e| if (e.to_col == 2) {
+    for (lo.row(0).edges_out) |e| if (e.to_col == 2) {
         to_overflow += 1;
     };
     try t.expectEqual(@as(usize, 3), to_overflow);
@@ -273,7 +283,8 @@ test "graph_layout: max_columns overflow lane" {
     try layout.renderAscii(&lo, &oct, &drawn.writer, .ascii);
     try t.expect(std.mem.indexOfScalar(u8, drawn.written(), '.') != null);
     // Overflowed commits still get a column of their own.
-    for (lo.rows) |r| try t.expect(r.node_col < 3);
+    var lit = lo.iterator();
+    while (lit.next()) |r| try t.expect(r.node_col < 3);
 }
 
 /// A random DAG of `n` commits in topological order (children first):
@@ -311,13 +322,15 @@ test "graph_layout: property: edges reach parents, incremental equals full" {
     for (0..200) |_| {
         const n = 1 + r.uintLessThan(usize, 60);
         const nodes = try randomDag(a, r, n);
-        const opts: layout.LayoutOptions = .{ .prefer_first_parent_straight = r.boolean(), .collapse_elided = r.boolean() };
+        // Small chunks, so edits share some and copy others.
+        const opts: layout.LayoutOptions = .{ .prefer_first_parent_straight = r.boolean(), .collapse_elided = r.boolean(), .chunk_rows = 1 + r.uintLessThan(u32, 8) };
         var l = try layout.compute(gpa, nodes, opts);
         defer l.deinit();
         try checkEdges(gpa, &l, nodes, opts.max_columns);
         // No two commits share a row and column: one commit per row by
         // construction; lanes crossing a row never use its commit's column.
-        for (l.rows) |row| for (row.edges_through) |th| try t.expect(th.col != row.node_col);
+        var it = l.iterator();
+        while (it.next()) |row| for (row.edges_through) |th| try t.expect(th.col != row.node_col);
 
         // Edit: change one commit's kind, drop one, or prepend one.
         const edited = try a.dupe(GraphNodeIn, nodes);
@@ -350,4 +363,38 @@ test "graph_layout: deterministic" {
     var b = try layout.compute(gpa, nodes, .{});
     defer b.deinit();
     try expectSameLayout(&a, &b);
+}
+
+test "graph_layout: incremental shares chunks across edits anywhere" {
+    const gpa = t.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var prng: std.Random.DefaultPrng = .init(11);
+    const r = prng.random();
+    const nodes = try randomDag(a, r, 2000);
+    const opts: layout.LayoutOptions = .{ .chunk_rows = 16 };
+    var l = try layout.compute(gpa, nodes, opts);
+    defer l.deinit();
+    for (0..40) |_| {
+        // Change a commit's kind, or drop a stretch of rows.
+        const at = r.uintLessThan(usize, nodes.len);
+        const edited = if (r.boolean()) blk: {
+            const e = try a.dupe(GraphNodeIn, nodes);
+            e[at].kind = if (e[at].kind == .wc) .normal else .wc;
+            break :blk e;
+        } else blk: {
+            const n = @min(nodes.len - at, 1 + r.uintLessThan(usize, 40));
+            break :blk try std.mem.concat(a, GraphNodeIn, &.{ nodes[0..at], nodes[at + n ..] });
+        };
+        var inc = try layout.computeIncremental(&l, nodes, edited, opts, gpa);
+        var full = try layout.compute(gpa, edited, opts);
+        defer full.deinit();
+        try expectSameLayout(&full, &inc);
+        // And back, from the shared layout, after the first is freed.
+        var back = try layout.computeIncremental(&inc, edited, nodes, opts, gpa);
+        inc.deinit();
+        defer back.deinit();
+        try expectSameLayout(&l, &back);
+    }
 }
