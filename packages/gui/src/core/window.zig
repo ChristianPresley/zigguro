@@ -625,6 +625,8 @@ pub const Window = struct {
         if (!w.needs_frame and !w.anyDirtyView()) return w.stats;
         w.needs_frame = false;
         w.frame_no += 1;
+        w.app.frame_epoch +%= 1;
+        w.app.images.recycle(w.app.gpa);
         w.stats.idle = false;
         std.mem.swap(std.ArrayList(Timer), &w.after_frame, &w.after_frame_due);
         w.engine.mc.theme = w.app.theme;
