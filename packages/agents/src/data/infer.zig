@@ -115,7 +115,7 @@ pub fn parseDecimalComma(s: []const u8) ?f64 {
     return std.fmt.parseFloat(f64, buf[0..s.len]) catch null;
 }
 
-fn daysFromCivil(y: i64, m: u32, d: u32) i32 {
+pub fn daysFromCivil(y: i64, m: u32, d: u32) i32 {
     // Howard Hinnant's algorithm.
     const yy = if (m <= 2) y - 1 else y;
     const era = @divFloor(yy, 400);
@@ -124,6 +124,20 @@ fn daysFromCivil(y: i64, m: u32, d: u32) i32 {
     const doy = @divFloor(153 * mp + 2, 5) + @as(i64, d) - 1;
     const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
     return @intCast(era * 146097 + doe - 719468);
+}
+
+/// Year, month and day of `days` since 1970-01-01 (Howard Hinnant's
+/// `civil_from_days`).
+pub fn civilFromDays(days: i64) struct { y: i64, m: u32, d: u32 } {
+    const z = days + 719468;
+    const era = @divFloor(z, 146097);
+    const doe: i64 = z - era * 146097;
+    const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+    const mp = @divFloor(5 * doy + 2, 153);
+    const d: u32 = @intCast(doy - @divFloor(153 * mp + 2, 5) + 1);
+    const m: u32 = @intCast(if (mp < 10) mp + 3 else mp - 9);
+    return .{ .y = yoe + era * 400 + @intFromBool(m <= 2), .m = m, .d = d };
 }
 
 fn validDate(y: i64, m: u32, d: u32) bool {
