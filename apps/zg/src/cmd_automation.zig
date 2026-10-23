@@ -65,7 +65,18 @@ pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:
     defer s.flush();
     const pins = openPinsDir(rt, min);
     defer if (pins) |d| d.close(rt.io);
-    return runIn(rt, pins, argv, &s.out_w.interface, &s.err_w.interface);
+    var tz = localZone(rt, min);
+    defer tz.deinit(rt.gpa);
+    return runIn(rt, pins, tz.resolver(), argv, &s.out_w.interface, &s.err_w.interface);
+}
+
+/// The system time zone (`$TZ`, `/etc/localtime`, or Windows' zone);
+/// UTC when it cannot be read.
+pub fn localZone(rt: *zg_core.Runtime, min: std.process.Init.Minimal) sched.TimeZone {
+    var arena: std.heap.ArenaAllocator = .init(rt.gpa);
+    defer arena.deinit();
+    var env = min.environ.createMap(arena.allocator()) catch return .utc();
+    return sched.TimeZone.local(rt.io, rt.gpa, &env) catch .utc();
 }
 
 /// `<state>/pins`, created when missing; null without a home directory.
@@ -84,7 +95,7 @@ fn usage(err: *Io.Writer) !u8 {
 }
 
 /// `zg automation` with the approvals directory and output streams given.
-pub fn runIn(rt: *zg_core.Runtime, pins: ?Io.Dir, argv: []const [:0]const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+pub fn runIn(rt: *zg_core.Runtime, pins: ?Io.Dir, zone: sched.ZoneResolver, argv: []const [:0]const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
     const gpa = rt.gpa;
     const io = rt.io;
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -133,7 +144,6 @@ pub fn runIn(rt: *zg_core.Runtime, pins: ?Io.Dir, argv: []const [:0]const u8, ou
     defer autos.close(io);
     const hist: ?Io.Dir = ws.openDir(io, sched.Service.history_path, .{}) catch null;
     defer if (hist) |h| h.close(io);
-    const zone = sched.utcZone();
     const key = ws.realPathFileAlloc(io, ".", arena) catch "";
     const approvals = try sched.Approvals.open(gpa, io, pins, key);
     defer approvals.close();
@@ -312,42 +322,42 @@ test "zg automation list, show, enable and validate" {
     defer errw.deinit();
 
     // From the repository: not approved yet.
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [needs approval]") != null);
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "approve", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "approve", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [enabled]") != null);
     try testing.expect(std.mem.indexOf(u8, out.written(), "every 5 minutes") != null);
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "show", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "show", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "budget    $0.25 per run") != null);
     out.clearRetainingCapacity();
     // --json is one JSON document.
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
     parsed.deinit();
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "disable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "disable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [disabled]") != null);
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
     try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/automations/bad.zon", .data = ".{ .name = \"bad\" }" });
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, sched.utcZone(), &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), ".zigguro/automations/bad.zon:1:") != null);
     // Disabling was the user's edit: still approved.
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "enable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "enable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [enabled]") != null);
     // No host: run fails cleanly.
-    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, &.{ "run", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
-    try testing.expectEqual(@as(u8, 2), try runIn(&rt, pins, &.{"show"}, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, sched.utcZone(), &.{ "run", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 2), try runIn(&rt, pins, sched.utcZone(), &.{"show"}, &out.writer, &errw.writer));
 }
 
 test "cli_json_schema" {
@@ -375,7 +385,7 @@ test "cli_json_schema" {
     defer out.deinit();
     var errw: Io.Writer.Allocating = .init(testing.allocator);
     defer errw.deinit();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, sched.utcZone(), &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

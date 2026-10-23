@@ -1,0 +1,15 @@
+// The Windows zone id to IANA zone table from Unicode CLDR
+// (windowsZones.xml, territory 001 rows). tools/tzdata_gen turns it into
+// packages/agents/src/sched/tzdata/windows_zones.zon.
+.{
+    .name = "Unicode CLDR windowsZones",
+    .version = "CLDR main (windowsZones otherVersion 7e11800), fetched 2026-10-23",
+    .license_spdx = "Unicode-3.0",
+    .source_url = "https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.xml",
+    .shipped = true,
+    .paths = .{
+        "tools/tzdata_gen/data/windowsZones.xml",
+        "packages/agents/src/sched/tzdata/windows_zones.zon",
+    },
+    .license_text_files = .{"tools/tzdata_gen/data/windowsZones.xml"},
+}

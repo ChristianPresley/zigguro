@@ -202,7 +202,9 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
     defer if (pins) |d| d.close(io);
     const approvals = try zg_agents.sched.Approvals.open(gpa, io, pins, cwd);
     defer approvals.close();
-    const automations = try zg_agents.sched.Service.init(gpa, io, ws_dir, reg, .fromHost(host), zg_agents.sched.utcZone(), .{
+    var tz = cmd_automation.localZone(rt, min);
+    defer tz.deinit(gpa);
+    const automations = try zg_agents.sched.Service.init(gpa, io, ws_dir, reg, .fromHost(host), tz.resolver(), .{
         .trust = approvals.trust(),
         .workspace_key = cwd,
         .warn = .{ .ctx = router, .warn = warnAutomation },

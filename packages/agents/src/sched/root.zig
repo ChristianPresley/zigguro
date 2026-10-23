@@ -3,6 +3,11 @@
 
 pub const zone = @import("zone.zig");
 pub const cron = @import("cron.zig");
+pub const tz = @import("tz.zig");
+pub const tzif = @import("tzif.zig");
+pub const posix_tz = @import("posix_tz.zig");
+pub const tz_windows = @import("tz_windows.zig");
+pub const tz_embedded = @import("tz_embedded.zig");
 pub const describe_mod = @import("describe.zig");
 pub const automation = @import("automation.zig");
 pub const jitter = @import("jitter.zig");
@@ -23,6 +28,8 @@ pub const ZoneResolver = zone.ZoneResolver;
 pub const Resolved = zone.Resolved;
 pub const FixedZone = zone.FixedZone;
 pub const utcZone = zone.utcZone;
+pub const TimeZone = tz.TimeZone;
+pub const PosixRule = posix_tz.PosixRule;
 pub const describe = describe_mod.describe;
 pub const Automation = automation.Automation;
 
@@ -47,4 +54,7 @@ test {
     _ = Approvals;
     _ = @import("cron_test.zig");
     _ = @import("describe_test.zig");
+    _ = tz;
+    _ = tz_windows;
+    _ = @import("tz_test.zig");
 }

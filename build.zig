@@ -238,6 +238,7 @@ pub fn build(b: *std.Build) void {
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
     _ = addTool(b, "wayland-scanner", "packages/build/wayland_scanner/main.zig", test_filters, f.optimize, tools_test_step);
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
+    const tzdata_gen = addTool(b, "tzdata-gen", "tools/tzdata_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const lspgen = addTool(b, "lspgen", "tools/lspgen/main.zig", test_filters, f.optimize, tools_test_step);
     const dapgen = addTool(b, "dapgen", "tools/dapgen/main.zig", test_filters, f.optimize, tools_test_step);
     const vkgen = addTool(b, "vkgen", "tools/vkgen/main.zig", test_filters, f.optimize, tools_test_step);
@@ -508,6 +509,13 @@ pub fn build(b: *std.Build) void {
     if (b.args) |a| keysym_gen_run.addArgs(a);
     keysym_gen_run.has_side_effects = true;
     b.step("keysym-gen", "Regenerate the XKB keysym tables (-- --check to verify)").dependOn(&keysym_gen_run.step);
+
+    const tzdata_gen_run = b.addRunArtifact(tzdata_gen);
+    tzdata_gen_run.addArgs(&.{"--root"});
+    tzdata_gen_run.addDirectoryArg(b.path("."));
+    if (b.args) |a| tzdata_gen_run.addArgs(a);
+    tzdata_gen_run.has_side_effects = true;
+    b.step("tzdata-gen", "Regenerate zg_agents' embedded time zones (-- --zoneinfo <dir>, --check)").dependOn(&tzdata_gen_run.step);
 
     // Build-graph self test: spawns `zig build` (guarded by -Dslow-tests).
     const test_build_opts = b.addOptions();
