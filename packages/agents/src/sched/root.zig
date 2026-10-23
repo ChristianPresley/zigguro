@@ -10,6 +10,10 @@ pub const state = @import("state.zig");
 pub const lease = @import("lease.zig");
 pub const history = @import("history.zig");
 pub const Scheduler = @import("scheduler.zig");
+pub const loader = @import("loader.zig");
+pub const AutomationRunner = @import("runner.zig");
+pub const tools = @import("tools.zig");
+pub const Service = @import("service.zig");
 
 pub const CronExpr = cron.CronExpr;
 pub const ParseError = cron.ParseError;
@@ -32,6 +36,13 @@ test {
     _ = history;
     _ = Scheduler;
     _ = @import("scheduler_test.zig");
+    _ = loader;
+    _ = AutomationRunner;
+    _ = @import("automation_test.zig");
+    _ = @import("runner_test.zig");
+    _ = tools;
+    _ = @import("tools_test.zig");
+    _ = Service;
     _ = @import("cron_test.zig");
     _ = @import("describe_test.zig");
 }
