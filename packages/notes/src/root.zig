@@ -74,6 +74,14 @@ pub const daily = struct {
     pub const renderTemplate = templates.renderTemplate;
     pub const listDailyNotes = notes.listDailyNotes;
 };
+/// Agent tools and MCP resources over the vault (E08.F08.S02.T01).
+pub const ai = struct {
+    pub const tools = @import("ai/tools.zig");
+    pub const edits = @import("ai/edits.zig");
+    pub const resources = @import("ai/resources.zig");
+    pub const ToolExporter = tools.ToolExporter;
+    pub const ResourceAdapter = resources.ResourceAdapter;
+};
 pub const NoteIndex = index.note_index.NoteIndex;
 pub const IndexView = index.note_index.IndexView;
 /// Synthetic notes for tests and benches.
@@ -91,4 +99,5 @@ test {
     _ = @import("search/exec_test.zig");
     _ = @import("refactor/rename_test.zig");
     _ = @import("daily/daily_test.zig");
+    _ = @import("ai/tools_test.zig");
 }
