@@ -14,6 +14,7 @@ pub const json_table = @import("json_table.zig");
 pub const stats = @import("stats.zig");
 pub const query = @import("query/root.zig");
 pub const tools = @import("tools.zig");
+pub const external = @import("external.zig");
 
 pub const Dataset = dataset.Dataset;
 pub const Dialect = csv.Dialect;
@@ -30,5 +31,7 @@ test {
     _ = @import("query_plan_test.zig");
     _ = @import("query_exec_test.zig");
     _ = @import("tools_test.zig");
+    _ = @import("external_test.zig");
+    @import("std").testing.refAllDecls(external);
     @import("std").testing.refAllDecls(tools);
 }

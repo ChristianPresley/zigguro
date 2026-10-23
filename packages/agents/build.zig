@@ -27,6 +27,11 @@ pub fn build(b: *std.Build) void {
         .bench = "bench/main.zig",
     });
 
+    const programs = addProgramTests(b, f, mod, ai_dep.module("zg_ai"), "");
+    const programs_run = b.addRunArtifact(programs);
+    programs_run.skip_foreign_checks = true;
+    b.top_level_steps.get("test").?.step.dependOn(&programs_run.step);
+
     // zg_agents_ui: Mission Control over zg_gui, a module of its own so
     // headless consumers (zg, the agent host) never import a GUI package.
     const ui = b.addModule("zg_agents_ui", .{
@@ -43,4 +48,33 @@ pub fn build(b: *std.Build) void {
     ui_tests.skip_foreign_checks = true;
     b.step("test-ui", "Run the zg_agents_ui tests").dependOn(&ui_tests.step);
     b.top_level_steps.get("test").?.step.dependOn(&ui_tests.step);
+}
+
+/// data_run_program's process tests (E13.F06.S02.T02): a separate test
+/// binary because it needs the fixture program's path. The root build
+/// calls this too (with `prefix` = "packages/agents/").
+pub fn addProgramTests(b: *std.Build, f: zg_build.Flags, agents: *std.Build.Module, ai: *std.Build.Module, prefix: []const u8) *std.Build.Step.Compile {
+    const program = b.addExecutable(.{
+        .name = "zg-data-program",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("{s}test/fixtures/data_program.zig", .{prefix})),
+            .target = f.target,
+            .optimize = f.optimize,
+        }),
+    });
+    const fixtures = b.addOptions();
+    fixtures.addOptionPath("program", program.getEmittedBin());
+    return b.addTest(.{
+        .name = "zg_agents-programs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("{s}test/program_test.zig", .{prefix})),
+            .target = f.target,
+            .optimize = f.optimize,
+            .imports = &.{
+                .{ .name = "zg_agents", .module = agents },
+                .{ .name = "zg_ai", .module = ai },
+                .{ .name = "agents_fixtures", .module = fixtures.createModule() },
+            },
+        }),
+    });
 }
