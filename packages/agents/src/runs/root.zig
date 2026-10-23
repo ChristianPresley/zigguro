@@ -10,6 +10,9 @@ pub const port = @import("port.zig");
 pub const untrusted = @import("untrusted.zig");
 pub const RunHost = @import("host.zig");
 pub const E10Agents = @import("bridge_e10.zig").E10Agents;
+pub const protocol = @import("protocol.zig");
+pub const ipc = @import("ipc.zig");
+pub const handoff = @import("handoff.zig");
 
 pub const RunId = run.RunId;
 pub const RunKind = run.RunKind;
@@ -30,4 +33,7 @@ test {
     _ = queue;
     _ = untrusted;
     _ = RunHost;
+    _ = protocol;
+    _ = ipc;
+    _ = handoff;
 }
