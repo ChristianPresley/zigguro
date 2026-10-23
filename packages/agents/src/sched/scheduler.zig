@@ -271,6 +271,36 @@ pub fn nextFires(s: *Scheduler, name: []const u8, out: []i64) usize {
     return n;
 }
 
+/// The next `out.len` fire times (unix ms, jitter included) of a
+/// scheduled or one-off automation after `now_ms`, without a scheduler
+/// (tools, CLI, the editor preview). Returns how many were filled.
+pub fn upcoming(a: *const Automation, z: zone_mod.ZoneResolver, workspace_key: []const u8, now_ms: i64, out: []i64) usize {
+    if (!a.enabled) return 0;
+    if (a.schedule()) |sch| {
+        const expr = cron.CronExpr.parse(sch.cron) catch return 0;
+        const j: i64 = @as(i64, jitter.offsetS(workspace_key, a.name, sch.jitter_s orelse jitter.defaultS(&expr))) * 1000;
+        var t = @divFloor(now_ms - j, 1000);
+        var n: usize = 0;
+        while (n < out.len) : (n += 1) {
+            t = expr.next(z, t) orelse break;
+            out[n] = t * 1000 + j;
+        }
+        return n;
+    }
+    if (a.once()) |o| {
+        const l = auto.parseLocal(o.at) orelse return 0;
+        const t: i64 = switch (z.fromLocal(z.ctx, l)) {
+            .unique => |x| x,
+            .ambiguous => |x| x[0],
+            .gap => |x| x,
+        };
+        if (t * 1000 <= now_ms or out.len == 0) return 0;
+        out[0] = t * 1000;
+        return 1;
+    }
+    return 0;
+}
+
 // ---- the loop ----
 
 /// Starts the loop (`clock` must be null: the loop uses the real clock).
