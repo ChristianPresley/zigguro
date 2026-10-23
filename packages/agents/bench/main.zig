@@ -19,6 +19,7 @@ fn register(b: *bench.Bench) !void {
     try registerTasks(b);
     try registerDocs(b);
     try registerData(b);
+    try registerVector(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -486,6 +487,65 @@ fn registerData(b: *bench.Bench) !void {
                     var col: u32 = 0;
                     while (col < 4) : (col += 1) bench.doNotOptimizeAway(ds.cell(r, col, arena.allocator()) catch unreachable);
                 }
+            }
+        }
+    }.f);
+}
+
+/// `vector/canvas_chart_view`: every tile of a 1,200×800 chart (gridlines,
+/// 200 bars, three 500-point series, 60 markers) rasterized on workers
+/// replacing a previous list's tiles (budget 4 ms).
+fn registerVector(b: *bench.Bench) !void {
+    const vector = zg_agents.vector;
+    const gpa = std.heap.smp_allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var c: vector.VectorCanvas = .init(arena.allocator());
+    try c.fillRect(.xywh(0, 0, 1200, 800), .rgb(0xFFFFFF));
+    for (0..11) |i| {
+        const y: f32 = 40 + @as(f32, @floatFromInt(i)) * 70;
+        try c.line(60, y, 1180, y, .{ .width = 1, .dash = &.{ 3, 3 } }, .rgb(0xDDDDDD));
+    }
+    var h: u32 = 7;
+    for (0..200) |i| {
+        h = h *% 1103515245 +% 12345;
+        const v: f32 = @floatFromInt(40 + (h >> 16) % 300);
+        try c.fillRect(.xywh(62 + @as(f32, @floatFromInt(i)) * 5.6, 740 - v, 4, v), vector.Color.rgb(0x4C78A8).withAlpha(160));
+    }
+    for (0..3) |series| {
+        const p = try c.path();
+        for (0..500) |i| {
+            const x = 60 + @as(f32, @floatFromInt(i)) * 2.24;
+            const y = 300 + @as(f32, @floatFromInt(series)) * 120 + 80 * @sin(@as(f32, @floatFromInt(i)) / (20 + @as(f32, @floatFromInt(series)) * 7));
+            if (i == 0) try p.moveTo(c.arena, x, y) else try p.lineTo(c.arena, x, y);
+        }
+        try c.stroke(p, .{ .width = 2, .join = .round }, .rgb(0xE45756 + @as(u24, @intCast(series)) * 0x101010));
+    }
+    for (0..60) |i| try c.circle(80 + @as(f32, @floatFromInt(i)) * 18, 200 + 40 * @cos(@as(f32, @floatFromInt(i))), 4, .rgb(0x54A24B));
+    try c.line(60, 20, 60, 740, .{ .width = 1.5 }, .rgb(0x333333));
+    try c.line(60, 740, 1180, 740, .{ .width = 1.5 }, .rgb(0x333333));
+    const dl = try c.finish();
+    var keys: std.ArrayListUnmanaged(vector.tiles.Key) = .empty;
+    defer keys.deinit(gpa);
+    const r = vector.tiles.tilesFor(.{ .x0 = 0, .y0 = 0, .x1 = 1200, .y1 = 800 });
+    var ty = r.y0;
+    while (ty < r.y1) : (ty += 1) {
+        var tx = r.x0;
+        while (tx < r.x1) : (tx += 1) try keys.append(gpa, .{ .hash = dl.hash, .scale_q = 1000, .tx = tx, .ty = ty });
+    }
+    // The view's cache lives on; each run replaces every tile (a
+    // content change), reusing the evicted tiles' buffers.
+    var cache: vector.TileCache = .init(gpa, vector.TileCache.default_budget);
+    defer cache.deinit();
+    const Ctx = struct { dl: *const vector.DisplayList, keys: []const vector.tiles.Key, io: std.Io, cache: *vector.TileCache };
+    var ctx: Ctx = .{ .dl = &dl, .keys = keys.items, .io = b.io, .cache = &cache };
+    try b.run("vector/canvas_chart_view", &ctx, struct {
+        fn f(x: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                x.cache.clear(x.io);
+                vector.tiles.rasterizeTiles(x.io, x.cache, x.dl, x.keys, 8) catch unreachable;
+                bench.doNotOptimizeAway(x.cache.count(x.io));
             }
         }
     }.f);
