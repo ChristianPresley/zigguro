@@ -28,7 +28,7 @@ const Idle = struct {
     fn snapshot(_: *anyopaque, _: u64, _: std.mem.Allocator) anyerror!?engine_mod.Snapshot {
         return null;
     }
-    fn post(_: *anyopaque, _: *const fn (*anyopaque) void, _: *anyopaque) void {}
+    fn post(_: *anyopaque, _: *anyopaque) void {}
     fn deliver(_: *anyopaque, _: engine_mod.Delivery) void {}
 };
 
