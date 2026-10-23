@@ -7,7 +7,9 @@
 //! Tools call in from agent tasks; editor work is posted to the UI thread
 //! (`App.post`) while the task waits on an `Io.Event`, so the documents
 //! are only ever touched there. The tool already passed the user's
-//! approval, so the edit session applies every valid proposal.
+//! approval, so the edit session applies every valid proposal, unless
+//! inline review is on (`inline_review`): then an edit to an open file
+//! waits in its editor as a pending change (`PendingEdits`).
 //!
 //! Rejections map onto the `Files` ones: a conflict with the user's
 //! typing, an evicted base version and an out-of-bounds edit all ask the
@@ -26,6 +28,7 @@ const api = zg_editor.model.api;
 const DocumentRegistry = api.registry.DocumentRegistry;
 const DocHandle = api.registry.DocHandle;
 const agent_edit = api.agent_edit;
+const PendingEdits = @import("pending_edits.zig").PendingEdits;
 
 /// See the module doc.
 pub const EditorFiles = struct {
@@ -39,6 +42,11 @@ pub const EditorFiles = struct {
     /// The `Files` for paths not open in the editor (E12's recording
     /// `ReviewGlue`); the plain disk when null.
     outside: ?zfiles.Files = null,
+    /// Where pending changes are shown (`bindPending`).
+    pending: ?*PendingEdits = null,
+    /// Agent edits to open files wait for the user in the editor instead
+    /// of applying (when the editor can show them).
+    inline_review: bool = false,
 
     pub const Hook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, doc: DocHandle, tool: []const u8) void };
 
@@ -66,6 +74,21 @@ pub const EditorFiles = struct {
 
     fn applyAll(_: *anyopaque, _: u64, _: DocHandle, _: agent_edit.ProposalSummary) agent_edit.Decision {
         return .apply;
+    }
+
+    /// Shows pending changes through `pe` while `inline_review` is on.
+    /// `self` must not move afterwards.
+    pub fn bindPending(self: *EditorFiles, pe: *PendingEdits) void {
+        self.pending = pe;
+        self.edits.pending_host = pe.host();
+        self.edits.policy = .{ .ctx = self, .decide = decide };
+    }
+
+    fn decide(ctx: *anyopaque, _: u64, doc: DocHandle, _: agent_edit.ProposalSummary) agent_edit.Decision {
+        const self = cast(ctx);
+        if (!self.inline_review) return .apply;
+        const pe = self.pending orelse return .apply;
+        return if (pe.canPlace(doc)) .pending else .apply;
     }
 
     fn cast(ctx: *anyopaque) *EditorFiles {
@@ -200,7 +223,7 @@ pub const EditorFiles = struct {
 fn mapOutcome(o: agent_edit.Outcome) zfiles.Outcome {
     return switch (o) {
         .applied => |a| .{ .applied = .{ .version = a.version } },
-        // The policy applies everything; a pending change has no id here.
+        // Waiting in the editor (inline review): no E12 changeset.
         .pending => .{ .pending = .{ .changeset = 0 } },
         .rejected => |r| .{ .rejected = switch (r) {
             .stale_handle => .{ .io = "the document was closed" },
