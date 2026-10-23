@@ -1,0 +1,21 @@
+id,name,city,score
+1,Cy,Oslo,12.72
+2,Di,Bern,96.83
+3,'Di , Jr',Bern,93.02
+4,Ed,Bern,24.85
+5,'Ann , Jr',Lima,52.24
+6,Ann,Bern,8.50
+7,'Ann , Jr',Lima,23.26
+8,Ann,Quito,96.24
+9,Cy,Bern,69.86
+10,'Ann , Jr',Quito,52.44
+11,'Ed , Jr',Quito,22.36
+12,'Ed , Jr',Accra,30.15
+13,'Di , Jr',Quito,64.46
+14,Bo,Lima,54.70
+15,Ann,Quito,5.53
+16,Bo,Bern,8.11
+17,Bo,Quito,22.68
+18,Ann,Bern,36.23
+19,'Di , Jr',Quito,73.91
+20,'Ed , Jr',Bern,96.99

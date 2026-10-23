@@ -1,0 +1,21 @@
+id^name^city^score
+1^Ed^Accra^94.15
+2^Ed^Quito^92.28
+3^Bo^Lima^41.66
+4^Di^Oslo^67.12
+5^"Di ^ Jr"^Quito^78.39
+6^Bo^Quito^14.30
+7^Bo^Lima^74.67
+8^Ann^Bern^16.28
+9^"Bo ^ Jr"^Bern^99.41
+10^Di^Lima^35.66
+11^Ann^Oslo^33.80
+12^Di^Oslo^38.43
+13^Ed^Accra^96.08
+14^Ann^Lima^97.17
+15^"Ann ^ Jr"^Quito^3.96
+16^"Bo ^ Jr"^Lima^81.98
+17^Cy^Accra^91.92
+18^Ed^Quito^8.95
+19^Ann^Lima^42.53
+20^"Ann ^ Jr"^Oslo^63.44
