@@ -7,6 +7,8 @@ pub const view = @import("view.zig");
 pub const deps = @import("deps.zig");
 pub const query = @import("query.zig");
 pub const events = @import("events.zig");
+pub const rank = @import("rank.zig");
+pub const board = @import("board.zig");
 pub const TaskStore = @import("store.zig");
 
 pub const Task = task.Task;
@@ -17,6 +19,8 @@ pub const Query = query.Query;
 pub const TaskEvent = events.TaskEvent;
 pub const parseQuery = query.parseQuery;
 pub const evalQuery = query.evalQuery;
+pub const BoardVM = board.BoardVM;
+pub const BoardMode = board.BoardMode;
 
 test {
     _ = ids;
@@ -24,4 +28,6 @@ test {
     _ = @import("store_test.zig");
     _ = @import("query_test.zig");
     _ = @import("deps_test.zig");
+    _ = rank;
+    _ = @import("board_test.zig");
 }
