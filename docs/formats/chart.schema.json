@@ -1,0 +1,2004 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zg-chart/1",
+  "title": "Chart spec",
+  "type": "object",
+  "required": [
+    "data",
+    "mark"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "width": {
+      "type": "number",
+      "minimum": 10,
+      "maximum": 10000
+    },
+    "height": {
+      "type": "number",
+      "minimum": 10,
+      "maximum": 10000
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exactly one of values, artifact, path (query only with path).",
+      "properties": {
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "maxItems": 100000
+        },
+        "artifact": {
+          "type": "string",
+          "description": "A table artifact id."
+        },
+        "path": {
+          "type": "string",
+          "description": "A workspace data file (CSV, TSV, JSON, NDJSON)."
+        },
+        "query": {
+          "type": "string",
+          "description": "A data query over the file."
+        }
+      }
+    },
+    "mark": {
+      "oneOf": [
+        {
+          "enum": [
+            "bar",
+            "line",
+            "area",
+            "point",
+            "circle",
+            "square",
+            "rule",
+            "rect",
+            "tick",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "bar",
+                "line",
+                "area",
+                "point",
+                "circle",
+                "square",
+                "rule",
+                "rect",
+                "tick",
+                "text"
+              ]
+            },
+            "stack": {
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "group"
+                }
+              ],
+              "description": "Bars and areas: stacked (true), overlaid (false) or side by side (\"group\", bars)."
+            },
+            "filled": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+            },
+            "opacity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "size": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "strokeWidth": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "point": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "encoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "y": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "x2": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "y2": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "color": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "size": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "opacity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "text": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Column name."
+            },
+            "type": {
+              "enum": [
+                "quantitative",
+                "nominal",
+                "ordinal",
+                "temporal"
+              ]
+            },
+            "aggregate": {
+              "enum": [
+                "count",
+                "sum",
+                "mean",
+                "median",
+                "min",
+                "max",
+                "distinct"
+              ]
+            },
+            "bin": {
+              "oneOf": [
+                {
+                  "const": true
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxbins": {
+                      "type": "number",
+                      "minimum": 2,
+                      "maximum": 1000
+                    }
+                  }
+                }
+              ]
+            },
+            "timeUnit": {
+              "enum": [
+                "year",
+                "quarter",
+                "month",
+                "week",
+                "day",
+                "hour"
+              ]
+            },
+            "sort": {
+              "enum": [
+                "ascending",
+                "descending",
+                "none",
+                "x",
+                "-x",
+                "y",
+                "-y"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "linear",
+                    "log",
+                    "time",
+                    "band",
+                    "point"
+                  ]
+                },
+                "zero": {
+                  "type": "boolean"
+                },
+                "domain": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "zone": {
+                  "enum": [
+                    "utc",
+                    "local"
+                  ]
+                }
+              }
+            },
+            "axis": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "grid": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "enum": [
+                        "auto",
+                        "si",
+                        "percent",
+                        "plain"
+                      ]
+                    },
+                    "labels": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            },
+            "legend": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "si",
+                "percent",
+                "plain"
+              ]
+            },
+            "value": {
+              "type": [
+                "number",
+                "string"
+              ],
+              "description": "A constant instead of a field (no other keys)."
+            }
+          }
+        },
+        "tooltip": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "Column name."
+              },
+              "type": {
+                "enum": [
+                  "quantitative",
+                  "nominal",
+                  "ordinal",
+                  "temporal"
+                ]
+              },
+              "aggregate": {
+                "enum": [
+                  "count",
+                  "sum",
+                  "mean",
+                  "median",
+                  "min",
+                  "max",
+                  "distinct"
+                ]
+              },
+              "bin": {
+                "oneOf": [
+                  {
+                    "const": true
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "maxbins": {
+                        "type": "number",
+                        "minimum": 2,
+                        "maximum": 1000
+                      }
+                    }
+                  }
+                ]
+              },
+              "timeUnit": {
+                "enum": [
+                  "year",
+                  "quarter",
+                  "month",
+                  "week",
+                  "day",
+                  "hour"
+                ]
+              },
+              "sort": {
+                "enum": [
+                  "ascending",
+                  "descending",
+                  "none",
+                  "x",
+                  "-x",
+                  "y",
+                  "-y"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "linear",
+                      "log",
+                      "time",
+                      "band",
+                      "point"
+                    ]
+                  },
+                  "zero": {
+                    "type": "boolean"
+                  },
+                  "domain": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "zone": {
+                    "enum": [
+                      "utc",
+                      "local"
+                    ]
+                  }
+                }
+              },
+              "axis": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "grid": {
+                        "type": "boolean"
+                      },
+                      "format": {
+                        "enum": [
+                          "auto",
+                          "si",
+                          "percent",
+                          "plain"
+                        ]
+                      },
+                      "labels": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              },
+              "legend": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "format": {
+                "enum": [
+                  "auto",
+                  "si",
+                  "percent",
+                  "plain"
+                ]
+              },
+              "value": {
+                "type": [
+                  "number",
+                  "string"
+                ],
+                "description": "A constant instead of a field (no other keys)."
+              }
+            }
+          }
+        },
+        "detail": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "Column name."
+              },
+              "type": {
+                "enum": [
+                  "quantitative",
+                  "nominal",
+                  "ordinal",
+                  "temporal"
+                ]
+              },
+              "aggregate": {
+                "enum": [
+                  "count",
+                  "sum",
+                  "mean",
+                  "median",
+                  "min",
+                  "max",
+                  "distinct"
+                ]
+              },
+              "bin": {
+                "oneOf": [
+                  {
+                    "const": true
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "maxbins": {
+                        "type": "number",
+                        "minimum": 2,
+                        "maximum": 1000
+                      }
+                    }
+                  }
+                ]
+              },
+              "timeUnit": {
+                "enum": [
+                  "year",
+                  "quarter",
+                  "month",
+                  "week",
+                  "day",
+                  "hour"
+                ]
+              },
+              "sort": {
+                "enum": [
+                  "ascending",
+                  "descending",
+                  "none",
+                  "x",
+                  "-x",
+                  "y",
+                  "-y"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "linear",
+                      "log",
+                      "time",
+                      "band",
+                      "point"
+                    ]
+                  },
+                  "zero": {
+                    "type": "boolean"
+                  },
+                  "domain": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "zone": {
+                    "enum": [
+                      "utc",
+                      "local"
+                    ]
+                  }
+                }
+              },
+              "axis": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "grid": {
+                        "type": "boolean"
+                      },
+                      "format": {
+                        "enum": [
+                          "auto",
+                          "si",
+                          "percent",
+                          "plain"
+                        ]
+                      },
+                      "labels": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              },
+              "legend": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "format": {
+                "enum": [
+                  "auto",
+                  "si",
+                  "percent",
+                  "plain"
+                ]
+              },
+              "value": {
+                "type": [
+                  "number",
+                  "string"
+                ],
+                "description": "A constant instead of a field (no other keys)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "transform": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "filter"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "filter": {
+                "type": "string",
+                "description": "A data query expression."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "calculate",
+              "as"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "calculate": {
+                "type": "string"
+              },
+              "as": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bin",
+              "field",
+              "as"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "bin": {
+                "oneOf": [
+                  {
+                    "const": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "maxbins": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                ]
+              },
+              "field": {
+                "type": "string"
+              },
+              "as": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "timeUnit",
+              "field",
+              "as"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "timeUnit": {
+                "enum": [
+                  "year",
+                  "quarter",
+                  "month",
+                  "week",
+                  "day",
+                  "hour"
+                ]
+              },
+              "field": {
+                "type": "string"
+              },
+              "as": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "fold"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "fold": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "as": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "aggregate"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "aggregate": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "op",
+                    "as"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "enum": [
+                        "count",
+                        "sum",
+                        "mean",
+                        "median",
+                        "min",
+                        "max",
+                        "distinct"
+                      ]
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "as": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "groupby": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
