@@ -135,6 +135,16 @@ const max_log = 4096;
 pub const ServerOptions = struct {
     /// `$XDG_RUNTIME_DIR` (fallback directory for long paths).
     runtime_dir: ?[]const u8 = null,
+    /// The host's automation scheduler (E13.F02), when it runs one.
+    automations: ?AutomationsPort = null,
+};
+
+/// The `automations.*` methods, served by the host's scheduler.
+pub const AutomationsPort = struct {
+    ctx: *anyopaque,
+    /// Fires `name` now; returns the fire id.
+    run: *const fn (ctx: *anyopaque, name: []const u8) anyerror!u64,
+    reload: *const fn (ctx: *anyopaque) anyerror!void,
 };
 
 /// Serves one workspace's `RunHost` and `RunRegistry` to clients.
@@ -144,6 +154,7 @@ pub const HostServer = struct {
     rt: *zg_core.Runtime,
     host: *RunHost,
     reg: *RunRegistry,
+    opts: ServerOptions = .{},
     token: Token,
     sock_path: []u8,
     server: net.Server,
@@ -197,6 +208,7 @@ pub const HostServer = struct {
             .token = try ensureToken(io, runs),
             .sock_path = path,
             .server = server,
+            .opts = opts,
         };
         s.listener = try reg.subscribe(.{ .ctx = s, .on_event = onRunEvent });
         errdefer reg.unsubscribe(s.listener);
@@ -264,6 +276,8 @@ pub const HostServer = struct {
             .{ protocol.methods.adopt, onAdopt },
             .{ protocol.methods.subscribe, onSubscribe },
             .{ protocol.methods.shutdown, onShutdown },
+            .{ protocol.methods.automation_run, onAutomationRun },
+            .{ protocol.methods.automation_reload, onAutomationReload },
         }) |m| try c.ep.onRequest(m[0], .{ .ctx = c, .func = guard(m[1]) });
         c.ep.onClose(.{ .ctx = c, .func = struct {
             fn f(ctx: ?*anyopaque, _: Endpoint.Result) void {
@@ -384,6 +398,18 @@ pub const HostServer = struct {
     fn onPin(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
         const p = try params(protocol.PinParams, req, arena);
         try c.server.reg.update(p.id, .{ .pinned = p.on });
+        return ok(arena);
+    }
+
+    fn onAutomationRun(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
+        const p = try params(protocol.AutomationRunParams, req, arena);
+        const a = c.server.opts.automations orelse return error.AutomationsUnavailable;
+        return Endpoint.raw(arena, protocol.AutomationRunResult{ .fire_id = try a.run(a.ctx, p.name) });
+    }
+
+    fn onAutomationReload(c: *Conn, _: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
+        const a = c.server.opts.automations orelse return error.AutomationsUnavailable;
+        try a.reload(a.ctx);
         return ok(arena);
     }
 
