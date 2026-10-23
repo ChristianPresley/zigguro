@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_lsp", .module = lsp },
+            .{ .name = "zg_jsonrpc", .module = jsonrpc },
             .{ .name = "zg_editor", .module = editor },
             .{ .name = "zg_syntax", .module = syntax },
         },

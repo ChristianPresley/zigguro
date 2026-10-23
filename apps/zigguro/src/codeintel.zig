@@ -1,7 +1,9 @@
 //! Language services in the workbench (E07): one zg_codeintel `Manager`
 //! for the working folder, which starts language servers (zls, clangd,
-//! ...) as matching files open, and the semantic tokens driver, which
-//! colours the editors through their `DocumentSyntax` overlays.
+//! ...) as matching files open; the semantic tokens driver, which
+//! colours the editors through their `DocumentSyntax` overlays; and the
+//! diagnostics driver, whose store the agent's edit tools read back
+//! through the settle detector (`agentDiagnostics`).
 //!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
@@ -18,6 +20,7 @@ const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 const zg_syntax = @import("zg_syntax");
 const zg_codeintel = @import("zg_codeintel");
+const zg_ai = @import("zg_ai");
 
 const Allocator = std.mem.Allocator;
 const Window = zg_gui.Window;
@@ -28,6 +31,7 @@ const Document = zg_editor.model.document.Document;
 const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
 const Manager = zg_codeintel.Manager;
 const SemTokDriver = zg_codeintel.features.SemTokDriver;
+const diagnostics = zg_codeintel.diagnostics;
 
 const log = std.log.scoped(.codeintel);
 
@@ -41,6 +45,8 @@ pub const CodeIntel = struct {
     mgr: Manager = undefined,
     names: zg_syntax.HighlightNames,
     semtok: SemTokDriver = undefined,
+    diags: diagnostics.Store,
+    diag: diagnostics.Driver = undefined,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
     /// A wake call is in the mailbox.
@@ -55,6 +61,9 @@ pub const CodeIntel = struct {
         syntax: *DocumentSyntax,
         /// Attached to the manager (once trusted).
         attached: bool = false,
+        /// Edits ask for a tick, so they reach the servers even when no
+        /// frame follows (agent edits to files not shown).
+        listener: ?zg_editor.model.document.ListenerId = null,
     };
 
     /// Language services for the folder `cwd` (absolute; must outlive
@@ -72,7 +81,9 @@ pub const CodeIntel = struct {
             // definitions only, so no workspace command can apply.
             .reg = try .init(gpa, .{}),
             .names = .init(gpa),
+            .diags = try .init(gpa, rt.io, docs.style),
         };
+        errdefer ci.diags.deinit();
         errdefer ci.reg.deinit();
         ci.mgr.init(rt, &ci.reg, docs, .{
             .workspace_folders = (&ci.cwd)[0..1],
@@ -81,6 +92,8 @@ pub const CodeIntel = struct {
             .client_version = "0.0.0",
         });
         errdefer ci.mgr.deinit();
+        try ci.diag.init(&ci.mgr, &ci.diags, .{ .pull = .{ .waker = ci.waker() } });
+        errdefer ci.diag.deinit();
         try ci.semtok.init(&ci.mgr, &ci.names, .{ .ctx = ci, .get = syntaxOf }, .{ .waker = ci.waker() });
         return ci;
     }
@@ -89,8 +102,11 @@ pub const CodeIntel = struct {
     /// before the documents and their syntax go away.
     pub fn destroy(ci: *CodeIntel) void {
         if (ci.win) |w| if (ci.timer != .none) w.cancelTimer(ci.timer);
+        for (ci.files.items) |f| if (f.listener) |l| f.doc.unsubscribe(l);
         ci.mgr.deinit();
+        ci.diag.deinit();
         ci.semtok.deinit();
+        ci.diags.deinit();
         ci.files.deinit(ci.gpa);
         ci.names.deinit();
         ci.reg.deinit();
@@ -101,6 +117,14 @@ pub const CodeIntel = struct {
     /// through them (`EditorView.hl_names`).
     pub fn highlightNames(ci: *CodeIntel) *const zg_syntax.HighlightNames {
         return &ci.names;
+    }
+
+    /// The agent's after-edit diagnostics (`zg_ai`'s
+    /// `FileTools.diagnostics`): waits for the servers to answer an edit,
+    /// then summarizes the file's errors and warnings. Valid until
+    /// `destroy`.
+    pub fn agentDiagnostics(ci: *CodeIntel) zg_ai.tools.builtin.files.Diagnostics {
+        return .{ .ctx = ci.diag.settleDetector(), .after_edit = diagnostics.SettleDetector.afterEdit };
     }
 
     /// Starts (or, when false, keeps holding) the language servers.
@@ -127,6 +151,7 @@ pub const CodeIntel = struct {
             log.warn("language services: {t}", .{e});
             return;
         };
+        f.listener = f.doc.subscribe(.{ .ctx = ci, .onChange = onDocChange }) catch null;
         ci.semtok.track(f.h) catch {};
         f.attached = true;
     }
@@ -138,6 +163,7 @@ pub const CodeIntel = struct {
                 ci.semtok.untrack(h);
                 ci.mgr.closeDoc(h);
             }
+            if (f.listener) |l| f.doc.unsubscribe(l);
             _ = ci.files.swapRemove(i);
             if (ci.shown) |s| if (std.meta.eql(s, h)) {
                 ci.shown = null;
@@ -167,13 +193,16 @@ pub const CodeIntel = struct {
     fn tick(ci: *CodeIntel) void {
         ci.mgr.tick();
         const changed = ci.semtok.tick();
+        _ = ci.diag.tick();
         const w = ci.win orelse return;
         if (changed) w.markAllDirty();
         if (ci.timer != .none) {
             w.cancelTimer(ci.timer);
             ci.timer = .none;
         }
-        const due = ci.semtok.nextDue() orelse return;
+        const a = ci.semtok.nextDue();
+        const b = ci.diag.nextDue();
+        const due = if (a != null and b != null) @min(a.?, b.?) else a orelse b orelse return;
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         const ms: u64 = @intCast(@max(1, @divFloor(due - now, std.time.ns_per_ms) + 1));
         ci.timer = w.setTimer(w.app.now_ms + ms, .{ .ctx = ci, .f = onTimer }) catch .none;
@@ -200,6 +229,10 @@ pub const CodeIntel = struct {
         const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
         ci.wake_posted.store(false, .release);
         if (ci.trusted) ci.tick();
+    }
+
+    fn onDocChange(ctx: *anyopaque, _: *const zg_editor.model.document.ChangeEvent) void {
+        wake(ctx);
     }
 
     fn syntaxOf(ctx: *anyopaque, h: DocHandle) ?*DocumentSyntax {
@@ -249,5 +282,11 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     }
     try testing.expectEqual(Manager.Status.missing, ci.mgr.serverList()[0].status);
     try testing.expectEqualStrings("zls", ci.mgr.serverList()[0].def.id);
+    // No server has the file: the agent's edit result gets nothing, at
+    // once.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const ad = ci.agentDiagnostics();
+    try testing.expect((try ad.after_edit(ad.ctx, rt.io, arena.allocator(), path)) == null);
     ci.close(h);
 }

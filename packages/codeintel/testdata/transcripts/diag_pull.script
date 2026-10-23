@@ -1,0 +1,16 @@
+# Pulled diagnostics: a full report with a related document, an
+# unchanged report after an edit (sent with the previous result id), then
+# a refresh and an empty full report.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "diagnosticProvider": {"interFileDependencies": true, "workspaceDiagnostics": false}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/diagnostic
+< {"id": $1, "result": {"kind": "full", "resultId": "r1", "items": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "severity": 1, "message": "first"}], "relatedDocuments": {"file:///${workspace}/other.zig": {"kind": "full", "items": [{"range": {"start": {"line": 3, "character": 1}, "end": {"line": 3, "character": 2}}, "severity": 2, "message": "in other"}]}}}}
+> textDocument/didChange
+> textDocument/diagnostic {"previousResultId": "r1"}
+< {"id": $1, "result": {"kind": "unchanged", "resultId": "r2"}}
+< {"id": 902, "method": "workspace/diagnostic/refresh"}
+> response {"id": 902, "result": null}
+> textDocument/diagnostic {"previousResultId": "r2"}
+< {"id": $1, "result": {"kind": "full", "resultId": "r3", "items": []}}
