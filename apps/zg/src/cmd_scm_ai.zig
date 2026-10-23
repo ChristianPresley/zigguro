@@ -5,7 +5,8 @@
 //!   sessions behind it, and prints it; `--apply` rewrites the change.
 //! - `zg scm ai resolve [REV]` (E09.F06.S02.T01) proposes a resolution
 //!   for every conflicted region of one change and prints them; `--apply`
-//!   rewrites the change when every region was resolved.
+//!   rewrites the change when every region was resolved, recording the
+//!   model as the author of the resolved lines (provenance).
 //!
 //! REV is a revset naming one commit (default `@`). The model comes from
 //! `--model`, `ZG_MODEL` or "sonnet", with keys from the environment (see
@@ -159,7 +160,7 @@ pub fn runWith(gpa: Allocator, io: Io, cwd: Io.Dir, args: Args, model: ports.Mod
     };
     return switch (args.cmd) {
         .describe => describeCmd(a, repo, target, args, model, model_name, meta, out, err),
-        .resolve => resolveCmd(gpa, io, a, repo, s, target, args, model, meta, out, err),
+        .resolve => resolveCmd(gpa, io, a, repo, s, target, args, model, model_name, who, meta, out, err),
     };
 }
 
@@ -265,7 +266,7 @@ fn describeError(e: anyerror, d: *const describe.Describer, err: *Io.Writer) !u8
     return 1;
 }
 
-fn resolveCmd(gpa: Allocator, io: Io, a: Allocator, repo: *zg_scm.Repo, s: *zg_scm.Store, target: ObjectId, args: Args, model: ports.ModelPort, meta: zg_scm.OpMeta, out: *Io.Writer, err: *Io.Writer) !u8 {
+fn resolveCmd(gpa: Allocator, io: Io, a: Allocator, repo: *zg_scm.Repo, s: *zg_scm.Store, target: ObjectId, args: Args, model: ports.ModelPort, model_name: []const u8, who: Who, meta: zg_scm.OpMeta, out: *Io.Writer, err: *Io.Writer) !u8 {
     var res: resolve.Resolver = .{ .gpa = gpa, .io = io, .store = s, .model = model };
     const run_ = res.proposeForChange(target) catch |e| switch (e) {
         error.NotConflicted => {
@@ -287,7 +288,12 @@ fn resolveCmd(gpa: Allocator, io: Io, a: Allocator, repo: *zg_scm.Repo, s: *zg_s
             const p = run_.proposal(i);
             dec.* = .{ .path = p.path, .region_idx = p.region_idx, .choice = .{ .accept = p.text } };
         }
-        const ap = try resolve.applyResolutions(repo, &run_.set, decisions, meta);
+        // Applied from the command line: the model wrote every region and
+        // the user accepted them by passing --apply.
+        const ap = try resolve.applyResolutionsWith(repo, &run_.set, decisions, meta, .{
+            .agent = .{ .kind = .agent, .name = "zg scm ai resolve", .model_id = model_name },
+            .human = zg_scm.prov.record.Actor.human(who.user, ""),
+        });
         var r = zg_scm.adopt.adopt(repo, ap.preview, meta) catch |e| {
             zg_scm.preview.discard(repo, ap.preview.op);
             return e;
@@ -499,6 +505,23 @@ test "zg scm ai resolve: proposes, then applies with --apply" {
     defer parsed.deinit();
     try testing.expectEqualStrings("ok", parsed.value.object.get("regions").?.array.items[0].object.get("status").?.string);
     try testing.expect(parsed.value.object.get("applied").? == .string);
+    {
+        // The resolved line is attributed to the model.
+        var repo_dir = try tmp.dir.openDir(io, "ws/.zg/repo", .{});
+        defer repo_dir.close(io);
+        var store_dir = try repo_dir.openDir(io, "store", .{});
+        defer store_dir.close(io);
+        const s = try zg_scm.Store.open(gpa, io, store_dir, .{ .fsync = false });
+        defer s.close();
+        const repo = try zg_scm.Repo.load(gpa, io, repo_dir, s, .{}, .head);
+        defer repo.close();
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const c = try zg_scm.operation.read(zg_scm.Change, s, arena.allocator(), repo.view().wcCommit("default").?);
+        const man = try zg_scm.prov.manifest.read(s, arena.allocator(), c.provenance.?);
+        const m = try man.find("src/a.txt").?.map(arena.allocator());
+        try testing.expect(!m.at(1).?.prov.eql(zg_scm.prov.attribution.inherited));
+    }
 
     // Resolved: nothing left to propose.
     out.clearRetainingCapacity();
