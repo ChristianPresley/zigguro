@@ -1,0 +1,14 @@
+// A parent theme for the include tests (authored for zigguro's tests).
+{
+  "name": "Fixture Base",
+  "type": "light",
+  "colors": {
+    "editor.background": "#ffffff",
+    "editor.foreground": "#202020",
+    "button.background": "#0055aa",
+  },
+  "tokenColors": [
+    { "scope": "comment", "settings": { "foreground": "#008000", "fontStyle": "italic" } },
+    { "scope": ["string", "constant.other.symbol"], "settings": { "foreground": "#a31515" } },
+  ],
+}
