@@ -34,9 +34,20 @@ The bar's defaults are in `InlineEditBar.Keys`, and the host can rebind them.
 The bar keeps the last 50 instructions per workspace. `History.save` and
 `History.load` write them one per line, with `\` and newlines escaped.
 
+## In the editor
+
+`agent.inlineEdit` (Ctrl+K Ctrl+I in the VS Code keymap, also in the
+palette) opens the bar over the selection, or over the current line when
+nothing is selected. `InlineEditHost` (`apps/zigguro/src/review/`) adds a
+three-row `block_above` decoration at the selection's first line and
+places the bar over those rows. The model is `ZG_INLINE_MODEL`, else
+`ZG_MODEL`, else `sonnet`. Accepting writes the open document through
+E05's `AgentEditSession`, as one undo step; the file is saved as usual.
+Edits to the document while the bar is open go to the session.
+
 ## Not yet
 
-- Hosting the bar above the selection (a `block_above` decoration) and
-  showing the live edits as a pending change both need EditorView hooks.
+- Showing the live edits as a pending change in the editor.
+- The instruction history is kept for the app's run only.
 - Predicted outputs: no E10 provider forwards a prediction yet.
 - Cassettes and the bench.

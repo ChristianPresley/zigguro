@@ -6,13 +6,14 @@
 //! or rejects the change at the caret, or all of a file's changes, from
 //! the command palette; an accepted hunk lands as one undo step.
 //!
-//! Each document with pending changes gets a decoration store, drawn by
-//! its editor, and a listener that rebases the changes through the
-//! user's typing (a hunk whose text the user changed turns conflicted
-//! and can only be rejected). When a document has none left the store
-//! goes away again. An editor already drawing another store (ghost-text
-//! completions) cannot show pending changes, so edits to it apply as
-//! before (`canPlace`).
+//! Each document with pending changes draws them in a decoration store:
+//! the editor's own (`Resolver.store`, shared with ghost text and the
+//! inline edit bar) or, without one, a store made for it that goes away
+//! when the document has none left. A listener rebases the changes
+//! through the user's typing (a hunk whose text the user changed turns
+//! conflicted and can only be rejected). An editor drawing a store this
+//! cannot reach, or with another block painter, cannot show pending
+//! changes, so edits to it apply as before (`canPlace`).
 //!
 //! UI thread only.
 
@@ -43,6 +44,9 @@ pub const PendingEdits = struct {
     pub const Resolver = struct {
         ctx: *anyopaque,
         view: *const fn (ctx: *anyopaque, doc: DocHandle) ?*EditorView,
+        /// The decoration store the editor of `doc` draws, created on
+        /// demand and listening to the document (null: none shared).
+        store: ?*const fn (ctx: *anyopaque, doc: DocHandle) ?*DecorationStore = null,
     };
 
     pub const Hook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void };
@@ -54,6 +58,8 @@ pub const PendingEdits = struct {
         view: *EditorView,
         doc: *Document,
         store: *DecorationStore,
+        /// Ours (else the editor's, shared).
+        owns_store: bool = true,
         store_listener: model.document.ListenerId,
         listener: model.document.ListenerId,
         changes: std.ArrayList(*PendingChange) = .empty,
@@ -82,7 +88,8 @@ pub const PendingEdits = struct {
     pub fn canPlace(pe: *PendingEdits, doc: DocHandle) bool {
         if (pe.entryOf(doc) != null) return true;
         const v = pe.resolver.view(pe.resolver.ctx, doc) orelse return false;
-        return v.decorations == null and v.block_painter == null;
+        if (v.block_painter != null) return false;
+        return v.decorations == null or pe.resolver.store != null;
     }
 
     /// Pending changes in all documents.
@@ -111,7 +118,7 @@ pub const PendingEdits = struct {
         const e = pe.entryOf(doc) orelse pe.newEntry(doc) catch return null;
         var name_buf: [32]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "agent.pending.{d}", .{e.owners}) catch unreachable;
-        const owner = e.store.registerOwner(name, 30) catch return null;
+        const owner = e.store.ownerByName(name) orelse e.store.registerOwner(name, 30) catch return null;
         e.owners += 1;
         return .{ .store = e.store, .owner = owner };
     }
@@ -125,7 +132,19 @@ pub const PendingEdits = struct {
 
     fn newEntry(pe: *PendingEdits, doc: DocHandle) !*Entry {
         const v = pe.resolver.view(pe.resolver.ctx, doc) orelse return error.NotOpen;
-        if (v.decorations != null or v.block_painter != null) return error.Busy;
+        if (v.block_painter != null) return error.Busy;
+        if (pe.resolver.store) |get| {
+            const store = get(pe.resolver.ctx, doc) orelse return error.Busy;
+            const e = try pe.gpa.create(Entry);
+            errdefer pe.gpa.destroy(e);
+            e.* = .{ .set = pe, .handle = doc, .view = v, .doc = v.doc, .store = store, .owns_store = false, .store_listener = undefined, .listener = undefined };
+            e.listener = try v.doc.subscribe(.{ .ctx = e, .onChange = onDocChange });
+            errdefer v.doc.unsubscribe(e.listener);
+            try pe.docs.append(pe.gpa, e);
+            v.block_painter = .{ .ctx = e, .paint = paintBlock };
+            return e;
+        }
+        if (v.decorations != null) return error.Busy;
         const e = try pe.gpa.create(Entry);
         errdefer pe.gpa.destroy(e);
         const store = try pe.gpa.create(DecorationStore);
@@ -149,13 +168,15 @@ pub const PendingEdits = struct {
         for (e.changes.items) |c| c.destroy();
         e.changes.deinit(pe.gpa);
         e.doc.unsubscribe(e.listener);
-        e.doc.unsubscribe(e.store_listener);
-        if (e.view.decorations == e.store) e.view.decorations = null;
         if (e.view.block_painter) |bp| if (bp.ctx == @as(?*anyopaque, e)) {
             e.view.block_painter = null;
         };
-        e.store.deinit();
-        pe.gpa.destroy(e.store);
+        if (e.owns_store) {
+            e.doc.unsubscribe(e.store_listener);
+            if (e.view.decorations == e.store) e.view.decorations = null;
+            e.store.deinit();
+            pe.gpa.destroy(e.store);
+        }
         pe.gpa.destroy(e);
     }
 
@@ -345,4 +366,53 @@ test "PendingEdits: places, rebases, accepts and rejects at the caret" {
     // Nothing left: the editor draws no store again.
     try testing.expect(view.decorations == null and view.block_painter == null);
     try testing.expectEqual(PendingEdits.Result.none, pe.acceptAt(view));
+}
+
+test "PendingEdits: draws in the editor's shared store and leaves it" {
+    const gpa = testing.allocator;
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), "one\ntwo\n");
+    defer doc.deinit();
+    const view = try EditorView.init(gpa, doc, .{});
+    defer view.deinit();
+    var store: DecorationStore = .init(gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    // Ghost text already draws here.
+    view.decorations = &store;
+    const handle: DocHandle = .{ .id = @enumFromInt(1), .gen = 1 };
+
+    const R = struct {
+        v: *EditorView,
+        s: *DecorationStore,
+        fn get(ctx: *anyopaque, _: DocHandle) ?*EditorView {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            return r.v;
+        }
+        fn getStore(ctx: *anyopaque, _: DocHandle) ?*DecorationStore {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            return r.s;
+        }
+    };
+    var r: R = .{ .v = view, .s = &store };
+    var pe: PendingEdits = .init(gpa, .{ .ctx = &r, .view = R.get, .store = R.getStore });
+    defer pe.deinit();
+    try testing.expect(pe.canPlace(handle));
+
+    const host = pe.host();
+    const pl = host.place(host.ctx, handle).?;
+    try testing.expect(pl.store == &store);
+    var cs = try model.edit.change_set.ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = 4, .end = 7 }, .text = "TWO" }});
+    defer cs.deinit();
+    const change = try PendingChange.create(gpa, doc, pl.store, pl.owner, &cs, doc.version, "Agent 1 edit", .{ .agent = 1 }, .{});
+    host.created(host.ctx, handle, change);
+    try testing.expect(view.block_painter != null);
+
+    view.setSelection(.caret(4));
+    try testing.expectEqual(PendingEdits.Result.done, pe.acceptAt(view));
+    const got = try doc.tree.copyRange(gpa, .{ .start = 0, .end = doc.len() });
+    defer gpa.free(got);
+    try testing.expectEqualStrings("one\nTWO\n", got);
+    // The shared store stays the editor's.
+    try testing.expect(view.decorations == @as(?*const DecorationStore, &store));
+    try testing.expect(view.block_painter == null);
 }
