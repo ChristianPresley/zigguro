@@ -79,6 +79,8 @@ pub const prov = struct {
     pub const manifest = @import("prov/manifest.zig");
     /// Edit events in, attribution maps out.
     pub const recorder = @import("prov/recorder.zig");
+    /// Attribution through rewrites and merges.
+    pub const remap = @import("prov/remap.zig");
 };
 /// AI workflows (F06): the ports other packages implement, and fakes.
 pub const ai = struct {
@@ -156,6 +158,7 @@ test {
     _ = @import("prov/attribution.zig");
     _ = @import("prov/manifest.zig");
     _ = @import("prov/recorder.zig");
+    _ = @import("prov/remap.zig");
     _ = @import("ai/testing/fake_model.zig");
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
