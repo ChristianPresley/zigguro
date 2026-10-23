@@ -74,6 +74,15 @@ pub const daily = struct {
     pub const renderTemplate = templates.renderTemplate;
     pub const listDailyNotes = notes.listDailyNotes;
 };
+/// Editor language features for notes (E08.F06.S02.T02): completion,
+/// hover previews, link navigation and diagnostics.
+pub const lang = struct {
+    pub const context = @import("lang/context.zig");
+    pub const completion = @import("lang/completion.zig");
+    pub const hover = @import("lang/hover.zig");
+    pub const link_nav = @import("lang/link_nav.zig");
+    pub const diagnostics = @import("lang/diagnostics.zig");
+};
 /// Agent tools and MCP resources over the vault (E08.F08.S02.T01).
 pub const ai = struct {
     pub const tools = @import("ai/tools.zig");
@@ -100,4 +109,5 @@ test {
     _ = @import("refactor/rename_test.zig");
     _ = @import("daily/daily_test.zig");
     _ = @import("ai/tools_test.zig");
+    _ = @import("lang/lang_test.zig");
 }
