@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200" font-family="Inter">
+<rect x="0" y="0" width="320" height="200" fill="#ffffff"/>
+<path d="M40 10 L40 170" fill="none" stroke="#333333" stroke-width="1"/>
+<path d="M40 170 L300 170" fill="none" stroke="#333333" stroke-width="1"/>
+<path d="M40 50 L300 50" fill="none" stroke="#999999" stroke-opacity="0.502" stroke-width="0.5" stroke-dasharray="2 2" stroke-dashoffset="1"/>
+<path d="M40 80 L300 80" fill="none" stroke="#999999" stroke-opacity="0.502" stroke-width="0.5" stroke-dasharray="2 2" stroke-dashoffset="1"/>
+<path d="M40 110 L300 110" fill="none" stroke="#999999" stroke-opacity="0.502" stroke-width="0.5" stroke-dasharray="2 2" stroke-dashoffset="1"/>
+<path d="M40 140 L300 140" fill="none" stroke="#999999" stroke-opacity="0.502" stroke-width="0.5" stroke-dasharray="2 2" stroke-dashoffset="1"/>
+<clipPath id="c1"><rect x="40" y="10" width="260" height="160"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M60 110 L90 110 L90 170 L60 170 Z" fill="#4c78a8"/>
+<path d="M120 60 L150 60 L150 170 L120 170 Z" fill="#4c78a8"/>
+<path d="M180 140 L210 140 L210 170 L180 170 Z" fill="#4c78a8"/>
+<path d="M240 30 L270 30 L270 170 L240 170 Z" fill="#4c78a8"/>
+<path d="M75 100 Q105 40 135 130 C160 150 180 20 255 40.125" fill="none" stroke="#e45756" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 3"/>
+</g>
+<path d="M258.333 40.125 C258.333 41.966 256.841 43.458 255 43.458 C253.159 43.458 251.667 41.966 251.667 40.125 C251.667 38.284 253.159 36.792 255 36.792 C256.841 36.792 258.333 38.284 258.333 40.125 Z" fill="#e45756"/>
+<text x="170" y="190" font-size="11" fill="#000000" text-anchor="middle">Revenue &lt;Q1 &amp; Q2&gt;</text>
+<text x="14" y="90" font-size="12" fill="#000000" text-anchor="middle" dominant-baseline="middle" font-weight="bold" font-family="Mono &amp; Co" transform="rotate(-90 14 90)">&quot;usd&quot; &apos;k&apos;</text>
+<text x="36" y="50" font-size="12" fill="#666666" text-anchor="end" dominant-baseline="hanging">tab	here</text>
+</svg>
