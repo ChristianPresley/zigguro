@@ -51,6 +51,8 @@ const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 const completions = @import("review/completions.zig");
+const inline_edit_bar = @import("review/inline_edit_bar.zig");
+const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
 
 const Ui = zg_gui.Ui;
@@ -103,6 +105,10 @@ pub const Workbench = struct {
     cur_panel: ?PanelRef = null,
     /// The completion provider, while attached to a window.
     completions_svc: ?*completions.Service = null,
+    /// The inline edit bar (Ctrl+K Ctrl+I), while open.
+    inline_edit: ?*InlineEditHost = null,
+    /// Its earlier instructions (created with the first bar).
+    inline_history: ?inline_edit_bar.History = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
     pending_open: ?[]u8 = null,
     /// The working folder (absolute).
@@ -204,6 +210,10 @@ pub const Workbench = struct {
         diff: ?*diff_model.DiffModel = null,
         /// Ghost-text completions while a window shows the editor.
         completions: ?*completions.EditorCompletions = null,
+        /// The decorations the editor draws (ghost text, the inline edit
+        /// bar's rows), once something needs them.
+        deco: ?*zg_editor.model.decorations.store.DecorationStore = null,
+        deco_listener: zg_editor.model.document.ListenerId = undefined,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -337,7 +347,17 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (wb.inline_edit) |h| if (h.view == f.view) {
+            h.destroy();
+            wb.inline_edit = null;
+        };
         if (f.completions) |c| c.detach();
+        if (f.deco) |d| {
+            f.doc.unsubscribe(f.deco_listener);
+            f.view.decorations = null;
+            d.deinit();
+            wb.gpa.destroy(d);
+        }
         var fm = f;
         if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         wb.setMode(&fm, .standard);
@@ -705,6 +725,9 @@ pub const Workbench = struct {
         wb.persister = null;
         // Floating panels come home before their windows close.
         if (wb.floater) |*fl| fl.closeAll();
+        // The inline edit bar edits through the agent's files.
+        if (wb.inline_edit) |h| h.destroy();
+        wb.inline_edit = null;
         // The panel stops the agent first: its tools may be waiting on
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
@@ -760,6 +783,7 @@ pub const Workbench = struct {
         // After the registry: its palette handlers point into it.
         if (wb.agent_cmds) |c| c.deinit();
         wb.diags.deinit();
+        if (wb.inline_history) |*h| h.deinit();
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
@@ -877,6 +901,7 @@ pub const Workbench = struct {
         .{ .id = "editor.toggleEmacs", .title = "Toggle Emacs Mode", .category = "Preferences", .run = toggleEmacs },
         .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
+        .{ .id = "agent.inlineEdit", .title = "Edit Selection Inline", .category = "AI", .run = inlineEditStart },
         .{ .id = "completions.trigger", .title = "Trigger Inline Completion", .category = "AI", .run = completionTrigger },
         .{ .id = "completions.acceptLine", .title = "Accept Next Line of Inline Completion", .category = "AI", .run = completionAcceptLine },
         .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
@@ -1221,7 +1246,8 @@ pub const Workbench = struct {
         const svc = wb.completions_svc orelse return;
         const w = wb.win orelse return;
         if (f.completions != null) return;
-        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, f.path) catch |e| blk: {
+        const store = wb.ensureDeco(f) catch |e| return log.warn("completions: {t}", .{e});
+        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, store, f.path) catch |e| blk: {
             log.warn("completions: {t}", .{e});
             break :blk null;
         };
@@ -1253,6 +1279,84 @@ pub const Workbench = struct {
         const svc = wb.completions_svc orelse return wb.notify(.info, "Inline completions need ZG_COMPLETION_URL or a model API key", .{});
         svc.enabled = !svc.enabled;
         if (!svc.enabled) for (wb.files.items) |f| if (f.completions) |c| c.ctl.dismiss(.escape);
+    }
+
+    /// `f`'s decoration store, created on first use (the view draws it).
+    fn ensureDeco(wb: *Workbench, f: *OpenFile) !*zg_editor.model.decorations.store.DecorationStore {
+        if (f.deco) |d| return d;
+        const d = try wb.gpa.create(zg_editor.model.decorations.store.DecorationStore);
+        errdefer wb.gpa.destroy(d);
+        d.* = .init(wb.gpa, f.doc);
+        errdefer d.deinit();
+        f.deco_listener = try f.doc.subscribe(d.listener());
+        f.deco = d;
+        f.view.decorations = d;
+        return d;
+    }
+
+    /// `agent.inlineEdit`: the inline edit bar over the selection (the
+    /// current line when nothing is selected).
+    fn inlineEditStart(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        const cp = wb.cur_panel orelse return;
+        const f = wb.fileOf(cp) orelse return;
+        const path = f.path orelse return wb.notify(.info, "Save the file before editing it inline", .{});
+        const handle = f.handle orelse return;
+        if (wb.inline_edit) |h| {
+            h.destroy();
+            wb.inline_edit = null;
+        }
+        try wb.startAgent(w);
+        const host = wb.agent.?;
+        const name = wb.env.get("ZG_INLINE_MODEL") orelse wb.env.get("ZG_MODEL") orelse "sonnet";
+        const info = host.models.resolve(name) orelse return wb.notify(.warning, "Inline edit: unknown model {s}", .{name});
+        const provider = host.hub.forModel(info) orelse return wb.notify(.warning, "Inline edit needs a model API key (ANTHROPIC_API_KEY, ...)", .{});
+        const store = try wb.ensureDeco(f);
+        const sel = f.view.primarySel();
+        var region: [2]usize = .{ @intCast(@min(sel.anchor, sel.head)), @intCast(@max(sel.anchor, sel.head)) };
+        if (region[0] == region[1]) {
+            const lr = f.view.lineRange(f.view.lineOf(region[0]));
+            region = .{ @intCast(lr.start), @intCast(lr.end) };
+        }
+        const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path });
+        defer wb.gpa.free(abs);
+        const rel = try std.fs.path.relative(wb.gpa, wb.cwd, null, host.review.root, abs);
+        defer wb.gpa.free(rel);
+        if (wb.inline_history == null) wb.inline_history = .init(wb.gpa);
+        wb.inline_edit = try InlineEditHost.open(wb.gpa, .{
+            .app = w.app,
+            .io = wb.io,
+            .view = f.view,
+            .store = store,
+            .path = rel,
+            .workspace = host.review.root,
+            .language = if (f.syntax) |sx| sx.lang.name else "",
+            .q = host.review.q,
+            .history = &host.review.history,
+            .inner = host.review.recording.files(),
+            .edits = &host.files.edits,
+            .handle = handle,
+            .provider = provider,
+            .model = info.id,
+            .ref = host.agent.ref,
+            .instructions = &wb.inline_history.?,
+            .hooks = .{ .ctx = wb, .to_agent = inlineToAgent, .changed = onStatusChanged },
+        }, region);
+    }
+
+    /// The inline edit bar handed its selection and instruction over.
+    fn inlineToAgent(ctx: *anyopaque, selection: []const u8, instruction: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (!wb.shown(wb.agent_ref)) wb.toggleAgent() catch |e| return log.warn("agent pane: {t}", .{e});
+        const p = wb.agent_panel orelse return;
+        const text = std.fmt.allocPrint(wb.gpa, "{s}\n\n```\n{s}\n```\n", .{ instruction, selection }) catch return;
+        defer wb.gpa.free(text);
+        p.input.setText(text) catch |e| log.warn("agent pane: {t}", .{e});
+    }
+
+    fn onStatusChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
     }
 
     fn closeEditorCmd(wb: *Workbench) !void {
@@ -1508,6 +1612,10 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
+        if (wb.inline_edit) |h| if (h.done) {
+            h.destroy();
+            wb.inline_edit = null;
+        };
         // Back in the window: files may have changed on disk.
         const focused = ui.win.chrome.focused;
         if (focused and !wb.was_focused) wb.checkFiles();
@@ -1646,8 +1754,10 @@ pub const Workbench = struct {
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
             defer ui.close();
             _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
+            const editor_node = ui.lastNode();
+            if (wb.inline_edit) |h| if (h.view == f.view and ui.window() == wb.win) h.build(ui);
             // Focus helpers act on the main window's nodes only.
-            f.node = if (ui.window() == wb.win) ui.lastNode() else .none;
+            f.node = if (ui.window() == wb.win) editor_node else .none;
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
