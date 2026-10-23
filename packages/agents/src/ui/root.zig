@@ -16,6 +16,9 @@ pub const automations_view = @import("automations_view.zig");
 /// The task board.
 pub const board = @import("board/board_view.zig");
 
+/// The artifact pane.
+pub const artifact_pane = @import("artifact_pane.zig");
+
 /// Standalone HTML export of Markdown documents.
 pub const export_html = @import("export_html.zig");
 
@@ -35,6 +38,7 @@ pub const MissionControl = mission_control.MissionControl;
 pub const TaskBoard = board.TaskBoard;
 pub const AutomationsView = automations_view.AutomationsView;
 pub const ToastBridge = toast_bridge.ToastBridge;
+pub const ArtifactPane = artifact_pane.ArtifactPane;
 pub const missionControl = mission_control.missionControl;
 
 test {
@@ -44,6 +48,7 @@ test {
     _ = @import("board/board_view_test.zig");
     _ = @import("doc_mode/doc_mode_view_test.zig");
     _ = @import("export_test.zig");
+    _ = @import("artifact_pane_test.zig");
     _ = @import("doc_mode/comments_view_test.zig");
     std.testing.refAllDecls(doc_mode);
 }
