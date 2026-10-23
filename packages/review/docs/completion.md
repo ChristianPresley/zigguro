@@ -191,6 +191,39 @@ While streaming, only complete lines count, and steps 1, 3 and 6 wait for
 the end. So the first whole line shows as soon as it arrives, and the
 ghost grows from there.
 
+## Ghost text
+
+`Controller` (one per editor) shows the engine's completions as E05
+`GhostText`. The host wires `Host.deliver` to `onDelivery` and
+`Host.failed` to `onFailed`, and forwards document changes to `onChange`,
+after the decoration store's listener. It also forwards caret moves that
+no edit made to `onCursorMove`, and reports the popup and focus.
+
+- Each delivery is post-processed, cache hits included. A drop while
+  streaming keeps the current ghost; a final drop removes it.
+- Typing the start of the ghost consumes it, and the engine keeps the
+  request in flight.
+- `accept(.all | .word | .line)` returns false when no ghost is visible, so
+  Tab falls through to the next binding (indent, snippet). An accept is
+  one undo group with the completion's origin. Accepting all of it asks for
+  the next completion at once.
+- While the LSP popup is open, the ghost is hidden unless `ghost_wins` is
+  set. `popupClosed` brings it back if the document did not change.
+- `snooze` adds 5 minutes each time. `status` gives the status bar's state:
+  ready, requesting, snoozed, disabled for the language, or unhealthy.
+
+| Command | Key | When |
+| --- | --- | --- |
+| `completions.accept` | Tab | a ghost is visible |
+| `completions.acceptWord` | Ctrl+Right (Cmd+Right) | a ghost is visible |
+| `completions.acceptLine` | none | a ghost is visible |
+| `completions.dismiss` | Escape | a ghost is visible |
+| `completions.trigger` | Alt+\\ | |
+| `completions.snooze` | none | |
+| `completions.toggle` | none | |
+
+The app registers the commands (E15).
+
 ## Telemetry
 
 `Telemetry` keeps counts in memory, and only counts: ghosts shown, full
