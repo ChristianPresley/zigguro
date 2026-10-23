@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zigguro.dev/schemas/automation-list.json",
+  "title": "zg automation list --json",
+  "type": "object",
+  "required": ["automations"],
+  "additionalProperties": false,
+  "properties": {
+    "automations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "enabled", "needs_approval", "triggers", "next_fires"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[^/\\\\]+$" },
+          "description": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "needs_approval": { "type": "boolean" },
+          "triggers": { "type": "string", "description": "The triggers in words." },
+          "next_fires": {
+            "type": "array",
+            "maxItems": 3,
+            "items": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$" }
+          },
+          "last_status": {
+            "type": "string",
+            "enum": ["fired", "overlap", "rate_limited", "disabled", "asleep_discarded", "budget_exhausted", "lease_lost", "chain_limit", "already_claimed", "failed"]
+          },
+          "problem": { "type": "string", "description": "file:line:column: message" }
+        }
+      }
+    }
+  }
+}
