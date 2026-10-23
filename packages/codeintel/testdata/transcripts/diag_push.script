@@ -1,0 +1,12 @@
+# Pushed diagnostics: a set for the open file, a push about text the
+# editor has edited since (mapped through the edit), then an empty push
+# that clears the file.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"version": 1}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file:///${workspace}/main.zig", "version": 1, "diagnostics": [{"range": {"start": {"line": 1, "character": 10}, "end": {"line": 1, "character": 11}}, "severity": 1, "message": "use of undeclared identifier 'x'\nmore detail", "source": "fake", "code": 42}, {"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "unused constant", "source": "fake", "tags": [1]}]}}
+> textDocument/didChange {"textDocument": {"version": 2}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file:///${workspace}/main.zig", "version": 1, "diagnostics": [{"range": {"start": {"line": 1, "character": 10}, "end": {"line": 1, "character": 11}}, "severity": 1, "message": "stale", "source": "fake"}]}}
+> textDocument/didChange {"textDocument": {"version": 3}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file:///${workspace}/main.zig", "version": 3, "diagnostics": []}}
