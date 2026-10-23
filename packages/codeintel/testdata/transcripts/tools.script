@@ -1,0 +1,12 @@
+# The agent's hover and definition requests: positions found from a name
+# (one line off) and from a column.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true}}}
+> initialized
+> textDocument/didOpen
+> textDocument/hover {"position": {"line": 1, "character": 6}}
+< {"id": $1, "result": {"contents": {"kind": "markdown", "value": "```zig\nconst b: u32\n```"}}}
+> textDocument/definition {"position": {"line": 1, "character": 15}}
+< {"id": $1, "result": [{"uri": "file:///${workspace}/main.zig", "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}}}]}
+> textDocument/hover {"position": {"line": 0, "character": 0}}
+< {"id": $1, "result": null}

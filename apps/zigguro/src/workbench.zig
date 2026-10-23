@@ -1472,7 +1472,10 @@ pub const Workbench = struct {
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
         // Edit results carry the language servers' diagnostics.
-        if (wb.codeintel) |ci| host.file_tools.diagnostics = ci.agentDiagnostics();
+        if (wb.codeintel) |ci| {
+            host.file_tools.diagnostics = ci.agentDiagnostics();
+            host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
+        }
         const pe = try wb.gpa.create(PendingEdits);
         pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc, .store = decoOfDoc });
         pe.on_change = .{ .ctx = wb, .f = onPendingChange };

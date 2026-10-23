@@ -39,6 +39,11 @@ pub const diagnostics = struct {
     pub const SettleDetector = @import("diagnostics/settle.zig");
 };
 
+/// Language-server tools for agents (zg_ai's foreign-tool contract).
+pub const agent = struct {
+    pub const tools = @import("agent/tools.zig");
+};
+
 /// LSP language ids for zg_syntax languages.
 pub const language = @import("language.zig");
 
@@ -55,4 +60,5 @@ test {
     _ = @import("features/features_test.zig");
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
+    _ = @import("agent/tools_test.zig");
 }

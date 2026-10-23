@@ -97,6 +97,11 @@ pub const AgentHost = struct {
     /// The connect running on a worker.
     mcp_task: ?Io.Future(void) = null,
 
+    /// Adds the language-server tools (E07); `e` must outlive the host.
+    pub fn addLanguageTools(h: *AgentHost, e: zg_ai.tools.adapters.foreign.Exporter) !void {
+        try h.adapters.registerAll(&h.tools, &.{ .lsp = e }, .{ .lsp = true, .debug = false, .tasks = false, .workspace = false, .notes = false, .scm = false, .mcp = false }, .{});
+    }
+
     /// An agent on the working folder whose file tools use the documents
     /// of `docs` and whose approvals go to `approvals` (which outlives the
     /// host). UI thread.
