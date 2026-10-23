@@ -664,3 +664,72 @@ test "view: focusEditor takes focus back from another widget" {
     f.view.focusEditor();
     try testing.expect(f.t.win.focus.eql(ed));
 }
+
+/// A text system that shapes: every grapheme is 10 px wide and a
+/// combining acute (U+0301) joins the character before it, so the only
+/// caret stops are at grapheme starts.
+const ShapingText = struct {
+    stops: [64]zg_gui.paint.text.CaretStop = undefined,
+    calls: u32 = 0,
+
+    fn system(s: *ShapingText) zg_gui.paint.TextSystem {
+        return .{ .ptr = s, .vtable = &.{ .metrics = metrics, .advance = advance, .glyph = glyph, .shape = shape, .carets = carets } };
+    }
+
+    fn metrics(_: *anyopaque, _: zg_gui.paint.text.TextStyle) zg_gui.paint.text.LineMetrics {
+        return .{ .ascent = 12, .descent = 4, .line_h = 16 };
+    }
+
+    fn advance(_: *anyopaque, _: zg_gui.paint.text.TextStyle, cp: u21) f32 {
+        return if (cp == 0x301) 0 else 10;
+    }
+
+    fn glyph(_: *anyopaque, _: zg_gui.paint.text.TextStyle, _: u21, _: zg_gui.core.Vec2) ?zg_gui.paint.canvas.GlyphQuad {
+        return null;
+    }
+
+    fn shape(_: *anyopaque, _: zg_gui.paint.text.TextStyle, _: []const u8) ?zg_gui.paint.text.Shaped {
+        return .{ .glyphs = &.{}, .width = 0 };
+    }
+
+    fn carets(p: *anyopaque, _: zg_gui.paint.text.TextStyle, s: []const u8, _: f32) ?[]const zg_gui.paint.text.CaretStop {
+        const self: *ShapingText = @ptrCast(@alignCast(p));
+        self.calls += 1;
+        var n: usize = 0;
+        var x: f32 = 0;
+        var it = (std.unicode.Utf8View.init(s) catch return null).iterator();
+        var i: usize = 0;
+        while (it.nextCodepointSlice()) |cs| : (i += cs.len) {
+            const cp = std.unicode.utf8Decode(cs) catch 0xfffd;
+            if (cp == 0x301) continue;
+            self.stops[n] = .{ .offset = @intCast(i), .x = x };
+            n += 1;
+            x += 10;
+        }
+        self.stops[n] = .{ .offset = @intCast(s.len), .x = x };
+        return self.stops[0 .. n + 1];
+    }
+};
+
+test "view: shaped rows place carets at grapheme stops" {
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), "e\u{301}xy");
+    defer doc.deinit();
+    const v = try EditorView.init(gpa, doc, .{});
+    defer v.deinit();
+    var sh: ShapingText = .{};
+    v.text_sys = sh.system();
+    const row = "e\u{301}xy";
+    // Byte 1 is inside the first grapheme: its caret is the grapheme's.
+    try testing.expectEqual(@as(f32, 0), v.xInLine(row, 1));
+    try testing.expectEqual(@as(f32, 10), v.xInLine(row, 3));
+    try testing.expectEqual(@as(f32, 30), v.xInLine(row, row.len));
+    // Hit testing never lands inside a grapheme.
+    try testing.expectEqual(@as(usize, 3), v.colAt(row, 8));
+    try testing.expectEqual(@as(usize, 0), v.colAt(row, 4));
+    try testing.expectEqual(@as(usize, row.len), v.colAt(row, 99));
+    // The row's stops are computed once.
+    try testing.expectEqual(@as(u32, 1), sh.calls);
+    // Unshaped, the advances add up per codepoint.
+    v.opts.shape_text = false;
+    try testing.expectEqual(@as(f32, 10), v.xInLine(row, 1));
+}
