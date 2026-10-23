@@ -164,6 +164,41 @@ snippets followed by the file with the cursor marked, sent at temperature
 import zg_ai, so the app binds a `ChatPort` to E10's `Provider.stream`.
 The app also builds providers from E10's ModelRegistry (role `completion`).
 
+## Post-processing
+
+`postprocess(arena, request, raw, final)` (E12.F07.S01.T04) turns model
+text into the ghost to show, or gives the reason to drop it:
+
+1. A cut-off end token at the end (`<|endoftext`, `<EOT`) is removed.
+2. Line endings follow the document: CRLF when the prefix has one.
+3. **Suffix overlap.** The longest tail of the completion's last line that
+   is how the rest of the cursor's line starts is cut, with spaces and
+   tabs ignored. For example, `foo(|)` with `bar)` shows `bar`.
+4. A single-line request keeps the first line.
+5. A multi-line request stops at the first line indented less than the
+   cursor's line, unless that line closes a bracket the completion opened.
+   It also stops at two blank lines in a row.
+6. Closers the completion has too many of are cut from its end when the
+   rest of the line already has them. Brackets are never added.
+7. It drops the text when it is empty or blank (`empty`,
+   `whitespace_only`), when it equals the line after the cursor's
+   (`duplicate_of_suffix`), when it repeats the line above
+   (`duplicate_of_prev_line`), or when its first line is over 1,000 bytes
+   (`too_long`).
+8. At most 30 lines are kept.
+
+While streaming, only complete lines count, and steps 1, 3 and 6 wait for
+the end. So the first whole line shows as soon as it arrives, and the
+ghost grows from there.
+
+## Telemetry
+
+`Telemetry` keeps counts in memory, and only counts: ghosts shown, full
+and partial accepts, characters accepted, and a latency histogram with
+log2 buckets. `acceptanceRate` and `p50Ms` feed the status bar's tooltip.
+`persist` adds a day's counts to `.zigguro/review/stats.zon` and keeps 90
+days. The file never holds code or paths, and nothing is sent anywhere.
+
 ## Bench
 
 `review.complete.build_request_100k` builds a request in the middle of a
@@ -173,3 +208,6 @@ budget is under 2 ms.
 `review.complete.scheduler_10k_keys` runs 10,000 keystrokes through the
 scheduler. It covers the UI thread's share of the time from keystroke to
 request.
+
+`review.complete.postprocess_20_lines` post-processes a 20-line multi-line
+completion. The budget is under 200 µs.

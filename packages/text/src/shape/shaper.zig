@@ -160,6 +160,7 @@ pub const Shaper = struct {
 /// Runs the whole pipeline over a filled buffer.
 pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
     const face = p.inst.face;
+    b.shaper_flag = false;
     for (b.infos.items) |*g| g.mask = p.global_mask;
     buffer.setUnicodeProps(b);
     buffer.formClusters(b);
@@ -244,6 +245,7 @@ pub fn run(p: *const ShapePlan, b: *Buffer) Allocator.Error!void {
 
     hideDefaultIgnorables(p, b);
     if (dir == .rtl) b.reverseRange(0, b.len());
+    if (p.complex.postprocessGlyphs) |f| try f(p, b, dir);
 }
 
 /// The horizontal direction `script` is written in; null for scripts
