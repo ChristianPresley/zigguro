@@ -11,6 +11,7 @@ pub const notify = @import("notify/root.zig");
 pub const sched = @import("sched/root.zig");
 pub const tasks = @import("tasks/root.zig");
 pub const docs = @import("docs/root.zig");
+pub const research = @import("research/root.zig");
 
 test {
     _ = runs;
@@ -19,4 +20,5 @@ test {
     _ = tasks;
     _ = sched;
     _ = docs;
+    _ = research;
 }
