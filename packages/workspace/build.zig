@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_ignore", .module = ignore },
+            .{ .name = "zg_regex", .module = b.dependency("zg_regex", f.args()).module("zg_regex") },
         },
         .bench = "bench/main.zig",
     });
