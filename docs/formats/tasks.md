@@ -115,6 +115,69 @@ An unknown key, an empty value, a bad status, priority, date or boolean,
 or an unclosed quote makes the whole query invalid; the board shows the
 error under the filter box instead of guessing.
 
+## Claims
+
+An agent claims a task before working on it, so two agents never work on
+the same one. A claim is a lock file, `.zigguro/tasks/.claims/T-0042.lock`
+(never committed: the folder has its own `.gitignore`):
+
+```
+run=01JABCDEFGHJKMNPQRSTVWXYZ0
+until=1792757700
+pid=4242
+host=virindi
+```
+
+- Claiming needs the task `ready` (or `backlog`, when a person starts an
+  agent on it from the board), every dependency finished, and no live
+  claim. The lock is written whole to a temporary file and renamed into
+  place without replacing, so exactly one claimer wins, across threads
+  and processes. The task then gets `status: in_progress` and
+  `claimed_by: <run>`.
+- A lease lasts 15 minutes. The app renews the leases of running agents
+  every 5 minutes; a claim not renewed within 30 seconds after it ends is
+  stale. The reaper (every minute) puts stale claims' tasks back in
+  `ready` and notes it in the task's agent log, so a crashed run's task
+  is free again within the lease plus a minute. Another claimer may also
+  take over a stale lock.
+- Releasing ends the claim: `done` and `review` set that status;
+  `failed` and `abandoned` put the task back in `ready` with a note.
+
+## Agent log
+
+Claims that expire, progress notes and completions are appended to a
+`## Agent log` section at the end of the task (added when missing):
+
+```markdown
+## Agent log
+
+- 01JABCDEFGHJKMNPQRSTVWXYZ0: parser done, writing tests
+- 01JABCDEFGHJKMNPQRSTVWXYZ0 finished (review): Fixed the parser and added 12 tests
+```
+
+These lines are written directly; every other change an agent makes to a
+task is a changeset for review.
+
+## Agent tools
+
+| Tool | Does |
+| --- | --- |
+| `task_list` | Tasks matching a query (default: open tasks by priority) |
+| `task_get` | A task's properties, blockers and body |
+| `task_create`, `task_update` | Propose a task or a change (reviewed) |
+| `task_claim`, `task_claim_next` | Claim a task, or the most urgent ready one matching a query |
+| `task_progress` | Add a note to the agent log |
+| `task_complete` | Finish with outcome `review` or `done` |
+| `task_release` | Give the task back, with the reason |
+
+`TaskCreated` and `TaskCompleted` hooks (settings `ai.hooks`, as in Claude
+Code) run before an agent creates or completes a task; exit code 2
+blocks it and stderr goes back to the agent.
+
+Starting an agent on a task (S on the board) claims the task for the new
+run, then runs the assignee's agent definition (`agent:<name>`) with the
+task as the prompt. Tasks labelled `code` run in their own lane.
+
 ## Budgets
 
 Measured by `zig build bench -- --filter tasks` in `packages/agents`:
