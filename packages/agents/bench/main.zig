@@ -36,6 +36,52 @@ fn registerSched(b: *bench.Bench) !void {
             }
         }
     }.f);
+    try registerTriggers(b);
+}
+
+/// `triggers/fire`: a file event matched against 50 automations' globs,
+/// then the poll after its debounce window that hands the fire to the
+/// port: the trigger-to-run-start latency the engine adds (budget 50 ms).
+fn registerTriggers(b: *bench.Bench) !void {
+    const sched = zg_agents.sched;
+    const gpa = std.heap.smp_allocator;
+    const Env = struct {
+        ms: i64 = 0,
+        fires: u64 = 0,
+        fn now(ctx: ?*anyopaque) i64 {
+            const e: *@This() = @ptrCast(@alignCast(ctx.?));
+            return e.ms;
+        }
+        fn fire(ctx: *anyopaque, _: []const u8, _: []const u8, _: sched.Scheduler.EventFire) anyerror!?u64 {
+            const e: *@This() = @ptrCast(@alignCast(ctx));
+            e.fires += 1;
+            return e.fires;
+        }
+        fn skip(_: *anyopaque, _: []const u8, _: sched.Scheduler.Skip) void {}
+    };
+    var env: Env = .{};
+    const t = try sched.TriggerEngine.init(gpa, b.io, .{ .ctx = &env, .fire = Env.fire, .skip = Env.skip }, .{ .clock = .{ .ctx = &env, .nowRealMs = Env.now } });
+    defer t.deinit();
+    var list: [50]sched.Automation = undefined;
+    var names: [50][8]u8 = undefined;
+    for (&list, 0..) |*a, i| a.* = .{
+        .name = std.fmt.bufPrint(&names[i], "a{d}", .{i}) catch unreachable,
+        .triggers = &.{.{ .files = .{ .globs = &.{ "src/**/*.{zig,zon}", "!src/gen/**" }, .debounce_ms = 100 } }},
+        .action = .{ .agent = .{ .prompt = "x" } },
+    };
+    try t.setAutomations(&list);
+    const Ctx = struct { t: *sched.TriggerEngine, env: *Env };
+    const ctx: Ctx = .{ .t = t, .env = &env };
+    try b.run("triggers/fire", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                c.t.onFileEvents(&.{.{ .path = "src/pkg/deep/file.zig", .kind = .modified }});
+                c.env.ms += 100;
+                bench.doNotOptimizeAway(c.t.poll());
+            }
+        }
+    }.f);
 }
 
 /// `notify/decide`: the policy and coalescing decision `post` makes
