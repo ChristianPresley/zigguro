@@ -766,6 +766,7 @@ pub fn load(r: *RunRegistry, lo: LoadOptions) !LoadReport {
             .ended_ms = row.ended_ms,
             .cost = row.cost,
             .revision = row.revision,
+            .pinned = row.pinned,
         });
         b.partial = true;
         try r.boxes.append(gpa, b);

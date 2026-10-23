@@ -57,7 +57,7 @@ pub fn writeUpdate(w: *std.Io.Writer, seq: u64, t: i64, u: Update) std.Io.Writer
             try s.objectField("status");
             try s.write(@tagName(st));
         },
-        .summary, .lane, .error_ => |txt| {
+        .summary, .lane, .error_, .title => |txt| {
             try s.objectField("text");
             try s.write(txt);
         },
@@ -80,6 +80,10 @@ pub fn writeUpdate(w: *std.Io.Writer, seq: u64, t: i64, u: Update) std.Io.Writer
         .started, .ended => |ms| {
             try s.objectField("at");
             try s.write(ms);
+        },
+        .pinned => |on| {
+            try s.objectField("on");
+            try s.write(on);
         },
     }
     try s.endObject();
@@ -129,6 +133,14 @@ pub fn decodeLine(arena: Allocator, line: []const u8) DecodeError!Line {
         break :blk .{ .update = .{ .summary = strField(o, "text") orelse return error.InvalidJournal } };
     } else if (std.mem.eql(u8, ty, "lane")) blk: {
         break :blk .{ .update = .{ .lane = strField(o, "text") orelse return error.InvalidJournal } };
+    } else if (std.mem.eql(u8, ty, "title")) blk: {
+        break :blk .{ .update = .{ .title = strField(o, "text") orelse return error.InvalidJournal } };
+    } else if (std.mem.eql(u8, ty, "pinned")) blk: {
+        const on = switch (o.get("on") orelse return error.InvalidJournal) {
+            .bool => |b| b,
+            else => return error.InvalidJournal,
+        };
+        break :blk .{ .update = .{ .pinned = on } };
     } else if (std.mem.eql(u8, ty, "error")) blk: {
         break :blk .{ .update = .{ .error_ = strField(o, "text") orelse return error.InvalidJournal } };
     } else if (std.mem.eql(u8, ty, "question")) blk: {
@@ -187,6 +199,8 @@ pub fn apply(gpa: Allocator, r: *RunRecord, u: Update) Allocator.Error!void {
         .error_ => |e| r.error_ = e,
         .started => |ms| r.started_ms = ms,
         .ended => |ms| r.ended_ms = ms,
+        .title => |t| r.spec.title = t,
+        .pinned => |on| r.pinned = on,
     }
     r.revision += 1;
 }
@@ -305,4 +319,19 @@ test "replay stops at a torn tail" {
     try testing.expectEqual(run.RunStatus.working, rp.record.status);
     try testing.expectEqual(@as(u8, '\n'), cut[rp.good_len - 1]);
     try testing.expectError(error.InvalidJournal, replay(arena.allocator(), "{\"v\":1}\n"));
+}
+
+test "title and pinned updates round trip" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var aw: std.Io.Writer.Allocating = .init(a);
+    const rec: RunRecord = .{ .id = .fromInt(7), .spec = .{ .kind = .background, .title = "old", .prompt = "p" }, .created_ms = 1 };
+    try writeCreate(&aw.writer, &rec);
+    try writeUpdate(&aw.writer, 2, 2, .{ .title = "new name" });
+    try writeUpdate(&aw.writer, 3, 3, .{ .pinned = true });
+    const rp = try replay(a, aw.written());
+    try testing.expectEqualStrings("new name", rp.record.spec.title);
+    try testing.expect(rp.record.pinned);
+    try testing.expectEqual(@as(u64, 3), rp.record.revision);
 }

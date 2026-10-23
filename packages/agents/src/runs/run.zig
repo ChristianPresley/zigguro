@@ -259,6 +259,8 @@ pub const RunRecord = struct {
     outputs: []const Output = &.{},
     error_: ?[]const u8 = null,
     /// Bumped by every change; the journal line sequence number.
+    /// Pinned to the top of Mission Control.
+    pinned: bool = false,
     revision: u64 = 1,
 };
 
@@ -274,6 +276,9 @@ pub const Update = union(enum) {
     error_: []const u8,
     started: i64,
     ended: i64,
+    /// Renames the run (`spec.title`).
+    title: []const u8,
+    pinned: bool,
 };
 
 pub const EventKind = enum { created, status, summary, cost, output, question, removed, changed };

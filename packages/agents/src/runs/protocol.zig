@@ -24,6 +24,12 @@ pub const methods = struct {
     pub const resume_ = "runs.resume";
     /// `ReplyParams` -> `Ok`
     pub const reply = "runs.reply";
+    /// `RenameParams` -> `Ok`
+    pub const rename = "runs.rename";
+    /// `PinParams` -> `Ok`
+    pub const pin = "runs.pin";
+    /// `RemoveParams` -> `Ok`: drops a terminal run from the list.
+    pub const remove = "runs.remove";
     /// `AdoptParams` -> `AdoptResult`: the host resumes runs another
     /// process paused and handed over.
     pub const adopt = "runs.adopt";
@@ -51,6 +57,9 @@ pub const IdParams = struct { id: run.RunId };
 pub const StartParams = struct { spec: run.RunSpec };
 pub const StopParams = struct { id: run.RunId, how: enum { graceful, now } = .graceful };
 pub const ReplyParams = struct { id: run.RunId, text: []const u8 };
+pub const RenameParams = struct { id: run.RunId, title: []const u8 };
+pub const PinParams = struct { id: run.RunId, on: bool = true };
+pub const RemoveParams = struct { id: run.RunId, delete_files: bool = false };
 pub const AdoptParams = struct { ids: []const run.RunId };
 pub const AdoptResult = struct { adopted: u32, failed: u32 };
 pub const SubscribeParams = struct { since: u64 = 0 };

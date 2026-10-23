@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const core = b.dependency("zg_core", f.args()).module("zg_core");
     const ai_dep = b.dependency("zg_ai", f.args());
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
-    _ = zg_build.addPackage(b, f, .{
+    const mod = zg_build.addPackage(b, f, .{
         .name = "zg_agents",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
@@ -16,4 +16,21 @@ pub fn build(b: *std.Build) void {
         },
         .bench = "bench/main.zig",
     });
+
+    // zg_agents_ui: Mission Control over zg_gui, a module of its own so
+    // headless consumers (zg, the agent host) never import a GUI package.
+    const ui = b.addModule("zg_agents_ui", .{
+        .root_source_file = b.path("src/ui/root.zig"),
+        .target = f.target,
+        .imports = &.{
+            .{ .name = "zg_agents", .module = mod },
+            .{ .name = "zg_gui", .module = b.dependency("zg_gui", f.args()).module("zg_gui") },
+            .{ .name = "zg_ai_proto", .module = ai_dep.module("zg_ai_proto") },
+        },
+    });
+    ui.addImport("zg_options", zg_build.optionsModule(b, f));
+    const ui_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_agents_ui", .root_module = zg_build.testModule(b, f, ui) }));
+    ui_tests.skip_foreign_checks = true;
+    b.step("test-ui", "Run the zg_agents_ui tests").dependOn(&ui_tests.step);
+    b.top_level_steps.get("test").?.step.dependOn(&ui_tests.step);
 }
