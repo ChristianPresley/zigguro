@@ -22,7 +22,7 @@ const Client = zg_lsp.client.Client;
 
 /// A workspace in a temp dir, a document registry and a manager whose
 /// only Zig server is the fake one playing `script`.
-const Harness = struct {
+pub const Harness = struct {
     rt: zg_core.Runtime,
     tmp: testing.TmpDir,
     ws_buf: [std.fs.max_path_bytes]u8,
@@ -32,7 +32,7 @@ const Harness = struct {
     docs: DocumentRegistry,
     mgr: Manager,
 
-    fn init(h: *Harness, script: []const u8, extra: []const Registry.Override) !void {
+    pub fn init(h: *Harness, script: []const u8, extra: []const Registry.Override) !void {
         h.rt.initTesting();
         const gpa = testing.allocator;
         h.tmp = testing.tmpDir(.{});
@@ -53,7 +53,7 @@ const Harness = struct {
         h.mgr.init(&h.rt, &h.reg, &h.docs, .{ .workspace_folders = (&h.ws)[0..1], .init_timeout = .fromSeconds(10) });
     }
 
-    fn deinit(h: *Harness) void {
+    pub fn deinit(h: *Harness) void {
         h.mgr.deinit();
         h.docs.deinit();
         h.reg.deinit();
@@ -62,7 +62,7 @@ const Harness = struct {
         _ = h.rt.deinit();
     }
 
-    fn open(h: *Harness, name: []const u8, text: []const u8) !DocHandle {
+    pub fn open(h: *Harness, name: []const u8, text: []const u8) !DocHandle {
         const path = try std.fs.path.join(testing.allocator, &.{ h.ws, name });
         defer testing.allocator.free(path);
         const d = try h.docs.openFile(path, text);
@@ -81,7 +81,7 @@ const Harness = struct {
         return error.Timeout;
     }
 
-    fn server(h: *Harness, id: []const u8) ?*Manager.Server {
+    pub fn server(h: *Harness, id: []const u8) ?*Manager.Server {
         for (h.mgr.serverList()) |s| if (std.mem.eql(u8, s.def.id, id)) return s;
         return null;
     }

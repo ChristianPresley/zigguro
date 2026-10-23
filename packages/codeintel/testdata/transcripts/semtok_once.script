@@ -1,0 +1,7 @@
+# One full result.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "semanticTokensProvider": {"legend": {"tokenTypes": ["variable", "function"], "tokenModifiers": ["readonly"]}, "full": {"delta": true}}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/semanticTokens/full
+< {"id": $1, "result": {"resultId": "1", "data": [0, 6, 1, 0, 1]}}
