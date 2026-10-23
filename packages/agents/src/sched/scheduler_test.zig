@@ -408,13 +408,13 @@ test "manual and event fires share the policy" {
     _ = f.at(t0);
     try testing.expectEqual(@as(u64, 1), try f.s.fireNow("ev"));
     try testing.expectEqual(Scheduler.FireReason.manual, f.runner.fires.items[0].reason);
-    try testing.expectEqual(@as(?u64, 2), try f.s.fireEvent("ev", "{\"event\":\"files\"}", 1));
+    try testing.expectEqual(@as(?u64, 2), try f.s.fireEvent("ev", "{\"event\":\"files\"}", .{ .depth = 1 }));
     try testing.expectEqualStrings("{\"event\":\"files\"}", f.runner.payloads.items[1].?);
-    try testing.expectEqual(@as(?u64, null), try f.s.fireEvent("ev", null, 3));
+    try testing.expectEqual(@as(?u64, null), try f.s.fireEvent("ev", null, .{ .depth = 3 }));
     try testing.expectEqual(@as(u32, 1), f.runner.warnings);
     f.runner.running = true;
     try testing.expectError(error.AlreadyRunning, f.s.fireNow("ev"));
-    try testing.expectEqual(@as(?u64, null), try f.s.fireEvent("ev", null, 0));
+    try testing.expectEqual(@as(?u64, null), try f.s.fireEvent("ev", null, .{}));
     try testing.expectError(error.UnknownAutomation, f.s.fireNow("nope"));
     f.runner.running = false;
     a.enabled = false;
