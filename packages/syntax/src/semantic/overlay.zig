@@ -40,7 +40,8 @@ pub const default_keep = [_]HighlightId{ .comment, .string, .character };
 pub const max_log = 64;
 
 const LineEntry = struct {
-    toks: []SemToken = &.{},
+    /// Points into one of `SemanticOverlay.bufs`.
+    toks: []const SemToken = &.{},
     /// Version of the last edit touching the line (0: never edited).
     edited_at: u64 = 0,
 };
@@ -52,6 +53,11 @@ pub const SemanticOverlay = struct {
     /// Column units of the server's positions.
     enc: Encoding = .utf16,
     lines: std.ArrayList(LineEntry) = .empty,
+    /// The token storage: one buffer per installed result, so a result
+    /// costs one allocation rather than one per line. A full result
+    /// replaces every line and frees the older buffers; range results add
+    /// buffers until `max_bufs`, then the live tokens are compacted.
+    bufs: std.ArrayList([]SemToken) = .empty,
     /// The last full or delta result, for applying the next delta.
     raw: std.ArrayList(u32) = .empty,
     result_id: ?[]u8 = null,
@@ -72,7 +78,8 @@ pub const SemanticOverlay = struct {
 
     /// Frees everything.
     pub fn deinit(o: *SemanticOverlay) void {
-        for (o.lines.items) |l| o.gpa.free(l.toks);
+        for (o.bufs.items) |b| o.gpa.free(b);
+        o.bufs.deinit(o.gpa);
         o.lines.deinit(o.gpa);
         o.raw.deinit(o.gpa);
         if (o.result_id) |r| o.gpa.free(r);
@@ -127,7 +134,6 @@ pub const SemanticOverlay = struct {
             const removed: usize = @intCast(e.removed);
             const inserted: usize = @intCast(e.inserted);
             std.debug.assert(first + removed <= o.lines.items.len);
-            for (o.lines.items[first..][0..removed]) |l| o.gpa.free(l.toks);
             try o.lines.ensureUnusedCapacity(o.gpa, inserted -| removed);
             const fill = [_]LineEntry{.{ .edited_at = new_version }} ** 16;
             // Replace the removed entries with stale ones, 16 at a time.
@@ -238,8 +244,12 @@ pub const SemanticOverlay = struct {
         std.debug.assert(src.lines == o.lines.items.len);
         var scratch: std.ArrayList(u8) = .empty;
         defer scratch.deinit(o.gpa);
-        var cur: std.ArrayList(SemToken) = .empty;
-        defer cur.deinit(o.gpa);
+        // Every token of the result, then where each line's run is.
+        var store: std.ArrayList(SemToken) = .empty;
+        defer store.deinit(o.gpa);
+        const Run = struct { line: u64, off: u32, len: u32 };
+        var runs: std.ArrayList(Run) = .empty;
+        defer runs.deinit(o.gpa);
         // Current-coordinate lines the result covers, as [lo, hi).
         var lo: u64 = 0;
         var hi: u64 = o.lines.items.len;
@@ -247,13 +257,15 @@ pub const SemanticOverlay = struct {
             lo = o.mapForward(version, r[0]);
             hi = @min(hi, o.mapForward(version, r[1]));
         }
-        // Lines in [lo, hi) not reached by any token are cleared.
-        var next_clear: u64 = lo;
+        try store.ensureTotalCapacity(o.gpa, data.len / 5);
 
         var line: u64 = 0;
         var col: u32 = 0;
         var cur_line: ?u64 = null;
+        var run_start: usize = 0;
         var text: []const u8 = "";
+        var ascii = true;
+        const no_log = o.log.items.len == 0 or o.log.items[o.log.items.len - 1].version <= version;
         var k: usize = 0;
         while (k + 5 <= data.len) : (k += 5) {
             const dl = data[k];
@@ -261,26 +273,71 @@ pub const SemanticOverlay = struct {
             line += dl;
             col +%= data[k + 1];
             const len = data[k + 2];
-            const target = o.mapLine(version, line) orelse continue;
+            const target = if (no_log) line else o.mapLine(version, line) orelse continue;
             if (target < lo or target >= hi) continue;
             if (cur_line == null or cur_line.? != target) {
-                if (cur_line) |c| try o.setLine(c, cur.items, version);
-                cur.clearRetainingCapacity();
-                while (next_clear < target) : (next_clear += 1) try o.setLine(next_clear, &.{}, version);
-                next_clear = target + 1;
+                if (cur_line) |c| try runs.append(o.gpa, .{ .line = c, .off = @intCast(run_start), .len = @intCast(store.items.len - run_start) });
+                run_start = store.items.len;
                 cur_line = target;
                 text = try src.get(target, &scratch, o.gpa);
+                ascii = allAscii(text);
             }
-            var s: u32 = @intCast(zg_core.utf8.columnToByte(text, col, o.enc));
-            const e: u32 = @intCast(zg_core.utf8.columnToByte(text, col +| len, o.enc));
-            if (cur.items.len > 0) s = @max(s, cur.items[cur.items.len - 1].end);
+            // On an ASCII line every encoding's columns are bytes.
+            var s: u32 = if (ascii) @min(col, @as(u32, @intCast(text.len))) else @intCast(zg_core.utf8.columnToByte(text, col, o.enc));
+            const e: u32 = if (ascii) @min(col +| len, @as(u32, @intCast(text.len))) else @intCast(zg_core.utf8.columnToByte(text, col +| len, o.enc));
+            const run = store.items[run_start..];
+            if (run.len > 0) s = @max(s, run[run.len - 1].end);
             if (s >= e) continue;
             const hl = try legend.resolve(data[k + 3], data[k + 4]);
             if (hl == .none) continue;
-            try cur.append(o.gpa, .{ .start = s, .end = e, .hl = hl });
+            try store.append(o.gpa, .{ .start = s, .end = e, .hl = hl });
         }
-        if (cur_line) |c| try o.setLine(c, cur.items, version);
-        while (next_clear < hi) : (next_clear += 1) try o.setLine(next_clear, &.{}, version);
+        if (cur_line) |c| try runs.append(o.gpa, .{ .line = c, .off = @intCast(run_start), .len = @intCast(store.items.len - run_start) });
+
+        const buf = try store.toOwnedSlice(o.gpa);
+        o.bufs.append(o.gpa, buf) catch |err| {
+            o.gpa.free(buf);
+            return err;
+        };
+        // Lines in [lo, hi) not reached by any token are cleared; a line
+        // edited after `version` keeps having no tokens.
+        var next_clear: u64 = lo;
+        for (runs.items) |r| {
+            while (next_clear < r.line) : (next_clear += 1) o.setLine(next_clear, &.{}, version);
+            next_clear = r.line + 1;
+            o.setLine(r.line, buf[r.off..][0..r.len], version);
+        }
+        while (next_clear < hi) : (next_clear += 1) o.setLine(next_clear, &.{}, version);
+        if (range == null) {
+            // Every line now points into `buf` or has no tokens.
+            for (o.bufs.items[0 .. o.bufs.items.len - 1]) |b| o.gpa.free(b);
+            o.bufs.replaceRangeAssumeCapacity(0, o.bufs.items.len - 1, &.{});
+        } else if (o.bufs.items.len > max_bufs) try o.compact();
+    }
+
+    fn allAscii(t: []const u8) bool {
+        for (t) |c| if (c >= 0x80) return false;
+        return true;
+    }
+
+    /// Range results kept as separate buffers before compacting.
+    const max_bufs = 8;
+
+    /// Copies the live tokens into one buffer and frees the others.
+    fn compact(o: *SemanticOverlay) Allocator.Error!void {
+        var n: usize = 0;
+        for (o.lines.items) |l| n += l.toks.len;
+        const buf = try o.gpa.alloc(SemToken, n);
+        try o.bufs.ensureUnusedCapacity(o.gpa, 1);
+        var at: usize = 0;
+        for (o.lines.items) |*l| {
+            @memcpy(buf[at..][0..l.toks.len], l.toks);
+            l.toks = buf[at..][0..l.toks.len];
+            at += l.toks.len;
+        }
+        for (o.bufs.items) |b| o.gpa.free(b);
+        o.bufs.clearRetainingCapacity();
+        o.bufs.appendAssumeCapacity(buf);
     }
 
     /// Maps a line boundary of `version` forward (edited lines map to the
@@ -303,13 +360,11 @@ pub const SemanticOverlay = struct {
         return l;
     }
 
-    fn setLine(o: *SemanticOverlay, line: u64, toks: []const SemToken, version: u64) Allocator.Error!void {
+    fn setLine(o: *SemanticOverlay, line: u64, toks: []const SemToken, version: u64) void {
         const entry = &o.lines.items[@intCast(line)];
         // A line edited after `version` keeps having no tokens.
         if (entry.edited_at > version) return;
-        const dup = try o.gpa.dupe(SemToken, toks);
-        o.gpa.free(entry.toks);
-        entry.toks = dup;
+        entry.toks = toks;
     }
 
     /// Lays `line`'s semantic tokens over its `lexical` tokens (`line_len`
