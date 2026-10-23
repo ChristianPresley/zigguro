@@ -22,6 +22,7 @@ fn register(b: *bench.Bench) !void {
     try registerVector(b);
     try registerChart(b);
     try registerGrid(b);
+    try registerDiagram(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -686,6 +687,31 @@ fn registerGrid(b: *bench.Bench) !void {
                 c.g.table.moveTo(c.at, 1, .replace);
                 c.t.win.markAllDirty();
                 bench.doNotOptimizeAway(c.t.frame());
+            }
+        }
+    }.f);
+}
+
+/// `diagram/flowchart_parse_300`: parsing a 300-node, 600-edge flowchart
+/// (budget 1 ms).
+fn registerDiagram(b: *bench.Bench) !void {
+    const zg_diagram = @import("zg_diagram");
+    const gpa = std.heap.smp_allocator;
+    var w: std.Io.Writer.Allocating = .init(gpa);
+    defer w.deinit();
+    try w.writer.writeAll("flowchart TB\n");
+    for (0..300) |i| try w.writer.print("  n{d}[\"Step {d}\"] --> n{d}\n  n{d} -.->|retry| n{d}\n", .{ i, i, (i + 1) % 300, i, (i * 7 + 3) % 300 });
+    const Ctx = struct { src: []const u8 };
+    var ctx: Ctx = .{ .src = w.written() };
+    try b.run("diagram/flowchart_parse_300", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                var diags: std.ArrayList(zg_diagram.Diagnostic) = .empty;
+                const d = zg_diagram.parse(arena.allocator(), c.src, &diags) catch unreachable;
+                bench.doNotOptimizeAway(d.?.edges.len);
             }
         }
     }.f);
