@@ -56,8 +56,9 @@ pub const Host = struct {
     /// The document as it is now, copied into `arena` (or `null` when it is
     /// gone).
     snapshot: *const fn (ctx: *anyopaque, doc: u64, arena: Allocator) anyerror!?Snapshot,
-    /// Runs `f(arg)` on the UI thread soon; callable from any thread.
-    post: *const fn (ctx: *anyopaque, f: *const fn (*anyopaque) void, arg: *anyopaque) void,
+    /// Runs `CompletionEngine.runPosted(arg)` on the UI thread soon;
+    /// callable from any thread.
+    post: *const fn (ctx: *anyopaque, arg: *anyopaque) void,
     deliver: *const fn (ctx: *anyopaque, d: Delivery) void,
     /// The provider failed (status bar); `null` when it recovered.
     failed: ?*const fn (ctx: *anyopaque, err: anyerror) void = null,
@@ -159,6 +160,11 @@ pub const CompletionEngine = struct {
         var due: [8]scheduler.Trigger = undefined;
         const n = e.sched.poll(now, &due);
         for (due[0..n]) |t| try e.start(t, now);
+    }
+
+    /// What `Host.post` runs on the UI thread.
+    pub fn runPosted(arg: *anyopaque) void {
+        Request.drainFn(arg);
     }
 
     /// Requests in flight (tests, status).
@@ -274,7 +280,7 @@ const Request = struct {
 
     fn schedule(r: *Request) void {
         if (r.posted.swap(true, .acq_rel)) return;
-        r.engine.host.post(r.engine.host.ctx, drainFn, r);
+        r.engine.host.post(r.engine.host.ctx, r);
     }
 
     fn drainFn(ctx: *anyopaque) void {
