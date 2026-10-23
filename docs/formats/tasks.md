@@ -178,6 +178,46 @@ Starting an agent on a task (S on the board) claims the task for the new
 run, then runs the assignee's agent definition (`agent:<name>`) with the
 task as the prompt. Tasks labelled `code` run in their own lane.
 
+## GitHub Issues
+
+A workspace's tasks can sync with one repository's issues, from the app
+or with `zg tasks gh pull|push|publish|status` (token in `GITHUB_TOKEN`
+or `GH_TOKEN`; `--repo OWNER/NAME` the first time).
+
+| Task | Issue |
+| --- | --- |
+| `title` (and the body's first `# ` heading) | title |
+| the body below it, without `## Agent log` | body |
+| `done` / `cancelled` / anything else | closed as completed / closed as not planned / open |
+| `labels` | labels (a set, ignoring case) |
+| `assignee` (a person) | the first assignee |
+
+- **Pull** imports open issues as `backlog` tasks with
+  `github: owner/repo#N` (closed issues and pull requests are not
+  imported) and brings changes to linked tasks. An issue reopened on
+  GitHub reopens a finished task as `ready`; an open task keeps its
+  status. Only issues updated since the last pull are fetched, so an
+  unchanged repository costs one request answered `304 Not Modified`.
+- **Push** sends local changes of linked tasks. A task whose issue was
+  deleted on GitHub is unlinked and kept.
+- **Publish** creates an issue for a task. Only a person's "Publish to
+  GitHub" does this; pull and push never create issues.
+- `--label` (setting `labels_filter`) limits the sync to issues with
+  those labels, and published tasks get them.
+
+Each field merges against the last values both sides agreed on. A field
+changed on one side is copied to the other. A field changed on both
+sides, to different values, is a **conflict**: neither side is
+overwritten, and a review item shows both (accepting it takes GitHub's
+value). Labels never conflict: what either side added is kept and what
+either side removed is dropped. The agent log and an `agent:*` assignee
+stay local. Requests are paced as GitHub asks: one at a time, a second
+apart for writes, and rate limits waited out.
+
+The sync's state (the agreed values, as hashes for the title and body,
+and the list's ETag) is `.zigguro/state/gh_sync.zon`, rewritten
+atomically after each pull, push or publish.
+
 ## Budgets
 
 Measured by `zig build bench -- --filter tasks` in `packages/agents`:
