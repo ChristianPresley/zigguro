@@ -1,0 +1,10 @@
+# Document links: a web link, one resolved on click, an allowed command
+# and a command that is not on the allowlist.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1, "documentLinkProvider": {"resolveProvider": true}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/documentLink
+< {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 14}}, "target": "https://ziglang.org"}, {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}}, "data": {"n": 1}}, {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 4}}, "target": "command:zig.build"}, {"range": {"start": {"line": 2, "character": 5}, "end": {"line": 2, "character": 9}}, "target": "command:rm.rf?%5B%5D"}]}
+> documentLink/resolve {"data": {"n": 1}}
+< {"id": $1, "result": {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}}, "target": "file:///w/b.zig"}}

@@ -35,6 +35,10 @@ pub const TextStyle = struct {
 /// the line's pen (y down).
 pub const ShapedGlyph = struct { id: u32, x: f32, y: f32 = 0 };
 
+/// A caret position in a shaped line: before the grapheme starting at
+/// byte `offset` (the line's end for the last stop), `x` from the pen.
+pub const CaretStop = struct { offset: u32, x: f32 };
+
 /// A shaped line.
 pub const Shaped = struct { glyphs: []const ShapedGlyph, width: f32 };
 
@@ -64,6 +68,12 @@ pub const TextSystem = struct {
         shaped_glyph: ?*const fn (*anyopaque, TextStyle, id: u32, pen: Vec2) ?GlyphQuad = null,
         /// The shaped width of one line (cached by the system).
         shaped_width: ?*const fn (*anyopaque, TextStyle, s: []const u8) f32 = null,
+        /// The caret stops of one shaped line (no newlines) in logical
+        /// order, at grapheme boundaries and inside ligatures where the
+        /// font says, ending with `s.len`; tabs advance to multiples of
+        /// `tab_w` px (0: eight spaces). Valid until the next `shape` or
+        /// `carets`; null when shaping fails.
+        carets: ?*const fn (*anyopaque, TextStyle, s: []const u8, tab_w: f32) ?[]const CaretStop = null,
     };
 
     /// Whether `st` is shaped by this system.
@@ -75,6 +85,13 @@ pub const TextSystem = struct {
     pub fn shape(t: TextSystem, st: TextStyle, s: []const u8) ?Shaped {
         if (!t.shapes(st)) return null;
         return t.vtable.shape.?(t.ptr, st, s);
+    }
+
+    /// See `VTable.carets`; null when `st` is not shaped.
+    pub fn carets(t: TextSystem, st: TextStyle, s: []const u8, tab_w: f32) ?[]const CaretStop {
+        if (!t.shapes(st)) return null;
+        const f = t.vtable.carets orelse return null;
+        return f(t.ptr, st, s, tab_w);
     }
 
     /// See `VTable.shaped_glyph`.

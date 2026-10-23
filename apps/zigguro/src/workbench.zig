@@ -38,6 +38,7 @@ const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
+const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
@@ -51,6 +52,8 @@ const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
 const completions = @import("review/completions.zig");
+const inline_edit_bar = @import("review/inline_edit_bar.zig");
+const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
 
 const Ui = zg_gui.Ui;
@@ -103,6 +106,10 @@ pub const Workbench = struct {
     cur_panel: ?PanelRef = null,
     /// The completion provider, while attached to a window.
     completions_svc: ?*completions.Service = null,
+    /// The inline edit bar (Ctrl+K Ctrl+I), while open.
+    inline_edit: ?*InlineEditHost = null,
+    /// Its earlier instructions (created with the first bar).
+    inline_history: ?inline_edit_bar.History = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
     pending_open: ?[]u8 = null,
     /// The working folder (absolute).
@@ -140,6 +147,9 @@ pub const Workbench = struct {
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
+    /// Agent edits waiting in their editors (inline review; with the
+    /// agent).
+    pending_edits: ?*PendingEdits = null,
     /// Code block colours in the agent's replies (with the panel).
     md_highlight: ?zg_editor.view.MarkdownHighlighter = null,
     /// Slash commands and skills, in the palette and the agent prompt.
@@ -204,6 +214,10 @@ pub const Workbench = struct {
         diff: ?*diff_model.DiffModel = null,
         /// Ghost-text completions while a window shows the editor.
         completions: ?*completions.EditorCompletions = null,
+        /// The decorations the editor draws (ghost text, the inline edit
+        /// bar's rows), once something needs them.
+        deco: ?*zg_editor.model.decorations.store.DecorationStore = null,
+        deco_listener: zg_editor.model.document.ListenerId = undefined,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -337,7 +351,18 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (wb.inline_edit) |h| if (h.view == f.view) {
+            h.destroy();
+            wb.inline_edit = null;
+        };
+        if (wb.pending_edits) |pe| pe.dropView(f.view);
         if (f.completions) |c| c.detach();
+        if (f.deco) |d| {
+            f.doc.unsubscribe(f.deco_listener);
+            f.view.decorations = null;
+            d.deinit();
+            wb.gpa.destroy(d);
+        }
         var fm = f;
         if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         wb.setMode(&fm, .standard);
@@ -705,6 +730,9 @@ pub const Workbench = struct {
         wb.persister = null;
         // Floating panels come home before their windows close.
         if (wb.floater) |*fl| fl.closeAll();
+        // The inline edit bar edits through the agent's files.
+        if (wb.inline_edit) |h| h.destroy();
+        wb.inline_edit = null;
         // The panel stops the agent first: its tools may be waiting on
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
@@ -720,6 +748,13 @@ pub const Workbench = struct {
         if (wb.agent_cmds) |c| c.target = null;
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
+        // After the agent (its file tools place changes here), before the
+        // editors the changes draw in.
+        if (wb.pending_edits) |pe| {
+            pe.deinit();
+            wb.gpa.destroy(pe);
+        }
+        wb.pending_edits = null;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
         if (wb.approvals_inbox) |i| i.destroy();
@@ -760,6 +795,7 @@ pub const Workbench = struct {
         // After the registry: its palette handlers point into it.
         if (wb.agent_cmds) |c| c.deinit();
         wb.diags.deinit();
+        if (wb.inline_history) |*h| h.deinit();
         wb.keys.deinit();
         for (wb.files.items) |f| wb.closeFile(f);
         wb.files.deinit(wb.gpa);
@@ -877,6 +913,12 @@ pub const Workbench = struct {
         .{ .id = "editor.toggleEmacs", .title = "Toggle Emacs Mode", .category = "Preferences", .run = toggleEmacs },
         .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
+        .{ .id = "agent.inlineEdit", .title = "Edit Selection Inline", .category = "AI", .run = inlineEditStart },
+        .{ .id = "agent.toggleInlineReview", .title = "Toggle Inline Review of Agent Edits", .category = "Agent", .run = toggleInlineReview },
+        .{ .id = "agent.acceptChange", .title = "Accept Agent Change", .category = "Agent", .run = acceptAgentChange },
+        .{ .id = "agent.rejectChange", .title = "Reject Agent Change", .category = "Agent", .run = rejectAgentChange },
+        .{ .id = "agent.acceptAllChanges", .title = "Accept All Agent Changes in File", .category = "Agent", .run = acceptAllAgentChanges },
+        .{ .id = "agent.rejectAllChanges", .title = "Reject All Agent Changes in File", .category = "Agent", .run = rejectAllAgentChanges },
         .{ .id = "completions.trigger", .title = "Trigger Inline Completion", .category = "AI", .run = completionTrigger },
         .{ .id = "completions.acceptLine", .title = "Accept Next Line of Inline Completion", .category = "AI", .run = completionAcceptLine },
         .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
@@ -1221,7 +1263,8 @@ pub const Workbench = struct {
         const svc = wb.completions_svc orelse return;
         const w = wb.win orelse return;
         if (f.completions != null) return;
-        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, f.path) catch |e| blk: {
+        const store = wb.ensureDeco(f) catch |e| return log.warn("completions: {t}", .{e});
+        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, store, f.path) catch |e| blk: {
             log.warn("completions: {t}", .{e});
             break :blk null;
         };
@@ -1253,6 +1296,84 @@ pub const Workbench = struct {
         const svc = wb.completions_svc orelse return wb.notify(.info, "Inline completions need ZG_COMPLETION_URL or a model API key", .{});
         svc.enabled = !svc.enabled;
         if (!svc.enabled) for (wb.files.items) |f| if (f.completions) |c| c.ctl.dismiss(.escape);
+    }
+
+    /// `f`'s decoration store, created on first use (the view draws it).
+    fn ensureDeco(wb: *Workbench, f: *OpenFile) !*zg_editor.model.decorations.store.DecorationStore {
+        if (f.deco) |d| return d;
+        const d = try wb.gpa.create(zg_editor.model.decorations.store.DecorationStore);
+        errdefer wb.gpa.destroy(d);
+        d.* = .init(wb.gpa, f.doc);
+        errdefer d.deinit();
+        f.deco_listener = try f.doc.subscribe(d.listener());
+        f.deco = d;
+        f.view.decorations = d;
+        return d;
+    }
+
+    /// `agent.inlineEdit`: the inline edit bar over the selection (the
+    /// current line when nothing is selected).
+    fn inlineEditStart(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        const cp = wb.cur_panel orelse return;
+        const f = wb.fileOf(cp) orelse return;
+        const path = f.path orelse return wb.notify(.info, "Save the file before editing it inline", .{});
+        const handle = f.handle orelse return;
+        if (wb.inline_edit) |h| {
+            h.destroy();
+            wb.inline_edit = null;
+        }
+        try wb.startAgent(w);
+        const host = wb.agent.?;
+        const name = wb.env.get("ZG_INLINE_MODEL") orelse wb.env.get("ZG_MODEL") orelse "sonnet";
+        const info = host.models.resolve(name) orelse return wb.notify(.warning, "Inline edit: unknown model {s}", .{name});
+        const provider = host.hub.forModel(info) orelse return wb.notify(.warning, "Inline edit needs a model API key (ANTHROPIC_API_KEY, ...)", .{});
+        const store = try wb.ensureDeco(f);
+        const sel = f.view.primarySel();
+        var region: [2]usize = .{ @intCast(@min(sel.anchor, sel.head)), @intCast(@max(sel.anchor, sel.head)) };
+        if (region[0] == region[1]) {
+            const lr = f.view.lineRange(f.view.lineOf(region[0]));
+            region = .{ @intCast(lr.start), @intCast(lr.end) };
+        }
+        const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path });
+        defer wb.gpa.free(abs);
+        const rel = try std.fs.path.relative(wb.gpa, wb.cwd, null, host.review.root, abs);
+        defer wb.gpa.free(rel);
+        if (wb.inline_history == null) wb.inline_history = .init(wb.gpa);
+        wb.inline_edit = try InlineEditHost.open(wb.gpa, .{
+            .app = w.app,
+            .io = wb.io,
+            .view = f.view,
+            .store = store,
+            .path = rel,
+            .workspace = host.review.root,
+            .language = if (f.syntax) |sx| sx.lang.name else "",
+            .q = host.review.q,
+            .history = &host.review.history,
+            .inner = host.review.recording.files(),
+            .edits = &host.files.edits,
+            .handle = handle,
+            .provider = provider,
+            .model = info.id,
+            .ref = host.agent.ref,
+            .instructions = &wb.inline_history.?,
+            .hooks = .{ .ctx = wb, .to_agent = inlineToAgent, .changed = onStatusChanged },
+        }, region);
+    }
+
+    /// The inline edit bar handed its selection and instruction over.
+    fn inlineToAgent(ctx: *anyopaque, selection: []const u8, instruction: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (!wb.shown(wb.agent_ref)) wb.toggleAgent() catch |e| return log.warn("agent pane: {t}", .{e});
+        const p = wb.agent_panel orelse return;
+        const text = std.fmt.allocPrint(wb.gpa, "{s}\n\n```\n{s}\n```\n", .{ instruction, selection }) catch return;
+        defer wb.gpa.free(text);
+        p.input.setText(text) catch |e| log.warn("agent pane: {t}", .{e});
+    }
+
+    fn onStatusChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
     }
 
     fn closeEditorCmd(wb: *Workbench) !void {
@@ -1350,6 +1471,11 @@ pub const Workbench = struct {
         const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, &wb.approvals);
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
+        const pe = try wb.gpa.create(PendingEdits);
+        pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc, .store = decoOfDoc });
+        pe.on_change = .{ .ctx = wb, .f = onPendingChange };
+        wb.pending_edits = pe;
+        host.files.bindPending(pe);
         const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
@@ -1460,6 +1586,65 @@ pub const Workbench = struct {
 
     /// An agent edit landed in the open document (the view follows the
     /// document's changes): repaint.
+    /// The editor of an open document (`PendingEdits`).
+    fn viewOfDoc(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) ?*EditorView {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |f| if (f.handle) |fh| if (std.meta.eql(fh, h)) return f.view;
+        return null;
+    }
+
+    /// The decoration store of an open document's editor (`PendingEdits`).
+    fn decoOfDoc(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) ?*zg_editor.model.decorations.store.DecorationStore {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |*f| if (f.handle) |fh| if (std.meta.eql(fh, h)) return wb.ensureDeco(f) catch null;
+        return null;
+    }
+
+    fn onPendingChange(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Turns inline review of agent edits on or off (this session).
+    fn toggleInlineReview(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.startAgent(w);
+        const host = wb.agent orelse return;
+        host.files.inline_review = !host.files.inline_review;
+        if (host.files.inline_review)
+            wb.notify(.info, "Agent edits to open files now wait in the editor: Accept or Reject Agent Change at the cursor", .{})
+        else
+            wb.notify(.info, "Agent edits to open files apply directly again", .{});
+    }
+
+    fn pendingResult(wb: *Workbench, res: PendingEdits.Result) void {
+        switch (res) {
+            .done => {},
+            .none => wb.notify(.info, "No agent change in this file", .{}),
+            .conflicted => wb.notify(.warning, "You changed this text since the agent's edit: reject the change or ask the agent again", .{}),
+        }
+    }
+
+    fn acceptAgentChange(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.acceptAt(wb.view));
+    }
+
+    fn rejectAgentChange(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.rejectAt(wb.view));
+    }
+
+    fn acceptAllAgentChanges(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.acceptAll(wb.view));
+    }
+
+    fn rejectAllAgentChanges(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.rejectAll(wb.view));
+    }
+
     fn onAgentEdit(ctx: *anyopaque, _: zg_editor.model.api.registry.DocHandle, _: []const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.win) |w| w.markAllDirty();
@@ -1508,6 +1693,10 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
+        if (wb.inline_edit) |h| if (h.done) {
+            h.destroy();
+            wb.inline_edit = null;
+        };
         // Back in the window: files may have changed on disk.
         const focused = ui.win.chrome.focused;
         if (focused and !wb.was_focused) wb.checkFiles();
@@ -1646,8 +1835,10 @@ pub const Workbench = struct {
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "editorFocus editorTextFocus" });
             defer ui.close();
             _ = zg_editor.view.editor(ui, .{ .view = f.view, .a11y_label = f.path orelse "Untitled" });
+            const editor_node = ui.lastNode();
+            if (wb.inline_edit) |h| if (h.view == f.view and ui.window() == wb.win) h.build(ui);
             // Focus helpers act on the main window's nodes only.
-            f.node = if (ui.window() == wb.win) ui.lastNode() else .none;
+            f.node = if (ui.window() == wb.win) editor_node else .none;
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
@@ -1747,7 +1938,7 @@ pub const Workbench = struct {
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [10]zg_gui.w.StatusItem = undefined;
+        var items: [12]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -1777,6 +1968,12 @@ pub const Workbench = struct {
         const waiting = wb.approvals.pendingCount(.{});
         if (waiting > 0) {
             items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
+            n += 1;
+        }
+        var pb: [32]u8 = undefined;
+        const pending = if (wb.pending_edits) |pe| pe.count() else 0;
+        if (pending > 0) {
+            items[n] = .{ .id = "agent.pending", .text = std.fmt.bufPrint(&pb, "{d} agent change{s}", .{ pending, if (pending == 1) "" else "s" }) catch "", .side = .right, .priority = 940, .tone = .warning, .tooltip = "Agent edits wait in the editor: click to accept the one at the cursor", .action = "agent.acceptChange" };
             n += 1;
         }
         if (wb.curCompletions()) |c| {

@@ -12,8 +12,8 @@
 //!   (`ANTHROPIC_API_KEY`, ...): `ZG_COMPLETION_MODEL`, else `haiku`.
 //! - Otherwise completions are off.
 //!
-//! Each editor gets its own decoration store (when the view has none) so
-//! the ghost can draw, a document listener after the store's, one window
+//! Each editor draws the ghost in the workbench's decoration store for
+//! it, and gets a document listener after the store's, one window
 //! timer armed from the engine's next deadline, and posted callbacks that
 //! bring provider text back to the UI thread. The workbench forwards caret
 //! moves (`onCaret`) and focus; keys arrive through the view's `key_hook`
@@ -170,10 +170,8 @@ pub const EditorCompletions = struct {
     view: *EditorView,
     doc: *Document,
     path: []u8,
-    store: ?*DecorationStore = null,
     engine: complete.CompletionEngine,
     ctl: complete.Controller,
-    store_listener: ?model.document.ListenerId = null,
     listener: model.document.ListenerId = undefined,
     timer: ?Window.TimerId = null,
     last_head: u64 = 0,
@@ -181,19 +179,14 @@ pub const EditorCompletions = struct {
 
     const doc_id = 1;
 
-    /// Null when no provider is configured or the view draws another
-    /// decoration store.
-    pub fn attach(gpa: Allocator, svc: *Service, win: *Window, view: *EditorView, path: ?[]const u8) !?*EditorCompletions {
+    /// Null when no provider is configured. `store` is the decoration
+    /// store the view draws, already listening to the document.
+    pub fn attach(gpa: Allocator, svc: *Service, win: *Window, view: *EditorView, store: *DecorationStore, path: ?[]const u8) !?*EditorCompletions {
         const p = svc.provider() orelse return null;
-        if (view.decorations != null) return null;
         const ec = try gpa.create(EditorCompletions);
         errdefer gpa.destroy(ec);
         const doc = view.doc;
-        const store = try gpa.create(DecorationStore);
-        errdefer gpa.destroy(store);
-        store.* = .init(gpa, doc);
-        errdefer store.deinit();
-        const owner = try store.registerOwner("ai.ghost", 20);
+        const owner = store.ownerByName("ai.ghost") orelse try store.registerOwner("ai.ghost", 20);
         ec.* = .{
             .gpa = gpa,
             .svc = svc,
@@ -201,7 +194,6 @@ pub const EditorCompletions = struct {
             .view = view,
             .doc = doc,
             .path = try gpa.dupe(u8, path orelse "untitled"),
-            .store = store,
             .engine = undefined,
             .ctl = undefined,
             .last_head = view.primarySel().head,
@@ -212,10 +204,7 @@ pub const EditorCompletions = struct {
         errdefer ec.engine.deinit();
         try ec.engine.open(doc_id, doc.version);
         ec.ctl = .init(gpa, doc, doc_id, store, owner, &ec.engine, .{});
-        ec.store_listener = try doc.subscribe(store.listener());
-        errdefer doc.unsubscribe(ec.store_listener.?);
         ec.listener = try doc.subscribe(.{ .ctx = ec, .onChange = onChange });
-        view.decorations = store;
         if (view.key_hook == null) view.key_hook = .{ .ctx = ec, .f = keyHook };
         return ec;
     }
@@ -228,12 +217,6 @@ pub const EditorCompletions = struct {
         ec.doc.unsubscribe(ec.listener);
         ec.ctl.deinit();
         ec.engine.deinit();
-        if (ec.store) |s| {
-            if (ec.view.decorations == s) ec.view.decorations = null;
-            if (ec.store_listener) |l| ec.doc.unsubscribe(l);
-            s.deinit();
-            ec.gpa.destroy(s);
-        }
         ec.gpa.free(ec.path);
         ec.gpa.destroy(ec);
     }
@@ -493,10 +476,13 @@ test "completions: an editor shows ghost text, Tab accepts it" {
     const view = try EditorView.init(gpa, doc, .{});
     defer view.deinit();
     view.setSelection(.{ .anchor = 19, .head = 19 });
+    var store: DecorationStore = .init(gpa, doc);
+    defer store.deinit();
+    _ = try doc.subscribe(store.listener());
+    view.decorations = &store;
 
-    const ec = (try EditorCompletions.attach(gpa, &svc, t.win, view, "a.zig")).?;
+    const ec = (try EditorCompletions.attach(gpa, &svc, t.win, view, &store, "a.zig")).?;
     defer ec.detach();
-    try testing.expect(view.decorations != null);
     // Tab with nothing showing falls through.
     const hook = view.key_hook.?;
     try testing.expect(!hook.f(hook.ctx, view, .{ .key = .tab }));
