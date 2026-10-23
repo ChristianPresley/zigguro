@@ -46,6 +46,7 @@ const window_mod = @import("core/window.zig");
 const view_mod = @import("core/view.zig");
 const text = @import("paint/text.zig");
 const DrawListCanvas = @import("paint/draw_list.zig").DrawListCanvas;
+const image_textures = @import("image/textures.zig");
 const FontText = @import("paint/font_text.zig").FontText;
 const chrome = @import("dock/chrome.zig");
 const hit_map = @import("dock/hit_map.zig");
@@ -97,6 +98,8 @@ pub const HostWindow = struct {
     hit_rects: std.ArrayList(hit_map.HitMap.Entry) = .empty,
     /// The renderer texture of each glyph atlas page.
     pages: std.ArrayList(r2d.TextureId) = .empty,
+    /// This renderer's copy of the app images (`App.images`).
+    images: image_textures.Mirror = .{},
     /// The UI Automation bridge (Windows).
     uia: ?*uia.Bridge = null,
 
@@ -112,6 +115,39 @@ pub const HostWindow = struct {
             .direct => |r| r.updateTexture(id, rect, pixels, row_pitch),
             .thread => |rt| rt.updateTexture(id, rect, pixels, row_pitch),
         };
+    }
+
+    fn destroyTexture(hw: *HostWindow, id: r2d.TextureId) void {
+        switch (hw.out) {
+            .direct => |r| r.destroyTexture(id),
+            .thread => |rt| rt.destroyTexture(id),
+        }
+    }
+
+    fn imageOps(hw: *HostWindow) image_textures.Mirror.Ops {
+        const Ops = struct {
+            fn create(ctx: *anyopaque, w: u32, h: u32) anyerror!u32 {
+                const x: *HostWindow = @ptrCast(@alignCast(ctx));
+                return @intFromEnum(try x.createTexture(.{ .width = w, .height = h, .format = .rgba8 }));
+            }
+            fn update(ctx: *anyopaque, tex: u32, w: u32, h: u32, pixels: []const u8) anyerror!void {
+                const x: *HostWindow = @ptrCast(@alignCast(ctx));
+                try x.updateTexture(@enumFromInt(tex), .{ .x = 0, .y = 0, .w = w, .h = h }, pixels, w * 4);
+            }
+            fn destroy(ctx: *anyopaque, tex: u32) void {
+                const x: *HostWindow = @ptrCast(@alignCast(ctx));
+                x.destroyTexture(@enumFromInt(tex));
+            }
+        };
+        return .{ .ctx = hw, .create = Ops.create, .update = Ops.update, .destroy = Ops.destroy };
+    }
+
+    /// Mirrors the app images into this window's renderer and points the
+    /// canvas at the textures.
+    fn syncImages(hw: *HostWindow, gpa: std.mem.Allocator, destroy: bool) !image_textures.Mirror.Change {
+        const change = try hw.images.sync(gpa, &hw.win.app.images, hw.imageOps(), destroy);
+        hw.dlc.images = @ptrCast(hw.images.tex.items);
+        return change;
     }
 
     fn resize(hw: *HostWindow, size: r2d.Size, scale: f32) void {
@@ -144,6 +180,7 @@ pub const HostWindow = struct {
         switch (hw.out) {
             .direct => |r| {
                 for (hw.pages.items) |t| if (t != .none) r.destroyTexture(t);
+                hw.images.destroyAll(hw.imageOps());
                 r.deinit();
             },
             // The renderer goes with its textures.
@@ -353,6 +390,7 @@ pub const Host = struct {
         h.app.closeWindow(hw.win);
         hw.deinitOutput();
         hw.pages.deinit(h.gpa);
+        hw.images.deinit(h.gpa);
         hw.own_list.deinit();
         h.platform.destroyWindow(hw.id);
         // The platform no longer asks the destroyed window's hit test.
@@ -521,7 +559,16 @@ pub const Host = struct {
                 // has its texture.
                 const pages_before = hw.pages.items.len;
                 hw.list.setGlyphPages(hw.pages.items);
+                _ = try hw.syncImages(h.gpa, true);
                 var st = hw.win.frame();
+                // Images are mapped to textures as they are recorded too:
+                // one the frame put on the GPU is painted again once its
+                // texture exists (new pixels in a mapped one just upload).
+                if (try hw.syncImages(h.gpa, false) == .created) {
+                    hw.win.themeChanged(false);
+                    const again = hw.win.frame();
+                    st.presented = st.presented or again.presented;
+                }
                 if (h.fonts != null) {
                     try h.uploadGlyphs();
                     if (hw.pages.items.len != pages_before) {

@@ -35,6 +35,9 @@ comptime {
 /// A `Canvas` that records into an `r2d.DrawList`.
 pub const DrawListCanvas = struct {
     list: *r2d.DrawList,
+    /// The renderer texture of each app image slot (`canvas.app_image`
+    /// ids); `.none` where the slot has no texture yet (not drawn).
+    images: []const r2d.TextureId = &.{},
 
     /// Forwards to `list`.
     pub fn init(list: *r2d.DrawList) DrawListCanvas {
@@ -119,7 +122,16 @@ pub const DrawListCanvas = struct {
         dl(p).glyphs(q[0..run.len], col(color), @enumFromInt(@intFromEnum(aa)));
     }
     fn image(p: *anyopaque, tex: canvas_mod.TextureId, dst: Rect, uv: Rect, tint: Color, radii: Radii) void {
-        dl(p).image(@enumFromInt(@intFromEnum(tex)), rf(dst), rf(uv), col(tint), rr(radii));
+        const raw = @intFromEnum(tex);
+        if (raw & canvas_mod.app_image == 0) {
+            dl(p).image(@enumFromInt(raw), rf(dst), rf(uv), col(tint), rr(radii));
+            return;
+        }
+        const d: *DrawListCanvas = @ptrCast(@alignCast(p));
+        const slot = raw & canvas_mod.app_image_slot;
+        if (slot >= d.images.len or d.images[slot] == .none) return;
+        const filter: r2d.Filter = if (raw & canvas_mod.app_image_nearest != 0) .nearest else .linear;
+        d.list.imageFiltered(d.images[slot], rf(dst), rf(uv), col(tint), rr(radii), filter);
     }
     fn beginScrollLayer(p: *anyopaque, id: u32, size: [2]u32, origin: [2]i32, damage: []const canvas_mod.PxRect) bool {
         const d: [*]const r2d.PxRect = @ptrCast(damage.ptr);

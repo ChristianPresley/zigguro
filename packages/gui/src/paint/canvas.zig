@@ -32,6 +32,14 @@ pub const TextAa = enum(u2) { grayscale, subpixel_rgb, subpixel_bgr, none };
 /// A renderer texture (matches `r2d.TextureId`).
 pub const TextureId = enum(u32) { none = 0, _ };
 
+/// Set in a `TextureId` naming an app image slot (`App.images`) instead
+/// of a renderer texture; each window maps the slot to its own texture.
+pub const app_image: u32 = 0x8000_0000;
+/// Set with `app_image`: sample the image with nearest filtering.
+pub const app_image_nearest: u32 = 0x4000_0000;
+/// The slot bits of an app image id.
+pub const app_image_slot: u32 = 0x3fff_ffff;
+
 /// A rectangle in physical pixels (matches `r2d.PxRect`).
 pub const PxRect = extern struct { x: i32, y: i32, w: u32, h: u32 };
 
