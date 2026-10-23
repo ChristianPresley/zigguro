@@ -20,6 +20,7 @@ fn register(b: *bench.Bench) !void {
     try registerDocs(b);
     try registerData(b);
     try registerVector(b);
+    try registerChart(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -546,6 +547,94 @@ fn registerVector(b: *bench.Bench) !void {
                 x.cache.clear(x.io);
                 vector.tiles.rasterizeTiles(x.io, x.cache, x.dl, x.keys, 8) catch unreachable;
                 bench.doNotOptimizeAway(x.cache.count(x.io));
+            }
+        }
+    }.f);
+}
+
+/// `chart/line_1m_frame`: a frame of a 1,000,000-point line chart: the
+/// compiled (M4-decimated) chart drawn into a display list and every
+/// tile of its 1,200×600 view rasterized on workers (budget 4 ms);
+/// `chart/line_1m_compile`: compiling it from the table when the spec
+/// or data changes (scales, ticks, decimation; for reference).
+fn registerChart(b: *bench.Bench) !void {
+    const chart = zg_agents.chart;
+    const vector = zg_agents.vector;
+    const gpa = std.heap.smp_allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var t: chart.Table = .{ .rows = 1_000_000 };
+    const xs = try a.alloc(chart.transform.Lit, t.rows);
+    const ys = try a.alloc(chart.transform.Lit, t.rows);
+    var h: u32 = 11;
+    for (xs, ys, 0..) |*x, *y, i| {
+        h = h *% 1103515245 +% 12345;
+        x.* = .{ .int = @intCast(i) };
+        y.* = .{ .float = @sin(@as(f64, @floatFromInt(i)) / 5000) * 100 + @as(f64, @floatFromInt(h >> 20)) / 64 };
+    }
+    try t.put(a, "x", .int, xs);
+    try t.put(a, "y", .float, ys);
+    var diag: chart.Diagnostic = .{};
+    const s = try chart.parseSpec(a,
+        \\{"title":"1M points","width":1200,"height":600,"data":{"artifact":"A-big"},"mark":"line",
+        \\ "encoding":{"x":{"field":"x","type":"quantitative"},"y":{"field":"y","type":"quantitative"}}}
+    , &diag);
+    const Ctx = struct {
+        t: chart.Table,
+        s: chart.ChartSpec,
+        io: std.Io,
+        c: chart.CompiledChart = undefined,
+        cache: *vector.TileCache,
+        keys: []const vector.tiles.Key = &.{},
+
+        fn load(ctx: *anyopaque, _: std.mem.Allocator, _: *const chart.spec.Data) anyerror!chart.Table {
+            const x: *@This() = @ptrCast(@alignCast(ctx));
+            return x.t;
+        }
+
+        fn compile(x: *@This(), fa: std.mem.Allocator) chart.CompiledChart {
+            var cd: chart.compile_mod.Diagnostic = .{};
+            return chart.compile(fa, std.heap.smp_allocator, &x.s, .{ .source = .{ .ctx = x, .load = load } }, &cd) catch unreachable;
+        }
+    };
+    var cache: vector.TileCache = .init(gpa, vector.TileCache.default_budget);
+    defer cache.deinit();
+    var ctx: Ctx = .{ .t = t, .s = s, .io = b.io, .cache = &cache };
+    ctx.c = ctx.compile(a);
+    var keys: std.ArrayListUnmanaged(vector.tiles.Key) = .empty;
+    defer keys.deinit(gpa);
+    const r = vector.tiles.tilesFor(.{ .x0 = 0, .y0 = 0, .x1 = ctx.c.width, .y1 = ctx.c.height });
+    var ty = r.y0;
+    while (ty < r.y1) : (ty += 1) {
+        var tx = r.x0;
+        while (tx < r.x1) : (tx += 1) try keys.append(gpa, .{ .hash = 0, .scale_q = 1000, .tx = tx, .ty = ty });
+    }
+    ctx.keys = keys.items;
+    try b.run("chart/line_1m_frame", &ctx, struct {
+        fn f(x: *Ctx, st: *bench.State) void {
+            var n: u64 = 0;
+            while (n < st.iterations()) : (n += 1) {
+                var frame: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer frame.deinit();
+                var cv: vector.VectorCanvas = .init(frame.allocator());
+                chart.render(&x.c, &cv) catch unreachable;
+                const dl = cv.finish() catch unreachable;
+                const ks = frame.allocator().dupe(vector.tiles.Key, x.keys) catch unreachable;
+                for (ks) |*k| k.hash = dl.hash;
+                x.cache.clear(x.io);
+                vector.tiles.rasterizeTiles(x.io, x.cache, &dl, ks, 4) catch unreachable;
+                bench.doNotOptimizeAway(x.cache.count(x.io));
+            }
+        }
+    }.f);
+    try b.run("chart/line_1m_compile", &ctx, struct {
+        fn f(x: *Ctx, st: *bench.State) void {
+            var n: u64 = 0;
+            while (n < st.iterations()) : (n += 1) {
+                var frame: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer frame.deinit();
+                bench.doNotOptimizeAway(x.compile(frame.allocator()).items.len);
             }
         }
     }.f);

@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const sniff = @import("../data/sniff.zig");
+const chart = @import("../chart/root.zig");
 
 pub const ArtifactKind = enum {
     markdown,
@@ -164,6 +165,10 @@ pub const Validator = struct {
     ctx: *anyopaque,
     check: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, content: []const u8) anyerror!?[]const u8,
 };
+
+/// The chart validator: strict spec reading (E13.F07.S01.T03).
+pub const chart_validator: Validator = .{ .ctx = @constCast(@as(*const anyopaque, &chart_validator_ctx)), .check = chart.checkSpec };
+const chart_validator_ctx: u8 = 0;
 
 pub const Validators = struct {
     chart: ?Validator = null,

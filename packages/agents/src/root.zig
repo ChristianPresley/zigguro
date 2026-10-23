@@ -15,6 +15,7 @@ pub const research = @import("research/root.zig");
 pub const data = @import("data/root.zig");
 pub const artifacts = @import("artifacts/root.zig");
 pub const vector = @import("vector/root.zig");
+pub const chart = @import("chart/root.zig");
 
 test {
     _ = runs;
@@ -26,5 +27,6 @@ test {
     _ = research;
     _ = data;
     _ = vector;
+    _ = chart;
     _ = artifacts;
 }

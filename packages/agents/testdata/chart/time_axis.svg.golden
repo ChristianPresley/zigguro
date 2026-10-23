@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="sans-serif">
+<rect x="0" y="0" width="600" height="320" fill="#ffffff"/>
+<text x="300" y="22" font-size="14" fill="#1a1a1a" text-anchor="middle" font-weight="bold">CPU</text>
+<path d="M45.32 274.5 L580 274.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 213.5 L580 213.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 152.5 L580 152.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 91.5 L580 91.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.32 30.5 L580 30.5" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M45.5 30 L45.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M181.5 30 L181.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M318.5 30 L318.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<path d="M454.5 30 L454.5 274" fill="none" stroke="#e6e6e6" stroke-width="1"/>
+<clipPath id="c1"><rect x="37.32" y="22" width="550.68" height="260"/></clipPath>
+<g clip-path="url(#c1)">
+<path d="M45.32 165.115 L56.696 162.98 L68.072 144.985 L79.449 126.685 L90.825 114.485 L102.201 125.16 L113.577 117.535 L124.953 107.775 L136.329 94.05 L147.706 105.64 L159.082 95.575 L170.458 92.83 L181.834 85.205 L193.21 109.3 L204.586 103.2 L215.963 124.855 L227.339 123.635 L238.715 157.185 L250.091 159.015 L261.467 162.98 L272.843 186.465 L284.22 196.225 L295.596 208.12 L306.972 220.625 L318.348 228.25 L329.724 231.605 L341.1 237.095 L352.477 242.28 L363.853 245.94 L375.229 239.23 L386.605 227.03 L397.981 229.47 L409.357 231.91 L420.734 216.66 L432.11 225.81 L443.486 196.53 L454.862 198.36 L466.238 180.365 L477.614 150.17 L488.991 146.205 L500.367 149.255 L511.743 113.265 L523.119 105.945 L534.495 94.965 L545.871 104.42 L557.248 85.51 L568.624 95.575 L580 105.64" fill="none" stroke="#4c78a8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<path d="M45.32 274.5 L580 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M45.5 274.5 L45.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="45.32" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">06:00</text>
+<path d="M181.5 274.5 L181.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="181.834" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">09:00</text>
+<path d="M318.5 274.5 L318.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="318.348" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">12:00</text>
+<path d="M454.5 274.5 L454.5 279.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="454.862" y="282.5" font-size="11" fill="#4d4d4d" text-anchor="middle" dominant-baseline="hanging">15:00</text>
+<text x="312.66" y="312" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="text-after-edge" font-weight="bold">at</text>
+<path d="M45.5 30 L45.5 274" fill="none" stroke="#888888" stroke-width="1"/>
+<path d="M40.5 274.5 L45.5 274.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="274" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">0</text>
+<path d="M40.5 213.5 L45.5 213.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="213" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">20</text>
+<path d="M40.5 152.5 L45.5 152.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="152" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">40</text>
+<path d="M40.5 91.5 L45.5 91.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="91" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">60</text>
+<path d="M40.5 30.5 L45.5 30.5" fill="none" stroke="#888888" stroke-width="1"/>
+<text x="37.5" y="30" font-size="11" fill="#4d4d4d" text-anchor="end" dominant-baseline="middle">80</text>
+<text x="13.5" y="152" font-size="11" fill="#1a1a1a" text-anchor="middle" dominant-baseline="middle" font-weight="bold" transform="rotate(-90 13.5 152)">cpu</text>
+</svg>
