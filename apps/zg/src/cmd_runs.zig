@@ -7,9 +7,11 @@
 //! (default 600) with no active runs and no clients, or on
 //! `host.shutdown`.
 //!
-//! `zg runs list|show|start|stop|pause|resume|reply [--json]` talk to the
-//! host; without one, `list` and `show` read the registry directly and
-//! the others fail with exit 1.
+//! `zg runs list|show|outputs|attach|start|stop|pause|resume|reply|pin|
+//! rename|remove [--json]` talk to the host; without one, `list`, `show`
+//! and `outputs` read the registry directly and the others fail with
+//! exit 1. Every Mission Control row action has a subcommand here
+//! (`zg_agents.mission.actions.table`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -37,11 +39,16 @@ pub const host_usage =
 pub const runs_usage =
     \\Usage: zg runs list [--json]
     \\       zg runs show ID [--json]
+    \\       zg runs outputs ID [--json]
+    \\       zg runs attach ID          (follows the run until it ends)
     \\       zg runs start [--title T] [--kind background|task] PROMPT
     \\       zg runs stop ID [--now]
     \\       zg runs pause ID
     \\       zg runs resume ID
     \\       zg runs reply ID TEXT
+    \\       zg runs pin ID [--off]
+    \\       zg runs rename ID TITLE
+    \\       zg runs remove ID [--delete-files]
     \\
     \\Options: --workspace DIR (default: the current directory)
     \\
@@ -231,7 +238,7 @@ pub fn runRuns(rt: *zg_core.Runtime, argv: []const [:0]const u8) !u8 {
     return runRunsIn(rt, argv, &s.out_w.interface, &s.err_w.interface);
 }
 
-const Cmd = enum { list, show, start, stop, pause, @"resume", reply };
+pub const Cmd = enum { list, show, outputs, attach, start, stop, pause, @"resume", reply, pin, rename, remove };
 
 /// `zg runs` with the output streams given.
 pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
@@ -244,6 +251,8 @@ pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writ
     const cmd = std.meta.stringToEnum(Cmd, argv[0]) orelse return usage(err, runs_usage);
     var json = false;
     var now = false;
+    var off = false;
+    var delete_files = false;
     var workspace: []const u8 = ".";
     var title: ?[]const u8 = null;
     var kind: runs.RunKind = .background;
@@ -256,6 +265,10 @@ pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writ
             json = true;
         } else if (std.mem.eql(u8, a, "--now")) {
             now = true;
+        } else if (std.mem.eql(u8, a, "--off")) {
+            off = true;
+        } else if (std.mem.eql(u8, a, "--delete-files")) {
+            delete_files = true;
         } else if (std.mem.eql(u8, a, "--workspace")) {
             workspace = flagValue(argv, &i) orelse return usage(err, runs_usage);
         } else if (std.mem.eql(u8, a, "--title")) {
@@ -266,8 +279,8 @@ pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writ
     }
     const need: usize = switch (cmd) {
         .list => 0,
-        .show, .stop, .pause, .@"resume", .start => 1,
-        .reply => 2,
+        .show, .outputs, .attach, .stop, .pause, .@"resume", .start, .pin, .remove => 1,
+        .reply, .rename => 2,
     };
     if (pos.items.len != need) return usage(err, runs_usage);
 
@@ -292,7 +305,7 @@ pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writ
     } else null;
 
     const c = client orelse switch (cmd) {
-        .list, .show => return offline(gpa, io, rd.dir, cmd, id, json, out, err),
+        .list, .show, .outputs => return offline(gpa, io, rd.dir, cmd, id, json, out, err),
         else => {
             try err.print("zg runs: no agent host is running for {s} (start one with `zg agents host`)\n", .{workspace});
             return 1;
@@ -317,8 +330,68 @@ pub fn runRunsIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writ
         .pause => _ = c.call(protocol.methods.pause, protocol.IdParams{ .id = id.? }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
         .@"resume" => _ = c.call(protocol.methods.resume_, protocol.IdParams{ .id = id.? }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
         .reply => _ = c.call(protocol.methods.reply, protocol.ReplyParams{ .id = id.?, .text = pos.items[1] }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
+        .pin => _ = c.call(protocol.methods.pin, protocol.PinParams{ .id = id.?, .on = !off }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
+        .rename => _ = c.call(protocol.methods.rename, protocol.RenameParams{ .id = id.?, .title = pos.items[1] }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
+        .remove => _ = c.call(protocol.methods.remove, protocol.RemoveParams{ .id = id.?, .delete_files = delete_files }, protocol.Ok, arena) catch return remoteFailed(err, cmd),
+        .outputs => {
+            const rec = c.call(protocol.methods.show, protocol.IdParams{ .id = id.? }, runs.RunRecord, arena) catch return remoteFailed(err, cmd);
+            try printOutputs(rec.outputs, json, out);
+        },
+        .attach => return attach(gpa, io, c, id.?, json, out, err),
     }
     return 0;
+}
+
+/// Follows a run: prints its status, question and summary as they change
+/// until it ends. Answer a question with `zg runs reply`.
+fn attach(gpa: Allocator, io: Io, c: *ipc.HostClient, id: runs.RunId, json: bool, out: *Io.Writer, err: *Io.Writer) !u8 {
+    var last_rev: u64 = 0;
+    var last_status: ?runs.RunStatus = null;
+    var last_summary: std.ArrayList(u8) = .empty;
+    defer last_summary.deinit(gpa);
+    var last_question: std.ArrayList(u8) = .empty;
+    defer last_question.deinit(gpa);
+    while (true) {
+        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_state.deinit();
+        const rec = c.call(protocol.methods.show, protocol.IdParams{ .id = id }, runs.RunRecord, arena_state.allocator()) catch return remoteFailed(err, .attach);
+        if (rec.revision != last_rev) {
+            last_rev = rec.revision;
+            if (json) {
+                try std.json.Stringify.value(protocol.RunSummary.of(&rec), .{}, out);
+                try out.writeByte('\n');
+            } else {
+                if (last_status != rec.status) try out.print("[{t}]\n", .{rec.status});
+                if (!std.mem.eql(u8, last_summary.items, rec.summary) and rec.summary.len > 0) try out.print("{s}\n", .{rec.summary});
+                const q = rec.question orelse "";
+                if (!std.mem.eql(u8, last_question.items, q) and q.len > 0) try out.print("asks: {s}\n  (answer with `zg runs reply {f} TEXT`)\n", .{ q, id });
+                last_question.clearRetainingCapacity();
+                try last_question.appendSlice(gpa, q);
+            }
+            last_status = rec.status;
+            last_summary.clearRetainingCapacity();
+            try last_summary.appendSlice(gpa, rec.summary);
+            try out.flush();
+        }
+        if (rec.status.isTerminal()) return if (rec.status == .completed) 0 else 1;
+        io.sleep(.fromMilliseconds(250), .awake) catch return 1;
+    }
+}
+
+fn printOutputs(outputs: []const runs.Output, json: bool, out: *Io.Writer) !void {
+    if (json) {
+        try std.json.Stringify.value(outputs, .{}, out);
+        return out.writeByte('\n');
+    }
+    if (outputs.len == 0) return out.writeAll("no outputs\n");
+    for (outputs) |o| switch (o) {
+        .changeset => |cs| try out.print("changeset  {d}\n", .{cs}),
+        .artifact => |s| try out.print("artifact   {s}\n", .{s}),
+        .file => |s| try out.print("file       {s}\n", .{s}),
+        .task => |s| try out.print("task       {s}\n", .{s}),
+        .note => |s| try out.print("note       {s}\n", .{s}),
+        .pr => |pr| try out.print("pr         #{d} {s}\n", .{ pr.number, pr.url }),
+    };
 }
 
 fn remoteFailed(err: *Io.Writer, cmd: Cmd) !u8 {
@@ -349,9 +422,13 @@ fn offline(gpa: Allocator, io: Io, dir: Io.Dir, cmd: Cmd, id: ?runs.RunId, json:
         },
         else => {
             const r = v.get(id.?) orelse {
-                try err.print("zg runs show: no run {f}\n", .{id.?});
+                try err.print("zg runs {t}: no run {f}\n", .{ cmd, id.? });
                 return 1;
             };
+            if (cmd == .outputs) {
+                try printOutputs(r.outputs, json, out);
+                return 0;
+            }
             try std.json.Stringify.value(r.*, .{ .whitespace = if (json) .minified else .indent_2 }, out);
             try out.writeByte('\n');
         },
@@ -406,7 +483,19 @@ test "zg runs lists and shows runs offline" {
     out.clearRetainingCapacity();
     try testing.expectEqual(@as(u8, 0), try runRunsIn(&rt, &.{ "show", &id_buf, "--json", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "\"prompt\":\"p\"") != null);
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runRunsIn(&rt, &.{ "outputs", &id_buf, "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqualStrings("no outputs\n", out.written());
     // Commands that need a host fail clearly.
     try testing.expectEqual(@as(u8, 1), try runRunsIn(&rt, &.{ "stop", &id_buf, "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, errw.written(), "no agent host") != null);
+}
+
+test "every Mission Control action has a zg runs subcommand" {
+    for (zg_agents.mission.actions.table) |a| {
+        if (std.meta.stringToEnum(Cmd, a.cli) == null) {
+            std.debug.print("no `zg runs {s}` for {s}\n", .{ a.cli, a.command });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
