@@ -715,4 +715,53 @@ fn registerDiagram(b: *bench.Bench) !void {
             }
         }
     }.f);
+
+    // `diagram/layout_300`: laying out a 300-node flowchart shaped like a
+    // real one (a main flow with skips, retry loops, labelled branches and
+    // three subgraphs; ~480 edges) (budget 15 ms).
+    var big: std.Io.Writer.Allocating = .init(gpa);
+    defer big.deinit();
+    try big.writer.writeAll("flowchart TB\n");
+    var prng: std.Random.DefaultPrng = .init(300);
+    const rnd = prng.random();
+    const nn = 300;
+    var at: usize = 0;
+    for (0..3) |sg| {
+        at += rnd.intRangeAtMost(usize, 0, nn / 6);
+        const len = rnd.intRangeAtMost(usize, 3, nn / 8 + 3);
+        try big.writer.print("  subgraph s{d} [Stage {d}]\n", .{ sg, sg });
+        for (at..@min(nn, at + len)) |i| try big.writer.print("    n{d}[Step {d}]\n", .{ i, i });
+        try big.writer.writeAll("  end\n");
+        at += len;
+    }
+    for (0..nn) |i| {
+        if (i + 1 < nn) try big.writer.print("  n{d} --> n{d}\n", .{ i, i + 1 });
+        if (rnd.boolean() and i + 2 < nn) {
+            const j = @min(nn - 1, i + rnd.intRangeAtMost(usize, 2, 6));
+            if (rnd.intRangeLessThan(u8, 0, 4) == 0) try big.writer.print("  n{d} -->|branch {d}| n{d}\n", .{ i, i, j }) else try big.writer.print("  n{d} --> n{d}\n", .{ i, j });
+        }
+        if (rnd.intRangeLessThan(u8, 0, 12) == 0 and i > 2) try big.writer.print("  n{d} -.->|retry| n{d}\n", .{ i, i - rnd.intRangeAtMost(usize, 1, 3) });
+    }
+    var parse_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer parse_arena.deinit();
+    var diags: std.ArrayList(zg_diagram.Diagnostic) = .empty;
+    const diagram = (try zg_diagram.parse(parse_arena.allocator(), big.written(), &diags)).?;
+    const Lay = struct {
+        d: zg_diagram.Diagram,
+        fn text(_: *anyopaque, t: []const u8, max_w: f32) [2]f32 {
+            return .{ @min(max_w, @as(f32, @floatFromInt(t.len)) * 7), 16 };
+        }
+    };
+    var lay: Lay = .{ .d = diagram };
+    try b.run("diagram/layout_300", &lay, struct {
+        fn f(c: *Lay, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                const l = zg_diagram.layout(arena.allocator(), &c.d, .{ .ctx = c, .text = Lay.text }, .{}) catch unreachable;
+                bench.doNotOptimizeAway(l.size);
+            }
+        }
+    }.f);
 }
