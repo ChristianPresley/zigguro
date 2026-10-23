@@ -35,6 +35,25 @@ pub const index = struct {
     pub const fuzzy = @import("index/fuzzy.zig");
     pub const mentions = @import("index/mentions.zig");
 };
+/// Note search (E08.F06.S03.T01).
+pub const search = struct {
+    pub const tokenize = @import("search/tokenize.zig");
+    pub const postings = @import("search/postings.zig");
+    pub const bm25 = @import("search/bm25.zig");
+    pub const query = @import("search/query.zig");
+    pub const exec = @import("search/exec.zig");
+    pub const snippets = @import("search/snippets.zig");
+    pub const retriever = @import("search/retriever.zig");
+    pub const search_index = @import("search/search_index.zig");
+    pub const SearchIndex = search_index.SearchIndex;
+    pub const QueryAst = query.QueryAst;
+    pub const parseQuery = query.parseQuery;
+    pub const Retriever = retriever.Retriever;
+    pub const Scored = retriever.Scored;
+    pub const bm25Retriever = retriever.bm25Retriever;
+    pub const hybrid = retriever.hybrid;
+    pub const run = exec.search;
+};
 pub const NoteIndex = index.note_index.NoteIndex;
 pub const IndexView = index.note_index.IndexView;
 /// Synthetic notes for tests and benches.
@@ -48,4 +67,6 @@ test {
     _ = @import("vault/fm_writer_test.zig");
     _ = @import("vault/extract_test.zig");
     _ = @import("index/note_index_test.zig");
+    _ = @import("search/query_test.zig");
+    _ = @import("search/exec_test.zig");
 }
