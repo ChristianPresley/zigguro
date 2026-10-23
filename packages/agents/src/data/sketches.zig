@@ -95,7 +95,27 @@ pub const Quantiles = struct {
         for (q.buffer.items) |x| all.appendAssumeCapacity(.{ .mean = x, .weight = 1 });
         q.total += @floatFromInt(q.buffer.items.len);
         q.buffer.clearRetainingCapacity();
-        std.mem.sort(Centroid, all.items, {}, struct {
+        try q.compress(all.items);
+    }
+
+    /// Adds `o`'s values (both are flushed).
+    pub fn merge(q: *Quantiles, o: *Quantiles) Allocator.Error!void {
+        try q.flush();
+        try o.flush();
+        if (o.centroids.items.len == 0) return;
+        var all: std.ArrayList(Centroid) = try .initCapacity(q.gpa, q.centroids.items.len + o.centroids.items.len);
+        defer all.deinit(q.gpa);
+        all.appendSliceAssumeCapacity(q.centroids.items);
+        all.appendSliceAssumeCapacity(o.centroids.items);
+        q.total += o.total;
+        q.min = @min(q.min, o.min);
+        q.max = @max(q.max, o.max);
+        try q.compress(all.items);
+    }
+
+    /// Sorts `all` and merges neighbours into `q.centroids`.
+    fn compress(q: *Quantiles, all: []Centroid) Allocator.Error!void {
+        std.mem.sort(Centroid, all, {}, struct {
             fn lt(_: void, a: Centroid, b: Centroid) bool {
                 return a.mean < b.mean;
             }
@@ -104,10 +124,10 @@ pub const Quantiles = struct {
         // The k1 scale: a centroid may span one unit of
         // k(q) = compression / 2π · asin(2q - 1), so there are at most
         // about compression / 2 of them and the tails stay fine-grained.
-        var cur = all.items[0];
+        var cur = all[0];
         var before: f64 = 0; // weight left of `cur`
         var k_left = q.scale(0);
-        for (all.items[1..]) |c| {
+        for (all[1..]) |c| {
             if (q.scale((before + cur.weight + c.weight) / q.total) - k_left <= 1) {
                 const w = cur.weight + c.weight;
                 cur.mean += (c.mean - cur.mean) * c.weight / w;

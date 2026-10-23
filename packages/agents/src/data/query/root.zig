@@ -7,6 +7,11 @@ pub const lexer = @import("lexer.zig");
 pub const parser = @import("parser.zig");
 pub const types = @import("types.zig");
 pub const plan = @import("plan.zig");
+pub const expr_eval = @import("expr_eval.zig");
+pub const agg = @import("agg.zig");
+pub const sort = @import("sort.zig");
+pub const join = @import("join.zig");
+pub const exec = @import("exec.zig");
 
 pub const Ast = ast.Ast;
 pub const Diagnostic = ast.Diagnostic;
@@ -14,6 +19,7 @@ pub const parse = parser.parse;
 pub const formatQuery = parser.formatQuery;
 pub const Plan = plan.Plan;
 pub const Catalog = plan.Catalog;
+pub const execute = exec.execute;
 
 /// The language in brief, for tool descriptions (the full reference is
 /// docs/formats/data-query.md; a test keeps the names here in sync with
@@ -34,6 +40,15 @@ pub const tool_summary =
     \\median p(x, 0.95) stddev.
     \\Errors read "message at start..end" (byte offsets in the query).
 ;
+
+test {
+    const std = @import("std");
+    std.testing.refAllDecls(expr_eval);
+    std.testing.refAllDecls(agg);
+    std.testing.refAllDecls(sort);
+    std.testing.refAllDecls(join);
+    std.testing.refAllDecls(exec);
+}
 
 test "tool_summary names every function and aggregate" {
     const std = @import("std");

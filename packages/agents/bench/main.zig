@@ -349,7 +349,7 @@ fn registerRuns(b: *bench.Bench) !void {
     gpa.free(ids);
 }
 
-/// `data/profile_1m_col` (see below);
+/// `data/profile_1m_col` and `data/query_10m` (see below);
 /// `data/csv_index_256mb`: the full parallel row index of a 256 MiB CSV
 /// with quoted multi-line fields (budget: 1 GB/s a core, so 256 ms on
 /// one core); `data/first_screen_256mb`: opening it from disk until the
@@ -404,6 +404,61 @@ fn registerData(b: *bench.Bench) !void {
                 defer arena.deinit();
                 const cancel: std.atomic.Value(bool) = .init(false);
                 bench.doNotOptimizeAway(data.stats.computeStats(c.io, c.ds, 1, arena.allocator(), &cancel) catch unreachable);
+            }
+        }
+    }.f);
+
+    // `data/query_10m`: filter + group over 10 M rows (budget 1.5 s on
+    // 8 cores).
+    var tenm: std.ArrayList(u8) = .empty;
+    defer tenm.deinit(gpa);
+    try tenm.ensureTotalCapacity(gpa, 10_000_000 * 20);
+    try tenm.appendSlice(gpa, "k,v,f\n");
+    var h: u64 = 1;
+    for (0..10_000_000) |r| {
+        h = h *% 6364136223846793005 +% 1442695040888963407;
+        try tenm.print(gpa, "k{d},{d},{d}.{d}\n", .{ (h >> 33) % 1000, (h >> 20) % 1000, r % 977, (h >> 40) % 10 });
+    }
+    const qds = try data.Dataset.openBytes(gpa, io, tenm.items, .csv);
+    defer qds.close();
+    try qds.waitIndexed();
+    const Query = struct {
+        ds: *data.Dataset,
+        io: std.Io,
+        plan: data.query.Plan,
+
+        fn get(self: *anyopaque, _: []const u8) ?*data.Dataset {
+            const qq: *@This() = @ptrCast(@alignCast(self));
+            return qq.ds;
+        }
+
+        fn batch(_: *anyopaque, cols: []const data.query.exec.ColumnVec, n: u32) anyerror!void {
+            bench.doNotOptimizeAway(cols.len + n);
+        }
+    };
+    var plan_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer plan_arena.deinit();
+    const schema_cols = [_]data.query.types.SchemaCol{
+        .{ .name = "k", .ty = .string },
+        .{ .name = "v", .ty = .int },
+        .{ .name = "f", .ty = .float },
+    };
+    const Cat = struct {
+        fn resolve(_: *anyopaque, _: []const u8) ?data.query.types.Schema {
+            return .{ .columns = &schema_cols };
+        }
+    };
+    var diag: data.query.Diagnostic = .{};
+    const tree = try data.query.parse(plan_arena.allocator(), "from w | where v > 100 and f < 900 | group k { c = count(), s = sum(f), m = avg(v) }", &diag);
+    var cat_ctx: u8 = 0;
+    var q: Query = .{ .ds = qds, .io = io, .plan = try data.query.plan.plan(plan_arena.allocator(), &tree, .{ .ctx = &cat_ctx, .resolve = Cat.resolve }, &diag) };
+    try b.run("data/query_10m", &q, struct {
+        fn f(c: *Query, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                const cancel: std.atomic.Value(bool) = .init(false);
+                const st = data.query.execute(c.io, std.heap.smp_allocator, &c.plan, .{ .ctx = c, .get = Query.get }, .{ .ctx = c, .batch = Query.batch }, .{ .cancel = &cancel }) catch unreachable;
+                bench.doNotOptimizeAway(st.rows_out);
             }
         }
     }.f);
