@@ -25,6 +25,18 @@ pub const VaultId = vault.VaultId;
 pub const NoteMeta = note.NoteMeta;
 pub const Link = note.Link;
 pub const FileId = note.FileId;
+/// The vault-wide link/tag/property index (E08.F06.S01.T02).
+pub const index = struct {
+    pub const note_index = @import("index/note_index.zig");
+    pub const names = @import("index/names.zig");
+    pub const tag_tree = @import("index/tag_tree.zig");
+    pub const properties = @import("index/properties.zig");
+    pub const persist = @import("index/persist.zig");
+    pub const fuzzy = @import("index/fuzzy.zig");
+    pub const mentions = @import("index/mentions.zig");
+};
+pub const NoteIndex = index.note_index.NoteIndex;
+pub const IndexView = index.note_index.IndexView;
 /// Synthetic notes for tests and benches.
 pub const testing = struct {
     pub const gen = @import("testing/gen.zig");
@@ -35,4 +47,5 @@ test {
     _ = @import("vault/frontmatter_test.zig");
     _ = @import("vault/fm_writer_test.zig");
     _ = @import("vault/extract_test.zig");
+    _ = @import("index/note_index_test.zig");
 }
