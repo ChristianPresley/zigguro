@@ -16,6 +16,82 @@ fn register(b: *bench.Bench) !void {
     try registerMission(b);
     try registerNotify(b);
     try registerSched(b);
+    try registerTasks(b);
+}
+
+/// `tasks/index_10k`: a cold open of a board of 10,000 task files
+/// (budget 250 ms); `tasks/query_10k`: a filtered, sorted query over it
+/// (budget 10 ms). The files live in a scratch directory under the
+/// working directory.
+fn registerTasks(b: *bench.Bench) !void {
+    const tasks = zg_agents.tasks;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    const cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/bench-tasks";
+    cwd.deleteTree(io, root) catch {};
+    try cwd.createDirPath(io, root ++ "/.zigguro/tasks");
+    var ws = try cwd.openDir(io, root, .{});
+    defer ws.close(io);
+    defer cwd.deleteTree(io, root) catch {};
+    const statuses = [_][]const u8{ "backlog", "ready", "in_progress", "review", "done" };
+    var name: [64]u8 = undefined;
+    var body: [512]u8 = undefined;
+    for (1..10_001) |i| {
+        const n = try std.fmt.bufPrint(&name, ".zigguro/tasks/T-{d:0>4}-task-number-{d}.md", .{ i, i });
+        const dep: usize = if (i > 10) i - 10 else 0;
+        const data = try std.fmt.bufPrint(&body,
+            \\---
+            \\id: T-{d:0>4}
+            \\title: Task number {d} about {s}
+            \\status: {s}
+            \\priority: P{d}
+            \\assignee: {s}
+            \\labels: [area-{d}, {s}]
+            \\depends_on: [T-{d:0>4}]
+            \\due: 2026-{d:0>2}-{d:0>2}
+            \\created: 2026-01-01T00:00:00Z
+            \\---
+            \\# Task number {d}
+            \\
+            \\Some body text that the index does not need to read.
+            \\
+        , .{ i, i, if (i % 3 == 0) "parsing" else "layout", statuses[i % statuses.len], i % 4, if (i % 2 == 0) "agent:coder" else "alice", i % 20, if (i % 5 == 0) "bug" else "feature", dep, 1 + i % 12, 1 + i % 28, i });
+        try ws.writeFile(io, .{ .sub_path = n, .data = data });
+    }
+    const Ctx = struct { ws: std.Io.Dir, io: std.Io };
+    const ctx: Ctx = .{ .ws = ws, .io = io };
+    try b.run("tasks/index_10k", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                const st = tasks.TaskStore.open(std.heap.smp_allocator, c.io, c.ws, .{}) catch unreachable;
+                bench.doNotOptimizeAway(st.view().tasks.len);
+                st.release(st.view());
+                st.close();
+            }
+        }
+    }.f);
+    const store = try tasks.TaskStore.open(gpa, io, ws, .{});
+    defer store.close();
+    const v = store.view();
+    defer store.release(v);
+    const Q = struct { v: *const tasks.TasksView };
+    try b.run("tasks/query_10k", &Q{ .v = v }, struct {
+        fn f(c: *const Q, s: *bench.State) void {
+            var i: u64 = 0;
+            var out: std.ArrayList(u32) = .empty;
+            defer out.deinit(std.heap.smp_allocator);
+            while (i < s.iterations()) : (i += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                const q = tasks.parseQuery(arena.allocator(), "status:ready,review -blocked:true assignee:agent:* parsing sort:due") catch unreachable;
+                out.clearRetainingCapacity();
+                tasks.query.evalQueryAt(c.v, &q, .{ .y = 2026, .m = 10, .d = 23 }, &out, std.heap.smp_allocator) catch unreachable;
+                bench.doNotOptimizeAway(out.items.len);
+            }
+        }
+    }.f);
 }
 
 /// `cron/next`: the next fire time of a weekday-office-hours expression
