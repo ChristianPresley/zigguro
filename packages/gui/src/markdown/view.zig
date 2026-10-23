@@ -23,6 +23,7 @@ const rich_text = @import("rich_text.zig");
 const code_view = @import("code_view.zig");
 const table_view = @import("table_view.zig");
 const image_view = @import("image_view.zig");
+const block_renderers = @import("block_renderers.zig");
 const geom = @import("../core/geom.zig");
 const ids = @import("../core/ids.zig");
 const ui_mod = @import("../core/ui.zig");
@@ -51,6 +52,7 @@ pub const Highlighter = code_view.Highlighter;
 pub const SyntaxClass = code_view.SyntaxClass;
 pub const Span = code_view.Span;
 pub const CodeAction = code_view.CodeAction;
+pub const BlockInfo = block_renderers.BlockInfo;
 pub const ImageLoader = image_view.ImageLoader;
 pub const ImageHandle = image_view.ImageHandle;
 
@@ -92,6 +94,9 @@ pub const MdViewProps = struct {
     virtualize: bool = true,
     /// Action buttons in every code block header (Insert, Apply).
     code_actions: []const CodeAction = &.{},
+    /// Fences drawn by a registered renderer (diagrams) instead of as
+    /// code.
+    block_renderers: ?*const block_renderers.MarkdownBlockRenderers = null,
     test_id: []const u8 = "",
 };
 
@@ -501,7 +506,8 @@ pub const Builder = struct {
                 b.leaf(i, st, .fg, true, .start);
             },
             .thematic_break => controls.separator(b.ui, false),
-            .code_fenced, .code_indented, .math_block => code_view.build(b, i),
+            .code_fenced => if (!b.custom(i)) code_view.build(b, i),
+            .code_indented, .math_block => code_view.build(b, i),
             .html_literal => {
                 var st = b.base;
                 st.font = .mono;
@@ -513,6 +519,14 @@ pub const Builder = struct {
             .front_matter => b.frontMatter(i),
             else => {},
         }
+    }
+
+    /// Fenced block `i` through its registered renderer; false when it
+    /// has none or the renderer declines.
+    fn custom(b: *Builder, i: u32) bool {
+        const info = fenceInfo(b.s, i, b.p) orelse return false;
+        const r = b.p.block_renderers.?.find(info.lang) orelse return false;
+        return r.build(r.ctx, b.ui, info);
     }
 
     /// A text leaf for block `i`.
@@ -751,11 +765,27 @@ fn updateHeights(s: *MdViewState, ui: *Ui, tops: []const u32, b: *const Builder)
     }
 }
 
+/// What a block renderer gets for fenced block `i` (null when `p` has
+/// no renderers or the block is not fenced).
+fn fenceInfo(s: *MdViewState, i: u32, p: MdViewProps) ?block_renderers.BlockInfo {
+    if (p.block_renderers == null) return null;
+    const d = s.doc;
+    const blk = d.blocks.items[i];
+    if (blk.kind != .code_fenced) return null;
+    const lang = code_view.langOf(d, i);
+    if (lang.len == 0) return null;
+    const e = s.entry(i) orelse return null;
+    return .{ .lang = lang, .info = d.contentOf(blk.info), .code = e.flat.text.items, .closed = blk.closed, .key = blk.src[0], .max_width = p.max_width };
+}
+
 /// An estimated height before a block is laid out: its text's lines at
 /// the view width.
 fn estimate(s: *MdViewState, i: u32, b: *const Builder) f32 {
     const d = s.doc;
     const blk = d.blocks.items[i];
+    if (fenceInfo(s, i, b.p)) |info| if (b.p.block_renderers.?.find(info.lang)) |r| if (r.estimate) |f| {
+        if (f(r.ctx, info)) |h| return h + b.gap();
+    };
     const lh = b.ts.metrics(b.base).line_h;
     const chars: f32 = @floatFromInt(blk.src[1] -| blk.src[0]);
     const per_line = @max(1, b.p.max_width / (b.base.size * 0.55));
