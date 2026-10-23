@@ -1,0 +1,16 @@
+---
+title: Release pipeline
+---
+flowchart LR
+  dev([Developer]) -->|push| ci{{CI}}
+  ci -->|green| review[/Review/]
+  ci -.->|red| dev
+  review ==> merge[(main)]
+  subgraph deploy [Deploy]
+    direction TB
+    stage[Staging] --> prod[[Production]]
+  end
+  merge --> deploy
+  classDef hot fill:#f66,color:#fff
+  class prod hot
+  linkStyle 3 stroke:#0a0,stroke-width:3px

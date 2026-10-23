@@ -1,0 +1,11 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "In", .shape = .parallelogram, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "Out", .shape = .parallelogram_alt, .classes = .{}, .span = .{ .start = 25, .end = 26 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

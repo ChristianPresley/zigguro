@@ -1,0 +1,13 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .style = .{ .fill = 4289379276, .stroke = 0 }, .span = .{ .start = 15, .end = 16 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{
+        .{ .name = "c", .style = .{ .fill = 1141973555 }, .span = .{ .start = 66, .end = 102 } },
+    },
+    .link_styles = .{},
+}
+// 3:21: warning: style 'font-size' is ignored

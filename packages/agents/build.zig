@@ -27,6 +27,17 @@ pub fn build(b: *std.Build) void {
         .bench = "bench/main.zig",
     });
 
+    // zg_diagram: diagrams from text (E13.F07.S02), std and zg_core only.
+    const diagram = b.addModule("zg_diagram", .{
+        .root_source_file = b.path("diagram/root.zig"),
+        .target = f.target,
+        .imports = &.{.{ .name = "zg_core", .module = core }},
+    });
+    diagram.addImport("zg_options", zg_build.optionsModule(b, f));
+    const diagram_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_diagram", .root_module = zg_build.testModule(b, f, diagram) }));
+    b.step("test-diagram", "Run the zg_diagram tests").dependOn(&diagram_tests.step);
+    b.top_level_steps.get("test").?.step.dependOn(&diagram_tests.step);
+
     const programs = addProgramTests(b, f, mod, ai_dep.module("zg_ai"), "");
     const programs_run = b.addRunArtifact(programs);
     programs_run.skip_foreign_checks = true;
@@ -49,6 +60,7 @@ pub fn build(b: *std.Build) void {
     const bench_mod = zg_build.benchModule(b, "zg_agents").?;
     bench_mod.addImport("zg_agents_ui", ui);
     bench_mod.addImport("zg_gui", gui);
+    bench_mod.addImport("zg_diagram", diagram);
     const ui_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_agents_ui", .root_module = zg_build.testModule(b, f, ui) }));
     ui_tests.skip_foreign_checks = true;
     b.step("test-ui", "Run the zg_agents_ui tests").dependOn(&ui_tests.step);

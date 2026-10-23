@@ -1,0 +1,12 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "Decide", .shape = .rhombus, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .cylinder, .classes = .{}, .span = .{ .start = 52, .end = 53 } },
+        .{ .id = "C", .label = "In", .shape = .parallelogram, .classes = .{}, .span = .{ .start = 71, .end = 72 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

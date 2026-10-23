@@ -1,0 +1,15 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{"someclass"}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "Label", .shape = .rect, .classes = .{"other"}, .span = .{ .start = 33, .end = 34 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 49 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{
+        .{ .name = "someclass", .style = .{ .fill = 4294941030 }, .span = .{ .start = 52, .end = 80 } },
+    },
+    .link_styles = .{},
+}

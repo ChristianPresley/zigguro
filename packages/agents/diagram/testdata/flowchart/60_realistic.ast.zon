@@ -1,0 +1,29 @@
+.{
+    .dir = .LR,
+    .title = "Release pipeline",
+    .nodes = .{
+        .{ .id = "dev", .label = "Developer", .shape = .stadium, .classes = .{}, .span = .{ .start = 47, .end = 50 } },
+        .{ .id = "ci", .label = "CI", .shape = .hexagon, .classes = .{}, .span = .{ .start = 74, .end = 76 } },
+        .{ .id = "review", .label = "Review", .shape = .parallelogram, .classes = .{}, .span = .{ .start = 99, .end = 105 } },
+        .{ .id = "merge", .label = "main", .shape = .cylinder, .classes = .{}, .span = .{ .start = 148, .end = 153 } },
+        .{ .id = "stage", .label = "Staging", .shape = .rect, .classes = .{}, .span = .{ .start = 210, .end = 215 } },
+        .{ .id = "prod", .label = "Production", .shape = .subroutine, .classes = .{"hot"}, .span = .{ .start = 229, .end = 233 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = "push", .min_len = 0, .span = .{ .start = 47, .end = 82 } },
+        .{ .from = 1, .to = 2, .style = .solid, .head = .arrow, .tail = .none, .label = "green", .min_len = 0, .span = .{ .start = 85, .end = 115 } },
+        .{ .from = 1, .to = 0, .style = .dotted, .head = .arrow, .tail = .none, .label = "red", .min_len = 0, .span = .{ .start = 118, .end = 134 } },
+        .{ .from = 2, .to = 3, .style = .thick, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 137, .end = 161 } },
+        .{ .from = 4, .to = 5, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 210, .end = 247 } },
+        .{ .from = 3, .to = 0, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 256, .end = 272 }, .to_kind = .subgraph },
+    },
+    .subgraphs = .{
+        .{ .id = "deploy", .title = "Deploy", .dir = .TB, .members = .{ 4, 5 }, .children = .{}, .span = .{ .start = 164, .end = 188 } },
+    },
+    .class_defs = .{
+        .{ .name = "hot", .style = .{ .fill = 4294927974, .color = 4294967295 }, .span = .{ .start = 275, .end = 308 } },
+    },
+    .link_styles = .{
+        .{ .index = 3, .style = .{ .stroke = 4278233600, .stroke_width = 3 }, .span = .{ .start = 328, .end = 368 } },
+    },
+}

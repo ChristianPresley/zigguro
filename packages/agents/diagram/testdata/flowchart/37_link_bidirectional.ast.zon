@@ -1,0 +1,21 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 22, .end = 23 } },
+        .{ .id = "C", .label = "C", .shape = .rect, .classes = .{}, .span = .{ .start = 33, .end = 34 } },
+        .{ .id = "D", .label = "D", .shape = .rect, .classes = .{}, .span = .{ .start = 44, .end = 45 } },
+        .{ .id = "E", .label = "E", .shape = .rect, .classes = .{}, .span = .{ .start = 55, .end = 56 } },
+        .{ .id = "F", .label = "F", .shape = .rect, .classes = .{}, .span = .{ .start = 67, .end = 68 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .arrow, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 23 } },
+        .{ .from = 1, .to = 2, .style = .solid, .head = .circle, .tail = .circle, .label = null, .min_len = 0, .span = .{ .start = 26, .end = 34 } },
+        .{ .from = 2, .to = 3, .style = .solid, .head = .cross, .tail = .cross, .label = null, .min_len = 0, .span = .{ .start = 37, .end = 45 } },
+        .{ .from = 3, .to = 4, .style = .thick, .head = .arrow, .tail = .arrow, .label = null, .min_len = 0, .span = .{ .start = 48, .end = 56 } },
+        .{ .from = 4, .to = 5, .style = .dotted, .head = .arrow, .tail = .arrow, .label = null, .min_len = 0, .span = .{ .start = 59, .end = 68 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

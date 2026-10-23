@@ -1,0 +1,16 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "i1", .label = "i1", .shape = .rect, .classes = .{}, .span = .{ .start = 86, .end = 88 } },
+        .{ .id = "f1", .label = "f1", .shape = .rect, .classes = .{}, .span = .{ .start = 93, .end = 95 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 86, .end = 95 } },
+    },
+    .subgraphs = .{
+        .{ .id = "TOP", .title = "TOP", .dir = .TB, .members = .{}, .children = .{1}, .span = .{ .start = 15, .end = 27 } },
+        .{ .id = "B1", .title = "B1", .dir = .RL, .members = .{ 0, 1 }, .children = .{}, .span = .{ .start = 49, .end = 60 } },
+    },
+    .class_defs = .{},
+    .link_styles = .{},
+}

@@ -1,0 +1,11 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "Bottom", .shape = .trapezoid, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "Top", .shape = .trapezoid_alt, .classes = .{}, .span = .{ .start = 29, .end = 30 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

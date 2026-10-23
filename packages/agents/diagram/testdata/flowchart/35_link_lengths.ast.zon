@@ -1,0 +1,23 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 22, .end = 23 } },
+        .{ .id = "C", .label = "C", .shape = .rect, .classes = .{}, .span = .{ .start = 34, .end = 35 } },
+        .{ .id = "D", .label = "D", .shape = .rect, .classes = .{}, .span = .{ .start = 46, .end = 47 } },
+        .{ .id = "E", .label = "E", .shape = .rect, .classes = .{}, .span = .{ .start = 57, .end = 58 } },
+        .{ .id = "F", .label = "F", .shape = .rect, .classes = .{}, .span = .{ .start = 69, .end = 70 } },
+        .{ .id = "G", .label = "G", .shape = .rect, .classes = .{}, .span = .{ .start = 81, .end = 82 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 1, .span = .{ .start = 15, .end = 23 } },
+        .{ .from = 0, .to = 2, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 2, .span = .{ .start = 26, .end = 35 } },
+        .{ .from = 0, .to = 3, .style = .dotted, .head = .arrow, .tail = .none, .label = null, .min_len = 1, .span = .{ .start = 38, .end = 47 } },
+        .{ .from = 0, .to = 4, .style = .thick, .head = .arrow, .tail = .none, .label = null, .min_len = 1, .span = .{ .start = 50, .end = 58 } },
+        .{ .from = 0, .to = 5, .style = .solid, .head = .none, .tail = .none, .label = null, .min_len = 2, .span = .{ .start = 61, .end = 70 } },
+        .{ .from = 0, .to = 6, .style = .invisible, .head = .none, .tail = .none, .label = null, .min_len = 2, .span = .{ .start = 73, .end = 82 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

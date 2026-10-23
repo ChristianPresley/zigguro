@@ -1,0 +1,13 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .style = .{ .fill = 4294941183, .stroke = 4281545523, .stroke_width = 4 }, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .style = .{ .fill = 4290493439, .stroke = 4294927974, .stroke_width = 2, .color = 4294967295, .stroke_dasharray = .{ 5, 5 } }, .span = .{ .start = 21, .end = 22 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = null, .min_len = 0, .span = .{ .start = 15, .end = 22 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}

@@ -1,0 +1,13 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "Zap", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "User", .shape = .rect, .classes = .{}, .span = .{ .start = 49, .end = 50 } },
+    },
+    .edges = .{},
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}
+// 2:14: warning: shape 'bolt' is not supported; drawn as a rectangle
+// 3:6: warning: 'icon' is ignored

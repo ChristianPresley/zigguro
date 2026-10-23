@@ -145,12 +145,14 @@ pub fn build(b: *std.Build) void {
             }
             test_step.dependOn(check_vk);
         }
-        // zg_terminal, zg_security, zg_notes and zg_agents also export GUI modules, tested with them.
-        inline for (.{ .{ "zg_terminal", "zg_terminal_view" }, .{ "zg_security", "zg_security_ui" }, .{ "zg_notes", "zg_notes_ui" }, .{ "zg_agents", "zg_agents_ui" } }) |extra| if (comptime std.mem.eql(u8, p.name, extra[0])) {
+        // zg_terminal, zg_security, zg_notes and zg_agents also export GUI
+        // modules, and zg_agents the zg_diagram parser, tested with them.
+        inline for (.{ .{ "zg_terminal", "zg_terminal_view" }, .{ "zg_security", "zg_security_ui" }, .{ "zg_notes", "zg_notes_ui" }, .{ "zg_agents", "zg_agents_ui" }, .{ "zg_agents", "zg_diagram" } }) |extra| if (comptime std.mem.eql(u8, p.name, extra[0])) {
             const vt = b.addTest(.{ .name = extra[1], .root_module = zg_build.testModule(b, f, deps[i].module(extra[1])), .filters = test_filters });
             const vrun = b.addRunArtifact(vt);
             vrun.skip_foreign_checks = true;
             one.dependOn(&vrun.step);
+            if (comptime std.mem.eql(u8, extra[1], "zg_diagram")) b.step("test-diagram", "Run the zg_diagram tests").dependOn(&vrun.step);
             test_step.dependOn(&vrun.step);
             fuzz_step.dependOn(&vrun.step);
         };

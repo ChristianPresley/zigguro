@@ -1,0 +1,19 @@
+.{
+    .dir = .LR,
+    .nodes = .{
+        .{ .id = "A", .label = "A", .shape = .rect, .classes = .{}, .span = .{ .start = 15, .end = 16 } },
+        .{ .id = "B", .label = "B", .shape = .rect, .classes = .{}, .span = .{ .start = 29, .end = 30 } },
+        .{ .id = "C", .label = "C", .shape = .rect, .classes = .{}, .span = .{ .start = 54, .end = 55 } },
+        .{ .id = "D", .label = "D", .shape = .rect, .classes = .{}, .span = .{ .start = 78, .end = 79 } },
+        .{ .id = "E", .label = "E", .shape = .rect, .classes = .{}, .span = .{ .start = 101, .end = 102 } },
+    },
+    .edges = .{
+        .{ .from = 0, .to = 1, .style = .solid, .head = .arrow, .tail = .none, .label = "text", .min_len = 0, .span = .{ .start = 15, .end = 30 } },
+        .{ .from = 1, .to = 2, .style = .dotted, .head = .arrow, .tail = .none, .label = "dotted text", .min_len = 0, .span = .{ .start = 33, .end = 55 } },
+        .{ .from = 2, .to = 3, .style = .thick, .head = .arrow, .tail = .none, .label = "thick text", .min_len = 0, .span = .{ .start = 58, .end = 79 } },
+        .{ .from = 3, .to = 4, .style = .solid, .head = .none, .tail = .none, .label = "open text", .min_len = 0, .span = .{ .start = 82, .end = 102 } },
+    },
+    .subgraphs = .{},
+    .class_defs = .{},
+    .link_styles = .{},
+}
