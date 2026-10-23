@@ -20,6 +20,7 @@ const zg_ai = @import("zg_ai");
 const zg_net = @import("zg_net");
 const zg_agents = @import("zg_agents");
 const review_hooks = @import("review_hooks.zig");
+const cmd_automation = @import("cmd_automation.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -196,7 +197,13 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
     // (the GUI may hold it instead). Files are re-read every 10 s.
     var ws_dir = try Io.Dir.cwd().openDir(io, workspace, .{});
     defer ws_dir.close(io);
+    // Repository automations wait for `zg automation approve`.
+    const pins = cmd_automation.openPinsDir(rt, min);
+    defer if (pins) |d| d.close(io);
+    const approvals = try zg_agents.sched.Approvals.open(gpa, io, pins, cwd);
+    defer approvals.close();
     const automations = try zg_agents.sched.Service.init(gpa, io, ws_dir, reg, .fromHost(host), zg_agents.sched.utcZone(), .{
+        .trust = approvals.trust(),
         .workspace_key = cwd,
         .warn = .{ .ctx = router, .warn = warnAutomation },
         .on_problem = reportProblem,
