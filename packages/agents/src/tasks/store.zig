@@ -482,6 +482,24 @@ pub fn delete(s: *TaskStore, id: TaskId, via: WriteVia) !Outcome {
     }
 }
 
+/// Moves a task the user deleted back from the trash (the board's undo).
+pub fn restore(s: *TaskStore, id: TaskId) !void {
+    var trash = s.dir.openDir(s.io, trash_dir, .{ .iterate = true }) catch return error.TaskNotFound;
+    defer trash.close(s.io);
+    var it = trash.iterate();
+    const idf = ids.format(id);
+    var name_buf: [256]u8 = undefined;
+    const name = while (try it.next(s.io)) |e| {
+        if (e.kind != .file or !isTaskFile(e.name) or e.name.len > name_buf.len) continue;
+        const rest = if (std.mem.startsWith(u8, e.name, idf.slice())) e.name[idf.slice().len..] else continue;
+        if (rest.len > 0 and rest[0] != '-' and rest[0] != '.') continue;
+        @memcpy(name_buf[0..e.name.len], e.name);
+        break name_buf[0..e.name.len];
+    } else return error.TaskNotFound;
+    try trash.rename(name, s.dir, name, s.io);
+    try s.reloadFile(name);
+}
+
 fn write(s: *TaskStore, a: Allocator, id: TaskId, name: []const u8, before: []const u8, after: []const u8, fields: []const []const u8, via: WriteVia) !Outcome {
     const path = try std.fmt.allocPrint(a, "{s}/{s}", .{ s.o.dir_rel, name });
     switch (via) {

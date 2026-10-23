@@ -1,5 +1,5 @@
-//! zg_agents_ui: the agent views over zg_gui (E13): Mission Control and
-//! the Automations manager. A
+//! zg_agents_ui: the agent views over zg_gui (E13): Mission Control, the
+//! Automations manager and the task board. A
 //! module of its own so headless consumers never import zg_gui.
 
 const std = @import("std");
@@ -13,7 +13,11 @@ pub const toast_bridge = @import("toast_bridge.zig");
 /// The Automations manager.
 pub const automations_view = @import("automations_view.zig");
 
+/// The task board.
+pub const board = @import("board/board_view.zig");
+
 pub const MissionControl = mission_control.MissionControl;
+pub const TaskBoard = board.TaskBoard;
 pub const AutomationsView = automations_view.AutomationsView;
 pub const ToastBridge = toast_bridge.ToastBridge;
 pub const missionControl = mission_control.missionControl;
@@ -22,4 +26,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("mission_control_test.zig");
     _ = @import("automations_view_test.zig");
+    _ = @import("board/board_view_test.zig");
 }
