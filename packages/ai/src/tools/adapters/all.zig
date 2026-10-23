@@ -14,7 +14,8 @@ const log = std.log.scoped(.ai_tools);
 
 /// The exporters the app has. Names are contracts with their packages:
 /// `zg_lsp.agent`, `zg_dap.agent`, the task runner, `zg_workspace.ai`,
-/// `zg_notes.ai`, `zg_scm.agent` and one per configured MCP server.
+/// `zg_notes.ai`, `zg_scm.agent`, `zg_agents` and one per configured MCP
+/// server.
 pub const Services = struct {
     lsp: ?foreign.Exporter = null,
     debug: ?foreign.Exporter = null,
@@ -22,6 +23,7 @@ pub const Services = struct {
     workspace: ?foreign.Exporter = null,
     notes: ?foreign.Exporter = null,
     scm: ?foreign.Exporter = null,
+    agents: ?foreign.Exporter = null,
     mcp: []const foreign.Exporter = &.{},
 };
 
@@ -33,6 +35,7 @@ pub const AdapterFlags = struct {
     workspace: bool = true,
     notes: bool = true,
     scm: bool = true,
+    agents: bool = true,
     mcp: bool = true,
 };
 
@@ -62,6 +65,7 @@ pub const Adapters = struct {
             .{ .e = s.workspace, .on = enabled.workspace, .what = "workspace" },
             .{ .e = s.notes, .on = enabled.notes, .what = "notes" },
             .{ .e = s.scm, .on = enabled.scm, .what = "scm" },
+            .{ .e = s.agents, .on = enabled.agents, .what = "agents" },
         };
         for (one) |x| {
             if (!x.on) continue;
