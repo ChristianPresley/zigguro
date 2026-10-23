@@ -19,10 +19,13 @@
 //! Columns from `max_columns - 1` on are one overflow column ("…") that
 //! holds every lane that did not fit.
 //!
-//! Rows store their edges in flat arrays, together with the lane state
-//! after each row, so `computeIncremental` can reuse the unchanged prefix
-//! and, once the lane state matches the old layout again, the unchanged
-//! suffix. Same input, same layout: nothing depends on hash order.
+//! Rows are stored in immutable chunks of up to `chunk_rows` rows, each
+//! with its edges in flat arrays and the lane state after each row.
+//! `computeIncremental` shares the unchanged chunks with the old layout
+//! (reference counted) and copies only the rows of the chunks an edit
+//! touches: the unchanged prefix, then, once the lane state matches the
+//! old layout again, the unchanged suffix. Same input, same layout:
+//! nothing depends on hash order.
 
 const std = @import("std");
 const index_mod = @import("index.zig");
@@ -55,6 +58,9 @@ pub const LayoutOptions = struct {
     /// Draw edges through hidden commits dashed (`elided`); otherwise as
     /// ordinary edges.
     collapse_elided: bool = true,
+    /// Rows per storage chunk (at least 1): an incremental relayout copies
+    /// at most two chunks' worth of unchanged rows and shares the rest.
+    chunk_rows: u32 = 512,
 };
 
 pub const EdgeKind = enum {
@@ -90,31 +96,109 @@ pub const Row = struct {
     edges_through: []const Lane,
 };
 
+/// Layouts made by `computeIncremental` share chunks with the layout they
+/// came from; any of them may be freed first, from any thread.
 pub const Layout = struct {
     gpa: Allocator,
-    rows: []Row,
     /// Columns used by the widest row.
     width: u16,
     max_columns: u16,
-    // Flat storage behind `rows`, plus the lane state after each row.
+    count: usize,
+    chunks: []*Chunk,
+    /// The first row of each chunk.
+    starts: []usize,
+
+    pub fn deinit(l: *Layout) void {
+        for (l.chunks) |c| c.release(l.gpa);
+        l.gpa.free(l.chunks);
+        l.gpa.free(l.starts);
+        l.* = undefined;
+    }
+
+    /// The number of rows: one per commit.
+    pub fn len(l: *const Layout) usize {
+        return l.count;
+    }
+
+    /// Row `i`; its slices live as long as the layout.
+    pub fn row(l: *const Layout, i: usize) Row {
+        const c = l.chunkOf(i);
+        return l.chunks[c].row(i - l.starts[c]);
+    }
+
+    /// The rows in order.
+    pub fn iterator(l: *const Layout) RowIterator {
+        return .{ .chunks = l.chunks };
+    }
+
+    /// The chunk holding row `i`.
+    fn chunkOf(l: *const Layout, i: usize) usize {
+        std.debug.assert(i < l.count);
+        var lo: usize = 0;
+        var hi: usize = l.starts.len;
+        while (hi - lo > 1) {
+            const mid = (lo + hi) / 2;
+            if (l.starts[mid] <= i) lo = mid else hi = mid;
+        }
+        return lo;
+    }
+
+    fn state(l: *const Layout, i: usize) State {
+        const c = l.chunkOf(i);
+        return l.chunks[c].state(i - l.starts[c]);
+    }
+};
+
+pub const RowIterator = struct {
+    chunks: []const *Chunk,
+    c: usize = 0,
+    i: usize = 0,
+
+    pub fn next(it: *RowIterator) ?Row {
+        while (it.c < it.chunks.len) {
+            const ch = it.chunks[it.c];
+            if (it.i < ch.recs.len) {
+                it.i += 1;
+                return ch.row(it.i - 1);
+            }
+            it.c += 1;
+            it.i = 0;
+        }
+        return null;
+    }
+};
+
+/// Up to `chunk_rows` rows; immutable once built.
+const Chunk = struct {
+    refs: std.atomic.Value(u32),
+    /// Columns used by the widest row of the chunk.
+    width: u16,
     recs: []Rec,
     edges: []Edge,
     through: []Lane,
     states: []Slot,
 
-    pub fn deinit(l: *Layout) void {
-        const gpa = l.gpa;
-        gpa.free(l.rows);
-        gpa.free(l.recs);
-        gpa.free(l.edges);
-        gpa.free(l.through);
-        gpa.free(l.states);
-        l.* = undefined;
+    fn row(c: *const Chunk, i: usize) Row {
+        const r = c.recs[i];
+        return .{
+            .node_col = r.node_col,
+            .edges_out = c.edges[r.e_start..][0..r.e_len],
+            .edges_through = c.through[r.t_start..][0..r.t_len],
+        };
     }
 
-    fn state(l: *const Layout, i: usize) State {
-        const r = l.recs[i];
-        return .{ .slots = l.states[r.s_start..][0..r.s_len], .regular = r.s_reg };
+    fn state(c: *const Chunk, i: usize) State {
+        const r = c.recs[i];
+        return .{ .slots = c.states[r.s_start..][0..r.s_len], .regular = r.s_reg };
+    }
+
+    fn release(c: *Chunk, gpa: Allocator) void {
+        if (c.refs.fetchSub(1, .acq_rel) != 1) return;
+        gpa.free(c.recs);
+        gpa.free(c.edges);
+        gpa.free(c.through);
+        gpa.free(c.states);
+        gpa.destroy(c);
     }
 };
 
@@ -130,7 +214,7 @@ const Slot = struct {
     }
 };
 
-/// Offsets of one row's data in the flat arrays.
+/// Offsets of one row's data in its chunk's flat arrays.
 const Rec = struct {
     node_col: u16,
     e_start: u32,
@@ -160,10 +244,16 @@ const Builder = struct {
     lanes: std.ArrayList(Slot) = .empty,
     overflow: std.ArrayList(u32) = .empty,
     next: std.ArrayList(Slot) = .empty,
+    // The chunk being built.
     recs: std.ArrayList(Rec) = .empty,
     edges: std.ArrayList(Edge) = .empty,
     through: std.ArrayList(Lane) = .empty,
     states: std.ArrayList(Slot) = .empty,
+    chunk_width: u16 = 0,
+    // Finished chunks.
+    chunks: std.ArrayList(*Chunk) = .empty,
+    starts: std.ArrayList(usize) = .empty,
+    sealed_rows: usize = 0,
     width: u16 = 0,
 
     fn deinit(b: *Builder) void {
@@ -175,6 +265,9 @@ const Builder = struct {
         b.edges.deinit(gpa);
         b.through.deinit(gpa);
         b.states.deinit(gpa);
+        for (b.chunks.items) |c| c.release(gpa);
+        b.chunks.deinit(gpa);
+        b.starts.deinit(gpa);
     }
 
     fn regularCap(b: *const Builder) u16 {
@@ -185,12 +278,101 @@ const Builder = struct {
         return b.opts.max_columns - 1;
     }
 
+    /// Room for a chunk of `n` rows.
     fn reserve(b: *Builder, n: usize) !void {
         const gpa = b.gpa;
         try b.recs.ensureTotalCapacity(gpa, n);
         try b.edges.ensureTotalCapacity(gpa, n * 2);
         try b.through.ensureTotalCapacity(gpa, n);
         try b.states.ensureTotalCapacity(gpa, n * 2);
+    }
+
+    /// Ends the chunk being built, if it has rows.
+    fn seal(b: *Builder) !void {
+        if (b.recs.items.len == 0) return;
+        const gpa = b.gpa;
+        try b.chunks.ensureUnusedCapacity(gpa, 1);
+        try b.starts.ensureUnusedCapacity(gpa, 1);
+        const c = try gpa.create(Chunk);
+        errdefer gpa.destroy(c);
+        const states = try b.states.toOwnedSlice(gpa);
+        errdefer gpa.free(states);
+        const through = try b.through.toOwnedSlice(gpa);
+        errdefer gpa.free(through);
+        const edges = try b.edges.toOwnedSlice(gpa);
+        errdefer gpa.free(edges);
+        const recs = try b.recs.toOwnedSlice(gpa);
+        c.* = .{ .refs = .init(1), .width = b.chunk_width, .recs = recs, .edges = edges, .through = through, .states = states };
+        b.push(c);
+        b.chunk_width = 0;
+    }
+
+    fn sealIfFull(b: *Builder) !void {
+        if (b.recs.items.len < b.opts.chunk_rows) return;
+        try b.seal();
+        try b.reserve(b.opts.chunk_rows);
+    }
+
+    fn push(b: *Builder, c: *Chunk) void {
+        b.chunks.appendAssumeCapacity(c);
+        b.starts.appendAssumeCapacity(b.sealed_rows);
+        b.sealed_rows += c.recs.len;
+        b.width = @max(b.width, c.width);
+    }
+
+    /// Appends `c`, shared with the layout it came from.
+    fn share(b: *Builder, c: *Chunk) !void {
+        try b.seal();
+        try b.chunks.ensureUnusedCapacity(b.gpa, 1);
+        try b.starts.ensureUnusedCapacity(b.gpa, 1);
+        _ = c.refs.fetchAdd(1, .monotonic);
+        b.push(c);
+    }
+
+    /// Appends a copy of row `i` of `c`.
+    fn copyRow(b: *Builder, c: *const Chunk, i: usize) !void {
+        const gpa = b.gpa;
+        const r = c.recs[i];
+        var n = r;
+        n.e_start = @intCast(b.edges.items.len);
+        n.t_start = @intCast(b.through.items.len);
+        n.s_start = @intCast(b.states.items.len);
+        try b.edges.appendSlice(gpa, c.edges[r.e_start..][0..r.e_len]);
+        try b.through.appendSlice(gpa, c.through[r.t_start..][0..r.t_len]);
+        try b.states.appendSlice(gpa, c.states[r.s_start..][0..r.s_len]);
+        try b.recs.append(gpa, n);
+        b.chunk_width = @max(b.chunk_width, rowWidth(c, r));
+        try b.sealIfFull();
+    }
+
+    /// Appends rows `from..to` of `l`: copies of the rows of chunks only
+    /// partly in range, the whole chunks shared.
+    fn appendRows(b: *Builder, l: *const Layout, from: usize, to: usize) !void {
+        if (from >= to) return;
+        var c = l.chunkOf(from);
+        var i = from;
+        while (i < to) : (c += 1) {
+            const ch = l.chunks[c];
+            const start = l.starts[c];
+            const end = start + ch.recs.len;
+            if (i == start and end <= to) {
+                try b.share(ch);
+            } else {
+                for (i - start..@min(end, to) - start) |x| try b.copyRow(ch, x);
+            }
+            i = @min(end, to);
+        }
+    }
+
+    /// The lane state after the last row added.
+    fn lastState(b: *const Builder) State {
+        if (b.recs.items.len > 0) {
+            const r = b.recs.getLast();
+            return .{ .slots = b.states.items[r.s_start..][0..r.s_len], .regular = r.s_reg };
+        }
+        if (b.chunks.items.len == 0) return .{ .slots = &.{}, .regular = 0 };
+        const c = b.chunks.getLast();
+        return c.state(c.recs.len - 1);
     }
 
     fn find(slots: []const Slot, target: u32) ?u16 {
@@ -325,7 +507,7 @@ const Builder = struct {
             .s_reg = @intCast(b.next.items.len),
             .s_len = @intCast(b.states.items.len - s_start),
         });
-        b.width = @max(b.width, widthOf(node_col, b.through.items[t_start..], out));
+        b.chunk_width = @max(b.chunk_width, widthOf(node_col, b.through.items[t_start..], out));
         std.mem.swap(std.ArrayList(Slot), &b.lanes, &b.next);
     }
 
@@ -355,30 +537,11 @@ const Builder = struct {
 
     fn finish(b: *Builder) !Layout {
         const gpa = b.gpa;
-        var l: Layout = .{
-            .gpa = gpa,
-            .rows = &.{},
-            .width = b.width,
-            .max_columns = b.opts.max_columns,
-            .recs = try b.recs.toOwnedSlice(gpa),
-            .edges = &.{},
-            .through = &.{},
-            .states = &.{},
-        };
-        errdefer gpa.free(l.recs);
-        l.edges = try b.edges.toOwnedSlice(gpa);
-        errdefer gpa.free(l.edges);
-        l.through = try b.through.toOwnedSlice(gpa);
-        errdefer gpa.free(l.through);
-        l.states = try b.states.toOwnedSlice(gpa);
-        errdefer gpa.free(l.states);
-        l.rows = try gpa.alloc(Row, l.recs.len);
-        for (l.rows, l.recs) |*row, r| row.* = .{
-            .node_col = r.node_col,
-            .edges_out = l.edges[r.e_start..][0..r.e_len],
-            .edges_through = l.through[r.t_start..][0..r.t_len],
-        };
-        return l;
+        try b.seal();
+        const starts = try b.starts.toOwnedSlice(gpa);
+        errdefer gpa.free(starts);
+        const chunks = try b.chunks.toOwnedSlice(gpa);
+        return .{ .gpa = gpa, .width = b.width, .max_columns = b.opts.max_columns, .count = b.sealed_rows, .chunks = chunks, .starts = starts };
     }
 };
 
@@ -390,19 +553,23 @@ fn edgeLess(_: void, a: Edge, b: Edge) bool {
 
 pub fn compute(gpa: Allocator, nodes: []const GraphNodeIn, opts: LayoutOptions) !Layout {
     std.debug.assert(opts.max_columns >= 2);
+    std.debug.assert(opts.chunk_rows >= 1);
     var b: Builder = .{ .gpa = gpa, .opts = opts };
     defer b.deinit();
-    try b.reserve(nodes.len);
-    for (nodes) |n| try b.addRow(n);
+    try b.reserve(@min(nodes.len, opts.chunk_rows));
+    for (nodes) |n| {
+        try b.addRow(n);
+        try b.sealIfFull();
+    }
     return b.finish();
 }
 
 /// The layout of `nodes`, reusing `prev` (the layout of `prev_nodes` with
-/// the same options): rows before the first changed commit are copied,
+/// the same options): rows before the first changed commit are reused,
 /// and so is the tail once the lane state matches the old layout's at the
-/// same distance from the end.
+/// same distance from the end. Whole chunks are shared with `prev`.
 pub fn computeIncremental(prev: *const Layout, prev_nodes: []const GraphNodeIn, nodes: []const GraphNodeIn, opts: LayoutOptions, gpa: Allocator) !Layout {
-    std.debug.assert(prev.recs.len == prev_nodes.len and prev.max_columns == opts.max_columns);
+    std.debug.assert(prev.count == prev_nodes.len and prev.max_columns == opts.max_columns and opts.chunk_rows >= 1);
     var k: usize = 0;
     const m = @min(nodes.len, prev_nodes.len);
     while (k < m and nodes[k].eql(prev_nodes[k])) k += 1;
@@ -411,22 +578,14 @@ pub fn computeIncremental(prev: *const Layout, prev_nodes: []const GraphNodeIn, 
 
     var b: Builder = .{ .gpa = gpa, .opts = opts };
     defer b.deinit();
-    try b.reserve(nodes.len);
+    try b.reserve(@min(nodes.len, opts.chunk_rows));
 
     // The prefix.
     if (k > 0) {
-        const last = prev.recs[k - 1];
-        const e_end = last.e_start + last.e_len;
-        const t_end = last.t_start + last.t_len;
-        const s_end = last.s_start + last.s_len;
-        b.recs.appendSliceAssumeCapacity(prev.recs[0..k]);
-        try b.edges.appendSlice(gpa, prev.edges[0..e_end]);
-        try b.through.appendSlice(gpa, prev.through[0..t_end]);
-        try b.states.appendSlice(gpa, prev.states[0..s_end]);
+        try b.appendRows(prev, 0, k);
         const st = prev.state(k - 1);
         try b.lanes.appendSlice(gpa, st.slots[0..st.regular]);
         for (st.slots[st.regular..]) |o| try b.overflow.append(gpa, o.target);
-        for (prev.recs[0..k]) |r| b.width = @max(b.width, rowWidth(prev, r));
     }
 
     // Changed rows, until the lane state lines up with the old layout.
@@ -434,39 +593,25 @@ pub fn computeIncremental(prev: *const Layout, prev_nodes: []const GraphNodeIn, 
     var j = k;
     while (j < nodes.len) : (j += 1) {
         try b.addRow(nodes[j]);
-        if (j + 1 < suffix_start or j + 1 == nodes.len) continue;
+        if (j + 1 < suffix_start or j + 1 == nodes.len) {
+            try b.sealIfFull();
+            continue;
+        }
         // The old row at the same distance from the end (-1: before the
         // first row).
         const old_j: isize = @as(isize, @intCast(j + prev_nodes.len)) - @as(isize, @intCast(nodes.len));
-        const cur = b.recs.getLast();
-        const now: State = .{ .slots = b.states.items[cur.s_start..][0..cur.s_len], .regular = cur.s_reg };
         const was: State = if (old_j < 0) .{ .slots = &.{}, .regular = 0 } else prev.state(@intCast(old_j));
-        if (!now.eql(was)) continue;
-        // Splice in the old tail, shifting its offsets.
-        const from: usize = @intCast(old_j + 1);
-        const first = prev.recs[from];
-        const de: i64 = @as(i64, @intCast(b.edges.items.len)) - first.e_start;
-        const dt: i64 = @as(i64, @intCast(b.through.items.len)) - first.t_start;
-        const ds: i64 = @as(i64, @intCast(b.states.items.len)) - first.s_start;
-        try b.edges.appendSlice(gpa, prev.edges[first.e_start..]);
-        try b.through.appendSlice(gpa, prev.through[first.t_start..]);
-        try b.states.appendSlice(gpa, prev.states[first.s_start..]);
-        try b.recs.ensureUnusedCapacity(gpa, prev.recs.len - from);
-        for (prev.recs[from..]) |r| {
-            var n = r;
-            n.e_start = @intCast(r.e_start + de);
-            n.t_start = @intCast(r.t_start + dt);
-            n.s_start = @intCast(r.s_start + ds);
-            b.recs.appendAssumeCapacity(n);
-            b.width = @max(b.width, rowWidth(prev, r));
-        }
+        const same = b.lastState().eql(was);
+        try b.sealIfFull();
+        if (!same) continue;
+        try b.appendRows(prev, @intCast(old_j + 1), prev.count);
         break;
     }
     return b.finish();
 }
 
-fn rowWidth(l: *const Layout, r: Rec) u16 {
-    return widthOf(r.node_col, l.through[r.t_start..][0..r.t_len], l.edges[r.e_start..][0..r.e_len]);
+fn rowWidth(c: *const Chunk, r: Rec) u16 {
+    return widthOf(r.node_col, c.through[r.t_start..][0..r.t_len], c.edges[r.e_start..][0..r.e_len]);
 }
 
 /// The columns a row draws in.
@@ -532,7 +677,9 @@ pub fn renderLabeled(layout: *const Layout, nodes: []const GraphNodeIn, w: *std.
     var cells_buf: [2 * 1024]Cell = undefined;
     const ncells = @min(cells_buf.len, 2 * @as(usize, layout.width));
     const cells = cells_buf[0..ncells];
-    for (layout.rows, 0..) |row, i| {
+    var rows = layout.iterator();
+    var i: usize = 0;
+    while (rows.next()) |row| : (i += 1) {
         @memset(cells, .space);
         for (row.edges_through) |t| {
             if (2 * t.col >= cells.len) continue;

@@ -38,6 +38,7 @@ const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
+const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
 const McpInputDialogs = @import("agent/mcp_input.zig").McpInputDialogs;
@@ -146,6 +147,9 @@ pub const Workbench = struct {
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
     agent_panel: ?*AgentPanel = null,
+    /// Agent edits waiting in their editors (inline review; with the
+    /// agent).
+    pending_edits: ?*PendingEdits = null,
     /// Code block colours in the agent's replies (with the panel).
     md_highlight: ?zg_editor.view.MarkdownHighlighter = null,
     /// Slash commands and skills, in the palette and the agent prompt.
@@ -351,6 +355,7 @@ pub const Workbench = struct {
             h.destroy();
             wb.inline_edit = null;
         };
+        if (wb.pending_edits) |pe| pe.dropView(f.view);
         if (f.completions) |c| c.detach();
         if (f.deco) |d| {
             f.doc.unsubscribe(f.deco_listener);
@@ -743,6 +748,13 @@ pub const Workbench = struct {
         if (wb.agent_cmds) |c| c.target = null;
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
+        // After the agent (its file tools place changes here), before the
+        // editors the changes draw in.
+        if (wb.pending_edits) |pe| {
+            pe.deinit();
+            wb.gpa.destroy(pe);
+        }
+        wb.pending_edits = null;
         if (wb.terminal) |t| t.destroy();
         wb.terminal = null;
         if (wb.approvals_inbox) |i| i.destroy();
@@ -902,6 +914,11 @@ pub const Workbench = struct {
         .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
         .{ .id = "agent.inlineEdit", .title = "Edit Selection Inline", .category = "AI", .run = inlineEditStart },
+        .{ .id = "agent.toggleInlineReview", .title = "Toggle Inline Review of Agent Edits", .category = "Agent", .run = toggleInlineReview },
+        .{ .id = "agent.acceptChange", .title = "Accept Agent Change", .category = "Agent", .run = acceptAgentChange },
+        .{ .id = "agent.rejectChange", .title = "Reject Agent Change", .category = "Agent", .run = rejectAgentChange },
+        .{ .id = "agent.acceptAllChanges", .title = "Accept All Agent Changes in File", .category = "Agent", .run = acceptAllAgentChanges },
+        .{ .id = "agent.rejectAllChanges", .title = "Reject All Agent Changes in File", .category = "Agent", .run = rejectAllAgentChanges },
         .{ .id = "completions.trigger", .title = "Trigger Inline Completion", .category = "AI", .run = completionTrigger },
         .{ .id = "completions.acceptLine", .title = "Accept Next Line of Inline Completion", .category = "AI", .run = completionAcceptLine },
         .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
@@ -1454,6 +1471,11 @@ pub const Workbench = struct {
         const host = try AgentHost.create(wb.rt, wb.env, w.app, &wb.docs, &wb.approvals);
         errdefer host.destroy();
         host.files.on_edit = .{ .ctx = wb, .f = onAgentEdit };
+        const pe = try wb.gpa.create(PendingEdits);
+        pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc });
+        pe.on_change = .{ .ctx = wb, .f = onPendingChange };
+        wb.pending_edits = pe;
+        host.files.bindPending(pe);
         const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
@@ -1564,6 +1586,58 @@ pub const Workbench = struct {
 
     /// An agent edit landed in the open document (the view follows the
     /// document's changes): repaint.
+    /// The editor of an open document (`PendingEdits`).
+    fn viewOfDoc(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) ?*EditorView {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |f| if (f.handle) |fh| if (std.meta.eql(fh, h)) return f.view;
+        return null;
+    }
+
+    fn onPendingChange(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Turns inline review of agent edits on or off (this session).
+    fn toggleInlineReview(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.startAgent(w);
+        const host = wb.agent orelse return;
+        host.files.inline_review = !host.files.inline_review;
+        if (host.files.inline_review)
+            wb.notify(.info, "Agent edits to open files now wait in the editor: Accept or Reject Agent Change at the cursor", .{})
+        else
+            wb.notify(.info, "Agent edits to open files apply directly again", .{});
+    }
+
+    fn pendingResult(wb: *Workbench, res: PendingEdits.Result) void {
+        switch (res) {
+            .done => {},
+            .none => wb.notify(.info, "No agent change in this file", .{}),
+            .conflicted => wb.notify(.warning, "You changed this text since the agent's edit: reject the change or ask the agent again", .{}),
+        }
+    }
+
+    fn acceptAgentChange(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.acceptAt(wb.view));
+    }
+
+    fn rejectAgentChange(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.rejectAt(wb.view));
+    }
+
+    fn acceptAllAgentChanges(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.acceptAll(wb.view));
+    }
+
+    fn rejectAllAgentChanges(wb: *Workbench) !void {
+        const pe = wb.pending_edits orelse return wb.pendingResult(.none);
+        wb.pendingResult(pe.rejectAll(wb.view));
+    }
+
     fn onAgentEdit(ctx: *anyopaque, _: zg_editor.model.api.registry.DocHandle, _: []const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.win) |w| w.markAllDirty();
@@ -1857,7 +1931,7 @@ pub const Workbench = struct {
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [10]zg_gui.w.StatusItem = undefined;
+        var items: [12]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -1887,6 +1961,12 @@ pub const Workbench = struct {
         const waiting = wb.approvals.pendingCount(.{});
         if (waiting > 0) {
             items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
+            n += 1;
+        }
+        var pb: [32]u8 = undefined;
+        const pending = if (wb.pending_edits) |pe| pe.count() else 0;
+        if (pending > 0) {
+            items[n] = .{ .id = "agent.pending", .text = std.fmt.bufPrint(&pb, "{d} agent change{s}", .{ pending, if (pending == 1) "" else "s" }) catch "", .side = .right, .priority = 940, .tone = .warning, .tooltip = "Agent edits wait in the editor: click to accept the one at the cursor", .action = "agent.acceptChange" };
             n += 1;
         }
         if (wb.curCompletions()) |c| {
