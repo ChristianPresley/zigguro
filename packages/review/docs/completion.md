@@ -222,7 +222,28 @@ no edit made to `onCursorMove`, and reports the popup and focus.
 | `completions.snooze` | none | |
 | `completions.toggle` | none | |
 
-The app registers the commands (E15).
+### In the app
+
+`apps/zigguro/src/review/completions.zig` picks the provider when the
+workbench gets a window:
+
+- `ZG_COMPLETION_URL` names a FIM server. `ZG_COMPLETION_KIND` is
+  `llamacpp` (the default), `ollama` or `openai`; `ZG_COMPLETION_MODEL`,
+  `ZG_COMPLETION_TEMPLATE` (for `openai`, default `qwen2.5-coder`) and
+  `ZG_COMPLETION_API_KEY` go with it. Plain HTTP works on loopback only,
+  unless `ZG_COMPLETION_INSECURE=1`.
+- Otherwise, with a model key such as `ANTHROPIC_API_KEY`, the chat
+  fallback runs through E10 (`ChatCompletionPort`) on `ZG_COMPLETION_MODEL`,
+  or `haiku` by default.
+- Otherwise completions are off.
+
+`EditorCompletions` binds one editor: its own decoration store when the
+view has none, a document listener after the store's, one window timer
+armed from `nextDeadline`, and `Host.post` through `App.post`. The
+workbench forwards caret moves and registers the palette commands; the
+status bar shows the state and toggles completions on click. Keys go
+through `EditorCompletions.onKey`, which returns false when the ghost does
+not take the key.
 
 ## Telemetry
 
