@@ -81,6 +81,8 @@ pub const prov = struct {
     pub const recorder = @import("prov/recorder.zig");
     /// Attribution through rewrites and merges.
     pub const remap = @import("prov/remap.zig");
+    /// Per-commit agents and sessions, for the provenance revsets.
+    pub const index = @import("prov/index.zig");
 };
 /// AI workflows (F06): the ports other packages implement, and fakes.
 pub const ai = struct {
@@ -159,6 +161,7 @@ test {
     _ = @import("prov/manifest.zig");
     _ = @import("prov/recorder.zig");
     _ = @import("prov/remap.zig");
+    _ = @import("prov/index.zig");
     _ = @import("ai/testing/fake_model.zig");
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
