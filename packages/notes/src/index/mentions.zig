@@ -1,7 +1,7 @@
 //! Unlinked mentions (E08.F06.S01.T02), computed on demand for one note
 //! as Obsidian does: whole-word, case-insensitive occurrences of the
 //! note's title, aliases and file stem in the other notes of its vault,
-//! outside links, code, math, comments and frontmatter.
+//! outside links, tags, code, math, comments and frontmatter.
 //!
 //! Matching folds ASCII case only (non-ASCII letters must match exactly)
 //! so reported ranges stay byte ranges of the source note. Note bytes come
@@ -61,6 +61,7 @@ pub fn unlinkedMentions(view: *const note_index.IndexView, gpa: Allocator, src: 
         defer ex.deinit(gpa);
         try ex.appendSlice(gpa, skip);
         for (e.meta.links) |l| try ex.append(gpa, l.src);
+        for (e.meta.tags) |tg| if (!tg.in_frontmatter) try ex.append(gpa, tg.src);
         std.mem.sort([2]u32, ex.items, {}, struct {
             fn lt(_: void, a: [2]u32, b: [2]u32) bool {
                 return a[0] < b[0];
