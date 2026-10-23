@@ -1,0 +1,103 @@
+# source|link as written|expected resolution (path, self, unresolved, ambiguous:winner)
+Home.md|[[Alpha]]|ambiguous:Archive/Alpha.md
+Home.md|[[alpha]]|ambiguous:Archive/Alpha.md
+Home.md|[[ALPHA|shown]]|ambiguous:Archive/Alpha.md
+Home.md|[[Projects/Alpha]]|Projects/Alpha.md
+Home.md|[[Projects/Alpha.md]]|Projects/Alpha.md
+Home.md|[[projects/alpha]]|Projects/Alpha.md
+Home.md|[[Archive/Alpha]]|Archive/Alpha.md
+Home.md|[[Archive/Alpha.md|old]]|Archive/Alpha.md
+Home.md|[[/Projects/Alpha]]|Projects/Alpha.md
+Home.md|[[Project A]]|Projects/Alpha.md
+Home.md|[[project a]]|Projects/Alpha.md
+Home.md|[[Jane]]|People/Jane Doe.md
+Home.md|[[J. Doe]]|People/Jane Doe.md
+Home.md|[[Jane Doe]]|People/Jane Doe.md
+Home.md|[[People/Jane Doe]]|People/Jane Doe.md
+Home.md|[[Jane Doe.md]]|People/Jane Doe.md
+Home.md|[[Old Note]]|Archive/Old Note.md
+Home.md|[[Old Note#Section]]|Archive/Old Note.md
+Home.md|[[Old Note#Section|see]]|Archive/Old Note.md
+Home.md|[[Archive/Old Note#Section]]|Archive/Old Note.md
+Home.md|[[Zig]]|Topics/Zig.md
+Home.md|[[Zig#Comptime#Generics]]|Topics/Zig.md
+Home.md|[[Zig#^blk1]]|Topics/Zig.md
+Home.md|[[Zig#^blk1|block]]|Topics/Zig.md
+Home.md|![[Zig#Comptime]]|Topics/Zig.md
+Home.md|![[Zig]]|Topics/Zig.md
+Home.md|[[#Local]]|self
+Home.md|[[#^here]]|self
+Home.md|[[2024-01-01]]|daily/2024-01-01.md
+Home.md|[[daily/2024-01-01]]|daily/2024-01-01.md
+Home.md|[[notes.v2]]|Projects/notes.v2.md
+Home.md|[[notes.v2.md]]|Projects/notes.v2.md
+Home.md|[[Alpha Draft]]|Inbox/Alpha Draft.md
+Home.md|[[Inbox/Alpha Draft]]|Inbox/Alpha Draft.md
+Home.md|[[sub/Deep]]|Topics/sub/Deep.md
+Home.md|[[Topics/sub/Deep]]|Topics/sub/Deep.md
+Home.md|[[Deep]]|Topics/sub/Deep.md
+Home.md|[[Home]]|Home.md
+Home.md|![[diagram.png]]|ambiguous:Topics/diagram.png
+Home.md|![[attachments/diagram.png]]|attachments/diagram.png
+Home.md|![[spec.pdf]]|attachments/spec.pdf
+Home.md|[[spec.pdf]]|attachments/spec.pdf
+Home.md|![[attachments/spec.pdf#page=2]]|attachments/spec.pdf
+Home.md|[[Missing]]|unresolved
+Home.md|[[Missing Note|alias]]|unresolved
+Home.md|[[Projects/Missing]]|unresolved
+Home.md|![[missing.png]]|unresolved
+Home.md|[[Nowhere/Alpha]]|unresolved
+Home.md|[Alpha](Projects/Alpha.md)|Projects/Alpha.md
+Home.md|[Alpha](Projects/Alpha)|Projects/Alpha.md
+Home.md|[Alpha](./Projects/Alpha.md)|Projects/Alpha.md
+Home.md|[Alpha](/Projects/Alpha.md)|Projects/Alpha.md
+Home.md|[old](Archive/Old%20Note.md)|Archive/Old Note.md
+Home.md|[old](<Archive/Old Note.md>)|Archive/Old Note.md
+Home.md|[old](Archive/Old%20Note.md#Section)|Archive/Old Note.md
+Home.md|[draft](Inbox/Alpha%20Draft.md)|Inbox/Alpha Draft.md
+Home.md|[nope](Projects/Alpha%20Draft.md)|unresolved
+Home.md|[deep](Topics/sub/Deep.md)|Topics/sub/Deep.md
+Home.md|![img](attachments/diagram.png)|attachments/diagram.png
+Home.md|[pdf](attachments/spec.pdf)|attachments/spec.pdf
+Home.md|[zig](Zig.md)|Topics/Zig.md
+Home.md|[home](Home.md)|Home.md
+Home.md|[up](../Home.md)|unresolved
+Projects/Beta.md|[[Alpha]]|ambiguous:Projects/Alpha.md
+Projects/Beta.md|[[alpha#Status]]|ambiguous:Projects/Alpha.md
+Projects/Beta.md|[[Alpha#^status]]|ambiguous:Projects/Alpha.md
+Projects/Beta.md|![[Alpha]]|ambiguous:Projects/Alpha.md
+Projects/Beta.md|[[Archive/Alpha]]|Archive/Alpha.md
+Projects/Beta.md|[[notes.v2]]|Projects/notes.v2.md
+Projects/Beta.md|[[Beta]]|Projects/Beta.md
+Projects/Beta.md|[[#Intro]]|self
+Projects/Beta.md|[[Jane]]|People/Jane Doe.md
+Projects/Beta.md|[[Home]]|Home.md
+Projects/Beta.md|![[diagram.png]]|ambiguous:Topics/diagram.png
+Projects/Beta.md|[a](Alpha.md)|Projects/Alpha.md
+Projects/Beta.md|[a](./Alpha.md)|Projects/Alpha.md
+Projects/Beta.md|[a](Alpha)|Projects/Alpha.md
+Projects/Beta.md|[home](../Home.md)|Home.md
+Projects/Beta.md|[old](../Archive/Old%20Note.md)|Archive/Old Note.md
+Projects/Beta.md|[v2](notes.v2.md)|Projects/notes.v2.md
+Projects/Beta.md|[img](../attachments/diagram.png)|attachments/diagram.png
+Projects/Beta.md|[out](../../Outside.md)|unresolved
+Projects/Beta.md|[zig](../Topics/Zig.md#Comptime)|Topics/Zig.md
+Projects/Beta.md|[[Missing]]|unresolved
+Topics/sub/Deep.md|[[Zig]]|Topics/Zig.md
+Topics/sub/Deep.md|[[Deep]]|Topics/sub/Deep.md
+Topics/sub/Deep.md|[[diagram.png]]|ambiguous:Topics/diagram.png
+Topics/sub/Deep.md|![[diagram.png]]|ambiguous:Topics/diagram.png
+Topics/sub/Deep.md|[up](../Zig.md)|Topics/Zig.md
+Topics/sub/Deep.md|[up](../Zig.md#Comptime)|Topics/Zig.md
+Topics/sub/Deep.md|[root](../../Home.md)|Home.md
+Topics/sub/Deep.md|[same](Deep.md)|Topics/sub/Deep.md
+Topics/sub/Deep.md|[pic](../diagram.png)|Topics/diagram.png
+Topics/sub/Deep.md|[pic](../../attachments/diagram.png)|attachments/diagram.png
+Topics/sub/Deep.md|[x](Zig)|Topics/Zig.md
+Topics/sub/Deep.md|[[Topics/Zig#Comptime]]|Topics/Zig.md
+Topics/sub/Deep.md|[[sub/Deep#^x]]|Topics/sub/Deep.md
+Topics/sub/Deep.md|[[Jane Doe#Work|Jane]]|People/Jane Doe.md
+Topics/sub/Deep.md|[[2024-01-01]]|daily/2024-01-01.md
+Topics/sub/Deep.md|[[Old Note]]|Archive/Old Note.md
+Topics/sub/Deep.md|[[Alpha]]|ambiguous:Archive/Alpha.md
+Topics/sub/Deep.md|[[Missing]]|unresolved
