@@ -349,6 +349,7 @@ fn registerRuns(b: *bench.Bench) !void {
     gpa.free(ids);
 }
 
+/// `data/profile_1m_col` (see below);
 /// `data/csv_index_256mb`: the full parallel row index of a 256 MiB CSV
 /// with quoted multi-line fields (budget: 1 GB/s a core, so 256 ms on
 /// one core); `data/first_screen_256mb`: opening it from disk until the
@@ -380,6 +381,29 @@ fn registerData(b: *bench.Bench) !void {
                 const cancel: std.atomic.Value(bool) = .init(false);
                 data.row_index.buildIndex(c.io, c.bytes, .{}, &ix, &progress, &cancel) catch unreachable;
                 bench.doNotOptimizeAway(ix.count());
+            }
+        }
+    }.f);
+
+    // `data/profile_1m_col`: column statistics of a 1 M-row numeric
+    // column (budget 200 ms).
+    var small: std.ArrayList(u8) = .empty;
+    defer small.deinit(gpa);
+    try small.appendSlice(gpa, "id,score,city\n");
+    for (0..1_000_000) |r| try small.print(gpa, "{d},{d}.{d},city{d}\n", .{ r, r % 9973, r % 10, r % 300 });
+    const profiled = try data.Dataset.openBytes(gpa, io, small.items, .csv);
+    defer profiled.close();
+    try profiled.waitIndexed();
+    const Prof = struct { ds: *data.Dataset, io: std.Io };
+    var prof: Prof = .{ .ds = profiled, .io = io };
+    try b.run("data/profile_1m_col", &prof, struct {
+        fn f(c: *Prof, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                const cancel: std.atomic.Value(bool) = .init(false);
+                bench.doNotOptimizeAway(data.stats.computeStats(c.io, c.ds, 1, arena.allocator(), &cancel) catch unreachable);
             }
         }
     }.f);

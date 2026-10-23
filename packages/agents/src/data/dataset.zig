@@ -9,8 +9,9 @@
 //! `seekApprox`). UTF-16 files are transcoded to UTF-8 at open; Latin-1
 //! files are converted cell by cell.
 //!
-//! JSON and NDJSON (`json_array`, `ndjson`) arrive with E13.F06.S01.T03
-//! behind the same `rowCount`/`cell` API.
+//! JSON arrays and NDJSON (`json_array`, `ndjson`) are `JsonTable`s
+//! behind the same `rowCount`/`cell` API; they are indexed in full at
+//! open. Column types are inferred from up to 10 k sampled cells.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -18,6 +19,8 @@ const csv = @import("csv.zig");
 const sniff_mod = @import("sniff.zig");
 const encoding = @import("encoding.zig");
 const row_index = @import("row_index.zig");
+const infer = @import("infer.zig");
+const json_table = @import("json_table.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -53,12 +56,14 @@ pub const Dataset = struct {
     cancel: std.atomic.Value(bool) = .init(false),
     index_error: ?anyerror = null,
     task: ?Io.Future(void) = null,
+    json: ?*json_table.JsonTable = null,
+    /// Inferred column types (from the first screen's rows for CSV).
+    types: []const infer.ColType = &.{},
 
     /// Opens `path` under `dir`. `hint` overrides the format guessed from
     /// the extension.
     pub fn open(gpa: Allocator, io: Io, dir: Io.Dir, path: []const u8, hint: ?Format) !*Dataset {
         const format = hint orelse formatOf(path);
-        if (format == .json_array or format == .ndjson) return error.Unsupported;
         const file = try dir.openFile(io, path, .{});
         defer file.close(io);
         const st = try file.stat(io);
@@ -92,7 +97,6 @@ pub const Dataset = struct {
 
     /// A dataset over bytes the caller keeps alive.
     pub fn openBytes(gpa: Allocator, io: Io, bytes: []const u8, format: Format) !*Dataset {
-        if (format == .json_array or format == .ndjson) return error.Unsupported;
         return init(gpa, io, bytes, null, null, format);
     }
 
@@ -129,11 +133,48 @@ pub const Dataset = struct {
             .full = .init(gpa),
         };
         errdefer ds.deinitParts();
+        if (format == .json_array or format == .ndjson) {
+            const t = try gpa.create(json_table.JsonTable);
+            errdefer gpa.destroy(t);
+            t.* = try json_table.JsonTable.open(io, gpa, bytes, if (format == .ndjson) .ndjson else .array, &ds.progress);
+            ds.json = t;
+            ds.sniffed.header = false;
+            ds.sniffed.confidence = 1;
+            try ds.jsonColumns();
+            ds.indexed.store(true, .release);
+            return ds;
+        }
         try ds.reindex(sniffed.dialect, sniffed.header);
         return ds;
     }
 
+    fn jsonColumns(ds: *Dataset) !void {
+        const t = ds.json.?;
+        const a = ds.arena.allocator();
+        const names = try a.alloc([]const u8, t.columns().len);
+        const types = try a.alloc(infer.ColType, t.columns().len);
+        for (t.columns(), names, types) |c, *n, *ty| {
+            n.* = c.name;
+            ty.* = c.ty;
+        }
+        ds.columns = names;
+        ds.types = types;
+    }
+
+    /// Adds JSON columns first seen in rows `first..first+n` (the grid
+    /// calls it for rows it shows). Returns how many were added.
+    pub fn discover(ds: *Dataset, first: u64, n: u64) !usize {
+        const t = ds.json orelse return 0;
+        const added = try t.discover(first, n);
+        if (added > 0) try ds.jsonColumns();
+        return added;
+    }
+
     fn deinitParts(ds: *Dataset) void {
+        if (ds.json) |t| {
+            t.deinit();
+            ds.gpa.destroy(t);
+        }
         ds.head.deinit();
         ds.full.deinit();
         ds.arena.deinit();
@@ -148,6 +189,7 @@ pub const Dataset = struct {
         _ = ds.arena.reset(.retain_capacity);
         try row_index.indexPrefix(ds.bytes, d, first_screen_bytes, &ds.head);
         ds.columns = try ds.columnNames();
+        ds.types = try ds.inferTypes();
         ds.full.reset();
         ds.progress.store(ds.head.count(), .release);
         ds.indexed.store(false, .release);
@@ -203,6 +245,7 @@ pub const Dataset = struct {
 
     /// Data rows (the header row not counted).
     pub fn rowCount(ds: *const Dataset) RowCount {
+        if (ds.json) |t| return .{ .exact = t.rowCount() };
         if (ds.indexed.load(.acquire)) return .{ .exact = ds.index().count() -| ds.headerRows() };
         return .{ .at_least = ds.progress.load(.acquire) -| ds.headerRows() };
     }
@@ -214,6 +257,7 @@ pub const Dataset = struct {
     /// The text of a cell ("" past the row's fields, or for a row not
     /// indexed yet).
     pub fn cell(ds: *const Dataset, row: u64, col: u32, arena: Allocator) ![]const u8 {
+        if (ds.json) |t| return t.cell(row, col, arena);
         const ix = ds.index();
         const r = row + ds.headerRows();
         if (r >= ix.count()) return "";
@@ -233,6 +277,7 @@ pub const Dataset = struct {
 
     /// Whether the cell is null under the dialect's null rules.
     pub fn isNull(ds: *const Dataset, row: u64, col: u32, arena: Allocator) !bool {
+        if (ds.json) |t| return t.isNull(row, col, arena);
         const ix = ds.index();
         const r = row + ds.headerRows();
         if (r >= ix.count()) return true;
@@ -244,6 +289,7 @@ pub const Dataset = struct {
 
     /// Whether the row's field count differs from the columns.
     pub fn rowShape(ds: *const Dataset, row: u64, arena: Allocator) !csv.Shape {
+        if (ds.json != null) return .ok;
         const ix = ds.index();
         const r = row + ds.headerRows();
         if (r >= ix.count()) return .ok;
@@ -256,6 +302,84 @@ pub const Dataset = struct {
     /// Whether cells are converted from Latin-1 (shown to the user).
     pub fn latin1(ds: *const Dataset) bool {
         return ds.encoding == .latin1;
+    }
+
+    /// Calls `f(ctx, text, is_null)` for every cell of column `col`, in
+    /// row order, reading the file sequentially (no index needed). `text`
+    /// lives until the next call. Checks `cancel` every 1024 rows.
+    pub fn forEachCell(ds: *const Dataset, col: u32, ctx: anytype, comptime f: fn (@TypeOf(ctx), []const u8, bool) anyerror!void, cancel: *const std.atomic.Value(bool)) !void {
+        var arena: std.heap.ArenaAllocator = .init(ds.gpa);
+        defer arena.deinit();
+        if (ds.json) |t| {
+            var row: u64 = 0;
+            while (row < t.rowCount()) : (row += 1) {
+                if (row % 256 == 0) {
+                    if (cancel.load(.acquire)) return error.Canceled;
+                    _ = arena.reset(.retain_capacity);
+                }
+                const a = arena.allocator();
+                if (try t.isNull(row, col, a)) try f(ctx, "", true) else try f(ctx, try t.cell(row, col, a), false);
+            }
+            return;
+        }
+        var rd: csv.CsvReader = .init(ds.bytes, ds.dialect);
+        var fields: std.ArrayList(csv.Field) = .empty;
+        defer fields.deinit(ds.gpa);
+        var row: u64 = 0;
+        if (ds.sniffed.header) _ = try rd.nextRecord(&fields, ds.gpa);
+        while (try rd.nextRecord(&fields, ds.gpa)) |_| : (row += 1) {
+            if (row % 1024 == 0) {
+                if (cancel.load(.acquire)) return error.Canceled;
+                _ = arena.reset(.retain_capacity);
+            }
+            if (col >= fields.items.len) {
+                try f(ctx, "", true);
+                continue;
+            }
+            const fl = fields.items[col];
+            var text = try rd.fieldText(fl, arena.allocator());
+            if (ds.encoding == .latin1) text = try encoding.latin1ToUtf8(arena.allocator(), text);
+            try f(ctx, text, rd.isNull(fl));
+        }
+    }
+
+    /// Up to `n` cells of column `col`: spread over the file once it's
+    /// indexed, else the first rows.
+    pub fn sampleColumn(ds: *const Dataset, col: u32, n: usize, arena: Allocator) ![]const []const u8 {
+        const total = switch (ds.rowCount()) {
+            .exact => |x| x,
+            .at_least => |x| x,
+        };
+        const take: u64 = @min(total, n);
+        const out = try arena.alloc([]const u8, @intCast(take));
+        const stride: u64 = if (ds.indexed.load(.acquire) and take > 0) @max(1, total / take) else 1;
+        for (out, 0..) |*o, i| o.* = try ds.cell(@as(u64, i) * stride, col, arena);
+        return out;
+    }
+
+    /// Settings for parsing this file's cells.
+    pub fn inferCtx(ds: *const Dataset) infer.InferCtx {
+        return .{ .decimal_comma = ds.json == null and ds.dialect.delimiter == ';' };
+    }
+
+    fn inferTypes(ds: *Dataset) ![]const infer.ColType {
+        const a = ds.arena.allocator();
+        const types = try a.alloc(infer.ColType, ds.columns.len);
+        var tmp: std.heap.ArenaAllocator = .init(ds.gpa);
+        defer tmp.deinit();
+        const ta = tmp.allocator();
+        const cols = try ta.alloc(std.ArrayList([]const u8), ds.columns.len);
+        for (cols) |*c| c.* = .empty;
+        var rd: csv.CsvReader = .init(ds.bytes, ds.dialect);
+        var fields: std.ArrayList(csv.Field) = .empty;
+        if (ds.sniffed.header) _ = try rd.nextRecord(&fields, ta);
+        var rows: usize = 0;
+        while (rows < 10_000 and rd.pos < first_screen_bytes) : (rows += 1) {
+            _ = (try rd.nextRecord(&fields, ta)) orelse break;
+            for (fields.items[0..@min(fields.items.len, cols.len)], 0..) |f, i| try cols[i].append(ta, try rd.fieldText(f, ta));
+        }
+        for (types, cols) |*t, c| t.* = infer.inferColumn(c.items, ds.inferCtx());
+        return types;
     }
 
     fn columnNames(ds: *Dataset) ![]const []const u8 {
