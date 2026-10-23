@@ -32,7 +32,7 @@ const DocumentRegistry = api.registry.DocumentRegistry;
 const DocHandle = api.registry.DocHandle;
 const LspSync = api.lsp_sync.LspSync;
 const ServerDef = Registry.ServerDef;
-const Feature = Registry.Feature;
+pub const Feature = Registry.Feature;
 pub const RefreshFeature = zg_lsp.client.host.RefreshFeature;
 
 /// Hears `workspace/*/refresh` requests, on the UI thread during `tick`.
