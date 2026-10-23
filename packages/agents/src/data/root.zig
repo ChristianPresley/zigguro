@@ -27,4 +27,5 @@ test {
     _ = @import("stats_test.zig");
     _ = @import("query_parser_test.zig");
     _ = @import("query_plan_test.zig");
+    _ = @import("query_exec_test.zig");
 }
