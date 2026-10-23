@@ -11,6 +11,7 @@ pub const doc_session = @import("doc_session.zig");
 pub const tools = @import("tools.zig");
 pub const shortcuts = @import("shortcuts.zig");
 pub const tracked = @import("tracked.zig");
+pub const html_sanitize = @import("html_sanitize.zig");
 
 pub const DocSession = doc_session.DocSession;
 pub const Section = sections.Section;
