@@ -4,9 +4,10 @@
 //! editor, other writes recorded by E12's `ReviewGlue`, which also takes
 //! a checkpoint per user turn), approvals through `ToolApprovals` over the workbench's
 //! approvals inbox (E12's `ApprovalBroker`, journaled in the review store), and command tools over child processes until E06's
-//! terminals take them. The other subsystems' tools (LSP, tasks, SCM,
-//! MCP, ...) come through zg_ai's adapters as each package exports them;
-//! none does yet.
+//! terminals take them. The other subsystems' tools come through zg_ai's
+//! adapters as each package exports them: the repository's (`scm_log`,
+//! `scm_show`, `scm_status`, `scm_op_log`) when the working folder is in
+//! a zg repository (`scm_tools.zig`), and MCP servers' (below).
 //!
 //! Context as in `zg agent` (zg_ai's `ContextStack`): the memory files
 //! (ZIGGURO.md, AGENTS.md, CLAUDE.md and rules from the home folder and
@@ -40,6 +41,7 @@ const ToolApprovals = @import("approvals.zig").ToolApprovals;
 const ReviewAgentPort = @import("review_agent_port.zig").ReviewAgentPort;
 const PlanCards = @import("plan_card.zig").PlanCards;
 const ChildRelay = @import("panel.zig").ChildRelay;
+const ScmTools = @import("scm_tools.zig").ScmTools;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -69,6 +71,8 @@ pub const AgentHost = struct {
     /// Review fix requests reach `agent` through this.
     review_port: ReviewAgentPort,
     file_tools: builtin_tools.files.FileTools,
+    /// The repository's tools (none outside a zg repository).
+    scm: ?ScmTools,
     adapters: zg_ai.tools.adapters.all.Adapters,
     agent_tools: zg_ai.tools.AgentTools,
     approvals: ToolApprovals,
@@ -143,7 +147,13 @@ pub const AgentHost = struct {
         try h.tools.addSource(h.file_tools.source());
         h.adapters = .init(gpa, io);
         errdefer h.adapters.deinit();
-        try h.adapters.registerAll(&h.tools, &.{}, .{}, .{});
+        h.scm = ScmTools.open(gpa, io, Io.Dir.cwd()) catch |e| blk: {
+            log.warn("repository tools unavailable: {t}", .{e});
+            break :blk null;
+        };
+        errdefer if (h.scm) |*st| st.close();
+        const scm_exporter: ?zg_ai.tools.adapters.foreign.Exporter = if (h.scm) |*st| st.exporter() else null;
+        try h.adapters.registerAll(&h.tools, &.{ .scm = scm_exporter }, .{}, .{});
         h.agent_tools = .init(gpa, io, &h.tools, .{});
         errdefer h.agent_tools.deinit();
         h.approvals = .init(gpa, approvals.approvalPort());
@@ -235,6 +245,7 @@ pub const AgentHost = struct {
         h.processes.deinit();
         h.tools.deinit();
         h.adapters.deinit();
+        if (h.scm) |*st| st.close();
         h.mcp.deinit();
         h.hub.deinit();
         h.limiter.deinit();
