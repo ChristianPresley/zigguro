@@ -30,6 +30,7 @@ fn register(b: *bench.Bench) !void {
     try pipeline.register(b);
     try registerComplete(b);
     try registerScheduler(b);
+    try registerPostprocess(b);
 }
 
 const Reanchor = struct {
@@ -227,6 +228,37 @@ fn registerScheduler(b: *bench.Bench) !void {
                     if (n > 0) _ = x.started(out[0], k);
                     bench.doNotOptimizeAway(x.typed(1, "a", "abc"));
                 }
+            }
+        }
+    }.f);
+}
+
+const Post = struct {
+    req: zg_review.assist.complete.CompletionRequest,
+    raw: []const u8,
+    arena: std.heap.ArenaAllocator,
+};
+
+/// Post-process a 20-line multi-line completion (budget < 200 µs).
+fn registerPostprocess(b: *bench.Bench) !void {
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(b.gpa);
+    try raw.appendSlice(b.gpa, "if (a) {\n");
+    for (0..18) |i| try raw.print(b.gpa, "        const v{d} = compute({d}, \"line\");\n", .{ i, i });
+    try raw.appendSlice(b.gpa, "    }\n}\nfn next() void {}<|endoftext");
+    var p: Post = .{
+        .req = .{ .path = "a.zig", .language = "zig", .prefix = "fn f() void {\n    ", .suffix = "\n}\n", .multiline = true, .max_tokens = 256, .stop = &.{} },
+        .raw = raw.items,
+        .arena = .init(b.gpa),
+    };
+    defer p.arena.deinit();
+    try b.run("review.complete.postprocess_20_lines", &p, struct {
+        fn f(x: *Post, st: *bench.State) void {
+            var i: u64 = 0;
+            while (i < st.iterations()) : (i += 1) {
+                _ = x.arena.reset(.retain_capacity);
+                const r = zg_review.assist.complete.postprocess.postprocess(x.arena.allocator(), &x.req, x.raw, true) catch unreachable;
+                bench.doNotOptimizeAway(r);
             }
         }
     }.f);

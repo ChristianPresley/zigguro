@@ -504,7 +504,7 @@ const VimBench = struct {
 fn registerVim(b: *bench.Bench, text: []const u8) !void {
     const edit = zg_editor.model.edit;
     const modes = zg_editor.modes;
-    inline for (.{ .{ "editor.vim.key_motion", "wwwbbb" }, .{ "editor.vim.key_dd_undo", "ddu" }, .{ "editor.vim.ex_substitute_all_undo", ":%s/^/#/<CR>u" } }) |c| {
+    inline for (.{ .{ "editor.vim.key_motion", "wwwbbb" }, .{ "editor.vim.key_dd_undo", "ddu" }, .{ "editor.vim.ex_substitute_all_undo", ":%s/^/#/<CR>u" }, .{ "editor.vim.ex_global_substitute_undo", ":g/a/s/a/A/<CR>u" } }) |c| {
         const doc = try zg_editor.model.document.Document.initBytes(b.gpa, @enumFromInt(1), text);
         defer doc.deinit();
         var sels = try edit.selection.SelectionSet.init(b.gpa, .caret(doc.tree.lineStart(doc.tree.lineCount() / 2)));

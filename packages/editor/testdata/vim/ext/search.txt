@@ -207,3 +207,35 @@ cd
 /[0-9]<CR>n
 --- after
 a1 b¦2
+
+=== search zs
+--- before
+¦foobar foobaz
+--- keys
+/foo\zsbaz<CR>
+--- after
+foobar foo¦baz
+
+=== search ze
+--- before
+¦foobar foobaz
+--- keys
+/foo\zebaz<CR>
+--- after
+foobar ¦foobaz
+
+=== search zs n
+--- before
+¦xab xab xab
+--- keys
+/x\zsab<CR>n
+--- after
+xab x¦ab xab
+
+=== search zs backward
+--- before
+foobar foob¦az
+--- keys
+?foo\zsbar<CR>
+--- after
+foo¦bar foobaz
