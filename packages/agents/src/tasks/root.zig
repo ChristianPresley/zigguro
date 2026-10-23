@@ -15,6 +15,8 @@ pub const tools = @import("tools.zig");
 pub const hooks = @import("hooks.zig");
 pub const dispatch = @import("dispatch.zig");
 pub const TaskStore = @import("store.zig");
+/// The GitHub Issues REST client the sync engine uses (E13.F03.S03).
+pub const github = @import("github/root.zig");
 
 pub const Task = task.Task;
 pub const TaskId = task.TaskId;
@@ -39,4 +41,5 @@ test {
     _ = hooks;
     _ = dispatch;
     _ = @import("claim_test.zig");
+    _ = github;
 }
