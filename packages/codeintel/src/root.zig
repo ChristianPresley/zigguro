@@ -53,5 +53,6 @@ test {
     _ = @import("Manager_test.zig");
     _ = @import("features/semtok_test.zig");
     _ = @import("features/features_test.zig");
+    _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
 }
