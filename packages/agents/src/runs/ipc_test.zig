@@ -123,13 +123,28 @@ test "ipc_roundtrip" {
     try testing.expectEqual(run.RunStatus.completed, rows[0].status);
     const rec = try client.call(protocol.methods.show, protocol.IdParams{ .id = started.id }, std.json.Value, a);
     try testing.expectEqualStrings("go", rec.object.get("spec").?.object.get("prompt").?.string);
+    // `zg runs attach` and `outputs` read the record typed.
+    const typed = try client.call(protocol.methods.show, protocol.IdParams{ .id = started.id }, run.RunRecord, a);
+    try testing.expectEqual(run.RunStatus.completed, typed.status);
+    try testing.expect(typed.id.eql(started.id));
     try testing.expectError(error.RemoteError, client.call(protocol.methods.reply, protocol.ReplyParams{ .id = started.id, .text = "x" }, protocol.Ok, a));
+    _ = try client.call(protocol.methods.rename, protocol.RenameParams{ .id = started.id, .title = "renamed" }, protocol.Ok, a);
+    _ = try client.call(protocol.methods.pin, protocol.PinParams{ .id = started.id }, protocol.Ok, a);
+    {
+        const v = side.reg.snapshot();
+        defer side.reg.release(v);
+        try testing.expectEqualStrings("renamed", v.get(started.id).?.spec.title);
+        try testing.expect(v.get(started.id).?.pinned);
+    }
     // Stop a queued-then-running run.
     side.fake.auto_complete = false;
     const s2 = try client.call(protocol.methods.start, protocol.StartParams{ .spec = .{ .kind = .background, .title = "two", .prompt = "go" } }, protocol.IdParams, a);
     try side.waitStatus(s2.id, .working);
     _ = try client.call(protocol.methods.stop, protocol.StopParams{ .id = s2.id, .how = .now }, protocol.Ok, a);
     try side.waitStatus(s2.id, .stopped);
+    _ = try client.call(protocol.methods.remove, protocol.RemoveParams{ .id = s2.id }, protocol.Ok, a);
+    const left = try client.call(protocol.methods.list, .{}, []protocol.RunSummary, a);
+    try testing.expectEqual(@as(usize, 1), left.len);
 }
 
 test "ipc_rejects_bad_token" {
