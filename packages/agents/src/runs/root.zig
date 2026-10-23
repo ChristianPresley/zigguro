@@ -20,6 +20,7 @@ pub const RunId = run.RunId;
 pub const RunKind = run.RunKind;
 pub const RunStatus = run.RunStatus;
 pub const RunSpec = run.RunSpec;
+pub const Isolation = run.Isolation;
 pub const RunRecord = run.RunRecord;
 pub const RunEvent = run.RunEvent;
 pub const Update = run.Update;

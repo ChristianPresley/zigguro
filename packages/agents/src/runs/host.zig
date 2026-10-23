@@ -137,8 +137,18 @@ fn limits(h: *const RunHost) queue_mod.Limits {
 
 /// Records and queues a run; returns at once.
 pub fn start(h: *RunHost, spec: run.RunSpec) Error!RunId {
+    return h.startAs(null, spec);
+}
+
+/// `start` with an id chosen beforehand (the task dispatcher claims the
+/// task for the run before starting it).
+pub fn startWithId(h: *RunHost, id: RunId, spec: run.RunSpec) Error!RunId {
+    return h.startAs(id, spec);
+}
+
+fn startAs(h: *RunHost, want: ?RunId, spec: run.RunSpec) Error!RunId {
     const profile = h.profiles.resolve(h.profiles.ctx, spec.profile) orelse return error.UnknownProfile;
-    const id = try h.reg.create(spec);
+    const id = if (want) |w| try h.reg.createWithId(w, spec) else try h.reg.create(spec);
     const l = try h.newLive(id, spec, profile);
     h.mutex.lockUncancelable(h.io);
     defer h.mutex.unlock(h.io);
