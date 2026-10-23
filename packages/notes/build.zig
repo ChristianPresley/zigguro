@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const text = b.dependency("zg_text", f.args()).module("zg_text");
     const workspace = b.dependency("zg_workspace", f.args()).module("zg_workspace");
     const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
+    const ai_proto = b.dependency("zg_ai", f.args()).module("zg_ai_proto");
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_notes",
         .imports = &.{
@@ -28,6 +29,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_core", .module = core },
             .{ .name = "zg_notes", .module = mod },
             .{ .name = "zg_gui", .module = b.dependency("zg_gui", f.args()).module("zg_gui") },
+            .{ .name = "zg_ai_proto", .module = ai_proto },
         },
     });
     ui.addImport("zg_options", zg_build.optionsModule(b, f));
@@ -35,4 +37,19 @@ pub fn build(b: *std.Build) void {
     ui_tests.skip_foreign_checks = true;
     b.step("test-ui", "Run the zg_notes_ui tests").dependOn(&ui_tests.step);
     b.top_level_steps.get("test").?.step.dependOn(&ui_tests.step);
+
+    // The search view's model is headless (no zg_gui): the bench drives
+    // it directly (`notes/search_view`).
+    const search_model = b.createModule(.{
+        .root_source_file = b.path("src/ui/search_view_model.zig"),
+        .target = f.target,
+        .imports = &.{
+            .{ .name = "zg_notes", .module = mod },
+            .{ .name = "zg_ai_proto", .module = ai_proto },
+        },
+    });
+    for (b.top_level_steps.get("bench").?.step.dependencies.items) |d| {
+        const run = d.cast(std.Build.Step.Run) orelse continue;
+        if (run.producer) |exe| exe.root_module.addImport("notes_search_model", search_model);
+    }
 }
