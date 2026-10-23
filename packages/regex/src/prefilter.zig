@@ -5,8 +5,9 @@
 //! Selection: one byte -> `memchr`; one literal -> `memmem`; the ASCII case
 //! variants of at most four literals (what `(?i)word` yields) -> one
 //! case-folding `memmem` per literal;
-//! up to three distinct first bytes -> `memchr2/3` on first bytes; otherwise
-//! Aho-Corasick. Searches over chunked inputs handle literals that straddle
+//! up to three distinct first bytes -> `memchr2/3` on first bytes; up to
+//! `packed_search.max_lits` literals of at least two bytes -> the
+//! fingerprint search; otherwise Aho-Corasick. Searches over chunked inputs handle literals that straddle
 //! a chunk boundary by stitching a small window across it.
 
 const std = @import("std");
@@ -14,6 +15,7 @@ const input_mod = @import("input.zig");
 pub const memchr = @import("prefilter/memchr.zig");
 pub const memmem = @import("prefilter/memmem.zig");
 pub const aho_corasick = @import("prefilter/aho_corasick.zig");
+pub const packed_search = @import("prefilter/packed.zig");
 
 const Allocator = std.mem.Allocator;
 const Input = input_mod.Input;
@@ -31,6 +33,7 @@ pub const Prefilter = struct {
         substring: memmem.Finder,
         /// Owned; each needle is one of `lits`, lower-cased.
         folds: []memmem.FoldFinder,
+        fingerprints: packed_search.Packed,
         ac: aho_corasick.AhoCorasick,
     },
     /// Owned copies of the literals.
@@ -83,7 +86,7 @@ pub const Prefilter = struct {
             1 => .{ .byte1 = firsts[0] },
             2 => .{ .bytes2 = .{ firsts[0], firsts[1] } },
             3 => .{ .bytes3 = firsts },
-            else => .{ .ac = try aho_corasick.AhoCorasick.init(gpa, lits) },
+            else => if (try packed_search.Packed.init(gpa, lits)) |p| .{ .fingerprints = p } else .{ .ac = try aho_corasick.AhoCorasick.init(gpa, lits) },
         };
         return pf;
     }
@@ -123,6 +126,7 @@ pub const Prefilter = struct {
         switch (pf.kind) {
             .ac => |*ac| ac.deinit(gpa),
             .folds => |f| gpa.free(f),
+            .fingerprints => |*p| p.deinit(gpa),
             else => {},
         }
         for (pf.lits) |l| gpa.free(l);
@@ -144,6 +148,7 @@ pub const Prefilter = struct {
             .bytes3 => |bs| memchr.memchr3(bs[0], bs[1], bs[2], hay, from),
             .substring => |*f| f.find(hay, from),
             .folds => |fs| findFolds(fs, hay, from),
+            .fingerprints => |*p| p.find(hay, from),
             .ac => |*ac| ac.find(hay, from),
         };
     }
@@ -224,6 +229,7 @@ pub const Prefilter = struct {
             .byte1, .bytes2, .bytes3 => 1,
             .substring => |f| f.needle.len,
             .folds => pf.max_len,
+            .fingerprints => |p| p.k,
             .ac => 1,
         };
     }
@@ -242,6 +248,9 @@ test "prefilter: chunked search matches the slice search" {
         &.{ "aB", "AB", "ab", "Ab" },
         &.{ "dAc", "Dac" },
         &.{ "ab", "AB", "cd", "Cd", "c\xc5" },
+        &.{ "abc", "bcd", "cdab", "dab", "Abd" },
+        // A one-byte literal keeps the set on Aho-Corasick.
+        &.{ "a", "bc", "cd", "Dab" },
     };
     for (sets) |lits| {
         var pf = (try Prefilter.init(gpa, lits)).?;

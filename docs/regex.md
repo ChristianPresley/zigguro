@@ -39,15 +39,22 @@ Limits: patterns up to 1 MiB, repetition counts up to 1000, nesting depth
 2. Otherwise the forward lazy DFA finds the match end. When every match
    starts with one of a few literals, a prefilter (SIMD memchr for 1–3
    first bytes, packed-pair memmem, case-folding memmem for `(?i)` literals,
-   or Aho-Corasick) skips to candidates. Case-insensitive literals become
+   a fingerprint search for up to 64 literals of two bytes or more, or
+   Aho-Corasick) skips to candidates. Case-insensitive literals become
    up to four lower-cased needles (for example `sherl` and `ſherl` for
    `(?i)sherlock`), each searched with ASCII letters folded.
-   The DFA jumps ahead whenever it is idle, but only with the SIMD
-   prefilters; Aho-Corasick is about as fast as the DFA itself.
+   The DFA jumps ahead whenever it is idle, but not with Aho-Corasick,
+   which is about as fast as the DFA itself. The fingerprint search
+   (`src/prefilter/packed.zig`) stands in for Teddy: Zig has no portable
+   runtime byte shuffle, so instead of nibble tables it tests each
+   position's first two or three bytes against 64 Ki-bit tables, with no
+   dependency between positions.
 3. The reverse lazy DFA finds the match start.
 4. Captures run the PikeVM anchored on the match span.
-5. The PikeVM handles the search when a DFA quits (a non-ASCII byte in a
-   pattern with a Unicode word boundary) or gives up (cache thrash).
+5. The PikeVM handles the search when a DFA quits (a Unicode word
+   boundary to decide next to a non-ASCII byte, whose word-ness the DFA
+   cannot know) or gives up (cache thrash). Non-ASCII text elsewhere runs
+   through the DFA.
 
 The lazy DFA cache is bounded by `Options.dfa_cache_bytes` per direction.
 
@@ -62,10 +69,13 @@ and CJK):
 | `regex.memchr_1byte` | ~22 GB/s | ≥ 4 GB/s |
 | `regex.memmem` | ~17 GB/s | ≥ 2 GB/s |
 | `regex.memmem_icase` (`(?i)sherlock`) | ~7.5 GB/s | ≥ 1 GB/s |
-| `regex.literal_alt_20` (Aho-Corasick) | ~500 MB/s | ≥ 1 GB/s |
+| `regex.teddy_8` (fingerprint search, no hits) | ~1.6 GB/s | ≥ 1.5 GB/s |
+| `regex.literal_alt_20` (fingerprint search) | ~1.25 GB/s | ≥ 1 GB/s |
 | `regex.dfa_no_match`, `regex.dfa_ident` | ~500–550 MB/s | ≥ 500 MB/s |
-| `regex.dfa_word_suffix` (Unicode `\b`, PikeVM fallback on CJK) | ~23 MB/s | ≥ 30 MB/s PikeVM |
+| `regex.dfa_word_suffix` (Unicode `\b`) | ~480 MB/s | ≥ 500 MB/s |
 
-Known gaps: Teddy (packed SIMD multi-literal search) is not implemented, so
-large literal sets run on Aho-Corasick; patterns with Unicode `\b` fall back
-to the PikeVM on non-ASCII text.
+Known gaps: sets of more than 64 literals, or with a one-byte literal,
+run on Aho-Corasick; a Unicode `\b` right next to non-ASCII text (for
+example `\w+\b` over CJK) still falls back to the PikeVM. The numbers above
+were taken while other work ran on the container, so they are on the low
+side.

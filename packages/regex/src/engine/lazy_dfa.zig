@@ -14,9 +14,11 @@
 //! - Leftmost-first: while stepping, the first NFA match state in priority
 //!   order drops every lower-priority state (including the unanchored
 //!   prefix loop), so the search ends at the leftmost-first match end.
-//! - Unicode word boundaries are not representable byte-wise; the DFA quits
-//!   on any non-ASCII byte when the program has them, and the meta engine
-//!   falls back to the PikeVM.
+//! - Unicode word boundaries are not representable byte-wise. Whether a
+//!   non-ASCII character is a word character is unknown to the DFA, so it
+//!   quits (and the meta engine falls back to the PikeVM) only when a
+//!   Unicode word assertion has to be decided next to a non-ASCII byte;
+//!   elsewhere non-ASCII text runs through the DFA like any other.
 //! - When the cache is full it is cleared and rebuilt; after repeated clears
 //!   with little progress the search gives up, and the caller falls back to
 //!   the PikeVM. Memory is bounded by `Options.dfa_cache_bytes`.
@@ -67,11 +69,21 @@ const tag_mask: u32 = tag_match | tag_start | (1 << 29);
 /// Offsets stay below the tag bits.
 const max_offset: u32 = 1 << 29;
 
+/// The Unicode word assertions.
+const unicode_word: LookSet = blk: {
+    var s: LookSet = .{};
+    for ([_]Look{ .word_unicode, .word_unicode_negate, .word_start_unicode, .word_end_unicode, .word_start_half_unicode, .word_end_half_unicode }) |l| s.insert(l);
+    break :blk s;
+};
+
 const Flags = packed struct(u8) {
     is_match: bool = false,
     from_word: bool = false,
     half_crlf: bool = false,
-    _pad: u5 = 0,
+    /// The previous unit was a non-ASCII byte: whether it ends a word
+    /// character is unknown (only in programs with Unicode word assertions).
+    word_unknown: bool = false,
+    _pad: u4 = 0,
 };
 
 /// Fixed part of a state key; NFA state ids follow it.
@@ -104,7 +116,7 @@ const KeyContext = struct {
 };
 
 /// The start-state context: what precedes the search start.
-const StartKind = enum(u3) { text, lf, cr, word, nonword };
+const StartKind = enum(u3) { text, lf, cr, word, nonword, non_ascii };
 
 /// Per-thread mutable DFA state for one program and match kind.
 pub const Cache = struct {
@@ -115,7 +127,7 @@ pub const Cache = struct {
     keys: std.heap.ArenaAllocator,
     key_bytes: usize = 0,
     map: std.HashMapUnmanaged([]const u8, u32, KeyContext, 80) = .empty,
-    starts: [2][5]u32 = @splat(@splat(unknown)),
+    starts: [2][6]u32 = @splat(@splat(unknown)),
     // Builder scratch.
     set: std.ArrayList(StateId) = .empty,
     seen: std.DynamicBitSetUnmanaged = .{},
@@ -289,7 +301,8 @@ pub const Dfa = struct {
             if (b == lf) s.insert(.start_line_crlf);
             if (!look_mod.isWordByte(b)) {
                 s.insert(.word_start_half_ascii);
-                s.insert(.word_start_half_unicode);
+                // After a non-ASCII byte the Unicode answer is unknown.
+                if (b < 0x80) s.insert(.word_start_half_unicode);
             }
         } else {
             s.insert(.start_text);
@@ -363,9 +376,10 @@ pub const Dfa = struct {
 
     /// The start state for `anchored` after `prev` (null = text start).
     fn startState(d: *const Dfa, c: *Cache, anchored: bool, prev: ?u8) Error!u32 {
-        if (prev) |b| if (d.quit_non_ascii and b >= 0x80) return error.Quit;
-        const kind: StartKind = if (prev) |b| (if (b == '\n') .lf else if (b == '\r') .cr else if (look_mod.isWordByte(b)) .word else .nonword) else .text;
-        const flags0 = d.contextDyn(prev);
+        const unknown_word = if (prev) |b| d.quit_non_ascii and b >= 0x80 else false;
+        const kind: StartKind = if (prev) |b| (if (unknown_word) .non_ascii else if (b == '\n') .lf else if (b == '\r') .cr else if (look_mod.isWordByte(b)) .word else .nonword) else .text;
+        var flags0 = d.contextDyn(prev);
+        flags0.word_unknown = unknown_word;
         const slot = &c.starts[@intFromBool(anchored)][@intFromEnum(kind)];
         if (slot.* != unknown) return slot.*;
         const have = d.behindDyn(prev);
@@ -373,6 +387,7 @@ pub const Dfa = struct {
         c.set.clearRetainingCapacity();
         resetSeen(c);
         try d.closure(c, if (anchored) d.program.start_anchored else d.program.start_unanchored, have, &need);
+        if (unknown_word and need.hasUnicodeWord()) return error.Quit;
         const id = (try d.intern(c, flags0, have, need, 0)) orelse blk: {
             try d.clearCache(c);
             break :blk (try d.intern(c, flags0, have, need, 0)) orelse return error.GaveUp;
@@ -393,13 +408,14 @@ pub const Dfa = struct {
     /// Computes (and caches) the transition of `cur` on `unit`. Returns the
     /// possibly renumbered current state id (after a cache clear) and the
     /// tagged entry for the next state (or `dead` / `quit`).
-    fn computeNext(d: *const Dfa, c: *Cache, cur_in: u32, unit: ?u8) Error!struct { cur: u32, next: u32 } {
-        if (unit) |b| if (d.quit_non_ascii and b >= 0x80) {
-            const cls = d.program.classes.get(b);
-            c.trans.items[cur_in * d.stride + cls] = quit;
-            return .{ .cur = cur_in, .next = quit };
-        };
+    const Step = struct { cur: u32, next: u32 };
+
+    fn computeNext(d: *const Dfa, c: *Cache, cur_in: u32, unit: ?u8) Error!Step {
         const cur_state = c.states.items[cur_in];
+        const non_ascii = if (unit) |b| d.quit_non_ascii and b >= 0x80 else false;
+        // A Unicode word assertion to decide with a non-ASCII character on
+        // either side.
+        if ((non_ascii or cur_state.flags.word_unknown) and cur_state.look_need.hasUnicodeWord()) return d.quitOn(c, cur_in, unit);
         // Save the current key: building may clear the cache.
         c.saved_key.clearRetainingCapacity();
         try c.saved_key.appendSlice(c.gpa, keyOf(c, cur_in));
@@ -411,7 +427,10 @@ pub const Dfa = struct {
         var work: std.ArrayList(StateId) = .empty;
         defer work.deinit(c.gpa);
         if (!cur_state.look_need.isEmpty()) {
-            const added = d.aheadDyn(cur_state.flags, unit);
+            var added = d.aheadDyn(cur_state.flags, unit);
+            // Next to a non-ASCII byte the Unicode word answers are unknown.
+            const unsure = non_ascii or cur_state.flags.word_unknown;
+            if (unsure) added.bits &= ~unicode_word.bits;
             const new_have = have.unionWith(added);
             if (new_have.bits & cur_state.look_need.bits != have.bits & cur_state.look_need.bits) {
                 have = new_have;
@@ -419,6 +438,8 @@ pub const Dfa = struct {
                 resetSeen(c);
                 var ignored: LookSet = .{};
                 for (cur_ids) |id| try d.closure(c, id, have, &ignored);
+                // The expansion reached a Unicode word assertion it cannot decide.
+                if (unsure and ignored.hasUnicodeWord()) return d.quitOn(c, cur_in, unit);
                 try work.appendSlice(c.gpa, c.set.items);
             }
         }
@@ -449,9 +470,12 @@ pub const Dfa = struct {
             }
         }
         if (unit) |_| {
+            // One the next unit would have to decide next to this byte.
+            if (non_ascii and need.hasUnicodeWord()) return d.quitOn(c, cur_in, unit);
             const ctx = d.contextDyn(unit);
             flags.from_word = ctx.from_word;
             flags.half_crlf = ctx.half_crlf;
+            flags.word_unknown = non_ascii;
         } else {
             // After end of input nothing more can happen.
             c.set.clearRetainingCapacity();
@@ -475,6 +499,14 @@ pub const Dfa = struct {
         const next_ptr = d.ptrOf(c, next);
         c.trans.items[cur * d.stride + cls] = next_ptr;
         return .{ .cur = cur, .next = next_ptr };
+    }
+
+    /// Caches and returns a quit transition (the decision depends only on
+    /// the state and on the unit being non-ASCII, one byte class).
+    fn quitOn(d: *const Dfa, c: *Cache, cur: u32, unit: ?u8) Step {
+        const cls: usize = if (unit) |b| d.program.classes.get(b) else d.eoi_class;
+        c.trans.items[cur * d.stride + cls] = quit;
+        return .{ .cur = cur, .next = quit };
     }
 
     fn reinsert(d: *const Dfa, c: *Cache, key: []const u8) Error!u32 {

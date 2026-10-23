@@ -13,9 +13,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 }
 
 /// Budgeted bench names that have no body yet.
-pub const pending = [_][]const u8{
-    "regex.teddy_8",
-};
+pub const pending = [_][]const u8{};
 
 const words = [_][]const u8{ "the", "of", "and", "to", "in", "is", "that", "for", "it", "as", "was", "with", "be", "by", "on", "not", "he", "this", "are", "or", "his", "from", "at", "which", "but", "have", "an", "had", "they", "you", "were", "their", "one", "all", "we", "can", "her", "has", "there", "been", "if", "more", "when", "will", "would", "who", "so", "no", "editor", "buffer", "window", "regex", "search" };
 const code = [_][]const u8{ "pub fn ", "const ", "var ", "return ", "if (", ") {\n", "}\n", "try ", "self.", "std.mem.", "allocator", "[i]", " = ", "while (", "u8", "usize", ";\n", "// comment about the code\n", "\"string literal\"", "0x1F", "for (items) |item| " };
@@ -107,6 +105,9 @@ fn register(b: *bench.Bench) !void {
     try runPattern(b, "regex.memmem", "Sherlock", hay);
     try runPattern(b, "regex.memmem_icase", "(?i)sherlock", hay);
     try runPattern(b, "regex.literal_alt_3", "Holmes|Watson|Moriarty", hay);
+    // Eight literals absent from the corpus: the fingerprint search's scan
+    // speed (named after Teddy, which it stands in for).
+    try runPattern(b, "regex.teddy_8", "zebra|quokka|axolotl|narwhal|okapi|pangolin|tapir|wombat", hay);
     try runPattern(b, "regex.literal_alt_20", "zebra|quokka|axolotl|narwhal|okapi|pangolin|tapir|wombat|dugong|gharial|kakapo|saiga|tarsier|vaquita|binturong|fossa|jerboa|kinkajou|numbat|quoll", hay);
     try runPattern(b, "regex.dfa_word_suffix", "[a-z]+ing\\b", hay);
     try runPattern(b, "regex.dfa_unicode_class", "\\p{Han}{3}", hay);
