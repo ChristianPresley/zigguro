@@ -21,6 +21,7 @@ pub const artifact_pane = @import("artifact_pane.zig");
 
 /// Vector canvases drawn as cached tiles.
 pub const vector_view = @import("vector_view.zig");
+pub const chart_view = @import("chart_view.zig");
 
 /// Standalone HTML export of Markdown documents.
 pub const export_html = @import("export_html.zig");
@@ -54,5 +55,6 @@ test {
     _ = @import("artifact_pane_test.zig");
     _ = @import("doc_mode/comments_view_test.zig");
     _ = @import("vector_view_test.zig");
+    _ = @import("chart_view_test.zig");
     std.testing.refAllDecls(doc_mode);
 }
