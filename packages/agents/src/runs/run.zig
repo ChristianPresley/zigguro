@@ -184,7 +184,8 @@ pub const Origin = union(enum) {
     cli,
     automation: struct { name: []const u8, fire_id: []const u8 = "" },
     workflow: struct { run: RunId, step: []const u8 },
-    task: struct { id: []const u8 },
+    /// `automation`: the task trigger that started it, if any.
+    task: struct { id: []const u8, automation: ?[]const u8 = null },
 };
 
 pub const Isolation = enum { shared, lane };
@@ -219,6 +220,9 @@ pub const RunSpec = struct {
     untrusted_payload: ?[]const u8 = null,
     /// E09 workspace/project id (E13.F09 groups runs by project).
     project: ?[]const u8 = null,
+    /// How many automation runs led to this one; writes carry it in their
+    /// provenance so trigger chains stay bounded. Null is 0.
+    chain_depth: ?u8 = null,
 };
 
 pub const Cost = struct {

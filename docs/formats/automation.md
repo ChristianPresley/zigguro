@@ -65,6 +65,30 @@ once, at the first occurrence; a wall time that does not exist (clocks
 going forward) fires at the first valid instant after the gap, so 02:30
 in a 02:00 to 03:00 gap fires at 03:00.
 
+#### Event triggers
+
+- **Globs**: `*` (within a directory, dotfiles too), `**` (any depth),
+  `?`, `[abc]`, `[!a-z]`, `{zig,zon}`. A pattern without a `/` matches
+  at any depth (`*.md`); with one it is relative to the workspace root
+  (`docs/*.md`). A trailing `/` matches a directory's contents. Changes
+  under `.zigguro/runs/`, `.zigguro/state/`, `.git/` and `.zg/` never
+  trigger.
+- **Debounce**: file changes are collected until `debounce_ms` passes
+  without another one, then the automation fires once with all of them.
+- **Payload**: the run gets the event as data, never as part of the
+  prompt: `{"event":"files","paths":[{"path":"docs/a.md","kinds":["modified"]}],"truncated":false}`
+  (at most 1,000 paths), `{"event":"scm","kind":"lane_landed","change_ids":[...],"descriptions":[...],"lane":"..."}`
+  or `{"event":"task","kind":"created","task":{...}}`. A prompt can name
+  the files with `{{trigger.files}}`.
+- **Loops**: changes an automation's own run made do not trigger it. A
+  run triggered by another automation's changes counts one level deeper;
+  past `max_chain_depth` (default 3) the fire is skipped and you get a
+  notification.
+- **Tasks**: `query` supports `status:`, `label:` (each must be
+  present), `assignee:`, `priority:P1` or `priority:>=P1` (P1 or more
+  urgent), and words that must appear in the title. The run claims the
+  task before it starts; a task someone else claimed is skipped.
+
 ### Actions
 
 | Action | Fields |

@@ -54,6 +54,15 @@ pub const FireRequest = struct {
     reason: FireReason,
     /// How many automation runs led to this one (event triggers).
     depth: u8 = 0,
+    /// The task a task trigger fired for (the run's origin).
+    task_id: ?[]const u8 = null,
+};
+
+/// How an event trigger's fire came about.
+pub const EventFire = struct {
+    /// Chain depth (`guard.depthFor`).
+    depth: u8 = 0,
+    task_id: ?[]const u8 = null,
 };
 
 /// Turns fires into runs (`runner.zig`'s `AutomationRunner`; fakes in
@@ -554,7 +563,8 @@ pub fn fireNow(s: *Scheduler, name: []const u8) FireError!u64 {
 /// An event trigger matched (`triggers.zig`): the same policy as
 /// scheduled fires, with an untrusted payload. Returns the fire id, or
 /// null when skipped (the skip is in the history).
-pub fn fireEvent(s: *Scheduler, name: []const u8, payload: ?[]const u8, depth: u8) FireError!?u64 {
+pub fn fireEvent(s: *Scheduler, name: []const u8, payload: ?[]const u8, o: EventFire) FireError!?u64 {
+    const depth = o.depth;
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     const e = s.findLocked(name) orelse return error.UnknownAutomation;
@@ -579,9 +589,19 @@ pub fn fireEvent(s: *Scheduler, name: []const u8, payload: ?[]const u8, depth: u
         .replace => s.runner.vtable.stopRunning(s.runner.ctx, name),
     };
     const id = s.next_fire_id;
-    s.startFire(e, .{ .automation = e.name(), .fire_id = 0, .due_unix_ms = now, .reason = .triggered, .depth = depth }, payload, now);
+    s.startFire(e, .{ .automation = e.name(), .fire_id = 0, .due_unix_ms = now, .reason = .triggered, .depth = depth, .task_id = o.task_id }, payload, now);
     s.saveLocked();
     return id;
+}
+
+/// Records an event fire the trigger engine refused (a task claimed by
+/// someone else).
+pub fn recordSkip(s: *Scheduler, name: []const u8, skip: Skip) void {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    const e = s.findLocked(name) orelse return;
+    const now = s.nowMs();
+    s.record(e, now, .triggered, null, skip, 0, now);
 }
 
 /// The lease is ours (this process fires).

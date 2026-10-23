@@ -12,6 +12,7 @@ const loader = @import("loader.zig");
 const Scheduler = @import("scheduler.zig");
 const AutomationRunner = @import("runner.zig");
 const tools = @import("tools.zig");
+const TriggerEngine = @import("triggers.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -23,6 +24,9 @@ pub const Options = struct {
     trust: ?loader.TrustPort = null,
     warn: ?AutomationRunner.WarnPort = null,
     workflows: ?AutomationRunner.WorkflowPort = null,
+    /// For SCM triggers with a revset, and task triggers (claims).
+    revsets: ?TriggerEngine.RevsetPort = null,
+    claims: ?TriggerEngine.ClaimPort = null,
     /// Mixed into jitter; the workspace's absolute path is a good key.
     workspace_key: []const u8 = "",
     /// Reports files that failed to load (once per file content).
@@ -39,6 +43,8 @@ state: Io.Dir,
 hist: Io.Dir,
 runner: AutomationRunner,
 scheduler: *Scheduler,
+/// Feed it file, SCM and task events.
+triggers: *TriggerEngine,
 o: Options,
 key: []u8,
 mutex: Io.Mutex = .init,
@@ -57,15 +63,18 @@ pub fn init(gpa: Allocator, io: Io, workspace: Io.Dir, reg: *runs.RunRegistry, s
     errdefer hist.close(io);
     const key = try gpa.dupe(u8, o.workspace_key);
     errdefer gpa.free(key);
-    s.* = .{ .gpa = gpa, .io = io, .autos = autos, .state = st, .hist = hist, .runner = undefined, .scheduler = undefined, .o = o, .key = key };
+    s.* = .{ .gpa = gpa, .io = io, .autos = autos, .state = st, .hist = hist, .runner = undefined, .scheduler = undefined, .triggers = undefined, .o = o, .key = key };
     s.runner = .init(gpa, io, reg, starter, z, .{ .warn = o.warn, .workflows = o.workflows });
     s.scheduler = try Scheduler.init(gpa, io, z, st, hist, s.runner.iface(), .{ .workspace_key = key });
     errdefer s.scheduler.deinit();
+    s.triggers = try TriggerEngine.init(gpa, io, .fromScheduler(s.scheduler), .{ .registry = reg, .revsets = o.revsets, .claims = o.claims });
+    errdefer s.triggers.deinit();
     try s.reload();
     return s;
 }
 
 pub fn deinit(s: *Service) void {
+    s.triggers.deinit();
     s.scheduler.deinit();
     if (s.loaded) |*l| l.deinit();
     s.autos.close(s.io);
@@ -77,6 +86,7 @@ pub fn deinit(s: *Service) void {
 
 pub fn start(s: *Service) !void {
     try s.scheduler.start();
+    try s.triggers.start();
 }
 
 /// Re-reads the automation files and hands them to the scheduler.
@@ -87,7 +97,9 @@ pub fn reload(s: *Service) !void {
         if (s.loaded) |*old| if (old.find(it.name)) |prev| if (std.mem.eql(u8, &prev.hash, &it.hash)) continue;
         f(s.o.on_problem_ctx, it.file, p.line, p.column, p.message);
     };
-    try s.scheduler.setAutomations(try res.automations());
+    const list = try res.automations();
+    try s.scheduler.setAutomations(list);
+    try s.triggers.setAutomations(list);
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     if (s.loaded) |*old| old.deinit();
