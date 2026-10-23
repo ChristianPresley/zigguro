@@ -190,6 +190,16 @@ pub const NoteIndex = struct {
         try ix.listeners.append(ix.gpa, l);
     }
 
+    /// Removes the listeners registered with `ctx`.
+    pub fn unsubscribe(ix: *NoteIndex, ctx: *anyopaque) void {
+        ix.mutex.lockUncancelable(ix.io);
+        defer ix.mutex.unlock(ix.io);
+        var i: usize = 0;
+        while (i < ix.listeners.items.len) {
+            if (ix.listeners.items[i].ctx == ctx) _ = ix.listeners.orderedRemove(i) else i += 1;
+        }
+    }
+
     /// Resolutions performed so far (tests check incrementality).
     pub fn resolutionCount(ix: *NoteIndex) u64 {
         ix.mutex.lockUncancelable(ix.io);
