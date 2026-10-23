@@ -94,9 +94,10 @@ fn nowMs(r: *const AutomationRunner) i64 {
     return @intCast(@divFloor(Io.Clock.real.now(r.io).nanoseconds, std.time.ns_per_ms));
 }
 
-fn isAutomation(rec: *const runs.RunRecord, name: []const u8) bool {
+pub fn isAutomation(rec: *const runs.RunRecord, name: []const u8) bool {
     return switch (rec.spec.origin) {
         .automation => |a| std.mem.eql(u8, a.name, name),
+        .task => |t| if (t.automation) |a| std.mem.eql(u8, a, name) else false,
         else => false,
     };
 }
@@ -148,7 +149,8 @@ pub fn buildSpec(r: *AutomationRunner, arena: Allocator, a: *const Automation, r
         },
         .profile = a.profile,
         .isolation = a.isolation,
-        .origin = .{ .automation = .{ .name = a.name, .fire_id = try arena.dupe(u8, fire_id) } },
+        .origin = if (req.task_id) |t| .{ .task = .{ .id = t, .automation = a.name } } else .{ .automation = .{ .name = a.name, .fire_id = try arena.dupe(u8, fire_id) } },
+        .chain_depth = if (req.depth > 0) req.depth else null,
         .budgets = .{ .max_turns = a.budgets.max_turns, .max_wall_ms = a.budgets.max_wall_ms, .max_cost_micros = a.budgets.max_cost_micro_usd },
         .tags = &.{"automation"},
         .untrusted_payload = payload,
