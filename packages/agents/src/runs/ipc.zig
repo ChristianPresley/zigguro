@@ -258,6 +258,9 @@ pub const HostServer = struct {
             .{ protocol.methods.pause, onPause },
             .{ protocol.methods.resume_, onResume },
             .{ protocol.methods.reply, onReply },
+            .{ protocol.methods.rename, onRename },
+            .{ protocol.methods.pin, onPin },
+            .{ protocol.methods.remove, onRemove },
             .{ protocol.methods.adopt, onAdopt },
             .{ protocol.methods.subscribe, onSubscribe },
             .{ protocol.methods.shutdown, onShutdown },
@@ -369,6 +372,24 @@ pub const HostServer = struct {
     fn onReply(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
         const p = try params(protocol.ReplyParams, req, arena);
         try c.server.host.reply(p.id, p.text);
+        return ok(arena);
+    }
+
+    fn onRename(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
+        const p = try params(protocol.RenameParams, req, arena);
+        try c.server.reg.update(p.id, .{ .title = p.title });
+        return ok(arena);
+    }
+
+    fn onPin(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
+        const p = try params(protocol.PinParams, req, arena);
+        try c.server.reg.update(p.id, .{ .pinned = p.on });
+        return ok(arena);
+    }
+
+    fn onRemove(c: *Conn, req: zg_jsonrpc.message.Request, arena: Allocator) !RawJson {
+        const p = try params(protocol.RemoveParams, req, arena);
+        try c.server.reg.remove(p.id, p.delete_files);
         return ok(arena);
     }
 
