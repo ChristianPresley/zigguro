@@ -9,6 +9,11 @@ pub const query = @import("query.zig");
 pub const events = @import("events.zig");
 pub const rank = @import("rank.zig");
 pub const board = @import("board.zig");
+pub const lease = @import("lease.zig");
+pub const ClaimManager = @import("claim.zig");
+pub const tools = @import("tools.zig");
+pub const hooks = @import("hooks.zig");
+pub const dispatch = @import("dispatch.zig");
 pub const TaskStore = @import("store.zig");
 
 pub const Task = task.Task;
@@ -30,4 +35,8 @@ test {
     _ = @import("deps_test.zig");
     _ = rank;
     _ = @import("board_test.zig");
+    _ = lease;
+    _ = hooks;
+    _ = dispatch;
+    _ = @import("claim_test.zig");
 }
