@@ -482,6 +482,57 @@ pub fn delete(s: *TaskStore, id: TaskId, via: WriteVia) !Outcome {
     }
 }
 
+pub const agent_log_heading = "## Agent log";
+
+/// Appends `- <line>` to the task's `## Agent log` section (added at the
+/// end when missing). Written directly whoever asks: the log is
+/// append-only coordination state (claims, progress, expiries), not
+/// content to review.
+pub fn appendAgentLog(s: *TaskStore, id: TaskId, line: []const u8) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(s.gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const name = try s.pathOf(a, id);
+    const before = try s.dir.readFileAlloc(s.io, name, a, .limited(16 << 20));
+    const after = try withLogLine(a, before, line);
+    _ = try s.write(a, id, name, before, after, &.{"agent_log"}, .user);
+}
+
+/// `bytes` with `- line` at the end of its agent log section.
+pub fn withLogLine(a: Allocator, bytes: []const u8, line: []const u8) ![]u8 {
+    const eol: []const u8 = if (std.mem.indexOf(u8, bytes, "\r\n") != null) "\r\n" else "\n";
+    const entry = try std.fmt.allocPrint(a, "- {s}{s}", .{ oneLine(line), eol });
+    const body_start: usize = if (fm.findFrontmatter(bytes)) |l| l.block[1] else 0;
+    // Find the heading at a line start, after the frontmatter.
+    var at: ?usize = null;
+    var i = body_start;
+    while (std.mem.indexOfPos(u8, bytes, i, agent_log_heading)) |p| : (i = p + 1) {
+        if (p == 0 or bytes[p - 1] == '\n') {
+            at = p;
+            break;
+        }
+    }
+    if (at) |h| {
+        // The section ends at the next `#`/`##` heading or the end.
+        var end = bytes.len;
+        var j = h + agent_log_heading.len;
+        while (std.mem.indexOfPos(u8, bytes, j, "\n#")) |p| : (j = p + 1) {
+            const rest = bytes[p + 1 ..];
+            if (std.mem.startsWith(u8, rest, "# ") or std.mem.startsWith(u8, rest, "## ")) {
+                end = p + 1;
+                break;
+            }
+        }
+        // After the section's last non-blank line.
+        var ins = end;
+        while (ins > h and (bytes[ins - 1] == '\n' or bytes[ins - 1] == '\r')) ins -= 1;
+        const sep: []const u8 = if (ins == bytes.len) eol else "";
+        return std.mem.concat(a, u8, &.{ bytes[0..ins], eol, entry[0 .. entry.len - eol.len], sep, bytes[ins..] });
+    }
+    const pad: []const u8 = if (bytes.len == 0 or bytes[bytes.len - 1] == '\n') "" else eol;
+    return std.mem.concat(a, u8, &.{ bytes, pad, eol, agent_log_heading, eol, eol, entry });
+}
+
 /// Moves a task the user deleted back from the trash (the board's undo).
 pub fn restore(s: *TaskStore, id: TaskId) !void {
     var trash = s.dir.openDir(s.io, trash_dir, .{ .iterate = true }) catch return error.TaskNotFound;
@@ -588,8 +639,13 @@ fn pathOf(s: *TaskStore, a: Allocator, id: TaskId) ![]const u8 {
     return a.dupe(u8, t.path);
 }
 
+/// Wall-clock milliseconds (the store's clock).
+pub fn nowMs(s: *const TaskStore) i64 {
+    return if (s.o.clock) |c| c.nowRealMs(c.ctx) else @as(i64, @intCast(@divFloor(Io.Clock.real.now(s.io).nanoseconds, std.time.ns_per_ms)));
+}
+
 fn nowDateTime(s: *const TaskStore) fm.DateTime {
-    const ms = if (s.o.clock) |c| c.nowRealMs(c.ctx) else @as(i64, @intCast(@divFloor(Io.Clock.real.now(s.io).nanoseconds, std.time.ns_per_ms)));
+    const ms = s.nowMs();
     const secs = @divFloor(ms, 1000);
     const days = @divFloor(secs, 86_400);
     const rem: u32 = @intCast(secs - days * 86_400);

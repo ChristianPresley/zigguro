@@ -20,11 +20,15 @@ pub const HookEvent = enum {
     PreCompact,
     PostCompact,
     Notification,
+    /// A task is being created on the task board (E13.F03).
+    TaskCreated,
+    /// An agent marks a task complete; exit 2 keeps it open.
+    TaskCompleted,
 
     /// Exit code 2 blocks these; on the others stderr goes to the model.
     pub fn blockable(e: HookEvent) bool {
         return switch (e) {
-            .PreToolUse, .UserPromptSubmit, .Stop, .SubagentStop, .PreCompact, .PermissionRequest => true,
+            .PreToolUse, .UserPromptSubmit, .Stop, .SubagentStop, .PreCompact, .PermissionRequest, .TaskCreated, .TaskCompleted => true,
             else => false,
         };
     }
@@ -55,6 +59,12 @@ pub const Input = struct {
     trigger: ?[]const u8 = null,
     stop_hook_active: ?bool = null,
     message: ?[]const u8 = null,
+    /// TaskCreated / TaskCompleted.
+    task_id: ?[]const u8 = null,
+    task_subject: ?[]const u8 = null,
+    task_description: ?[]const u8 = null,
+    /// The agent (run) creating or completing the task.
+    teammate_name: ?[]const u8 = null,
 };
 
 /// The JSON object written to the hook's stdin.
@@ -83,6 +93,10 @@ fn encode(w: *std.Io.Writer, event: HookEvent, in: Input) std.Io.Writer.Error!vo
     if (in.trigger) |v| try field(&s, "trigger", v);
     if (in.stop_hook_active) |v| try field(&s, "stop_hook_active", v);
     if (in.message) |v| try field(&s, "message", v);
+    if (in.task_id) |v| try field(&s, "task_id", v);
+    if (in.task_subject) |v| try field(&s, "task_subject", v);
+    if (in.task_description) |v| try field(&s, "task_description", v);
+    if (in.teammate_name) |v| try field(&s, "teammate_name", v);
     try s.endObject();
 }
 
