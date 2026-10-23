@@ -1,5 +1,6 @@
-//! `file:` URI <-> filesystem path mapping and URI comparison (the URI half
-//! of E07.F01.S01.T02; `docUriFromLsp` follows with E05's `DocUri`).
+//! `file:` URI <-> filesystem path mapping, URI comparison and the
+//! classification of the documents servers name (the URI half of
+//! E07.F01.S01.T02).
 //!
 //! Behaviour follows VS Code's `URI.file` / `fsPath`:
 //! - `uriFromPath` percent-encodes everything except unreserved characters
@@ -180,4 +181,41 @@ pub fn eqlUri(a: []const u8, b: []const u8) bool {
     const ca = canonical(a, &ba) orelse return false;
     const cb = canonical(b, &bb) orelse return false;
     return std.mem.eql(u8, ca, cb);
+}
+
+/// What a server's URI names, as the editor opens it.
+pub const DocUri = union(enum) {
+    /// A file on disk (native path).
+    file: []u8,
+    /// An unsaved buffer (`untitled:Untitled-1` -> "Untitled-1").
+    untitled: []u8,
+    /// Anything else (rust-analyzer's virtual documents, `jdt:`,
+    /// `zigguro-virtual:`): shown read-only, its text fetched from the
+    /// server (`workspace/textDocumentContent`). Holds the whole URI.
+    virtual: []u8,
+
+    pub fn deinit(d: DocUri, gpa: Allocator) void {
+        switch (d) {
+            inline else => |s| gpa.free(s),
+        }
+    }
+};
+
+/// Classifies `uri` (caller frees with `DocUri.deinit`).
+pub fn docUriFromLsp(gpa: Allocator, uri: []const u8) Error!DocUri {
+    return docUriFromLspStyle(gpa, uri, .native);
+}
+
+/// `docUriFromLsp` for an explicit path style.
+pub fn docUriFromLspStyle(gpa: Allocator, uri: []const u8, style: Style) Error!DocUri {
+    if (try pathFromUriStyle(gpa, uri, style)) |p| return .{ .file = p };
+    const untitled = "untitled:";
+    if (uri.len > untitled.len and std.ascii.eqlIgnoreCase(uri[0..untitled.len], untitled)) {
+        const name = uri[untitled.len..];
+        const buf = try gpa.alloc(u8, name.len);
+        return .{ .untitled = try gpa.realloc(buf, decodeInto(name, buf)) };
+    }
+    const colon = std.mem.indexOfScalar(u8, uri, ':') orelse return error.InvalidUri;
+    if (colon == 0) return error.InvalidUri;
+    return .{ .virtual = try gpa.dupe(u8, uri) };
 }

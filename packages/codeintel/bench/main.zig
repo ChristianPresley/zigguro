@@ -22,6 +22,11 @@ fn register(b: *bench.Bench) !void {
     defer fx.deinit();
     try b.run("codeintel.diag.convert_10k: parse and convert a 10k-diagnostic push (worker)", &fx, diagConvert10k);
     try b.run("codeintel.diag.apply_10k: map 10k diagnostics to bytes and publish (UI)", &fx, diagApply10k);
+    try b.run("codeintel.position.convert_ascii: position <-> byte, 10k-line doc, lines in order", &fx, positionAscii);
+    var wide: WideFixture = undefined;
+    wide.init(std.heap.smp_allocator);
+    defer wide.deinit();
+    try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
 /// A typical PATH; most builtin servers are absent, so every entry is
@@ -160,3 +165,45 @@ fn diagApply10k(fx: *DiagFixture, s: *State) void {
 }
 
 const Document = @import("zg_editor").model.document.Document;
+
+/// One position each way per op, walking the lines in order as results
+/// arrive. Budget: < 200 ns.
+fn positionAscii(fx: *DiagFixture, s: *State) void {
+    var m: zg_codeintel.features.position.Mapper = .{ .gpa = s.allocator(), .tree = &fx.doc.tree, .enc = .utf16 };
+    defer m.deinit();
+    var acc: u64 = 0;
+    for (0..s.iterations()) |i| {
+        const line: u32 = @intCast(i % diag_count);
+        const off = m.byteOf(.{ .line = line, .character = 20 }) catch unreachable;
+        acc +%= (m.positionOf(off + 3) catch unreachable).character;
+    }
+    bench.doNotOptimizeAway(acc);
+}
+
+const WideFixture = struct {
+    doc: *Document,
+
+    fn init(fx: *WideFixture, gpa: std.mem.Allocator) void {
+        var w: std.Io.Writer.Allocating = .init(gpa);
+        defer w.deinit();
+        for (0..250) |_| w.writer.writeAll("a\u{e9}\u{4e2d}\u{1F600}") catch unreachable;
+        w.writer.writeAll("\n") catch unreachable;
+        fx.doc = Document.initBytes(gpa, @enumFromInt(1), w.written()) catch unreachable;
+    }
+
+    fn deinit(fx: *WideFixture) void {
+        fx.doc.deinit();
+    }
+};
+
+/// Columns near the end of a long mixed line, each way. Budget: < 2 us.
+fn positionWide(fx: *WideFixture, s: *State) void {
+    var m: zg_codeintel.features.position.Mapper = .{ .gpa = s.allocator(), .tree = &fx.doc.tree, .enc = .utf16 };
+    defer m.deinit();
+    var acc: u64 = 0;
+    for (0..s.iterations()) |i| {
+        const off = m.byteOf(.{ .line = 0, .character = @intCast(1000 + i % 200) }) catch unreachable;
+        acc +%= (m.positionOf(off) catch unreachable).character;
+    }
+    bench.doNotOptimizeAway(acc);
+}
