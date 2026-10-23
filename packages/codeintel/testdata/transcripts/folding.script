@@ -1,0 +1,12 @@
+# Folding ranges mapped to folds, a 3.18 refresh, then an error (the
+# editor falls back to its own structure).
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1, "foldingRangeProvider": true}}}
+> initialized
+> textDocument/didOpen
+> textDocument/foldingRange
+< {"id": $1, "result": [{"startLine": 4, "endLine": 9, "collapsedText": "{...}"}, {"startLine": 0, "endLine": 3, "kind": "imports"}, {"startLine": 5, "endLine": 5}, {"startLine": 6, "endLine": 8, "kind": "comment"}, {"startLine": 4, "endLine": 6, "kind": "region"}]}
+< {"id": 901, "method": "workspace/foldingRange/refresh"}
+> response {"id": 901, "result": null}
+> textDocument/foldingRange
+< {"id": $1, "error": {"code": -32603, "message": "internal error"}}
