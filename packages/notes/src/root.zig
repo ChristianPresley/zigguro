@@ -62,6 +62,18 @@ pub const refactor = struct {
     pub const planMoves = rename.planMoves;
     pub const planHeadingRename = heading_rename.planHeadingRename;
 };
+/// Daily notes and templates (E08.F07.S02.T01).
+pub const daily = struct {
+    pub const datefmt = @import("daily/datefmt.zig");
+    pub const localtime = @import("daily/localtime.zig");
+    pub const templates = @import("daily/templates.zig");
+    pub const notes = @import("daily/daily.zig");
+    pub const commands = @import("daily/commands.zig");
+    pub const LocalTz = localtime.LocalTz;
+    pub const NotesCtx = commands.NotesCtx;
+    pub const renderTemplate = templates.renderTemplate;
+    pub const listDailyNotes = notes.listDailyNotes;
+};
 pub const NoteIndex = index.note_index.NoteIndex;
 pub const IndexView = index.note_index.IndexView;
 /// Synthetic notes for tests and benches.
@@ -78,4 +90,5 @@ test {
     _ = @import("search/query_test.zig");
     _ = @import("search/exec_test.zig");
     _ = @import("refactor/rename_test.zig");
+    _ = @import("daily/daily_test.zig");
 }
