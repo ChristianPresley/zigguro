@@ -13,6 +13,8 @@ pub const E10Agents = @import("bridge_e10.zig").E10Agents;
 pub const protocol = @import("protocol.zig");
 pub const ipc = @import("ipc.zig");
 pub const handoff = @import("handoff.zig");
+/// A scripted agent runtime for tests (uses `std.testing`).
+pub const fake_agents = @import("fake_agents.zig");
 
 pub const RunId = run.RunId;
 pub const RunKind = run.RunKind;
