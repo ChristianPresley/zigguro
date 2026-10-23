@@ -1,0 +1,8 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"path":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"oneOf":[
+{"type":"object","properties":{"op":{"const":"append"},"text":{"type":"string"}},"required":["op","text"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"append_section"},"heading":{"type":"string"},"text":{"type":"string"}},"required":["op","heading","text"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"replace_section"},"heading":{"type":"string"},"text":{"type":"string"}},"required":["op","heading","text"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"str_replace"},"old":{"type":"string"},"new":{"type":"string"}},"required":["op","old","new"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"set_property"},"name":{"type":"string"},"value":{}},"required":["op","name","value"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"remove_property"},"name":{"type":"string"}},"required":["op","name"],"additionalProperties":false},
+{"type":"object","properties":{"op":{"const":"add_tag"},"tag":{"type":"string"}},"required":["op","tag"],"additionalProperties":false}]}}},"required":["path","edits"],"additionalProperties":false}

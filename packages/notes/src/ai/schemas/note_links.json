@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"path":{"type":"string"},"direction":{"type":"string","enum":["in","out","both"]},"depth":{"type":"integer","minimum":1,"maximum":2,"default":1}},"required":["path","direction"],"additionalProperties":false}

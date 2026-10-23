@@ -108,6 +108,39 @@ fn register(b: *bench.Bench) !void {
         }
     }.f);
 
+    // Budget: p95 < 100 ms per read tool call (search_notes, read_note,
+    // note_links) on the 10 k vault (E08.F08.S02.T01).
+    tools_src = .{
+        .gpa = std.heap.page_allocator,
+        .ix = sx.ix,
+        .search = sx.s,
+        .vault = &whole_vault,
+        .files = .{ .ctx = @constCast(&v10k), .read = readByPath, .create = noCreate },
+        .changes = .{ .ctx = undefined, .propose = noPropose },
+        .tz = &utc_tz,
+        .io = b.io,
+    };
+    const calls = [_][2][]const u8{
+        .{ "search_notes", "{\"query\": \"project review\", \"limit\": 20}" },
+        .{ "read_note", "{\"path\": \"f23/n123.md\"}" },
+        .{ "note_links", "{\"path\": \"f17/n4567.md\", \"direction\": \"both\", \"depth\": 2}" },
+        .{ "search_notes", "{\"query\": \"tag:#t42 zig\"}" },
+    };
+    try b.run("notes/tools_read_10k", &calls, struct {
+        fn f(cs: *const [4][2][]const u8, s: *bench.State) void {
+            var arena: std.heap.ArenaAllocator = .init(s.allocator());
+            defer arena.deinit();
+            for (0..s.iterations()) |_| {
+                _ = arena.reset(.retain_capacity);
+                const c = cs[tools_turn % cs.len];
+                tools_turn += 1;
+                const r = zg_notes.ai.tools.run(&tools_src, arena.allocator(), c[0], c[1]) catch @panic("tool");
+                if (r.is_error) @panic(r.json);
+                bench.doNotOptimizeAway(r.json.len);
+            }
+        }
+    }.f);
+
     // Budget: opening today's (existing) daily note in the 10 k vault
     // takes < 50 ms (E08.F07.S02.T01).
     try ix10k.indexNote(.{ .index = 10_000, .gen = 0 }, .of(0), "daily/2026-10-21.md", "# today\n");
@@ -159,6 +192,27 @@ fn noCreate(ctx: *anyopaque, path: []const u8, bytes: []const u8) anyerror!void 
     _ = ctx;
     _ = path;
     _ = bytes;
+    return error.Unexpected;
+}
+
+var tools_src: zg_notes.ai.tools.Source = undefined;
+var tools_turn: usize = 0;
+
+/// A generated note by its `f<k>/n<i>.md` path.
+fn readByPath(ctx: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 {
+    const v: *const gen.Vault = @ptrCast(@alignCast(ctx));
+    const base = std.fs.path.basename(path);
+    if (base.len < 5 or base[0] != 'n') return null;
+    const i = std.fmt.parseInt(usize, base[1 .. base.len - 3], 10) catch return null;
+    if (i >= v.notes.len) return null;
+    return try gpa.dupe(u8, v.notes[i]);
+}
+
+fn noPropose(ctx: *anyopaque, label: []const u8, tool: []const u8, changes: []const zg_notes.ai.tools.FileChange) anyerror!u64 {
+    _ = ctx;
+    _ = label;
+    _ = tool;
+    _ = changes;
     return error.Unexpected;
 }
 
