@@ -56,7 +56,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "scm")) return cmd_scm.run(&rt, argv[2..]);
     if (argv.len >= 3 and std.mem.eql(u8, argv[1], "agents") and std.mem.eql(u8, argv[2], "host")) return cmd_runs.runHost(&rt, min, argv[3..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "runs")) return cmd_runs.runRuns(&rt, argv[2..]);
-    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "automation")) return cmd_automation.run(&rt, argv[2..]);
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "automation")) return cmd_automation.run(&rt, min, argv[2..]);
 
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);

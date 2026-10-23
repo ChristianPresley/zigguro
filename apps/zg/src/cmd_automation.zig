@@ -3,7 +3,9 @@
 //!
 //! `list`, `show`, `history` and `validate` read `.zigguro/automations`
 //! and the history directly. `enable` and `disable` rewrite the file (the
-//! user's own edit) and ask a running agent host to reload. `run` asks the
+//! user's own edit, which approves it) and ask a running agent host to
+//! reload. `approve` approves an automation that came with the repository
+//! (approvals live in the user's state directory, `<state>/pins`). `run` asks the
 //! agent host to fire the automation now (exit 1 without one). `validate`
 //! exits 1 when any file has a problem, printing `file:line:col: message`
 //! lines, so it can run in CI.
@@ -11,6 +13,7 @@
 const std = @import("std");
 const zg_core = @import("zg_core");
 const zg_agents = @import("zg_agents");
+const zg_config = @import("zg_config");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -24,6 +27,7 @@ pub const usage_text =
     \\       zg automation show NAME [--json]
     \\       zg automation enable NAME
     \\       zg automation disable NAME
+    \\       zg automation approve NAME
     \\       zg automation run NAME
     \\       zg automation history NAME [--limit N] [--json]
     \\       zg automation validate [--json]
@@ -32,11 +36,12 @@ pub const usage_text =
     \\
     \\Automations live in .zigguro/automations/<name>.zon (see
     \\docs/formats/automation.md). `run` needs the workspace's agent host
-    \\(the GUI or `zg agents host`).
+    \\(the GUI or `zg agents host`). Automations that came with the
+    \\repository run only after `approve` (or Review & enable in the app).
     \\
 ;
 
-pub const Cmd = enum { list, show, enable, disable, run, history, validate };
+pub const Cmd = enum { list, show, enable, disable, approve, run, history, validate };
 
 const Streams = struct {
     out_w: Io.File.Writer,
@@ -54,11 +59,23 @@ const Streams = struct {
     }
 };
 
-pub fn run(rt: *zg_core.Runtime, argv: []const [:0]const u8) !u8 {
+pub fn run(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []const [:0]const u8) !u8 {
     var s: Streams = undefined;
     s.init(rt.io);
     defer s.flush();
-    return runIn(rt, argv, &s.out_w.interface, &s.err_w.interface);
+    const pins = openPinsDir(rt, min);
+    defer if (pins) |d| d.close(rt.io);
+    return runIn(rt, pins, argv, &s.out_w.interface, &s.err_w.interface);
+}
+
+/// `<state>/pins`, created when missing; null without a home directory.
+pub fn openPinsDir(rt: *zg_core.Runtime, min: std.process.Init.Minimal) ?Io.Dir {
+    var arena: std.heap.ArenaAllocator = .init(rt.gpa);
+    defer arena.deinit();
+    var env = min.environ.createMap(arena.allocator()) catch return null;
+    const paths = zg_config.paths.resolve(arena.allocator(), &env, .{}) catch return null;
+    const pins = std.fs.path.join(arena.allocator(), &.{ paths.state, "pins" }) catch return null;
+    return Io.Dir.cwd().createDirPathOpen(rt.io, pins, .{}) catch null;
 }
 
 fn usage(err: *Io.Writer) !u8 {
@@ -66,8 +83,8 @@ fn usage(err: *Io.Writer) !u8 {
     return 2;
 }
 
-/// `zg automation` with the output streams given.
-pub fn runIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+/// `zg automation` with the approvals directory and output streams given.
+pub fn runIn(rt: *zg_core.Runtime, pins: ?Io.Dir, argv: []const [:0]const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
     const gpa = rt.gpa;
     const io = rt.io;
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -118,7 +135,10 @@ pub fn runIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writer, 
     defer if (hist) |h| h.close(io);
     const zone = sched.utcZone();
     const key = ws.realPathFileAlloc(io, ".", arena) catch "";
+    const approvals = try sched.Approvals.open(gpa, io, pins, key);
+    defer approvals.close();
     var src: sched.tools.Source = .{
+        .trust = approvals.trust(),
         .gpa = gpa,
         .io = io,
         .dir = autos,
@@ -194,8 +214,27 @@ pub fn runIn(rt: *zg_core.Runtime, argv: []const [:0]const u8, out: *Io.Writer, 
             defer af.deinit(io);
             try af.file.writeStreamingAll(io, text);
             try af.replace(io);
+            // The user's own edit approves the new content.
+            var h: sched.loader.Hash = undefined;
+            std.crypto.hash.sha2.Sha256.hash(text, &h, .{});
+            approvals.approve(name, h) catch |e| try err.print("zg automation: could not record the approval: {t}\n", .{e});
             try out.print("{s} {s}\n", .{ if (a.enabled) "Enabled" else "Disabled", name });
             // Tell a running host now (it would notice within seconds).
+            if (try hostClient(rt, ws)) |c| {
+                defer c.deinit();
+                _ = c.call(protocol.methods.automation_reload, .{}, protocol.Ok, arena) catch {};
+            }
+        },
+        .approve => {
+            const name = pos.items[0];
+            const file = try std.fmt.allocPrint(arena, "{s}.zon", .{name});
+            const l = try sched.loader.loadOne(io, arena, autos, file, null);
+            if (l.automation == null) {
+                try err.print("zg automation: {s}: {s}\n", .{ file, if (l.problem) |p| p.message else "not found" });
+                return 1;
+            }
+            try approvals.approve(name, l.hash);
+            try out.print("Approved {s}\n", .{name});
             if (try hostClient(rt, ws)) |c| {
                 defer c.deinit();
                 _ = c.call(protocol.methods.automation_reload, .{}, protocol.Ok, arena) catch {};
@@ -261,6 +300,8 @@ test "zg automation list, show, enable and validate" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = testing.io;
+    const pins: Io.Dir = try tmp.dir.createDirPathOpen(io, "pins", .{});
+    defer pins.close(io);
     const ws = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(ws);
     try tmp.dir.createDirPath(io, ".zigguro/automations");
@@ -270,31 +311,43 @@ test "zg automation list, show, enable and validate" {
     var errw: Io.Writer.Allocating = .init(testing.allocator);
     defer errw.deinit();
 
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    // From the repository: not approved yet.
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [needs approval]") != null);
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "approve", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [enabled]") != null);
     try testing.expect(std.mem.indexOf(u8, out.written(), "every 5 minutes") != null);
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "show", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "show", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "budget    $0.25 per run") != null);
     out.clearRetainingCapacity();
     // --json is one JSON document.
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
     parsed.deinit();
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "disable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "disable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [disabled]") != null);
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
     try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/automations/bad.zon", .data = ".{ .name = \"bad\" }" });
     out.clearRetainingCapacity();
-    try testing.expectEqual(@as(u8, 1), try runIn(&rt, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, &.{ "validate", "--workspace", ws }, &out.writer, &errw.writer));
     try testing.expect(std.mem.indexOf(u8, out.written(), ".zigguro/automations/bad.zon:1:") != null);
+    // Disabling was the user's edit: still approved.
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "enable", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    out.clearRetainingCapacity();
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expect(std.mem.indexOf(u8, out.written(), "tidy  [enabled]") != null);
     // No host: run fails cleanly.
-    try testing.expectEqual(@as(u8, 1), try runIn(&rt, &.{ "run", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
-    try testing.expectEqual(@as(u8, 2), try runIn(&rt, &.{"show"}, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 1), try runIn(&rt, pins, &.{ "run", "tidy", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 2), try runIn(&rt, pins, &.{"show"}, &out.writer, &errw.writer));
 }
 
 test "cli_json_schema" {
@@ -310,6 +363,7 @@ test "cli_json_schema" {
     defer tmp.cleanup();
     const ws = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(ws);
+    const pins: ?Io.Dir = null;
     try tmp.dir.createDirPath(io, ".zigguro/automations");
     try tmp.dir.createDirPath(io, ".zigguro/runs/automations");
     try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/automations/tidy.zon", .data = ".{ .name = \"tidy\", .triggers = .{.{ .schedule = .{ .cron = \"@hourly\" } }}, .action = .{ .agent = .{ .prompt = \"Tidy\" } }, .budgets = .{ .max_cost_micro_usd = 1 } }" });
@@ -321,7 +375,7 @@ test "cli_json_schema" {
     defer out.deinit();
     var errw: Io.Writer.Allocating = .init(testing.allocator);
     defer errw.deinit();
-    try testing.expectEqual(@as(u8, 0), try runIn(&rt, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
+    try testing.expectEqual(@as(u8, 0), try runIn(&rt, pins, &.{ "list", "--json", "--workspace", ws }, &out.writer, &errw.writer));
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
