@@ -80,6 +80,54 @@ fn register(b: *bench.Bench) !void {
             bench.doNotOptimizeAway(total);
         }
     }.f);
+
+    // Budget: p95 < 20 ms over 20 mixed queries on the 10 k vault, and
+    // the index ≤ 1.5× the vault text (E08.F06.S03.T01).
+    const sx = try buildSearch(b.io, &v10k);
+    var text_bytes: usize = 0;
+    for (v10k.notes) |n| text_bytes += n.len;
+    std.debug.print("notes search index: {d} KB for {d} KB of text ({d:.2}x)\n", .{ sx.s.memoryBytes() / 1024, text_bytes / 1024, @as(f64, @floatFromInt(sx.s.memoryBytes())) / @as(f64, @floatFromInt(text_bytes)) });
+    const queries = [_][]const u8{
+        "zig",               "project review",              "\"design notes\"",                 "meeting OR plan",
+        "budget -release",   "tag:#t42",                    "tag:#area/3 zig",                  "[status:done] graph",
+        "[rating:>3]",       "[created:>2024-06-01] agent", "file:n12",                         "path:f3/ index",
+        "line:(zig editor)", "section:(section vault)",     "task-todo:open",                   "/rel+ease/",
+        "content:workspace", "match-case:Note",             "(alpha OR beta) (gamma OR delta)", "lat",
+    };
+    const asts = try a.alloc(zg_notes.search.QueryAst, queries.len);
+    for (queries, asts) |q, *ast| ast.* = zg_notes.search.parseQuery(a, q).ok;
+    try b.run("notes/search_10k", asts, struct {
+        fn f(qs: []const zg_notes.search.QueryAst, s: *bench.State) void {
+            var out: std.ArrayList(zg_notes.search.Scored) = .empty;
+            defer out.deinit(s.allocator());
+            for (0..s.iterations()) |i| {
+                out.clearRetainingCapacity();
+                zg_notes.search.run(search_ctx.s, s.allocator(), &qs[i % qs.len], 50, &out) catch @panic("search");
+                bench.doNotOptimizeAway(out.items.len);
+            }
+        }
+    }.f);
+}
+
+const SearchCtx = struct { ix: *zg_notes.NoteIndex, s: *zg_notes.search.SearchIndex, vault: *const gen.Vault };
+var search_ctx: SearchCtx = undefined;
+
+/// Note text for verification, as an editor or disk would supply it.
+fn readNote(ctx: *anyopaque, gpa: std.mem.Allocator, id: zg_notes.FileId, path: []const u8) anyerror!?[]u8 {
+    _ = path;
+    const v: *const gen.Vault = @ptrCast(@alignCast(ctx));
+    if (id.index >= v.notes.len) return null;
+    return try gpa.dupe(u8, v.notes[id.index]);
+}
+
+fn buildSearch(io: std.Io, v: *const gen.Vault) !SearchCtx {
+    const gpa = std.heap.page_allocator;
+    const ix = try zg_notes.NoteIndex.init(gpa, io, &.{whole_vault});
+    const s = try zg_notes.search.SearchIndex.attach(ix, .{ .content = .{ .ctx = @constCast(v), .read = readNote } });
+    for (v.paths, v.notes, 0..) |p, n, i| try ix.indexNote(.{ .index = @intCast(i), .gen = 0 }, .of(0), p, n);
+    try ix.commit();
+    search_ctx = .{ .ix = ix, .s = s, .vault = v };
+    return search_ctx;
 }
 
 const whole_vault: zg_notes.Vault = .{ .id = .of(0), .root = .of(0), .rel_dir = "", .config = .{} };
