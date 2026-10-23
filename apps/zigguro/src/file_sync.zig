@@ -91,6 +91,8 @@ pub const FileSync = struct {
     /// The diff's base is the file at git HEAD, which saving or reloading
     /// does not change.
     diff_head: bool = false,
+    /// The HEAD commit the base was read at (`scm_base.headCommit`).
+    head_commit: ?[32]u8 = null,
 
     pub const UndoStore = struct { dir: Io.Dir, key: [32]u8 };
 

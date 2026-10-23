@@ -11,6 +11,7 @@
         .zg_workspace = .{ .path = "../workspace" },
         .zg_security = .{ .path = "../security" },
         .zg_scm = .{ .path = "../scm" },
+        .zg_net = .{ .path = "../net" },
     },
     .paths = .{
         "build.zig",

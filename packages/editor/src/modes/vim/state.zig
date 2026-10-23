@@ -28,6 +28,7 @@ const marks_mod = @import("marks.zig");
 const macros = @import("macros.zig");
 const search_mod = @import("search.zig");
 const repeat_mod = @import("repeat.zig");
+const confirm_mod = @import("confirm.zig");
 const ex = @import("ex.zig");
 
 const Allocator = std.mem.Allocator;
@@ -129,6 +130,9 @@ pub const VimState = struct {
     /// registers when it is done.
     reg: Register = .{},
     group: mode_mod.ChangeGroup,
+    /// `:g` and `:normal` hold one undo step open around the commands
+    /// they run; those commands' own begin/commit do nothing meanwhile.
+    group_held: bool = false,
     last_find: ?motions.LastFind = null,
     /// Registers, file marks, the last search and options; `own` unless
     /// the editor shares one between its Vim states.
@@ -147,6 +151,8 @@ pub const VimState = struct {
     /// The command waiting for a `/` or `?` pattern (`d/foo<CR>`).
     cmd_saved: ?VimCommand = null,
     cmd_return: Mode = .normal,
+    /// `:s` with the `c` flag waiting for an answer; it takes every key.
+    confirm: ?*confirm_mod.Confirm = null,
     /// A message for the status line (`:s` counts, errors), until the next key.
     message: [160]u8 = undefined,
     message_len: usize = 0,
@@ -277,6 +283,7 @@ pub const VimState = struct {
         if (vs.doc) |d| if (vs.listener) |l| d.unsubscribe(l);
         vs.doc = null;
         vs.listener = null;
+        confirm_mod.cancel(vs);
         vs.group.cancel();
     }
 
@@ -352,6 +359,22 @@ pub const VimState = struct {
         return res;
     }
 
+    /// `:normal {keys}`: runs `keys` as typed in Normal mode from the
+    /// cursors as they are; a command left unfinished ends as with
+    /// `<Esc>`. Stops at the first key that fails.
+    pub fn runNormal(vs: *VimState, keys: []const Key, host: *Host) !void {
+        try vs.syncOut(host);
+        vs.mode = .normal;
+        for (keys) |k| {
+            _ = try vs.feedKey(k, host);
+            if (vs.bell) break;
+        }
+        if (vs.mode != .normal and vs.mode != .op_pending) _ = try vs.feedKey(.named(.esc), host);
+        vs.pending.reset();
+        vs.mode = .normal;
+        try vs.syncOut(host);
+    }
+
     /// Runs the keys a macro queued, stopping at the first that fails.
     fn drain(vs: *VimState, host: *Host) !void {
         var budget: usize = 1_000_000;
@@ -390,6 +413,11 @@ pub const VimState = struct {
         vs.pending.recording = vs.recording != null;
         const inserting = vs.mode == .insert or vs.mode == .replace;
         if (inserting and vs.rep.capturing and !vs.rep.replaying) try vs.rep.addKey(vs.gpa, k);
+        if (vs.confirm != null) {
+            try confirm_mod.key(vs, k, host);
+            try vs.syncOut(host);
+            return .consumed;
+        }
         const r: mode_mod.KeyResult = switch (vs.mode) {
             .insert => try vs.insertKey(k, host),
             .replace => try vs.replaceKey(k, host),
@@ -576,6 +604,7 @@ pub const VimState = struct {
     }
 
     pub fn beginChange(vs: *VimState, host: *Host) !void {
+        if (vs.group_held) return;
         try vs.group.begin(try vs.caretsOf());
         _ = host;
     }
@@ -589,6 +618,7 @@ pub const VimState = struct {
     }
 
     pub fn commitChange(vs: *VimState, host: *Host) !void {
+        if (vs.group_held) return;
         try vs.group.commit(host.undo, try vs.caretsOf(), .{ .label = "Vim", .origin = host.edit.origin, .timestamp = host.now() });
     }
 

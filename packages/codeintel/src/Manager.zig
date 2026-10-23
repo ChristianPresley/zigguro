@@ -33,6 +33,13 @@ const DocHandle = api.registry.DocHandle;
 const LspSync = api.lsp_sync.LspSync;
 const ServerDef = Registry.ServerDef;
 const Feature = Registry.Feature;
+pub const RefreshFeature = zg_lsp.client.host.RefreshFeature;
+
+/// Hears `workspace/*/refresh` requests, on the UI thread during `tick`.
+pub const RefreshListener = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque, server: *Server, feature: RefreshFeature) void,
+};
 
 const log = std.log.scoped(.codeintel);
 
@@ -65,6 +72,8 @@ pub const Status = enum {
 /// `deinit`.
 pub const Server = struct {
     mgr: *Manager,
+    /// Index in `serverList`; the client's `ServerId`.
+    id: u32,
     def: *const ServerDef,
     root: []u8,
     /// The resolved executable (empty when missing).
@@ -95,6 +104,7 @@ const Msg = union(enum) {
     ready: *Server,
     failed: struct { server: *Server, err: anyerror },
     crashed: *Server,
+    refresh: zg_lsp.client.host.RefreshEvent,
 };
 
 gpa: Allocator,
@@ -113,6 +123,7 @@ taken: std.ArrayList(Msg) = .empty,
 servers: std.ArrayList(*Server) = .empty,
 open: std.AutoHashMapUnmanaged(DocHandle, OpenDoc) = .empty,
 closing: std.atomic.Value(bool) = .init(false),
+refresh_listeners: std.ArrayList(RefreshListener) = .empty,
 
 /// `m` must not move once a document is open.
 pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRegistry, opts: Options) void {
@@ -138,7 +149,7 @@ pub fn deinit(m: *Manager) void {
     for (m.takeInbox()) |msg| switch (msg) {
         .attach => |a| m.freeAttach(a),
         .ready => |s| m.retire(s),
-        .failed, .crashed => {},
+        .failed, .crashed, .refresh => {},
     };
     m.sub.join() catch {};
     m.freeTaken();
@@ -152,6 +163,7 @@ pub fn deinit(m: *Manager) void {
         m.gpa.destroy(s);
     }
     m.servers.deinit(m.gpa);
+    m.refresh_listeners.deinit(m.gpa);
     var it = m.open.valueIterator();
     while (it.next()) |d| m.gpa.free(d.lang);
     m.open.deinit(m.gpa);
@@ -220,32 +232,54 @@ pub fn tick(m: *Manager) void {
         .ready => |s| m.onReady(s),
         .failed => |f| m.onFailed(f.server, f.err),
         .crashed => |s| m.onCrashed(s),
+        .refresh => |e| if (e.server < m.servers.items.len) {
+            const s = m.servers.items[e.server];
+            if (s.status == .running) for (m.refresh_listeners.items) |l| l.func(l.ctx, s, e.feature);
+        },
     };
     m.freeTaken();
     for (m.servers.items) |s| if (s.sync) |*sy| sy.flush();
 }
 
+/// Adds a refresh listener.
+pub fn onRefresh(m: *Manager, l: RefreshListener) Allocator.Error!void {
+    try m.refresh_listeners.append(m.gpa, l);
+}
+
 /// The running clients that `f` goes to for `h`, per `routing`; writes a
 /// prefix of `out` and returns its length.
 pub fn clientsFor(m: *Manager, h: DocHandle, f: Feature, out: []*Client) usize {
-    const od = m.open.get(h) orelse return 0;
-    const kind = m.docs.kind(h) orelse return 0;
-    const match: DocMatch = .{
-        .language_id = od.lang,
-        .scheme = if (kind == .file) "file" else "untitled",
-        .path = if (kind == .file) m.docs.name(h) else null,
-    };
-    const C = routing.Candidate(*Client);
+    var servers: [16]*Server = undefined;
+    const n = m.serversFor(h, f, servers[0..@min(out.len, servers.len)]);
+    for (servers[0..n], out[0..n]) |s, *c| c.* = s.client.?;
+    return n;
+}
+
+/// Like `clientsFor`, with the servers (whose `client` is set).
+pub fn serversFor(m: *Manager, h: DocHandle, f: Feature, out: []*Server) usize {
+    const match = m.docMatch(h) orelse return 0;
+    const C = routing.Candidate(*Server);
     var buf: [16]C = undefined;
     var n: usize = 0;
     for (m.servers.items) |s| {
         if (s.status != .running or !s.hasDoc(h) or n == buf.len) continue;
         const c = s.client.?;
         const caps = c.caps() orelse continue;
-        buf[n] = .{ .def = s.def, .ctx = c, .supports = caps.supports(f, match) };
+        buf[n] = .{ .def = s.def, .ctx = s, .supports = caps.supports(f, match) };
         n += 1;
     }
-    return routing.select(*Client, f, buf[0..n], out);
+    return routing.select(*Server, f, buf[0..n], out);
+}
+
+/// `h` as document selectors see it (null when not open here).
+pub fn docMatch(m: *const Manager, h: DocHandle) ?DocMatch {
+    const od = m.open.get(h) orelse return null;
+    const kind = m.docs.kind(h) orelse return null;
+    return .{
+        .language_id = od.lang,
+        .scheme = if (kind == .file) "file" else "untitled",
+        .path = if (kind == .file) m.docs.name(h) else null,
+    };
 }
 
 /// The server running `def_id` for `h`, if any.
@@ -281,6 +315,7 @@ fn newServer(m: *Manager, a: @FieldType(Msg, "attach")) !*Server {
     errdefer m.gpa.free(exe);
     s.* = .{
         .mgr = m,
+        .id = @intCast(m.servers.items.len),
         .def = a.def,
         .root = root,
         .exe = exe,
@@ -485,6 +520,10 @@ fn start(s: *Server) !void {
         .roots = if (s.root.len > 0) try a.dupe([]const u8, &.{s.root}) else &.{},
         .initialization_options = init_opts,
         .init_timeout = m.opts.init_timeout,
+        .services = .{
+            .server = s.id,
+            .refresh = .{ .ctx = m, .func = onServerRefresh },
+        },
     });
     try s.client.?.subscribe(.{ .ctx = s, .on_state = onClientState });
     try s.client.?.start();
@@ -495,6 +534,11 @@ fn start(s: *Server) !void {
 fn onClientState(ctx: ?*anyopaque, _: *Client, st: zg_lsp.client.Client.ClientState) void {
     const s: *Server = @ptrCast(@alignCast(ctx.?));
     if (st == .crashed and !s.mgr.closing.load(.acquire)) s.mgr.push(.{ .crashed = s });
+}
+
+fn onServerRefresh(ctx: ?*anyopaque, e: zg_lsp.client.host.RefreshEvent) void {
+    const m: *Manager = @ptrCast(@alignCast(ctx.?));
+    if (!m.closing.load(.acquire)) m.push(.{ .refresh = e });
 }
 
 /// Shuts a client down and frees it with its process.

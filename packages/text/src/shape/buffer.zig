@@ -228,6 +228,8 @@ pub const Buffer = struct {
     has_non_ascii: bool = false,
     /// Some glyphs carry `UFlags.deleted`.
     has_deleted: bool = false,
+    /// Complex-shaper scratch for the run (Arabic: `stch` tiles recorded).
+    shaper_flag: bool = false,
 
     /// An empty buffer.
     pub fn init(gpa: Allocator) Buffer {
@@ -252,6 +254,7 @@ pub const Buffer = struct {
         b.has_default_ignorables = false;
         b.has_attachments = false;
         b.has_non_ascii = false;
+        b.shaper_flag = false;
     }
 
     /// Number of glyphs.

@@ -93,6 +93,17 @@ fn formatOf(io: Io, common: Io.Dir) ObjectFormat {
     return .sha1;
 }
 
+/// The commit `HEAD` points at, or null when it is unborn. Editors
+/// compare it between checks to notice commits, checkouts and resets.
+pub fn headId(gpa: Allocator, io: Io, d: *const Discovered) !?oid_mod.Oid {
+    var git_dir = try Io.Dir.openDirAbsolute(io, d.git_dir, .{});
+    defer git_dir.close(io);
+    var rs = try RefStore.open(gpa, io, git_dir, .sha1, .{});
+    defer rs.close();
+    rs.format = formatOf(io, rs.common_dir);
+    return rs.resolve("HEAD");
+}
+
 /// The contents of `rel` (a '/'-separated path in the working tree) at
 /// `HEAD`, owned by the caller; null when HEAD is unborn or has no file
 /// there.
@@ -196,6 +207,7 @@ test "worktree: discover and read HEAD files, linked worktrees too" {
     const got = (try readHeadFile(gpa, io, &d, rel)).?;
     defer gpa.free(got);
     try testing.expectEqualStrings("pub fn f() void {}\n", got);
+    try testing.expect((try headId(gpa, io, &d)).?.eql(head));
     try testing.expectEqual(@as(?[]u8, null), try readHeadFile(gpa, io, &d, "src/missing.zig"));
     try testing.expectEqual(@as(?[]u8, null), try readHeadFile(gpa, io, &d, "src"));
     try testing.expectEqual(@as(?[]u8, null), try readHeadFile(gpa, io, &d, "README/x"));
@@ -216,6 +228,11 @@ test "worktree: discover and read HEAD files, linked worktrees too" {
     const got2 = (try readHeadFile(gpa, io, &d2, "README")).?;
     defer gpa.free(got2);
     try testing.expectEqualStrings("hello\n", got2);
+    try testing.expect((try headId(gpa, io, &d2)).?.eql(head));
+
+    // An unborn branch.
+    try tmp.dir.writeFile(io, .{ .sub_path = "main/.git/worktrees/wt/HEAD", .data = "ref: refs/heads/new\n" });
+    try testing.expectEqual(@as(?oid_mod.Oid, null), try headId(gpa, io, &d2));
 
     // Outside any repository.
     try testing.expectEqual(@as(?[]u8, null), try d.relative(gpa, wt_file));

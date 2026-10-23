@@ -261,6 +261,29 @@ pub fn diffLines(arena: Allocator, a: []const []const u8, b: []const []const u8)
     while (suf < a.len - pre and suf < b.len - pre and std.mem.eql(u8, a[a.len - 1 - suf], b[b.len - 1 - suf])) suf += 1;
     const n: isize = @intCast(a.len - pre - suf);
     const m: isize = @intCast(b.len - pre - suf);
+    if (n == 0 or m == 0) {
+        // Only insertions or only deletions: no search (and no O(D^2)
+        // trace).
+        var ops = try arena.alloc(DiffOp, a.len + b.len - pre - suf);
+        var k: usize = 0;
+        for (0..pre) |i| {
+            ops[k] = .{ .kind = .equal, .index = i };
+            k += 1;
+        }
+        for (pre..a.len - suf) |i| {
+            ops[k] = .{ .kind = .delete, .index = i };
+            k += 1;
+        }
+        for (pre..b.len - suf) |i| {
+            ops[k] = .{ .kind = .insert, .index = i };
+            k += 1;
+        }
+        for (a.len - suf..a.len) |i| {
+            ops[k] = .{ .kind = .equal, .index = i };
+            k += 1;
+        }
+        return ops[0..k];
+    }
     const max: isize = n + m;
     const off: isize = max + 1;
     // Each step keeps only the diagonals it can reach, [-d-1, d+1]: the

@@ -1,8 +1,8 @@
 # Completion
 
-`zg_review.assist.complete` (E12.F07.S01.T02) builds the request for a
-ghost-text completion. The provider adapters (#944) and the ghost-text controller (#946) build
-on the request builder and the scheduler.
+`zg_review.assist.complete` (E12.F07.S01) builds the request for a
+ghost-text completion, decides when to send it, and streams the answer
+from a FIM provider. The ghost-text controller (#946) builds on these.
 
 ## Request
 
@@ -106,12 +106,131 @@ the current time. The host arms one timer from `nextDeadline` and calls
 
 Once a document is open, a keystroke allocates nothing.
 
+`CompletionEngine` puts the scheduler, the cache and a provider together.
+Everything runs on the UI thread except the provider call, which runs on
+its own task and sends its text back through `Host.post`. When `tick`
+finds a trigger due, the engine takes a snapshot of the document from the
+host. A snapshot older than the trigger starts nothing. A cache hit is
+delivered at once; otherwise the engine builds the request and starts the
+provider. `Host.deliver` gets the text so far, how many leading bytes the
+user already typed (to hide), and whether it is final. `typed` keeps or
+cancels the request in flight, and `dismiss` drops everything for a
+document. A request that was replaced or cancelled is never delivered.
+The host must stop running posted callbacks once it calls `deinit`.
+
 `Cache` holds up to 512 finished completions in 4 MiB, least recently
 used first out. Its keys are the document, the model, and XxHash3 hashes
 of the last 2 KiB of prefix and the first 256 bytes of suffix. `extend`
 serves the rest of a cached completion that the user typed through after
 dismissing it. `invalidateDoc` clears a document's completions after a
 non-typing edit.
+
+## Providers
+
+A `FimProvider` (E12.F07.S01.T03) streams the middle for a
+`CompletionRequest` into a `Sink`. The call blocks, so the engine runs it
+on a worker task. Cancelling that task returns `error.Canceled` and drops
+the connection: llama.cpp and Ollama stop generating when the client goes
+away, and a half-read connection never goes back to the pool. Each
+provider's `caps.server_side_template` says whether it fills the middle
+itself; `gate` uses it to decide about mid-line requests.
+
+`HttpFim` talks to three kinds of server through `zg_net`:
+
+| Kind | Request | Stream |
+| --- | --- | --- |
+| llama.cpp | `POST /infill`: `input_prefix`, `input_suffix`, `input_extra` (the snippets), `n_predict`, `stop`, `stream`, `cache_prompt`, optional `id_slot` | SSE, `content` and `stop` |
+| Ollama | `POST /api/generate`: `model`, `prompt` (the snippets as comments, then the prefix), `suffix`, `raw: false`, `keep_alive`, `options.num_predict`, `options.stop`, `options.temperature` | NDJSON, `response` and `done` |
+| OpenAI-style | `POST /v1/completions`: `model`, `prompt` from `fim.render`, `max_tokens`, up to four `stop`s, `temperature`, `stream` | SSE, `choices[0].text`, then `[DONE]` |
+
+- **End tokens.** The OpenAI-style output ends at the first end token or
+  FIM marker of the template, even when it is split across chunks.
+- **No retries.** A failed completion is not retried. Three failures in a
+  row make the provider unhealthy for 30 seconds (`healthy` drives the
+  status-bar indicator). While it is unhealthy, `complete` returns
+  `error.Unhealthy` without sending a request.
+- **Warm-up.** `warm` opens a connection with a cheap request (`/health`,
+  `/api/version` or `/v1/models`) at most once a minute. The host calls it
+  on editor focus.
+- **Endpoints.** HTTPS and loopback are always allowed. Plain HTTP to
+  another host needs `allow_insecure_http` (`completions.allowInsecureHttp`,
+  for LAN servers). The API key comes from E16 secrets, is sent as a bearer
+  token, and is never logged.
+
+`ChatFim` uses a chat model with no FIM support. The system prompt asks
+for only the code that replaces `<CURSOR>`, and the user message is the
+snippets followed by the file with the cursor marked, sent at temperature
+0. A reply wrapped in a Markdown fence is unwrapped. zg_review does not
+import zg_ai, so the app binds a `ChatPort` to E10's `Provider.stream`.
+The app also builds providers from E10's ModelRegistry (role `completion`).
+
+## Post-processing
+
+`postprocess(arena, request, raw, final)` (E12.F07.S01.T04) turns model
+text into the ghost to show, or gives the reason to drop it:
+
+1. A cut-off end token at the end (`<|endoftext`, `<EOT`) is removed.
+2. Line endings follow the document: CRLF when the prefix has one.
+3. **Suffix overlap.** The longest tail of the completion's last line that
+   is how the rest of the cursor's line starts is cut, with spaces and
+   tabs ignored. For example, `foo(|)` with `bar)` shows `bar`.
+4. A single-line request keeps the first line.
+5. A multi-line request stops at the first line indented less than the
+   cursor's line, unless that line closes a bracket the completion opened.
+   It also stops at two blank lines in a row.
+6. Closers the completion has too many of are cut from its end when the
+   rest of the line already has them. Brackets are never added.
+7. It drops the text when it is empty or blank (`empty`,
+   `whitespace_only`), when it equals the line after the cursor's
+   (`duplicate_of_suffix`), when it repeats the line above
+   (`duplicate_of_prev_line`), or when its first line is over 1,000 bytes
+   (`too_long`).
+8. At most 30 lines are kept.
+
+While streaming, only complete lines count, and steps 1, 3 and 6 wait for
+the end. So the first whole line shows as soon as it arrives, and the
+ghost grows from there.
+
+## Ghost text
+
+`Controller` (one per editor) shows the engine's completions as E05
+`GhostText`. The host wires `Host.deliver` to `onDelivery` and
+`Host.failed` to `onFailed`, and forwards document changes to `onChange`,
+after the decoration store's listener. It also forwards caret moves that
+no edit made to `onCursorMove`, and reports the popup and focus.
+
+- Each delivery is post-processed, cache hits included. A drop while
+  streaming keeps the current ghost; a final drop removes it.
+- Typing the start of the ghost consumes it, and the engine keeps the
+  request in flight.
+- `accept(.all | .word | .line)` returns false when no ghost is visible, so
+  Tab falls through to the next binding (indent, snippet). An accept is
+  one undo group with the completion's origin. Accepting all of it asks for
+  the next completion at once.
+- While the LSP popup is open, the ghost is hidden unless `ghost_wins` is
+  set. `popupClosed` brings it back if the document did not change.
+- `snooze` adds 5 minutes each time. `status` gives the status bar's state:
+  ready, requesting, snoozed, disabled for the language, or unhealthy.
+
+| Command | Key | When |
+| --- | --- | --- |
+| `completions.accept` | Tab | a ghost is visible |
+| `completions.acceptWord` | Ctrl+Right (Cmd+Right) | a ghost is visible |
+| `completions.acceptLine` | none | a ghost is visible |
+| `completions.dismiss` | Escape | a ghost is visible |
+| `completions.trigger` | Alt+\\ | |
+| `completions.snooze` | none | |
+| `completions.toggle` | none | |
+
+The app registers the commands (E15).
+
+## Telemetry
+
+`Telemetry` keeps counts in memory, and only counts: ghosts shown, full
+and partial accepts, characters accepted, and a latency histogram with
+log2 buckets. `acceptanceRate` and `p50Ms` feed the status bar's tooltip.
+`persist` adds a day's counts to `.zigguro/review/stats.zon` and keeps 90
+days. The file never holds code or paths, and nothing is sent anywhere.
 
 ## Bench
 
@@ -122,3 +241,6 @@ budget is under 2 ms.
 `review.complete.scheduler_10k_keys` runs 10,000 keystrokes through the
 scheduler. It covers the UI thread's share of the time from keystroke to
 request.
+
+`review.complete.postprocess_20_lines` post-processes a 20-line multi-line
+completion. The budget is under 200 µs.

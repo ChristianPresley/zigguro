@@ -8,8 +8,10 @@
 //! U+072F) instead of carrying ArabicShaping.txt's group column in the UCD
 //! tables.
 //!
-//! Not yet done: HarfBuzz's fallback shaping through the Presentation Forms
-//! for Arabic fonts without GSUB forms, and Syriac `stch` stretching.
+//! Arabic fonts without GSUB forms are shaped through the Presentation
+//! Forms (`arabic_fallback.zig`). `stch` (Syriac Abbreviation Mark and
+//! the Arabic subtending marks) records the pieces it decomposes a mark
+//! into, and they are tiled to the width of the word after positioning.
 
 const std = @import("std");
 const plan_mod = @import("../plan.zig");
@@ -23,6 +25,8 @@ const GlyphInfo = buffer.GlyphInfo;
 const unicode = @import("../../unicode/root.zig");
 const Script = unicode.Script;
 const tag = @import("../../ot/root.zig").tag;
+const Direction = buffer.Direction;
+const fallback = @import("arabic_fallback.zig");
 
 /// The shaper for Arabic and the scripts that join like it.
 pub const shaper: ComplexShaper = .{
@@ -31,6 +35,7 @@ pub const shaper: ComplexShaper = .{
     .dataInit = dataInit,
     .setupMasks = setupMasks,
     .reorderMarks = reorderMarks,
+    .postprocessGlyphs = applyStch,
     .zero_marks = .gdef_late,
     .fallback_position = true,
 };
@@ -128,29 +133,189 @@ fn mongolianVariationSelectors(b: *Buffer) void {
 fn collectFeatures(b: *PlanBuilder) std.mem.Allocator.Error!void {
     const manual_zwj: FeatureFlags = .{ .manual_zwj = true };
     try b.enableFeature(tag("stch"), .none, 1);
-    try b.addGsubPause(null);
+    try b.addGsubPause(recordStch);
     try b.enableFeature(tag("ccmp"), manual_zwj, 1);
     try b.enableFeature(tag("locl"), manual_zwj, 1);
     try b.addGsubPause(null);
     inline for (form_features) |f| {
         const syriac = comptime (f[3] == '2' or f[3] == '3');
-        const fallback = b.script == .Arab and !syriac;
-        try b.addFeature(tag(f), .{ .has_fallback = fallback }, 1);
+        const has_fallback = b.script == .Arab and !syriac;
+        try b.addFeature(tag(f), .{ .has_fallback = has_fallback }, 1);
         try b.addGsubPause(null);
     }
     try b.addGsubPause(null);
     try b.enableFeature(tag("rlig"), .{ .manual_zwj = true, .has_fallback = true }, 1);
-    if (b.script == .Arab) try b.addGsubPause(null);
+    if (b.script == .Arab) try b.addGsubPause(fallbackShape);
     try b.enableFeature(tag("rclt"), manual_zwj, 1);
     try b.enableFeature(tag("calt"), manual_zwj, 1);
     try b.addGsubPause(null);
     try b.enableFeature(tag("mset"), .none, 1);
 }
 
-/// Sets the per-form masks (also used by USE for joining scripts).
-pub fn dataInit(p: *ShapePlan) void {
+/// Sets the per-form masks (also used by USE for joining scripts) and,
+/// for an Arabic font none of whose tables has the non-Syriac forms,
+/// builds the fallback lookups.
+pub fn dataInit(p: *ShapePlan) std.mem.Allocator.Error!void {
     inline for (form_features, 0..) |f, i| p.shaper_masks[i] = p.mask1(tag(f));
     p.shaper_masks[@intFromEnum(Action.none)] = 0;
+    if (p.script != .Arab) return;
+    inline for (form_features) |f| {
+        const syriac = comptime (f[3] == '2' or f[3] == '3');
+        if (!syriac and !p.maskOf(tag(f)).needs_fallback) return;
+    }
+    p.shaper_data = try fallback.build(p, p.arena.allocator());
+}
+
+fn fallbackShape(p: *const ShapePlan, b: *Buffer) std.mem.Allocator.Error!void {
+    const fb: *const fallback.Fallback = @ptrCast(@alignCast(p.shaper_data orelse return));
+    try fallback.apply(p, fb, b);
+}
+
+/// `stch` tiles in `GlyphInfo.shaper` (after the joining actions).
+const stch_fixed: u8 = 8;
+const stch_repeating: u8 = 9;
+
+fn isStch(g: GlyphInfo) bool {
+    return g.shaper == stch_fixed or g.shaper == stch_repeating;
+}
+
+/// After `stch`: the pieces it multiplied a glyph into are tiles, the
+/// odd-numbered components repeating and the others fixed.
+fn recordStch(p: *const ShapePlan, b: *Buffer) std.mem.Allocator.Error!void {
+    if (p.mask1(tag("stch")) == 0) return;
+    for (b.infos.items) |*g| if (g.multiplied()) {
+        g.shaper = if (g.ligComp() % 2 != 0) stch_repeating else stch_fixed;
+        b.shaper_flag = true;
+    };
+}
+
+/// Characters a stretched mark spans: the rest of its word.
+fn isWord(g: GlyphInfo) bool {
+    return switch (g.gc) {
+        .Cn, .Co, .Lm, .Lo, .Mc, .Me, .Mn, .Nd, .Nl, .No, .Sc, .Sk, .Sm, .So => true,
+        else => false,
+    };
+}
+
+/// Most tiles one stretch may produce.
+const stch_max_glyphs = 256;
+
+/// Tiles each recorded `stch` sequence across the width of the word before
+/// it (in visual order: to its right in RTL text): fixed tiles once, the
+/// repeating ones as often as fits, squeezed to fill (HarfBuzz's
+/// `apply_stch`). Measures first, then grows the buffer and copies from
+/// the end.
+fn applyStch(p: *const ShapePlan, b: *Buffer, dir: Direction) std.mem.Allocator.Error!void {
+    if (!b.shaper_flag) return;
+    const rtl = dir == .rtl;
+    if (!rtl) b.reverseRange(0, b.len());
+    defer if (!rtl) b.reverseRange(0, b.len());
+
+    var extra: usize = 0;
+    const count = b.len();
+    inline for (.{ false, true }) |cut| {
+        if (cut) {
+            try b.infos.resize(b.gpa, count + extra);
+            try b.pos.resize(b.gpa, count + extra);
+        }
+        const infos = b.infos.items;
+        const pos = b.pos.items;
+        var j = count + extra;
+        var i = count;
+        while (i > 0) : (i -= 1) {
+            if (!isStch(infos[i - 1])) {
+                if (cut) {
+                    j -= 1;
+                    infos[j] = infos[i - 1];
+                    pos[j] = pos[i - 1];
+                }
+                continue;
+            }
+            var w_total: i32 = 0;
+            var w_fixed: i32 = 0;
+            var w_repeating: i32 = 0;
+            var n_fixed: i64 = 0;
+            var n_repeating: i64 = 0;
+            const end = i;
+            while (i > 0 and isStch(infos[i - 1])) {
+                i -= 1;
+                const width = advance(p, infos[i]);
+                if (infos[i].shaper == stch_fixed) {
+                    w_fixed +|= width;
+                    n_fixed += 1;
+                } else {
+                    w_repeating +|= width;
+                    n_repeating += 1;
+                }
+            }
+            const start = i;
+            var ctx = i;
+            while (ctx > 0 and !isStch(infos[ctx - 1]) and (infos[ctx - 1].isDefaultIgnorable() or isWord(infos[ctx - 1]))) {
+                ctx -= 1;
+                w_total +|= pos[ctx].x_adv;
+            }
+            i += 1; // the loop's decrement lands on `start`
+
+            // Additional copies of each repeating tile.
+            var n_copies: i64 = 0;
+            const w_remaining_signed = @as(i64, w_total) - w_fixed;
+            const w_repeating_signed: i64 = w_repeating;
+            var w_remaining: i32 = w_total -| w_fixed;
+            if (w_remaining_signed > w_repeating_signed and w_repeating_signed > 0)
+                n_copies = @divTrunc(w_remaining_signed, w_repeating_signed) - 1;
+            // An extra repeat, squeezed, may fit better.
+            var overlap: i32 = 0;
+            const shortfall = w_remaining_signed - w_repeating_signed * (n_copies + 1);
+            if (shortfall > 0 and n_repeating > 0) {
+                n_copies += 1;
+                const excess = (n_copies + 1) * w_repeating_signed - w_remaining_signed;
+                if (excess > 0) {
+                    overlap = @intCast(std.math.clamp(@divTrunc(excess, n_copies * n_repeating), std.math.minInt(i32), std.math.maxInt(i32)));
+                    w_remaining = 0;
+                }
+            }
+            var max_copies: i64 = 0;
+            if (n_repeating > 0) {
+                const base_glyphs = n_fixed + n_repeating;
+                if (base_glyphs < stch_max_glyphs) max_copies = @divTrunc(stch_max_glyphs - base_glyphs, n_repeating);
+            }
+            n_copies = @min(n_copies, max_copies);
+
+            if (!cut) {
+                extra += @intCast(n_copies * n_repeating);
+            } else {
+                b.unsafeToBreak(ctx, end);
+                var x_offset: i32 = @divTrunc(w_remaining, 2);
+                var k = end;
+                while (k > start) : (k -= 1) {
+                    const width = advance(p, infos[k - 1]);
+                    var repeat: i64 = 1;
+                    if (infos[k - 1].shaper == stch_repeating) repeat += n_copies;
+                    pos[k - 1].x_adv = 0;
+                    var n: i64 = 0;
+                    while (n < repeat) : (n += 1) {
+                        if (rtl) {
+                            x_offset -|= width;
+                            if (n > 0) x_offset +|= overlap;
+                        }
+                        pos[k - 1].x_off = x_offset;
+                        j -= 1;
+                        infos[j] = infos[k - 1];
+                        pos[j] = pos[k - 1];
+                        if (!rtl) {
+                            x_offset +|= width;
+                            if (n > 0) x_offset -|= overlap;
+                        }
+                    }
+                }
+            }
+        }
+        if (cut) std.debug.assert(j == 0);
+    }
+}
+
+fn advance(p: *const ShapePlan, g: GlyphInfo) i32 {
+    return @intFromFloat(@round(p.inst.advance(g.gid)));
 }
 
 /// Assigns joining forms and their masks (also used by USE).

@@ -69,6 +69,17 @@ pub const preview = @import("oplog/preview.zig");
 pub const adopt = @import("oplog/adopt.zig");
 /// Rebasing descendants of rewritten and abandoned commits.
 pub const rebase = @import("oplog/rebase.zig");
+/// Provenance (F05): who wrote each line.
+pub const prov = struct {
+    /// Provenance records: actors, prompts under a privacy level, reviews.
+    pub const record = @import("prov/record.zig");
+    /// Per-file run-length line attribution.
+    pub const attribution = @import("prov/attribution.zig");
+    /// A change's manifest of attribution maps.
+    pub const manifest = @import("prov/manifest.zig");
+    /// Edit events in, attribution maps out.
+    pub const recorder = @import("prov/recorder.zig");
+};
 /// AI workflows (F06): the ports other packages implement, and fakes.
 pub const ai = struct {
     pub const ports = @import("ai/ports.zig");
@@ -78,10 +89,14 @@ pub const ai = struct {
     pub const agent_tools = @import("ai/agent_tools.zig");
     /// The files a proposal changes, for review items.
     pub const proposal_files = @import("ai/proposal_files.zig");
-    /// Approving an edited description.
+    /// Drafting change descriptions (and approving edited ones).
     pub const describe = @import("ai/describe.zig");
     /// Proposing and applying conflict resolutions.
     pub const resolve = @import("ai/resolve.zig");
+    /// Token-budgeted prompt context (diffs, statistics).
+    pub const context = @import("ai/context.zig");
+    /// The prompt template renderer.
+    pub const prompts = @import("ai/prompts.zig");
     pub const testing = struct {
         pub const fake_model = @import("ai/testing/fake_model.zig");
         pub const fake_review = @import("ai/testing/fake_review.zig");
@@ -137,6 +152,10 @@ test {
     _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
     _ = @import("oplog/preview_test.zig");
+    _ = @import("prov/record.zig");
+    _ = @import("prov/attribution.zig");
+    _ = @import("prov/manifest.zig");
+    _ = @import("prov/recorder.zig");
     _ = @import("ai/testing/fake_model.zig");
     _ = @import("ai/testing/fake_review.zig");
     _ = @import("ai/landing_test.zig");
@@ -144,4 +163,6 @@ test {
     _ = @import("ai/proposal_files.zig");
     _ = @import("ai/describe.zig");
     _ = @import("ai/resolve.zig");
+    _ = @import("ai/context.zig");
+    _ = @import("ai/prompts.zig");
 }

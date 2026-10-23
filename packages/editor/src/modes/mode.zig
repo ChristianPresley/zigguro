@@ -114,11 +114,16 @@ pub const ModeHandler = struct {
 pub const ChangeGroup = struct {
     gpa: Allocator,
     active: bool = false,
-    forward: ?ChangeSet = null,
-    inverse: ?ChangeSet = null,
+    /// Each change since `begin` with its inverse, oldest first. They are
+    /// composed at `commit`, pairwise, so a group of n changes costs
+    /// O(n log n) composition instead of O(n^2) (`:g` over a large file,
+    /// a long insert session).
+    parts: std.ArrayList(Part) = .empty,
     sel_before: std.ArrayList(Selection) = .empty,
-    /// Set when composing failed; the group is dropped.
+    /// Set when collecting failed; the group is dropped.
     failed: bool = false,
+
+    const Part = struct { forward: ChangeSet, inverse: ChangeSet };
 
     pub fn init(gpa: Allocator) ChangeGroup {
         return .{ .gpa = gpa };
@@ -126,6 +131,7 @@ pub const ChangeGroup = struct {
 
     pub fn deinit(g: *ChangeGroup) void {
         g.reset();
+        g.parts.deinit(g.gpa);
         g.sel_before.deinit(g.gpa);
     }
 
@@ -149,15 +155,13 @@ pub const ChangeGroup = struct {
     pub fn commit(g: *ChangeGroup, undo: *UndoTree, sels_after: []const Selection, meta: undo_mod.GroupMeta) Allocator.Error!void {
         if (!g.active) return;
         g.active = false;
-        if (g.failed or g.forward == null) return g.reset();
-        const f = g.forward.?;
-        const inv = g.inverse.?;
-        g.forward = null;
-        g.inverse = null;
+        if (g.failed or g.parts.items.len == 0) return g.reset();
+        try g.fold();
+        const whole = g.parts.pop().?;
         // A coalescing key lets the step join the one before it (Emacs
         // amalgamating self-inserts); otherwise it stands alone.
         if (meta.coalesce_key == null) undo.breakGroup();
-        try undo.record(f, inv, g.sel_before.items, sels_after, meta);
+        try undo.record(whole.forward, whole.inverse, g.sel_before.items, sels_after, meta);
         if (meta.coalesce_key == null) undo.breakGroup();
     }
 
@@ -168,10 +172,53 @@ pub const ChangeGroup = struct {
     }
 
     fn reset(g: *ChangeGroup) void {
-        if (g.forward) |*f| f.deinit();
-        if (g.inverse) |*i| i.deinit();
-        g.forward = null;
-        g.inverse = null;
+        for (g.parts.items) |*p| {
+            p.forward.deinit();
+            p.inverse.deinit();
+        }
+        g.parts.clearRetainingCapacity();
+    }
+
+    /// Composes the parts pairwise until one is left. On OutOfMemory
+    /// everything collected is dropped.
+    fn fold(g: *ChangeGroup) Allocator.Error!void {
+        while (g.parts.items.len > 1) {
+            const ps = g.parts.items;
+            var next: std.ArrayList(Part) = .empty;
+            var i: usize = 0;
+            errdefer {
+                for (next.items) |*p| {
+                    p.forward.deinit();
+                    p.inverse.deinit();
+                }
+                next.deinit(g.gpa);
+                // Parts from `i` on were not consumed yet.
+                for (ps[i..]) |*p| {
+                    p.forward.deinit();
+                    p.inverse.deinit();
+                }
+                g.parts.clearRetainingCapacity();
+            }
+            try next.ensureTotalCapacity(g.gpa, (ps.len + 1) / 2);
+            while (i < ps.len) {
+                if (i + 1 == ps.len) {
+                    next.appendAssumeCapacity(ps[i]);
+                    i += 1;
+                    break;
+                }
+                var f = try ps[i].forward.compose(&ps[i + 1].forward, g.gpa);
+                errdefer f.deinit();
+                const inv = try ps[i + 1].inverse.compose(&ps[i].inverse, g.gpa);
+                for (ps[i .. i + 2]) |*p| {
+                    p.forward.deinit();
+                    p.inverse.deinit();
+                }
+                next.appendAssumeCapacity(.{ .forward = f, .inverse = inv });
+                i += 2;
+            }
+            g.parts.deinit(g.gpa);
+            g.parts = next;
+        }
     }
 
     fn onChange(ctx: *anyopaque, ev: *const ChangeEvent) void {
@@ -186,19 +233,9 @@ pub const ChangeGroup = struct {
     fn add(g: *ChangeGroup, ev: *const ChangeEvent) Allocator.Error!void {
         var inv = try ev.changes.invert(ev.before, g.gpa);
         errdefer inv.deinit();
-        if (g.forward) |*f| {
-            var nf = try f.compose(ev.changes, g.gpa);
-            errdefer nf.deinit();
-            const ni = try inv.compose(&g.inverse.?, g.gpa);
-            inv.deinit();
-            f.deinit();
-            g.inverse.?.deinit();
-            g.forward = nf;
-            g.inverse = ni;
-        } else {
-            g.forward = try ev.changes.clone(g.gpa);
-            g.inverse = inv;
-        }
+        var f = try ev.changes.clone(g.gpa);
+        errdefer f.deinit();
+        try g.parts.append(g.gpa, .{ .forward = f, .inverse = inv });
     }
 };
 

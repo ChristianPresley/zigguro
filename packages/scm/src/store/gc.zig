@@ -17,6 +17,8 @@ const object = @import("object.zig");
 const enc = @import("encode.zig");
 const seg = @import("segment.zig");
 const store_mod = @import("store.zig");
+const record = @import("../prov/record.zig");
+const manifest = @import("../prov/manifest.zig");
 const ObjectId = id_mod.ObjectId;
 const Kind = id_mod.Kind;
 const Store = store_mod.Store;
@@ -40,7 +42,7 @@ pub const RootProvider = struct {
 };
 
 /// Reports the references of object kinds this module does not know
-/// (operations, views, provenance records: defined by later epics).
+/// (operations and views, defined by the op log).
 pub const EdgeFn = *const fn (ctx: ?*anyopaque, kind: Kind, bytes: []const u8, sink: *RootSink) anyerror!void;
 
 /// How objects reference each other.
@@ -71,7 +73,15 @@ pub fn references(arena: Allocator, kind: Kind, bytes: []const u8, opts: EdgeOpt
             for (cb.chunks) |ch| try sink.add(ch.id);
         },
         .blob, .text => {},
-        .operation, .view, .attribution, .prov_record => if (opts.extra_edges) |f| try f(opts.extra_ctx, kind, bytes, sink),
+        .attribution => {
+            const m = try enc.decode(manifest.ProvenanceManifest, arena, bytes);
+            for (m.files) |f| for (f.records) |r| try sink.add(r);
+        },
+        .prov_record => {
+            const r = try enc.decode(record.ProvenanceRecord, arena, bytes);
+            try record.edges(r, sink, RootSink.add);
+        },
+        .operation, .view => if (opts.extra_edges) |f| try f(opts.extra_ctx, kind, bytes, sink),
     }
 }
 
