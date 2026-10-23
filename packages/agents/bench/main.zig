@@ -17,6 +17,43 @@ fn register(b: *bench.Bench) !void {
     try registerNotify(b);
     try registerSched(b);
     try registerTasks(b);
+    try registerDocs(b);
+}
+
+/// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
+/// Markdown document after an edit before it (budget 1 ms);
+/// `docs/outline_1mb`: its section outline (no budget; for reference).
+fn registerDocs(b: *bench.Bench) !void {
+    const docs = zg_agents.docs;
+    const gpa = std.heap.smp_allocator;
+    var text: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (text.items.len < 1 << 20) : (i += 1) {
+        try text.print(gpa, "## Section {d}\n\nSome prose about item {d}, with enough words to look like a paragraph of a long document.\n\n", .{ i, i });
+    }
+    const Ctx = struct { text: []u8, anchors: docs.anchors.Anchors, id: docs.anchors.AnchorId };
+    var ctx: Ctx = .{ .text = text.items, .anchors = .{}, .id = 0 };
+    ctx.id = try ctx.anchors.create(gpa, text.items, @intCast(text.items.len - 4096), .right);
+    try b.run("docs/anchor_resolve_1mb", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                // An edit far before the anchor, then resolve it.
+                c.anchors.applyEdit(100, 0, 0);
+                bench.doNotOptimizeAway(c.anchors.resolve(c.id, c.text));
+            }
+        }
+    }.f);
+    try b.run("docs/outline_1mb", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                bench.doNotOptimizeAway(docs.sections.outline(arena.allocator(), c.text) catch unreachable);
+            }
+        }
+    }.f);
 }
 
 /// `tasks/index_10k`: a cold open of a board of 10,000 task files
