@@ -416,6 +416,10 @@ test "manual and event fires share the policy" {
     try testing.expectError(error.AlreadyRunning, f.s.fireNow("ev"));
     try testing.expectEqual(@as(?u64, null), try f.s.fireEvent("ev", null, 0));
     try testing.expectError(error.UnknownAutomation, f.s.fireNow("nope"));
+    f.runner.running = false;
+    a.enabled = false;
+    try f.s.setAutomations(&.{a});
+    try testing.expectError(error.Disabled, f.s.fireNow("ev"));
 }
 
 const ShiftedClock = struct {

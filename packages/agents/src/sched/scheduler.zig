@@ -533,12 +533,15 @@ fn saveLocked(s: *Scheduler) void {
 
 pub const FireError = error{ UnknownAutomation, Disabled, AlreadyRunning } || Allocator.Error;
 
-/// Fires `name` now ("Run now"): no rate limit, but the budget applies
-/// and a run still going is not replaced. Returns the fire id.
+/// Fires `name` now ("Run now"): no rate limit and no budget check, and
+/// a run still going is not replaced. A disabled automation does not run.
+/// Returns the fire id.
 pub fn fireNow(s: *Scheduler, name: []const u8) FireError!u64 {
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     const e = s.findLocked(name) orelse return error.UnknownAutomation;
+    // Disabled includes repository automations not yet approved.
+    if (!e.def.enabled) return error.Disabled;
     const now = s.nowMs();
     if (s.runner.vtable.isRunning(s.runner.ctx, name)) return error.AlreadyRunning;
     const id = s.next_fire_id;
