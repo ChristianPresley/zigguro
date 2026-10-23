@@ -21,6 +21,7 @@ fn register(b: *bench.Bench) !void {
     try registerData(b);
     try registerVector(b);
     try registerChart(b);
+    try registerGrid(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -635,6 +636,56 @@ fn registerChart(b: *bench.Bench) !void {
                 var frame: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
                 defer frame.deinit();
                 bench.doNotOptimizeAway(x.compile(frame.allocator()).items.len);
+            }
+        }
+    }.f);
+}
+
+/// `data/grid_scroll_10m`: a frame of the data grid after a page-sized
+/// jump through a 10 M-row CSV, building every visible cell in a
+/// headless window (budget 8.3 ms).
+fn registerGrid(b: *bench.Bench) !void {
+    const zg_gui = @import("zg_gui");
+    const ui = @import("zg_agents_ui");
+    const data = zg_agents.data;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.ensureTotalCapacity(gpa, 10_000_000 * 48);
+    try text.appendSlice(gpa, "id,name,amount,day,city,flag\n");
+    for (0..10_000_000) |r| try text.print(gpa, "{d},name {d},{d}.{d},2026-{d:0>2}-{d:0>2},city{d},{s}\n", .{ r, r % 977, r % 9973, r % 10, 1 + r % 12, 1 + r % 28, r % 300, if (r % 3 == 0) "true" else "false" });
+    const ds = try data.Dataset.openBytes(gpa, io, text.items, .csv);
+    defer ds.close();
+    try ds.waitIndexed();
+
+    const Host = struct {
+        g: ?*ui.data.DataGrid = null,
+        pub fn build(h: *@This(), u: *zg_gui.Ui) void {
+            if (h.g) |g| ui.data.dataGrid(u, g);
+        }
+    };
+    var host: Host = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .root = .of(&host), .size = .{ .w = 1600, .h = 900 } });
+    defer t.deinit();
+    const g = try ui.data.DataGrid.init(gpa, io, &t.app, ds, "data", .{});
+    defer {
+        host.g = null;
+        g.deinit();
+    }
+    host.g = g;
+    _ = t.settle();
+    const Ctx = struct { t: *zg_gui.testing.TestApp, g: *ui.data.DataGrid, rows: u64, at: u64 = 0 };
+    var ctx: Ctx = .{ .t = t, .g = g, .rows = ds.index().count() };
+    try b.run("data/grid_scroll_10m", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                // A page down, plus a far jump every 16 frames.
+                c.at = if (n % 16 == 15) (c.at *% 2654435761 +% 7919) % c.rows else (c.at + 37) % c.rows;
+                c.g.table.moveTo(c.at, 1, .replace);
+                c.t.win.markAllDirty();
+                bench.doNotOptimizeAway(c.t.frame());
             }
         }
     }.f);

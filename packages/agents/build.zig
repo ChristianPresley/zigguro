@@ -34,16 +34,21 @@ pub fn build(b: *std.Build) void {
 
     // zg_agents_ui: Mission Control over zg_gui, a module of its own so
     // headless consumers (zg, the agent host) never import a GUI package.
+    const gui = b.dependency("zg_gui", f.args()).module("zg_gui");
     const ui = b.addModule("zg_agents_ui", .{
         .root_source_file = b.path("src/ui/root.zig"),
         .target = f.target,
         .imports = &.{
             .{ .name = "zg_agents", .module = mod },
-            .{ .name = "zg_gui", .module = b.dependency("zg_gui", f.args()).module("zg_gui") },
+            .{ .name = "zg_gui", .module = gui },
             .{ .name = "zg_ai_proto", .module = ai_dep.module("zg_ai_proto") },
         },
     });
     ui.addImport("zg_options", zg_build.optionsModule(b, f));
+    // The data grid's scroll bench drives the UI module headlessly.
+    const bench_mod = zg_build.benchModule(b, "zg_agents").?;
+    bench_mod.addImport("zg_agents_ui", ui);
+    bench_mod.addImport("zg_gui", gui);
     const ui_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_agents_ui", .root_module = zg_build.testModule(b, f, ui) }));
     ui_tests.skip_foreign_checks = true;
     b.step("test-ui", "Run the zg_agents_ui tests").dependOn(&ui_tests.step);

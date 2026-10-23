@@ -305,6 +305,7 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
         // Benches see the package and everything the package imports.
         bench_mod.addImport(spec.name, mod);
         for (spec.imports) |imp| bench_mod.addImport(imp.name, imp.module);
+        b.modules.put(b.graph.arena, b.fmt("{s}{s}", .{ spec.name, bench_suffix }), bench_mod) catch @panic("OOM");
         const exe = b.addExecutable(.{ .name = b.fmt("{s}-bench", .{spec.name}), .root_module = bench_mod });
         b.installArtifact(exe);
         const run = b.addRunArtifact(exe);
@@ -313,6 +314,15 @@ pub fn addPackage(b: *std.Build, f: Flags, spec: PackageSpec) *std.Build.Module 
         b.step("bench", "Run this package's benchmarks").dependOn(&run.step);
     }
     return mod;
+}
+
+const bench_suffix = "-bench-root";
+
+/// The root module of package `name`'s bench (null without one), for a
+/// package build that adds imports created after `addPackage`, such as a
+/// module layered on the package itself.
+pub fn benchModule(b: *std.Build, name: []const u8) ?*std.Build.Module {
+    return b.modules.get(b.fmt("{s}{s}", .{ name, bench_suffix }));
 }
 
 /// A copy of package module `mod` (same root file and imports) with
