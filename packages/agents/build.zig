@@ -6,6 +6,8 @@ pub fn build(b: *std.Build) void {
     const core = b.dependency("zg_core", f.args()).module("zg_core");
     const ai_dep = b.dependency("zg_ai", f.args());
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
+    const platform = b.dependency("zg_platform", f.args()).module("zg_platform");
+    const text = b.dependency("zg_text", f.args()).module("zg_text");
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_agents",
         .imports = &.{
@@ -13,6 +15,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_ai", .module = ai_dep.module("zg_ai") },
             .{ .name = "zg_ai_proto", .module = ai_dep.module("zg_ai_proto") },
             .{ .name = "zg_jsonrpc", .module = jsonrpc },
+            .{ .name = "zg_platform", .module = platform },
+            .{ .name = "zg_text", .module = text },
         },
         .bench = "bench/main.zig",
     });
