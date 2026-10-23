@@ -320,3 +320,45 @@ test "path_store: concurrent readers see consistent snapshots" {
     ps.collect();
     try std.testing.expectEqual(@as(u32, 0), bad.load(.acquire));
 }
+
+test "path_store: index finds every live node after removes and renames" {
+    const gpa = std.testing.allocator;
+    const ps = try PathStore.init(gpa, std.testing.io);
+    defer ps.deinit();
+    try ps.addRoot(r0, false);
+    var ch: std.ArrayList(Change) = .empty;
+    defer ch.deinit(gpa);
+    var prng: std.Random.DefaultPrng = .init(631);
+    const r = prng.random();
+    var buf: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    for (0..5000) |_| {
+        const p = randomPath(r, &buf);
+        switch (r.uintLessThan(u8, 10)) {
+            0...6 => upsert(ps, &ch, p, file) catch |e| if (e != error.NotADirectory) return e,
+            7, 8 => try ps.apply(&.{ .ops = &.{.{ .remove = .{ .root = r0, .rel = p } }} }, &ch),
+            else => {
+                const q = randomPath(r, &buf2);
+                ps.apply(&.{ .ops = &.{.{ .rename = .{ .root = r0, .from = p, .to = q } }} }, &ch) catch |e| switch (e) {
+                    error.NotADirectory, error.RenameIntoSelf => {},
+                    else => return e,
+                };
+            },
+        }
+    }
+    // Re-upserting every live file must find it (and its parents) in the
+    // index: no node is added.
+    const s = ps.snapshot();
+    defer s.release();
+    const before = ps.nodeCount();
+    var it = s.iterFiles(null);
+    var pbuf: [512]u8 = undefined;
+    var n: usize = 0;
+    while (it.next()) |id| : (n += 1) {
+        ch.clearRetainingCapacity();
+        try upsert(ps, &ch, s.pathOf(id, &pbuf), file);
+        for (ch.items) |c| try std.testing.expect(c.what != .added);
+    }
+    try std.testing.expect(n > 100);
+    try std.testing.expectEqual(before, ps.nodeCount());
+}
