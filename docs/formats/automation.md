@@ -92,10 +92,15 @@ one allows comes from its E16 permission rule set:
 ## Trust
 
 An automation that arrives with the repository (a clone or a pull) is
-loaded disabled until you approve its exact content once in the manager
-("New automation from the repository: review and enable"). Editing the
-file afterwards needs approval again. Automations you create or edit
-yourself are approved as you save them.
+loaded disabled until you approve its exact content once, in the manager
+("New automation from the repository: review and enable") or with
+`zg automation approve NAME`. It cannot be run by hand before that
+either. A file changed afterwards needs approval again. Automations you
+create or edit yourself (manager, `zg automation enable|disable`) are
+approved as you save them. Approvals live in your state directory
+(`<state>/pins/automations.zon`, for example
+`~/.local/state/zigguro/pins` on Linux), never in the workspace, so a
+repository cannot approve its own automations.
 
 ## Where state lives
 
