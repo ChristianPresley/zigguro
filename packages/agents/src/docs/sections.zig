@@ -290,3 +290,25 @@ fn joinLines(a: Allocator, para: []const u8) Allocator.Error![]const u8 {
     }
     return out.items;
 }
+
+/// One edit (a single undo step) that moves section `from` with its
+/// subsections to just before section `before` (null: the end).
+pub const Move = struct { start: u32, old_len: u32, new_text: []const u8 };
+
+/// The edit moving section `from` before `before`, or null when it would
+/// not move (into itself, or where it already is).
+pub fn moveSection(a: Allocator, text: []const u8, all: []const Section, from: u32, before: ?u32) Allocator.Error!?Move {
+    const r = all[from].range;
+    const to: u32 = if (before) |b| all[b].range.start else @intCast(text.len);
+    if (to >= r.start and to <= r.end) return null;
+    var moved = text[r.start..r.end];
+    // The last section may lack a final newline.
+    if (moved.len > 0 and moved[moved.len - 1] != '\n') moved = try std.mem.concat(a, u8, &.{ moved, "\n" });
+    if (to < r.start) {
+        const new = try std.mem.concat(a, u8, &.{ moved, text[to..r.start] });
+        return .{ .start = to, .old_len = r.end - to, .new_text = new };
+    }
+    const tail = text[r.end..to];
+    const sep: []const u8 = if (tail.len > 0 and tail[tail.len - 1] != '\n') "\n" else "";
+    return .{ .start = r.start, .old_len = to - r.start, .new_text = try std.mem.concat(a, u8, &.{ tail, sep, moved }) };
+}
