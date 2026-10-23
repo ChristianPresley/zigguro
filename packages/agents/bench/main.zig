@@ -18,6 +18,7 @@ fn register(b: *bench.Bench) !void {
     try registerSched(b);
     try registerTasks(b);
     try registerDocs(b);
+    try registerData(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -346,4 +347,67 @@ fn registerRuns(b: *bench.Bench) !void {
     }.f);
     reg.deinit();
     gpa.free(ids);
+}
+
+/// `data/csv_index_256mb`: the full parallel row index of a 256 MiB CSV
+/// with quoted multi-line fields (budget: 1 GB/s a core, so 256 ms on
+/// one core); `data/first_screen_256mb`: opening it from disk until the
+/// first screen's cells read (budget 200 ms; the full index runs in the
+/// background and is canceled at close). The 1 GB budget scales from
+/// these; the file lives in a scratch directory under the working
+/// directory.
+fn registerData(b: *bench.Bench) !void {
+    const data = zg_agents.data;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    var i: usize = 0;
+    while (text.items.len < 256 << 20) : (i += 1) {
+        if (i % 9 == 0) {
+            try text.print(gpa, "{d},\"note {d}\nwith, a comma and \"\"quotes\"\"\",{d}.{d},2026-10-23\n", .{ i, i, i % 1000, i % 97 });
+        } else try text.print(gpa, "{d},plain row {d},{d}.{d},2026-10-23\n", .{ i, i, i % 1000, i % 97 });
+    }
+    const Ctx = struct { bytes: []const u8, io: std.Io };
+    var ctx: Ctx = .{ .bytes = text.items, .io = io };
+    try b.run("data/csv_index_256mb", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                var ix: data.RowIndex = .init(std.heap.smp_allocator);
+                defer ix.deinit();
+                var progress: std.atomic.Value(u64) = .init(0);
+                const cancel: std.atomic.Value(bool) = .init(false);
+                data.row_index.buildIndex(c.io, c.bytes, .{}, &ix, &progress, &cancel) catch unreachable;
+                bench.doNotOptimizeAway(ix.count());
+            }
+        }
+    }.f);
+
+    const cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/bench-data";
+    cwd.deleteTree(io, root) catch {};
+    try cwd.createDirPath(io, root);
+    defer cwd.deleteTree(io, root) catch {};
+    var dir = try cwd.openDir(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "big.csv", .data = text.items });
+    const Open = struct { dir: std.Io.Dir, io: std.Io };
+    var open: Open = .{ .dir = dir, .io = io };
+    try b.run("data/first_screen_256mb", &open, struct {
+        fn f(c: *Open, s: *bench.State) void {
+            var n: u64 = 0;
+            while (n < s.iterations()) : (n += 1) {
+                const ds = data.Dataset.open(std.heap.smp_allocator, c.io, c.dir, "big.csv", null) catch unreachable;
+                defer ds.close();
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                var r: u64 = 0;
+                while (r < 60) : (r += 1) {
+                    var col: u32 = 0;
+                    while (col < 4) : (col += 1) bench.doNotOptimizeAway(ds.cell(r, col, arena.allocator()) catch unreachable);
+                }
+            }
+        }
+    }.f);
 }
