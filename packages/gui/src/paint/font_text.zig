@@ -71,6 +71,8 @@ pub const FontText = struct {
     /// The last shaped line (valid until the next `shape`).
     scratch: std.heap.ArenaAllocator,
     shaped: std.ArrayList(text.ShapedGlyph) = .empty,
+    /// The last line's caret stops (valid until the next `shape`).
+    stops: std.ArrayList(text.CaretStop) = .empty,
 
     const Mapped = struct { face: u8, gid: u16, adv: f32 };
 
@@ -134,6 +136,7 @@ pub const FontText = struct {
     pub fn destroy(ft: *FontText) void {
         const gpa = ft.gpa;
         ft.shaped.deinit(gpa);
+        ft.stops.deinit(gpa);
         ft.layout.deinit();
         ft.fb.deinit();
         ft.reg.deinit();
@@ -187,6 +190,7 @@ pub const FontText = struct {
         .shape = shape,
         .shaped_glyph = shapedGlyph,
         .shaped_width = shapedWidth,
+        .carets = carets,
     };
 
     fn self(p: *anyopaque) *FontText {
@@ -256,6 +260,20 @@ pub const FontText = struct {
             }
         }
         return .{ .glyphs = ft.shaped.items, .width = line.width };
+    }
+
+    fn carets(p: *anyopaque, st: TextStyle, s: []const u8, tab_w: f32) ?[]const text.CaretStop {
+        const ft = self(p);
+        _ = ft.scratch.reset(.retain_capacity);
+        ft.stops.clearRetainingCapacity();
+        if (s.len == 0) {
+            ft.stops.append(ft.gpa, .{ .offset = 0, .x = 0 }) catch return null;
+            return ft.stops.items;
+        }
+        const line = ft.layout.layoutLine(ft.scratch.allocator(), s, &.{.{ .end = @intCast(s.len), .style = ft.zstyle(st) }}, .{ .tab_width_px = tab_w }) catch return null;
+        ft.stops.ensureTotalCapacity(ft.gpa, line.carets.len) catch return null;
+        for (line.carets) |c| ft.stops.appendAssumeCapacity(.{ .offset = c.offset, .x = c.x });
+        return ft.stops.items;
     }
 
     fn shapedGlyph(p: *anyopaque, st: TextStyle, id: u32, pen: Vec2) ?canvas.GlyphQuad {
