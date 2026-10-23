@@ -10,6 +10,7 @@ pub const mission = @import("mission/root.zig");
 pub const notify = @import("notify/root.zig");
 pub const sched = @import("sched/root.zig");
 pub const tasks = @import("tasks/root.zig");
+pub const docs = @import("docs/root.zig");
 
 test {
     _ = runs;
@@ -17,4 +18,5 @@ test {
     _ = notify;
     _ = tasks;
     _ = sched;
+    _ = docs;
 }
