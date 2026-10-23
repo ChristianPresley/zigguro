@@ -14,6 +14,7 @@ pub const loader = @import("loader.zig");
 pub const AutomationRunner = @import("runner.zig");
 pub const tools = @import("tools.zig");
 pub const Service = @import("service.zig");
+pub const Approvals = @import("approvals.zig");
 
 pub const CronExpr = cron.CronExpr;
 pub const ParseError = cron.ParseError;
@@ -43,6 +44,7 @@ test {
     _ = tools;
     _ = @import("tools_test.zig");
     _ = Service;
+    _ = Approvals;
     _ = @import("cron_test.zig");
     _ = @import("describe_test.zig");
 }
