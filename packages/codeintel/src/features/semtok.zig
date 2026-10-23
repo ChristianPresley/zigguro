@@ -230,6 +230,19 @@ pub fn tick(d: *SemTokDriver) bool {
     return changed;
 }
 
+/// When a debounced request falls due (`.awake` nanoseconds), if one is
+/// waiting: schedule a `tick` for then (no frame may come otherwise).
+pub fn nextDue(d: *const SemTokDriver) ?i96 {
+    if (!d.opts.enabled) return null;
+    var best: ?i96 = null;
+    for (d.states.values()) |st| {
+        if (st.server == null or st.inflight != null) continue;
+        if (!st.force and st.applied == st.seen) continue;
+        best = if (best) |b| @min(b, st.due_ns) else st.due_ns;
+    }
+    return best;
+}
+
 fn maybeRequest(d: *SemTokDriver, h: DocHandle, st: *DocState, now: i96) void {
     const doc = d.docs.get(h) orelse return;
     var servers: [1]*Server = undefined;
