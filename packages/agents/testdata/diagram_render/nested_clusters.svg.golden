@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="436.8" height="164.5" viewBox="0 0 436.8 164.5" font-family="sans-serif">
+<rect x="0" y="0" width="436.8" height="164.5" fill="#ffffff"/>
+<path d="M92 8 L337.2 8 L337.2 156.5 L92 156.5 Z" fill="#9370db" fill-opacity="0.059"/>
+<path d="M92 8 L337.2 8 L337.2 156.5 L92 156.5 Z" fill="none" stroke="#a89bd0" stroke-width="1" stroke-linejoin="round"/>
+<text x="214.6" y="20.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Outer box</text>
+<path d="M108 49.5 L254.8 49.5 L254.8 140.5 L108 140.5 Z" fill="#9370db" fill-opacity="0.059"/>
+<path d="M108 49.5 L254.8 49.5 L254.8 140.5 L108 140.5 Z" fill="none" stroke="#a89bd0" stroke-width="1" stroke-linejoin="round"/>
+<text x="181.4" y="62.25" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Inner box</text>
+<path d="M156.4 107.75 C173.067 107.75 182.733 107.75 199.4 107.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M206.4 107.75 L198.4 110.75 L198.4 104.75 Z" fill="#333333"/>
+<path d="M238.8 107.75 C255.467 107.75 265.133 107.75 281.8 107.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M288.8 107.75 L280.8 110.75 L280.8 104.75 Z" fill="#333333"/>
+<path d="M74 107.75 C90.667 107.75 100.333 107.75 117 107.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M124 107.75 L116 110.75 L116 104.75 Z" fill="#333333"/>
+<path d="M321.2 107.75 C337.867 107.75 347.533 107.75 364.2 107.75" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M371.2 107.75 L363.2 110.75 L363.2 104.75 Z" fill="#333333"/>
+<path d="M124 91 L156.4 91 L156.4 124.5 L124 124.5 Z" fill="#ececff"/>
+<path d="M124 91 L156.4 91 L156.4 124.5 L124 124.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="140.2" y="107.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">x</text>
+<path d="M206.4 91 L238.8 91 L238.8 124.5 L206.4 124.5 Z" fill="#ececff"/>
+<path d="M206.4 91 L238.8 91 L238.8 124.5 L206.4 124.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="222.6" y="107.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">y</text>
+<path d="M288.8 91 L321.2 91 L321.2 124.5 L288.8 124.5 Z" fill="#ececff"/>
+<path d="M288.8 91 L321.2 91 L321.2 124.5 L288.8 124.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="305" y="107.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">z</text>
+<path d="M8 91 L74 91 L74 124.5 L8 124.5 Z" fill="#ececff"/>
+<path d="M8 91 L74 91 L74 124.5 L8 124.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="41" y="107.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">start</text>
+<path d="M371.2 91 L428.8 91 L428.8 124.5 L371.2 124.5 Z" fill="#ececff"/>
+<path d="M371.2 91 L428.8 91 L428.8 124.5 L371.2 124.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="400" y="107.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">stop</text>
+</svg>

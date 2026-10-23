@@ -50,6 +50,8 @@ pub const Context = core.Context;
 pub const Style = layout.Style;
 /// See `host.Host`.
 pub const Host = host.Host;
+/// Fenced-block renderers for Markdown views (diagrams).
+pub const MarkdownBlockRenderers = markdown.MarkdownBlockRenderers;
 
 test {
     std.testing.refAllDecls(@This());

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="159.196" height="440.376" viewBox="0 0 159.196 440.376" font-family="sans-serif">
+<rect x="0" y="0" width="159.196" height="440.376" fill="#ffffff"/>
+<path d="M74.696 41.5 C74.696 45.667 74.696 58.167 74.696 66.5 C74.696 74.833 74.696 80.333 74.696 84.5" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M74.696 91.5 L71.696 83.5 L77.696 83.5 Z" fill="#333333"/>
+<path d="M61.233 132.814 C55.91 139.783 34.618 161.699 29.296 174.626 C23.973 187.553 29.296 197.418 29.296 203.376" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M29.296 210.376 L26.296 202.376 L32.296 202.376 Z" fill="#333333"/>
+<path d="M29.296 243.876 C29.296 249.834 27.014 267.71 29.296 279.626 C31.577 291.543 38.201 302.881 40.482 308.839" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M42.986 315.376 L37.323 308.978 L42.926 306.832 Z" fill="#333333"/>
+<path d="M57.471 315.376 C60.341 309.418 71.825 294.335 74.696 279.626 C77.566 264.918 74.696 244.626 74.696 227.126 C74.696 209.626 74.696 189.334 74.696 174.626 C74.696 159.918 74.696 151.834 74.696 145.876" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M74.696 138.876 L77.696 146.876 L71.696 146.876 Z" fill="#333333"/>
+<path d="M89.542 132.191 C95.718 139.264 120.42 158.804 126.596 174.626 C132.771 190.449 126.596 209.626 126.596 227.126 C126.596 244.626 126.596 262.126 126.596 279.626 C126.596 297.126 126.596 316.418 126.596 332.126 C126.596 347.835 126.596 362.751 126.596 373.876 C126.596 385.001 126.596 387.71 126.596 391.876" fill="none" stroke="#333333" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M126.596 398.876 L123.596 390.876 L129.596 390.876 Z" fill="#333333"/>
+<path d="M12.696 163.876 L45.896 163.876 L45.896 185.376 L12.696 185.376 Z" fill="#ffffff"/>
+<text x="29.296" y="174.626" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Yes</text>
+<path d="M114.196 268.876 L138.996 268.876 L138.996 290.376 L114.196 290.376 Z" fill="#ffffff"/>
+<text x="126.596" y="279.626" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">No</text>
+<path d="M41.696 8 L107.696 8 L107.696 41.5 L41.696 41.5 Z" fill="#ececff"/>
+<path d="M41.696 8 L107.696 8 L107.696 41.5 L41.696 41.5 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="74.696" y="24.75" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Start</text>
+<path d="M74.696 91.5 L127.304 115.188 L74.696 138.876 L22.087 115.188 Z" fill="#ececff"/>
+<path d="M74.696 91.5 L127.304 115.188 L74.696 138.876 L22.087 115.188 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="74.696" y="115.188" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Is it?</text>
+<path d="M8.896 210.376 L49.696 210.376 L49.696 243.876 L8.896 243.876 Z" fill="#ececff"/>
+<path d="M8.896 210.376 L49.696 210.376 L49.696 243.876 L8.896 243.876 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="29.296" y="227.126" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">OK</text>
+<path d="M8 315.376 L90.8 315.376 L90.8 348.876 L8 348.876 Z" fill="#ececff"/>
+<path d="M8 315.376 L90.8 315.376 L90.8 348.876 L8 348.876 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="49.4" y="332.126" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">Rethink</text>
+<path d="M101.996 398.876 L151.196 398.876 L151.196 432.376 L101.996 432.376 Z" fill="#ececff"/>
+<path d="M101.996 398.876 L151.196 398.876 L151.196 432.376 L101.996 432.376 Z" fill="none" stroke="#9370db" stroke-width="1" stroke-linejoin="round"/>
+<text x="126.596" y="415.626" font-size="14" fill="#1f2328" text-anchor="middle" dominant-baseline="middle">End</text>
+</svg>

@@ -16,6 +16,7 @@ pub const data = @import("data/root.zig");
 pub const artifacts = @import("artifacts/root.zig");
 pub const vector = @import("vector/root.zig");
 pub const chart = @import("chart/root.zig");
+pub const diagram_render = @import("diagram_render/root.zig");
 
 test {
     _ = runs;
@@ -28,5 +29,6 @@ test {
     _ = data;
     _ = vector;
     _ = chart;
+    _ = diagram_render;
     _ = artifacts;
 }

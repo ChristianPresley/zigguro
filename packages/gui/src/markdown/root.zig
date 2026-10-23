@@ -37,6 +37,8 @@ pub const code_view = @import("code_view.zig");
 pub const table_view = @import("table_view.zig");
 /// The `image_view.zig` module.
 pub const image_view = @import("image_view.zig");
+/// The `block_renderers.zig` module.
+pub const block_renderers = @import("block_renderers.zig");
 
 /// See `doc.Doc`.
 pub const Doc = doc.Doc;
@@ -50,6 +52,12 @@ pub const view = view_mod.view;
 pub const MdViewState = view_mod.MdViewState;
 /// See `view.MdViewProps`.
 pub const MdViewProps = view_mod.MdViewProps;
+/// See `block_renderers.MarkdownBlockRenderers`.
+pub const MarkdownBlockRenderers = block_renderers.MarkdownBlockRenderers;
+/// See `block_renderers.BlockRenderer`.
+pub const BlockRenderer = block_renderers.BlockRenderer;
+/// See `block_renderers.BlockInfo`.
+pub const BlockInfo = block_renderers.BlockInfo;
 
 test {
     std.testing.refAllDecls(@This());

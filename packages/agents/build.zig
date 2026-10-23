@@ -12,6 +12,14 @@ pub fn build(b: *std.Build) void {
     const frontmatter = b.dependency("zg_notes", f.args()).module("zg_frontmatter");
     // regex_match in data queries (E13.F06.S02.T03).
     const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
+    // zg_diagram: diagrams from text (E13.F07.S02), std and zg_core only;
+    // zg_agents draws its diagrams.
+    const diagram = b.addModule("zg_diagram", .{
+        .root_source_file = b.path("diagram/root.zig"),
+        .target = f.target,
+        .imports = &.{.{ .name = "zg_core", .module = core }},
+    });
+    diagram.addImport("zg_options", zg_build.optionsModule(b, f));
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_agents",
         .imports = &.{
@@ -23,17 +31,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_text", .module = text },
             .{ .name = "zg_frontmatter", .module = frontmatter },
             .{ .name = "zg_regex", .module = regex },
+            .{ .name = "zg_diagram", .module = diagram },
         },
         .bench = "bench/main.zig",
     });
 
-    // zg_diagram: diagrams from text (E13.F07.S02), std and zg_core only.
-    const diagram = b.addModule("zg_diagram", .{
-        .root_source_file = b.path("diagram/root.zig"),
-        .target = f.target,
-        .imports = &.{.{ .name = "zg_core", .module = core }},
-    });
-    diagram.addImport("zg_options", zg_build.optionsModule(b, f));
     const diagram_tests = b.addRunArtifact(b.addTest(.{ .name = "zg_diagram", .root_module = zg_build.testModule(b, f, diagram) }));
     b.step("test-diagram", "Run the zg_diagram tests").dependOn(&diagram_tests.step);
     b.top_level_steps.get("test").?.step.dependOn(&diagram_tests.step);
@@ -53,6 +55,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_agents", .module = mod },
             .{ .name = "zg_gui", .module = gui },
             .{ .name = "zg_ai_proto", .module = ai_dep.module("zg_ai_proto") },
+            .{ .name = "zg_diagram", .module = diagram },
         },
     });
     ui.addImport("zg_options", zg_build.optionsModule(b, f));

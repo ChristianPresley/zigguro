@@ -128,6 +128,55 @@ test "code block copy puts the raw code on the clipboard" {
     try testing.expectEqualStrings("const a = 1;\n    indented();", t.app.clipboard.get());
 }
 
+const FenceRenderer = struct {
+    calls: u32 = 0,
+    last_code: []const u8 = "",
+    last_closed: bool = false,
+    fn build(ctx: *anyopaque, ui: *Ui, b: md.BlockInfo) bool {
+        const self: *FenceRenderer = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        self.last_code = b.code;
+        self.last_closed = b.closed;
+        // Shown as code until the fence closes.
+        if (!b.closed) return false;
+        ui.text("drawn diagram", .{});
+        return true;
+    }
+};
+
+test "registered fence renderers replace the code view" {
+    const h = try Harness.create("```mermaid\nflowchart TB\n  a --> b\n```\n\n```zig\nconst a = 1;\n```\n", false);
+    defer h.destroy();
+    var r: FenceRenderer = .{};
+    var reg: @import("block_renderers.zig").MarkdownBlockRenderers = .{};
+    try reg.register("mermaid", .{ .ctx = &r, .build = FenceRenderer.build });
+    h.props.block_renderers = &reg;
+    const t = try h.app();
+    defer t.deinit();
+    try testing.expect(r.calls >= 1);
+    try testing.expect(r.last_closed);
+    try testing.expectEqualStrings("flowchart TB\n  a --> b", r.last_code);
+    try testing.expect(t.find(.{ .kind = "text", .name = "drawn diagram" }) != null);
+    // The other fence is still code; the mermaid one has no code header.
+    try testing.expect(t.find(.{ .kind = "text", .name = "zig" }) != null);
+    try testing.expect(t.find(.{ .kind = "text", .name = "mermaid" }) == null);
+}
+
+test "an unclosed fence falls back to code while streaming" {
+    const h = try Harness.create("```mermaid\nflowchart TB\n  a --> b\n", true);
+    defer h.destroy();
+    var r: FenceRenderer = .{};
+    var reg: @import("block_renderers.zig").MarkdownBlockRenderers = .{};
+    try reg.register("mermaid", .{ .ctx = &r, .build = FenceRenderer.build });
+    h.props.block_renderers = &reg;
+    const t = try h.app();
+    defer t.deinit();
+    try testing.expect(r.calls >= 1);
+    try testing.expect(!r.last_closed);
+    try testing.expect(t.find(.{ .kind = "text", .name = "mermaid" }) != null);
+    try testing.expect(t.find(.{ .kind = "text", .name = "drawn diagram" }) == null);
+}
+
 const CountingHighlighter = struct {
     calls: u32 = 0,
     fn hl(ptr: *anyopaque, a: std.mem.Allocator, _: []const u8, code: []const u8, out: *std.ArrayList(md.Span)) std.mem.Allocator.Error!void {
