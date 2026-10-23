@@ -50,6 +50,7 @@ const diff_model = zg_editor.model.diff.diff_model;
 const scm_base = @import("scm_base.zig");
 const ReviewView = @import("review/review_view.zig").ReviewView;
 const path_crumbs = @import("path_crumbs.zig");
+const completions = @import("review/completions.zig");
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -99,6 +100,8 @@ pub const Workbench = struct {
     review_view_ref: ?PanelRef = null,
     /// The current file's panel.
     cur_panel: ?PanelRef = null,
+    /// The completion provider, while attached to a window.
+    completions_svc: ?*completions.Service = null,
     /// A file to switch to at the next build (from a breadcrumb dropdown).
     pending_open: ?[]u8 = null,
     /// The working folder (absolute).
@@ -194,6 +197,8 @@ pub const Workbench = struct {
         /// The document against the file's text, for the gutter's SCM
         /// bar (null: not read from disk).
         diff: ?*diff_model.DiffModel = null,
+        /// Ghost-text completions while a window shows the editor.
+        completions: ?*completions.EditorCompletions = null,
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
@@ -325,6 +330,7 @@ pub const Workbench = struct {
     }
 
     fn closeFile(wb: *Workbench, f: OpenFile) void {
+        if (f.completions) |c| c.detach();
         var fm = f;
         wb.setMode(&fm, .standard);
         if (f.sync) |x| x.destroy();
@@ -359,6 +365,7 @@ pub const Workbench = struct {
         if (wb.win != null) {
             nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
             nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+            wb.attachCompletions(nf);
         }
         return nf;
     }
@@ -714,10 +721,14 @@ pub const Workbench = struct {
         wb.palette.handle.close(w);
         wb.adapter.deinit();
         wb.palette.deinit();
-        for (wb.files.items) |f| {
+        for (wb.files.items) |*f| {
             f.view.on_change = null;
             f.view.on_caret = null;
+            if (f.completions) |c| c.detach();
+            f.completions = null;
         }
+        if (wb.completions_svc) |svc| svc.destroy();
+        wb.completions_svc = null;
         if (w.app.on_message) |h| if (h.ctx == @as(*anyopaque, wb)) {
             w.app.on_message = null;
         };
@@ -772,6 +783,11 @@ pub const Workbench = struct {
             f.view.on_change = .{ .ctx = wb, .f = onViewChange };
             f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
         }
+        wb.completions_svc = completions.Service.create(wb.rt, wb.env, win.app) catch |e| blk: {
+            log.err("completions: {t}", .{e});
+            break :blk null;
+        };
+        for (wb.files.items) |*f| wb.attachCompletions(f);
         wb.approvals = .init(wb.gpa, wb.io, .{});
         if (ApprovalsInbox.create(wb.gpa, wb.io, win.app, &wb.approvals)) |inb| {
             inb.win = win;
@@ -844,6 +860,11 @@ pub const Workbench = struct {
         .{ .id = "editor.toggleEmacs", .title = "Toggle Emacs Mode", .category = "Preferences", .run = toggleEmacs },
         .{ .id = "workbench.closeEditor", .title = "Close Editor", .category = "View", .run = closeEditorCmd },
         .{ .id = "workbench.floatingAlwaysOnTop", .title = "Toggle Floating Windows Always on Top", .category = "View", .run = toggleFloatOnTop },
+        .{ .id = "completions.trigger", .title = "Trigger Inline Completion", .category = "AI", .run = completionTrigger },
+        .{ .id = "completions.acceptLine", .title = "Accept Next Line of Inline Completion", .category = "AI", .run = completionAcceptLine },
+        .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
+        .{ .id = "completions.snooze", .title = "Snooze Inline Completions (5 Minutes)", .category = "AI", .run = completionSnooze },
+        .{ .id = "completions.toggle", .title = "Toggle Inline Completions", .category = "AI", .run = completionToggle },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -1174,6 +1195,46 @@ pub const Workbench = struct {
         return wb.samePath(cabs, abs);
     }
 
+    /// Ghost-text completions for `f`'s editor (none when no provider is
+    /// configured).
+    fn attachCompletions(wb: *Workbench, f: *OpenFile) void {
+        const svc = wb.completions_svc orelse return;
+        const w = wb.win orelse return;
+        if (f.completions != null) return;
+        f.completions = completions.EditorCompletions.attach(wb.gpa, svc, w, f.view, f.path) catch |e| blk: {
+            log.warn("completions: {t}", .{e});
+            break :blk null;
+        };
+    }
+
+    /// The current editor's completions.
+    fn curCompletions(wb: *Workbench) ?*completions.EditorCompletions {
+        for (wb.files.items) |f| if (f.view == wb.view) return f.completions;
+        return null;
+    }
+
+    fn completionTrigger(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.trigger();
+    }
+
+    fn completionAcceptLine(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| _ = c.acceptLine();
+    }
+
+    fn completionDismiss(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.ctl.dismiss(.escape);
+    }
+
+    fn completionSnooze(wb: *Workbench) !void {
+        if (wb.curCompletions()) |c| c.snooze();
+    }
+
+    fn completionToggle(wb: *Workbench) !void {
+        const svc = wb.completions_svc orelse return wb.notify(.info, "Inline completions need ZG_COMPLETION_URL or a model API key", .{});
+        svc.enabled = !svc.enabled;
+        if (!svc.enabled) for (wb.files.items) |f| if (f.completions) |c| c.ctl.dismiss(.escape);
+    }
+
     fn closeEditorCmd(wb: *Workbench) !void {
         wb.closeEditor(false);
     }
@@ -1418,8 +1479,9 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
-    fn onViewChange(ctx: *anyopaque, _: *EditorView) void {
+    fn onViewChange(ctx: *anyopaque, v: *EditorView) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |f| if (f.view == v) if (f.completions) |c| c.onCaret();
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1685,6 +1747,10 @@ pub const Workbench = struct {
         const waiting = wb.approvals.pendingCount(.{});
         if (waiting > 0) {
             items[n] = .{ .id = "approvals", .text = std.fmt.bufPrint(&ab, "\u{2691} {d} approval{s}", .{ waiting, if (waiting == 1) "" else "s" }) catch "", .side = .right, .priority = 950, .tone = .warning, .tooltip = "Requests wait for your approval: click to show them", .action = "review.approvals.open" };
+            n += 1;
+        }
+        if (wb.curCompletions()) |c| {
+            items[n] = .{ .id = "completions", .text = c.statusText(), .side = .right, .priority = 40, .tooltip = "Inline completions: click to turn them on or off", .action = "completions.toggle" };
             n += 1;
         }
         items[n] = .{ .id = "terminal", .text = "Terminal", .side = .right, .priority = 10, .action = "terminal.toggle" };
