@@ -235,11 +235,14 @@ pub const Dataset = struct {
         ds.gpa.destroy(ds);
     }
 
-    fn index(ds: *const Dataset) *const RowIndex {
+    /// The row index: the full one once indexing finished, else the
+    /// first screen's.
+    pub fn index(ds: *const Dataset) *const RowIndex {
         return if (ds.indexed.load(.acquire) and ds.full.complete()) &ds.full else &ds.head;
     }
 
-    fn headerRows(ds: *const Dataset) u64 {
+    /// 1 when the first record is a header, else 0.
+    pub fn headerRows(ds: *const Dataset) u64 {
         return @intFromBool(ds.sniffed.header);
     }
 
