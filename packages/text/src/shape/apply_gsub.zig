@@ -109,21 +109,33 @@ pub fn applyLookup(c: *Ctx, index: u16) Allocator.Error!void {
 }
 
 /// A MultipleSubst lookup copies the run into `buf.out`, expanding as it
-/// goes, so a run that decomposes every letter stays linear.
+/// goes, so a run that decomposes every letter stays linear. Glyphs the
+/// lookup leaves alone are copied in slices just before the next glyph it
+/// rewrites, and a run it never touches is not copied at all.
 fn applyMultipleLookup(c: *Ctx, l: Lookup, acc: ?*const digest.LookupAccel, filter: []const u64) Allocator.Error!void {
     const b = c.buf;
-    b.out.clearRetainingCapacity();
-    try b.out.ensureTotalCapacity(b.gpa, b.len());
     c.multi_out = true;
     defer c.multi_out = false;
+    // Glyphs before `copied` are already in `buf.out`.
+    var copied: usize = 0;
+    var started = false;
     var i: usize = 0;
-    while (i < b.len()) : (i += 1) {
-        if (!c.budget.exhausted and digest.has(filter, b.infos.items[i].gid) and c.applicable(i)) {
-            const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
-            if (applied != null) continue;
+    while (true) {
+        i = c.nextCandidate(filter, i);
+        if (i >= b.len() or c.budget.exhausted) break;
+        if (!started) {
+            b.out.clearRetainingCapacity();
+            try b.out.ensureTotalCapacity(b.gpa, b.len());
+            started = true;
         }
-        try b.out.append(b.gpa, b.infos.items[i]);
+        try b.out.appendSlice(b.gpa, b.infos.items[copied..i]);
+        copied = i;
+        const applied = if (acc) |a| try applyAtAccel(c, a, i) else try applyAt(c, l, i);
+        if (applied != null) copied = i + 1;
+        i += 1;
     }
+    if (!started) return;
+    try b.out.appendSlice(b.gpa, b.infos.items[copied..]);
     b.swapOut();
 }
 
