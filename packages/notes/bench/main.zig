@@ -81,6 +81,42 @@ fn register(b: *bench.Bench) !void {
         }
     }.f);
 
+    // Budget: the `[[` completion list in < 16 ms for a 10 k-note vault
+    // (E08.F06.S02.T02).
+    try b.run("notes/complete_10k", view10k, struct {
+        fn f(v: *const zg_notes.IndexView, s: *bench.State) void {
+            var arena: std.heap.ArenaAllocator = .init(s.allocator());
+            defer arena.deinit();
+            const docs = [_][]const u8{ "see [[n12", "[[proj", "tags #t4", "[[n77#" };
+            for (0..s.iterations()) |_| {
+                _ = arena.reset(.retain_capacity);
+                const d = docs[complete_turn % docs.len];
+                complete_turn += 1;
+                const items = zg_notes.lang.completion.complete(arena.allocator(), v, .{ .text = d, .cursor = @intCast(d.len), .path = "f1/n1.md", .vault = &whole_vault }) catch @panic("complete");
+                bench.doNotOptimizeAway(items.len);
+            }
+        }
+    }.f);
+
+    // Budget: a hover preview of a 20 KB note in < 50 ms to first paint
+    // (E08.F06.S02.T02; this is the slicing, before rendering).
+    const hix = try zg_notes.NoteIndex.init(std.heap.page_allocator, b.io, &.{whole_vault});
+    try hix.indexNote(.{ .index = 0, .gen = 0 }, .of(0), "Big.md", note20);
+    try hix.commit();
+    hover_note = note20;
+    try b.run("notes/hover_20kb", try hix.reader(), struct {
+        fn f(v: *const zg_notes.IndexView, s: *bench.State) void {
+            var arena: std.heap.ArenaAllocator = .init(s.allocator());
+            defer arena.deinit();
+            const doc = "see [[Big]] here";
+            for (0..s.iterations()) |_| {
+                _ = arena.reset(.retain_capacity);
+                const p = zg_notes.lang.hover.preview(arena.allocator(), v, &whole_vault, "x.md", doc, 7, .{ .ctx = undefined, .read = hoverRead }, 64 << 10) catch @panic("hover");
+                bench.doNotOptimizeAway(p.?.text.len);
+            }
+        }
+    }.f);
+
     // Budget: p95 < 20 ms over 20 mixed queries on the 10 k vault, and
     // the index ≤ 1.5× the vault text (E08.F06.S03.T01).
     const sx = try buildSearch(b.io, &v10k);
@@ -197,6 +233,15 @@ fn noCreate(ctx: *anyopaque, path: []const u8, bytes: []const u8) anyerror!void 
 
 var tools_src: zg_notes.ai.tools.Source = undefined;
 var tools_turn: usize = 0;
+var complete_turn: usize = 0;
+var hover_note: []const u8 = "";
+
+fn hoverRead(ctx: *anyopaque, gpa: std.mem.Allocator, id: zg_notes.FileId, path: []const u8) anyerror!?[]u8 {
+    _ = ctx;
+    _ = id;
+    _ = path;
+    return try gpa.dupe(u8, hover_note);
+}
 
 /// A generated note by its `f<k>/n<i>.md` path.
 fn readByPath(ctx: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror!?[]u8 {
