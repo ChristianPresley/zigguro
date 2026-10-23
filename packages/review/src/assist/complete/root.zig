@@ -9,6 +9,8 @@ pub const scheduler = @import("scheduler.zig");
 pub const cache = @import("cache.zig");
 pub const providers = @import("providers.zig");
 pub const engine = @import("engine.zig");
+pub const postprocess = @import("postprocess.zig");
+pub const telemetry = @import("telemetry.zig");
 pub const provider_chat = @import("provider_chat.zig");
 
 pub const CompletionRequest = context.CompletionRequest;
@@ -34,4 +36,5 @@ test {
     _ = @import("scheduler_test.zig");
     _ = @import("providers_test.zig");
     _ = @import("engine_test.zig");
+    _ = @import("postprocess_test.zig");
 }
