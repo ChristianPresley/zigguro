@@ -431,6 +431,14 @@ pub fn update(s: *TaskStore, id: TaskId, p: TaskPatch, via: WriteVia) !Outcome {
     var arena_state: std.heap.ArenaAllocator = .init(s.gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+    const r = try s.render(a, id, p);
+    if (std.mem.eql(u8, r.before, r.after)) return .applied;
+    return s.write(a, id, r.name, r.before, r.after, r.fields, via);
+}
+
+/// What `update` would write, without writing it: the file name, its
+/// bytes now and after the patch, and the fields changed. In `a`.
+pub fn render(s: *TaskStore, a: Allocator, id: TaskId, p: TaskPatch) !struct { name: []const u8, before: []const u8, after: []const u8, fields: []const []const u8 } {
     const name = try s.pathOf(a, id);
     const before = try s.dir.readFileAlloc(s.io, name, a, .limited(16 << 20));
     var edits: std.ArrayList(fm_writer.PropEdit) = .empty;
@@ -453,8 +461,7 @@ pub fn update(s: *TaskStore, id: TaskId, p: TaskPatch, via: WriteVia) !Outcome {
         const head = if (loc) |l| after[0..l.block[1]] else "";
         after = try std.mem.concat(a, u8, &.{ head, b });
     }
-    if (std.mem.eql(u8, before, after)) return .applied;
-    return s.write(a, id, name, before, after, fields.items, via);
+    return .{ .name = name, .before = before, .after = after, .fields = fields.items };
 }
 
 /// Moves the file to `.zigguro/tasks/.trash/` (people) or proposes its

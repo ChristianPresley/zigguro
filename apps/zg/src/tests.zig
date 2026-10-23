@@ -11,4 +11,5 @@ test {
     _ = @import("scm_tools.zig");
     _ = @import("cmd_runs.zig");
     _ = @import("cmd_automation.zig");
+    _ = @import("cmd_tasks.zig");
 }
