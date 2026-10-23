@@ -2421,7 +2421,8 @@ The `Host` and what it points to belong to the caller.
 
 ### Stability
 Unstable. Gaps: `=`, `!`, `H`/`M`/`L`, blockwise put, counts on Visual
-operators other than shifts; `:s` flag `c`; look-around, back references,
+operators other than shifts; `:s` flag `c` under `:g` or `:normal` (its
+`^E`/`^Y` are ignored); look-around, back references,
 and `\zs`/`\ze` inside a group, twice, or with a top-level `\|` (reported
 with their span); text after `\ze` is consumed, so the next match starts
 after it; `:normal` keys are
