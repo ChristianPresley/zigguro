@@ -32,6 +32,8 @@ pub fn Hooks(comptime M: zg_lsp.protocol.Method) type {
         /// The document lost its server (or failed): drop its results and
         /// let the editor fall back.
         clear: *const fn (ctx: *anyopaque, h: DocHandle) void,
+        /// Fills in params beyond `textDocument` (result ids).
+        prepare: ?*const fn (ctx: *anyopaque, h: DocHandle, client: *Client, params: *zg_lsp.protocol.RequestInfo(M).Params) void = null,
     };
 }
 
@@ -201,7 +203,9 @@ pub fn Poller(comptime M: zg_lsp.protocol.Method, comptime feature: Manager.Feat
             x.* = .{ .p = p, .h = h, .client = c, .version = ver };
             st.inflight = x;
             errdefer st.inflight = null;
-            _ = try c.request(M, .{ .textDocument = .{ .uri = uri } }, .{ .doc = p.mgr.docMatch(h) }, .{ .ctx = x, .func = onResult });
+            var params: zg_lsp.protocol.RequestInfo(M).Params = .{ .textDocument = .{ .uri = uri } };
+            if (p.hooks.prepare) |f| f(p.hooks.ctx, h, c, &params);
+            _ = try c.request(M, params, .{ .doc = p.mgr.docMatch(h) }, .{ .ctx = x, .func = onResult });
             p.outstanding += 1;
             p.sent += 1;
             st.force = false;
