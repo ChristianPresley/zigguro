@@ -23,6 +23,7 @@ test {
     _ = @import("review/queue_panel.zig");
     _ = @import("review/review_view.zig");
     _ = @import("review/inline_edit_bar.zig");
+    _ = @import("review/inline_edit_host.zig");
     _ = @import("review/completions.zig");
     _ = @import("review/approval_card.zig");
     _ = @import("review/approvals_view.zig");
