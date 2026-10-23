@@ -66,6 +66,8 @@ const Live = struct {
     slot: bool = false,
     pause_req: bool = false,
     pause_sent: bool = false,
+    /// Paused with its agent kept (a late turn end is ignored).
+    paused: bool = false,
     stop_req: ?StopHow = null,
     resume_req: bool = false,
     done: bool = false,
@@ -308,11 +310,12 @@ fn turnFinished(h: *RunHost, l: *Live, why: port.TurnEnd) void {
     const next: Next = blk: {
         h.mutex.lockUncancelable(h.io);
         defer h.mutex.unlock(h.io);
-        if (l.done) return;
+        if (l.done or l.paused) return;
         if (l.stop_req != null) break :blk .stopped;
         if (l.pause_req) {
             l.pause_req = false;
             l.pause_sent = false;
+            l.paused = true;
             h.freeSlotLocked(l);
             break :blk .paused;
         }
@@ -414,13 +417,29 @@ fn forceStop(h: *RunHost, l: *Live) void {
     h.finish(l, .stopped, null);
 }
 
-/// Pauses a working run at its next tool boundary or turn end.
+/// Pauses a working run at its next tool boundary or turn end. A run
+/// waiting for input pauses at once (its pending turn is cancelled).
 pub fn pause(h: *RunHost, id: RunId) void {
-    h.mutex.lockUncancelable(h.io);
-    defer h.mutex.unlock(h.io);
-    const l = h.find(id) orelse return;
-    if (l.done or l.handle == null or !l.slot) return;
-    l.pause_req = true;
+    const v = h.reg.snapshot();
+    const waiting = if (v.get(id)) |r| r.status == .needs_input else false;
+    h.reg.release(v);
+    const hd = blk: {
+        h.mutex.lockUncancelable(h.io);
+        defer h.mutex.unlock(h.io);
+        const l = h.find(id) orelse return;
+        if (l.done or l.paused or l.handle == null or !l.slot) return;
+        if (!waiting) {
+            l.pause_req = true;
+            return;
+        }
+        l.paused = true;
+        h.freeSlotLocked(l);
+        break :blk l.handle.?;
+    };
+    h.reg.update(id, .{ .question = null }) catch {};
+    h.reg.update(id, .{ .status = .working }) catch {};
+    h.reg.update(id, .{ .status = .paused }) catch {};
+    h.agents.cancel(hd, .turn);
 }
 
 /// Resumes a paused or interrupted run (it queues for a slot). An
@@ -450,6 +469,7 @@ pub fn resumeRun(h: *RunHost, id: RunId) Error!void {
         break :blk l;
     };
     l.done = false;
+    l.paused = false;
     l.stop_req = null;
     l.resume_req = true;
     try h.queue.push(h.gpa, id, l.kind);
@@ -483,6 +503,55 @@ pub fn attach(h: *RunHost, id: RunId) Error!proto.AgentRef {
         break :blk l.handle orelse return error.NotLive;
     };
     return h.agents.ref(hd) orelse error.NotLive;
+}
+
+/// Takes over a run another process handed over (`runs.adopt`): re-reads
+/// its journal, then resumes it (paused, interrupted) or queues it
+/// (queued).
+pub fn adopt(h: *RunHost, id: RunId) Error!void {
+    h.reg.refresh(id) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.UnknownRun,
+    };
+    const v = h.reg.snapshot();
+    defer h.reg.release(v);
+    const rec = v.get(id) orelse return error.UnknownRun;
+    switch (rec.status) {
+        .paused, .interrupted => return h.resumeRun(id),
+        .queued => {
+            const profile = h.profiles.resolve(h.profiles.ctx, rec.spec.profile) orelse return error.UnknownProfile;
+            h.mutex.lockUncancelable(h.io);
+            defer h.mutex.unlock(h.io);
+            if (h.find(id) != null) return;
+            const l = try h.newLive(id, rec.spec, profile);
+            errdefer {
+                l.arena.deinit();
+                h.gpa.destroy(l);
+            }
+            try h.lives.put(h.gpa, id.toInt(), l);
+            try h.queue.push(h.gpa, id, l.kind);
+            h.cond.signal(h.io);
+        },
+        else => return error.NotResumable,
+    }
+}
+
+/// Lets go of a run handed to another process: disposes its agent (which
+/// flushes its E10 session) without changing its status.
+pub fn forget(h: *RunHost, id: RunId) void {
+    const hd = blk: {
+        h.mutex.lockUncancelable(h.io);
+        defer h.mutex.unlock(h.io);
+        const l = h.find(id) orelse return;
+        if (l.done) return;
+        l.done = true;
+        _ = h.queue.remove(id);
+        h.freeSlotLocked(l);
+        const hd = l.handle;
+        l.handle = null;
+        break :blk hd;
+    };
+    if (hd) |x| h.agents.dispose(x);
 }
 
 /// Runs this host is driving (queued, running or paused), for handoff.
