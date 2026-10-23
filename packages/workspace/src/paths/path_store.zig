@@ -173,7 +173,7 @@ pub const PathStore = struct {
     owned: std.ArrayList(bool) = .empty,
     slots: u32 = 0,
     free: std.ArrayList(u32) = .empty,
-    index: std.HashMapUnmanaged(u32, void, IndexCtx, 80) = .empty,
+    index: ChildIndex = .{},
     roots: std.ArrayList(RootSlot) = .empty,
     file_count: u32 = 0,
     generation: u64 = 0,
@@ -255,9 +255,19 @@ pub const PathStore = struct {
 
     /// Like `apply`, with `changes` growing in `changes_gpa`.
     pub fn applyWith(ps: *PathStore, delta: *const Delta, changes: *std.ArrayList(Change), changes_gpa: Allocator) ApplyError!void {
-        try ps.index.ensureUnusedCapacityContext(ps.gpa, @intCast(delta.ops.len), .{ .ps = ps });
+        try ps.index.ensureUnused(ps.gpa, delta.ops.len);
         var out: ChangeList = .{ .list = changes, .gpa = changes_gpa };
-        for (delta.ops) |op| try ps.applyOne(op, &out);
+        // Upserts are latency bound (a random path string and index slot
+        // each), so prefetch both a few ops ahead.
+        const ops = delta.ops;
+        for (ops, 0..) |op, i| {
+            if (i + 16 < ops.len) switch (ops[i + 16]) {
+                .upsert => |u| @prefetch(u.rel.ptr, .{}),
+                else => {},
+            };
+            if (i + 4 < ops.len) ps.prefetchUpsert(ops[i + 4]);
+            try ps.applyOne(op, &out);
+        }
         try ps.publish();
         ps.collect();
     }
@@ -341,8 +351,23 @@ pub const PathStore = struct {
     }
 
     fn findChildHashed(ps: *const PathStore, parent: u32, name: []const u8, ci: bool, nh: u32) ?u32 {
-        const key: IndexKey = .{ .parent = parent, .name = name, .ci = ci, .hash = nh };
-        return ps.index.getKeyAdapted(key, IndexAdapter{ .ps = ps });
+        return switch (ps.index.lookup(ps, .{ .parent = parent, .name = name, .ci = ci, .hash = nh })) {
+            .found => |i| i,
+            .empty => null,
+        };
+    }
+
+    /// Prefetches the index slot of an upsert whose parent is the walk
+    /// cache's directory (the usual case while a scan lists a directory).
+    fn prefetchUpsert(ps: *const PathStore, op: Delta.Op) void {
+        const u = switch (op) {
+            .upsert => |u| u,
+            else => return,
+        };
+        const slash = std.mem.lastIndexOfScalar(u8, u.rel, '/') orelse return;
+        const parent = ps.walk.hit(u.root, u.rel[0..slash], ps) orelse return;
+        const ci = ps.roots.items[u.root.index()].case_insensitive;
+        ps.index.prefetch(mix(parent, nameHash(u.rel[slash + 1 ..], ci)));
     }
 
     /// Walks `rel` from the root; null when a segment is missing.
@@ -384,7 +409,7 @@ pub const PathStore = struct {
 
     fn createChildHashed(ps: *PathStore, parent: u32, name: []const u8, info: NodeInfo, root: u16, nh: u32) !u32 {
         const i = try ps.createNode(parent, name, info, root, nh);
-        try ps.index.putContext(ps.gpa, i, {}, .{ .ps = ps });
+        try ps.index.put(ps.gpa, ps, i);
         return i;
     }
 
@@ -437,40 +462,40 @@ pub const PathStore = struct {
                     const nh = nameHash(seg, slot.case_insensitive);
                     // One probe both finds an existing child and reserves the
                     // slot for a new one.
+                    try ps.index.ensureUnused(ps.gpa, 1);
                     const key: IndexKey = .{ .parent = cur, .name = seg, .ci = slot.case_insensitive, .hash = nh };
-                    const gop = try ps.index.getOrPutContextAdapted(ps.gpa, key, IndexAdapter{ .ps = ps }, IndexCtx{ .ps = ps });
-                    if (gop.found_existing) {
-                        const child = gop.key_ptr.*;
-                        if (last) {
-                            const before = ps.node(child).info;
-                            const was_dir = before.isDir();
-                            if (was_dir and !u.info.isDir()) {
-                                // A directory became a file: drop its subtree.
-                                try ps.removeChildren(child, changes);
+                    switch (ps.index.lookup(ps, key)) {
+                        .found => |child| {
+                            if (last) {
+                                const before = ps.node(child).info;
+                                const was_dir = before.isDir();
+                                if (was_dir and !u.info.isDir()) {
+                                    // A directory became a file: drop its subtree.
+                                    try ps.removeChildren(child, changes);
+                                }
+                                const n2 = try ps.nodeMut(child);
+                                n2.info = u.info;
+                                // Re-listing a directory keeps its loading state; only
+                                // `set_children_complete` (or `reset_root`) changes it.
+                                if (was_dir and u.info.isDir()) n2.info.flags.loading = before.flags.loading;
+                                if (was_dir != u.info.isDir()) {
+                                    if (u.info.isDir()) ps.file_count -= 1 else ps.file_count += 1;
+                                }
+                                if (!before.sameContent(n2.info) or @as(u13, @bitCast(before.flags)) != @as(u13, @bitCast(n2.info.flags)))
+                                    try changes.add(.{ .id = ps.idOf(child), .what = .modified });
+                            } else if (!ps.node(child).info.isDir()) {
+                                return error.NotADirectory;
                             }
-                            const n2 = try ps.nodeMut(child);
-                            n2.info = u.info;
-                            // Re-listing a directory keeps its loading state; only
-                            // `set_children_complete` (or `reset_root`) changes it.
-                            if (was_dir and u.info.isDir()) n2.info.flags.loading = before.flags.loading;
-                            if (was_dir != u.info.isDir()) {
-                                if (u.info.isDir()) ps.file_count -= 1 else ps.file_count += 1;
-                            }
-                            if (!before.sameContent(n2.info) or @as(u13, @bitCast(before.flags)) != @as(u13, @bitCast(n2.info.flags)))
-                                try changes.add(.{ .id = ps.idOf(child), .what = .modified });
-                        } else if (!ps.node(child).info.isDir()) {
-                            return error.NotADirectory;
-                        }
-                        cur = child;
-                    } else {
-                        const info: NodeInfo = if (last) u.info else .{ .kind = .dir, .flags = .{ .loading = true } };
-                        const created = ps.createNode(cur, seg, info, u.root.index(), nh) catch |err| {
-                            ps.index.removeByPtr(gop.key_ptr);
-                            return err;
-                        };
-                        gop.key_ptr.* = created;
-                        cur = created;
-                        try changes.add(.{ .id = ps.idOf(cur), .what = .added });
+                            cur = child;
+                        },
+                        .empty => |pos| {
+                            const info: NodeInfo = if (last) u.info else .{ .kind = .dir, .flags = .{ .loading = true } };
+                            const created = try ps.createNode(cur, seg, info, u.root.index(), nh);
+                            // createNode leaves the index alone, so `pos` is still free.
+                            ps.index.fill(pos, mix(cur, nh), created);
+                            cur = created;
+                            try changes.add(.{ .id = ps.idOf(cur), .what = .added });
+                        },
                     }
                 }
                 if (std.mem.lastIndexOfScalar(u8, u.rel, '/')) |slash| ps.walk.remember(u.root, u.rel[0..slash], ps.node(cur).parent, ps);
@@ -511,7 +536,7 @@ pub const PathStore = struct {
                 }
                 const old_parent = ps.node(src).parent;
                 const old_parent_id = ps.idOf(old_parent);
-                _ = ps.index.removeContext(src, .{ .ps = ps });
+                ps.index.remove(ps, src);
                 try ps.unlink(src);
                 const interned = try ps.names.intern(ps.gpa, new_name, nameHash(new_name, false));
                 const n = try ps.nodeMut(src);
@@ -519,7 +544,7 @@ pub const PathStore = struct {
                 n.name_len = @intCast(interned.len);
                 n.name_hash = nameHash(new_name, slot.case_insensitive);
                 try ps.link(parent, src);
-                try ps.index.putContext(ps.gpa, src, {}, .{ .ps = ps });
+                try ps.index.put(ps.gpa, ps, src);
                 try changes.add(.{ .id = ps.idOf(src), .what = .renamed, .old_parent = old_parent_id });
             },
             .set_children_complete => |s| {
@@ -543,7 +568,7 @@ pub const PathStore = struct {
         try ps.removeChildren(top, changes);
         const id = ps.idOf(top);
         if (!is_root) {
-            _ = ps.index.removeContext(top, .{ .ps = ps });
+            ps.index.remove(ps, top);
             try ps.unlink(top);
         }
         const n = try ps.nodeMut(top);
@@ -660,26 +685,108 @@ fn mix(parent: u32, name_hash: u32) u64 {
     return x;
 }
 
-const IndexCtx = struct {
-    ps: *const PathStore,
-    pub fn hash(c: IndexCtx, i: u32) u64 {
-        const n = c.ps.node(i);
-        return mix(n.parent, n.name_hash);
-    }
-    pub fn eql(_: IndexCtx, a: u32, b: u32) bool {
-        return a == b;
-    }
-};
+/// The (parent, name) -> node index: open addressing with linear probing.
+/// A slot packs the key hash's high 32 bits (which also pick its home
+/// slot) with node + 1, so a probe reads one cache line, a mismatch rarely
+/// touches a node, and growing needs no node at all. Removal shifts later
+/// entries back instead of leaving tombstones.
+const ChildIndex = struct {
+    slots: []u64 = &.{},
+    count: usize = 0,
 
-const IndexAdapter = struct {
-    ps: *const PathStore,
-    pub fn hash(_: IndexAdapter, k: IndexKey) u64 {
-        return mix(k.parent, k.hash);
+    const Lookup = union(enum) { found: u32, empty: usize };
+
+    fn tagOf(h: u64) u32 {
+        return @truncate(h >> 32);
     }
-    pub fn eql(a: IndexAdapter, k: IndexKey, i: u32) bool {
-        const n = a.ps.node(i);
-        if (n.parent != k.parent) return false;
-        return if (k.ci) std.ascii.eqlIgnoreCase(n.name(), k.name) else std.mem.eql(u8, n.name(), k.name);
+
+    fn deinit(x: *ChildIndex, gpa: Allocator) void {
+        gpa.free(x.slots);
+    }
+
+    /// Makes room for `n` more entries at a load of at most 3/4.
+    fn ensureUnused(x: *ChildIndex, gpa: Allocator, n: usize) Allocator.Error!void {
+        const need = x.count + n;
+        if (need * 4 <= x.slots.len * 3) return;
+        const len = std.math.ceilPowerOfTwo(usize, @max(64, need + need / 3 + 1)) catch return error.OutOfMemory;
+        if (len > 1 << 32) return error.OutOfMemory;
+        const fresh = try gpa.alloc(u64, len);
+        @memset(fresh, 0);
+        const mask = len - 1;
+        for (x.slots) |e| {
+            if (e == 0) continue;
+            var pos: usize = @as(u32, @truncate(e >> 32)) & mask;
+            while (fresh[pos] != 0) pos = (pos + 1) & mask;
+            fresh[pos] = e;
+        }
+        gpa.free(x.slots);
+        x.slots = fresh;
+    }
+
+    fn prefetch(x: *const ChildIndex, h: u64) void {
+        if (x.slots.len == 0) return;
+        @prefetch(&x.slots[tagOf(h) & (x.slots.len - 1)], .{});
+    }
+
+    /// The node for `k`, or the free slot where it belongs. Needs a
+    /// non-empty table (`ensureUnused` first).
+    fn lookup(x: *const ChildIndex, ps: *const PathStore, k: IndexKey) Lookup {
+        if (x.slots.len == 0) return .{ .empty = 0 };
+        const tag = tagOf(mix(k.parent, k.hash));
+        const mask = x.slots.len - 1;
+        var pos: usize = tag & mask;
+        while (true) : (pos = (pos + 1) & mask) {
+            const e = x.slots[pos];
+            if (e == 0) return .{ .empty = pos };
+            if (@as(u32, @truncate(e >> 32)) != tag) continue;
+            const i: u32 = @as(u32, @truncate(e)) - 1;
+            const n = ps.node(i);
+            if (n.parent != k.parent) continue;
+            if (if (k.ci) std.ascii.eqlIgnoreCase(n.name(), k.name) else std.mem.eql(u8, n.name(), k.name)) return .{ .found = i };
+        }
+    }
+
+    /// Stores node `i` (key hash `h`) in the free slot `lookup` returned.
+    fn fill(x: *ChildIndex, pos: usize, h: u64, i: u32) void {
+        x.slots[pos] = (@as(u64, tagOf(h)) << 32) | (i + 1);
+        x.count += 1;
+    }
+
+    /// Indexes node `i` under its current parent and name.
+    fn put(x: *ChildIndex, gpa: Allocator, ps: *const PathStore, i: u32) Allocator.Error!void {
+        try x.ensureUnused(gpa, 1);
+        const n = ps.node(i);
+        const h = mix(n.parent, n.name_hash);
+        const mask = x.slots.len - 1;
+        var pos: usize = tagOf(h) & mask;
+        while (x.slots[pos] != 0) pos = (pos + 1) & mask;
+        x.fill(pos, h, i);
+    }
+
+    /// Unindexes node `i` (keyed by its current parent and name).
+    fn remove(x: *ChildIndex, ps: *const PathStore, i: u32) void {
+        if (x.slots.len == 0) return;
+        const n = ps.node(i);
+        const mask = x.slots.len - 1;
+        var pos: usize = tagOf(mix(n.parent, n.name_hash)) & mask;
+        while (true) : (pos = (pos + 1) & mask) {
+            const e = x.slots[pos];
+            if (e == 0) return;
+            if (@as(u32, @truncate(e)) == i + 1) break;
+        }
+        // Backward-shift deletion: pull later entries of the run into the
+        // hole when the hole lies between their home slot and them.
+        var hole = pos;
+        var next = (pos + 1) & mask;
+        while (x.slots[next] != 0) : (next = (next + 1) & mask) {
+            const home = @as(u32, @truncate(x.slots[next] >> 32)) & mask;
+            if (((next -% home) & mask) >= ((next -% hole) & mask)) {
+                x.slots[hole] = x.slots[next];
+                hole = next;
+            }
+        }
+        x.slots[hole] = 0;
+        x.count -= 1;
     }
 };
 
