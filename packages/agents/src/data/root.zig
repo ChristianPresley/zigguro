@@ -12,6 +12,7 @@ pub const infer = @import("infer.zig");
 pub const sketches = @import("sketches.zig");
 pub const json_table = @import("json_table.zig");
 pub const stats = @import("stats.zig");
+pub const query = @import("query/root.zig");
 
 pub const Dataset = dataset.Dataset;
 pub const Dialect = csv.Dialect;
@@ -24,4 +25,6 @@ test {
     _ = @import("infer_test.zig");
     _ = @import("json_table_test.zig");
     _ = @import("stats_test.zig");
+    _ = @import("query_parser_test.zig");
+    _ = @import("query_plan_test.zig");
 }
