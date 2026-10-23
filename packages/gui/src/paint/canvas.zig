@@ -231,6 +231,51 @@ pub const OpList = struct {
             },
         };
     }
+
+    /// Replays `r` into `c` scaled by `scale` about the node's origin, then
+    /// translated by `offset`, with every colour's alpha times `alpha` (a
+    /// node's animated visual; `replay` when both are 1).
+    pub fn replayX(l: *const OpList, r: Range, offset: Vec2, scale: f32, alpha: f32, c: Canvas, scratch: *std.ArrayList(GlyphQuad), gpa: std.mem.Allocator) void {
+        if (scale == 1 and alpha == 1) return l.replay(r, offset, c, scratch, gpa);
+        const X = struct {
+            s: f32,
+            o: Vec2,
+            fn rect(x: @This(), q: Rect) Rect {
+                return .{ .x = q.x * x.s + x.o.x, .y = q.y * x.s + x.o.y, .w = q.w * x.s, .h = q.h * x.s };
+            }
+            fn point(x: @This(), p: Vec2) Vec2 {
+                return .{ .x = p.x * x.s + x.o.x, .y = p.y * x.s + x.o.y };
+            }
+            fn radii(x: @This(), q: Radii) Radii {
+                return .{ .tl = q.tl * x.s, .tr = q.tr * x.s, .br = q.br * x.s, .bl = q.bl * x.s };
+            }
+            fn insets(x: @This(), q: Insets) Insets {
+                return .{ .l = q.l * x.s, .t = q.t * x.s, .r = q.r * x.s, .b = q.b * x.s };
+            }
+        };
+        const x: X = .{ .s = scale, .o = offset };
+        for (l.ops.items[r.op_start..r.op_end]) |op| switch (op) {
+            .rect => |o| c.rect(x.rect(o.r), o.fill.fade(alpha), x.radii(o.radii)),
+            .border => |o| c.border(x.rect(o.r), x.insets(o.widths), o.color.fade(alpha), x.radii(o.radii)),
+            .shadow => |o| c.shadow(x.rect(o.r), x.radii(o.radii), o.sigma * scale, o.spread * scale, o.color.fade(alpha)),
+            .gradient => |o| c.linearGradient(x.rect(o.r), x.point(o.p0), x.point(o.p1), o.c0.fade(alpha), o.c1.fade(alpha), x.radii(o.radii)),
+            .image => |o| c.image(o.tex, x.rect(o.dst), o.uv, o.tint.fade(alpha), x.radii(o.radii)),
+            .push_clip => |o| c.pushClip(x.rect(o.r), x.radii(o.radii)),
+            .pop_clip => c.popClip(),
+            .glyphs => |o| {
+                const src = l.quads.items[o.start..][0..o.len];
+                scratch.clearRetainingCapacity();
+                scratch.appendSlice(gpa, src) catch {
+                    c.glyphs(src, o.color.fade(alpha), o.aa);
+                    continue;
+                };
+                for (scratch.items) |*q| {
+                    q.dst = .{ q.dst[0] * scale + offset.x, q.dst[1] * scale + offset.y, q.dst[2] * scale, q.dst[3] * scale };
+                }
+                c.glyphs(scratch.items, o.color.fade(alpha), o.aa);
+            },
+        };
+    }
 };
 
 /// A `Canvas` that records every call as text, for snapshot tests and
