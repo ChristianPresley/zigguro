@@ -20,6 +20,9 @@ pub const AutomationRunner = @import("runner.zig");
 pub const tools = @import("tools.zig");
 pub const Service = @import("service.zig");
 pub const Approvals = @import("approvals.zig");
+pub const glob = @import("glob.zig");
+pub const guard = @import("guard.zig");
+pub const TriggerEngine = @import("triggers.zig");
 
 pub const CronExpr = cron.CronExpr;
 pub const ParseError = cron.ParseError;
@@ -57,4 +60,8 @@ test {
     _ = tz;
     _ = tz_windows;
     _ = @import("tz_test.zig");
+    _ = guard;
+    _ = TriggerEngine;
+    _ = @import("glob_test.zig");
+    _ = @import("triggers_test.zig");
 }
