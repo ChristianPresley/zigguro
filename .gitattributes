@@ -20,3 +20,4 @@ packages/ai/eval/fixtures/notes/data.bin binary
 *.ppm binary
 packages/editor/testdata/encodings/** binary
 packages/editor/src/model/encoding/whatwg/*.txt -text
+packages/agents/src/tasks/testdata/fixtures/T-0003-crlf.md -text
