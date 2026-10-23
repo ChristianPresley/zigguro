@@ -60,3 +60,22 @@ test "uri: eqlUri" {
     try testing.expect(!uri.eqlUri("file:///a/b", "file:///a/c"));
     try testing.expect(!uri.eqlUri("file:///A/b", "file:///a/b"));
 }
+
+fn expectDoc(u: []const u8, style: uri.Style, comptime tag: std.meta.Tag(uri.DocUri), want: []const u8) !void {
+    const d = try uri.docUriFromLspStyle(testing.allocator, u, style);
+    defer d.deinit(testing.allocator);
+    try testing.expectEqual(tag, std.meta.activeTag(d));
+    try testing.expectEqualStrings(want, @field(d, @tagName(tag)));
+}
+
+test "uri: docUriFromLsp classifies files, untitled and virtual documents" {
+    try expectDoc("file:///home/u/a%20b.zig", .posix, .file, "/home/u/a b.zig");
+    try expectDoc("file:///c%3A/x/y.rs", .windows, .file, "C:\\x\\y.rs");
+    try expectDoc("untitled:Untitled-1", .posix, .untitled, "Untitled-1");
+    try expectDoc("Untitled:My%20Notes", .posix, .untitled, "My Notes");
+    try expectDoc("rust-analyzer:/expand/macro.rs", .posix, .virtual, "rust-analyzer:/expand/macro.rs");
+    try expectDoc("jdt://contents/rt.jar/java.lang/String.class", .posix, .virtual, "jdt://contents/rt.jar/java.lang/String.class");
+    try expectDoc("zigguro-virtual:/agent/1/plan.md", .posix, .virtual, "zigguro-virtual:/agent/1/plan.md");
+    try testing.expectError(error.InvalidUri, uri.docUriFromLspStyle(testing.allocator, "no scheme", .posix));
+    try testing.expectError(error.UnsupportedAuthority, uri.docUriFromLspStyle(testing.allocator, "file://server/share/x", .posix));
+}
