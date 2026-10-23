@@ -17,7 +17,6 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Budgeted bench names that have no body yet.
 pub const pending = [_][]const u8{
-    "gui.frame.idle_with_animation",
     "gui.text.shape_cache_hit",
 };
 
@@ -297,6 +296,41 @@ fn quickPick(c: *QpCase, s: *bench.State) void {
 
 const QpCase = struct { t: *TestApp, qp: *QpBench };
 
+/// 200 soft springs on view values (restarted when they settle).
+const AnimCase = struct {
+    a: zg_gui.anim.Animator,
+    vals: [200]f32 = @splat(0),
+    now: u64 = 1_000_000_000,
+    flip: bool = false,
+
+    fn start(c: *AnimCase) void {
+        c.flip = !c.flip;
+        for (&c.vals) |*v| _ = c.a.animate(.{ .value = .{ .ptr = v } }, if (c.flip) 1000 else 0, .{ .spring = .{ .omega = 4, .zeta = 0.9 } });
+    }
+};
+
+/// One animator tick of 200 springs (8.33 ms apart, as at 120 Hz).
+fn animator200(c: *AnimCase, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.now += 8_333_333;
+        if (c.a.tick(c.now) == .idle) c.start();
+    }
+    bench.doNotOptimizeAway(c.vals[199]);
+}
+
+const AnimFrame = struct { t: *TestApp, node: zg_gui.core.NodeId, x: f32 = 0 };
+
+/// A frame of a 1k-row list where only one row is moving.
+fn idleWithAnimation(c: *AnimFrame, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        c.x = if (c.x >= 100) 0 else c.x + 1;
+        c.t.win.setVisual(c.node, .{ .translate = .{ .x = c.x } });
+        bench.doNotOptimizeAway(c.t.frame().nodes_replayed);
+    }
+}
+
 fn register(b: *bench.Bench) !void {
     for (pending) |name| if (b.opts.filter == null or std.mem.indexOf(u8, name, b.opts.filter.?) != null)
         std.debug.print("{s:<40} skipped (not implemented yet)\n", .{name});
@@ -306,6 +340,20 @@ fn register(b: *bench.Bench) !void {
         const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
         defer t.deinit();
         try b.run("gui.reconcile.unchanged_1k", t, reconcileUnchanged);
+    }
+    {
+        var c: AnimCase = .{ .a = .init(b.gpa) };
+        defer c.a.deinit();
+        c.start();
+        try b.run("gui.animator_200", &c, animator200);
+    }
+    {
+        var v: ListView = .{ .n = 1000 };
+        const t = try scene(b.gpa, .of(&v), .{ .w = 800, .h = 600 });
+        defer t.deinit();
+        const list = t.find(.{ .test_id = "list" }).?;
+        var c: AnimFrame = .{ .t = t, .node = t.win.store.hot.items(.first_child)[list.index] };
+        try b.run("gui.frame.idle_with_animation", &c, idleWithAnimation);
     }
     {
         var v: ListView = .{ .n = 5000, .churn = true };
