@@ -56,6 +56,11 @@ pub const workspace_file = @import("model/workspace_file.zig");
 pub const storage = @import("model/storage.zig");
 /// Frecency-ranked recents.
 pub const recents = @import("model/recents.zig");
+/// Read-only agent tools over the path tree (E08.F08.S02.T01).
+pub const ai = struct {
+    pub const tools = @import("ai/tools.zig");
+    pub const ToolExporter = tools.ToolExporter;
+};
 /// `core.excludesFile` lookup.
 pub const gitconfig_excludes = @import("ignore/gitconfig_excludes.zig");
 
@@ -73,4 +78,5 @@ test {
     _ = @import("index/trigram/segment.zig");
     _ = @import("index/trigram/query.zig");
     _ = @import("index/trigram/index_test.zig");
+    _ = @import("ai/tools_test.zig");
 }
