@@ -302,3 +302,65 @@ test "resolve: apply decisions produces resolved change and restacks" {
     bad[2] = .{ .path = "nope", .region_idx = 0, .choice = .{ .side = 0 } };
     try t.expectError(error.UnknownRegion, resolve.applyResolutions(repo, &set, &bad, fx.meta("resolve")));
 }
+
+test "resolve: provenance of accepted vs edited lines" {
+    const enc = @import("../store/encode.zig");
+    const record = @import("../prov/record.zig");
+    const manifest = @import("../prov/manifest.zig");
+    const attribution = @import("../prov/attribution.zig");
+    var f = try fx.Fixture.init(t.allocator);
+    defer f.deinit();
+    var b = try setup(
+        &f,
+        &.{ .{ "a.txt", "1\nX\n2\nY\n3\n" }, .{ "gone", "g\n" } },
+        &.{ .{ "a.txt", "1\nXL\n2\nYL\n3\n" }, .{ "gone", "g\n" } },
+        &.{ .{ "a.txt", "1\nXR\n2\nYR\n3\n" }, .{ "gone", "g2\n" } },
+    );
+    defer b.close();
+    const repo = b.repo();
+    var arena_state: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const set = try resolve.conflicts(a, f.store, b.change);
+    try t.expectEqual(@as(usize, 2), set.regions.len);
+
+    const decisions = [_]resolve.RegionDecision{
+        .{ .path = "a.txt", .region_idx = 0, .choice = .{ .accept = "XA\nXA2\n" } },
+        .{ .path = "a.txt", .region_idx = 1, .choice = .{ .edit = "YE\n" } },
+    };
+    const who: resolve.ResolveAttribution = .{
+        .agent = record.Actor.agent("resolver", "anthropic/claude-x", "s-9"),
+        .human = record.Actor.human("Bob", "bob@example.com"),
+        .review = .{ .review_id = 42 },
+    };
+    const ap = try resolve.applyResolutionsWith(repo, &set, &decisions, fx.meta("resolve"), who);
+    const c = try op_mod.read(object.Change, f.store, a, ap.commit);
+    try t.expectEqualStrings("1\nXA\nXA2\n2\nYE\n3\n", (try fileAt(f.store, a, c.tree_terms[0], "a.txt")).?);
+    const man = try manifest.read(f.store, a, c.provenance.?);
+    try t.expectEqual(@as(usize, 1), man.files.len);
+    const m = try man.find("a.txt").?.map(a);
+    const recOf = struct {
+        fn read(s: *store_mod.Store, ar: Allocator, id: ObjectId) !record.ProvenanceRecord {
+            const r = try s.read(id);
+            defer r.release();
+            return enc.decode(record.ProvenanceRecord, ar, try ar.dupe(u8, r.bytes));
+        }
+    }.read;
+    try t.expect(m.at(0).?.prov.eql(attribution.inherited));
+    const acc = try recOf(f.store, a, m.at(1).?.prov);
+    try t.expectEqual(record.ActorKind.agent, acc.actor.kind);
+    try t.expectEqual(@as(u64, 42), acc.review.?.review_id);
+    try t.expect(acc.review.?.verbatim);
+    try t.expect(m.at(2).?.prov.eql(m.at(1).?.prov));
+    try t.expect(m.at(3).?.prov.eql(attribution.inherited));
+    const ed = try recOf(f.store, a, m.at(4).?.prov);
+    try t.expect(ed.actor.eql(who.human));
+    try t.expect(!ed.review.?.verbatim);
+    try t.expect(m.at(5).?.prov.eql(attribution.inherited));
+    preview.discard(repo, ap.preview.op);
+
+    // Without attribution nothing is recorded.
+    const ap2 = try resolve.applyResolutions(repo, &set, &decisions, fx.meta("resolve"));
+    try t.expect((try op_mod.read(object.Change, f.store, a, ap2.commit)).provenance == null);
+    preview.discard(repo, ap2.preview.op);
+}
