@@ -192,14 +192,29 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
 
     const host = try runs.RunHost.init(gpa, io, reg, e10.agentPort(), null, .builtin, .{ .workspace_root = cwd });
     defer host.deinit();
-    const server = try ipc.HostServer.listen(rt, host, reg, rd.dir, rd.abs, .{ .runtime_dir = env.get("XDG_RUNTIME_DIR") });
+    // Automations: the host fires them while it holds the scheduler lease
+    // (the GUI may hold it instead). Files are re-read every 10 s.
+    var ws_dir = try Io.Dir.cwd().openDir(io, workspace, .{});
+    defer ws_dir.close(io);
+    const automations = try zg_agents.sched.Service.init(gpa, io, ws_dir, reg, .fromHost(host), zg_agents.sched.utcZone(), .{
+        .workspace_key = cwd,
+        .warn = .{ .ctx = router, .warn = warnAutomation },
+        .on_problem = reportProblem,
+        .on_problem_ctx = err,
+    });
+    defer automations.deinit();
+    try automations.start();
+    const server = try ipc.HostServer.listen(rt, host, reg, rd.dir, rd.abs, .{ .runtime_dir = env.get("XDG_RUNTIME_DIR"), .automations = automations.port() });
     defer server.deinit();
     try out.print("zg agents host: serving {s} on {s}\n", .{ workspace, server.sock_path });
     s.flush();
 
     var idle: runs.handoff.IdleTimer = .{ .idle_ms = idle_s * std.time.ms_per_s };
+    var ticks: u32 = 0;
     while (!server.shutdown_requested.load(.acquire)) {
         io.sleep(.fromMilliseconds(250), .awake) catch break;
+        ticks +%= 1;
+        if (ticks % 40 == 0) automations.reload() catch {};
         const active = blk: {
             const v = reg.snapshot();
             defer reg.release(v);
@@ -221,6 +236,18 @@ fn warn(ctx: *anyopaque, msg: []const u8) void {
 }
 
 fn redact(_: *anyopaque, _: []const u8) void {}
+
+fn warnAutomation(ctx: *anyopaque, name: []const u8, message: []const u8) void {
+    const router: *notify.NotificationRouter = @ptrCast(@alignCast(ctx));
+    var key_buf: [80]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "automation:{s}", .{name}) catch return;
+    router.post(.{ .key = key, .severity = .warning, .title = name, .body = message });
+}
+
+fn reportProblem(ctx: ?*anyopaque, file: []const u8, line: u32, column: u32, message: []const u8) void {
+    const err: *Io.Writer = @ptrCast(@alignCast(ctx.?));
+    err.print("zg agents host: .zigguro/automations/{s}:{d}:{d}: {s}\n", .{ file, line, column, message }) catch {};
+}
 
 const no_secrets: zg_ai.keyref.SecretStore = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .vtable = &.{ .get = getNone, .put = putNone } };
 
