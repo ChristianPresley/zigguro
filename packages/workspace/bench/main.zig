@@ -29,6 +29,9 @@ fn monorepo(a: std.mem.Allocator, n: usize) ![]const []const u8 {
     return out;
 }
 
+var tools_src: zg_workspace.ai.tools.Source = undefined;
+var tools_turn: usize = 0;
+
 const StoreCtx = struct { paths: []const []const u8, ops: []zg_workspace.paths.Delta.Op };
 
 const FastCtx = struct { pats: []const wm.Pattern, names: []const []const u8 };
@@ -89,6 +92,36 @@ fn register(b: *bench.Bench) !void {
         try b.run("workspace/path_store_lookup", LookupCtx{ .snap = snap, .paths = mono[0..1000] }, struct {
             fn f(c: LookupCtx, s: *bench.State) void {
                 for (0..s.iterations()) |i| bench.doNotOptimizeAway(c.snap.lookup(.of(0), c.paths[i % c.paths.len]));
+            }
+        }.f);
+    }
+
+    // Budget: p95 < 100 ms per read tool call (list_dir, glob,
+    // find_files) on a 100 k file workspace (E08.F08.S02.T01).
+    {
+        const ps = try zg_workspace.PathStore.init(std.heap.page_allocator, b.io);
+        try ps.addRoot(.of(0), false);
+        var ch: std.ArrayList(zg_workspace.paths.Change) = .empty;
+        try ps.apply(&.{ .ops = ops[0..100_000] }, &ch);
+        tools_src = .{ .store = ps, .roots = &.{.{ .id = .of(0), .name = "mono" }} };
+        const calls = [_][2][]const u8{
+            .{ "find_files", "{\"query\": \"coremain\", \"limit\": 50}" },
+            .{ "glob", "{\"pattern\": \"packages/p1*/api/**/*.zig\"}" },
+            .{ "list_dir", "{\"path\": \"packages/p1\", \"depth\": 3}" },
+            .{ "find_files", "{\"query\": \"p10/views/handler\"}" },
+        };
+        try b.run("workspace/tools_read", &calls, struct {
+            fn f(cs: *const [4][2][]const u8, s: *bench.State) void {
+                var arena: std.heap.ArenaAllocator = .init(s.allocator());
+                defer arena.deinit();
+                for (0..s.iterations()) |_| {
+                    _ = arena.reset(.retain_capacity);
+                    const c = cs[tools_turn % cs.len];
+                    tools_turn += 1;
+                    const r = zg_workspace.ai.tools.run(&tools_src, arena.allocator(), c[0], c[1]) catch @panic("tool");
+                    if (r.is_error) @panic(r.json);
+                    bench.doNotOptimizeAway(r.json.len);
+                }
             }
         }.f);
     }
