@@ -1,0 +1,14 @@
+{"v":1,"seq":1,"t":1000,"type":"create","id":"01JABCDEFGHJKMNPQRSTVWXYZ0","spec":{"kind":"scheduled","title":"Triage \"issues\"","prompt":"Look at new issues","profile":"default","isolation":"shared","origin":{"automation":{"name":"triage","fire_id":"f1"}},"budgets":{"max_turns":20},"tags":["nightly"]}}
+{"v":1,"seq":2,"t":1001,"type":"status","status":"starting"}
+{"v":1,"seq":3,"t":1002,"type":"started","at":1002}
+{"v":1,"seq":4,"t":1003,"type":"session","session":"00000000000000000004HMASW9"}
+{"v":1,"seq":5,"t":1004,"type":"status","status":"working"}
+{"v":1,"seq":6,"t":1005,"type":"question","text":"Allow `rm`?"}
+{"v":1,"seq":7,"t":1006,"type":"status","status":"needs_input"}
+{"v":1,"seq":8,"t":1007,"type":"status","status":"working"}
+{"v":1,"seq":9,"t":1008,"type":"cost","cost":{"micros":1500,"input_tokens":10,"output_tokens":4}}
+{"v":1,"seq":10,"t":1009,"type":"output","output":{"changeset":17}}
+{"v":1,"seq":11,"t":1010,"type":"output","output":{"pr":{"url":"https://example.test/pr/3","number":3}}}
+{"v":1,"seq":12,"t":1011,"type":"summary","text":"Labelled 3 issues"}
+{"v":1,"seq":13,"t":1012,"type":"ended","at":1012}
+{"v":1,"seq":14,"t":1012,"type":"end","status":"completed"}

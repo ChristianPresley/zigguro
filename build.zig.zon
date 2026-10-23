@@ -32,6 +32,7 @@
         .zg_review = .{ .path = "packages/review" },
         .zg_install = .{ .path = "packages/install" },
         .zg_codeintel = .{ .path = "packages/codeintel" },
+        .zg_agents = .{ .path = "packages/agents" },
         // pkgtool:insert
     },
     .paths = .{
