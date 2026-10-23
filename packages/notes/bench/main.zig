@@ -53,4 +53,41 @@ fn register(b: *bench.Bench) !void {
             s.setBytes(src.len);
         }
     }.f);
+
+    // Budget: a 10 k note vault (50 k links, 2 k tags) indexes cold in
+    // < 1.5 s; a backlinks query takes < 1 ms (E08.F06.S01.T02).
+    const v10k = try gen.vault(a, .{ .notes = 10_000, .links_per_note = 5, .tags = 2000 });
+    try b.run("notes/index_10k", &v10k, struct {
+        fn f(v: *const gen.Vault, s: *bench.State) void {
+            var bytes: usize = 0;
+            for (v.notes) |n| bytes += n.len;
+            for (0..s.iterations()) |_| {
+                const ix = buildIndex(s.allocator(), s.ioHandle(), v) catch @panic("index");
+                ix.deinit();
+            }
+            s.setBytes(bytes);
+        }
+    }.f);
+    const ix10k = try buildIndex(std.heap.page_allocator, b.io, &v10k);
+    const view10k = try ix10k.reader();
+    try b.run("notes/backlinks_10k", view10k, struct {
+        fn f(v: *const zg_notes.IndexView, s: *bench.State) void {
+            var total: usize = 0;
+            for (0..s.iterations()) |i| {
+                const id: zg_notes.FileId = .{ .index = @intCast(i % 10_000), .gen = 0 };
+                total += v.backlinks(id).len;
+            }
+            bench.doNotOptimizeAway(total);
+        }
+    }.f);
+}
+
+const whole_vault: zg_notes.Vault = .{ .id = .of(0), .root = .of(0), .rel_dir = "", .config = .{} };
+
+fn buildIndex(gpa: std.mem.Allocator, io: std.Io, v: *const gen.Vault) !*zg_notes.NoteIndex {
+    const ix = try zg_notes.NoteIndex.init(gpa, io, &.{whole_vault});
+    errdefer ix.deinit();
+    for (v.paths, v.notes, 0..) |p, n, i| try ix.indexNote(.{ .index = @intCast(i), .gen = 0 }, .of(0), p, n);
+    try ix.commit();
+    return ix;
 }
