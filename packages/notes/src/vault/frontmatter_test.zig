@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const zg_core = @import("zg_core");
-const fm = @import("frontmatter.zig");
+const fm = @import("zg_frontmatter").frontmatter;
 
 const testing = std.testing;
 

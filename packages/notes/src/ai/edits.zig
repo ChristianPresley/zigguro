@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const extract_mod = @import("../vault/extract.zig");
-const fm_writer = @import("../vault/fm_writer.zig");
-const frontmatter = @import("../vault/frontmatter.zig");
+const fm_writer = @import("zg_frontmatter").fm_writer;
+const frontmatter = @import("zg_frontmatter").frontmatter;
 const vault_mod = @import("../vault/vault.zig");
 
 const Allocator = std.mem.Allocator;

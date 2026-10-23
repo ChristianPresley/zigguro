@@ -21,7 +21,7 @@ const search_index = @import("search_index.zig");
 const retriever = @import("retriever.zig");
 const snippets = @import("snippets.zig");
 const note_mod = @import("../vault/note.zig");
-const frontmatter = @import("../vault/frontmatter.zig");
+const frontmatter = @import("zg_frontmatter").frontmatter;
 const names = @import("../index/names.zig");
 
 const Allocator = std.mem.Allocator;

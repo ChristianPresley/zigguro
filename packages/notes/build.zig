@@ -8,10 +8,18 @@ pub fn build(b: *std.Build) void {
     const workspace = b.dependency("zg_workspace", f.args()).module("zg_workspace");
     const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
     const ai_proto = b.dependency("zg_ai", f.args()).module("zg_ai_proto");
+    // zg_frontmatter: the frontmatter parser and writer alone (std and
+    // zg_core), for other packages' Markdown files with properties.
+    const frontmatter = b.addModule("zg_frontmatter", .{
+        .root_source_file = b.path("src/fm/root.zig"),
+        .target = f.target,
+        .imports = &.{.{ .name = "zg_core", .module = core }},
+    });
     const mod = zg_build.addPackage(b, f, .{
         .name = "zg_notes",
         .imports = &.{
             .{ .name = "zg_core", .module = core },
+            .{ .name = "zg_frontmatter", .module = frontmatter },
             .{ .name = "zg_text", .module = text },
             .{ .name = "zg_workspace", .module = workspace },
             .{ .name = "zg_regex", .module = regex },

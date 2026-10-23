@@ -6,9 +6,9 @@
 const std = @import("std");
 
 /// YAML-subset frontmatter parser (E08.F06.S01.T03).
-pub const frontmatter = @import("vault/frontmatter.zig");
+pub const frontmatter = @import("zg_frontmatter").frontmatter;
 /// Byte-preserving property writer (E08.F06.S01.T03).
-pub const fm_writer = @import("vault/fm_writer.zig");
+pub const fm_writer = @import("zg_frontmatter").fm_writer;
 /// Vault configuration and detection (E08.F06.S01.T01).
 pub const vault = @import("vault/vault.zig");
 /// Per-note metadata types.

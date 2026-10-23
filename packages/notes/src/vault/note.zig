@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const zg_workspace = @import("zg_workspace");
-const frontmatter = @import("frontmatter.zig");
+const frontmatter = @import("zg_frontmatter").frontmatter;
 
 pub const FileId = zg_workspace.FileId;
 

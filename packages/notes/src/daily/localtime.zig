@@ -244,7 +244,7 @@ pub const PosixRule = struct {
                 const first = datefmt.daysFromCivil(.{ .y = year, .m = @intCast(d.month), .d = 1 });
                 const first_wd: i64 = @mod(first + 4, 7);
                 var day = first + @mod(@as(i64, d.wday) - first_wd, 7) + (@as(i64, d.week) - 1) * 7;
-                const dim = @import("../vault/frontmatter.zig").daysInMonth(year, @intCast(d.month));
+                const dim = @import("zg_frontmatter").frontmatter.daysInMonth(year, @intCast(d.month));
                 while (day >= first + dim) day -= 7;
                 return day;
             },
