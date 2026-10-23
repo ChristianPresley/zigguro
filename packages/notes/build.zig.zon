@@ -10,6 +10,7 @@
         .zg_workspace = .{ .path = "../workspace" },
         .zg_regex = .{ .path = "../regex" },
         .zg_gui = .{ .path = "../gui" },
+        .zg_ai = .{ .path = "../ai" },
     },
     .paths = .{
         "build.zig",
