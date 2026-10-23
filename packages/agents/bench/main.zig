@@ -14,6 +14,33 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 fn register(b: *bench.Bench) !void {
     try registerRuns(b);
     try registerMission(b);
+    try registerNotify(b);
+}
+
+/// `notify/decide`: the policy and coalescing decision `post` makes
+/// under its lock (budget 10 us).
+fn registerNotify(b: *bench.Bench) !void {
+    const notify = zg_agents.notify;
+    var rt: zg_core.Runtime = undefined;
+    try rt.initBorrowed(std.heap.smp_allocator, b.io, 64);
+    defer _ = rt.deinit();
+    const r = try notify.NotificationRouter.init(std.heap.smp_allocator, &rt, null, null, .{}, .{ .inline_delivery = true });
+    defer r.deinit();
+    try b.run("notify/decide", r, struct {
+        fn f(router: *notify.NotificationRouter, s: *bench.State) void {
+            var i: u64 = 0;
+            var key: [24]u8 = undefined;
+            while (i < s.iterations()) : (i += 1) {
+                const n: notify.Notification = .{
+                    .key = std.fmt.bufPrint(&key, "run:{d}", .{i % 512}) catch unreachable,
+                    .group = if (i % 4 == 0) "wf:bench" else null,
+                    .severity = .success,
+                    .title = "Done",
+                };
+                bench.doNotOptimizeAway(router.decide(&n) catch unreachable);
+            }
+        }
+    }.f);
 }
 
 /// `mission/open_500`: Mission Control's first frame over 500 runs (budget
