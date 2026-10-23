@@ -665,6 +665,16 @@ pub const IndexView = struct {
         return if (v.names.placeOf(id)) |p| p.path else null;
     }
 
+    /// The note or attachment at vault-relative `path` (case-insensitive).
+    pub fn idOfPath(v: *const IndexView, gpa: Allocator, vault: VaultId, path: []const u8) !?FileId {
+        var keys: KeyBuf = .{};
+        defer keys.deinit(gpa);
+        const md = names_mod.isMdExt(path);
+        const key = try keys.view(gpa, vault, if (md) names_mod.withoutMd(path) else path);
+        const l = (if (md) v.names.paths.get(key) else v.names.att_paths.get(key)) orelse return null;
+        return if (l.items.len > 0) l.items[0] else null;
+    }
+
     pub fn vaultOf(v: *const IndexView, id: FileId) ?*const Vault {
         const p = v.names.placeOf(id) orelse return null;
         for (v.vaults) |*x| if (x.id == p.vault) return x;
