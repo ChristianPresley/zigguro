@@ -1,0 +1,21 @@
+idnamecityscore
+1"Cy  Jr"Lima6.66
+2AnnQuito99.43
+3DiQuito62.17
+4AnnLima93.81
+5"Bo  Jr"Lima20.18
+6CyAccra75.95
+7CyLima27.05
+8AnnOslo1.53
+9EdLima51.42
+10BoOslo65.83
+11DiAccra83.46
+12DiQuito68.77
+13BoLima40.47
+14CyLima1.43
+15CyOslo8.45
+16DiQuito59.88
+17"Cy  Jr"Lima15.75
+18"Di  Jr"Quito96.18
+19EdOslo96.57
+20"Cy  Jr"Lima0.11

@@ -21,3 +21,5 @@ packages/ai/eval/fixtures/notes/data.bin binary
 packages/editor/testdata/encodings/** binary
 packages/editor/src/model/encoding/whatwg/*.txt -text
 packages/agents/src/tasks/testdata/fixtures/T-0003-crlf.md -text
+# Data mode corpus: line endings and encodings are what sniffing tests.
+packages/agents/src/data/testdata/** binary
