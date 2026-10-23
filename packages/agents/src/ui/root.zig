@@ -22,6 +22,8 @@ pub const artifact_pane = @import("artifact_pane.zig");
 /// Vector canvases drawn as cached tiles.
 pub const vector_view = @import("vector_view.zig");
 pub const chart_view = @import("chart_view.zig");
+/// Diagrams with pan and zoom, and the `mermaid` fence renderer.
+pub const diagram_view = @import("diagram_view.zig");
 
 /// Data mode: the grid over CSV and JSON datasets.
 pub const data = @import("data/root.zig");
@@ -59,6 +61,7 @@ test {
     _ = @import("doc_mode/comments_view_test.zig");
     _ = @import("vector_view_test.zig");
     _ = @import("chart_view_test.zig");
+    _ = @import("diagram_view_test.zig");
     _ = data;
     std.testing.refAllDecls(doc_mode);
 }
