@@ -26,6 +26,7 @@ const Allocator = std.mem.Allocator;
 const runs = zg_agents.runs;
 const protocol = runs.protocol;
 const ipc = runs.ipc;
+const notify = zg_agents.notify;
 
 pub const host_usage =
     \\Usage: zg agents host [--workspace DIR] [--idle-exit SECONDS]
@@ -132,6 +133,13 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
 
     const reg = try runs.RunRegistry.init(gpa, io, rd.dir, .{});
     defer reg.deinit();
+    // Run notifications go to stderr (no window: everything is "away").
+    var note_buf: [1024]u8 = undefined;
+    var note_w: Io.File.Writer = .init(.stderr(), io, &note_buf);
+    const router = try notify.NotificationRouter.init(gpa, rt, try notify.headlessBackend(gpa, io, &note_w.interface, null), null, .{}, .{});
+    defer router.deinit();
+    const notifier = try notify.RunNotifier.init(reg, router);
+    defer notifier.deinit();
     const report = try reg.load(.{ .host_alive = false });
     if (report.interrupted != 0) try err.print("zg agents host: {d} run(s) were interrupted\n", .{report.interrupted});
 
