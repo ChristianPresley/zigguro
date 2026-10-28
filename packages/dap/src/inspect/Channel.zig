@@ -24,7 +24,7 @@ pub const Tag = struct {
     b: u64 = 0,
     c: u64 = 0,
 
-    pub const Kind = enum { stack_page, scopes, variables, lazy, set_value, source };
+    pub const Kind = enum { stack_page, scopes, variables, lazy, set_value, source, evaluate, completions };
 };
 
 /// One queued item: a request's result or a session change.
