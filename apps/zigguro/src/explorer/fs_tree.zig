@@ -373,7 +373,9 @@ pub const FsTree = struct {
         return if (n.is_dir) id else n.parent;
     }
 
-    fn childPath(t: *FsTree, dir: Id, name: []const u8) OpError![]u8 {
+    /// The path `name` (may be nested) would have in folder `dir`
+    /// (caller frees).
+    pub fn childPath(t: *FsTree, dir: Id, name: []const u8) OpError![]u8 {
         if (!validName(name)) {
             // Nested paths ("src/new.zig") are allowed for creation.
             var parts = std.mem.tokenizeAny(u8, name, "/\\");
