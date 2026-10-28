@@ -11,6 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zg_text = @import("zg_text");
 const document = @import("../document.zig");
+const Mapped = @import("../buffer/buffers.zig").Mapped;
 
 const Allocator = std.mem.Allocator;
 const Document = document.Document;
@@ -140,6 +141,28 @@ pub const DocumentRegistry = struct {
         return r.addDoc(.file, disp, key, uri_s, .{ .owned = bytes });
     }
 
+    /// `openFileOwned` over the mapped file `m` (large-file mode), which
+    /// the document unmaps; when the file is already open, `m` is unmapped.
+    /// On error `m` is still the caller's.
+    pub fn openFileMapped(r: *DocumentRegistry, path: []const u8, m: Mapped) Error!DocHandle {
+        if (!isAbsolute(path, r.style)) return error.NotAbsolute;
+        const disp = try normalizePath(r.gpa, path, r.style);
+        errdefer r.gpa.free(disp);
+        const key = try pathKey(r.gpa, disp, r.style);
+        errdefer r.gpa.free(key);
+        if (r.by_key.get(key)) |i| {
+            r.gpa.free(key);
+            r.gpa.free(disp);
+            var mm = m;
+            mm.destroy();
+            r.slots.items[i].refs += 1;
+            return r.handleOf(i);
+        }
+        const uri_s = try fileUri(r.gpa, disp);
+        errdefer r.gpa.free(uri_s);
+        return r.addDoc(.file, disp, key, uri_s, .{ .mapped = m });
+    }
+
     /// The document open for `path`, if any (no reference added).
     pub fn findFile(r: *DocumentRegistry, path: []const u8) Allocator.Error!?DocHandle {
         const disp = try normalizePath(r.gpa, path, r.style);
@@ -215,7 +238,7 @@ pub const DocumentRegistry = struct {
         return r.addDoc(k, disp, key, uri_s, .{ .copy = bytes });
     }
 
-    const Text = union(enum) { copy: []const u8, owned: []u8 };
+    const Text = union(enum) { copy: []const u8, owned: []u8, mapped: Mapped };
 
     fn addDoc(r: *DocumentRegistry, k: DocKind, disp: []u8, key: []u8, uri_s: []u8, text: Text) Error!DocHandle {
         try r.free.ensureTotalCapacity(r.gpa, r.slots.items.len + 1);
@@ -228,6 +251,7 @@ pub const DocumentRegistry = struct {
         const doc = switch (text) {
             .copy => |b| try Document.initBytes(r.gpa, @enumFromInt(i), b),
             .owned => |b| try Document.initOwned(r.gpa, @enumFromInt(i), b),
+            .mapped => |m| try Document.initMapped(r.gpa, @enumFromInt(i), m),
         };
         const s = &r.slots.items[i];
         s.* = .{ .doc = doc, .gen = s.gen, .refs = 1, .kind = k, .name = disp, .key = key, .uri = uri_s };
