@@ -1,0 +1,29 @@
+.{
+    .version = 1,
+    .name = "review-changes",
+    .description = "Review every file a change touches, then merge and rank the comments",
+    .args = .{
+        .{ .name = "revset", .required = false, .default = "@", .description = "The changes to review (default: the working copy)" },
+    },
+    .steps = .{
+        .{ .id = "files", .phase = "Find files", .builtin = .{ .name = "scm.changed_files", .input = "$args.revset" } },
+        .{ .id = "review", .phase = "Review", .map = .{
+            .over = "$.files",
+            .as = "file",
+            .max_fail_ratio = 0.1,
+            .agent = .{
+                .prompt = "@workflow/review-file",
+                .with = .{ .{ .name = "file", .value = "$file" }, .{ .name = "revset", .value = "$args.revset" } },
+                .tools = .{ "read_file", "run_command" },
+                .label = "Review",
+                .schema = "{\"type\":\"object\",\"required\":[\"comments\"],\"properties\":{\"comments\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"file\",\"line\",\"severity\",\"comment\"],\"properties\":{\"file\":{\"type\":\"string\"},\"line\":{\"type\":\"integer\"},\"severity\":{\"enum\":[\"blocker\",\"major\",\"minor\"]},\"comment\":{\"type\":\"string\"}}}}}}",
+            },
+        } },
+        .{ .id = "summary", .phase = "Summarize", .reduce = .{
+            .prompt = "@workflow/review-summary",
+            .with = .{.{ .name = "comments", .value = "$.review[*].comments[*]" }},
+            .label = "Summary",
+        } },
+        .{ .id = "table", .phase = "Summarize", .when = "$.review[*].comments[*]", .builtin = .{ .name = "artifact.write_table", .input = "$.review[*].comments[*]" } },
+    },
+}
