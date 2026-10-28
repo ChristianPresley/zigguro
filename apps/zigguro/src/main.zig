@@ -108,7 +108,13 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const want_review = hasFlag(min, rt.gpa, "--review");
     const use_wb = file_arg != null or want_terminal or want_agent or want_review;
     var wb: Workbench = undefined;
-    if (use_wb) try wb.init(&rt, &env, file_arg);
+    if (use_wb) {
+        try wb.init(&rt, &env, file_arg);
+        // settings.json and keybindings.json in the config folder.
+        const cp = kind.paths;
+        wb.useSettings(if (cp) |p| p.userSettings() else null, if (cp) |p| p.userKeybindings() else null) catch |e|
+            std.log.err("settings: {t}", .{e});
+    }
     defer if (use_wb) wb.deinit();
     const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
 
