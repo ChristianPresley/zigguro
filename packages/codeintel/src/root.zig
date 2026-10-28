@@ -32,6 +32,7 @@ pub const sync = struct {
 pub const registry = struct {
     pub const Registry = @import("registry/Registry.zig");
     pub const routing = @import("registry/routing.zig");
+    pub const zls = @import("registry/zls.zig");
 };
 
 /// Feature drivers: request results from the routed server and hand
@@ -65,6 +66,7 @@ pub const features = struct {
     pub const raw_json = @import("features/raw_json.zig");
     pub const VirtualDocs = @import("features/virtual_docs.zig");
     pub const ServerStatus = @import("features/server_status.zig");
+    pub const ZlsSupport = @import("features/zls_support.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -100,8 +102,10 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("sync/sink_test.zig");
     _ = @import("registry/registry_test.zig");
+    _ = @import("registry/zls_test.zig");
     _ = @import("Manager_test.zig");
     _ = @import("features/server_status_test.zig");
+    _ = @import("features/zls_support_test.zig");
     _ = @import("features/semtok_test.zig");
     _ = @import("features/features_test.zig");
     _ = @import("features/nav_hover_test.zig");
