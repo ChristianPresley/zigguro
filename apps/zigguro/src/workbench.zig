@@ -56,6 +56,7 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const NavService = @import("codeintel.zig").NavService;
 const settings_mod = @import("settings/service.zig");
 const Settings = settings_mod.Settings;
 const SettingsView = @import("settings/view.zig").SettingsView;
@@ -228,15 +229,33 @@ pub const Workbench = struct {
     /// The Problems panel (created on first show) and its dock panel.
     problems: ?*ProblemsPanel = null,
     problems_ref: ?PanelRef = null,
-    /// Where `pending_open` puts the caret: a problem's start.
-    pending_goto: ?problems_panel.Problems.Item = null,
+    /// Where `pending_open` puts the caret.
+    pending_goto: ?Goto = null,
     /// The message of the problem next/previous problem went to, shown
     /// in the status line until the caret leaves it.
     problem_note: std.ArrayList(u8) = .empty,
     problem_note_at: u64 = 0,
     problems_badge: [16]u8 = undefined,
+    /// Back and forward through the places navigation jumped between.
+    nav_history: ?NavService.History = null,
+    /// The targets the last navigation offered, and their QuickPick rows.
+    nav_arena: ?std.heap.ArenaAllocator = null,
+    nav_targets: []NavService.Target = &.{},
+    nav_items: []zg_gui.w.quick_pick.QpItem = &.{},
+    nav_pick: zg_gui.w.quick_pick.QuickPickHandle = .{},
+    nav_title: []const u8 = "",
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
+
+    /// Where a file opened by `pending_open` puts the caret.
+    const Goto = union(enum) {
+        /// A problem's start.
+        problem: problems_panel.Problems.Item,
+        /// A language server position (line, column in `enc`).
+        pos: struct { line: u32, character: u32, enc: @FieldType(NavService.Target, "enc") },
+        /// A byte offset (clamped).
+        offset: u64,
+    };
 
     /// Which keys editors use.
     const KeyMode = enum { standard, vim, emacs };
@@ -890,6 +909,9 @@ pub const Workbench = struct {
         }
         wb.problems = null;
         wb.problem_note.deinit(wb.gpa);
+        if (wb.win) |w| wb.nav_pick.close(w);
+        if (wb.nav_history) |*h| h.deinit();
+        if (wb.nav_arena) |*a| a.deinit();
         // Before the documents: the servers' text sync listens to them.
         if (wb.codeintel) |ci| ci.destroy();
         wb.codeintel = null;
@@ -964,6 +986,8 @@ pub const Workbench = struct {
         wb.mcp_input = .init(wb.gpa, wb.io, win, wb.cwd);
         if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
             ci.win = win;
+            ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
+            ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
             ci.setTrusted(wb.trust == .trusted);
@@ -1065,6 +1089,14 @@ pub const Workbench = struct {
         .{ .id = "editor.nextProblemInFile", .title = "Go to Next Problem in File", .category = "Go", .run = nextProblemInFile },
         .{ .id = "editor.previousProblemInFile", .title = "Go to Previous Problem in File", .category = "Go", .run = previousProblemInFile },
         .{ .id = "problems.open", .title = "Go to Problem", .category = "Problems", .run = problemsOpen },
+        .{ .id = "editor.showHover", .title = "Show Hover", .category = "Editor", .run = showHover },
+        .{ .id = "editor.goToDefinition", .title = "Go to Definition", .category = "Go", .run = goToDefinition },
+        .{ .id = "editor.goToDeclaration", .title = "Go to Declaration", .category = "Go", .run = goToDeclaration },
+        .{ .id = "editor.goToTypeDefinition", .title = "Go to Type Definition", .category = "Go", .run = goToTypeDefinition },
+        .{ .id = "editor.goToImplementation", .title = "Go to Implementations", .category = "Go", .run = goToImplementation },
+        .{ .id = "editor.findReferences", .title = "Go to References", .category = "Go", .run = findReferences },
+        .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
+        .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
         .{ .id = "problems.copyMessage", .title = "Copy Problem Message", .category = "Problems", .run = problemsCopyMessage },
         .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
@@ -1838,6 +1870,221 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    // -- hover and navigation --------------------------------------------------
+
+    /// `editor.showHover`: the hover at the caret.
+    fn showHover(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return;
+        const w = wb.win orelse return;
+        if (wb.editor_node.isNone()) return;
+        const r = w.layoutRect(wb.editor_node);
+        const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
+        ci.showHoverAt(wb.view, h, wb.view.primarySel().head, origin) catch
+            wb.notify(.info, "No language server for this file", .{});
+    }
+
+    fn navGo(wb: *Workbench, kind: NavService.Kind) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server for this file", .{});
+        const n = try ci.goTo(kind, h, wb.view.primarySel().head, true);
+        if (n == 0) wb.notify(.info, "No language server provides {s} for this file", .{navNoun(kind)});
+    }
+
+    fn navNoun(kind: NavService.Kind) []const u8 {
+        return switch (kind) {
+            .definition => "definitions",
+            .declaration => "declarations",
+            .type_definition => "type definitions",
+            .implementation => "implementations",
+            .references => "references",
+        };
+    }
+
+    fn goToDefinition(wb: *Workbench) !void {
+        try wb.navGo(.definition);
+    }
+
+    fn goToDeclaration(wb: *Workbench) !void {
+        try wb.navGo(.declaration);
+    }
+
+    fn goToTypeDefinition(wb: *Workbench) !void {
+        try wb.navGo(.type_definition);
+    }
+
+    fn goToImplementation(wb: *Workbench) !void {
+        try wb.navGo(.implementation);
+    }
+
+    fn findReferences(wb: *Workbench) !void {
+        try wb.navGo(.references);
+    }
+
+    /// A navigation request has its answers: none is a notice, one
+    /// definition-like target is jumped to, and anything else is offered
+    /// in a QuickPick.
+    fn onNavDone(ctx: *anyopaque, r: NavService.Results) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (r.targets.len == 0) return wb.notify(.info, "No {s} found", .{navNoun(r.kind)});
+        if (r.targets.len == 1 and r.kind != .references) return wb.jumpTo(r.targets[0]);
+        wb.offerTargets(r) catch |e| wb.notify(.error_, "Could not list {s}: {t}", .{ navNoun(r.kind), e });
+    }
+
+    /// Opens `t` (in a tab, loading it the first time) with the caret at
+    /// its selection start, remembering where the caret was for Go Back.
+    fn jumpTo(wb: *Workbench, t: NavService.Target) void {
+        const path = t.path orelse return wb.notify(.info, "Can't open {s}", .{t.uri});
+        wb.rememberHere();
+        wb.openAt(path, .{ .pos = .{ .line = t.selection.start.line, .character = t.selection.start.character, .enc = t.enc } });
+    }
+
+    /// Opens `abs` at the next build with the caret at `g`.
+    fn openAt(wb: *Workbench, abs: []const u8, g: Goto) void {
+        const copy = wb.gpa.dupe(u8, abs) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = copy;
+        wb.pending_focus = true;
+        wb.pending_explorer = false;
+        wb.pending_goto = g;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// The current file and caret, if it has a path.
+    fn here(wb: *Workbench, buf: []u8) ?NavService.History.Loc {
+        const path = wb.path orelse return null;
+        var fba = std.heap.FixedBufferAllocator.init(buf);
+        const abs = std.fs.path.resolve(fba.allocator(), &.{ wb.cwd, path }) catch return null;
+        return .{ .path = abs, .offset = wb.view.primarySel().head };
+    }
+
+    fn history(wb: *Workbench) *NavService.History {
+        if (wb.nav_history == null) wb.nav_history = .init(wb.gpa);
+        return &wb.nav_history.?;
+    }
+
+    fn rememberHere(wb: *Workbench) void {
+        var buf: [std.fs.max_path_bytes * 2]u8 = undefined;
+        const loc = wb.here(&buf) orelse return;
+        wb.history().push(loc) catch {};
+    }
+
+    /// `navigation.back` (Alt+Left).
+    fn navigateBack(wb: *Workbench) !void {
+        var buf: [std.fs.max_path_bytes * 2]u8 = undefined;
+        const loc = wb.here(&buf) orelse return;
+        const to = try wb.history().back(loc) orelse return;
+        wb.openAt(to.path, .{ .offset = to.offset });
+    }
+
+    /// `navigation.forward` (Alt+Right).
+    fn navigateForward(wb: *Workbench) !void {
+        const to = wb.history().forward() orelse return;
+        wb.openAt(to.path, .{ .offset = to.offset });
+    }
+
+    /// Puts the caret at line `line`, column `character` (counted in
+    /// `enc`) of the current editor.
+    fn gotoPos(wb: *Workbench, line: u32, character: u32, enc: @FieldType(NavService.Target, "enc")) void {
+        const v = wb.view;
+        const l = @min(@as(u64, line), v.lineCount() - 1);
+        const lr = v.lineRange(l);
+        wb.gotoOffset(lr.start + zg_core.utf8.columnToByte(v.text(lr), character, enc));
+    }
+
+    fn gotoOffset(wb: *Workbench, off: u64) void {
+        const v = wb.view;
+        v.setSelection(.caret(@min(off, wb.doc.len())));
+        v.revealPrimary();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Lists the targets of `r` in a QuickPick ("file:line:column" and
+    /// the folder); accepting one jumps there.
+    fn offerTargets(wb: *Workbench, r: NavService.Results) !void {
+        const w = wb.win orelse return;
+        wb.nav_pick.close(w);
+        if (wb.nav_arena) |*a| a.deinit();
+        wb.nav_arena = .init(wb.gpa);
+        const a = wb.nav_arena.?.allocator();
+        wb.nav_targets = try a.alloc(NavService.Target, r.targets.len);
+        wb.nav_items = try a.alloc(zg_gui.w.quick_pick.QpItem, r.targets.len);
+        for (r.targets, wb.nav_targets, wb.nav_items, 0..) |t, *dst, *it, i| {
+            dst.* = t;
+            dst.uri = try a.dupe(u8, t.uri);
+            dst.path = if (t.path) |p| try a.dupe(u8, p) else null;
+            const full = dst.path orelse dst.uri;
+            const rel = if (dst.path != null and std.mem.startsWith(u8, full, wb.cwd) and full.len > wb.cwd.len and std.fs.path.isSep(full[wb.cwd.len])) full[wb.cwd.len + 1 ..] else full;
+            it.* = .{
+                .id = i,
+                .label = try std.fmt.allocPrint(a, "{s}:{d}:{d}", .{ std.fs.path.basename(rel), t.selection.start.line + 1, t.selection.start.character + 1 }),
+                .description = std.fs.path.dirname(rel) orelse "",
+            };
+        }
+        wb.nav_title = try std.fmt.allocPrint(a, "{s} ({d})", .{ switch (r.kind) {
+            .definition => "Definitions",
+            .declaration => "Declarations",
+            .type_definition => "Type Definitions",
+            .implementation => "Implementations",
+            .references => "References",
+        }, r.targets.len });
+        const provs = [_]zg_gui.w.quick_pick.Provider{.{ .ptr = wb, .vtable = &nav_pick_vtable }};
+        wb.nav_pick = try zg_gui.w.quick_pick.openQuickPick(w, .{ .providers = &provs, .title = wb.nav_title, .test_id = "nav-targets" });
+    }
+
+    const nav_pick_vtable: zg_gui.w.quick_pick.Provider.VTable = .{
+        .placeholder = "Filter by file name",
+        .items = navPickItems,
+        .accept = navPickAccept,
+    };
+
+    fn navPickItems(ptr: ?*anyopaque) []const zg_gui.w.quick_pick.QpItem {
+        const wb: *Workbench = @ptrCast(@alignCast(ptr.?));
+        return wb.nav_items;
+    }
+
+    fn navPickAccept(ptr: ?*anyopaque, items: []const zg_gui.w.quick_pick.QpItem, _: ?[]const u8, _: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ptr.?));
+        if (items.len == 0 or items[0].id >= wb.nav_targets.len) return;
+        wb.jumpTo(wb.nav_targets[@intCast(items[0].id)]);
+    }
+
+    /// A link in a hover: files open (with `#L<line>`), allowlisted
+    /// commands run, web links are copied (no browser hand-off yet).
+    fn onHoverLink(ctx: *anyopaque, target: zg_gui.markdown.view_mod.LinkTarget, _: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const url = switch (target) {
+            .url => |u| u,
+            else => return,
+        };
+        if (wb.codeintel) |ci| ci.hideHover();
+        if (std.mem.startsWith(u8, url, "command:")) {
+            const rest = url["command:".len..];
+            const id = rest[0 .. std.mem.indexOfScalar(u8, rest, '?') orelse rest.len];
+            for (zg_codeintel.features.HoverService.allowed_commands) |c| if (std.mem.eql(u8, c, id)) {
+                const cid = wb.reg.lookup(id) orelse return wb.notify(.info, "{s} isn't available yet", .{id});
+                wb.reg.execute(cid, null, .palette) catch |e| wb.notify(.error_, "{s}: {t}", .{ id, e });
+                return;
+            };
+            return;
+        }
+        if (std.mem.startsWith(u8, url, "file:")) {
+            const frag = std.mem.indexOfScalar(u8, url, '#');
+            const path = (zg_codeintel.uri.pathFromUri(wb.gpa, url[0 .. frag orelse url.len]) catch null) orelse return wb.notify(.info, "Can't open {s}", .{url});
+            defer wb.gpa.free(path);
+            var line: u32 = 0;
+            if (frag) |i| if (i + 2 < url.len and url[i + 1] == 'L') {
+                const digits = url[i + 2 ..];
+                const n = std.mem.indexOfNone(u8, digits, "0123456789") orelse digits.len;
+                line = (std.fmt.parseInt(u32, digits[0..n], 10) catch 1) -| 1;
+            };
+            wb.rememberHere();
+            return wb.openAt(path, .{ .pos = .{ .line = line, .character = 0, .enc = .utf16 } });
+        }
+        if (wb.win) |w| w.app.clipboard.set(wb.gpa, url);
+        wb.notify(.info, "Link copied: {s}", .{url});
+    }
+
     // -- problems --------------------------------------------------------------
 
     fn ensureProblems(wb: *Workbench) !void {
@@ -1884,7 +2131,7 @@ pub const Workbench = struct {
         wb.pending_open = copy;
         wb.pending_focus = focus;
         wb.pending_explorer = false;
-        wb.pending_goto = it;
+        wb.pending_goto = .{ .problem = it };
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -2584,7 +2831,11 @@ pub const Workbench = struct {
             const goto = wb.pending_goto;
             wb.pending_goto = null;
             if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
-                if (goto) |it| wb.gotoProblem(it);
+                if (goto) |g| switch (g) {
+                    .problem => |it| wb.gotoProblem(it),
+                    .pos => |p_| wb.gotoPos(p_.line, p_.character, p_.enc),
+                    .offset => |o| wb.gotoOffset(o),
+                };
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
@@ -3251,6 +3502,86 @@ test "workbench: F8 goes through problems across files; the Problems panel and s
     _ = t.settle();
     try std.testing.expect(wb.shown(wb.problems_ref));
     try std.testing.expect(t.find(.{ .name = "error: unused b, b.zig line 1" }) != null);
+}
+
+test "workbench: go to definition jumps, Back and Forward return; several targets are listed; hover links" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\nconst \u{e9} = a;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.zig", .data = "pub const b = 2;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+    const b = try std.fs.path.join(gpa, &.{ root, "b.zig" });
+    defer gpa.free(b);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    const h = wb.currentHandle().?;
+    const in_b: NavService.Target = .{ .uri = "file:///b.zig", .path = b, .selection = .{ .start = .{ .line = 0, .character = 10 }, .end = .{ .line = 0, .character = 11 } }, .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 16 } }, .enc = .utf16 };
+    // "é" is one UTF-16 unit and two bytes: column 8 is byte 9.
+    const in_a: NavService.Target = .{ .uri = "file:///a.zig", .path = a, .selection = .{ .start = .{ .line = 1, .character = 8 }, .end = .{ .line = 1, .character = 9 } }, .range = .{ .start = .{ .line = 1, .character = 0 }, .end = .{ .line = 1, .character = 12 } }, .enc = .utf16 };
+
+    // One definition: jump there.
+    wb.view.setSelection(.caret(5));
+    Workbench.onNavDone(&wb, .{ .kind = .definition, .origin = h, .targets = &.{in_b}, .complete = true });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 10), wb.view.primarySel().head);
+    // Back to where the caret was, and forward again.
+    try Workbench.navigateBack(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("a.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 5), wb.view.primarySel().head);
+    try Workbench.navigateForward(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 10), wb.view.primarySel().head);
+
+    // References: a list, even of one; accepting a row jumps.
+    Workbench.onNavDone(&wb, .{ .kind = .references, .origin = h, .targets = &.{ in_a, in_b }, .complete = true });
+    _ = t.settle();
+    try std.testing.expect(wb.nav_pick.isOpen(t.win));
+    try std.testing.expectEqualStrings("a.zig:2:9", wb.nav_items[0].label);
+    try std.testing.expectEqualStrings("References (2)", wb.nav_title);
+    Workbench.navPickAccept(&wb, wb.nav_items[0..1], null, false);
+    wb.nav_pick.close(t.win);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("a.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 13 + 9), wb.view.primarySel().head);
+
+    // Nothing found: a notice, no jump.
+    Workbench.onNavDone(&wb, .{ .kind = .implementation, .origin = h, .targets = &.{}, .complete = true });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("a.zig", std.fs.path.basename(wb.path.?));
+
+    // Hover links: a file link with a line opens it; web links are
+    // copied; other commands than the allowlisted ones do nothing.
+    const link = try std.fmt.allocPrint(gpa, "file://{s}#L1", .{b});
+    defer gpa.free(link);
+    Workbench.onHoverLink(&wb, .{ .url = link }, false);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 0), wb.view.primarySel().head);
+    Workbench.onHoverLink(&wb, .{ .url = "https://ziglang.org/documentation/" }, false);
+    try std.testing.expectEqualStrings("https://ziglang.org/documentation/", t.win.app.clipboard.get());
+    Workbench.onHoverLink(&wb, .{ .url = "command:workbench.action.quit" }, false);
+    _ = t.settle();
 }
 
 test "workbench: opening the terminal focuses it; the Agent button shows and hides the pane" {

@@ -138,6 +138,51 @@ test "view: key hook sees keys first and can consume them" {
     try testing.expectEqual(@as(u32, 2), h.seen);
 }
 
+test "view: pointer hook hears moves, leaves, Ctrl+clicks and keys" {
+    var f: Fx = undefined;
+    try f.init("abcd\nef");
+    defer f.deinit();
+    const Hook = struct {
+        last: ?view_mod.PointerEvent = null,
+        moves: u32 = 0,
+        leaves: u32 = 0,
+        fn on(ctx: *anyopaque, _: *EditorView, e: view_mod.PointerEvent) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            switch (e.kind) {
+                .move => h.moves += 1,
+                .leave => h.leaves += 1,
+                .click, .key => h.last = e,
+            }
+            if (e.kind == .move) h.last = e;
+            return e.kind == .click or (e.kind == .key and e.key.?.key == .escape);
+        }
+    };
+    var h: Hook = .{};
+    f.view.pointer_hook = .{ .ctx = &h, .f = Hook.on };
+    // Over "c": its offset, and an origin that places it in the window.
+    const p = try f.pointAt(0, 2);
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = p } });
+    try testing.expectEqual(@as(?u64, 2), h.last.?.offset);
+    const at = f.view.posOf(2);
+    try testing.expect(@abs(h.last.?.origin.x + at.x - (p.x - 1)) < 0.5);
+    // Past the end of line 2: no text there.
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.pointAt(1, 6) } });
+    try testing.expectEqual(@as(?u64, null), h.last.?.offset);
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = .{ .x = -10, .y = -10 } } });
+    try testing.expect(h.leaves >= 1);
+    // Ctrl+click is the hook's: the caret stays put.
+    f.view.setSelection(.caret(0));
+    try f.clickAt(1, 1, 1, .{ .key = .unknown, .mods = .{ .ctrl = true } });
+    try testing.expectEqual(view_mod.PointerEvent.Kind.click, h.last.?.kind);
+    try testing.expectEqual(@as(?u64, 6), h.last.?.offset);
+    try testing.expectEqual(@as(u64, 0), f.head());
+    // Keys: Escape consumed, others go on to the editor.
+    f.press(.{ .key = .escape });
+    try testing.expect(h.last.?.key.?.key == .escape);
+    f.t.typeText("x");
+    try f.expectText("xabcd\nef");
+}
+
 test "view: undo groups typing and redo restores it" {
     var f: Fx = undefined;
     try f.init("");
