@@ -1,7 +1,7 @@
 //! Picks the transport for a remote URL (E09.F08): `https://` and
 //! `http://` go over smart HTTP; `ssh://` and scp-like `user@host:path`
-//! over the native SSH client; local paths and `file://` are not served
-//! yet.
+//! over the native SSH client; local paths and `file://` are served
+//! in-process.
 
 const std = @import("std");
 const zg_net = @import("zg_net");
@@ -53,7 +53,7 @@ pub const Default = struct {
                 if (o.env == null) o.env = repo.env;
                 break :blk (try ssh_session.connect(repo.gpa, repo.io, url, service, o)).connection();
             },
-            .local => error.LocalTransportUnavailable,
+            .local => (try @import("local.zig").Local.connect(repo, url, service)).connection(),
         };
     }
 };

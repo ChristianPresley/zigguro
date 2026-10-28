@@ -331,7 +331,7 @@ pub fn indexBytes(gpa: Allocator, io: std.Io, data: []const u8, fmt: ObjectForma
     for (entries.items, 0..) |e, i| out[i] = .{ .oid = e.oid, .crc32 = e.crc, .offset = e.offset };
     @memcpy(out[entries.items.len..], extra.items);
     std.mem.sort(idx_mod.Entry, out, {}, idx_mod.Entry.lessThan);
-    for (out[1..], 0..) |e, i| if (e.oid.eql(out[i].oid)) return error.CorruptPack;
+    if (out.len > 1) for (out[1..], 0..) |e, i| if (e.oid.eql(out[i].oid)) return error.CorruptPack;
     return .{
         .entries = out,
         .appended = try appended.toOwnedSlice(),
