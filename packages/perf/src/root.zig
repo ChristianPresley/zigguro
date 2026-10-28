@@ -14,6 +14,8 @@ pub const trace = @import("trace.zig");
 pub const frame = @import("frame.zig");
 /// Perfetto and Chrome trace export.
 pub const @"export" = @import("export.zig");
+/// ftrace and ETW bridges.
+pub const os = @import("os.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -22,6 +24,17 @@ pub const StallWatchdog = runtime.StallWatchdog;
 /// See `runtime.ActivitySignal`.
 pub const ActivitySignal = runtime.ActivitySignal;
 
+/// A probe for `zig build check-frame-pointers`: its code must start with
+/// the frame setup when frame pointers are kept (E14.F02.S03.T02).
+export fn zg_perf_fp_probe(x: u64) callconv(.c) u64 {
+    @setRuntimeSafety(false);
+    return fpProbeInner(x) +% 1;
+}
+
+noinline fn fpProbeInner(x: u64) u64 {
+    return x *% 0x9e37_79b9_7f4a_7c15;
+}
+
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(budget);
@@ -29,4 +42,5 @@ test {
     std.testing.refAllDecls(trace);
     std.testing.refAllDecls(frame);
     std.testing.refAllDecls(@"export");
+    std.testing.refAllDecls(os);
 }

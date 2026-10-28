@@ -595,6 +595,7 @@ pub const Host = struct {
                     defer submit_zone.end();
                     try hw.submit();
                     hw.frames += 1;
+                    zg_perf.os.frame(hw.frames);
                 }
             },
             else => {},

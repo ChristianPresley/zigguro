@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows Performance Recorder profile for zigguro's ETW provider
+  (E14.F02.S03.T02). Start zigguro with ZG_OS_TRACE=etw, then:
+
+    wpr -start GeneralProfile -start tools\perf\zigguro.wprp
+    ... reproduce ...
+    wpr -stop zigguro.etl
+
+  The provider is the TraceLogging provider "Zigguro",
+  GUID {625b5a21-8f0d-4b3e-8d0e-893db16cf3d4} (packages/perf/src/os/etw.zig).
+  Keywords: 0x1 frames, 0x2 zones, 0x4 instants. Level 5 records zones,
+  level 4 only frames.
+-->
+<WindowsPerformanceRecorder Version="1.0" Author="zigguro" Comments="zigguro frames, zones and instants">
+  <Profiles>
+    <EventCollector Id="EventCollector_Zigguro" Name="Zigguro Event Collector">
+      <BufferSize Value="1024" />
+      <Buffers Value="64" />
+    </EventCollector>
+    <EventProvider Id="EventProvider_Zigguro" Name="625b5a21-8f0d-4b3e-8d0e-893db16cf3d4" Level="5">
+      <Keywords>
+        <Keyword Value="0x7" />
+      </Keywords>
+    </EventProvider>
+    <Profile Id="Zigguro.Verbose.File" Name="Zigguro" Description="zigguro frames, zones and instants" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <EventCollectorId Value="EventCollector_Zigguro">
+          <EventProviders>
+            <EventProviderId Value="EventProvider_Zigguro" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+    <Profile Id="Zigguro.Verbose.Memory" Name="Zigguro" Description="zigguro frames, zones and instants" Base="Zigguro.Verbose.File" LoggingMode="Memory" DetailLevel="Verbose" />
+  </Profiles>
+</WindowsPerformanceRecorder>
