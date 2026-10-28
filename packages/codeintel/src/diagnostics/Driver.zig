@@ -65,8 +65,9 @@ const TrackKey = struct { server: u32, h: DocHandle };
 const Track = struct {
     /// Newest first.
     sent: [history]?struct { lsp: i32, snap: Snapshot } = @splat(null),
-    /// The newest version sent that the server has not reported on.
-    awaiting: ?i32 = null,
+    /// The version the server last reported on (a push's, the newest
+    /// sent when a push has none, or a pull's).
+    reported: ?i32 = null,
     sent_ns: i96 = 0,
     report_ns: i96 = 0,
     result_id: ?[]u8 = null,
@@ -91,13 +92,15 @@ taken: std.ArrayList(Incoming) = .empty,
 tracks: std.AutoArrayHashMapUnmanaged(TrackKey, Track) = .empty,
 /// Store keys of open documents.
 keys: std.AutoArrayHashMapUnmanaged(DocHandle, []u8) = .empty,
-/// Servers that reported at least once (only they are waited for).
-reporters: std.AutoHashMapUnmanaged(u32, void) = .empty,
+/// Build progress per server (reader threads write it).
+builds_mutex: Io.Mutex = .init,
+builds: std.AutoHashMapUnmanaged(u32, i96) = .empty,
 /// Servers whose sets are in the store.
 owners: std.AutoArrayHashMapUnmanaged(u32, void) = .empty,
-/// Scratch for the settle table.
-act_keys: std.ArrayList([]const u8) = .empty,
-acts: std.ArrayList(SettleDetector.Activity) = .empty,
+/// Scratch for the settle tables.
+rows: std.ArrayList(SettleDetector.Row) = .empty,
+states: std.ArrayList(SettleDetector.ServerState) = .empty,
+pulls: std.ArrayList([]u8) = .empty,
 
 /// `d` must not move. Call before the first `Manager.openDoc`.
 pub fn init(d: *Driver, mgr: *Manager, store: *Store, opts: Options) Allocator.Error!void {
@@ -106,7 +109,11 @@ pub fn init(d: *Driver, mgr: *Manager, store: *Store, opts: Options) Allocator.E
         .io = mgr.rt.io,
         .mgr = mgr,
         .store = store,
-        .settle = .init(mgr.gpa, mgr.rt.io, store, opts.settle),
+        .settle = .init(mgr.gpa, mgr.rt.io, store, so: {
+            var o = opts.settle;
+            if (o.waker.ctx == null) o.waker = opts.pull.waker;
+            break :so o;
+        }),
         .poll = .init(mgr, .{ .ctx = d, .apply = applyPull, .clear = clearPull, .prepare = preparePull }, opts.pull),
         .ws = .init(mgr, ws: {
             var o = opts.workspace;
@@ -117,6 +124,7 @@ pub fn init(d: *Driver, mgr: *Manager, store: *Store, opts: Options) Allocator.E
     };
     mgr.setDiagnosticsHooks(.{ .ctx = d, .publish = onPublish, .sent = onSent });
     try mgr.onRefresh(.{ .ctx = d, .func = onRefresh });
+    try mgr.progress.subscribe(.{ .ctx = d, .func = onProgress });
 }
 
 /// Call after `Manager.deinit` (no pushes or answers arrive after it).
@@ -131,10 +139,12 @@ pub fn deinit(d: *Driver) void {
     d.settle.deinit();
     for (d.keys.values()) |k| d.gpa.free(k);
     d.keys.deinit(d.gpa);
-    d.reporters.deinit(d.gpa);
+    d.builds.deinit(d.gpa);
     d.owners.deinit(d.gpa);
-    d.act_keys.deinit(d.gpa);
-    d.acts.deinit(d.gpa);
+    d.rows.deinit(d.gpa);
+    d.states.deinit(d.gpa);
+    for (d.pulls.items) |k| d.gpa.free(k);
+    d.pulls.deinit(d.gpa);
 }
 
 /// The detector behind `zg_ai`'s `FileTools.diagnostics`.
@@ -161,6 +171,7 @@ pub fn tick(d: *Driver) bool {
     for (d.takeInbox()) |x| d.applyPush(x) catch |e| log.debug("diagnostics: {t}", .{e});
     d.taken.clearRetainingCapacity();
     d.syncDocs();
+    d.urgePulls();
     _ = d.poll.tick();
     d.ws.tick(d.nowNs(), .{ .ctx = d, .full = onWorkspaceFull });
     d.dropStopped();
@@ -215,7 +226,6 @@ fn applyPush(d: *Driver, x: Incoming) !void {
     const servers = d.mgr.serverList();
     if (x.server >= servers.len or servers[x.server].status != .running) return set.?.destroy();
     const s = servers[x.server];
-    try d.reporters.put(d.gpa, x.server, {});
     const now = d.nowNs();
     if (d.docOf(s, x.key)) |h| if (d.tracks.getPtr(.{ .server = x.server, .h = h })) |t| {
         const sent = pick(t, x.version) orelse {
@@ -224,9 +234,7 @@ fn applyPush(d: *Driver, x: Incoming) !void {
             return;
         };
         try convert.mapBytes(d.gpa, set.?, &sent.snap.tree, position.encodingOf(s.client.?.encoding()), sent.snap.version);
-        if (t.awaiting) |a| if (x.version == null or x.version.? >= a) {
-            t.awaiting = null;
-        };
+        t.reported = x.version orelse if (t.sent[0]) |n| n.lsp else null;
         t.report_ns = now;
     };
     try d.owners.put(d.gpa, x.server, {});
@@ -258,7 +266,6 @@ fn onSent(ctx: *anyopaque, s: *Manager.Server, h: DocHandle, version: i32) void 
     std.mem.copyBackwards(@TypeOf(t.sent[0]), t.sent[1..], t.sent[0 .. history - 1]);
     t.sent[0] = .{ .lsp = version, .snap = doc.snapshot() };
     t.sent_ns = d.nowNs();
-    if (d.reporters.contains(s.id)) t.awaiting = version;
 }
 
 // ------------------------------------------------------------------ pull
@@ -273,7 +280,6 @@ fn onRefresh(ctx: *anyopaque, _: *Manager.Server, f: Manager.RefreshFeature) voi
 fn onWorkspaceFull(ctx: *anyopaque, s: *Manager.Server, uri: []const u8, items: []const protocol.Diagnostic) void {
     const d: *Driver = @ptrCast(@alignCast(ctx));
     const c = s.client orelse return;
-    d.reporters.put(d.gpa, s.id, {}) catch {};
     d.applyRelated(s, uri, position.encodingOf(c.encoding()), items) catch |e| log.debug("workspace diagnostics: {t}", .{e});
 }
 
@@ -303,7 +309,6 @@ fn applyPull(ctx: *anyopaque, h: DocHandle, c: *Client, value: protocol.Document
 fn applyReport(d: *Driver, h: DocHandle, c: *Client, value: protocol.DocumentDiagnosticReport) !void {
     const s = d.serverOf(c) orelse return;
     const key = d.keyOfDoc(h) orelse return;
-    try d.reporters.put(d.gpa, s.id, {});
     const enc = position.encodingOf(c.encoding());
     var result_id: ?[]const u8 = null;
     switch (value) {
@@ -324,7 +329,8 @@ fn applyReport(d: *Driver, h: DocHandle, c: *Client, value: protocol.DocumentDia
         },
     }
     const t = d.tracks.getPtr(.{ .server = s.id, .h = h }) orelse return;
-    t.awaiting = null;
+    // Pulls answer for the current text (older answers are asked again).
+    t.reported = if (t.sent[0]) |n| n.lsp else null;
     t.report_ns = d.nowNs();
     if (t.result_id) |old| d.gpa.free(old);
     t.result_id = if (result_id) |r| try d.gpa.dupe(u8, r) else null;
@@ -420,25 +426,51 @@ fn dropStopped(d: *Driver) void {
         if (id < servers.len and servers[id].status == .running) continue;
         d.store.clearOwner(.{ .server = id }) catch continue;
         d.owners.swapRemoveAt(i);
-        _ = d.reporters.remove(id);
     }
 }
 
 /// Publishes per-document activity to the settle detector, then frees
 /// the keys of closed documents (the detector borrowed them until now).
 fn updateSettle(d: *Driver) void {
-    d.act_keys.clearRetainingCapacity();
-    d.acts.clearRetainingCapacity();
+    d.rows.clearRetainingCapacity();
+    d.states.clearRetainingCapacity();
     for (d.tracks.keys(), d.tracks.values()) |k, t| {
         const key = d.keyOfDoc(k.h) orelse continue;
-        d.act_keys.append(d.gpa, key) catch return;
-        d.acts.append(d.gpa, .{
+        const newest = t.sent[0] orelse continue;
+        const doc = d.mgr.docs.get(k.h) orelse continue;
+        d.rows.append(d.gpa, .{
+            .key = key,
+            .server = k.server,
+            .sent = newest.lsp,
             .sent_ns = t.sent_ns,
+            .reported = t.reported,
             .report_ns = t.report_ns,
-            .pending = @intFromBool(t.awaiting != null),
+            .dirty = doc.version != newest.snap.version,
         }) catch return;
     }
-    d.settle.set(d.act_keys.items, d.acts.items) catch return;
+    {
+        d.builds_mutex.lockUncancelable(d.io);
+        defer d.builds_mutex.unlock(d.io);
+        for (d.mgr.serverList()) |s| {
+            var st: SettleDetector.ServerState = .{
+                .id = s.id,
+                .status = switch (s.status) {
+                    .starting => .starting,
+                    .running => .running,
+                    .crashed => .crashed,
+                    else => .down,
+                },
+                .progress = d.mgr.progress.activeCount(s.id),
+            };
+            if (d.builds.get(s.id)) |end| {
+                st.builds = true;
+                st.build_end_ns = end;
+            }
+            st.setName(s.def.id);
+            d.states.append(d.gpa, st) catch return;
+        }
+    }
+    d.settle.set(d.rows.items, d.states.items) catch return;
     var i: usize = d.keys.count();
     while (i > 0) {
         i -= 1;
@@ -446,6 +478,32 @@ fn updateSettle(d: *Driver) void {
         d.gpa.free(d.keys.values()[i]);
         d.keys.swapRemoveAt(i);
     }
+}
+
+/// Pulls the agent waits on go out now, not after the debounce.
+fn urgePulls(d: *Driver) void {
+    d.settle.takePulls(&d.pulls) catch {};
+    defer {
+        for (d.pulls.items) |k| d.gpa.free(k);
+        d.pulls.clearRetainingCapacity();
+    }
+    for (d.pulls.items) |key| {
+        var it = d.mgr.open.keyIterator();
+        while (it.next()) |h| if (d.keyOfDoc(h.*)) |k| if (std.mem.eql(u8, k, key)) d.poll.urge(h.*);
+    }
+}
+
+/// Reader threads: remembers when a server's build progress (ZLS
+/// build-on-save) ends; such a server's diagnostics wait for it.
+fn onProgress(ctx: ?*anyopaque, e: zg_lsp.client.progress.ProgressEvent) void {
+    const d: *Driver = @ptrCast(@alignCast(ctx.?));
+    const title = e.title orelse return;
+    if (std.ascii.indexOfIgnoreCase(title, "build") == null) return;
+    d.builds_mutex.lockUncancelable(d.io);
+    defer d.builds_mutex.unlock(d.io);
+    const gop = d.builds.getOrPut(d.gpa, e.server) catch return;
+    if (!gop.found_existing) gop.value_ptr.* = 0;
+    if (e.kind == .end) gop.value_ptr.* = d.nowNs();
 }
 
 fn nowNs(d: *const Driver) i96 {

@@ -269,8 +269,8 @@ pub const AgentDiag = struct {
 };
 
 /// `src/a.zig:12:5: error: expected type 'u32', found '[]const u8' [zls]`,
-/// one per line (first message line only), sorted by path and position,
-/// within the budget; the rest summarized.
+/// one per line (first message line only), sorted by path, line,
+/// severity and column, within the budget; the rest summarized.
 pub fn renderDiagnostics(arena: Allocator, ds: []const AgentDiag, o: RenderOpts) Allocator.Error![]const u8 {
     const S = struct { d: AgentDiag, shown: []const u8 };
     const list = try arena.alloc(S, ds.len);
@@ -283,6 +283,9 @@ pub fn renderDiagnostics(arena: Allocator, ds: []const AgentDiag, o: RenderOpts)
                 .eq => {},
             }
             if (a.d.line != b.d.line) return a.d.line < b.d.line;
+            const ra = severityRank(a.d.severity);
+            const rb = severityRank(b.d.severity);
+            if (ra != rb) return ra < rb;
             return a.d.column < b.d.column;
         }
     }.lt);
@@ -297,6 +300,13 @@ pub fn renderDiagnostics(arena: Allocator, ds: []const AgentDiag, o: RenderOpts)
         try writeDiagnostic(arena, &out, s.shown, s.d);
     }
     return out.items;
+}
+
+/// Errors before warnings before the rest, at the same line.
+pub fn severityRank(label: []const u8) u8 {
+    const order = [_][]const u8{ "error", "warning", "info", "hint" };
+    for (order, 0..) |o, i| if (std.mem.eql(u8, o, label)) return @intCast(i);
+    return order.len;
 }
 
 pub fn writeDiagnostic(arena: Allocator, out: *std.ArrayList(u8), shown: []const u8, d: AgentDiag) Allocator.Error!void {

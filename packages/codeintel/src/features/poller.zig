@@ -54,6 +54,8 @@ pub fn Poller(comptime M: zg_lsp.protocol.Method, comptime feature: Manager.Feat
             seen: u64 = 0,
             due_ns: i96 = 0,
             force: bool = false,
+            /// Ask without waiting for the debounce (`urge`).
+            urgent: bool = false,
             retried: bool = false,
         };
 
@@ -110,6 +112,11 @@ pub fn Poller(comptime M: zg_lsp.protocol.Method, comptime feature: Manager.Feat
             for (p.states.values()) |*st| st.force = true;
         }
 
+        /// Asks `h` again at the next tick, without the debounce.
+        pub fn urge(p: *Self, h: DocHandle) void {
+            if (p.states.getPtr(h)) |st| st.urgent = true;
+        }
+
         /// Applies results and sends due requests; true when anything
         /// shown changed.
         pub fn tick(p: *Self) bool {
@@ -149,6 +156,8 @@ pub fn Poller(comptime M: zg_lsp.protocol.Method, comptime feature: Manager.Feat
                     }
                     st.applied = x.version;
                     st.retried = false;
+                    // An answer for the current text is what `urge` wanted.
+                    st.urgent = false;
                     return p.hooks.apply(p.hooks.ctx, x.h, x.client, o.value);
                 },
                 .content_modified => if (!st.retried) {
@@ -190,6 +199,11 @@ pub fn Poller(comptime M: zg_lsp.protocol.Method, comptime feature: Manager.Feat
             if (ver != st.seen) {
                 st.seen = ver;
                 st.due_ns = if (st.applied == null) now else now + p.opts.debounce.nanoseconds;
+            }
+            if (st.urgent) {
+                st.urgent = false;
+                st.force = true;
+                st.due_ns = now;
             }
             if (!st.force and st.applied == ver) return;
             if (now < st.due_ns) return;

@@ -1,0 +1,9 @@
+# Settle detection with a server that pushes without a version: the
+# push after the edit counts for the version sent.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"version": 1}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file:///${workspace}/main.zig", "diagnostics": [{"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "unused constant", "source": "fake"}]}}
+> textDocument/didChange {"textDocument": {"version": 2}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file:///${workspace}/main.zig", "diagnostics": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}, "severity": 1, "message": "expected expression", "source": "fake"}]}}
