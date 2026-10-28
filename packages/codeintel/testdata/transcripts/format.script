@@ -1,9 +1,9 @@
 # Formatting (document, the per-range fallback last range first, on
-# type), the save pipeline (willSaveWaitUntil, then a code action on save
+# type), the save pipeline (willSave, willSaveWaitUntil, then a code action on save
 # resolved, then format; then one that runs out of time twice) and a
 # willRenameFiles edit before didRenameFiles.
 > initialize
-< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": {"openClose": true, "change": 2, "willSaveWaitUntil": true}, "documentFormattingProvider": true, "documentRangeFormattingProvider": true, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": ";"}, "codeActionProvider": {"resolveProvider": true}, "workspace": {"fileOperations": {"willRename": {"filters": [{"pattern": {"glob": "**/*.zig", "matches": "file"}}]}, "didRename": {"filters": [{"pattern": {"glob": "**/*.zig"}}]}}}}}}
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": {"openClose": true, "change": 2, "willSave": true, "willSaveWaitUntil": true}, "documentFormattingProvider": true, "documentRangeFormattingProvider": true, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": ";"}, "codeActionProvider": {"resolveProvider": true}, "workspace": {"fileOperations": {"willRename": {"filters": [{"pattern": {"glob": "**/*.zig", "matches": "file"}}]}, "didRename": {"filters": [{"pattern": {"glob": "**/*.zig"}}]}}}}}}
 > initialized
 > textDocument/didOpen
 > textDocument/formatting {"options": {"tabSize": 2, "insertSpaces": true}}
@@ -18,6 +18,7 @@
 > textDocument/onTypeFormatting {"ch": ";", "position": {"line": 0, "character": 12}}
 < {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 12}, "end": {"line": 0, "character": 12}}, "newText": " // one"}]}
 > textDocument/didChange
+> textDocument/willSave {"reason": 1}
 > textDocument/willSaveWaitUntil {"reason": 1}
 < {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// top\n"}]}
 > textDocument/didChange
@@ -28,9 +29,11 @@
 > textDocument/didChange
 > textDocument/formatting
 < {"id": $1, "result": []}
+> textDocument/willSave
 > textDocument/willSaveWaitUntil
 ~ 150ms
 < {"id": $1, "result": []}
+> textDocument/willSave
 > textDocument/willSaveWaitUntil
 ~ 150ms
 < {"id": $1, "result": []}
