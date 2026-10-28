@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Remote Attach",
+            "type": "python",
+            "request": "attach",
+            "connect": { "host": "localhost", "port": 5678 },
+            "pathMappings": [{ "localRoot": "${workspaceFolder}", "remoteRoot": "." }]
+        },
+        {
+            "name": "Python: Module",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "${input:module}"
+        }
+    ],
+    "inputs": [
+        { "id": "module", "type": "promptString", "description": "Module to run", "default": "app" }
+    ]
+}
