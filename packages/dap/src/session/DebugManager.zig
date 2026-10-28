@@ -85,6 +85,9 @@ pub const BreakpointSink = struct {
     setTemp: ?*const fn (ctx: ?*anyopaque, s: *DebugSession, src: DebugSession.SourceRef, line: u32) bool = null,
     /// Removes it (on the next stop, from the dispatcher).
     clearTemp: ?*const fn (ctx: ?*anyopaque, s: *DebugSession) void = null,
+    /// The session ended (or failed to start), on a session worker: drop
+    /// what is kept for it.
+    onEnd: ?*const fn (ctx: ?*anyopaque, s: *DebugSession) void = null,
 };
 
 pub const Timeouts = struct {
