@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
     const editor = b.dependency("zg_editor", f.args()).module("zg_editor");
     const syntax = b.dependency("zg_syntax", f.args()).module("zg_syntax");
+    const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_codeintel",
         .imports = &.{
@@ -17,6 +18,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_jsonrpc", .module = jsonrpc },
             .{ .name = "zg_editor", .module = editor },
             .{ .name = "zg_syntax", .module = syntax },
+            .{ .name = "zg_regex", .module = regex },
         },
         .bench = "bench/main.zig",
         // zg_lsp's scripted server plays the language servers in tests.

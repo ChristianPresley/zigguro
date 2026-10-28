@@ -61,6 +61,8 @@ pub const SearchView = struct {
     announced: ?usize = null,
     seen_version: u32 = 0,
     err: ?[]const u8 = null,
+    /// The query field's node at the last build (`focus`).
+    field_node: zg_gui.core.NodeId = .none,
 
     pub fn init(gpa: Allocator, m: *NoteSearchViewModel, o: Options) !*SearchView {
         const v = try gpa.create(SearchView);
@@ -97,6 +99,11 @@ pub const SearchView = struct {
 
     pub fn build(v: *SearchView, ui: *Ui) void {
         noteSearchView(ui, v);
+    }
+
+    /// Moves keyboard focus to the query field (after a build in `w`).
+    pub fn focus(v: *SearchView, w: *zg_gui.Window) void {
+        if (!v.field_node.isNone() and w.store.valid(v.field_node)) w.setFocus(v.field_node, true);
     }
 
     fn onKey(v: *SearchView, k: ev_mod.KeyPress) bool {
@@ -167,6 +174,7 @@ pub fn noteSearchView(ui: *Ui, v: *SearchView) void {
     ui.open(.{ .style = .{ .dir = .row, .gap = th.dim(.space_xs), .align_items = .center } });
     ui.open(.{ .style = .{ .grow = 1 } });
     const r = zg_gui.w.text_field.textField(ui, .{ .buffer = &v.field, .a11y_label = "Search notes", .placeholder = "Search notes (? for operators)", .invalid = m.err != null });
+    v.field_node = ui.lastNode();
     ui.close();
     if (r.changed) m.setQuery(v.field.slice());
     if (controls.button(ui, .{ .label = "?" }).clicked) v.show_help = !v.show_help;

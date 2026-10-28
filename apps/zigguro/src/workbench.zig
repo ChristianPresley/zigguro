@@ -63,6 +63,9 @@ const SettingsView = @import("settings/view.zig").SettingsView;
 const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
+const NotesService = @import("notes/service.zig").NotesService;
+const zg_notes_ui = @import("zg_notes_ui");
+const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
 const fs_tree = @import("explorer/fs_tree.zig");
 
 const Ui = zg_gui.Ui;
@@ -236,6 +239,12 @@ pub const Workbench = struct {
     problem_note: std.ArrayList(u8) = .empty,
     problem_note_at: u64 = 0,
     problems_badge: [16]u8 = undefined,
+    /// The folder's notes (made on first use) and their dock panels.
+    notes: ?*NotesService = null,
+    notes_ref: ?PanelRef = null,
+    notes_search_ref: ?PanelRef = null,
+    /// The bytes `pending_open` selects (a note link or search hit).
+    pending_range: ?[2]u32 = null,
     /// Back and forward through the places navigation jumped between.
     nav_history: ?NavService.History = null,
     /// The targets the last navigation offered, and their QuickPick rows.
@@ -307,8 +316,10 @@ pub const Workbench = struct {
     const kind_settings: zg_gui.dock.model.PanelKindId = 6;
     const kind_explorer: zg_gui.dock.model.PanelKindId = 7;
     const kind_problems: zg_gui.dock.model.PanelKindId = 8;
+    const kind_notes: zg_gui.dock.model.PanelKindId = 9;
+    const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -466,6 +477,7 @@ pub const Workbench = struct {
         const abs = if (f.path) |p| std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch null else null;
         defer if (abs) |a| wb.gpa.free(a);
         if (abs) |a| wb.crumbs.set(wb.cwd, a) catch {} else wb.crumbs.len = 0;
+        if (wb.notes) |n| n.setActive(abs);
     }
 
     /// Keeps `f` and opens it as a tab in the focused center group.
@@ -779,6 +791,8 @@ pub const Workbench = struct {
                 kind_settings => wb.settings_ref = p,
                 kind_explorer => wb.explorer_ref = p,
                 kind_problems => wb.problems_ref = p,
+                kind_notes => wb.notes_ref = p,
+                kind_notes_search => wb.notes_search_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -909,6 +923,8 @@ pub const Workbench = struct {
         }
         wb.problems = null;
         wb.problem_note.deinit(wb.gpa);
+        if (wb.notes) |n| n.destroy();
+        wb.notes = null;
         if (wb.win) |w| wb.nav_pick.close(w);
         if (wb.nav_history) |*h| h.deinit();
         if (wb.nav_arena) |*a| a.deinit();
@@ -1099,6 +1115,11 @@ pub const Workbench = struct {
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
         .{ .id = "problems.copyMessage", .title = "Copy Problem Message", .category = "Problems", .run = problemsCopyMessage },
+        .{ .id = "notes.showSidebar", .title = "Show Notes Sidebar", .category = "Notes", .run = showNotesSidebar },
+        .{ .id = "notes.search", .title = "Search Notes", .category = "Notes", .run = notesSearch },
+        .{ .id = "notes.searchSelection", .title = "Search Notes for Selection", .category = "Notes", .run = notesSearchSelection },
+        .{ .id = "notes.saveSearch", .title = "Save Note Search", .category = "Notes", .run = notesSaveSearch },
+        .{ .id = "notes.followLink", .title = "Follow Link Under Cursor", .category = "Notes", .run = notesFollowLink },
         .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
         .{ .id = "explorer.open", .title = "Open", .category = "Explorer", .run = explorerOpen },
         .{ .id = "explorer.newFile", .title = "New File...", .category = "Explorer", .run = explorerNewFile },
@@ -1220,6 +1241,10 @@ pub const Workbench = struct {
             .{ .label = "Overwrite", .action = "file.saveOverwrite" },
             .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
+        switch (o) {
+            .saved, .reloaded => if (wb.notes) |n| n.fileChanged(fs.path),
+            else => {},
+        }
         const quiet = switch (o) {
             .saved, .save_failed => wb.takeQuiet(fs),
             else => false,
@@ -2085,6 +2110,190 @@ pub const Workbench = struct {
         wb.notify(.info, "Link copied: {s}", .{url});
     }
 
+    // -- notes -----------------------------------------------------------------
+
+    /// The folder's notes, scanned on first use.
+    fn ensureNotes(wb: *Workbench) !void {
+        if (wb.notes != null) return;
+        const w = wb.win orelse return error.NoWindow;
+        const n = try NotesService.create(wb.gpa, wb.io, w.app, wb.cwd, wb.env, .{
+            .ctx = wb,
+            .open = onNoteOpen,
+            .search = onNoteSearch,
+            .changed = onNotesChanged,
+            .apply = onNotesApply,
+            .propose = onNotesPropose,
+        });
+        wb.notes = n;
+        const abs = if (wb.path) |p| std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch null else null;
+        defer if (abs) |a| wb.gpa.free(a);
+        n.setActive(abs);
+    }
+
+    /// The notes sidebar or the note search, with the scan's progress.
+    fn notesPanel(wb: *Workbench, ui: *Ui, search: bool) void {
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .bg = .{ .token = .bg_elevated } }, .key_context = if (search) "notesSearchFocus" else "notesSidebarFocus" });
+        defer ui.close();
+        wb.ensureNotes() catch |e| {
+            ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+            ui.textf("Notes are not available: {t}", .{e}, .{ .color = .fg_muted });
+            ui.close();
+            return;
+        };
+        const n = wb.notes.?;
+        switch (n.stateNow()) {
+            .scanning => {
+                ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                ui.textf("Indexing notes ({d} so far)...", .{n.noteCount()}, .{ .color = .fg_muted });
+                ui.close();
+            },
+            .failed => {
+                ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                ui.text("Some notes could not be read; see the log.", .{ .color = .warning });
+                ui.close();
+            },
+            .ready => if (n.noteCount() == 0) {
+                ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                ui.text("No Markdown notes in this folder.", .{ .color = .fg_muted });
+                ui.close();
+            },
+        }
+        if (search) n.search_view.build(ui) else n.sidebar.build(ui);
+    }
+
+    /// `notes.showSidebar`: backlinks, links, properties and tags of the
+    /// current note, in the right side area.
+    fn showNotesSidebar(wb: *Workbench) !void {
+        try wb.ensureNotes();
+        if (wb.notes_ref == null) wb.notes_ref = try wb.dock.addPanel(kind_notes, null);
+        try wb.reveal(wb.notes_ref.?, .right);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `notes.search` (Ctrl+Shift+N).
+    fn notesSearch(wb: *Workbench) !void {
+        try wb.showNotesSearch(null);
+    }
+
+    /// Shows the note search in the left side area (with `query`) and
+    /// focuses its field.
+    fn showNotesSearch(wb: *Workbench, query: ?[]const u8) !void {
+        try wb.ensureNotes();
+        if (query) |q| try wb.notes.?.search_view.setQuery(q);
+        if (wb.notes_search_ref == null) wb.notes_search_ref = try wb.dock.addPanel(kind_notes_search, null);
+        try wb.reveal(wb.notes_search_ref.?, .left);
+        if (wb.win) |w| {
+            w.markAllDirty();
+            w.afterNextFrame(.{ .ctx = wb, .f = focusNotesSearch });
+        }
+    }
+
+    fn focusNotesSearch(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.notes) |n| n.search_view.focus(w);
+    }
+
+    /// `notes.searchSelection`: searches notes for the selected text (its
+    /// first line, as a phrase).
+    fn notesSearchSelection(wb: *Workbench) !void {
+        const sel = wb.view.primarySel();
+        const lo = @min(sel.anchor, sel.head);
+        const hi = @max(sel.anchor, sel.head);
+        if (lo == hi) return wb.showNotesSearch(null);
+        const text = wb.view.text(.{ .start = lo, .end = @min(hi, lo + 200) });
+        const line = std.mem.trim(u8, text[0 .. std.mem.indexOfAny(u8, text, "\r\n") orelse text.len], " \t");
+        var q: std.ArrayList(u8) = .empty;
+        defer q.deinit(wb.gpa);
+        try q.append(wb.gpa, '"');
+        for (line) |c| {
+            if (c == '"' or c == '\\') try q.append(wb.gpa, '\\');
+            try q.append(wb.gpa, c);
+        }
+        try q.append(wb.gpa, '"');
+        try wb.showNotesSearch(q.items);
+    }
+
+    /// `notes.followLink` (Alt+Enter): opens the target of the note link
+    /// at the caret, creating a missing note.
+    fn notesFollowLink(wb: *Workbench) !void {
+        const path = wb.path orelse return;
+        try wb.ensureNotes();
+        const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path });
+        defer wb.gpa.free(abs);
+        const text = wb.view.text(.{ .start = 0, .end = wb.doc.len() });
+        const at: u32 = @intCast(@min(wb.view.primarySel().head, std.math.maxInt(u32)));
+        if (!try wb.notes.?.followLink(abs, text, at)) wb.notify(.info, "No note link at the cursor", .{});
+    }
+
+    /// `notes.saveSearch`: keeps the current query in the saved list.
+    fn notesSaveSearch(wb: *Workbench) !void {
+        const n = wb.notes orelse return;
+        n.search_view.saveSearch(wb.io, null) catch |e| wb.notify(.error_, "Saving the search failed: {t}", .{e});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// A note link or search hit: open the note at the next build and
+    /// select `range` (to the side is not supported yet: same group).
+    fn onNoteOpen(ctx: *anyopaque, abs: []const u8, range: ?[2]u32, to_side: bool) void {
+        _ = to_side;
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const copy = wb.gpa.dupe(u8, abs) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = copy;
+        wb.pending_focus = true;
+        wb.pending_explorer = false;
+        wb.pending_goto = null;
+        wb.pending_range = range;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn onNoteSearch(ctx: *anyopaque, query: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showNotesSearch(query) catch |e| wb.notify(.error_, "Note search: {t}", .{e});
+    }
+
+    fn onNotesChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Sidebar edits: one accepted changeset in the review store when the
+    /// agent runs (so review history shows and reverts it), else written
+    /// directly. Open editors reload the files.
+    fn onNotesApply(ctx: *anyopaque, label: []const u8, changes: []const zg_notes_ui.ports.FileChange) anyerror!?u64 {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        defer wb.checkFiles();
+        if (wb.agent) |h| {
+            const files = try wb.gpa.alloc(ReviewGlue.ProposedFile, changes.len);
+            defer wb.gpa.free(files);
+            for (changes, files) |c, *f| f.* = .{ .path = c.path, .base = c.base, .new = c.new };
+            const id = try h.review.proposeChange(label, .{ .notes = .{ .tx = 0 } }, files, true);
+            return if (id) |x| @intFromEnum(x) else 0;
+        }
+        try wb.notes.?.writeChanges(changes);
+        return 0;
+    }
+
+    /// The agent's note edits: one changeset, pending review unless the
+    /// review mode applies agent edits at once. Any thread.
+    fn onNotesPropose(ctx: *anyopaque, label: []const u8, changes: []const zg_notes_ui.ports.FileChange) anyerror!u64 {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const h = wb.agent orelse return error.Unsupported;
+        const files = try wb.gpa.alloc(ReviewGlue.ProposedFile, changes.len);
+        defer wb.gpa.free(files);
+        for (changes, files) |c, *f| f.* = .{ .path = c.path, .base = c.base, .new = c.new };
+        const id = try h.review.proposeChange(label, .{ .notes = .{ .tx = 0 } }, files, h.review.mode == .auto_apply);
+        return if (id) |x| @intFromEnum(x) else 0;
+    }
+
+    /// Selects bytes `r` of the current editor (clamped) and shows them.
+    fn selectBytes(wb: *Workbench, r: [2]u32) void {
+        const len = wb.doc.len();
+        const v = wb.view;
+        v.setSelection(.{ .anchor = @min(r[0], len), .head = @min(r[1], len) });
+        v.revealPrimary();
+    }
+
     // -- problems --------------------------------------------------------------
 
     fn ensureProblems(wb: *Workbench) !void {
@@ -2336,6 +2545,8 @@ pub const Workbench = struct {
     /// open editors of it follow (unsaved ones stay and say so).
     fn onExplorerMoved(ctx: *anyopaque, old: []const u8, new: ?[]const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        // Note links follow (before the editors reopen the files).
+        if (wb.notes) |n| n.moved(old, new);
         var i: usize = 0;
         while (i < wb.files.items.len) {
             const f = &wb.files.items[i];
@@ -2583,6 +2794,10 @@ pub const Workbench = struct {
             host.file_tools.diagnostics = ci.agentDiagnostics();
             host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
         }
+        // The notes tools (the folder's notes are scanned from now on).
+        if (wb.ensureNotes()) {
+            host.addNotesTools(wb.notes.?.agentTools()) catch |e| log.warn("notes tools: {t}", .{e});
+        } else |e| log.warn("notes: {t}", .{e});
         const pe = try wb.gpa.create(PendingEdits);
         pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc, .store = decoOfDoc });
         pe.on_change = .{ .ctx = wb, .f = onPendingChange };
@@ -2830,12 +3045,15 @@ pub const Workbench = struct {
             wb.pending_explorer = false;
             const goto = wb.pending_goto;
             wb.pending_goto = null;
+            const range = wb.pending_range;
+            wb.pending_range = null;
             if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
                 if (goto) |g| switch (g) {
                     .problem => |it| wb.gotoProblem(it),
                     .pos => |p_| wb.gotoPos(p_.line, p_.character, p_.enc),
                     .offset => |o| wb.gotoOffset(o),
                 };
+                if (range) |r| wb.selectBytes(r);
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
@@ -2960,6 +3178,8 @@ pub const Workbench = struct {
             kind_settings => .{ .title = "Settings" },
             kind_explorer => .{ .title = "Explorer" },
             kind_problems => .{ .title = "Problems", .badge = wb.problemsBadge() },
+            kind_notes => .{ .title = "Notes" },
+            kind_notes_search => .{ .title = "Search Notes" },
             else => .{ .title = "?" },
         };
     }
@@ -3002,6 +3222,7 @@ pub const Workbench = struct {
                     ui.close();
                 }
             },
+            kind_notes, kind_notes_search => wb.notesPanel(ui, wb.kindOf(p) == kind_notes_search),
             else => {},
         }
     }
@@ -3030,7 +3251,7 @@ pub const Workbench = struct {
             wb.settings_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -3621,4 +3842,75 @@ test "workbench: opening the terminal focuses it; the Agent button shows and hid
     try t.click(.{ .role = .button, .name = "Agent" });
     _ = t.settle();
     try std.testing.expect(!wb.shown(wb.agent_ref));
+}
+
+test "workbench: the notes sidebar follows the editor; note search opens a hit" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.md", .data = "# Alpha\n\nSee [[b]] about zebras.\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.md", .data = "# Bravo\n\nStripes.\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const b = try std.fs.path.join(gpa, &.{ root, "b.md" });
+    defer gpa.free(b);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, b);
+    defer wb.deinit();
+    // The folder is the test's, not the process's.
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1200, .h = 800 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // The sidebar shows what links to the current note.
+    try Workbench.showNotesSidebar(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.shown(wb.notes_ref));
+    try std.testing.expect(t.find(.{ .role = .link, .name = "Alpha" }) != null);
+    try std.testing.expect(t.find(.{ .name = "Linked from Alpha: See [[b]] about zebras." }) != null);
+
+    // Ctrl+Shift+N: the search finds a by its text; Enter opens it with
+    // the hit selected, and the sidebar follows.
+    try Workbench.notesSearch(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.shown(wb.notes_search_ref));
+    const n = wb.notes.?;
+    n.search_model.o.debounce_ms = 0;
+    try n.search_view.setQuery("zebras");
+    t.win.markAllDirty();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 1), n.search_model.rows().len);
+    n.search_model.openSelected(false);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("a.md", std.fs.path.basename(wb.path.?));
+    const sel = wb.view.primarySel();
+    try std.testing.expect(sel.anchor != sel.head);
+    try n.sidebar_model.sync();
+    try std.testing.expectEqualStrings("Alpha", n.sidebar_model.title);
+
+    // Alt+Enter on the link follows it to b.
+    t.win.setFocus(wb.editor_node, false);
+    wb.view.setSelection(.caret(15));
+    t.press(.enter, .{ .alt = true });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.md", std.fs.path.basename(wb.path.?));
+
+    // Saving a note indexes it again.
+    try tmp.dir.writeFile(io, .{ .sub_path = "c.md", .data = "# Charlie\n\n[[a]]\n" });
+    const c = try std.fs.path.join(gpa, &.{ root, "c.md" });
+    defer gpa.free(c);
+    n.fileChanged(c);
+    try n.sidebar_model.sync();
+    try std.testing.expectEqual(@as(usize, 1), n.sidebar_model.backlinks.len);
 }
