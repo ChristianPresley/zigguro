@@ -59,7 +59,7 @@ fn lessOwner(_: void, a: []const u8, b: []const u8) bool {
 pub fn writeMarkdown(f: *const schema.File, w: *std.Io.Writer) std.Io.Writer.Error!void {
     try w.writeAll(header);
     try w.writeAll("\n# Performance budgets\n\n");
-    try w.print("{d} budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`).\n", .{f.budgets.len});
+    try w.print("{d} budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).\n", .{f.budgets.len});
     try w.writeAll("\n## Machines\n\n| class | description | cpu | RAM | gpu | display |\n|---|---|---|---|---|---|\n");
     for (f.machines) |m| try w.print("| `{t}` | {s} | {s} | {d} GB | {s} | {s} |\n", .{ m.class, m.description, m.cpu, m.ram_gb, m.gpu, m.display });
 
