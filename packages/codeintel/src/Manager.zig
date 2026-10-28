@@ -9,9 +9,10 @@
 //! waker asks for one). Spawning and freeing servers stays on workers too
 //! because `ServerProcess` blocks.
 //!
-//! Restarting crashed servers (backoff, re-sync) is `restart.zig`'s job and
-//! comes later; a crashed server keeps its documents so a restart can
-//! track them again.
+//! A crashed server keeps its documents and starts again after a backoff
+//! (zg_lsp's `RestartPolicy`: 1 s, 2 s, 4 s, ...); too many crashes in a
+//! short time disable it until `enable`. `restart` and `stop` do the same
+//! by hand. A restart re-sends `didOpen` for every document.
 
 const Manager = @This();
 const std = @import("std");
@@ -76,7 +77,12 @@ pub const Options = struct {
     waker: zg_core.runtime.Waker = .noop,
     init_timeout: Io.Duration = .fromSeconds(30),
     client_version: []const u8 = "0.0.0",
+    /// The crash restart policy each server starts with; null: crashed
+    /// servers stay down.
+    restart: ?RestartPolicy = .{},
 };
+
+pub const RestartPolicy = zg_lsp.client.restart.RestartPolicy;
 
 pub const Status = enum {
     starting,
@@ -85,7 +91,13 @@ pub const Status = enum {
     missing,
     /// Spawning or `initialize` failed; see `Server.err`.
     failed,
+    /// Down after a crash; `Server.restart_due_ns` says when it starts
+    /// again.
     crashed,
+    /// Stopped by hand (`stop`).
+    stopped,
+    /// Crashed too often; `enable` starts it again.
+    disabled,
 };
 
 /// One server instance. Owned by the manager; pointers stay valid until
@@ -114,6 +126,18 @@ pub const Server = struct {
     agent_commands: u32 = 0,
     /// Start-up strings (argv, URIs, initialization options).
     arena: std.heap.ArenaAllocator,
+    restart_policy: ?RestartPolicy = null,
+    /// When a crashed server starts again (`.awake` ns).
+    restart_due_ns: ?i96 = null,
+    /// Crashes since the manager started it.
+    crashes: u32 = 0,
+    /// When it last became ready (`.awake` ns), for its uptime.
+    ready_ns: i96 = 0,
+    /// Old clients still shutting down: a start waits for them, since
+    /// they share the server's id.
+    reaping: std.atomic.Value(u32) = .init(0),
+    /// The last stderr lines before the last crash.
+    crash_log: std.ArrayList(u8) = .empty,
 
     pub fn hasDoc(s: *const Server, h: DocHandle) bool {
         return indexOfDoc(s.docs.items, h) != null;
@@ -193,6 +217,7 @@ pub fn deinit(m: *Manager) void {
     m.taken.deinit(m.gpa);
     for (m.servers.items) |s| {
         s.docs.deinit(m.gpa);
+        s.crash_log.deinit(m.gpa);
         s.arena.deinit();
         m.gpa.free(s.root);
         m.gpa.free(s.exe);
@@ -264,6 +289,10 @@ pub fn saved(m: *Manager, h: DocHandle) void {
 /// Drains worker reports, then flushes pending edits to every running
 /// server. Call once per frame.
 pub fn tick(m: *Manager) void {
+    if (m.nextRestartDue()) |due| if (m.now() >= due) for (m.servers.items) |s| if (s.restart_due_ns) |d| if (m.now() >= d) {
+        log.info("restarting {s}", .{s.def.id});
+        m.restart(s);
+    };
     for (m.takeInbox()) |msg| switch (msg) {
         .attach => |a| m.onAttach(a),
         .ready => |s| m.onReady(s),
@@ -375,6 +404,7 @@ fn newServer(m: *Manager, a: @FieldType(Msg, "attach")) !*Server {
         .exe = exe,
         .status = if (a.exe == null) .missing else .starting,
         .arena = .init(m.gpa),
+        .restart_policy = m.opts.restart,
     };
     try m.servers.append(m.gpa, s);
     if (a.exe == null) {
@@ -390,7 +420,10 @@ fn newServer(m: *Manager, a: @FieldType(Msg, "attach")) !*Server {
 
 fn onReady(m: *Manager, s: *Server) void {
     const c = s.client.?;
+    // Stopped while it started.
+    if (s.status == .stopped) return m.retire(s);
     s.status = .running;
+    s.ready_ns = m.now();
     if (c.state() != .running) return m.onCrashed(s);
     s.sink = .init(m.gpa, .client(c));
     if (m.diagnostics != null) s.sink.observer = .{ .ctx = s, .sent = onSent };
@@ -418,6 +451,7 @@ fn track(m: *Manager, sy: *LspSync, h: DocHandle) void {
 
 fn onFailed(m: *Manager, s: *Server, err: anyerror) void {
     _ = m;
+    if (s.status == .stopped) return;
     s.status = .failed;
     s.err = err;
     log.info("{s} failed to start: {t}", .{ s.def.id, err });
@@ -429,7 +463,65 @@ fn onCrashed(m: *Manager, s: *Server) void {
     log.info("{s} crashed", .{s.def.id});
     m.detach(s);
     s.status = .crashed;
+    s.crashes += 1;
+    s.crash_log.clearRetainingCapacity();
+    if (s.proc) |p| p.stderrTail(&s.crash_log, 50) catch {};
     m.retire(s);
+    const p = &(s.restart_policy orelse return);
+    switch (p.onCrash(m.now())) {
+        .restart_after => |d| s.restart_due_ns = m.now() + d.nanoseconds,
+        .disable => {
+            log.info("{s} crashed {d} times: disabled", .{ s.def.id, s.crashes });
+            s.status = .disabled;
+        },
+    }
+}
+
+fn now(m: *const Manager) i96 {
+    return Io.Clock.Timestamp.now(m.rt.io, .awake).raw.nanoseconds;
+}
+
+/// The next crash restart, if one is waiting (`.awake` ns).
+pub fn nextRestartDue(m: *const Manager) ?i96 {
+    var due: ?i96 = null;
+    for (m.servers.items) |s| if (s.restart_due_ns) |d| {
+        due = if (due) |x| @min(x, d) else d;
+    };
+    return due;
+}
+
+/// Stops `s` (if running) and starts it again; its documents are opened
+/// again once it is ready. Nothing for a missing executable or a server
+/// still starting.
+pub fn restart(m: *Manager, s: *Server) void {
+    if (s.status == .missing or s.status == .starting or m.closing.load(.acquire)) return;
+    s.restart_due_ns = null;
+    if (s.status == .running) m.retire(s);
+    s.status = .starting;
+    s.err = null;
+    m.sub.spawnLoop(startTask, .{s}) catch |err| {
+        s.status = .failed;
+        s.err = err;
+    };
+}
+
+/// Shuts `s` down and keeps it down until `restart` or `enable`.
+pub fn stop(m: *Manager, s: *Server) void {
+    s.restart_due_ns = null;
+    switch (s.status) {
+        .missing, .stopped => return,
+        .running => m.retire(s),
+        // `onReady` retires it.
+        .starting => {},
+        .failed, .crashed, .disabled => {},
+    }
+    s.status = .stopped;
+}
+
+/// Forgets `s`'s crashes and starts it (a disabled or stopped server).
+pub fn enable(m: *Manager, s: *Server) void {
+    if (s.restart_policy) |*p| p.reset();
+    m.restart(s);
 }
 
 /// Stops syncing `s` without sending anything.
@@ -449,7 +541,8 @@ fn retire(m: *Manager, s: *Server) void {
     const p = s.proc.?;
     s.client = null;
     s.proc = null;
-    m.sub.spawn(reapTask, .{ c, p });
+    _ = s.reaping.fetchAdd(1, .acq_rel);
+    m.sub.spawn(reapServerTask, .{ s, c, p });
 }
 
 // ---------------------------------------------------------------- inbox
@@ -528,6 +621,7 @@ fn resolveTask(job: *ResolveJob) Io.Cancelable!void {
 /// Spawns the server, wires a client and waits for `initialize`.
 fn startTask(s: *Server) Io.Cancelable!void {
     const m = s.mgr;
+    while (s.reaping.load(.acquire) > 0) try m.rt.io.sleep(.fromMilliseconds(5), .awake);
     start(s) catch |e| {
         if (s.client) |c| {
             c.shutdown();
@@ -644,6 +738,12 @@ fn onSent(ctx: *anyopaque, uri: []const u8, version: i32) void {
         const u = m.docs.uri(h) orelse continue;
         if (std.mem.eql(u8, u, uri)) return hooks.sent(hooks.ctx, s, h, version);
     }
+}
+
+/// `reapTask` for a client of `s`.
+fn reapServerTask(s: *Server, c: *Client, p: *ServerProcess) Io.Cancelable!void {
+    defer _ = s.reaping.fetchSub(1, .release);
+    return reapTask(c, p);
 }
 
 /// Shuts a client down and frees it with its process.
