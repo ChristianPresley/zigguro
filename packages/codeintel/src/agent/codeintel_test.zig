@@ -5,6 +5,7 @@
 const std = @import("std");
 const zg_editor = @import("zg_editor");
 const CodeIntel = @import("CodeIntel.zig");
+const tools = @import("tools.zig");
 const BackgroundDocs = @import("background_docs.zig");
 const Store = @import("../diagnostics/Store.zig");
 const Engine = @import("../edits/Engine.zig");
@@ -142,7 +143,11 @@ test "codeintel: background document, qualified names, queries, review routing, 
         try testing.expectEqual(@as(usize, 1), sum.files.len);
         try testing.expectEqual(@as(usize, 2), sum.edits);
         try testing.expectEqual(@as(u32, 0), f.review.n);
-        try testing.expectEqual(@as(u64, 41), try f.ci.renameApply(&c, ref, "create", 4));
+        // Through the tool: the changeset comes back with the result.
+        var out: tools.Output = .init(arena.allocator());
+        try testing.expect(try tools.runAs(&f.ci, 4, io, arena.allocator(), "lsp_rename_apply", "{\"path\": \"lib.zig\", \"line\": 2, \"name\": \"init\", \"new_name\": \"create\"}", &out));
+        try testing.expectEqual(@as(?u64, 41), out.changeset);
+        try testing.expectEqualStrings("Proposed for review as changeset 41: rename to create. Nothing changes until the user accepts it.", out.text.written());
         try testing.expectEqual(Engine.Origin{ .agent = 4 }, f.review.origin.?);
     }
     // Code actions: preferred first, disabled last; commands are refused;
