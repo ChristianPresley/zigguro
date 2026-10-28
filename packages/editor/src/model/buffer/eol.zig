@@ -77,6 +77,21 @@ pub fn detectEolBytes(text: []const u8) EolStats {
     return .finish(c.counts, false);
 }
 
+/// Counts terminators in the first `sample_limit` bytes of `text`
+/// (`sampled` when it is longer): a large file's style without reading
+/// all of it.
+pub fn detectEolSample(text: []const u8) EolStats {
+    if (text.len <= sample_limit) return detectEolBytes(text);
+    var c: Counter = .{};
+    const end: usize = @intCast(sample_limit);
+    c.feed(text[0..end]);
+    // A CR ending the sample may be the first half of a CRLF.
+    if (c.pending_cr) {
+        if (text[end] == '\n') c.counts[@intFromEnum(Eol.crlf)] += 1 else c.counts[@intFromEnum(Eol.cr)] += 1;
+    }
+    return .finish(c.counts, true);
+}
+
 /// Streaming terminator counter; a CR at a chunk end waits for the next.
 /// Counts 32 bytes at a time: every LF and CR, and the CRs followed by an
 /// LF (CRLF); LF-only and CR-only counts follow from those.
@@ -177,4 +192,20 @@ test "eol: block counting matches a byte-by-byte count over random chunks" {
         if (c.pending_cr) c.counts[@intFromEnum(Eol.cr)] += 1;
         try std.testing.expectEqual(want, c.counts);
     }
+}
+
+test "eol: a sample counts its prefix and pairs a CR at its end" {
+    const gpa = std.testing.allocator;
+    const n: usize = @intCast(sample_limit + 10);
+    const text = try gpa.alloc(u8, n);
+    defer gpa.free(text);
+    @memset(text, 'x');
+    text[10] = '\n';
+    text[sample_limit - 1] = '\r';
+    text[sample_limit] = '\n';
+    text[n - 2] = '\r';
+    const s = detectEolSample(text);
+    try std.testing.expect(s.sampled);
+    try std.testing.expectEqual([3]u64{ 1, 1, 0 }, s.counts);
+    try std.testing.expect(!detectEolSample("a\r\nb").sampled);
 }
