@@ -47,7 +47,8 @@ pub const parse_markers = @import("merge/parse_markers.zig");
 pub const tree_merge = @import("merge/tree_merge.zig");
 /// Three-way and N-way file content merge.
 pub const content_merge = @import("merge/content_merge.zig");
-/// Git repositories through zg_git: merge, cherry-pick, revert and stash.
+/// Git repositories through zg_git: merge, cherry-pick, revert, stash,
+/// rebase and pull.
 pub const gitbridge = struct {
     /// Results, commits and git's operation-state files.
     pub const common = @import("gitbridge/common.zig");
@@ -59,6 +60,10 @@ pub const gitbridge = struct {
     pub const pick = @import("gitbridge/pick.zig");
     /// `git stash`.
     pub const stash = @import("gitbridge/stash.zig");
+    /// `git rebase` (merge backend).
+    pub const rebase = @import("gitbridge/rebase.zig");
+    /// `git pull`.
+    pub const pull = @import("gitbridge/pull.zig");
 };
 /// Operation objects and their metadata.
 pub const operation = @import("oplog/operation.zig");
