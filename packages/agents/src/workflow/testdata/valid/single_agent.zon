@@ -1,0 +1,8 @@
+.{
+    .version = 1,
+    .name = "single-agent",
+    .description = "One agent",
+    .steps = .{
+        .{ .id = "answer", .agent = .{ .prompt = "Say hello." } },
+    },
+}

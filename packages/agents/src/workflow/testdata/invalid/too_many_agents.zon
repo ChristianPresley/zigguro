@@ -1,0 +1,2 @@
+// expect: the workflow can start 45 agents, more than limits.max_agents (40)
+.{ .version = 1, .name = "x", .limits = .{ .max_agents = 40 }, .steps = .{.{ .id = "a", .loop_until = .{ .agent = .{ .prompt = "A" }, .check = .{ .path = "$.a.ok" }, .max_rounds = 45 } }} }

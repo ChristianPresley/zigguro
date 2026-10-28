@@ -10,6 +10,11 @@
 //! AND evaluates its cheap children first. Matches are ranked by BM25F
 //! over the query's positive terms (filters add no score), then by path.
 //! Case-insensitive substring tests fold ASCII only.
+//!
+//! Text checks that only narrow the result (not under `-` or `OR`) are
+//! deferred: the candidates are ranked first and checked best first,
+//! stopping once `k` pass, so a phrase or `/regex/` over many candidates
+//! reads only as many notes as it needs.
 
 const std = @import("std");
 const zg_regex = @import("zg_regex");
@@ -44,7 +49,9 @@ pub fn search(s: *SearchIndex, gpa: Allocator, q: *const QueryAst, k: u32, out: 
     var live = try Set.initEmpty(c.a, c.n);
     for (s.postings.docs.items, 0..) |d, i| if (d.live and c.entry(@intCast(i)) != null) live.set(i);
     if (q.* == .and_ and q.and_.len == 0) return;
+    c.deferring = true;
     const hits = try c.eval(q, live);
+    c.deferring = false;
     // Score.
     var terms: std.StringArrayHashMapUnmanaged(void) = .empty;
     try c.scoreTerms(q, &terms);
@@ -63,7 +70,15 @@ pub fn search(s: *SearchIndex, gpa: Allocator, q: *const QueryAst, k: u32, out: 
     var it = hits.iterator(.{});
     while (it.next()) |doc| try ranked.append(c.a, .{ .doc = @intCast(doc), .score = scores[doc], .path = c.entry(@intCast(doc)).?.path });
     std.mem.sort(Ranked, ranked.items, {}, Ranked.lt);
-    const top = ranked.items[0..@min(k, ranked.items.len)];
+    // The deferred checks, best first, until `k` pass.
+    var n_top: usize = 0;
+    for (ranked.items) |r| {
+        if (n_top == k) break;
+        if (!try c.passesDeferred(r.doc)) continue;
+        ranked.items[n_top] = r;
+        n_top += 1;
+    }
+    const top = ranked.items[0..n_top];
     try out.ensureUnusedCapacity(gpa, top.len);
     var hl_terms: std.StringHashMapUnmanaged(void) = .empty;
     for (terms.keys()) |t| try hl_terms.put(c.a, t, {});
@@ -99,8 +114,53 @@ const Ctx = struct {
     expansions: std.StringHashMapUnmanaged([]const u32) = .empty,
     tok_a: tokenize.Tokenizer = .{},
     tok_b: tokenize.Tokenizer = .{},
+    /// Text checks may be deferred (`Deferred`): set while evaluating the
+    /// query for ranking, cleared under `-` and `OR`.
+    deferring: bool = false,
+    deferred: std.ArrayList(Deferred) = .empty,
 
     const Compiled = struct { re: zg_regex.Regex, cache: zg_regex.Cache };
+
+    /// A text check left for the ranked candidates, with the settings in
+    /// force where it appeared.
+    const Deferred = struct {
+        kind: enum { text, unit, task },
+        q: *const QueryAst,
+        op: OpKind = .line,
+        scope: Scope,
+        case_sensitive: bool,
+        regex_ci: bool,
+    };
+
+    fn deferCheck(c: *Ctx, d: Deferred) !void {
+        try c.deferred.append(c.a, d);
+    }
+
+    /// Whether `doc` passes every deferred check.
+    fn passesDeferred(c: *Ctx, doc: u32) !bool {
+        const saved = .{ c.scope, c.case_sensitive, c.regex_ci };
+        defer {
+            c.scope = saved[0];
+            c.case_sensitive = saved[1];
+            c.regex_ci = saved[2];
+        }
+        for (c.deferred.items) |d| {
+            c.scope = d.scope;
+            c.case_sensitive = d.case_sensitive;
+            c.regex_ci = d.regex_ci;
+            const ok = switch (d.kind) {
+                .text => try c.textMatches(d.q, doc),
+                .unit => try c.unitMatch(d.op, d.q, doc),
+                .task => try c.taskMatch(d.op, d.q, doc) != null,
+            };
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    fn here(c: *const Ctx, kind: @FieldType(Deferred, "kind"), q: *const QueryAst, op: OpKind) Deferred {
+        return .{ .kind = kind, .q = q, .op = op, .scope = c.scope, .case_sensitive = c.case_sensitive, .regex_ci = c.regex_ci };
+    }
 
     fn deinit(c: *Ctx) void {
         var it = c.regexes.valueIterator();
@@ -208,11 +268,17 @@ const Ctx = struct {
                 return set;
             },
             .or_ => |items| {
+                const saved = c.deferring;
+                c.deferring = false;
+                defer c.deferring = saved;
                 var set = try Set.initEmpty(c.a, c.n);
                 for (items) |*it| set.setUnion(try c.eval(it, cand));
                 return set;
             },
             .not => |inner| {
+                const saved = c.deferring;
+                c.deferring = false;
+                defer c.deferring = saved;
                 var r = try c.eval(inner, cand);
                 r.toggleAll();
                 r.setIntersection(cand);
@@ -254,6 +320,10 @@ const Ctx = struct {
             },
             .line, .block, .section => {
                 var set = try c.eval(arg, cand);
+                if (c.deferring) {
+                    try c.deferCheck(c.here(.unit, arg, kind));
+                    return set;
+                }
                 var it = set.iterator(.{});
                 var drop: std.ArrayList(usize) = .empty;
                 while (it.next()) |doc| if (!try c.unitMatch(kind, arg, @intCast(doc))) try drop.append(c.a, doc);
@@ -262,6 +332,10 @@ const Ctx = struct {
             },
             .task, .task_todo, .task_done => {
                 var set = try c.eval(arg, cand);
+                if (c.deferring) {
+                    try c.deferCheck(c.here(.task, arg, kind));
+                    return set;
+                }
                 var it = set.iterator(.{});
                 var drop: std.ArrayList(usize) = .empty;
                 while (it.next()) |doc| if (try c.taskMatch(kind, arg, @intCast(doc)) == null) try drop.append(c.a, doc);
@@ -271,17 +345,23 @@ const Ctx = struct {
         }
     }
 
-    /// Drops the docs of `set` whose text does not match `q`.
+    /// Drops the docs of `set` whose text does not match `q` (or defers
+    /// the check to the ranked candidates).
     fn verify(c: *Ctx, q: *const QueryAst, set: *Set) !void {
+        if (c.deferring) return c.deferCheck(c.here(.text, q, .line));
         var drop: std.ArrayList(usize) = .empty;
         var it = set.iterator(.{});
         while (it.next()) |doc| {
-            const e = c.entry(@intCast(doc)).?;
-            const ok = (c.scope == .all and try c.matchText(q, e.meta.title, c.case_sensitive)) or
-                if (try c.scopeText(@intCast(doc))) |t| try c.matchText(q, t, c.case_sensitive) else false;
-            if (!ok) try drop.append(c.a, doc);
+            if (!try c.textMatches(q, @intCast(doc))) try drop.append(c.a, doc);
         }
         for (drop.items) |d| set.unset(d);
+    }
+
+    /// Whether the title or the scope's text of `doc` matches `q`.
+    fn textMatches(c: *Ctx, q: *const QueryAst, doc: u32) !bool {
+        const e = c.entry(doc).?;
+        return (c.scope == .all and try c.matchText(q, e.meta.title, c.case_sensitive)) or
+            if (try c.scopeText(doc)) |t| try c.matchText(q, t, c.case_sensitive) else false;
     }
 
     /// Whether `text` matches `q` as plain text.

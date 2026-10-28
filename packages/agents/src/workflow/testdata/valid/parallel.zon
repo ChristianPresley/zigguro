@@ -1,0 +1,11 @@
+.{
+    .version = 1,
+    .name = "parallel",
+    .steps = .{
+        .{ .id = "both", .parallel = .{
+            .{ .id = "security", .agent = .{ .prompt = "Review for security." } },
+            .{ .id = "style", .agent = .{ .prompt = "Review for style." } },
+        } },
+        .{ .id = "merge", .reduce = .{ .prompt = "Merge {{$.both.security}} and {{$.style}}." } },
+    },
+}

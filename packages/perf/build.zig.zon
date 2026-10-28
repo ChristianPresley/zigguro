@@ -1,0 +1,20 @@
+.{
+    .name = .zg_perf,
+    .version = "0.0.0",
+    .fingerprint = 0xe63d41ad0e8e1d3b,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+        "tools",
+        "budgets.zon",
+    },
+}

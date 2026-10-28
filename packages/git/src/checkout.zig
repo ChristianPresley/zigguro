@@ -300,6 +300,14 @@ pub fn writeFile(repo: *Repository, rel: []const u8, mode: u32, id: Oid) !void {
     }
     var blob = try repo.odb.read(gpa, id);
     defer blob.deinit(gpa);
+    try writeContent(repo, rel, mode, blob.data);
+}
+
+/// Writes `content` (blob bytes, before smudging) as worktree file `rel`,
+/// replacing what is there; used for blobs and for merged text with
+/// conflict markers.
+pub fn writeContent(repo: *Repository, rel: []const u8, mode: u32, content: []const u8) !void {
+    const gpa = repo.gpa;
     if (std.fs.path.dirnamePosix(rel)) |dir| try makeParents(repo, dir);
     // Replace whatever is there.
     repo.work.deleteFile(repo.io, rel) catch |e| switch (e) {
@@ -309,11 +317,11 @@ pub fn writeFile(repo: *Repository, rel: []const u8, mode: u32, id: Oid) !void {
     };
     const symlinks = repo.config.getBool("core.symlinks") orelse (builtin.os.tag != .windows);
     if (mode == tree_mod.mode_symlink and symlinks) {
-        try repo.work.symLink(repo.io, blob.data, rel, .{});
+        try repo.work.symLink(repo.io, content, rel, .{});
         return;
     }
-    const data = try smudge(repo, gpa, blob.data, mode);
-    defer if (data.ptr != blob.data.ptr) gpa.free(data);
+    const data = try smudge(repo, gpa, content, mode);
+    defer if (data.ptr != content.ptr) gpa.free(data);
     const perms: Io.File.Permissions = if (mode == tree_mod.mode_exec) .executable_file else .default_file;
     try repo.work.writeFile(repo.io, .{ .sub_path = rel, .data = data, .flags = .{ .permissions = perms } });
 }
@@ -342,7 +350,7 @@ fn makeParents(repo: *Repository, dir: []const u8) !void {
 }
 
 /// LF to CRLF in text when `core.autocrlf` is true.
-fn smudge(repo: *const Repository, gpa: Allocator, data: []u8, mode: u32) ![]u8 {
+fn smudge(repo: *const Repository, gpa: Allocator, data: []const u8, mode: u32) ![]const u8 {
     if (mode == tree_mod.mode_symlink) return data;
     const v = repo.config.get("core.autocrlf") orelse return data;
     if (!(config_mod.parseBool(v) orelse false)) return data;

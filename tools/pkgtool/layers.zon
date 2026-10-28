@@ -26,7 +26,7 @@
         .zg_mcp = 4,
         .zg_review = 4,
         .zg_agents = 4,
-        .zg_perf = 4,
+        .zg_perf = 1, // E14 epic (#15): budgets, tracing and guardrails every package may import (depends only on zg_core)
         .zg_config = 4,
         .zg_security = 4,
         .zg_mcp_servers = 5,
@@ -48,6 +48,7 @@
         .{ "zg_dap", "zg_lsp" }, // E07.F06.S01.T01 (DapConnection reuses the zg_lsp transports, server processes and script engine)
         .{ "zg_notes", "zg_ai" }, // E08.F06.S05.T01 (the note AI tools and search view import only the zg_ai_proto leaf module)
         .{ "zg_notes", "zg_workspace" }, // E08.F06.S01.T02 (the note index is an indexer plugin over the workspace PathStore)
+        .{ "zg_scm", "zg_git" }, // E09.F09.S01.T01 (the git bridge merges, cherry-picks, reverts and stashes in git repositories through zg_git)
         .{ "zg_git", "zg_workspace" }, // E09.F07.S02.T02 (config includeIf and the ignore matcher use only the std-only zg_ignore leaf module)
         .{ "zg_vulkan", "zg_platform" }, // E02 epic (#3): the renderer targets zg_platform SurfaceTarget/Presenter types (E02.F06.S01.T01)
     },

@@ -1,0 +1,2 @@
+// expect: step "t": command steps need a permission profile that allows commands (set .profile)
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "t", .command = .{ .argv = .{"make"} } }} }

@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "phases",
+    .steps = .{
+        .{ .id = "a", .phase = "Discover", .agent = .{ .prompt = "A" } },
+        .{ .id = "b", .phase = "Discover", .agent = .{ .prompt = "B" } },
+        .{ .id = "c", .phase = "Report", .reduce = .{ .prompt = "{{$.a}} {{$.b}}" } },
+    },
+}

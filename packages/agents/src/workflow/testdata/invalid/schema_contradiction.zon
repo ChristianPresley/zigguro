@@ -1,0 +1,2 @@
+// expect: step "a": schema can never be satisfied: "score" is required but additionalProperties is false and it is not in properties
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "a", .agent = .{ .prompt = "A", .schema = "{\"type\":\"object\",\"required\":[\"score\"],\"properties\":{\"note\":{\"type\":\"string\"}},\"additionalProperties\":false}" } }} }

@@ -758,9 +758,11 @@ pub const ReviewGlue = struct {
         if (r.apply != null) _ = g.conflicts.rebaseApplied() catch |e| log.warn("rebasing after an apply failed: {t}", .{e});
     }
 
-    /// Writes what changed to the store (when persisting). Locked. A
-    /// failure is logged: the change stands, and the next flush retries.
-    fn flushLocked(g: *ReviewGlue) void {
+    /// Writes what changed to the store (when persisting). Callers hold
+    /// `mutex`; views that act on the queue through their own session
+    /// call it after each action. A failure is logged: the change stands,
+    /// and the next flush retries.
+    pub fn flushLocked(g: *ReviewGlue) void {
         const st = g.store orelse return;
         st.flush() catch |e| log.warn("review store: flush failed: {t}", .{e});
     }

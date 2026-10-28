@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "limits",
+    .limits = .{ .max_parallel = 64, .max_agents = 500, .max_map_items = 4096, .max_cost_micros = 2000000 },
+    .steps = .{
+        .{ .id = "items", .builtin = .{ .name = "files.glob", .input = "$" } },
+        .{ .id = "each", .map = .{ .over = "$.items", .max_parallel = 64, .max_fail_ratio = 0.5, .agent = .{ .prompt = "Look at {{$item}} ({{$index}})", .isolation = .lane, .stall_ms = 60000, .max_retries = 3 } } },
+    },
+}

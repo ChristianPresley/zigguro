@@ -558,8 +558,72 @@ pub fn setValue(gpa: Allocator, io: Io, path: []const u8, key: []const u8, value
     try writeLocked(io, path, next);
 }
 
+/// Adds another `key = value` after the section's last variable, keeping
+/// existing values (multi-valued keys such as `remote.<name>.fetch`).
+pub fn addValue(gpa: Allocator, io: Io, path: []const u8, key: []const u8, value: []const u8) !void {
+    const k = splitKey(key) orelse return error.InvalidConfig;
+    const old = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_file_bytes)) catch |e| switch (e) {
+        error.FileNotFound => try gpa.dupe(u8, ""),
+        else => return e,
+    };
+    defer gpa.free(old);
+    const next = try edit(gpa, old, k, value, true);
+    defer gpa.free(next);
+    try writeLocked(io, path, next);
+}
+
+/// Renames the section `[section "sub"]` to `[section "new_sub"]`, or
+/// removes it with everything in it when `new_sub` is null (`git remote
+/// rename` / `git remote remove`).
+pub fn renameSection(gpa: Allocator, io: Io, path: []const u8, section: []const u8, sub: []const u8, new_sub: ?[]const u8) !void {
+    const old = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_file_bytes));
+    defer gpa.free(old);
+    const next = try editSection(gpa, old, section, sub, new_sub);
+    defer gpa.free(next);
+    try writeLocked(io, path, next);
+}
+
+/// `renameSection` on text.
+pub fn editSection(gpa: Allocator, text: []const u8, section: []const u8, sub: []const u8, new_sub: ?[]const u8) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var it = LineIter{ .text = text };
+    var inside = false;
+    while (it.next()) |ln| {
+        const line = text[ln[0]..it.lineEnd(ln)];
+        const t = std.mem.trimStart(u8, text[ln[0]..ln[1]], " \t");
+        if (t.len > 0 and t[0] == '[') {
+            var p: Parser = .{ .text = t, .a = arena.allocator() };
+            inside = if (p.header()) |h|
+                std.ascii.eqlIgnoreCase(h.section, section) and h.subsection != null and std.mem.eql(u8, h.subsection.?, sub)
+            else |_|
+                false;
+            if (inside) {
+                if (new_sub) |ns| {
+                    try out.print(gpa, "[{s} \"", .{section});
+                    for (ns) |ch| {
+                        if (ch == '"' or ch == '\\') try out.append(gpa, '\\');
+                        try out.append(gpa, ch);
+                    }
+                    try out.appendSlice(gpa, "\"]\n");
+                }
+                continue;
+            }
+        }
+        if (inside and new_sub == null) continue;
+        try out.appendSlice(gpa, line);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
 /// `setValue` on text.
 pub fn editText(gpa: Allocator, text: []const u8, k: Key, value: ?[]const u8) ![]u8 {
+    return edit(gpa, text, k, value, false);
+}
+
+fn edit(gpa: Allocator, text: []const u8, k: Key, value: ?[]const u8, add: bool) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var c: Config = .init(gpa);
@@ -593,7 +657,7 @@ pub fn editText(gpa: Allocator, text: []const u8, k: Key, value: ?[]const u8) ![
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     const new_line = if (value) |v| try formatLine(arena.allocator(), k.name, v) else null;
-    if (lines.items.len > 0) {
+    if (lines.items.len > 0 and !add) {
         // Replace the last occurrence (or remove them all).
         var pos: usize = 0;
         for (lines.items, 0..) |r, i| {

@@ -1,0 +1,7 @@
+.{
+    .version = 1,
+    .name = "builtin-only",
+    .steps = .{
+        .{ .id = "changed", .builtin = .{ .name = "scm.changed_files", .input = "$" } },
+    },
+}
