@@ -38,6 +38,14 @@ pub const Store = struct {
         return s;
     }
 
+    /// A store over the mapped `m`, which it unmaps when released.
+    pub fn createMapped(gpa: Allocator, m: buffers.Mapped) Allocator.Error!*Store {
+        const s = try gpa.create(Store);
+        errdefer gpa.destroy(s);
+        s.* = .{ .gpa = gpa, .pool = .init(gpa), .bt = try buffers.BufferTable.createMapped(gpa, m) };
+        return s;
+    }
+
     /// Adds a reference.
     pub fn retain(s: *Store) void {
         _ = s.rc.fetchAdd(1, .monotonic);
