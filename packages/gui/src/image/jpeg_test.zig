@@ -176,6 +176,38 @@ test "jpeg: truncated, unsupported and oversized files" {
     try testing.expectError(error.TooLarge, decode.decode(gpa, copy, .{}));
 }
 
+test "jpeg: threaded decoding gives the same bytes" {
+    // Threads, one MCU row per streamed chunk and one row per band, so
+    // the 37×29 fixtures cross chunk and band boundaries.
+    defer {
+        jpeg.test_knobs.threads = false;
+        jpeg.test_knobs.chunk_mcu_rows = 8;
+    }
+    const names = [_][]const u8{ "baseline444", "baseline422", "baseline420", "gray", "progressive420", "progressive444", "restart", "cmyk", "orient6" };
+    for (names) |name| {
+        var n_buf: [64]u8 = undefined;
+        const file = try load(try std.fmt.bufPrint(&n_buf, "{s}.jpg", .{name}));
+        defer gpa.free(file);
+        jpeg.test_knobs.threads = false;
+        jpeg.test_knobs.chunk_mcu_rows = 8;
+        var one = try decode.decode(gpa, file, .{});
+        defer one.deinit(gpa);
+        jpeg.test_knobs.threads = true;
+        jpeg.test_knobs.chunk_mcu_rows = 1;
+        var many = try decode.decode(gpa, file, .{});
+        defer many.deinit(gpa);
+        try testing.expectEqualSlices(u8, one.rgba, many.rgba);
+        // Scaled decodes too.
+        var half = try decode.decodeScaled(gpa, file, 19, .{});
+        defer half.deinit(gpa);
+        jpeg.test_knobs.threads = false;
+        jpeg.test_knobs.chunk_mcu_rows = 8;
+        var half_one = try decode.decodeScaled(gpa, file, 19, .{});
+        defer half_one.deinit(gpa);
+        try testing.expectEqualSlices(u8, half_one.rgba, half.rgba);
+    }
+}
+
 test "jpeg: output is deterministic" {
     // Golden hashes of the decodes: the IDCT and colour conversion are
     // integer only, so every target must produce these exact bytes.
