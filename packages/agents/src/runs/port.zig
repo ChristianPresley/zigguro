@@ -46,7 +46,16 @@ pub const StartRequest = struct {
     profile: []const u8,
     /// Unattended profiles deny `ask` decisions instead of prompting.
     unattended: bool,
+    /// Appended to the system prompt (the E13.F09 project section).
+    system_append: ?[]const u8 = null,
     sink: Sink,
+};
+
+/// E13.F09: the system-prompt section of a run's project; null when the
+/// project is unknown. Called on the host's worker thread.
+pub const ContextPort = struct {
+    ctx: *anyopaque,
+    section: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, project: []const u8) anyerror!?[]const u8,
 };
 
 pub const Started = struct { handle: usize, session: u128 };
