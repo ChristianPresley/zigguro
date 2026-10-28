@@ -57,6 +57,7 @@ const early_update = @import("startup/early_update_check.zig");
 const install_kind = @import("startup/install_kind.zig");
 const StartupReport = @import("startup/report.zig").StartupReport;
 const zg_perf = @import("zg_perf");
+const mem_tags = @import("mem_tags.zig");
 const bench_latency = @import("bench/latency.zig");
 const bench_runner = @import("bench/runner.zig");
 
@@ -88,6 +89,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer _ = rt.deinit();
     zg_perf.startup.global().install(rt.io);
     zg_perf.startup.mark(.runtime_ready);
+    // Subsystems charge their memory tags from here on (--mem-report).
+    mem_tags.enabled = true;
     // Before GPU and window init: apply a staged update or roll back one
     // that cannot start (may re-execute the process).
     var boot = early_update.run(&rt, min, running.first);
@@ -117,7 +120,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     }
     const backend = zg_platform.detectBackend(&env);
 
-    var app = zg_gui.App.init(rt.gpa);
+    var app = zg_gui.App.init(mem_tags.of(rt.gpa, .gui));
     defer app.deinit();
     app.attachRuntime(&rt);
     // `--trace=`, `--trace-format=`, `ZG_TRACE` and the perf.trace.*
@@ -131,7 +134,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var mono: zg_gui.paint.text.MonoText = .{};
     const font_files = fonts.load(rt.gpa, rt.io, &env);
     defer if (font_files) |f| f.deinit(rt.gpa);
-    const font_text: ?*zg_gui.paint.FontText = if (font_files) |f| zg_gui.paint.FontText.create(rt.gpa, .{ .ui = f.ui, .mono = f.mono }) catch null else null;
+    const font_text: ?*zg_gui.paint.FontText = if (font_files) |f| zg_gui.paint.FontText.create(mem_tags.of(rt.gpa, .text), .{ .ui = f.ui, .mono = f.mono }) catch null else null;
     defer if (font_text) |ft| ft.destroy();
     const text_sys = if (font_text) |ft| ft.system() else mono.system();
     zg_perf.startup.mark(.fonts_ready);
@@ -202,7 +205,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
 
     if (backend != .headless) native: {
-        const platform = zg_platform.init(rt.gpa, rt.io, .{ .environ_map = &env }) catch |err| {
+        const platform = zg_platform.init(mem_tags.of(rt.gpa, .platform), rt.io, .{ .environ_map = &env }) catch |err| {
             try w.print("zigguro {s}: no {t} display ({t}); falling back to the headless platform\n", .{ zg_release.current.version_string, backend, err });
             try w.flush();
             break :native;
@@ -213,7 +216,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         // session bus.
         var bus_buf: [256]u8 = undefined;
         const session_bus: ?[]const u8 = if (builtin.os.tag == .linux) zg_platform.portal.desktop.sessionAddress(&bus_buf, &env) else null;
-        var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{
+        var host = zg_gui.Host.init(mem_tags.of(rt.gpa, .gpu_host), rt.io, &app, platform, text_sys, .{
             .fonts = font_text,
             .a11y = .{ .session_address = session_bus, .version = zg_release.current.version_string },
             .timeline = tracing.timeline,
