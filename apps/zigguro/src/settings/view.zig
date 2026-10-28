@@ -26,7 +26,7 @@ const SettingDef = zg_config.schema.SettingDef;
 const reg = &service.registry;
 
 /// Category order: the key's first segment.
-const categories = [_][]const u8{ "workbench", "editor", "files", "explorer", "terminal", "git", "keyboard", "commands" };
+const categories = [_][]const u8{ "workbench", "editor", "files", "explorer", "terminal", "git", "lsp", "zig", "keyboard", "commands" };
 
 /// See the module doc.
 pub const SettingsView = struct {
@@ -155,7 +155,8 @@ pub const SettingsView = struct {
                 last_cat = cat;
                 last_head = head;
                 var hb: [48]u8 = undefined;
-                ui.id(@as(u64, 1 << 40) | cat);
+                // Uncategorized heads share a rank: tell them apart.
+                ui.id(if (cat == categories.len) std.hash.Wyhash.hash(1 << 40, head) else @as(u64, 1 << 40) | cat);
                 ui.open(.{ .style = .{ .padding = .{ .t = if (shown == 0) 4 else 16, .b = 4 }, .shrink = 0 } });
                 ui.text(titleCase(&hb, head), .{ .style = .{ .size = 16, .weight = 600 }, .theme_size = false, .wrap = false });
                 ui.close();
