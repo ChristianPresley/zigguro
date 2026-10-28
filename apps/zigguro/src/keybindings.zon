@@ -1,6 +1,6 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
 // user's keybindings.json win). VS Code's explorer and problems keys,
-// and note search.
+// note search, and multiple terminals.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
@@ -27,4 +27,9 @@
     .{ .key = "shift+f12", .command = "editor.findReferences", .when = "editorTextFocus" },
     .{ .key = "alt+left", .macos = "ctrl+-", .command = "navigation.back" },
     .{ .key = "alt+right", .macos = "ctrl+shift+-", .command = "navigation.forward" },
+    // workbench.action.terminal.new / split / focusNext / focusPrevious
+    .{ .key = "ctrl+shift+`", .command = "terminal.new" },
+    .{ .key = "mod+shift+5", .macos = "mod+\\", .command = "terminal.split", .when = "terminalFocus" },
+    .{ .key = "ctrl+pagedown", .macos = "mod+shift+]", .command = "terminal.focusNext", .when = "terminalFocus" },
+    .{ .key = "ctrl+pageup", .macos = "mod+shift+[", .command = "terminal.focusPrevious", .when = "terminalFocus" },
 }
