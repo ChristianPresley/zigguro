@@ -120,7 +120,7 @@ pub const Search = struct {
         defer text.deinit(s.gpa);
         var rows: std.ArrayList(RowStart) = .empty;
         defer rows.deinit(s.gpa);
-        try buildText(pl, s.gpa, &text, &rows);
+        try buildText(pl, s.gpa, &text, &rows, null, null);
 
         var it = re.findIter(&cache, zg_regex.Input.fromSlice(text.items));
         while (it.next()) |m| {
@@ -179,13 +179,16 @@ pub const Search = struct {
     }
 };
 
-const RowStart = struct { off: u32, row: u64 };
+/// Where a row's text starts in `buildText`'s output.
+pub const RowStart = struct { off: u32, row: u64 };
 
-/// The hot rows as logical lines, and where each row starts in them.
-fn buildText(pl: *const PageList, gpa: Allocator, text: *std.ArrayList(u8), rows: *std.ArrayList(RowStart)) !void {
-    var pin: ?Pin = pl.firstHot();
-    var abs = sel.absRow(pl, pin.?);
+/// The hot rows (or absolute rows `first` to `last`) as logical lines,
+/// and where each row starts in them.
+pub fn buildText(pl: *const PageList, gpa: Allocator, text: *std.ArrayList(u8), rows: *std.ArrayList(RowStart), first: ?u64, last: ?u64) !void {
+    var pin: ?Pin = if (first) |f| sel.rowPin(pl, f) else pl.firstHot();
+    var abs = if (pin) |p| sel.absRow(pl, p) else return;
     while (pin) |p| : (abs += 1) {
+        if (last) |l| if (abs > l) break;
         const start = text.items.len;
         try rows.append(gpa, .{ .off = @intCast(start), .row = abs });
         for (p.cells()) |c| try appendCell(text, gpa, &p.node.page, c);
@@ -210,8 +213,8 @@ fn appendCell(out: *std.ArrayList(u8), gpa: Allocator, page: *const zg_terminal.
     };
 }
 
-/// The cell holding text byte `off`.
-fn pointAt(pl: *const PageList, rows: []const RowStart, off: u32) ?Point {
+/// The cell holding text byte `off` of `buildText`'s output.
+pub fn pointAt(pl: *const PageList, rows: []const RowStart, off: u32) ?Point {
     // The last row starting at or before `off`.
     var lo: usize = 0;
     var hi: usize = rows.len;

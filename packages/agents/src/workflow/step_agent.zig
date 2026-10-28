@@ -19,6 +19,7 @@ const interp = @import("interpolate.zig");
 const validate_mod = @import("validate.zig");
 const JournalStore = @import("journal.zig");
 const PromptLibrary = @import("../library/index.zig");
+const RunId = @import("../runs/run.zig").RunId;
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -164,7 +165,31 @@ const Attempt = union(enum) {
     restart,
 };
 
+/// One attempt, recorded in the progress's worker list.
 fn attemptOnce(x: *Exec, prep: *const Prepared, prompt: []const u8, attempt: u8) Abort!Attempt {
+    var child: ?RunId = null;
+    const r = attemptRun(x, prep, prompt, attempt, &child);
+    const c = child orelse return r;
+    const now = x.eng.nowMs();
+    const t = &x.tracker;
+    const out = r catch |err| {
+        t.workerEnded(c, .stopped, "stopped", now);
+        return err;
+    };
+    switch (out) {
+        .ok => |v| switch (v) {
+            .string => |str| t.workerEnded(c, .done, str, now),
+            else => t.workerEnded(c, .done, std.json.Stringify.valueAlloc(x.allocator(), v, .{}) catch "", now),
+        },
+        .fatal => |m| t.workerEnded(c, .failed, m, now),
+        .rejected => |m| t.workerEnded(c, .failed, m, now),
+        .stalled => t.workerEnded(c, .failed, "stalled", now),
+        .restart => t.workerEnded(c, .stopped, "restarted", now),
+    }
+    return out;
+}
+
+fn attemptRun(x: *Exec, prep: *const Prepared, prompt: []const u8, attempt: u8, child: *?RunId) Abort!Attempt {
     const e = x.eng;
     const io = e.io;
     const a = x.allocator();
@@ -174,6 +199,8 @@ fn attemptOnce(x: *Exec, prep: *const Prepared, prompt: []const u8, attempt: u8)
     if (attempt > 0) x.tracker.agent(prep.step, .retried) else x.tracker.agent(prep.step, .started);
     const p = try a.create(exec.Pending);
     p.* = .{ .x = x, .child = e.newId(), .step = prep.step, .pos = prep.pos, .last_activity_ms = .init(e.nowMs()) };
+    x.tracker.workerStarted(.{ .child = p.child, .step = prep.step, .pos = prep.pos, .attempt = attempt, .prompt = prompt, .started_ms = e.nowMs() });
+    child.* = p.child;
     try x.track(p);
     defer x.untrack(p);
     const seq = x.nextSeq();

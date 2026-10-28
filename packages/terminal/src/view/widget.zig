@@ -166,6 +166,12 @@ pub const Term = struct {
                 }
             }
 
+            // The hovered link, underlined.
+            if (v.hover_link) |*hl| if ((sel_mod.Selection{ .kind = .stream, .anchor_lo = hl.lo, .anchor_hi = hl.hi, .lo = hl.lo, .hi = hl.hi }).rowSpan(top_row + y, cols)) |span| {
+                const ul_y = top + base + @max(1, @round(m.descent / 2));
+                pc.rect(.{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = ul_y, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = @max(1, @round(ch / 16)) }, pc.color(.fg_link), .{});
+            };
+
             // The selection, over the backgrounds.
             if (v.selection) |*sel| if (sel.rowSpan(top_row + y, cols)) |span| {
                 pc.rect(.{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch }, sel_color, .{});
@@ -354,6 +360,7 @@ pub const Term = struct {
                 v.text(s);
                 return true;
             },
+            .pointer_leave => _ = v.hoverAt(null),
             .pointer_down => |p| {
                 ec.focus();
                 if (!v.reportsMouse(p)) return pressSelect(ec, v, p);
@@ -378,6 +385,11 @@ pub const Term = struct {
                 return true;
             },
             .pointer_move => |p| {
+                if (v.press == null and !v.selecting and !v.reportsMouse(p)) {
+                    _ = v.hoverAt(Term.cellAt(ec, v, p.pos).cell);
+                    ec.setCursor(if (v.hover_link != null and p.mods.ctrl) .pointer else .text);
+                    return false;
+                }
                 ec.setCursor(.text);
                 if (v.press != null or v.selecting) {
                     dragSelect(ec, v, p.pos);
@@ -414,6 +426,8 @@ fn pressSelect(ec: *EventCx, v: *TerminalView, p: zg_gui.input.event.Pointer) bo
     if (p.button != .left) return true;
     const at = Term.cellAt(ec, v, p.pos);
     const pt = v.pointAt(at.cell);
+    // Ctrl+click opens a link; a plain click never does.
+    if (p.mods.ctrl and p.clicks == 1 and v.openLinkAt(pt)) return true;
     if (p.mods.shift and v.selection != null and p.clicks == 1) {
         v.extendSelection(pt);
         v.selecting = true;

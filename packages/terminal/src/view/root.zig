@@ -16,6 +16,8 @@ pub const input_route = @import("input_route.zig");
 pub const selection = @import("selection.zig");
 /// Scrollback search (E06.F05.S03).
 pub const search = @import("search.zig");
+/// Links in the output (E06.F05.S03.T02).
+pub const links = @import("links.zig");
 /// The find bar over a terminal.
 pub const find_bar = @import("find_bar.zig");
 /// Terminal tabs and split groups of the panel (E06.F07).

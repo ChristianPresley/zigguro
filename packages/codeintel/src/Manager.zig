@@ -54,6 +54,15 @@ pub const DiagnosticsHooks = struct {
 
 const log = std.log.scoped(.codeintel);
 
+pub const ApplyEditCb = zg_lsp.client.host.ApplyEditCb;
+
+/// Handles `workspace/applyEdit` on the UI thread (the workspace edit
+/// engine). `params` is valid during the call; answer through `reply`.
+pub const ApplyEditHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, s: *Server, params: *const zg_lsp.protocol.ApplyWorkspaceEditParams, reply: ApplyEditCb) void,
+};
+
 pub const Options = struct {
     /// Workspace folder paths, absolute. Roots never go above the folder
     /// that holds the document.
@@ -99,6 +108,10 @@ pub const Server = struct {
     sync: ?LspSync = null,
     /// Documents attached to this server, tracked while it runs.
     docs: std.ArrayList(DocHandle) = .empty,
+    /// The agent session whose `workspace/executeCommand` is in flight
+    /// (UI thread): server edits meanwhile are the agent's.
+    agent_command: ?u32 = null,
+    agent_commands: u32 = 0,
     /// Start-up strings (argv, URIs, initialization options).
     arena: std.heap.ArenaAllocator,
 
@@ -116,6 +129,8 @@ const Msg = union(enum) {
     failed: struct { server: *Server, err: anyerror },
     crashed: *Server,
     refresh: zg_lsp.client.host.RefreshEvent,
+    /// `workspace/applyEdit` (the request's JSON, owned).
+    apply_edit: struct { server: u32, json: []u8, reply: ApplyEditCb },
 };
 
 gpa: Allocator,
@@ -136,6 +151,8 @@ open: std.AutoHashMapUnmanaged(DocHandle, OpenDoc) = .empty,
 closing: std.atomic.Value(bool) = .init(false),
 refresh_listeners: std.ArrayList(RefreshListener) = .empty,
 diagnostics: ?DiagnosticsHooks = null,
+/// Null: server edits are refused.
+apply_edit_hook: ?ApplyEditHook = null,
 
 /// `m` must not move once a document is open.
 pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRegistry, opts: Options) void {
@@ -162,6 +179,10 @@ pub fn deinit(m: *Manager) void {
         .attach => |a| m.freeAttach(a),
         .ready => |s| m.retire(s),
         .failed, .crashed, .refresh => {},
+        .apply_edit => |a| {
+            a.reply.call(.{ .applied = false, .failure_reason = "shutting down" });
+            m.gpa.free(a.json);
+        },
     };
     m.sub.join() catch {};
     m.freeTaken();
@@ -248,8 +269,18 @@ pub fn tick(m: *Manager) void {
             const s = m.servers.items[e.server];
             if (s.status == .running) for (m.refresh_listeners.items) |l| l.func(l.ctx, s, e.feature);
         },
+        .apply_edit => |a| {
+            defer m.gpa.free(a.json);
+            m.onApplyEditMsg(a.server, a.json, a.reply);
+        },
     };
     m.freeTaken();
+    m.flush();
+}
+
+/// Sends every server the edits not sent yet (before a request, so it
+/// is about the text the server has).
+pub fn flush(m: *Manager) void {
     for (m.servers.items) |s| if (s.sync) |*sy| sy.flush();
 }
 
@@ -543,6 +574,12 @@ fn start(s: *Server) !void {
         .services = .{
             .server = s.id,
             .refresh = .{ .ctx = m, .func = onServerRefresh },
+            .host = host: {
+                var h = zg_lsp.client.host.null_host;
+                h.ctx = m;
+                h.applyEdit = onApplyEdit;
+                break :host h;
+            },
         },
         .notification_handlers = if (m.diagnostics != null)
             try a.dupe(Client.NamedNotificationHandler, &.{.{
@@ -561,6 +598,24 @@ fn start(s: *Server) !void {
 fn onClientState(ctx: ?*anyopaque, _: *Client, st: zg_lsp.client.Client.ClientState) void {
     const s: *Server = @ptrCast(@alignCast(ctx.?));
     if (st == .crashed and !s.mgr.closing.load(.acquire)) s.mgr.push(.{ .crashed = s });
+}
+
+/// From the endpoint: hands the edit to the UI thread.
+fn onApplyEdit(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, params: []const u8, reply: ApplyEditCb) void {
+    const m: *Manager = @ptrCast(@alignCast(ctx.?));
+    if (m.closing.load(.acquire)) return reply.call(.{ .applied = false, .failure_reason = "shutting down" });
+    const json = m.gpa.dupe(u8, params) catch return reply.call(.{ .applied = false, .failure_reason = "out of memory" });
+    m.push(.{ .apply_edit = .{ .server = server, .json = json, .reply = reply } });
+}
+
+fn onApplyEditMsg(m: *Manager, server: u32, json: []const u8, reply: ApplyEditCb) void {
+    const hook = m.apply_edit_hook orelse return reply.call(.{ .applied = false, .failure_reason = "workspace edits are not supported" });
+    if (server >= m.servers.items.len or m.servers.items[server].status != .running) return reply.call(.{ .applied = false, .failure_reason = "server stopped" });
+    var arena: std.heap.ArenaAllocator = .init(m.gpa);
+    defer arena.deinit();
+    const params = std.json.parseFromSliceLeaky(zg_lsp.protocol.ApplyWorkspaceEditParams, arena.allocator(), json, .{ .ignore_unknown_fields = true }) catch
+        return reply.call(.{ .applied = false, .failure_reason = "invalid workspace edit" });
+    hook.f(hook.ctx, m.servers.items[server], &params, reply);
 }
 
 fn onServerRefresh(ctx: ?*anyopaque, e: zg_lsp.client.host.RefreshEvent) void {

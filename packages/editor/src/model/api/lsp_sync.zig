@@ -123,6 +123,12 @@ pub const LspSync = struct {
         return (s.find(h) orelse return null).version;
     }
 
+    /// Whether `h` has changes not sent yet (the server's text is older
+    /// than the document).
+    pub fn hasPending(s: *const LspSync, h: DocHandle) bool {
+        return (s.find(h) orelse return false).pending != null;
+    }
+
     /// Sends the coalesced changes of every document; call once per frame.
     pub fn flush(s: *LspSync) void {
         for (s.tracked.values()) |*t| if (t.pending != null) {

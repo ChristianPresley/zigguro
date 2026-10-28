@@ -52,6 +52,10 @@ pub const UnderlineStyle = struct {
 };
 
 pub const GutterMark = struct { lane: u8 = 0, icon: u32, style: StyleRef };
+
+/// A `GutterMark.icon` drawn as a lightbulb (code actions); other icons
+/// are dots.
+pub const icon_lightbulb: u32 = 0x1F4A1;
 pub const OverviewMark = struct { lane: u8 = 0, style: StyleRef };
 
 /// Virtual text. The store copies `text`.

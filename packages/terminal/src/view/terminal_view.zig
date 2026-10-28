@@ -27,6 +27,9 @@
 //! - Search (`search.zig`): `find` highlights every match and scrolls to
 //!   the current one; `findStep` moves through them. The find bar
 //!   (`find_bar.zig`) drives it.
+//! - Links (`links.zig`): hovering one underlines it; Ctrl+click hands its
+//!   target to `on_open_link` (a plain click never opens). The shell's
+//!   working folder (OSC 7) is kept for resolving relative paths.
 //!
 //! Single-threaded for now: the owner feeds output on the UI thread. The
 //! locked session and atomically mirrored mode bits of E06.F01 replace
@@ -38,6 +41,7 @@ const zg_terminal = @import("zg_terminal");
 const route = @import("input_route.zig");
 const sel_mod = @import("selection.zig");
 const search_mod = @import("search.zig");
+const links_mod = @import("links.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
@@ -62,6 +66,13 @@ pub const ResizeHook = struct {
 pub const ChangeHook = struct {
     ctx: *anyopaque,
     f: *const fn (ctx: *anyopaque, v: *TerminalView) void,
+};
+
+/// Called with a link the user Ctrl+clicked (the target's strings live
+/// until the next hover).
+pub const LinkHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *TerminalView, target: links_mod.Target) void,
 };
 
 /// Decides whether a key goes to the IDE (true) instead of the application.
@@ -133,6 +144,15 @@ pub const TerminalView = struct {
     search: search_mod.Search,
     find_active: bool = false,
     find_alt: bool = false,
+    /// Where Ctrl+clicked links go.
+    on_open_link: ?LinkHook = null,
+    /// Finds links; made on the first hover.
+    links: ?*links_mod.Detector = null,
+    /// The link under the pointer, and the cell it was found from.
+    hover_link: ?links_mod.Link = null,
+    hover_cell: ?sel_mod.Point = null,
+    /// The shell's working folder from OSC 7 (local hosts only), or "".
+    cwd: std.ArrayList(u8) = .empty,
     /// The last query (its pattern copied), searched again after a resize.
     find_query: search_mod.Query = .{ .pattern = "" },
     find_pattern: std.ArrayList(u8) = .empty,
@@ -149,6 +169,11 @@ pub const TerminalView = struct {
     pub fn deinit(v: *TerminalView) void {
         v.search.deinit();
         v.find_pattern.deinit(v.gpa);
+        if (v.links) |d| {
+            d.deinit();
+            v.gpa.destroy(d);
+        }
+        v.cwd.deinit(v.gpa);
         v.pending_paste.deinit(v.gpa);
         v.paste_buf.deinit(v.gpa);
     }
@@ -206,7 +231,11 @@ pub const TerminalView = struct {
     pub fn feed(v: *TerminalView, bytes: []const u8) void {
         v.term.feed(bytes);
         v.flushReplies();
+        v.takeEffects();
         v.checkSelection();
+        // The text under the pointer may have changed.
+        v.hover_link = null;
+        v.hover_cell = null;
         if (v.search.matches.items.len > 0) v.search.prune(v.term.screen().pages.evicted);
         v.changed();
     }
@@ -341,6 +370,59 @@ pub const TerminalView = struct {
         if (m.ctrl and !m.shift and kp.key == .insert) return .copy;
         if (!m.ctrl and !m.shift and kp.key == .escape) return .clear;
         return .none;
+    }
+
+    /// Handles the terminal's effects (the working folder) and empties
+    /// the queue.
+    fn takeEffects(v: *TerminalView) void {
+        for (v.term.effects.pending()) |e| switch (e) {
+            .cwd => |c| if (!c.remote) {
+                v.cwd.clearRetainingCapacity();
+                v.cwd.appendSlice(v.gpa, c.path) catch {};
+            },
+            else => {},
+        };
+        v.term.effects.clear();
+    }
+
+    // -- links ---------------------------------------------------------------
+
+    /// Finds the link over viewport cell `cell` for hovering; returns
+    /// whether the hovered link changed.
+    pub fn hoverAt(v: *TerminalView, cell: ?[2]u16) bool {
+        const at = if (cell) |c| v.pointAt(c) else null;
+        if (std.meta.eql(at, v.hover_cell)) return false;
+        v.hover_cell = at;
+        const before = v.hover_link;
+        v.hover_link = if (at) |p| v.linkAt(p) else null;
+        const changed_ = !std.meta.eql(if (before) |b| [2]sel_mod.Point{ b.lo, b.hi } else null, if (v.hover_link) |l| [2]sel_mod.Point{ l.lo, l.hi } else null);
+        if (changed_) v.generation +%= 1;
+        return changed_;
+    }
+
+    /// The link over `at`, or null.
+    pub fn linkAt(v: *TerminalView, at: sel_mod.Point) ?links_mod.Link {
+        const d = v.links orelse blk: {
+            const d = v.gpa.create(links_mod.Detector) catch return null;
+            d.* = links_mod.Detector.init(v.gpa) catch {
+                v.gpa.destroy(d);
+                return null;
+            };
+            v.links = d;
+            break :blk d;
+        };
+        return d.linkAt(&v.term.screen().pages, at) catch null;
+    }
+
+    /// Opens the link over `at` through `on_open_link`; false when there
+    /// is none.
+    pub fn openLinkAt(v: *TerminalView, at: sel_mod.Point) bool {
+        const l = v.linkAt(at) orelse return false;
+        v.hover_link = l;
+        v.hover_cell = at;
+        const h = v.on_open_link orelse return true;
+        h.f(h.ctx, v, l.target);
+        return true;
     }
 
     // -- search --------------------------------------------------------------

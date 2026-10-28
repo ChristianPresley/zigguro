@@ -1,0 +1,30 @@
+# Rename (prepare with a placeholder, an error, default behavior), code
+# actions (diagnostic data sent back, resolve then edit then command) and
+# an agent's command whose workspace edit goes to review.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "renameProvider": {"prepareProvider": true}, "codeActionProvider": {"resolveProvider": true}, "executeCommandProvider": {"commands": ["fake.fix", "fake.agentEdit"]}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/prepareRename {"position": {"line": 0, "character": 7}}
+< {"id": $1, "result": {"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 9}}, "placeholder": "foo"}}
+> textDocument/rename {"position": {"line": 0, "character": 6}, "newName": "bar"}
+< {"id": $1, "result": {"changes": {"file://${workspace}/main.zig": [{"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 9}}, "newText": "bar"}, {"range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 7}}, "newText": "bar"}]}}}
+> textDocument/didChange
+> textDocument/prepareRename {"position": {"line": 1, "character": 0}}
+< {"id": $1, "error": {"code": -32803, "message": "You cannot rename this element."}}
+> textDocument/prepareRename {"position": {"line": 0, "character": 0}}
+< {"id": $1, "result": {"defaultBehavior": true}}
+> textDocument/codeAction {"range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 10}}, "context": {"diagnostics": [{"message": "unused", "code": 9, "data": {"fix": 7, "s": "x"}}], "triggerKind": 1}}
+< {"id": $1, "result": [{"title": "Run fix", "command": "fake.fix", "arguments": [1]}, {"title": "Can't", "kind": "refactor", "disabled": {"reason": "Nope"}}, {"title": "Extract", "kind": "refactor.extract", "edit": {"changes": {}}}, {"title": "Remove it", "kind": "quickfix", "isPreferred": true, "data": {"r": 1}}]}
+> codeAction/resolve {"title": "Remove it", "data": {"r": 1}}
+< {"id": $1, "result": {"title": "Remove it", "kind": "quickfix", "edit": {"changes": {"file://${workspace}/main.zig": [{"range": {"start": {"line": 2, "character": 0}, "end": {"line": 3, "character": 0}}, "newText": ""}]}}, "command": {"title": "after", "command": "fake.fix", "arguments": [2]}}}
+> textDocument/didChange
+> workspace/executeCommand {"command": "fake.fix", "arguments": [2]}
+< {"id": $1, "result": null}
+> workspace/executeCommand {"command": "fake.agentEdit"}
+< {"id": 1, "method": "workspace/applyEdit", "params": {"edit": {"changes": {"file://${workspace}/main.zig": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// agent\n"}]}}}}
+> response {"id": 1, "result": {"applied": false, "failureReason": "queued for review"}}
+< {"id": $1, "result": null}
+> shutdown
+< {"id": $1, "result": null}
+> exit

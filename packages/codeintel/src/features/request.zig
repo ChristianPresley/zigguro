@@ -89,7 +89,19 @@ pub fn Requester(comptime M: protocol.Method, comptime feature: Manager.Feature)
         /// of `h`. `extra` holds the params' other fields (`context` for
         /// references). Returns the servers asked (0: none provides it).
         pub fn ask(r: *Self, h: DocHandle, offset: u64, extra: anytype) !u8 {
+            return r.send(h, offset, null, extra);
+        }
+
+        /// `ask` for the requests about a range (code actions): bytes
+        /// `range` of `h`; answers carry `range.start` as their offset.
+        pub fn askRange(r: *Self, h: DocHandle, range: position.ByteRange, extra: anytype) !u8 {
+            return r.send(h, range.start, range, extra);
+        }
+
+        fn send(r: *Self, h: DocHandle, offset: u64, range: ?position.ByteRange, extra: anytype) !u8 {
             r.cancel();
+            // The position is in the current text: the servers get it first.
+            r.mgr.flush();
             const doc = r.mgr.docs.get(h) orelse return 0;
             const uri = r.mgr.docs.uri(h) orelse return 0;
             var cs: [max_servers]*Client = undefined;
@@ -99,9 +111,13 @@ pub fn Requester(comptime M: protocol.Method, comptime feature: Manager.Feature)
                 defer m.deinit();
                 var params: Params = undefined;
                 params.textDocument = .{ .uri = uri };
-                params.position = try m.positionOf(@min(offset, doc.len()));
+                if (comptime @hasField(Params, "position")) params.position = try m.positionOf(@min(offset, doc.len()));
+                if (comptime @hasField(Params, "range")) {
+                    const br = range orelse position.ByteRange{ .start = offset, .end = offset };
+                    params.range = try m.fromRange(.{ .start = @min(br.start, doc.len()), .end = @min(br.end, doc.len()) });
+                }
                 inline for (@typeInfo(Params).@"struct".fields) |f| {
-                    if (comptime std.mem.eql(u8, f.name, "textDocument") or std.mem.eql(u8, f.name, "position")) continue;
+                    if (comptime std.mem.eql(u8, f.name, "textDocument") or std.mem.eql(u8, f.name, "position") or std.mem.eql(u8, f.name, "range")) continue;
                     @field(params, f.name) = if (@hasField(@TypeOf(extra), f.name)) @field(extra, f.name) else f.defaultValue().?;
                 }
                 const a = try r.gpa.create(Answer);
