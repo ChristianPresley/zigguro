@@ -61,6 +61,9 @@ pub const AgentStep = struct {
 
 pub const CommandStep = struct {
     argv: []const []const u8,
+    /// `argv` is one command line for the user's shell (`cmd` on Windows,
+    /// `sh` elsewhere) instead of a program and its arguments.
+    shell: bool = false,
     cwd: ?[]const u8 = null,
     /// Null accepts any exit code.
     expect_exit: ?i32 = 0,
@@ -99,6 +102,8 @@ pub const VoteStep = struct {
 pub const Check = struct {
     /// Passes when the command exits 0.
     command: ?[]const []const u8 = null,
+    /// `command` is one command line for the user's shell.
+    shell: bool = false,
     /// Passes when the value at this path is truthy.
     path: ?[]const u8 = null,
     /// Passes when the judge's result has `"pass": true`.

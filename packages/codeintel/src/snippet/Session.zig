@@ -67,12 +67,19 @@ scratch: std.ArrayList(Range) = .empty,
 /// (a snippet with only `$0`). `exp` is only read during the call;
 /// transforms it points at must outlive the session.
 pub fn begin(gpa: Allocator, view: *EditorView, at: []const Range, exp: *const Snippet.Expansion) !*Session {
+    return beginWith(gpa, view, at, exp, &.{});
+}
+
+/// `begin` with `extra` edits (clear of every insertion point) made in
+/// the same undo step: a completion's additional text edits.
+pub fn beginWith(gpa: Allocator, view: *EditorView, at: []const Range, exp: *const Snippet.Expansion, extra: []const Replace) !*Session {
     const s = try gpa.create(Session);
     errdefer gpa.destroy(s);
     s.* = .{ .gpa = gpa, .view = view };
     errdefer s.deinitFields();
 
-    // Insertion points in order; each lands shifted by the ones before.
+    // Insertion points in order (their cursor index), then every edit in
+    // order; each lands shifted by the ones before.
     const sorted = try gpa.dupe(Range, at);
     defer gpa.free(sorted);
     std.mem.sort(Range, sorted, {}, struct {
@@ -80,19 +87,31 @@ pub fn begin(gpa: Allocator, view: *EditorView, at: []const Range, exp: *const S
             return a.start < b.start;
         }
     }.lt);
-    const edits = try gpa.alloc(Replace, sorted.len);
+    const Ins = struct { edit: Replace, cursor: ?u32 };
+    const all = try gpa.alloc(Ins, sorted.len + extra.len);
+    defer gpa.free(all);
+    for (sorted, 0..) |r, ci| all[ci] = .{ .edit = .{ .range = r, .text = exp.text.items }, .cursor = @intCast(ci) };
+    for (extra, sorted.len..) |e, i| all[i] = .{ .edit = e, .cursor = null };
+    std.mem.sort(Ins, all, {}, struct {
+        fn lt(_: void, a: Ins, b: Ins) bool {
+            return a.edit.range.start < b.edit.range.start;
+        }
+    }.lt);
+    const edits = try gpa.alloc(Replace, all.len);
     defer gpa.free(edits);
-    for (sorted, edits) |r, *e| e.* = .{ .range = r, .text = exp.text.items };
+    for (all, edits) |x, *e| e.* = x.edit;
     s.own_edit = true;
     try view.applyEdits(edits);
     s.own_edit = false;
     var delta: i128 = 0;
-    for (sorted, 0..) |r, ci| {
+    for (all) |x| {
+        const r = x.edit.range;
         const base: u64 = @intCast(@as(i128, r.start) + delta);
-        delta += @as(i128, exp.text.items.len) - @as(i128, r.end - r.start);
+        delta += @as(i128, x.edit.text.len) - @as(i128, r.end - r.start);
+        const ci = x.cursor orelse continue;
         for (exp.stops.items) |st| try s.stops.append(gpa, .{
             .index = st.index,
-            .cursor = @intCast(ci),
+            .cursor = ci,
             .range = .{ .start = base + st.start, .end = base + st.end },
             .choice = st.choice,
             .mirror = st.mirror_of != null,
@@ -351,9 +370,14 @@ pub const Stack = struct {
 
     /// Expands `exp` at `at` (inside the running session, if any).
     pub fn begin(st: *Stack, view: *EditorView, at: []const Range, exp: *const Snippet.Expansion) !void {
+        return st.beginWith(view, at, exp, &.{});
+    }
+
+    /// `begin` with `extra` edits in the same undo step (`beginWith`).
+    pub fn beginWith(st: *Stack, view: *EditorView, at: []const Range, exp: *const Snippet.Expansion, extra: []const Replace) !void {
         // A snippet in another editor ends the sessions of this one.
         if (st.items.items.len > 0 and st.items.items[0].view != view) st.endAll();
-        const s = try Session.begin(st.gpa, view, at, exp);
+        const s = try Session.beginWith(st.gpa, view, at, exp, extra);
         if (s.done) return s.destroy();
         st.items.append(st.gpa, s) catch |e| {
             s.destroy();

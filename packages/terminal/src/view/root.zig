@@ -12,6 +12,8 @@ pub const widget = @import("widget.zig");
 pub const palette = @import("palette.zig");
 /// zg_gui events as encoder inputs.
 pub const input_route = @import("input_route.zig");
+/// Selection and copy (E06.F05.S02).
+pub const selection = @import("selection.zig");
 /// Terminal tabs and split groups of the panel (E06.F07).
 pub const panel_model = @import("panel_model.zig");
 

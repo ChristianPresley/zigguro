@@ -12,9 +12,13 @@
 //! its own (OSC 10/11). Layout fits the grid to the widget and resizes the
 //! terminal (`TerminalView.fit`).
 //!
+//! The selection paints in the theme's selection colour over the cell
+//! backgrounds, under the glyphs. A press without reporting starts one
+//! (see `TerminalView`); dragging past the top or bottom edge scrolls.
+//!
 //! Open (E06.F05): per-row damage and layer caching, E03 cell layout with
 //! ligatures and procedural box drawing, minimum contrast, IME preedit,
-//! selection, hyperlink hover and blink.
+//! hyperlink hover and blink.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -22,6 +26,7 @@ const zg_terminal = @import("zg_terminal");
 const view_mod = @import("terminal_view.zig");
 const pal = @import("palette.zig");
 const route = @import("input_route.zig");
+const sel_mod = @import("selection.zig");
 
 const TerminalView = view_mod.TerminalView;
 const Ui = zg_gui.Ui;
@@ -121,6 +126,8 @@ pub const Term = struct {
         const cols = t.cols();
 
         pc.pushClip(r, 0);
+        const sel_color = pc.color(.selection_bg);
+        const top_row = sel_mod.absRow(&screen.pages, screen.pages.viewportRow(0));
         for (0..rows) |yi| {
             const y: u16 = @intCast(yi);
             const pin = screen.pages.viewportRow(y);
@@ -141,6 +148,11 @@ pub const Term = struct {
                 if (!c0.bg_default) pc.rect(.{ .x = pad + @as(f32, @floatFromInt(x)) * cw, .y = top, .w = @as(f32, @floatFromInt(e - x)) * cw, .h = ch }, c0.bg, .{});
                 x = e;
             }
+
+            // The selection, over the backgrounds.
+            if (v.selection) |*sel| if (sel.rowSpan(top_row + y, cols)) |span| {
+                pc.rect(.{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch }, sel_color, .{});
+            };
 
             // Glyphs, in runs of one colour and face; wide cells alone.
             x = 0;
@@ -283,7 +295,7 @@ pub const Term = struct {
 
     /// The cell under window point `p` (clamped to the grid) and the pixel
     /// offset in the text area.
-    fn cellAt(ec: *EventCx, v: *TerminalView, p: Vec2) struct { cell: [2]u16, px: [2]u32 } {
+    pub fn cellAt(ec: *EventCx, v: *TerminalView, p: Vec2) struct { cell: [2]u16, px: [2]u32 } {
         const l = ec.local(p);
         const x = @max(0, l.x - v.opts.padding);
         const y = @max(0, l.y - v.opts.padding);
@@ -306,14 +318,28 @@ pub const Term = struct {
         switch (ev.*) {
             .focus_gained => v.setFocused(true),
             .focus_lost => v.setFocused(false),
-            .key => |k| return v.key(k, if (k.action == .release) "" else ec.clipboard()),
+            .key => |k| switch (v.selectionKey(k)) {
+                .copy => {
+                    if (v.selectionText(ec.allocator()) catch null) |text| {
+                        defer ec.allocator().free(text);
+                        ec.setClipboard(text);
+                    }
+                    v.clearSelection();
+                    return true;
+                },
+                .clear => {
+                    v.clearSelection();
+                    return true;
+                },
+                .none => return v.key(k, if (k.action == .release) "" else ec.clipboard()),
+            },
             .text => |s| {
                 v.text(s);
                 return true;
             },
             .pointer_down => |p| {
                 ec.focus();
-                if (!v.reportsMouse(p)) return true;
+                if (!v.reportsMouse(p)) return pressSelect(ec, v, p);
                 const at = cellAt(ec, v, p.pos);
                 v.buttons |= route.buttonBit(p.button);
                 v.last_motion = at.cell;
@@ -322,6 +348,10 @@ pub const Term = struct {
                 return true;
             },
             .pointer_up => |p| {
+                if (v.press != null or v.selecting) {
+                    endSelect(ec, v);
+                    return true;
+                }
                 if (v.buttons == 0) return false;
                 v.buttons &= ~route.buttonBit(p.button);
                 if (v.buttons == 0) ec.releaseCapture();
@@ -332,6 +362,10 @@ pub const Term = struct {
             },
             .pointer_move => |p| {
                 ec.setCursor(.text);
+                if (v.press != null or v.selecting) {
+                    dragSelect(ec, v, p.pos);
+                    return true;
+                }
                 if (!v.reportsMouse(p)) return false;
                 const at = cellAt(ec, v, p.pos);
                 const held: u8 = if (v.buttons & 1 != 0) 0 else if (v.buttons & 2 != 0) 1 else if (v.buttons & 4 != 0) 2 else 3;
@@ -355,6 +389,62 @@ pub const Term = struct {
         return false;
     }
 };
+
+/// A press that the application does not get: Shift extends the
+/// selection, a double click selects a word and a triple click a line;
+/// otherwise the selection goes and a drag may start a new one.
+fn pressSelect(ec: *EventCx, v: *TerminalView, p: zg_gui.input.event.Pointer) bool {
+    if (p.button != .left) return true;
+    const at = Term.cellAt(ec, v, p.pos);
+    const pt = v.pointAt(at.cell);
+    if (p.mods.shift and v.selection != null and p.clicks == 1) {
+        v.extendSelection(pt);
+        v.selecting = true;
+    } else switch (p.clicks) {
+        1 => {
+            v.clearSelection();
+            v.press = .{ .at = pt, .cell = at.cell, .rect = p.mods.alt };
+        },
+        2 => {
+            v.beginSelection(pt, .word);
+            v.selecting = true;
+        },
+        else => {
+            v.beginSelection(pt, .line);
+            v.selecting = true;
+        },
+    }
+    ec.capture();
+    return true;
+}
+
+/// Pointer motion while selecting: a press becomes a selection once the
+/// pointer leaves its cell; beyond the top or bottom edge the view
+/// scrolls a row per move.
+fn dragSelect(ec: *EventCx, v: *TerminalView, pos: Vec2) void {
+    const l = ec.local(pos);
+    const h = ec.rect().h;
+    if (l.y < 0) v.scrollBy(1) else if (l.y > h) v.scrollBy(-1);
+    const at = Term.cellAt(ec, v, pos);
+    if (v.press) |pr| {
+        if (at.cell[0] == pr.cell[0] and at.cell[1] == pr.cell[1] and l.y >= 0 and l.y <= h) return;
+        v.press = null;
+        v.beginSelection(pr.at, if (pr.rect) .rect else .stream);
+        v.selecting = true;
+    }
+    v.extendSelection(v.pointAt(at.cell));
+}
+
+/// Ends a drag: the selection becomes the PRIMARY selection.
+fn endSelect(ec: *EventCx, v: *TerminalView) void {
+    v.press = null;
+    v.selecting = false;
+    ec.releaseCapture();
+    if (v.selectionText(ec.allocator()) catch null) |text| {
+        defer ec.allocator().free(text);
+        if (text.len > 0) ec.setPrimary(text);
+    }
+}
 
 /// Adds a terminal for `view` to the tree (in a `terminalFocus` key
 /// context), records its node in `view.node` (for focusing) and points the

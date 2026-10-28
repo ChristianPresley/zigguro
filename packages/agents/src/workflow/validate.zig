@@ -177,7 +177,7 @@ const V = struct {
                 const c = lp.check;
                 const n = @as(u8, @intFromBool(c.command != null)) + @intFromBool(c.path != null) + @intFromBool(c.judge != null);
                 if (n != 1) try v.diags.add(s.id, "check needs exactly one of command, path or judge", .{});
-                if (c.command) |argv| try v.commandArgv(s.id, argv);
+                if (c.command) |argv| try v.commandArgv(s.id, argv, c.shell);
                 if (c.path) |p| try v.path(s.id, "check.path", p, lc);
                 if (c.judge) |j| try v.agent(s.id, "check.judge: ", j, lc, lp.max_rounds);
             },
@@ -187,7 +187,7 @@ const V = struct {
             },
             .builtin => |b| try v.builtin(s.id, b, ctx),
             .command => |c| {
-                try v.commandArgv(s.id, c.argv);
+                try v.commandArgv(s.id, c.argv, c.shell);
                 if (c.cwd) |cwd| if (path_mod.isPath(cwd)) try v.path(s.id, "cwd", cwd, ctx);
             },
         }
@@ -207,7 +207,7 @@ const V = struct {
         mc.map_as = m.as;
         // Map items are not known statically: count one agent per map.
         if (m.agent) |ag| try v.agent(id, "", ag, mc, 1);
-        if (m.command) |c| try v.commandArgv(id, c.argv);
+        if (m.command) |c| try v.commandArgv(id, c.argv, c.shell);
         if (m.builtin) |b| try v.builtin(id, b, mc);
     }
 
@@ -220,8 +220,9 @@ const V = struct {
         try v.path(id, "input", b.input, ctx);
     }
 
-    fn commandArgv(v: *V, id: []const u8, argv: []const []const u8) !void {
+    fn commandArgv(v: *V, id: []const u8, argv: []const []const u8, shell: bool) !void {
         if (argv.len == 0 or argv[0].len == 0) try v.diags.add(id, "a command needs argv", .{});
+        if (shell and argv.len > 1) try v.diags.add(id, "a shell command is one command line (one argv entry)", .{});
         const profile = v.d.profile orelse {
             try v.diags.add(id, "command steps need a permission profile that allows commands (set .profile)", .{});
             return;
