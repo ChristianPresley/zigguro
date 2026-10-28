@@ -5,6 +5,8 @@ const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_codeintel = @import("zg_codeintel");
 const zg_syntax = @import("zg_syntax");
+const zg_editor = @import("zg_editor");
+const zg_lsp = @import("zg_lsp");
 const bench = zg_core.bench;
 const State = bench.State;
 const Registry = zg_codeintel.registry.Registry;
@@ -37,6 +39,10 @@ fn register(b: *bench.Bench) !void {
     try b.run("codeintel.completion.refilter_20k: score and sort 20k items for a keystroke (full list)", &cfx, completionRefilter20k);
     try b.run("codeintel.completion.arrive_20k: a 20k-item list arrives: sortText order, score and sort", &cfx, completionArrive20k);
     try b.run("codeintel.completion.decode_5mb: parse a 5 MB completion list and apply its defaults (worker)", &cfx, completionDecode5mb);
+    var wsfx: WsEditFixture = undefined;
+    wsfx.init(std.heap.smp_allocator);
+    defer wsfx.deinit();
+    try b.run("lsp.wsedit.plan_10k: plan a workspace edit of 10k text edits on a 10k-line open file", &wsfx, wseditPlan10k);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -379,5 +385,87 @@ fn completionDecode5mb(f: *CompletionFixture, s: *State) void {
         items.clearRetainingCapacity();
         _ = crank.decode(gpa, v, 0, &.{}, &items) catch unreachable;
         bench.doNotOptimizeAway(items.items.len);
+    }
+}
+
+/// A 10k-line open document and a `WorkspaceEdit` renaming a word on
+/// every line, built once.
+const WsEditFixture = struct {
+    gpa: std.mem.Allocator,
+    docs: zg_editor.model.api.registry.DocumentRegistry,
+    h: zg_editor.model.api.registry.DocHandle,
+    edits: []zg_codeintel.edits.plan.Replace,
+    text_edits: []zg_lsp.protocol.TextEdit,
+    edit: zg_lsp.protocol.WorkspaceEdit,
+
+    fn init(f: *WsEditFixture, gpa: std.mem.Allocator) void {
+        f.gpa = gpa;
+        f.docs = .init(gpa, .posix);
+        var text: std.Io.Writer.Allocating = .init(gpa);
+        defer text.deinit();
+        for (0..10_000) |i| text.writer.print("    const value_{d} = compute(value_{d}, 42);\n", .{ i, i }) catch unreachable;
+        f.h = f.docs.openFile("/w/big.zig", text.written()) catch unreachable;
+        f.text_edits = gpa.alloc(zg_lsp.protocol.TextEdit, 10_000) catch unreachable;
+        for (f.text_edits, 0..) |*te, i| {
+            const line: u32 = @intCast(i);
+            te.* = .{ .range = .{ .start = .{ .line = line, .character = 10 }, .end = .{ .line = line, .character = 15 } }, .newText = "result" };
+        }
+        f.edits = &.{};
+        var changes: std.json.ArrayHashMap([]const zg_lsp.protocol.TextEdit) = .{};
+        changes.map.put(gpa, "file:///w/big.zig", f.text_edits) catch unreachable;
+        f.edit = .{ .changes = changes };
+    }
+
+    fn deinit(f: *WsEditFixture) void {
+        f.edit.changes.?.map.deinit(f.gpa);
+        f.gpa.free(f.text_edits);
+        f.docs.release(f.h);
+        f.docs.deinit();
+    }
+};
+
+const no_fs: zg_codeintel.edits.plan.FileOps = .{ .ctx = undefined, .vtable = &.{
+    .kind = struct {
+        fn f(_: *anyopaque, _: []const u8) ?zg_codeintel.edits.plan.FileKind {
+            return null;
+        }
+    }.f,
+    .read = struct {
+        fn f(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]u8 {
+            return error.FileNotFound;
+        }
+    }.f,
+    .write = struct {
+        fn f(_: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+            return error.AccessDenied;
+        }
+    }.f,
+    .move = struct {
+        fn f(_: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+            return error.AccessDenied;
+        }
+    }.f,
+    .trash = struct {
+        fn f(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]u8 {
+            return error.AccessDenied;
+        }
+    }.f,
+    .restore = struct {
+        fn f(_: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+            return error.AccessDenied;
+        }
+    }.f,
+    .forget = struct {
+        fn f(_: *anyopaque, _: []const u8) void {}
+    }.f,
+} };
+
+/// Plans 10k edits (convert, sort, check, apply to the copy). Budget:
+/// 10k edits in < 10 ms.
+fn wseditPlan10k(f: *WsEditFixture, s: *State) void {
+    for (0..s.iterations()) |_| {
+        var p = zg_codeintel.edits.plan.plan(f.gpa, &f.docs, no_fs, &f.edit, .{ .enc = .utf8 }, "rename", null) catch unreachable;
+        bench.doNotOptimizeAway(p.steps.len);
+        p.deinit();
     }
 }
