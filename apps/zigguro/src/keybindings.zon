@@ -1,9 +1,11 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
-// user's keybindings.json win). VS Code's explorer and problems keys,
-// note search, and multiple terminals.
+// user's keybindings.json win). VS Code's explorer, problems and source
+// control keys, note search, and multiple terminals.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
+    // workbench.view.scm
+    .{ .key = "mod+shift+g", .command = "workbench.showScm" },
     // renameFile / deleteFile / filesExplorer.copy / cut / paste
     .{ .key = "f2", .command = "explorer.rename", .when = "explorerTreeFocus" },
     .{ .key = "delete", .macos = "cmd+backspace", .command = "explorer.delete", .when = "explorerTreeFocus" },
