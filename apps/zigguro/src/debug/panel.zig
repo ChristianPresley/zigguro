@@ -1,6 +1,6 @@
 //! The Run and Debug panel (E07.F07.S01.T01, .T03): the debug toolbar,
 //! the configuration row, then the Variables, Watch, Call Stack,
-//! Loaded Scripts (while debugging) and Breakpoints views, over the debug
+//! Loaded Scripts and Modules (while debugging) and Breakpoints views, over the debug
 //! service. The console is a panel of its own.
 //!
 //! The trees are rebuilt only when the service's `generation` changed,
@@ -16,6 +16,7 @@ const call_stack = @import("call_stack.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
 const sources_view = @import("sources_view.zig");
+const modules_view = @import("modules_view.zig");
 
 const Allocator = std.mem.Allocator;
 const Ui = zg_gui.Ui;
@@ -25,6 +26,7 @@ const CallStack = call_stack.CallStack;
 const VarTree = var_tree.VarTree;
 const BpView = bp_view.BpView;
 const SourcesView = sources_view.SourcesView;
+const ModulesView = modules_view.ModulesView;
 
 pub const DebugPanel = struct {
     gpa: Allocator,
@@ -34,6 +36,7 @@ pub const DebugPanel = struct {
     watch: VarTree = undefined,
     bpv: BpView = undefined,
     srcs: SourcesView = undefined,
+    mods: ModulesView = undefined,
     /// The service generation the tree was built from.
     seen: u64 = 0,
     snap_arena: std.heap.ArenaAllocator,
@@ -50,11 +53,14 @@ pub const DebugPanel = struct {
         try p.bpv.init(gpa, d.bpHooks());
         errdefer p.bpv.deinit();
         try p.srcs.init(gpa, d.sourcesHooks());
+        errdefer p.srcs.deinit();
+        try p.mods.init(gpa);
         p.seen = 0;
         _ = p.refresh();
     }
 
     pub fn deinit(p: *DebugPanel) void {
+        p.mods.deinit();
         p.srcs.deinit();
         p.bpv.deinit();
         p.watch.deinit();
@@ -74,6 +80,7 @@ pub const DebugPanel = struct {
         p.watch.update(p.d.viewInspector()) catch {};
         if (p.d.bpSnapshot(p.snap_arena.allocator())) |bs| p.bpv.update(bs) catch {} else |_| {}
         if (p.d.sourcesSnapshot(p.snap_arena.allocator())) |ss| p.srcs.update(ss) catch {} else |_| {}
+        if (p.d.modulesSnapshot(p.snap_arena.allocator())) |ms| p.mods.update(ms) catch {} else |_| {}
         if (p.d.reveal_req) |id| {
             if (p.d.entryById(id) == null) {
                 p.d.reveal_req = null;
@@ -89,7 +96,7 @@ pub const DebugPanel = struct {
         p.stack.focus(w);
     }
 
-    pub const View = enum { variables, watch, call_stack, loaded_scripts, breakpoints };
+    pub const View = enum { variables, watch, call_stack, loaded_scripts, modules, breakpoints };
 
     /// Edits breakpoint `id`'s `field` in the Breakpoints view (just made:
     /// the rows are read again first).
@@ -111,6 +118,7 @@ pub const DebugPanel = struct {
             .watch => p.watch.focus(w),
             .call_stack => p.stack.focus(w),
             .loaded_scripts => p.srcs.focus(w),
+            .modules => p.mods.focus(w),
             .breakpoints => p.bpv.focus(w),
         }
     }
@@ -147,6 +155,10 @@ pub const DebugPanel = struct {
             heading(ui, "LOADED SCRIPTS");
             ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "loadedScriptsFocus" });
             if (p.srcs.isEmpty()) hint(ui, "No loaded scripts yet.") else p.srcs.build(ui);
+            ui.close();
+            heading(ui, "MODULES");
+            ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "modulesFocus" });
+            if (p.mods.isEmpty()) hint(ui, "No modules yet.") else p.mods.build(ui);
             ui.close();
         }
         p.breakpointsHeading(ui);
