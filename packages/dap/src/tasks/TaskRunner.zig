@@ -112,7 +112,8 @@ pub const TerminalHost = struct {
 pub const ProblemHost = struct {
     ctx: *anyopaque,
     /// The owner's problems are now `problems` (valid during the call).
-    set: *const fn (ctx: *anyopaque, owner: []const u8, problems: []const pm.Problem) void,
+    /// `label` is the task's: a new run of it replaces the old run's.
+    set: *const fn (ctx: *anyopaque, owner: []const u8, label: []const u8, problems: []const pm.Problem) void,
     /// `reveal_problems`: show the Problems panel.
     reveal: ?*const fn (ctx: *anyopaque) void = null,
 };
@@ -676,7 +677,7 @@ fn onCycle(ctx: *anyopaque, ev: pm.Cycle) void {
 }
 
 fn publish(r: *TaskRunner, node: *TaskRun, problems: []const pm.Problem) void {
-    if (r.cfg.problems) |h| h.set(h.ctx, node.owner, problems);
+    if (r.cfg.problems) |h| h.set(h.ctx, node.owner, node.label, problems);
 }
 
 fn reveal(r: *TaskRunner, node: *TaskRun) void {
