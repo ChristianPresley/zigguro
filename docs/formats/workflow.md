@@ -165,3 +165,34 @@ untrusted sources (web pages, trigger payloads) are wrapped in
 
 `"@research/lead"` uses the prompt library entry `research/lead`
 (docs/formats/prompts.md), rendered with the `with` bindings.
+
+## Resume and replay
+
+Every agent start is journaled in `.zigguro/runs/<workflow run>/workflow.jsonl`
+with a replay key: BLAKE3 over the step path, the map item index, the
+final prompt text, the tools, the model, the schema and the prompt
+library entry's text hash. Results are journaled when they arrive.
+
+Resuming a stopped, crashed or edited workflow (`zg workflow resume RUN`)
+walks the agents in the order they started:
+
+1. While every earlier agent was reused, an agent whose key matches a
+   completed result in the journal returns that result without starting.
+2. The first agent that differs re-runs, and so does every agent started
+   after it. An agent differs when its prompt, tools, model, schema or
+   library text changed, when a different agent now starts in its place,
+   or when it failed, was stopped on its own, or was still running when
+   the workflow stopped.
+3. Stopping the whole workflow is not a failure: agents that had finished
+   are reused on resume.
+
+Plans expand deterministically (no wall clock or randomness; `$args` are
+captured at start; vote copies are seeded by their index), so the same
+definition and arguments start the same agents in the same order. Editing
+the last step's prompt re-runs only that step; editing one map item's
+input re-runs that item and everything started after it. Builtins and
+commands always run again; answered gates are journaled like agents.
+
+Journal lines: `{"v":1,"seq":N,"t":"start","key":"<hex>","child":"<run id>"}`
+and `{"v":1,"seq":N,"t":"result","status":"ok|failed|stopped","result":…|"error":"…"}`.
+A line cut off by a crash is dropped when the journal is opened.
