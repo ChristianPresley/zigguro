@@ -8,8 +8,11 @@
 //!
 //! Remotes go over HTTPS (zg_net, credential helpers), SSH (zg_git's
 //! client, keys, agent and known_hosts) or the file system. Commits are
-//! signed when `commit.gpgSign` asks for it (SSH keys). Not built in
-//! yet: `bisect run` and `submodule foreach`; they report so.
+//! signed when `commit.gpgSign` asks for it (SSH keys). `rebase -i`
+//! writes a plan to edit instead of opening an editor, and
+//! `rebase -i --start` carries it out. Not built in yet: `bisect run`,
+//! `submodule foreach` and the plan's exec/label/merge lines; they
+//! report so.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -121,6 +124,7 @@ pub const Git = struct {
             .{ .name = "CHERRY_PICK_HEAD", .op = .cherry_pick },
             .{ .name = "REVERT_HEAD", .op = .revert },
             .{ .name = "BISECT_LOG", .op = .bisect },
+            .{ .name = plan_file, .op = .rebase_plan },
         };
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         for (checks) |c| {
@@ -129,6 +133,13 @@ pub const Git = struct {
             return c.op;
         }
         return .none;
+    }
+
+    /// A file in the repository folder (the interactive rebase plan,
+    /// `rebase-merge/git-rebase-todo`, ...), in `buf`.
+    pub fn gitPath(g: *const Git, buf: []u8, name: []const u8) ?[]const u8 {
+        const gd = g.git_dir orelse return null;
+        return std.fmt.bufPrint(buf, "{s}{c}{s}", .{ gd, std.fs.path.sep, name }) catch null;
     }
 
     /// Runs a git command line (without "git") in the working tree.
@@ -364,6 +375,8 @@ pub const Op = enum {
     cherry_pick,
     revert,
     bisect,
+    /// `rebase -i` wrote a plan to edit; nothing has moved yet.
+    rebase_plan,
 
     pub fn label(o: Op) []const u8 {
         return switch (o) {
@@ -373,6 +386,7 @@ pub const Op = enum {
             .cherry_pick => "Cherry-picking",
             .revert => "Reverting",
             .bisect => "Bisecting",
+            .rebase_plan => "Interactive rebase planned",
         };
     }
 
@@ -385,6 +399,7 @@ pub const Op = enum {
             .cherry_pick => "cherry-pick",
             .revert => "revert",
             .bisect => "bisect",
+            .rebase_plan => "rebase",
         };
     }
 };
@@ -666,6 +681,12 @@ fn describe(e: anyerror) []const u8 {
         error.LocalModifications => "fatal: the submodule has local modifications; use -f to discard them",
         error.MissingPath => "fatal: say which submodule path",
         error.NoUrl => "fatal: the submodule has no url in .gitmodules",
+        error.UnsupportedRebaseCommand => "error: the plan uses a command not built in yet (exec, label, reset, merge, update-ref, fixup -C/-c)",
+        error.BadRebaseTodo => "error: a plan line has no commit",
+        error.SquashWithoutPrevious => "error: cannot 'squash' without a previous commit",
+        error.NothingToDo => "error: nothing to do (the plan is empty)",
+        error.NoRebasePlan => "error: no interactive rebase planned; run 'rebase -i <upstream>' first",
+        error.RebaseInProgress => "fatal: a rebase is already in progress; continue, skip or abort it first",
         error.Unsupported => "this git command is not built into zigguro yet",
         else => @errorName(e),
     };
@@ -677,6 +698,8 @@ const Args = struct {
     flags: std.StringHashMapUnmanaged([]const u8) = .empty,
     pos: std.ArrayList([]const u8) = .empty,
     after_dashdash: std.ArrayList([]const u8) = .empty,
+    /// Every `-x value` in order (`-m a -m b` keeps both).
+    values: std.ArrayList([2][]const u8) = .empty,
 
     /// `with_value` flags take the next word (or `--x=v`).
     fn parse(a: Allocator, words: []const []const u8, with_value: []const []const u8) !Args {
@@ -691,6 +714,7 @@ const Args = struct {
             if (w.len > 1 and w[0] == '-') {
                 if (std.mem.indexOfScalar(u8, w, '=')) |eq| if (std.mem.startsWith(u8, w, "--")) {
                     try r.flags.put(a, w[0..eq], w[eq + 1 ..]);
+                    try r.values.append(a, .{ w[0..eq], w[eq + 1 ..] });
                     continue;
                 };
                 const takes = for (with_value) |v| {
@@ -698,6 +722,7 @@ const Args = struct {
                 } else false;
                 if (takes and i + 1 < words.len) {
                     try r.flags.put(a, w, words[i + 1]);
+                    try r.values.append(a, .{ w, words[i + 1] });
                     i += 1;
                 } else try r.flags.put(a, w, "");
                 continue;
@@ -713,6 +738,13 @@ const Args = struct {
 
     fn get(r: *const Args, f: []const u8) ?[]const u8 {
         return r.flags.get(f);
+    }
+
+    /// The values of every `f` or `g` given, in order.
+    fn every(r: *const Args, a: Allocator, f: []const u8, g: []const u8) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        for (r.values.items) |v| if (std.mem.eql(u8, v[0], f) or std.mem.eql(u8, v[0], g)) try out.append(a, v[1]);
+        return out.items;
     }
 
     /// Positionals before and after `--`.
@@ -979,7 +1011,8 @@ fn cmdClean(_: *const Git, repo: *Repository, a: Allocator, rest: []const []cons
 
 fn cmdCommit(g: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, _: *Io.Writer) !u8 {
     const args = try Args.parse(a, rest, &.{ "-m", "--message", "-F" });
-    var msg: []const u8 = args.get("-m") orelse args.get("--message") orelse "";
+    // Each -m is a paragraph, as with git.
+    var msg: []const u8 = try std.mem.join(a, "\n\n", try args.every(a, "-m", "--message"));
     var cleanup: zg_git.commit_cmd.Cleanup = .whitespace;
     if (msg.len == 0) {
         // --no-edit (or nothing): the prepared message of a merge,
@@ -1586,6 +1619,7 @@ fn resultOut(r: bridge.common.Result, out: *Io.Writer, err: *Io.Writer) !u8 {
         .fast_forward => try out.writeAll("Fast-forward\n"),
         .committed => try out.writeAll("Done.\n"),
         .applied => try out.writeAll("Applied; not committed.\n"),
+        .stopped => try out.writeAll("Stopped. Amend or commit what you need, then continue the rebase.\n"),
         .conflicted => {
             for (r.conflicts) |p| try err.print("CONFLICT (content): Merge conflict in {s}\n", .{p});
             try err.writeAll("Resolve the conflicts, stage the files, then continue (or abort).\n");
@@ -1631,29 +1665,116 @@ fn cmdMerge(g: *const Git, repo: *Repository, a: Allocator, rest: []const []cons
 
 fn cmdRebase(g: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
     const args = try Args.parse(a, rest, &.{"--onto"});
-    const opts: bridge.rebase.Options = .{ .onto = args.get("--onto"), .tz_offset_min = g.tz_offset_min };
+    var opts: bridge.rebase.Options = .{ .onto = args.get("--onto"), .tz_offset_min = g.tz_offset_min };
     if (args.has("--abort")) {
         try bridge.rebase.abort(repo);
         return 0;
     }
+    if (args.has("--edit-todo")) {
+        if (!bridge.rebase.inProgress(repo)) return error.NoRebaseInProgress;
+        try out.writeAll("Edit .git/rebase-merge/git-rebase-todo (opened in the editor), save it, then continue.\n");
+        return 0;
+    }
+    var upstream: []const u8 = if (args.pos.items.len > 0) args.pos.items[0] else "@{u}";
     if (args.has("-i") or args.has("--interactive")) {
-        try err.writeAll("Interactive rebase needs an editor; reorder commits with cherry-pick instead.\n");
-        return 1;
+        if (args.has("--cancel")) {
+            repo.git_dir.deleteFile(repo.io, plan_file) catch |e| if (e == error.FileNotFound) return error.NoRebasePlan else return e;
+            try out.writeAll("Interactive rebase plan dropped.\n");
+            return 0;
+        }
+        if (!args.has("--start")) return planRebase(repo, a, upstream, opts.onto, out);
+        const text = repo.git_dir.readFileAlloc(repo.io, plan_file, a, .limited(4 << 20)) catch |e| return if (e == error.FileNotFound) error.NoRebasePlan else e;
+        const plan = try readPlan(repo, a, text);
+        upstream = plan.upstream;
+        opts.onto = plan.onto;
+        opts.todo = plan.todo;
+        var r = try bridge.rebase.rebase(repo, upstream, opts);
+        defer r.deinit();
+        repo.git_dir.deleteFile(repo.io, plan_file) catch {};
+        if (r.kind == .committed) {
+            try out.writeAll("Successfully rebased.\n");
+            return 0;
+        }
+        return resultOut(r, out, err);
     }
     var r = if (args.has("--continue"))
         try bridge.rebase.continueRebase(repo, opts)
     else if (args.has("--skip"))
         try bridge.rebase.skip(repo, opts)
-    else blk: {
-        const up = if (args.pos.items.len > 0) args.pos.items[0] else "@{u}";
-        break :blk try bridge.rebase.rebase(repo, up, opts);
-    };
+    else
+        try bridge.rebase.rebase(repo, upstream, opts);
     defer r.deinit();
     if (r.kind == .committed) {
         try out.writeAll("Successfully rebased.\n");
         return 0;
     }
     return resultOut(r, out, err);
+}
+
+/// Where `rebase -i` leaves its plan until `rebase -i --start`.
+pub const plan_file = "zg-rebase-todo";
+const plan_header = "# zigguro rebase -i";
+
+/// `rebase -i <upstream>`: writes the plan (a pick per commit, as git's
+/// editor shows it) for the user to edit; nothing moves yet.
+fn planRebase(repo: *Repository, a: Allocator, upstream: []const u8, onto: ?[]const u8, out: *Io.Writer) !u8 {
+    if (bridge.rebase.inProgress(repo)) return error.RebaseInProgress;
+    const items = try bridge.rebase.plan(repo, a, upstream);
+    var aw: Io.Writer.Allocating = .init(a);
+    try aw.writer.print("{s} {s}", .{ plan_header, upstream });
+    if (onto) |o| try aw.writer.print(" --onto {s}", .{o});
+    try aw.writer.writeAll("\n");
+    try bridge.rebase.formatTodo(repo, items, &aw.writer);
+    try aw.writer.writeAll(
+        \\
+        \\# Edit this plan, save it, then press Start (or run 'rebase -i --start').
+        \\# Lines run top to bottom; reorder them to reorder the commits.
+        \\#
+        \\# p, pick <commit> = use commit
+        \\# r, reword <commit> = use commit, with the text after it as the new subject
+        \\# e, edit <commit> = use commit, but stop for amending
+        \\# s, squash <commit> = meld into the previous commit, keeping both messages
+        \\# f, fixup <commit> = meld into the previous commit, keeping its message
+        \\# d, drop <commit> = remove commit
+        \\# b, break = stop here (continue the rebase later)
+        \\#
+        \\# Removing a line drops that commit; an empty plan does nothing.
+        \\
+    );
+    try repo.git_dir.writeFile(repo.io, .{ .sub_path = plan_file, .data = aw.written() });
+    try out.print("Planned {d} commit{s} onto {s}: edit the plan (opened in the editor), then Start.\n", .{ items.len, if (items.len == 1) "" else "s", onto orelse upstream });
+    return 0;
+}
+
+const Plan = struct { upstream: []const u8, onto: ?[]const u8, todo: []const bridge.rebase.TodoItem };
+
+/// Reads a plan file. A `reword` line whose text no longer matches the
+/// commit's subject gives the commit that subject (its body stays).
+fn readPlan(repo: *Repository, a: Allocator, text: []const u8) !Plan {
+    const first = std.mem.sliceTo(text, '\n');
+    if (!std.mem.startsWith(u8, first, plan_header)) return error.NoRebasePlan;
+    var words = std.mem.tokenizeScalar(u8, first[plan_header.len..], ' ');
+    const upstream = words.next() orelse return error.NoRebasePlan;
+    const onto = if (words.next()) |w| (if (std.mem.eql(u8, w, "--onto")) words.next() else null) else null;
+    const todo = try bridge.rebase.parseTodo(a, text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var i: usize = 0;
+    while (lines.next()) |raw| {
+        const l = std.mem.trim(u8, raw, " \t\r");
+        if (l.len == 0 or l[0] == '#' or std.mem.startsWith(u8, l, "noop")) continue;
+        defer i += 1;
+        if (i >= todo.len or todo[i].cmd != .reword) continue;
+        var it = std.mem.tokenizeAny(u8, l, " \t");
+        _ = it.next();
+        _ = it.next();
+        const subject = std.mem.trim(u8, it.rest(), " \t");
+        const id = try zg_git.revparse.resolveCommit(repo, todo[i].rev);
+        const c = try bridge.common.readCommit(repo, a, id);
+        const old_subject = bridge.common.subject(c.message);
+        if (subject.len == 0 or std.mem.eql(u8, subject, old_subject)) continue;
+        todo[i].message = try std.mem.concat(a, u8, &.{ subject, c.message[old_subject.len..] });
+    }
+    return .{ .upstream = upstream, .onto = onto, .todo = todo };
 }
 
 /// `cherry-pick` and `revert` (`words[0]` says which).
@@ -2063,4 +2184,65 @@ test "git: submodules are added, updated, synced and removed natively" {
     const fe = try p.run(gpa, &.{ "submodule", "foreach", "ls" });
     defer fe.deinit(gpa);
     try testing.expect(!fe.ok());
+}
+
+test "git: an interactive rebase plan squashes, rewords and stops to edit" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var g = try testRepo(&tmp, &env);
+    defer g.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "base.txt", .data = "base\n" });
+    try expectRun(&g, &.{ "add", "-A" });
+    try expectRun(&g, &.{ "commit", "-q", "-m", "base" });
+    for (1..4) |i| {
+        var buf: [16]u8 = undefined;
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&buf, "c{d}.txt", .{i}), .data = "x\n" });
+        try expectRun(&g, &.{ "add", "-A" });
+        try expectRun(&g, &.{ "commit", "-q", "-m", try std.fmt.bufPrint(&buf, "c{d}", .{i}), "-m", "body" });
+    }
+
+    // The plan lists the three commits; nothing moves until Start.
+    try expectRun(&g, &.{ "rebase", "-i", "HEAD~3" });
+    try testing.expectEqual(Op.rebase_plan, g.operation());
+    const plan = try tmp.dir.readFileAlloc(io, ".git/" ++ plan_file, gpa, .limited(1 << 16));
+    defer gpa.free(plan);
+    var lines = std.mem.splitScalar(u8, plan, '\n');
+    _ = lines.next();
+    var ids: [3][]const u8 = undefined;
+    for (&ids) |*id| id.* = std.mem.sliceTo(lines.next().?["pick ".len..], ' ');
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const edited = try std.fmt.allocPrint(a, "# zigguro rebase -i HEAD~3\npick {s} c1\ns {s} c2\nreword {s} Third, renamed\n", .{ ids[0], ids[1], ids[2] });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git/" ++ plan_file, .data = edited });
+    try expectRun(&g, &.{ "rebase", "-i", "--start" });
+    try testing.expectEqual(Op.none, g.operation());
+    const log = try g.log(a, 10, false);
+    try testing.expectEqual(@as(usize, 3), log.len);
+    try testing.expectEqualStrings("Third, renamed", log[0].subject);
+    try testing.expectEqualStrings("c1", log[1].subject);
+    try testing.expectEqualStrings("base", log[2].subject);
+
+    // An edit stops; staged changes amend the commit on Continue.
+    try expectRun(&g, &.{ "rebase", "-i", "HEAD~1" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git/" ++ plan_file, .data = try std.fmt.allocPrint(a, "# zigguro rebase -i HEAD~1\nedit {s}\n", .{log[0].hash}) });
+    try expectRun(&g, &.{ "rebase", "-i", "--start" });
+    try testing.expectEqual(Op.rebase, g.operation());
+    try tmp.dir.writeFile(io, .{ .sub_path = "c3.txt", .data = "amended\n" });
+    try expectRun(&g, &.{ "add", "c3.txt" });
+    try expectRun(&g, &.{ "rebase", "--continue" });
+    try testing.expectEqual(Op.none, g.operation());
+    const after = try g.log(a, 10, false);
+    try testing.expectEqual(@as(usize, 3), after.len);
+    try testing.expectEqualStrings("Third, renamed", after[0].subject);
+    try testing.expect(!std.mem.eql(u8, after[0].hash, log[0].hash));
+
+    // A plan can be dropped.
+    try expectRun(&g, &.{ "rebase", "-i", "HEAD~2" });
+    try expectRun(&g, &.{ "rebase", "-i", "--cancel" });
+    try testing.expectEqual(Op.none, g.operation());
 }

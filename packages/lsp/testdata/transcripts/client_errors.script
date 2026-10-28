@@ -6,7 +6,11 @@
 > textDocument/hover
 < {"id": $1, "error": {"code": -32801, "message": "content modified"}}
 > textDocument/hover
+< {"id": $1, "error": {"code": -32800, "message": "request cancelled"}}
+> textDocument/hover
 < {"id": $1, "error": {"code": -32802, "message": "server cancelled"}}
+> textDocument/hover
+< {"id": $1, "error": {"code": -32802, "message": "not now", "data": {"retriggerRequest": false}}}
 > textDocument/hover
 < {"id": $1, "error": {"code": -32603, "message": "boom"}}
 > textDocument/hover

@@ -305,3 +305,168 @@ test "gitbridge: pull matches git" {
     }
     try testing.expectEqual(@as(usize, 0), failures);
 }
+
+const IStep = union(enum) {
+    /// `git rebase -i <upstream>` with this todo list.
+    start: struct { upstream: []const u8, todo: []const rebase.TodoItem },
+    cont,
+    skip,
+    abort,
+    /// Runs in both copies.
+    sh: []const u8,
+};
+
+const IScenario = struct { name: []const u8, setup: []const u8, steps: []const IStep, editor: []const u8 = ":" };
+
+/// Five commits on `feature` (f1..f5, each with a body) over `main one`.
+const stack = base ++
+    "git checkout -qb feature && for i in 1 2 3 4 5; do printf \"$i\\n\" > f$i.txt && git add f$i.txt && git commit -qm \"f$i\" -m \"body $i\"; done && " ++
+    "git checkout -q main && sed -i 's/^8$/eight/' a.txt && git commit -qam 'main one' && git checkout -q feature";
+/// `feature`: g1 adds g.txt, g2 changes line 4 (which main changed too), g3 adds h.txt.
+const squash_conflict = base ++
+    "git checkout -qb feature && printf 'g\\n' > g.txt && git add g.txt && git commit -qm g1 && " ++
+    "sed -i 's/^4$/four (feature)/' a.txt && git commit -qam g2 && printf 'h\\n' > h.txt && git add h.txt && git commit -qm g3 && " ++
+    "git checkout -q main && sed -i 's/^4$/four (main)/' a.txt && git commit -qam 'main four' && git checkout -q feature";
+
+fn todoItem(comptime cmd: rebase.Command, comptime rev: []const u8) rebase.TodoItem {
+    return .{ .cmd = cmd, .rev = rev };
+}
+
+const interactive_scenarios = [_]IScenario{
+    .{ .name = "rebase -i: squash, fixup and reword", .setup = stack, .steps = &.{.{ .start = .{ .upstream = "main", .todo = &.{
+        todoItem(.pick, "feature~4"), todoItem(.squash, "feature~3"), todoItem(.squash, "feature~2"), todoItem(.fixup, "feature~1"), todoItem(.reword, "feature"),
+    } } }} },
+    .{ .name = "rebase -i: a fixup run, reordered, a drop", .setup = stack, .steps = &.{.{ .start = .{ .upstream = "main", .todo = &.{
+        todoItem(.pick, "feature~3"), todoItem(.fixup, "feature~4"), todoItem(.fixup, "feature~1"), todoItem(.drop, "feature~2"), todoItem(.pick, "feature"),
+    } } }} },
+    .{ .name = "rebase -i: edit amends, break stops", .setup = stack, .steps = &.{
+        .{ .start = .{ .upstream = "main", .todo = &.{ todoItem(.pick, "feature~4"), todoItem(.edit, "feature~3"), todoItem(.reword, "feature~2"), .{ .cmd = .@"break" }, todoItem(.pick, "feature~1"), todoItem(.drop, "feature") } } },
+        .{ .sh = "printf 'more\\n' >> f2.txt && git add f2.txt" },
+        .cont,
+        .cont,
+    } },
+    .{ .name = "rebase -i: commits already in place fast-forward", .setup = stack, .steps = &.{
+        .{ .start = .{ .upstream = "feature~5", .todo = &.{ todoItem(.pick, "feature~4"), todoItem(.edit, "feature~3"), todoItem(.pick, "feature~2"), todoItem(.reword, "feature~1"), todoItem(.pick, "feature") } } },
+        .cont,
+    } },
+    .{ .name = "rebase -i: a squash that conflicts", .setup = squash_conflict, .steps = &.{
+        .{ .start = .{ .upstream = "main", .todo = &.{ todoItem(.pick, "feature~2"), todoItem(.squash, "feature~1"), todoItem(.fixup, "feature") } } },
+        .{ .sh = "printf 'resolved\\n' > a.txt && git add a.txt" },
+        .cont,
+    } },
+    .{ .name = "rebase -i: a pick that conflicts, skipped", .setup = squash_conflict, .steps = &.{
+        .{ .start = .{ .upstream = "main", .todo = &.{ todoItem(.pick, "feature~1"), todoItem(.pick, "feature~2"), todoItem(.pick, "feature") } } },
+        .skip,
+    } },
+    .{ .name = "rebase -i: abort after an edit", .setup = stack, .steps = &.{
+        .{ .start = .{ .upstream = "main", .todo = &.{ todoItem(.edit, "feature~4"), todoItem(.pick, "feature~3") } } },
+        .abort,
+    } },
+    .{
+        .name = "rebase -i: reword with a new message",
+        .setup = stack,
+        .editor = "f() { printf \"Renamed\\n\\nwith a body\\n\" > \"$1\"; }; f",
+        .steps = &.{.{ .start = .{ .upstream = "main", .todo = &.{ todoItem(.pick, "feature~4"), .{ .cmd = .reword, .rev = "feature~3", .message = "Renamed\n\nwith a body" } } } }},
+    },
+};
+
+/// The git command for a step.
+fn gitStep(a: Allocator, step: IStep, editor: []const u8) ![]const u8 {
+    const quiet = " >/dev/null 2>&1 || true";
+    return switch (step) {
+        .start => |s| blk: {
+            var fmt: std.ArrayList(u8) = .empty;
+            var revs: std.ArrayList(u8) = .empty;
+            for (s.todo) |it| {
+                if (it.cmd == .@"break") {
+                    try fmt.appendSlice(a, "break\\n");
+                    continue;
+                }
+                try fmt.print(a, "{s} %s %s\\n", .{@tagName(it.cmd)});
+                try revs.print(a, " $(git rev-parse {s}) $(git log -1 --format=%s {s})", .{ it.rev, it.rev });
+            }
+            break :blk std.fmt.allocPrint(a, "printf '{s}'{s} > ../todo && GIT_SEQUENCE_EDITOR='cp ../todo' GIT_EDITOR='{s}' git rebase -i {s}{s}", .{ fmt.items, revs.items, editor, s.upstream, quiet });
+        },
+        .cont => std.fmt.allocPrint(a, "GIT_EDITOR=: git rebase --continue{s}", .{quiet}),
+        .skip => std.fmt.allocPrint(a, "git rebase --skip{s}", .{quiet}),
+        .abort => std.fmt.allocPrint(a, "git rebase --abort{s}", .{quiet}),
+        .sh => |c| a.dupe(u8, c),
+    };
+}
+
+fn nativeStep(repo: *git.Repository, step: IStep) !void {
+    var r = switch (step) {
+        .start => |s| try rebase.rebase(repo, s.upstream, .{ .todo = s.todo }),
+        .cont => try rebase.continueRebase(repo, .{}),
+        .skip => try rebase.skip(repo, .{}),
+        .abort => return rebase.abort(repo),
+        .sh => unreachable,
+    };
+    r.deinit();
+}
+
+test "gitbridge: interactive rebase matches git" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("PATH", "/usr/local/bin:/usr/bin:/bin");
+    try env.put("HOME", root);
+    try env.put("LANG", "C");
+    try env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try env.put("GIT_CEILING_DIRECTORIES", root);
+    try env.put("GIT_AUTHOR_NAME", "A");
+    try env.put("GIT_AUTHOR_EMAIL", "a@example.com");
+    try env.put("GIT_COMMITTER_NAME", "C");
+    try env.put("GIT_COMMITTER_EMAIL", "c@example.com");
+    try env.put("GIT_AUTHOR_DATE", "1700000000 +0100");
+    try env.put("GIT_COMMITTER_DATE", "1700000000 +0100");
+    const probe = sh(gpa, io, root, &env, "git --version") catch return error.SkipZigTest;
+    gpa.free(probe);
+
+    const i_snapshot = snapshot ++ "; echo --; for s in amend current-fixups message-squash; do test -f .git/rebase-merge/$s && { echo \"== $s\"; cat .git/rebase-merge/$s; echo; }; done; " ++
+        "git reflog --format='%H %gs'; git log -1 --format=%B";
+    var failures: usize = 0;
+    scenario: for (interactive_scenarios, 0..) |sc, i| {
+        var name_buf: [32]u8 = undefined;
+        const dir_name = try std.fmt.bufPrint(&name_buf, "i{d}", .{i});
+        const setup = try std.fmt.allocPrint(gpa, "mkdir {s} && cd {s} && mkdir n && cd n && {s} && cd .. && cp -a n g", .{ dir_name, dir_name, sc.setup });
+        defer gpa.free(setup);
+        gpa.free(try sh(gpa, io, root, &env, setup));
+        const n_dir = try std.fs.path.join(gpa, &.{ root, dir_name, "n" });
+        defer gpa.free(n_dir);
+        const g_dir = try std.fs.path.join(gpa, &.{ root, dir_name, "g" });
+        defer gpa.free(g_dir);
+        for (sc.steps, 0..) |step, k| {
+            var arena: std.heap.ArenaAllocator = .init(gpa);
+            defer arena.deinit();
+            gpa.free(try sh(gpa, io, g_dir, &env, try gitStep(arena.allocator(), step, sc.editor)));
+            if (step == .sh) {
+                gpa.free(try sh(gpa, io, n_dir, &env, step.sh));
+            } else {
+                const repo = (try git.Repository.discover(gpa, io, n_dir, .{ .env = &env })).?;
+                defer repo.close();
+                nativeStep(repo, step) catch |e| {
+                    std.debug.print("scenario '{s}' step {d}: native returned {}\n", .{ sc.name, k, e });
+                    failures += 1;
+                    continue :scenario;
+                };
+            }
+            const want = try sh(gpa, io, g_dir, &env, i_snapshot);
+            defer gpa.free(want);
+            const got = try sh(gpa, io, n_dir, &env, i_snapshot);
+            defer gpa.free(got);
+            if (!std.mem.eql(u8, want, got)) {
+                std.debug.print("scenario '{s}' step {d} differs\n--- git:\n{s}\n--- native:\n{s}\n", .{ sc.name, k, want, got });
+                failures += 1;
+                continue :scenario;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), failures);
+}

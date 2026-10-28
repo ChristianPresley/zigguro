@@ -153,6 +153,8 @@ refresh_listeners: std.ArrayList(RefreshListener) = .empty,
 diagnostics: ?DiagnosticsHooks = null,
 /// Null: server edits are refused.
 apply_edit_hook: ?ApplyEditHook = null,
+/// Work-done progress and partial-result tokens of every server.
+progress: zg_lsp.client.progress.ProgressTracker,
 
 /// `m` must not move once a document is open.
 pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRegistry, opts: Options) void {
@@ -164,6 +166,7 @@ pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRe
         .opts = opts,
         .empty_env = .init(rt.gpa),
         .sub = .init(rt.io),
+        .progress = .init(rt.gpa, rt.io),
     };
 }
 
@@ -196,6 +199,7 @@ pub fn deinit(m: *Manager) void {
         m.gpa.destroy(s);
     }
     m.servers.deinit(m.gpa);
+    m.progress.deinit();
     m.refresh_listeners.deinit(m.gpa);
     var it = m.open.valueIterator();
     while (it.next()) |d| m.gpa.free(d.lang);
@@ -573,6 +577,7 @@ fn start(s: *Server) !void {
         .init_timeout = m.opts.init_timeout,
         .services = .{
             .server = s.id,
+            .progress = &m.progress,
             .refresh = .{ .ctx = m, .func = onServerRefresh },
             .host = host: {
                 var h = zg_lsp.client.host.null_host;
