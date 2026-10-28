@@ -206,3 +206,118 @@ test "ED 3 drops cold scrollback" {
     try testing.expectEqual(@as(u64, 0), pl.coldRows());
     try testing.expectEqual(@as(u64, 0), pl.scrollbackRows());
 }
+
+test "decoded pages keep their encoding and compact again without encoding" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50 });
+    defer t.deinit();
+    feedLines(&t, 0, 2000);
+    const pl = &t.primary.pages;
+    const cold_before = pl.cold_nodes.items.len;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    // Decode the two newest cold pages.
+    const second = pl.coldRows() - pl.cold_nodes.items[cold_before - 1].rows - 1;
+    try rowAt(pl, second, &text);
+    try testing.expectEqual(@as(usize, 2), pl.thawed.items.len);
+    try testing.expect(pl.thawed_bytes > 0);
+    try pl.verify();
+    // Leaving them lets the next output take them back, reusing the blobs.
+    const blob = pl.thawed.items[0].page.blob.ptr;
+    try pl.scrollViewport(-1_000_000);
+    feedLines(&t, 2000, 2001);
+    try pl.verify();
+    try testing.expectEqual(@as(usize, 0), pl.thawed.items.len);
+    try testing.expectEqual(@as(usize, 0), pl.thawed_bytes);
+    try testing.expectEqual(cold_before, pl.cold_nodes.items.len);
+    try testing.expectEqual(blob, pl.cold_nodes.items[cold_before - 1].page.blob.ptr);
+    try rowAt(pl, second, &text);
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "line {d} bold", .{second}), text.items);
+}
+
+test "the decode cache keeps at most thaw_cache pages and empties on resize" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50 });
+    defer t.deinit();
+    feedLines(&t, 0, 20_000);
+    const pl = &t.primary.pages;
+    try testing.expect(pl.cold_nodes.items.len > PageList.thaw_cache + 2);
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    try rowAt(pl, 0, &text);
+    try testing.expectEqualStrings("line 0 bold", text.items);
+    try testing.expectEqual(@as(usize, PageList.thaw_cache), pl.thawed.items.len);
+    try pl.verify();
+    try t.resize(30, 5);
+    try testing.expectEqual(@as(usize, 0), pl.thawed.items.len);
+    try pl.verify();
+}
+
+test "background compaction swaps rows out and keeps pins" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50, .background_compaction = true });
+    defer t.deinit();
+    const pl = &t.primary.pages;
+    var start = pl.activeRow(0);
+    start.x = 3;
+    const pin = try pl.track(start);
+    defer pl.untrack(pin);
+    feedLines(&t, 0, 2000);
+    // Nothing compacts until the owner runs the job.
+    try testing.expectEqual(@as(u64, 0), pl.coldRows());
+    try testing.expect(t.compactionDue());
+    while (t.compactionDue()) {
+        const job = (try t.beginCompaction()).?;
+        // Only one job at a time.
+        try testing.expectEqual(@as(?*PageList.CompactJob, null), try t.beginCompaction());
+        job.run();
+        try t.finishCompaction(job);
+    }
+    try pl.verify();
+    try testing.expect(pl.coldRows() > 1000);
+    try testing.expect(pin.garbage and pin.cold != null);
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    try rowAt(pl, 0, &text);
+    try testing.expectEqualStrings("line 0 bold", text.items);
+    try testing.expect(!pin.garbage);
+    try testing.expectEqual(@as(u16, 3), pin.pin.x);
+}
+
+test "a background compaction overtaken by a resize or ED 3 is dropped" {
+    inline for (.{ "resize", "ed3" }) |what| {
+        var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50, .background_compaction = true });
+        defer t.deinit();
+        const pl = &t.primary.pages;
+        feedLines(&t, 0, 3000);
+        const job = (try t.beginCompaction()).?;
+        job.run();
+        if (comptime std.mem.eql(u8, what, "resize")) try t.resize(30, 5) else t.feed("\x1b[3J");
+        try t.finishCompaction(job);
+        try pl.verify();
+        try testing.expectEqual(@as(u64, 0), pl.coldRows());
+        try testing.expect(!pl.job_out);
+    }
+}
+
+test "a background compaction is dropped when the viewport moved into its rows" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50, .background_compaction = true });
+    defer t.deinit();
+    const pl = &t.primary.pages;
+    feedLines(&t, 0, 3000);
+    const job = (try t.beginCompaction()).?;
+    job.run();
+    try pl.scrollViewport(1_000_000);
+    try t.finishCompaction(job);
+    try pl.verify();
+    try testing.expectEqual(@as(u64, 0), pl.coldRows());
+}
+
+test "cancelling a background compaction frees it" {
+    var t = try Terminal.init(testing.allocator, .{ .cols = 40, .rows = 5, .hot_scrollback_rows = 50, .background_compaction = true, .deflate_scrollback = true });
+    defer t.deinit();
+    feedLines(&t, 0, 3000);
+    const job = (try t.beginCompaction()).?;
+    job.run();
+    try testing.expect(job.result != null);
+    t.cancelCompaction(job);
+    try testing.expect(!t.primary.pages.job_out);
+}
