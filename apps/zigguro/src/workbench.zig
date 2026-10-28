@@ -70,6 +70,7 @@ const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
 const HierarchyPanel = @import("hierarchy_panel.zig").HierarchyPanel;
+const doc_links = @import("doc_links.zig");
 const HierarchyService = @import("codeintel.zig").HierarchyService;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
@@ -1072,6 +1073,7 @@ pub const Workbench = struct {
             ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
             ci.inline_info.on_action = .{ .ctx = wb, .f = onLensAction };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
+            ci.link_hook = .{ .ctx = wb, .open = onDocLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
             ci.setTrusted(wb.trust == .trusted);
@@ -1204,6 +1206,8 @@ pub const Workbench = struct {
         .{ .id = "quickOpen.symbolsInFile", .title = "Go to Symbol in Editor...", .category = "Go", .run = symbolsInFile },
         .{ .id = "quickOpen.symbols", .title = "Go to Symbol in Workspace...", .category = "Go", .run = symbolsInWorkspace },
         .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
+        .{ .id = "editor.expandSelection", .title = "Expand Selection", .category = "Selection", .run = expandSelection },
+        .{ .id = "editor.shrinkSelection", .title = "Shrink Selection", .category = "Selection", .run = shrinkSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
@@ -2407,6 +2411,42 @@ pub const Workbench = struct {
 
     /// A link in a hover: files open (with `#L<line>`), allowlisted
     /// commands run, web links are copied (no browser hand-off yet).
+    /// A Ctrl+clicked document link: files open in the editor (at the
+    /// `#L` line), web links in the browser, allowed commands run.
+    fn onDocLink(ctx: *anyopaque, kind: doc_links.LinkDriver.TargetKind, target: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        switch (kind) {
+            .web => if (wb.win) |w| w.openUri(target),
+            .file => {
+                var buf: [std.fs.max_path_bytes]u8 = undefined;
+                const t = doc_links.fileTarget(&buf, target) orelse return wb.notify(.info, "Can't open {s}", .{target});
+                wb.rememberHere();
+                wb.openAt(t.path, .{ .pos = .{ .line = t.line orelse 0, .character = 0, .enc = .utf16 } });
+            },
+            .command => {
+                const rest = target["command:".len..];
+                const id = rest[0 .. std.mem.indexOfScalar(u8, rest, '?') orelse rest.len];
+                const cid = wb.reg.lookup(id) orelse return wb.notify(.info, "{s} isn't available yet", .{id});
+                wb.reg.execute(cid, null, .palette) catch |e| wb.notify(.error_, "{s}: {t}", .{ id, e });
+            },
+        }
+    }
+
+    /// `editor.expandSelection` (Shift+Alt+Right).
+    fn expandSelection(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return;
+        const h = wb.currentHandle() orelse return;
+        ci.expandSelection(wb.view, h);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `editor.shrinkSelection` (Shift+Alt+Left).
+    fn shrinkSelection(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return;
+        ci.shrinkSelection(wb.view);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     fn onHoverLink(ctx: *anyopaque, target: zg_gui.markdown.view_mod.LinkTarget, _: bool) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         const url = switch (target) {
