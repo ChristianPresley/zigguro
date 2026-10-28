@@ -14,6 +14,8 @@ pub const glob = @import("proto/glob.zig");
 pub const uri = @import("proto/uri.zig");
 /// Position encodings and their negotiation.
 pub const position = @import("proto/position.zig");
+/// A fast decoder for `textDocument/completion` results.
+pub const completion_parse = @import("proto/completion_parse.zig");
 /// Fuzzy scoring for completion, symbol pickers and REPL completions.
 pub const fuzzy = @import("features/fuzzy.zig");
 /// Byte transports (stdio pipes, TCP) shared with zg_dap.
@@ -57,6 +59,7 @@ test {
     _ = @import("client/ServerProcess_test.zig");
     _ = @import("client/caps_test.zig");
     _ = @import("proto/uri_test.zig");
+    _ = @import("proto/completion_parse_test.zig");
     _ = @import("client/client_test.zig");
     _ = @import("client/server_requests_test.zig");
     _ = @import("client/progress_test.zig");
