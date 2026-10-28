@@ -1869,12 +1869,13 @@ pub const Workbench = struct {
     fn ensureNotes(wb: *Workbench) !void {
         if (wb.notes != null) return;
         const w = wb.win orelse return error.NoWindow;
-        const n = try NotesService.create(wb.gpa, wb.io, w.app, wb.cwd, .{
+        const n = try NotesService.create(wb.gpa, wb.io, w.app, wb.cwd, wb.env, .{
             .ctx = wb,
             .open = onNoteOpen,
             .search = onNoteSearch,
             .changed = onNotesChanged,
             .apply = onNotesApply,
+            .propose = onNotesPropose,
         });
         wb.notes = n;
         const abs = if (wb.path) |p| std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch null else null;
@@ -2024,6 +2025,18 @@ pub const Workbench = struct {
         }
         try wb.notes.?.writeChanges(changes);
         return 0;
+    }
+
+    /// The agent's note edits: one changeset, pending review unless the
+    /// review mode applies agent edits at once. Any thread.
+    fn onNotesPropose(ctx: *anyopaque, label: []const u8, changes: []const zg_notes_ui.ports.FileChange) anyerror!u64 {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const h = wb.agent orelse return error.Unsupported;
+        const files = try wb.gpa.alloc(ReviewGlue.ProposedFile, changes.len);
+        defer wb.gpa.free(files);
+        for (changes, files) |c, *f| f.* = .{ .path = c.path, .base = c.base, .new = c.new };
+        const id = try h.review.proposeChange(label, .{ .notes = .{ .tx = 0 } }, files, h.review.mode == .auto_apply);
+        return if (id) |x| @intFromEnum(x) else 0;
     }
 
     /// Selects bytes `r` of the current editor (clamped) and shows them.
@@ -2534,6 +2547,10 @@ pub const Workbench = struct {
             host.file_tools.diagnostics = ci.agentDiagnostics();
             host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
         }
+        // The notes tools (the folder's notes are scanned from now on).
+        if (wb.ensureNotes()) {
+            host.addNotesTools(wb.notes.?.agentTools()) catch |e| log.warn("notes tools: {t}", .{e});
+        } else |e| log.warn("notes: {t}", .{e});
         const pe = try wb.gpa.create(PendingEdits);
         pe.* = .init(wb.gpa, .{ .ctx = wb, .view = viewOfDoc, .store = decoOfDoc });
         pe.on_change = .{ .ctx = wb, .f = onPendingChange };
