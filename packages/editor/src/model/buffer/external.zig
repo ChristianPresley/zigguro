@@ -56,23 +56,125 @@ pub fn load(gpa: Allocator, io: Io, dir: Dir, path: []const u8, hint: ?Encoding,
     var f = try dir.openFile(io, path, .{});
     defer f.close(io);
     const st = try f.stat(io);
-    var rbuf: [64 << 10]u8 = undefined;
-    var r = f.reader(io, &rbuf);
-    const bytes = r.interface.allocRemaining(gpa, .unlimited) catch |e| switch (e) {
-        error.ReadFailed => return r.err.?,
-        else => |x| return x,
-    };
-    defer gpa.free(bytes);
+    const bytes = try readWhole(gpa, io, f, st);
+    var bytes_owned = true;
+    defer if (bytes_owned) gpa.free(bytes);
+    // A large file is hashed on another task while it is decoded and its
+    // line ends counted.
+    var hash: u64 = 0;
+    var group: Io.Group = .init;
+    defer group.await(io) catch {};
+    if (bytes.len >= parallel_min) {
+        group.concurrent(io, hashInto, .{ &hash, bytes }) catch hashInto(&hash, bytes);
+    } else hashInto(&hash, bytes);
     const d = enc.detect(bytes[0..@min(bytes.len, 8 << 10)], hint, fallback);
-    const text = try enc.decodeAll(d.encoding, bytes, gpa);
+    // UTF-8 without a BOM decodes to itself: keep the buffer instead of
+    // copying it (a 1 GB file would otherwise be held twice).
+    const text = if (d.encoding == .utf8) bytes else try enc.decodeAll(d.encoding, bytes, gpa);
+    errdefer if (text.ptr != bytes.ptr) gpa.free(text);
+    const eol = eol_mod.detectEolBytes(text);
+    group.await(io) catch {};
+    bytes_owned = text.ptr != bytes.ptr;
     return .{
         .text = text,
         .encoding = d.encoding,
         .confidence = d.confidence,
-        .eol = eol_mod.detectEolBytes(text),
+        .eol = eol,
         // Size and hash describe the bytes read, even if the file grew
         // after the stat.
-        .disk = .{ .size = bytes.len, .mtime = st.mtime, .file_id = save_mod.fileId(st), .content_hash = save_mod.hashBytes(bytes) },
+        .disk = .{ .size = bytes.len, .mtime = st.mtime, .file_id = save_mod.fileId(st), .content_hash = hash },
+    };
+}
+
+/// Files from this size are read by several tasks at once and hashed on
+/// one while the caller decodes them (page faults and memory bandwidth,
+/// not the disk, bound a warm read of a large file).
+pub const parallel_min: u64 = 32 << 20;
+const max_read_tasks = 8;
+
+fn hashInto(out: *u64, bytes: []const u8) void {
+    out.* = save_mod.hashBytes(bytes);
+}
+
+const ReadTask = struct {
+    f: File,
+    buf: []u8,
+    off: u64,
+    err: ?File.ReadPositionalError = null,
+    n: usize = 0,
+
+    fn run(t: *ReadTask, io: Io) void {
+        t.n = t.f.readPositionalAll(io, t.buf, t.off) catch |e| {
+            t.err = e;
+            return;
+        };
+    }
+};
+
+/// Reads a regular file of `size` bytes with up to `max_read_tasks`
+/// positional reads at once. Null when the file changed size meanwhile
+/// or does not read positionally: the caller reads it sequentially.
+fn readParallel(gpa: Allocator, io: Io, f: File, size: usize) Allocator.Error!?[]u8 {
+    const buf = try gpa.alloc(u8, size);
+    var ok = false;
+    defer if (!ok) gpa.free(buf);
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const n: usize = std.math.clamp(cpus, 1, max_read_tasks);
+    var tasks: [max_read_tasks]ReadTask = undefined;
+    const per = std.mem.alignForward(usize, size / n, 1 << 16);
+    var group: Io.Group = .init;
+    var used: usize = 0;
+    var off: usize = 0;
+    while (off < size) : (used += 1) {
+        const end = if (used + 1 == n) size else @min(size, off + per);
+        tasks[used] = .{ .f = f, .buf = buf[off..end], .off = off };
+        off = end;
+    }
+    for (tasks[1..used]) |*t| group.concurrent(io, ReadTask.run, .{ t, io }) catch t.run(io);
+    tasks[0].run(io);
+    group.await(io) catch return null;
+    for (tasks[0..used]) |t| if (t.err != null or t.n != t.buf.len) return null;
+    // Grown since the stat: read it all again, sequentially.
+    var probe_buf: [1]u8 = undefined;
+    if ((f.readPositional(io, &.{&probe_buf}, size) catch return null) != 0) return null;
+    ok = true;
+    return buf;
+}
+
+/// Reads all of `f` into one allocation sized from the stat (`size`), so
+/// a large file is read straight into place instead of through a growing
+/// buffer (in parallel from `parallel_min` bytes); a file that grew since
+/// the stat is read to its end, one that shrank is cut to what was read.
+/// Procfs-style files (size 0) work too.
+fn readWhole(gpa: Allocator, io: Io, f: File, st: File.Stat) ![]u8 {
+    const size = st.size;
+    if (st.kind == .file and size >= parallel_min) {
+        if (try readParallel(gpa, io, f, std.math.cast(usize, size) orelse return error.FileTooBig)) |b| return b;
+    }
+    var rbuf: [64 << 10]u8 = undefined;
+    var r = f.reader(io, &rbuf);
+    var list: std.ArrayList(u8) = try .initCapacity(gpa, std.math.cast(usize, size) orelse return error.FileTooBig);
+    errdefer list.deinit(gpa);
+    while (true) {
+        if (list.items.len == list.capacity) {
+            // At the stat size: probe for more before growing.
+            var probe_buf: [4096]u8 = undefined;
+            const n = r.interface.readSliceShort(&probe_buf) catch |e| return mapRead(e, &r);
+            if (n == 0) break;
+            try list.appendSlice(gpa, probe_buf[0..n]);
+            continue;
+        }
+        const n = r.interface.readSliceShort(list.unusedCapacitySlice()) catch |e| return mapRead(e, &r);
+        if (n == 0) break;
+        list.items.len += n;
+    }
+    if (list.items.len == list.capacity) return list.items;
+    return list.toOwnedSlice(gpa);
+}
+
+fn mapRead(e: Io.Reader.ShortError, r: *const File.Reader) File.Reader.Error {
+    return switch (e) {
+        error.ReadFailed => r.err.?,
     };
 }
 

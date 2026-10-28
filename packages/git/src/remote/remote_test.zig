@@ -160,7 +160,9 @@ fn fetchEmpty(native: bool) !void {
     f.e.native = native;
     try f.run("", "mkdir srv && cd srv && git init -q -b main && for i in 1 2 3 4 5; do seq 1 $((i*200)) > f$i; git add f$i; git commit -qm c$i; done && git tag -a v1 -m v1 HEAD~2 && " ++
         "cd .. && for d in g n; do git init -q -b main $d && (cd $d && git remote add origin ../srv); done");
-    try f.run("g", "git fetch origin 2>/dev/null");
+    // git 2.48 and later also create origin/HEAD here (followRemoteHEAD);
+    // the native fetch does not, so pin the older behavior.
+    try f.run("g", "git -c remote.origin.followRemoteHEAD=never fetch origin 2>/dev/null");
     {
         const repo = try f.open(gpa, "n");
         defer repo.close();
@@ -239,7 +241,7 @@ test "remote: add, set-url, rename and remove like git remote" {
     var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
     defer f.deinit(gpa);
     try f.run("", "mkdir srv && cd srv && git init -q -b main && git commit -q --allow-empty -m one && cd .. && git clone -q srv g && cp -a g n");
-    const script = "git remote add up ../srv && git fetch -q up && git remote set-url --push up ../elsewhere && git branch -q -u up/main main && git remote rename up upstream && git remote rename origin old && git remote remove old";
+    const script = "git remote add up ../srv && git -c remote.up.followRemoteHEAD=never fetch -q up && git remote set-url --push up ../elsewhere && git branch -q -u up/main main && git remote rename up upstream && git remote rename origin old && git remote remove old";
     try f.run("g", script);
     {
         const repo = try f.open(gpa, "n");

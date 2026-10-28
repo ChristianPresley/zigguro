@@ -51,8 +51,12 @@ pub const IndentUnit = struct {
 /// Lines read by `guess`.
 pub const guess_lines = 1000;
 
+/// Bytes read by `guess` at most, so a large file with little indentation
+/// (a log) does not scan to its end on open.
+pub const guess_bytes = 1 << 20;
+
 /// The indentation unit of `snap`'s text, from the first `guess_lines`
-/// indented lines: tabs when most indented lines start with a tab,
+/// indented lines within the first `guess_bytes` bytes: tabs when most indented lines start with a tab,
 /// otherwise the most common positive change in leading spaces between
 /// consecutive non-blank lines (2, 4 or 8 preferred on ties). Null when
 /// nothing is indented.
@@ -68,7 +72,11 @@ pub fn guess(snap: *const Snapshot) ?IndentUnit {
     var first: u8 = 0;
     var blank = true;
     var counting = true;
-    outer: while (it.next()) |c| {
+    var budget: usize = guess_bytes;
+    outer: while (it.next()) |chunk| {
+        if (budget == 0) break;
+        const c = chunk[0..@min(chunk.len, budget)];
+        budget -= c.len;
         for (c) |b| {
             if (b == '\n') {
                 if (!blank) {

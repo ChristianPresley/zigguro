@@ -201,7 +201,60 @@ pub const Highlighter = struct {
             try h.splice(edits[i]);
         }
         std.debug.assert(h.store.lineCount() == src.lines);
-        try h.run(src, std.math.maxInt(u64), deadline, edit_line_budget);
+        // Relex each edit's own lines and what they invalidate, not lines
+        // pending from before (a document still being lexed would
+        // otherwise be lexed from its top on every keystroke).
+        var budget: u64 = edit_line_budget;
+        var delta: i128 = 0;
+        for (edits) |e| {
+            const first: u64 = @intCast(@as(i128, e.first) + delta);
+            delta += @as(i128, e.inserted) - @as(i128, e.removed);
+            const from = if (h.lang.lookahead) first -| 1 else first;
+            try h.runEdit(src, from, first + @max(e.inserted, 1), deadline, &budget);
+        }
+    }
+
+    /// Relexes from `first` (current lines) through `mark_end` (the lines
+    /// an edit marked) and on while end states change, within `deadline`
+    /// and `budget.*` lines. A start state never lexed stops it, and so
+    /// does a line past the edit that was never lexed (nothing to converge
+    /// with): both stay pending for `ensure` and `idle`. Lines below an
+    /// earlier pending line are relexed approximately and stay pending.
+    fn runEdit(h: *Highlighter, src: LineSource, first: u64, mark_end: u64, deadline: ?Deadline, budget: *u64) Allocator.Error!void {
+        const n = h.store.lineCount();
+        var line = first;
+        var count: u64 = 0;
+        while (line < n and budget.* > 0) : (line += 1) {
+            if (deadline) |d| if (count % 32 == 31 and d.passed()) return;
+            if (!h.isPending(line)) return;
+            const start = h.startState(line);
+            if (start == .unknown) return;
+            if (line >= mark_end and h.store.rec(line).end_state == .unknown) return;
+            // Exact when no pending line is above it.
+            const exact = h.pending.items[0].start == line;
+            const r = try h.relex(src, line, start, !exact);
+            count += 1;
+            budget.* -= 1;
+            if (r == .reset) return;
+            if (exact) {
+                const front = &h.pending.items[0];
+                front.start += 1;
+                if (front.start == front.end) _ = h.pending.orderedRemove(0);
+            }
+            if (line + 1 >= n) return;
+            if (r == .changed) {
+                // A changed end state invalidates the next line.
+                if (!h.isPending(line + 1)) try h.addPending(line + 1, line + 2);
+            } else if (line + 1 >= mark_end) return;
+        }
+    }
+
+    fn isPending(h: *const Highlighter, line: u64) bool {
+        for (h.pending.items) |r| {
+            if (r.start > line) return false;
+            if (line < r.end) return true;
+        }
+        return false;
     }
 
     fn splice(h: *Highlighter, e: LineEdit) Allocator.Error!void {

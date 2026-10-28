@@ -32,6 +32,7 @@ test {
     _ = @import("startup/early_update_check.zig");
     _ = @import("startup/install_kind.zig");
     _ = @import("workbench.zig");
+    _ = @import("mem_tags.zig");
     _ = @import("tracing.zig");
     _ = @import("startup/report.zig");
     _ = @import("startup/services.zig");
