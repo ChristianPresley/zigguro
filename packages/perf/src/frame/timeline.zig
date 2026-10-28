@@ -11,6 +11,7 @@ const std = @import("std");
 const zg_core = @import("zg_core");
 const record_mod = @import("record.zig");
 const histogram = @import("histogram.zig");
+const clock_contract = @import("clock_contract.zig");
 const registry = @import("../budget/registry.zig");
 
 const FrameRecord = record_mod.FrameRecord;
@@ -99,7 +100,9 @@ pub const FrameTimeline = struct {
     finalized: u64 = 0,
     discarded: u64 = 0,
     estimated: u64 = 0,
-    clock_warned: bool = false,
+    /// Frames whose timestamps broke the clock contract's order; they
+    /// stay out of the histograms (`clock_contract.checkMonotonicChain`).
+    clock_violations: u64 = 0,
 
     /// A timeline holding the last `capacity` frames (default 1024).
     pub fn init(gpa: std.mem.Allocator, capacity: u32) !FrameTimeline {
@@ -237,13 +240,11 @@ pub const FrameTimeline = struct {
         t.finalized += 1;
         const r = &t.ring[i];
         if (r.discarded) t.discarded += 1;
-        if (std.debug.runtime_safety and !t.clock_warned) {
-            const in = r.t_input_os_ns orelse 0;
-            const out = r.t_presented_ns orelse r.t_submit_ns;
-            if (!(out >= r.t_submit_ns and r.t_submit_ns >= in)) {
-                t.clock_warned = true;
-                log.info("frame timeline: timestamps out of order (input {d}, submit {d}, presented {d}); check the clock domain", .{ in, r.t_submit_ns, out });
-            }
+        if (clock_contract.checkMonotonicChain(r)) |v| {
+            if (t.clock_violations == 0) log.info("frame timeline: {t} in frame {d}; check the clock domain (docs/perf/latency.md)", .{ v, r.seq });
+            t.clock_violations += 1;
+            zg_core.trace.counter("perf.clock_violation", @intCast(t.clock_violations));
+            return;
         }
         var reason: ?SlowReason = null;
         if (r.isKeyInput()) if (r.keyToPhoton()) |v| {
@@ -415,4 +416,25 @@ test "timeline: ring wraparound" {
     try std.testing.expectEqual(@as(u64, 84), out[0].seq);
     try std.testing.expectEqual(@as(u64, 99), out[15].seq);
     try std.testing.expectEqual(@as(u64, 99), t.key_to_photon.total);
+}
+
+test "timeline: clock violations stay out of the histograms" {
+    var t = try FrameTimeline.init(std.testing.allocator, 64);
+    defer t.deinit();
+    t.onFrameStats(stats(1, 10_000_000));
+    // Presented before submit: a clock-domain mismatch.
+    t.onPresented(1001, 10_500_000, 1);
+    try std.testing.expectEqual(@as(u64, 1), t.clock_violations);
+    try std.testing.expectEqual(@as(u64, 0), t.key_to_photon.total);
+    try std.testing.expectEqual(@as(u64, 0), t.key_to_photon_recent.current.total);
+    // Input after frame start.
+    var s = stats(2, 20_000_000);
+    s.t_input_ns = s.t_frame_start_ns + 1;
+    s.expect_feedback = false;
+    t.onFrameStats(s);
+    try std.testing.expectEqual(@as(u64, 2), t.clock_violations);
+    t.onFrameStats(stats(3, 30_000_000));
+    t.onPresented(1003, 32_000_000, 1);
+    try std.testing.expectEqual(@as(u64, 2), t.clock_violations);
+    try std.testing.expectEqual(@as(u64, 1), t.key_to_photon.total);
 }
