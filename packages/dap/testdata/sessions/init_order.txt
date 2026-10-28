@@ -1,0 +1,23 @@
+# The start choreography: launch is sent before initialized, and
+# configurationDone before the launch response (which this adapter only
+# sends after it, like most). Then the model events and a natural end.
+> initialize {"clientID": "zigguro", "clientName": "zigguro", "adapterID": "fake", "linesStartAt1": true, "columnsStartAt1": true, "pathFormat": "path", "supportsRunInTerminalRequest": true, "supportsStartDebuggingRequest": true, "supportsProgressReporting": true}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event process {"name": "app", "systemProcessId": 4242, "startMethod": "launch"}
+< event module {"reason": "new", "module": {"id": 1, "name": "app", "path": "/w/app"}}
+< event module {"reason": "new", "module": {"id": "libc", "name": "libc.so.6"}}
+< event module {"reason": "removed", "module": {"id": "libc", "name": "libc.so.6"}}
+< event loadedSource {"reason": "new", "source": {"path": "/w/src/main.zig"}}
+< event progressStart {"progressId": "p1", "title": "Loading symbols"}
+< event progressStart {"progressId": "p2", "title": "Indexing"}
+< event progressEnd {"progressId": "p2"}
+< event capabilities {"capabilities": {"supportsStepBack": true}}
+< event exited {"exitCode": 3}
+< event terminated
+> disconnect {"restart": false}
+< {}
