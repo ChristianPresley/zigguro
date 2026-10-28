@@ -452,3 +452,32 @@ test "terminal: command blocks: Ctrl+Up/Down navigation, output selection and co
     try testing.expectEqual(TerminalView.RerunResult.untrusted, f.view.rerunLast());
     try f.expectOut("");
 }
+
+test "terminal: kitty images paint below and above the text, and their textures go with them" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    const app = f.t.win.app;
+    try f.view.enableImages(app.gpa, &app.images);
+    // The textures go before the app's table does.
+    defer {
+        f.view.images.?.deinit();
+        gpa.destroy(f.view.images.?);
+        f.view.images = null;
+    }
+    const px = [_]u8{ 255, 0, 0, 255 } ** 4;
+    var enc: [64]u8 = undefined;
+    const b64 = std.base64.standard.Encoder.encode(&enc, &px);
+    var buf: [256]u8 = undefined;
+    f.feed(try std.fmt.bufPrint(&buf, "\x1b_Ga=T,f=32,s=2,v=2,i=1,z=-1,c=2,r=1,q=2;{s}\x1b\\below", .{b64}));
+    f.feed(try std.fmt.bufPrint(&buf, "\x1b_Ga=T,f=32,s=2,v=2,i=2,q=2;{s}\x1b\\", .{b64}));
+    const snap = f.t.paintSnapshot();
+    const first = std.mem.indexOf(u8, snap, "image ").?;
+    const glyphs = std.mem.indexOf(u8, snap, "glyphs").?;
+    const last = std.mem.lastIndexOf(u8, snap, "image ").?;
+    try testing.expect(first < glyphs and glyphs < last);
+    try testing.expectEqual(@as(usize, 2), f.view.images.?.entries.count());
+    f.feed("\x1b_Ga=d,d=A\x1b\\");
+    try testing.expect(std.mem.indexOf(u8, f.t.paintSnapshot(), "image ") == null);
+    try testing.expectEqual(@as(usize, 0), f.view.images.?.entries.count());
+}

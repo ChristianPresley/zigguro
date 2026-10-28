@@ -372,10 +372,17 @@ fn eraseDisplay(t: *Terminal, mode: u16, selective: bool) void {
         1 => s.eraseDisplay(.above, o) catch t.allocFailed(),
         2 => {
             if (!selective and !t.alt_active and t.opts.clear_pushes_to_scrollback) {
+                // The images scroll into scrollback with their rows.
                 pushToScrollback(t, o);
-            } else s.eraseDisplay(.all, o) catch t.allocFailed();
+            } else {
+                s.eraseDisplay(.all, o) catch t.allocFailed();
+                if (!selective) t.images.clearScreen(t.imageLists(), if (t.alt_active) .alternate else .primary, false);
+            }
         },
-        3 => if (!selective) s.eraseDisplay(.scrollback, o) catch t.allocFailed(),
+        3 => if (!selective) {
+            s.eraseDisplay(.scrollback, o) catch t.allocFailed();
+            t.images.prune(t.imageLists());
+        },
         else => {},
     }
 }

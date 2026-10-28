@@ -83,6 +83,14 @@ pub const TerminalPanel = struct {
         p.view = .init(gpa, &p.term, .{});
         p.view.sink = .{ .ctx = p, .write = write };
         p.view.on_resize = .{ .ctx = p, .f = onResize };
+        p.term.opts.graphics.io = io;
+        p.term.opts.graphics.allow_file_media = true;
+        p.term.opts.graphics.tmpdir = env.get("TMPDIR") orelse "";
+        p.view.enableImages(app.gpa, &app.images) catch |e| {
+            p.view.deinit();
+            p.term.deinit();
+            return e;
+        };
         _ = p.view.enableBlocks(.{}) catch |e| {
             p.view.deinit();
             p.term.deinit();
