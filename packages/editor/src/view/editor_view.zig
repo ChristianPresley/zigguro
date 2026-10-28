@@ -137,6 +137,8 @@ pub const PointerEvent = struct {
     mods: @FieldType(zg_gui.input.event.KeyPress, "mods") = .{},
     /// The key pressed (`kind == .key`).
     key: ?zg_gui.input.event.KeyPress = null,
+    /// The text typed (`kind == .text` and `.typed`).
+    text: []const u8 = "",
 
     pub const Kind = enum {
         /// The pointer moved over the text (not while dragging).
@@ -148,6 +150,11 @@ pub const PointerEvent = struct {
         /// A key press, before anything else sees it (returning true
         /// consumes it; Escape hides a hover this way).
         key,
+        /// Text is about to be typed (returning true consumes it: a
+        /// completion's commit character accepts it first).
+        text,
+        /// Text was typed (completion and signature help triggers).
+        typed,
     };
 };
 
