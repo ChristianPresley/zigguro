@@ -36,6 +36,9 @@ pub const DocKind = union(enum) {
     untitled: u32,
     /// A scratch buffer of an agent session.
     agent: u64,
+    /// A document with no file behind it (a language server's virtual
+    /// URI, a debugger's source): read-only, keyed by its URI.
+    virtual,
 };
 
 /// Registry-wide events. Strings are valid during the callback only.
@@ -155,6 +158,35 @@ pub const DocumentRegistry = struct {
         try uri_s.print(r.gpa, "zigguro-agent://{d}/", .{session});
         try percentEncode(&uri_s, r.gpa, name_in, true);
         return r.add(.{ .agent = session }, disp, key, try uri_s.toOwnedSlice(r.gpa), bytes);
+    }
+
+    /// A read-only document for `uri_in` (not a `file:` URI) named
+    /// `name_in`, or another reference to the one already open for it
+    /// (then `bytes` is ignored). Its text changes only through
+    /// `Document.applyChangeSet` by its owner.
+    pub fn openVirtual(r: *DocumentRegistry, uri_in: []const u8, name_in: []const u8, bytes: []const u8) Error!DocHandle {
+        const key = try std.fmt.allocPrint(r.gpa, "virtual:{s}", .{uri_in});
+        errdefer r.gpa.free(key);
+        if (r.by_key.get(key)) |i| {
+            r.gpa.free(key);
+            r.slots.items[i].refs += 1;
+            return r.handleOf(i);
+        }
+        const disp = try r.gpa.dupe(u8, name_in);
+        errdefer r.gpa.free(disp);
+        const uri_s = try r.gpa.dupe(u8, uri_in);
+        errdefer r.gpa.free(uri_s);
+        const h = try r.add(.virtual, disp, key, uri_s, bytes);
+        r.slots.items[@intFromEnum(h.id)].read_only = true;
+        return h;
+    }
+
+    /// The virtual document open for `uri_in`, if any (no reference added).
+    pub fn findVirtual(r: *const DocumentRegistry, uri_in: []const u8) ?DocHandle {
+        var buf: [4096]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "virtual:{s}", .{uri_in}) catch return null;
+        const i = r.by_key.get(key) orelse return null;
+        return r.handleOf(i);
     }
 
     fn add(r: *DocumentRegistry, k: DocKind, disp: []u8, key: []u8, uri_s: []u8, bytes: []const u8) Error!DocHandle {
