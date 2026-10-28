@@ -1,0 +1,23 @@
+# Virtual documents: a statically claimed scheme fetched, then refreshed;
+# (after the client's next edit); a scheme registered later; a
+# definition that lands in it.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "definitionProvider": true, "workspace": {"textDocumentContent": {"schemes": ["rust-analyzer"]}}}}}
+> initialized
+> textDocument/didOpen
+> workspace/textDocumentContent {"uri": "rust-analyzer://expand/lib.rs"}
+< {"id": $1, "result": {"text": "fn a() {}\nfn b() {}\n"}}
+> textDocument/didChange
+< {"id": 7, "method": "workspace/textDocumentContent/refresh", "params": {"uri": "rust-analyzer://expand/lib.rs"}}
+> response {"id": 7, "result": null}
+> workspace/textDocumentContent {"uri": "rust-analyzer://expand/lib.rs"}
+< {"id": $1, "result": {"text": "fn a() {}\nfn c() {}\n"}}
+< {"id": 8, "method": "client/registerCapability", "params": {"registrations": [{"id": "tdc", "method": "workspace/textDocumentContent", "registerOptions": {"schemes": ["jdt"]}}]}}
+> response {"id": 8, "result": null}
+> textDocument/definition
+< {"id": $1, "result": {"uri": "jdt://contents/rt.jar/java.lang/String.class", "range": {"start": {"line": 1, "character": 13}, "end": {"line": 1, "character": 19}}}}
+> workspace/textDocumentContent {"uri": "jdt://contents/rt.jar/java.lang/String.class"}
+< {"id": $1, "result": {"text": "package java.lang;\npublic final class String {}\n"}}
+> shutdown
+< {"id": $1, "result": null}
+> exit
