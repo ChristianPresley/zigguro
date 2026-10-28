@@ -42,6 +42,8 @@ pub const features = struct {
     pub const HoverService = @import("features/hover.zig");
     pub const HighlightService = @import("features/highlight.zig");
     pub const NavService = @import("features/navigation.zig");
+    pub const CompletionService = @import("features/completion.zig");
+    pub const completion_rank = @import("features/completion_rank.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -75,6 +77,7 @@ test {
     _ = @import("features/semtok_test.zig");
     _ = @import("features/features_test.zig");
     _ = @import("features/nav_hover_test.zig");
+    _ = @import("features/completion_test.zig");
     _ = @import("snippet/Snippet.zig");
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");

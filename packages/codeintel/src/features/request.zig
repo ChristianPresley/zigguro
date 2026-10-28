@@ -45,6 +45,8 @@ pub fn Requester(comptime M: protocol.Method, comptime feature: Manager.Feature)
             result: Client.Result(M) = undefined,
             round: u64,
             r: *Self,
+            /// Set by `retain`: the caller frees it with `free`.
+            kept: bool = false,
         };
 
         gpa: Allocator,
@@ -149,9 +151,21 @@ pub fn Requester(comptime M: protocol.Method, comptime feature: Manager.Feature)
             return r.taken.items;
         }
 
-        /// Frees the answers `take` returned.
+        /// Keeps answer `a` (from `take`) past the next `take`, `cancel`
+        /// or `ask`, until `free`.
+        pub fn retain(_: *Self, a: *Answer) void {
+            a.kept = true;
+        }
+
+        /// Frees an answer `retain` kept.
+        pub fn free(r: *Self, a: *Answer) void {
+            std.debug.assert(a.kept);
+            r.drop(a);
+        }
+
+        /// Frees the answers `take` returned (but the kept ones).
         fn release(r: *Self) void {
-            for (r.taken.items) |a| r.drop(a);
+            for (r.taken.items) |a| if (!a.kept) r.drop(a);
             r.taken.clearRetainingCapacity();
         }
 

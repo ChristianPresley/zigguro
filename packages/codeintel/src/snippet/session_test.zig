@@ -242,3 +242,17 @@ test "snippet_session: nested session push/pop" {
     try testing.expect(stack.top() == null);
     try testing.expect(!try stack.next());
 }
+
+test "snippet_session: extra edits land in the same undo step" {
+    var f = try Fx.init("x");
+    defer f.deinit();
+    f.view.setSelection(.caret(1));
+    const s = try Session.beginWith(gpa, f.view, &.{.{ .start = 1, .end = 1 }}, try f.expand("f($1)$0"), &.{.{ .range = .{ .start = 0, .end = 0 }, .text = "// a\n" }});
+    defer s.destroy();
+    try f.expectText("// a\nxf()");
+    try f.expectSels("8-8");
+    try testing.expect(!try s.next());
+    try f.expectSels("9-9");
+    try testing.expect(try f.view.undoStep());
+    try f.expectText("x");
+}
