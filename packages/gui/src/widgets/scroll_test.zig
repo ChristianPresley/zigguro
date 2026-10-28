@@ -161,3 +161,38 @@ test "virtual list builds only the visible rows" {
     _ = t.settle();
     try std.testing.expectEqual(@as(f32, 220), t.win.scrollOffset(v.vis.node).y);
 }
+
+const NestedPage = struct {
+    area: NodeId = .none,
+    pub fn build(self: *NestedPage, ui: *Ui) void {
+        ui.open(.{ .style = .{ .w = .{ .px = 300 }, .h = .{ .px = 200 }, .dir = .column } });
+        defer ui.close();
+        self.area = scroll.scrollArea(ui, .{ .test_id = "area" });
+        defer ui.close();
+        var i: u32 = 0;
+        while (i < 50) : (i += 1) {
+            ui.id(i);
+            ui.open(.{ .style = .{ .h = .{ .px = 20 }, .shrink = 0, .dir = .column } });
+            ui.open(.{ .style = .{ .h = .{ .px = 10 }, .bg = .{ .token = .bg_sunken } }, .test_id = if (i == 1) "child1" else "" });
+            ui.close();
+            ui.close();
+        }
+    }
+};
+
+test "a row scrolled out takes its subtree's paint with it" {
+    var v: NestedPage = .{};
+    const t = try TestApp.init(std.testing.allocator, .{ .root = view_mod.AnyView.of(&v) });
+    defer t.deinit();
+    _ = t.settle();
+    const child = t.find(.{ .test_id = "child1" }).?;
+    try std.testing.expect(t.win.store.hot.items(.flags)[child.index].painted);
+    // The row is culled; its child is not walked but must not keep a
+    // paint range into the op list the next frames reuse.
+    wheel(t, 100, 100, 20);
+    _ = t.settle();
+    try std.testing.expect(!t.win.store.hot.items(.flags)[child.index].painted);
+    wheel(t, 100, 100, -20);
+    _ = t.settle();
+    try std.testing.expect(t.win.store.hot.items(.flags)[child.index].painted);
+}

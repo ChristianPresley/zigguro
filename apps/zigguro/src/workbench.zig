@@ -1030,6 +1030,7 @@ pub const Workbench = struct {
         if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
             ci.win = win;
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
+            ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -2003,6 +2004,15 @@ pub const Workbench = struct {
     /// A navigation request has its answers: none is a notice, one
     /// definition-like target is jumped to, and anything else is offered
     /// in a QuickPick.
+    /// The completion list opened or closed over `view`: the AI ghost
+    /// text there steps aside while it shows.
+    fn onCompletionPopup(ctx: *anyopaque, view: *EditorView, open: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |*f| if (f.view == view) if (f.completions) |ec| {
+            if (open) ec.popupOpened() else ec.popupClosed();
+        };
+    }
+
     fn onNavDone(ctx: *anyopaque, r: NavService.Results) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (r.targets.len == 0) return wb.notify(.info, "No {s} found", .{navNoun(r.kind)});

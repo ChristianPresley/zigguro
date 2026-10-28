@@ -17,8 +17,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zg_lsp = @import("zg_lsp");
 
-const protocol = zg_lsp.protocol;
+pub const protocol = zg_lsp.protocol;
 const fuzzy = zg_lsp.fuzzy;
+
+pub const Kind = protocol.CompletionItemKind;
+/// Most pattern characters `Ranker.matches` reports.
+pub const max_pattern = fuzzy.max_pattern;
 
 /// An item's documentation.
 pub const Doc = union(enum) {

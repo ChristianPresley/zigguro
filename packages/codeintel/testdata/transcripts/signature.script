@@ -1,0 +1,12 @@
+# Signature help: opened by "(", cycled and retriggered by ",", closed by
+# a null answer.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "signatureHelpProvider": {"triggerCharacters": ["("], "retriggerCharacters": [","]}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/signatureHelp {"position": {"line": 0, "character": 2}, "context": {"triggerKind": 2, "triggerCharacter": "(", "isRetrigger": false}}
+< {"id": $1, "result": {"signatures": [{"label": "f(a: u8, b: u16)", "documentation": "Adds.", "parameters": [{"label": [2, 7]}, {"label": "b: u16"}]}, {"label": "f(c: bool)", "parameters": [{"label": "c: bool"}]}], "activeSignature": 0, "activeParameter": 0}}
+> textDocument/signatureHelp {"position": {"line": 0, "character": 4}, "context": {"triggerKind": 2, "triggerCharacter": ",", "isRetrigger": true, "activeSignatureHelp": {"activeSignature": 1}}}
+< {"id": $1, "result": {"signatures": [{"label": "f(a: u8, b: u16)", "parameters": [{"label": [2, 7]}, {"label": "b: u16"}]}, {"label": "f(c: bool)", "parameters": [{"label": "c: bool"}]}], "activeSignature": 0, "activeParameter": 1}}
+> textDocument/signatureHelp {"position": {"line": 0, "character": 5}, "context": {"triggerKind": 3, "isRetrigger": true}}
+< {"id": $1, "result": null}
