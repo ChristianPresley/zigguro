@@ -8,6 +8,10 @@ const std = @import("std");
 pub const budget = @import("budget.zig");
 /// Stall watchdog, zone shadow stacks and the activity signal (E14.F01.S02).
 pub const runtime = @import("runtime.zig");
+/// Trace categories, the async span taxonomy and the async span API (E14.F02).
+pub const trace = @import("trace.zig");
+/// Frame records, the frame timeline and latency histograms (E14.F03).
+pub const frame = @import("frame.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -20,4 +24,6 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(budget);
     std.testing.refAllDecls(runtime);
+    std.testing.refAllDecls(trace);
+    std.testing.refAllDecls(frame);
 }

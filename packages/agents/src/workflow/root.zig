@@ -8,6 +8,8 @@ pub const path = @import("path.zig");
 pub const interpolate = @import("interpolate.zig");
 pub const parse = @import("parse.zig");
 pub const validate = @import("validate.zig");
+pub const JournalStore = @import("journal.zig");
+pub const replay = @import("replay.zig");
 
 pub const WorkflowDef = def.WorkflowDef;
 pub const NamedStep = def.NamedStep;
@@ -18,9 +20,14 @@ pub const Path = path.Path;
 pub const Diagnostics = parse.Diagnostics;
 pub const ValidateEnv = validate.ValidateEnv;
 pub const parseDef = parse.parseDef;
+pub const ReplayKey = JournalStore.ReplayKey;
+pub const replayKey = JournalStore.replayKey;
+pub const Replayer = replay.Replayer;
 
 test {
     _ = @import("parse_test.zig");
     _ = @import("path_test.zig");
     _ = @import("interpolate_test.zig");
+    _ = @import("journal_test.zig");
+    _ = @import("replay_test.zig");
 }

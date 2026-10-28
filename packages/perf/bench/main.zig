@@ -56,6 +56,39 @@ fn register(b: *bench.Bench) !void {
             bench.doNotOptimizeAway(x);
         }
     }.f);
+    try b.run("perf.histogram_record", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            var h: zg_perf.frame.LatencyHistogram = .{};
+            var x: u64 = 0x9e3779b97f4a7c15;
+            for (0..s.iterations()) |_| {
+                x = x *% 6364136223846793005 +% 1442695040888963407;
+                h.record(x >> 36);
+            }
+            bench.doNotOptimizeAway(&h);
+        }
+    }.f);
+    try b.run("perf.timeline_frame", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            var t = zg_perf.frame.FrameTimeline.init(std.heap.page_allocator, 1024) catch unreachable;
+            defer t.deinit();
+            for (0..s.iterations()) |i| {
+                const seq: u64 = i + 1;
+                const t0: u64 = seq * 8_333_333;
+                t.onFrameStats(.{ .seq = seq, .t_input_ns = t0, .input_kind = .key, .t_frame_start_ns = t0 + 100_000, .build_ns = 300_000, .t_submit_ns = t0 + 1_000_000, .present_id = seq });
+                t.onPresented(seq, t0 + 4_000_000, 0);
+            }
+            bench.doNotOptimizeAway(&t.key_to_photon);
+        }
+    }.f);
+    try b.run("perf.async_span_pair", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            for (0..s.iterations()) |_| {
+                const span = zg_perf.trace.async_span.Span.begin(.lsp_request);
+                span.end();
+            }
+            drainTrace();
+        }
+    }.f);
     try b.run("perf.budget_by_id", {}, struct {
         fn f(_: void, s: *bench.State) void {
             for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_perf.budget.byId("agents.notification_route"));

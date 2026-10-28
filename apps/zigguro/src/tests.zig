@@ -38,4 +38,5 @@ test {
     _ = @import("explorer/panel.zig");
     _ = @import("problems_panel.zig");
     _ = @import("notes/service.zig");
+    _ = @import("hover_popup.zig");
 }

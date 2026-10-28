@@ -73,6 +73,22 @@ pub const remote = struct {
     pub const objects = @import("remote/objects.zig");
     pub const fetch = @import("remote/fetch.zig");
     pub const push = @import("remote/push.zig");
+    pub const credential = @import("remote/credential.zig");
+    pub const http = @import("remote/http.zig");
+    pub const connect = @import("remote/connect.zig");
+};
+/// The native SSH-2 client for `ssh://` and scp-like remotes.
+pub const ssh = struct {
+    pub const wire = @import("ssh/wire.zig");
+    pub const cipher = @import("ssh/cipher.zig");
+    pub const pubkey = @import("ssh/pubkey.zig");
+    pub const keys = @import("ssh/keys.zig");
+    pub const agent = @import("ssh/agent.zig");
+    pub const known_hosts = @import("ssh/known_hosts.zig");
+    pub const config = @import("ssh/config.zig");
+    pub const url = @import("ssh/url.zig");
+    pub const client = @import("ssh/client.zig");
+    pub const session = @import("ssh/session.zig");
 };
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
@@ -138,6 +154,10 @@ test {
     _ = @import("ops_test.zig");
     _ = @import("remote/remote_test.zig");
     _ = @import("remote/refspec.zig");
+    _ = @import("remote/http_test.zig");
+    _ = @import("remote/connect.zig");
+    _ = @import("ssh/ssh_test.zig");
+    std.testing.refAllDecls(ssh);
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
