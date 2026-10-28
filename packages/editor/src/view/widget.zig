@@ -776,7 +776,7 @@ pub const Editor = struct {
                 defer v.gpa.free(t);
                 ec.setClipboard(t);
             } else if (!ro) try v.deleteForward(unit) else return false,
-            .enter, .numpad_enter => if (!ro and !ctrl) try v.newline() else return false,
+            .enter, .numpad_enter => if (!ro and !ctrl and !k.mods.alt) try v.newline() else return false,
             .tab => if (!ro and !ctrl) try v.tab() else return false,
             .escape => {
                 if (v.selections().len > 1) {
