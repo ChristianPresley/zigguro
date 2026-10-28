@@ -83,6 +83,8 @@ pub const Options = struct {
 };
 
 pub const RestartPolicy = zg_lsp.client.restart.RestartPolicy;
+pub const WatchBridge = zg_lsp.client.watch_bridge.WatchBridge;
+pub const FsEvent = zg_lsp.client.watch_bridge.FsEvent;
 
 pub const Status = enum {
     starting,
@@ -179,6 +181,9 @@ diagnostics: ?DiagnosticsHooks = null,
 apply_edit_hook: ?ApplyEditHook = null,
 /// Work-done progress and partial-result tokens of every server.
 progress: zg_lsp.client.progress.ProgressTracker,
+/// Routes file changes to the servers that registered watchers (null:
+/// out of memory at `init`).
+watch: ?WatchBridge = null,
 
 /// `m` must not move once a document is open.
 pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRegistry, opts: Options) void {
@@ -192,6 +197,11 @@ pub fn init(m: *Manager, rt: *zg_core.Runtime, reg: *Registry, docs: *DocumentRe
         .sub = .init(rt.io),
         .progress = .init(rt.gpa, rt.io),
     };
+    m.watch = WatchBridge.init(rt.gpa, rt.io, opts.workspace_folders, .{
+        .sender = .{ .ctx = m, .send = onWatchedSend },
+        .dirty = .{ .ctx = m, .isDirty = isDirtyPath },
+        .waker = opts.waker,
+    }) catch null;
 }
 
 /// Shuts every server down (`shutdown`/`exit`, then terminate) and waits
@@ -225,6 +235,7 @@ pub fn deinit(m: *Manager) void {
     }
     m.servers.deinit(m.gpa);
     m.progress.deinit();
+    if (m.watch) |*w| w.deinit();
     m.refresh_listeners.deinit(m.gpa);
     var it = m.open.valueIterator();
     while (it.next()) |d| m.gpa.free(d.lang);
@@ -309,6 +320,7 @@ pub fn tick(m: *Manager) void {
     };
     m.freeTaken();
     m.flush();
+    if (m.watch) |*w| w.flush();
 }
 
 /// Sends every server the edits not sent yet (before a request, so it
@@ -481,6 +493,34 @@ fn now(m: *const Manager) i96 {
     return Io.Clock.Timestamp.now(m.rt.io, .awake).raw.nanoseconds;
 }
 
+/// When `tick` next has watched-file changes to send (`.awake` ns).
+pub fn nextWatchDue(m: *Manager) ?i96 {
+    if (m.watch) |*w| return w.nextDue();
+    return null;
+}
+
+/// Takes file changes from the app's watcher; any thread.
+pub fn onFsEvents(m: *Manager, events: []const FsEvent) void {
+    if (m.watch) |*w| w.onFsEvents(events);
+}
+
+/// From the watch bridge in `tick`.
+fn onWatchedSend(ctx: ?*anyopaque, server: u32, params: zg_lsp.protocol.DidChangeWatchedFilesParams) void {
+    const m: *Manager = @ptrCast(@alignCast(ctx.?));
+    if (server >= m.servers.items.len) return;
+    const s = m.servers.items[server];
+    if (s.status != .running) return;
+    const c = s.client orelse return;
+    c.notify(.@"workspace/didChangeWatchedFiles", params) catch |e| log.info("{s}: didChangeWatchedFiles: {t}", .{ s.def.id, e });
+}
+
+fn isDirtyPath(ctx: ?*anyopaque, path: []const u8) bool {
+    const m: *Manager = @ptrCast(@alignCast(ctx.?));
+    const h = (m.docs.findFile(path) catch return false) orelse return false;
+    const d = m.docs.get(h) orelse return false;
+    return d.isDirty();
+}
+
 /// The next crash restart, if one is waiting (`.awake` ns).
 pub fn nextRestartDue(m: *const Manager) ?i96 {
     var due: ?i96 = null;
@@ -537,6 +577,8 @@ fn detach(m: *Manager, s: *Server) void {
 /// Hands `s`'s client and process to a worker to shut down and free.
 fn retire(m: *Manager, s: *Server) void {
     m.detach(s);
+    // Its registrations go with the client.
+    if (m.watch) |*w| w.removeServer(s.id);
     const c = s.client orelse return;
     const p = s.proc.?;
     s.client = null;
@@ -672,6 +714,7 @@ fn start(s: *Server) !void {
         .services = .{
             .server = s.id,
             .progress = &m.progress,
+            .watch = if (m.watch) |*w| w.host() else null,
             .refresh = .{ .ctx = m, .func = onServerRefresh },
             .host = host: {
                 var h = zg_lsp.client.host.null_host;
