@@ -48,6 +48,7 @@ const Io = std.Io;
 const DebugManager = zg_dap.session.DebugManager;
 const DebugSession = zg_dap.session.DebugSession;
 const BreakpointManager = zg_dap.breakpoints.BreakpointManager;
+const VariablesModel = zg_dap.inspect.VariablesModel;
 const ConfigSet = zg_dap.config.ConfigSet;
 const LaunchConfig = zg_dap.config.LaunchConfig;
 const zig_autoconfig = zg_dap.config.zig_autoconfig;
@@ -1277,6 +1278,34 @@ pub const Debug = struct {
         e.s.stepInTargets(sel.frame, .{ .ctx = d.inbox, .func = Inbox.onTargets });
     }
 
+    /// Break on Value Change: asks the active session whether variable
+    /// `n` can get a data breakpoint, and adds one that breaks on writes.
+    pub fn breakOnValueChange(d: *Debug, n: VariablesModel.NodeId) void {
+        const e = d.active() orelse return;
+        if (!(e.s.caps().supportsDataBreakpoints orelse false)) return d.say(.info, "This debugger cannot break when a value changes", .{});
+        const ref = e.insp.vars.containerRef(n) orelse return d.say(.info, "Only a variable of the current stop can get a data breakpoint", .{});
+        const v = e.insp.vars.node(n) orelse return;
+        const req = d.gpa.create(DataReq) catch return;
+        req.* = .{ .q = d.inbox, .name = d.gpa.dupe(u8, v.name) catch {
+            d.gpa.destroy(req);
+            return;
+        } };
+        d.inbox.retain();
+        d.bps.dataBreakpointInfo(e.s, ref, v.name, .{ .ctx = req, .func = DataReq.onInfo });
+    }
+
+    /// UI thread: the answer to `breakOnValueChange`.
+    fn applyDataInfo(d: *Debug, m: *DataMsg) void {
+        const id = m.data_id orelse return d.say(.info, "Cannot break when {s} changes: {s}", .{ m.name, if (m.description.len > 0) m.description else "the debugger refused" });
+        const access: BreakpointManager.Access = if (m.access_types.len == 0 or std.mem.indexOfScalar(BreakpointManager.Access, m.access_types, .write) != null) .write else m.access_types[0];
+        _ = d.bps.add(.{ .kind = .{ .data = .{
+            .data_id = id,
+            .description = if (m.description.len > 0) m.description else m.name,
+            .access = access,
+            .can_persist = m.can_persist,
+        } } }) catch return d.say(.error_, "The data breakpoint was not added", .{});
+    }
+
     fn openTargets(d: *Debug, m: *TargetsMsg) !void {
         const w = d.win orelse return;
         if (m.ids.len == 0) return d.say(.info, "There is nothing to step into here", .{});
@@ -1523,6 +1552,48 @@ const TargetsMsg = struct {
     labels: [][]const u8,
 };
 
+/// A `dataBreakpointInfo` in flight.
+const DataReq = struct {
+    q: *Inbox,
+    name: []u8,
+
+    /// On the dispatcher.
+    fn onInfo(ctx: ?*anyopaque, info: ?BreakpointManager.DataInfo) void {
+        const r: *DataReq = @ptrCast(@alignCast(ctx.?));
+        const q = r.q;
+        defer {
+            q.gpa.free(r.name);
+            q.gpa.destroy(r);
+            q.release();
+        }
+        const m = q.gpa.create(DataMsg) catch return;
+        m.* = .{ .arena = .init(q.gpa), .name = "" };
+        const a = m.arena.allocator();
+        copy: {
+            m.name = a.dupe(u8, r.name) catch break :copy;
+            const x = info orelse {
+                m.description = "the debugger gave no answer";
+                break :copy;
+            };
+            m.data_id = if (x.data_id) |id| a.dupe(u8, id) catch break :copy else null;
+            m.description = a.dupe(u8, x.description) catch break :copy;
+            m.access_types = a.dupe(BreakpointManager.Access, x.access_types) catch break :copy;
+            m.can_persist = x.can_persist;
+        }
+        q.push(.{ .data_info = m });
+    }
+};
+
+/// `dataBreakpointInfo`'s answer, for the UI thread.
+const DataMsg = struct {
+    arena: std.heap.ArenaAllocator,
+    name: []const u8,
+    data_id: ?[]const u8 = null,
+    description: []const u8 = "",
+    access_types: []const BreakpointManager.Access = &.{},
+    can_persist: bool = false,
+};
+
 const Msg = union(enum) {
     session: struct { s: *DebugSession, id: u32, change: DebugSession.Change },
     /// Inspection results arrived.
@@ -1534,6 +1605,7 @@ const Msg = union(enum) {
     watches: []u8,
     autos: struct { arena: *std.heap.ArenaAllocator, configs: []const LaunchConfig },
     targets: *TargetsMsg,
+    data_info: *DataMsg,
     goto_failed: ?[]u8,
     compound_done: ?[]u8,
 };
@@ -1594,6 +1666,10 @@ const Inbox = struct {
             .targets => |t| {
                 t.arena.deinit();
                 q.gpa.destroy(t);
+            },
+            .data_info => |x| {
+                x.arena.deinit();
+                q.gpa.destroy(x);
             },
             .goto_failed, .compound_done => |s| if (s) |x| q.gpa.free(x),
             .watches => |text| q.gpa.free(text),
@@ -1688,6 +1764,11 @@ const Inbox = struct {
                     d.openTargets(t) catch {};
                     t.arena.deinit();
                     q.gpa.destroy(t);
+                },
+                .data_info => |x| {
+                    d.applyDataInfo(x);
+                    x.arena.deinit();
+                    q.gpa.destroy(x);
                 },
                 .goto_failed => |msg| {
                     d.say(.warning, "Cannot jump there: {s}", .{msg orelse "out of memory"});
