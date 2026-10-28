@@ -4,14 +4,22 @@
 //! by the façade) and Adobe colour transforms. Arithmetic coding and
 //! lossless or hierarchical modes are `Unsupported`.
 //!
-//! Every scan decodes into per-block coefficients; the inverse DCT runs
-//! once after the last scan. It is a separable float transform on
-//! `@Vector(8, f32)` rows in strict float mode (no contraction), so the
+//! A sequential file whose one scan holds every component (the usual
+//! camera JPEG) streams: MCU rows decode in chunks into a two-slot
+//! coefficient ring, and helper threads run each chunk's IDCT and colour
+//! conversion while the next chunk decodes. Other files decode every
+//! scan into whole-image coefficients, then run the IDCT and colour
+//! conversion in bands on several threads. Small images use no threads.
+//!
+//! The inverse DCT is libjpeg's accurate integer transform on
+//! `@Vector(8, i32)` lanes, and colour conversion is fixed point, so the
 //! output is the same on every target. `scale` 2, 4 or 8 decodes at 1/2,
-//! 1/4 or 1/8 size with a reduced IDCT over the top-left coefficients.
+//! 1/4 or 1/8 size with a reduced IDCT (strict float mode, also the same
+//! everywhere) over the top-left coefficients.
 //! Chroma is upsampled with the triangle ("fancy") filter.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const image = @import("image.zig");
 
 const Allocator = std.mem.Allocator;
@@ -29,11 +37,15 @@ const dezigzag = [64 + 16]u8{
     63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
 };
 
-const fast_bits = 9;
+const fast_bits = 10;
 
 const Huffman = struct {
     /// Fast lookup by the next `fast_bits` bits: symbol index + 1 (0: slow).
     fast: [1 << fast_bits]u16 = @splat(0),
+    /// For AC tables: a whole run/size code and its magnitude bits within
+    /// the next `fast_bits` bits, as `value << 8 | run << 4 | bits used`
+    /// (0: decode the slow way). Values outside -128..127 are left out.
+    fast_ac: [1 << fast_bits]i16 = @splat(0),
     /// Code length of each symbol index.
     size: [256]u8 = @splat(0),
     values: [256]u8 = @splat(0),
@@ -80,6 +92,21 @@ const Huffman = struct {
             }
             code <<= 1;
         }
+        for (0..1 << fast_bits) |i| {
+            const f = h.fast[i];
+            if (f == 0) continue;
+            const rs = h.values[f - 1];
+            const run: u16 = rs >> 4;
+            const mag: u5 = @intCast(rs & 15);
+            const len: u5 = @intCast(h.size[f - 1]);
+            if (mag == 0 or @as(u32, len) + mag > fast_bits) continue;
+            // The magnitude bits follow the code within the lookahead.
+            const raw: i32 = @intCast((i << len) & ((1 << fast_bits) - 1));
+            var v: i32 = raw >> @intCast(fast_bits - @as(u32, mag));
+            if (v < (@as(i32, 1) << @intCast(mag - 1))) v += 1 - (@as(i32, 1) << mag);
+            if (v < -128 or v > 127) continue;
+            h.fast_ac[i] = @intCast(v * 256 + @as(i32, run) * 16 + len + mag);
+        }
         h.defined = true;
     }
 };
@@ -108,16 +135,31 @@ const Component = struct {
 const Bits = struct {
     data: []const u8,
     pos: usize,
-    acc: u32 = 0,
-    n: u6 = 0,
+    /// Unread bits, left-aligned; `n` of them are valid.
+    acc: u64 = 0,
+    n: u7 = 0,
     /// A marker was reached; zeros are fed from here on.
     marker: ?u8 = null,
     /// Zero bytes fed because the data ended (no marker).
     padded: u32 = 0,
 
+    /// Tops the accumulator up to at least 57 bits. Eight bytes without
+    /// an 0xFF (no stuffing, no marker) load in one step.
     fn fill(b: *Bits) void {
-        while (b.n <= 24) {
-            var byte: u32 = 0;
+        if (b.marker == null and b.pos + 8 <= b.data.len) {
+            const w = std.mem.readInt(u64, b.data[b.pos..][0..8], .big);
+            const inv = ~w;
+            const ones: u64 = 0x0101010101010101;
+            if ((inv -% ones) & ~inv & (ones << 7) == 0) {
+                const take: u7 = (64 - b.n) >> 3;
+                b.acc |= (w >> @intCast(64 - @as(u7, take) * 8)) << @intCast(64 - b.n - take * 8);
+                b.n += take * 8;
+                b.pos += take;
+                return;
+            }
+        }
+        while (b.n <= 56) {
+            var byte: u64 = 0;
             if (b.marker == null and b.pos >= b.data.len) b.padded += 1;
             if (b.marker == null and b.pos < b.data.len) {
                 const c = b.data[b.pos];
@@ -134,7 +176,7 @@ const Bits = struct {
                     b.pos += 1;
                 }
             }
-            b.acc |= byte << @intCast(24 - b.n);
+            b.acc |= byte << @intCast(56 - b.n);
             b.n += 8;
         }
     }
@@ -142,7 +184,7 @@ const Bits = struct {
     fn bits(b: *Bits, n: u5) u32 {
         if (n == 0) return 0;
         if (b.n < n) b.fill();
-        const v = b.acc >> @intCast(32 - @as(u6, n));
+        const v: u32 = @intCast(b.acc >> @intCast(64 - @as(u7, n)));
         b.acc <<= n;
         b.n -= n;
         return v;
@@ -162,15 +204,15 @@ const Bits = struct {
 
     fn decode(b: *Bits, h: *const Huffman) DecodeError!u8 {
         if (b.n < 16) b.fill();
-        const look = b.acc >> (32 - fast_bits);
+        const look: usize = @intCast(b.acc >> (64 - fast_bits));
         const f = h.fast[look];
         if (f != 0) {
-            const sz: u5 = @intCast(h.size[f - 1]);
+            const sz: u6 = @intCast(h.size[f - 1]);
             b.acc <<= sz;
             b.n -= sz;
             return h.values[f - 1];
         }
-        const top = b.acc >> 16;
+        const top: u32 = @intCast(b.acc >> 48);
         var len: usize = fast_bits + 1;
         while (len <= 16) : (len += 1) {
             if (top < h.maxcode[len]) break;
@@ -224,12 +266,45 @@ const Decoder = struct {
     jfif: bool = false,
     orientation: u8 = 1,
     frame_seen: bool = false,
+    /// Output block size: 8 / scale.
+    n: u32 = 8,
+    /// Whole-image coefficients are allocated (progressive or multi-scan).
+    coefs_full: bool = false,
+    /// The only scan was decoded and converted as it streamed in.
+    streamed: bool = false,
+    /// The RGBA output, once allocated.
+    out: []u8 = &.{},
+    /// Chunks of a streamed scan converted so far (helper threads).
+    chunks_done: std.atomic.Value(u32) = .init(0),
+    /// Bytes of `out` already touched by the prefault thread; colour
+    /// conversion waits for its rows to be covered.
+    out_ready: std.atomic.Value(usize) = .init(std.math.maxInt(usize)),
 
     fn deinit(d: *Decoder) void {
         for (d.comps[0..d.ncomp]) |*c| {
             d.gpa.free(c.coefs);
             d.gpa.free(c.plane);
         }
+        d.gpa.free(d.out);
+    }
+
+    fn outW(d: *const Decoder) u32 {
+        const scale = 8 / d.n;
+        return (d.w + scale - 1) / scale;
+    }
+
+    fn outH(d: *const Decoder) u32 {
+        const scale = 8 / d.n;
+        return (d.h + scale - 1) / scale;
+    }
+
+    fn transform(d: *const Decoder) Transform {
+        return switch (d.ncomp) {
+            1 => .gray,
+            3 => if (d.adobe) |t| (if (t == 0) .rgb else .ycbcr) else if (d.comps[0].id == 'R' and d.comps[1].id == 'G' and d.comps[2].id == 'B') .rgb else .ycbcr,
+            4 => if (d.adobe) |t| (if (t == 2) .ycck else .cmyk) else .cmyk,
+            else => unreachable,
+        };
     }
 };
 
@@ -273,7 +348,13 @@ pub fn info(bytes: []const u8) DecodeError!Info {
 pub fn decodeJpeg(gpa: Allocator, bytes: []const u8, limits: Limits, scale: u4, orient_out: ?*u8) DecodeError!Image {
     if (bytes.len > limits.max_bytes) return error.TooLarge;
     if (bytes.len < 4 or bytes[0] != 0xFF or bytes[1] != 0xD8) return error.Malformed;
-    var d: Decoder = .{ .gpa = gpa, .data = bytes, .limits = limits };
+    var d: Decoder = .{ .gpa = gpa, .data = bytes, .limits = limits, .n = switch (scale) {
+        1 => 8,
+        2 => 4,
+        4 => 2,
+        8 => 1,
+        else => return error.Unsupported,
+    } };
     defer d.deinit();
     var pos: usize = 2;
     var scans: u32 = 0;
@@ -326,7 +407,7 @@ pub fn decodeJpeg(gpa: Allocator, bytes: []const u8, limits: Limits, scale: u4, 
     }
     if (!d.frame_seen or scans == 0) return error.Malformed;
     if (orient_out) |o| o.* = d.orientation;
-    return finish(&d, scale);
+    return finish(&d);
 }
 
 fn readQuant(d: *Decoder, seg: []const u8) DecodeError!void {
@@ -402,11 +483,162 @@ fn readFrame(d: *Decoder, seg: []const u8, progressive: bool) DecodeError!void {
         const ch = (d.h * c.v + d.vmax - 1) / d.vmax;
         c.bw_own = (cw + 7) / 8;
         c.bh_own = (ch + 7) / 8;
-        const n = std.math.mul(usize, @as(usize, c.bw) * c.bh, 64) catch return error.TooLarge;
-        c.coefs = try d.gpa.alloc(i16, n);
-        @memset(c.coefs, 0);
+        _ = std.math.mul(usize, @as(usize, c.bw) * c.bh, 64) catch return error.TooLarge;
     }
     d.frame_seen = true;
+}
+
+/// Coefficients for the whole image, for scans that refine or add to
+/// earlier ones.
+fn allocCoefs(d: *Decoder) DecodeError!void {
+    if (d.coefs_full) return;
+    for (d.comps[0..d.ncomp]) |*c| {
+        d.gpa.free(c.coefs);
+        c.coefs = &.{};
+        c.coefs = try d.gpa.alloc(i16, @as(usize, c.bw) * c.bh * 64);
+        @memset(c.coefs, 0);
+    }
+    d.coefs_full = true;
+}
+
+/// Planes at the output block size.
+fn allocPlanes(d: *Decoder) DecodeError!void {
+    for (d.comps[0..d.ncomp]) |*c| {
+        c.pw = c.bw * d.n;
+        c.ph = c.bh * d.n;
+        c.plane = try d.gpa.alloc(u8, @as(usize, c.pw) * c.ph);
+    }
+}
+
+/// True when the output is large enough to decode on several threads.
+fn threaded(d: *const Decoder) bool {
+    if (builtin.single_threaded) return false;
+    if (builtin.is_test and test_knobs.threads) return true;
+    return @as(u64, d.w) * d.h * d.n * d.n / 64 >= parallel_min_px;
+}
+
+/// MCU rows per chunk of a streamed scan.
+const default_chunk_mcu_rows = 8;
+fn chunkRows() u32 {
+    return if (builtin.is_test) test_knobs.chunk_mcu_rows else default_chunk_mcu_rows;
+}
+
+/// Lets tests run the threaded paths on small fixtures.
+pub const test_knobs = struct {
+    pub var threads = false;
+    pub var chunk_mcu_rows: u32 = default_chunk_mcu_rows;
+};
+
+/// Inverse DCT of MCU rows `my0..my1`, held in ring slot `slot`.
+fn idctChunk(d: *const Decoder, slot: usize, my0: u32, my1: u32) void {
+    const n = d.n;
+    for (d.comps[0..d.ncomp]) |*c| {
+        const q = &d.qt[c.tq];
+        const ring = c.coefs[slot * chunkRows() * c.v * c.bw * 64 ..];
+        const by0 = my0 * c.v;
+        for (by0..my1 * c.v) |by| for (0..c.bw) |bx| {
+            const coef = ring[((by - by0) * c.bw + bx) * 64 ..][0..64];
+            const at = by * n * c.pw + bx * n;
+            if (n == 8) idct8(coef, q, c.plane[at..], c.pw) else idctReduced(coef, q, n, c.plane[at..], c.pw);
+        };
+    }
+}
+
+/// Output rows of MCU rows below `my` (all rows once `my` is the last):
+/// the triangle filter reads one chroma row into the next MCU row.
+fn rowsReady(d: *const Decoder, my: u32) u32 {
+    if (my >= d.mcuy) return d.outH();
+    return @min(d.outH(), (my -| 1) * d.vmax * d.n);
+}
+
+/// A streamed chunk's work: the IDCT of chunk `k`, then (after the
+/// previous chunk's work, which it joins) the colour conversion of every
+/// output row that has become complete. Chunks thus convert in order,
+/// one at a time, into the one shared row scratch.
+fn chunkWork(d: *Decoder, k: u32, slot: usize, my0: u32, my1: u32, prev: ?std.Thread, rows: []u8) void {
+    idctChunk(d, slot, my0, my1);
+    if (prev) |t| t.join();
+    const hi = rowsReady(d, my1);
+    while (d.out_ready.load(.acquire) < @as(usize, hi) * d.outW() * 4) std.Thread.yield() catch {};
+    colorRows(d, d.transform(), rows, rowsReady(d, my0), hi);
+    d.chunks_done.store(k + 1, .release);
+}
+
+/// Writes every page of the output once, ahead of colour conversion, so
+/// its page faults (a large share of the conversion's time) are taken on
+/// a spare core while the entropy decoder runs.
+fn prefault(d: *Decoder) void {
+    const step = 64 << 10;
+    var at: usize = 0;
+    while (at < d.out.len) {
+        const end = @min(at + step, d.out.len);
+        var p = at;
+        while (p < end) : (p += 4096) d.out[p] = 0;
+        d.out_ready.store(end, .release);
+        at = end;
+    }
+}
+
+/// A sequential scan holding every component (so the only one): MCU rows
+/// are decoded in chunks into a two-slot ring, and each chunk's IDCT and
+/// colour conversion run on a helper thread while the next chunk decodes.
+fn streamScan(d: *Decoder, b: *Bits, sc: []const *Component, sp: ScanParams) DecodeError!void {
+    for (d.comps[0..d.ncomp]) |*c| {
+        d.gpa.free(c.coefs);
+        c.coefs = &.{};
+        c.coefs = try d.gpa.alloc(i16, 2 * @as(usize, chunkRows()) * c.v * c.bw * 64);
+    }
+    try allocPlanes(d);
+    d.out = try d.gpa.alloc(u8, try image.pixelBytes(d.outW(), d.outH(), d.limits));
+    const rows = try d.gpa.alloc(u8, @as(usize, d.outW()) * d.ncomp);
+    defer d.gpa.free(rows);
+    d.streamed = true;
+    const use_threads = threaded(d);
+    // The newest helper; each one joins the one before it.
+    var last: ?std.Thread = null;
+    defer if (last) |t| t.join();
+    var faulter: ?std.Thread = null;
+    defer if (faulter) |t| t.join();
+    if (use_threads) {
+        d.out_ready.store(0, .release);
+        faulter = std.Thread.spawn(.{}, prefault, .{d}) catch null;
+        if (faulter == null) d.out_ready.store(std.math.maxInt(usize), .release);
+    }
+    var todo: u32 = d.restart_interval;
+    var my0: u32 = 0;
+    var k: u32 = 0;
+    while (my0 < d.mcuy) : (k += 1) {
+        const my1 = @min(my0 + chunkRows(), d.mcuy);
+        const slot = k % 2;
+        // The slot is free once chunk k - 2 is done.
+        while (k >= 2 and d.chunks_done.load(.acquire) < k - 1) std.Thread.yield() catch {};
+        var my = my0;
+        while (my < my1) : (my += 1) {
+            var mx: u32 = 0;
+            while (mx < d.mcux) : (mx += 1) {
+                if (d.restart_interval != 0) {
+                    if (todo == 0) {
+                        b.restart();
+                        for (sc) |c| c.dc_pred = 0;
+                        todo = d.restart_interval;
+                    }
+                    todo -= 1;
+                }
+                for (sc) |c| {
+                    const ring = c.coefs[slot * chunkRows() * c.v * c.bw * 64 ..];
+                    for (0..c.v) |v| for (0..c.h) |hh| {
+                        const bx = mx * c.h + @as(u32, @intCast(hh));
+                        const by = (my - my0) * c.v + @as(u32, @intCast(v));
+                        try decodeBlock(d, b, c, ring[(@as(usize, by) * c.bw + bx) * 64 ..][0..64], sp);
+                    };
+                }
+            }
+        }
+        const t: ?std.Thread = if (use_threads) std.Thread.spawn(.{}, chunkWork, .{ d, k, slot, my0, my1, last, rows }) catch null else null;
+        if (t == null) chunkWork(d, k, slot, my0, my1, last, rows);
+        last = t;
+        my0 = my1;
+    }
 }
 
 /// Decodes one scan; returns the position after its entropy-coded data.
@@ -454,7 +686,12 @@ fn readScan(d: *Decoder, seg: []const u8, data_at: usize) DecodeError!usize {
     const sp: ScanParams = .{ .kind = kind, .ss = ss, .se = se, .al = al };
 
     var todo: u32 = d.restart_interval;
-    if (ns == 1) {
+    if (d.streamed) {
+        // Nothing can follow a scan of every component; skip its data.
+    } else if (!d.progressive and ns == d.ncomp and !d.coefs_full) {
+        try streamScan(d, &b, sc[0..ns], sp);
+    } else if (ns == 1) {
+        try allocCoefs(d);
         const c = sc[0];
         var by: u32 = 0;
         while (by < c.bh_own) : (by += 1) {
@@ -473,6 +710,7 @@ fn readScan(d: *Decoder, seg: []const u8, data_at: usize) DecodeError!usize {
             }
         }
     } else {
+        try allocCoefs(d);
         var my: u32 = 0;
         while (my < d.mcuy) : (my += 1) {
             var mx: u32 = 0;
@@ -510,6 +748,7 @@ const ScanParams = struct { kind: ScanKind, ss: u8, se: u8, al: u5 };
 fn decodeBlock(d: *Decoder, b: *Bits, c: *Component, blk: *[64]i16, sp: ScanParams) DecodeError!void {
     switch (sp.kind) {
         .sequential => {
+            blk.* = @splat(0);
             const t = try b.decode(&d.dc[c.td]);
             if (t > 16) return error.Malformed;
             c.dc_pred += b.receiveExtend(@intCast(t));
@@ -517,6 +756,18 @@ fn decodeBlock(d: *Decoder, b: *Bits, c: *Component, blk: *[64]i16, sp: ScanPara
             var k: usize = 1;
             const ac = &d.ac[c.ta];
             while (k < 64) {
+                if (b.n < 16) b.fill();
+                const fac = ac.fast_ac[@intCast(b.acc >> (64 - fast_bits))];
+                if (fac != 0) {
+                    const used: u6 = @intCast(fac & 15);
+                    b.acc <<= used;
+                    b.n -= used;
+                    k += @intCast((fac >> 4) & 15);
+                    if (k > 63) return error.Malformed;
+                    blk[dezigzag[k]] = fac >> 8;
+                    k += 1;
+                    continue;
+                }
                 const rs = try b.decode(ac);
                 const r = rs >> 4;
                 const s: u5 = @intCast(rs & 15);
@@ -623,65 +874,97 @@ fn refineNonZero(b: *Bits, blk: *[64]i16, ss: u8, se: u8, p1: i16) void {
 
 // -- IDCT ---------------------------------------------------------------------
 
-const V8 = @Vector(8, f32);
+const I8 = @Vector(8, i32);
 
-/// `K[u][x] = C(u)/2 * cos((2x+1)uπ/16)`, C(0) = 1/√2.
-const idct_k: [8]V8 = blk: {
-    @setEvalBranchQuota(10000);
-    var k: [8]V8 = undefined;
-    for (0..8) |u| {
-        var row: [8]f32 = undefined;
-        for (0..8) |x| {
-            const cu: f64 = if (u == 0) 1.0 / @sqrt(2.0) else 1.0;
-            row[x] = @floatCast(cu / 2.0 * @cos(@as(f64, @floatFromInt((2 * x + 1) * u)) * std.math.pi / 16.0));
-        }
-        k[u] = row;
+fn splat8(v: i32) I8 {
+    return @splat(v);
+}
+
+/// One 8-point pass of libjpeg's accurate integer IDCT (jidctint.c,
+/// 13-bit constants) over eight lanes at once; outputs are not descaled.
+/// Arithmetic wraps so corrupt coefficients cannot trap.
+inline fn idct1d(x: [8]I8) [8]I8 {
+    var z2 = x[2];
+    var z3 = x[6];
+    var z1 = (z2 +% z3) *% splat8(4433);
+    const t2 = z1 +% z3 *% splat8(-15137);
+    const t3 = z1 +% z2 *% splat8(6270);
+    const t0 = (x[0] +% x[4]) << @splat(13);
+    const t1 = (x[0] -% x[4]) << @splat(13);
+    const t10 = t0 +% t3;
+    const t13 = t0 -% t3;
+    const t11 = t1 +% t2;
+    const t12 = t1 -% t2;
+    var o0 = x[7];
+    var o1 = x[5];
+    var o2 = x[3];
+    var o3 = x[1];
+    z1 = o0 +% o3;
+    z2 = o1 +% o2;
+    z3 = o0 +% o2;
+    var z4 = o1 +% o3;
+    const z5 = (z3 +% z4) *% splat8(9633);
+    o0 *%= splat8(2446);
+    o1 *%= splat8(16819);
+    o2 *%= splat8(25172);
+    o3 *%= splat8(12299);
+    z1 *%= splat8(-7373);
+    z2 *%= splat8(-20995);
+    z3 = z3 *% splat8(-16069) +% z5;
+    z4 = z4 *% splat8(-3196) +% z5;
+    o0 +%= z1 +% z3;
+    o1 +%= z2 +% z4;
+    o2 +%= z2 +% z3;
+    o3 +%= z1 +% z4;
+    return .{ t10 +% o3, t11 +% o2, t12 +% o1, t13 +% o0, t13 -% o0, t12 -% o1, t11 -% o2, t10 -% o3 };
+}
+
+fn transpose8(m: [8]I8) [8]I8 {
+    var a: [8][8]i32 = undefined;
+    for (0..8) |i| a[i] = m[i];
+    var t: [8]I8 = undefined;
+    for (0..8) |i| {
+        var r: [8]i32 = undefined;
+        for (0..8) |j| r[j] = a[j][i];
+        t[i] = r;
     }
-    break :blk k;
-};
-
-/// `idct_k` as scalars.
-const idct_s: [8][8]f32 = blk: {
-    var t: [8][8]f32 = undefined;
-    for (0..8) |u| t[u] = idct_k[u];
-    break :blk t;
-};
+    return t;
+}
 
 /// Inverse DCT of a dequantized block into 8×8 samples at `out` (stride
-/// `stride`), level-shifted and clamped.
+/// `stride`), level-shifted and clamped. Integer only, so the output is
+/// the same on every target.
 fn idct8(coef: *const [64]i16, q: *const [64]u16, out: []u8, stride: usize) void {
-    @setFloatMode(.strict);
     // A flat block (only DC) is one value; smooth images have many.
     var ac: @Vector(64, i16) = coef.*;
     ac[0] = 0;
-    const dc_only = !@reduce(.Or, ac != @as(@Vector(64, i16), @splat(0)));
-    if (dc_only) {
-        const s: f32 = @floatFromInt(@as(i32, coef[0]) * q[0]);
-        const v: u8 = @intFromFloat(@floor(std.math.clamp(s * idct_s[0][0] * idct_s[0][0] + 128.5, 0, 255)));
+    if (!@reduce(.Or, ac != @as(@Vector(64, i16), @splat(0)))) {
+        const dc = @as(i32, coef[0]) *% q[0];
+        const v: u8 = @intCast(std.math.clamp((dc +% 4) >> 3, -128, 127) + 128);
         for (0..8) |y| @memset(out[y * stride ..][0..8], v);
         return;
     }
-    // Rows: g[v] = Σu F[v][u] K[u].
-    var g: [8]V8 = undefined;
-    for (0..8) |v| {
-        var acc: V8 = @splat(0);
-        for (0..8) |u| {
-            const f = coef[v * 8 + u];
-            if (f == 0) continue;
-            const s: f32 = @floatFromInt(@as(i32, f) * q[v * 8 + u]);
-            acc += @as(V8, @splat(s)) * idct_k[u];
-        }
-        g[v] = acc;
+    // Columns (lanes are columns), descaled by CONST_BITS - PASS1_BITS.
+    var x: [8]I8 = undefined;
+    for (0..8) |r| {
+        const cv: @Vector(8, i16) = coef[r * 8 ..][0..8].*;
+        const qv: @Vector(8, u16) = q[r * 8 ..][0..8].*;
+        x[r] = @as(I8, cv) *% @as(I8, qv);
     }
-    // Columns: f[y] = Σv K[v][y] g[v].
+    var ws = idct1d(x);
+    for (&ws) |*w| w.* = (w.* +% splat8(1 << 10)) >> @splat(11);
+    // Rows (lanes are rows after the transpose), descaled by
+    // CONST_BITS + PASS1_BITS + 3 with the +128 level shift folded in.
+    const px = idct1d(transpose8(ws));
+    var cols: [8]I8 = undefined;
+    for (0..8) |k| {
+        const v = (px[k] +% splat8((1 << 17) + (128 << 18))) >> @splat(18);
+        cols[k] = @min(@max(v, splat8(0)), splat8(255));
+    }
+    const rows = transpose8(cols);
     for (0..8) |y| {
-        var acc: V8 = @splat(128.5);
-        for (0..8) |v| acc += @as(V8, @splat(idct_s[v][y])) * g[v];
-        const lo: V8 = @splat(0);
-        const hi: V8 = @splat(255);
-        const c = @min(@max(acc, lo), hi);
-        const row = out[y * stride ..][0..8];
-        inline for (0..8) |x| row[x] = @intFromFloat(@floor(c[x]));
+        const b: @Vector(8, u8) = @intCast(rows[y]);
+        out[y * stride ..][0..8].* = b;
     }
 }
 
@@ -709,68 +992,151 @@ fn idctReduced(coef: *const [64]i16, q: *const [64]u16, n: usize, out: []u8, str
 
 // -- output -------------------------------------------------------------------
 
-fn finish(d: *Decoder, scale: u4) DecodeError!Image {
-    const n: u32 = switch (scale) {
-        1 => 8,
-        2 => 4,
-        4 => 2,
-        8 => 1,
-        else => return error.Unsupported,
-    };
-    const ow = (d.w + scale - 1) / scale;
-    const oh = (d.h + scale - 1) / scale;
-    const out_len = try image.pixelBytes(ow, oh, d.limits);
-    // Planes at the reduced block size.
+/// Images from this many output pixels up run the IDCT and colour
+/// conversion on several threads.
+const parallel_min_px = 1 << 20;
+const max_threads = 8;
+
+/// Runs `f(ctx, band, lo, hi)` over `0..total` split into `bands` bands,
+/// one per thread (the caller's thread takes band 0). A band whose
+/// thread fails to start runs on the caller's thread.
+fn forBands(total: usize, bands: usize, ctx: anytype, comptime f: fn (@TypeOf(ctx), usize, usize, usize) void) void {
+    if (bands <= 1) return f(ctx, 0, 0, total);
+    var threads: [max_threads]?std.Thread = @splat(null);
+    for (1..bands) |i| threads[i] = std.Thread.spawn(.{}, f, .{ ctx, i, total * i / bands, total * (i + 1) / bands }) catch null;
+    f(ctx, 0, 0, total / bands);
+    for (1..bands) |i| {
+        if (threads[i]) |t| t.join() else f(ctx, i, total * i / bands, total * (i + 1) / bands);
+    }
+}
+
+const Transform = enum { gray, ycbcr, rgb, cmyk, ycck };
+
+const OutCtx = struct {
+    d: *const Decoder,
+    /// Per band: one upsampled row per component.
+    rows: []u8,
+};
+
+/// IDCT of block rows `lo..hi`, counted over all components in order.
+fn idctBand(cx: *const OutCtx, band: usize, lo: usize, hi: usize) void {
+    _ = band;
+    const d = cx.d;
+    const n = d.n;
+    var first: usize = 0;
     for (d.comps[0..d.ncomp]) |*c| {
-        c.pw = c.bw * n;
-        c.ph = c.bh * n;
-        c.plane = try d.gpa.alloc(u8, @as(usize, c.pw) * c.ph);
-        const q = &d.qt[c.tq];
-        for (0..c.bh) |by| for (0..c.bw) |bx| {
-            const coef = c.coefs[(by * c.bw + bx) * 64 ..][0..64];
-            const at = by * n * c.pw + bx * n;
-            if (n == 8) idct8(coef, q, c.plane[at..], c.pw) else idctReduced(coef, q, n, c.plane[at..], c.pw);
-        };
-    }
-    const out = try d.gpa.alloc(u8, out_len);
-    errdefer d.gpa.free(out);
-    const transform: enum { gray, ycbcr, rgb, cmyk, ycck } = switch (d.ncomp) {
-        1 => .gray,
-        3 => if (d.adobe) |t| (if (t == 0) .rgb else .ycbcr) else if (d.comps[0].id == 'R' and d.comps[1].id == 'G' and d.comps[2].id == 'B') .rgb else .ycbcr,
-        4 => if (d.adobe) |t| (if (t == 2) .ycck else .cmyk) else .cmyk,
-        else => unreachable,
-    };
-    const rows = try d.gpa.alloc(u8, @as(usize, ow) * d.ncomp);
-    defer d.gpa.free(rows);
-    var row: [4][]u8 = undefined;
-    for (0..d.ncomp) |i| row[i] = rows[i * ow ..][0..ow];
-    for (0..oh) |y| {
-        for (d.comps[0..d.ncomp], 0..) |*c, i| upsampleRow(d, c, @intCast(y), ow, row[i]);
-        const dst = out[y * ow * 4 ..][0 .. ow * 4];
-        for (0..ow) |x| {
-            var px: [4]u8 = .{ 0, 0, 0, 255 };
-            switch (transform) {
-                .gray => px = .{ row[0][x], row[0][x], row[0][x], 255 },
-                .rgb => px = .{ row[0][x], row[1][x], row[2][x], 255 },
-                .ycbcr => {
-                    const rgb = ycc(row[0][x], row[1][x], row[2][x]);
-                    px = .{ rgb[0], rgb[1], rgb[2], 255 };
-                },
-                .cmyk, .ycck => {
-                    var cmy: [3]u8 = .{ row[0][x], row[1][x], row[2][x] };
-                    if (transform == .ycck) {
-                        const rgb = ycc(cmy[0], cmy[1], cmy[2]);
-                        cmy = .{ 255 - rgb[0], 255 - rgb[1], 255 - rgb[2] };
-                    }
-                    // Adobe stores CMYK inverted: R = C·K / 255.
-                    const k: u32 = row[3][x];
-                    px = .{ @intCast((@as(u32, cmy[0]) * k + 127) / 255), @intCast((@as(u32, cmy[1]) * k + 127) / 255), @intCast((@as(u32, cmy[2]) * k + 127) / 255), 255 };
-                },
-            }
-            dst[x * 4 ..][0..4].* = px;
+        const end = first + c.bh;
+        const a = @max(lo, first);
+        const b = @min(hi, end);
+        if (a < b) {
+            const q = &d.qt[c.tq];
+            for (a - first..b - first) |by| for (0..c.bw) |bx| {
+                const coef = c.coefs[(by * c.bw + bx) * 64 ..][0..64];
+                const at = by * n * c.pw + bx * n;
+                if (n == 8) idct8(coef, q, c.plane[at..], c.pw) else idctReduced(coef, q, n, c.plane[at..], c.pw);
+            };
         }
+        first = end;
     }
+}
+
+fn colorBand(cx: *const OutCtx, band: usize, lo: usize, hi: usize) void {
+    const d = cx.d;
+    colorRows(d, d.transform(), cx.rows[band * @as(usize, d.outW()) * d.ncomp ..], lo, hi);
+}
+
+/// Colour conversion of output rows `lo..hi` into `d.out`; `rows` holds
+/// one upsampled row per component.
+fn colorRows(d: *const Decoder, transform: Transform, rows: []u8, lo: usize, hi: usize) void {
+    const ow = d.outW();
+    var src: [4][]const u8 = undefined;
+    for (lo..hi) |y| {
+        for (d.comps[0..d.ncomp], 0..) |*c, i| src[i] = upsampleRow(d, c, @intCast(y), ow, rows[i * ow ..][0..ow]);
+        convertRow(transform, src[0..d.ncomp], d.out[y * ow * 4 ..][0 .. ow * 4]);
+    }
+}
+
+fn finish(d: *Decoder) DecodeError!Image {
+    const ow = d.outW();
+    const oh = d.outH();
+    if (!d.streamed) {
+        const out_len = try image.pixelBytes(ow, oh, d.limits);
+        try allocPlanes(d);
+        var block_rows: usize = 0;
+        for (d.comps[0..d.ncomp]) |*c| block_rows += c.bh;
+        d.out = try d.gpa.alloc(u8, out_len);
+        // At least 64 rows a band (any number in tests that force threads).
+        const band_rows: u32 = if (builtin.is_test and test_knobs.threads) 1 else 64;
+        const bands: usize = if (!threaded(d))
+            1
+        else
+            @max(1, @min(max_threads, std.Thread.getCpuCount() catch 1, oh / band_rows));
+        const rows = try d.gpa.alloc(u8, bands * @as(usize, ow) * d.ncomp);
+        defer d.gpa.free(rows);
+        const cx: OutCtx = .{ .d = d, .rows = rows };
+        forBands(block_rows, bands, &cx, idctBand);
+        forBands(oh, bands, &cx, colorBand);
+    }
+    const out = d.out;
+    d.out = &.{};
     return .{ .w = ow, .h = oh, .rgba = out, .format = .jpeg };
+}
+
+/// One output row from per-component rows of `ow` samples.
+fn convertRow(transform: Transform, src: []const []const u8, dst: []u8) void {
+    const ow = dst.len / 4;
+    var x: usize = 0;
+    switch (transform) {
+        .ycbcr => {
+            const L = 16;
+            const V = @Vector(L, i32);
+            while (x + L <= ow) : (x += L) {
+                const yv: V = @as(@Vector(L, u8), src[0][x..][0..L].*);
+                const b = @as(V, @as(@Vector(L, u8), src[1][x..][0..L].*)) - @as(V, @splat(128));
+                const r = @as(V, @as(@Vector(L, u8), src[2][x..][0..L].*)) - @as(V, @splat(128));
+                const Y = (yv << @splat(16)) + @as(V, @splat(1 << 15));
+                const lo: V = @splat(0);
+                const hi: V = @splat(255);
+                const R: @Vector(L, u32) = @intCast(@min(@max((Y + @as(V, @splat(91881)) * r) >> @splat(16), lo), hi));
+                const G: @Vector(L, u32) = @intCast(@min(@max((Y - @as(V, @splat(22554)) * b - @as(V, @splat(46802)) * r) >> @splat(16), lo), hi));
+                const B: @Vector(L, u32) = @intCast(@min(@max((Y + @as(V, @splat(116130)) * b) >> @splat(16), lo), hi));
+                storeRgba(dst[x * 4 ..][0 .. L * 4], R, G, B);
+            }
+            while (x < ow) : (x += 1) {
+                const rgb = ycc(src[0][x], src[1][x], src[2][x]);
+                dst[x * 4 ..][0..4].* = .{ rgb[0], rgb[1], rgb[2], 255 };
+            }
+        },
+        .gray => {
+            const L = 16;
+            while (x + L <= ow) : (x += L) {
+                const g: @Vector(L, u32) = @as(@Vector(L, u8), src[0][x..][0..L].*);
+                storeRgba(dst[x * 4 ..][0 .. L * 4], g, g, g);
+            }
+            while (x < ow) : (x += 1) dst[x * 4 ..][0..4].* = .{ src[0][x], src[0][x], src[0][x], 255 };
+        },
+        .rgb => while (x < ow) : (x += 1) {
+            dst[x * 4 ..][0..4].* = .{ src[0][x], src[1][x], src[2][x], 255 };
+        },
+        .cmyk, .ycck => while (x < ow) : (x += 1) {
+            var cmy: [3]u8 = .{ src[0][x], src[1][x], src[2][x] };
+            if (transform == .ycck) {
+                const rgb = ycc(cmy[0], cmy[1], cmy[2]);
+                cmy = .{ 255 - rgb[0], 255 - rgb[1], 255 - rgb[2] };
+            }
+            // Adobe stores CMYK inverted: R = C·K / 255.
+            const k: u32 = src[3][x];
+            dst[x * 4 ..][0..4].* = .{ @intCast((@as(u32, cmy[0]) * k + 127) / 255), @intCast((@as(u32, cmy[1]) * k + 127) / 255), @intCast((@as(u32, cmy[2]) * k + 127) / 255), 255 };
+        },
+    }
+}
+
+/// Packs channels into RGBA bytes with alpha 255.
+fn storeRgba(dst: []u8, r: anytype, g: @TypeOf(r), b: @TypeOf(r)) void {
+    const L = @typeInfo(@TypeOf(r)).vector.len;
+    var px = r | (g << @splat(8)) | (b << @splat(16)) | @as(@TypeOf(r), @splat(0xFF000000));
+    if (builtin.cpu.arch.endian() == .big) px = @byteSwap(px);
+    dst[0 .. L * 4].* = @bitCast(px);
 }
 
 /// JFIF YCbCr to RGB in 16.16 fixed point.
@@ -789,35 +1155,81 @@ fn clamp8(v: i32) u8 {
     return @intCast(std.math.clamp(v, 0, 255));
 }
 
-/// Row `y` of the output for component `c`, upsampled to `ow` samples
-/// (triangle filter when the component is subsampled by 2).
-fn upsampleRow(d: *const Decoder, c: *const Component, y: u32, ow: u32, out: []u8) void {
+/// Row `y` of the output for component `c`, `ow` samples upsampled
+/// with the triangle filter when the component is subsampled by 2. The
+/// result is `out` or, at full resolution, the plane row itself.
+fn upsampleRow(d: *const Decoder, c: *const Component, y: u32, ow: u32, out: []u8) []const u8 {
     const fx: u32 = d.hmax / c.h;
     const fy: u32 = d.vmax / c.v;
-    // The rows above and below to blend (the nearer one weighs 1/4).
+    // The rows above and below to blend (the nearer one weighs 3/4).
     const sy = y / fy;
     const sy2: u32 = if (fy == 1) sy else if (y % 2 == 0) (if (sy > 0) sy - 1 else sy) else @min(sy + 1, c.ph - 1);
     const r0 = c.plane[@as(usize, @min(sy, c.ph - 1)) * c.pw ..][0..c.pw];
-    if (fx == 1 and fy == 1) {
-        @memcpy(out[0..ow], r0[0..ow]);
-        return;
-    }
+    if (fx == 1 and fy == 1) return r0[0..ow];
     const r1 = c.plane[@as(usize, @min(sy2, c.ph - 1)) * c.pw ..][0..c.pw];
-    for (0..ow) |x| {
-        const sx: u32 = @as(u32, @intCast(x)) / fx;
-        if (fx == 1) {
-            out[x] = if (fy == 1) r0[sx] else @intCast((3 * @as(u32, r0[sx]) + r1[sx] + 2) / 4);
+    if (fx == 1) {
+        // Vertical only: (3·near + far + 2) / 4.
+        for (out[0..ow], r0[0..ow], r1[0..ow]) |*o, a, b| o.* = @intCast((3 * @as(u16, a) + b + 2) >> 2);
+        return out[0..ow];
+    }
+    // Horizontal (and vertical): per source column s, a = 3·near + far
+    // (4·near without vertical subsampling); output 2s blends a with its
+    // left neighbour, 2s + 1 with its right one: (3·a + a' + 8) / 16.
+    const half = (ow + 1) / 2;
+    const col = struct {
+        fn at(p: []const u8, q: []const u8, s: usize, vert: bool) u16 {
+            return if (vert) 3 * @as(u16, p[s]) + q[s] else 4 * @as(u16, p[s]);
+        }
+    }.at;
+    const vert = fy != 1;
+    var s: usize = 0;
+    const L = 16;
+    const V = @Vector(L, u16);
+    while (s < half) {
+        if (s > 0 and s + L + 1 <= c.pw and s + L <= half and 2 * (s + L) <= ow) {
+            const p0: V = @as(@Vector(L, u8), r0[s - 1 ..][0..L].*);
+            const c0: V = @as(@Vector(L, u8), r0[s..][0..L].*);
+            const n0: V = @as(@Vector(L, u8), r0[s + 1 ..][0..L].*);
+            var pa: V = undefined;
+            var ca: V = undefined;
+            var na: V = undefined;
+            if (vert) {
+                const three: V = @splat(3);
+                pa = three * p0 + @as(V, @as(@Vector(L, u8), r1[s - 1 ..][0..L].*));
+                ca = three * c0 + @as(V, @as(@Vector(L, u8), r1[s..][0..L].*));
+                na = three * n0 + @as(V, @as(@Vector(L, u8), r1[s + 1 ..][0..L].*));
+            } else {
+                const four: V = @splat(4);
+                pa = four * p0;
+                ca = four * c0;
+                na = four * n0;
+            }
+            const three: V = @splat(3);
+            const eight: V = @splat(8);
+            const even: @Vector(L, u8) = @intCast((three * ca + pa + eight) >> @splat(4));
+            const odd: @Vector(L, u8) = @intCast((three * ca + na + eight) >> @splat(4));
+            const mask = comptime blk: {
+                var m: [2 * L]i32 = undefined;
+                for (0..L) |i| {
+                    m[2 * i] = i;
+                    m[2 * i + 1] = ~@as(i32, i);
+                }
+                break :blk m;
+            };
+            out[2 * s ..][0 .. 2 * L].* = @shuffle(u8, even, odd, mask);
+            s += L;
             continue;
         }
-        const sx2: u32 = if (x % 2 == 0) (if (sx > 0) sx - 1 else sx) else @min(sx + 1, c.pw - 1);
-        if (fy == 1) {
-            out[x] = @intCast((3 * @as(u32, r0[sx]) + r0[sx2] + 2) / 4);
-        } else {
-            const a = 3 * @as(u32, r0[sx]) + r1[sx];
-            const b = 3 * @as(u32, r0[sx2]) + r1[sx2];
-            out[x] = @intCast((3 * a + b + 8) / 16);
+        const a = col(r0, r1, s, vert);
+        const left = col(r0, r1, if (s > 0) s - 1 else s, vert);
+        out[2 * s] = @intCast((3 * a + left + 8) >> 4);
+        if (2 * s + 1 < ow) {
+            const right = col(r0, r1, @min(s + 1, c.pw - 1), vert);
+            out[2 * s + 1] = @intCast((3 * a + right + 8) >> 4);
         }
+        s += 1;
     }
+    return out[0..ow];
 }
 
 // -- EXIF ---------------------------------------------------------------------
