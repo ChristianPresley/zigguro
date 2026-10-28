@@ -610,6 +610,35 @@ pub fn build(b: *std.Build) void {
         b.step("bench-latency", "Type into a 100k-line file in the app and write zig-out/bench-results/latency.json").dependOn(&install.step);
     }
 
+    // bench-startup (E14.F05.S01.T03): launches the app repeatedly and
+    // writes zig-out/bench-results/startup.json; build with
+    // -Doptimize=ReleaseFast for real numbers. Arguments after `--` go to
+    // the harness (--runs, --cold-runs, --workspace, --platform, ...).
+    {
+        const harness = b.addExecutable(.{ .name = "zigguro-bench-startup", .root_module = appModule(b, "apps/zigguro/src/bench/startup.zig", f.target, f.optimize, &mods, options) });
+        b.installArtifact(harness);
+        const run = b.addRunArtifact(harness);
+        run.has_side_effects = true;
+        run.addArg("--exe");
+        run.addArtifactArg(zigguro_exe);
+        run.addArg("--out");
+        const out = run.addOutputFileArg("startup.json");
+        if (b.args) |args| run.addArgs(args);
+        const install = b.addInstallFileWithDir(out, .prefix, "bench-results/startup.json");
+        b.step("bench-startup", "Launch the app repeatedly and write zig-out/bench-results/startup.json").dependOn(&install.step);
+        // Two headless launches, as a test (part of zig build test).
+        const smoke = b.addRunArtifact(harness);
+        smoke.has_side_effects = true;
+        smoke.addArgs(&.{ "--runs", "2", "--cold-runs", "1", "--warmup-runs", "0", "--platform", "headless", "--timeout-ms", "60000", "--exe" });
+        smoke.addArtifactArg(zigguro_exe);
+        smoke.addArg("--out");
+        _ = smoke.addOutputFileArg("startup.json");
+        smoke.expectExitCode(0);
+        const smoke_step = b.step("test-bench-startup", "Run bench-startup with 2 headless launches");
+        smoke_step.dependOn(&smoke.step);
+        test_step.dependOn(smoke_step);
+    }
+
     // Agent evaluations (packages/ai/eval): scenarios against fixture
     // workspaces, offline from scripts and cassettes.
     const eval_step = b.step("eval", "Run the agent evaluation suite (-Deval-filter, -Deval-update-baseline, -Deval-live -Deval-model)");
