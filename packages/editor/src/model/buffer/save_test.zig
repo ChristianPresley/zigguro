@@ -416,3 +416,65 @@ test "load: a large file read in parallel equals its bytes" {
     try std.testing.expectEqual(@as(u64, n), l.disk.size);
     try std.testing.expectEqual(@as(u64, n / 61), l.eol.counts[@intFromEnum(eol.Eol.lf)]);
 }
+
+test "load: a large file is memory-mapped, hashed and sampled" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const n: usize = @intCast(external.map_min + 9);
+    const data = try gpa.alloc(u8, n);
+    defer gpa.free(data);
+    // CRLF lines, with the sample ending between a CR and its LF.
+    for (data, 0..) |*b, i| b.* = switch (i % 50) {
+        48 => '\r',
+        49 => '\n',
+        else => 'a' + @as(u8, @intCast(i % 26)),
+    };
+    data[eol.sample_limit - 1] = '\r';
+    data[eol.sample_limit] = '\n';
+    try tmp.dir.writeFile(io, .{ .sub_path = "big.txt", .data = data });
+    var l = try external.load(gpa, io, tmp.dir, "big.txt", null, .utf8);
+    var owned = true;
+    defer if (owned) l.deinit(gpa);
+    if (builtin.os.tag != .windows) try std.testing.expect(l.map != null);
+    try std.testing.expectEqualSlices(u8, data, l.text);
+    // The hash is left to the caller.
+    try std.testing.expectEqual(l.map != null, l.hash_pending);
+    const h = if (l.hash_pending) save.hashBytesParallel(io, l.text) else l.disk.content_hash;
+    try std.testing.expectEqual(save.hashBytes(data), h);
+    try std.testing.expectEqual(try save.hashFile(tmp.dir, io, "big.txt"), h);
+    try std.testing.expect(l.eol.sampled);
+    try std.testing.expectEqual(eol.Eol.crlf, l.eol.style);
+    // The document takes the map over.
+    if (l.map) |m| {
+        owned = false;
+        const d = try Document.initMapped(gpa, @enumFromInt(1), m);
+        defer d.deinit();
+        try std.testing.expectEqual(@as(u64, n), d.len());
+        // One more break: the CRLF placed at the sample edge.
+        try std.testing.expectEqual(@as(u64, n / 50 + 2), d.tree.lineCount());
+    }
+}
+
+test "save: content hashes agree one-shot, streamed and in parallel" {
+    const sizes = [_]usize{ 0, 1, save.hash_chunk - 1, save.hash_chunk, 3 * save.hash_chunk + 5 };
+    const data = try gpa.alloc(u8, sizes[sizes.len - 1]);
+    defer gpa.free(data);
+    var prng: std.Random.DefaultPrng = .init(5);
+    prng.random().bytes(data);
+    var last: ?u64 = null;
+    for (sizes) |size| {
+        const b = data[0..size];
+        const want = save.hashBytes(b);
+        try std.testing.expectEqual(want, save.hashBytesParallel(io, b));
+        var h: save.ContentHasher = .{};
+        var at: usize = 0;
+        while (at < size) {
+            const k = @min(size - at, 1 + prng.random().uintLessThan(usize, 5 << 20));
+            h.update(b[at..][0..k]);
+            at += k;
+        }
+        try std.testing.expectEqual(want, h.final());
+        if (last) |x| try std.testing.expect(x != want);
+        last = want;
+    }
+}
