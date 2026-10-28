@@ -1,0 +1,13 @@
+# runInTerminal external with shell args: no external terminal is
+# configured, so it runs integrated, joined for the shell.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< reverse runInTerminal {"kind": "external", "argsCanBeInterpretedByShell": true, "title": "app", "cwd": "/w", "args": ["/w/app", "a b"], "env": {"ZG_TEST": "1", "ZG_UNSET": null}}
+> response runInTerminal {"success": true, "body": {"processId": 4242, "shellProcessId": 17}}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event initialized
+> configurationDone
+< {}
+> disconnect {"terminateDebuggee": true}
+< {}
