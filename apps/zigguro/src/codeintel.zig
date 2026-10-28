@@ -90,6 +90,7 @@ pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
 pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 pub const SmartSelect = @import("smart_select.zig").SmartSelect;
 pub const DocLinks = @import("doc_links.zig").DocLinks;
+const LspWatch = @import("lsp_watch.zig").LspWatch;
 const LinkDriver = @import("doc_links.zig").LinkDriver;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
@@ -201,6 +202,8 @@ pub const CodeIntel = struct {
     /// Document links: underlined, Ctrl+click follows (`link_hook`).
     links: DocLinks = undefined,
     link_hook: ?LinkHook = null,
+    /// The workspace watcher for servers' watched files.
+    fs_watch: LspWatch = undefined,
     /// Server states and progress (the status bar, the server commands).
     status: ServerStatus = undefined,
     status_seen: u64 = 0,
@@ -334,6 +337,7 @@ pub const CodeIntel = struct {
         ci.smart = .init(gpa, &ci.mgr, ci.waker());
         ci.smart.structure = .{ .ctx = ci, .f = selectionStructureOf };
         ci.links.init(gpa, &ci.mgr, ci.waker(), .{ .ctx = ci, .open = onLinkOpen }, style.link);
+        ci.fs_watch = .init(gpa, rt.io, &ci.mgr, ci.cwd);
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -353,6 +357,7 @@ pub const CodeIntel = struct {
         ci.inline_info.release();
         ci.smart.release();
         ci.links.release();
+        ci.fs_watch.deinit();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -1258,6 +1263,7 @@ pub const CodeIntel = struct {
 
     fn tick(ci: *CodeIntel) void {
         ci.mgr.tick();
+        ci.fs_watch.poll();
         var changed = ci.semtok.tick();
         _ = ci.diag.tick();
         changed = (ci.decor.flush() catch false) or changed;
@@ -1324,7 +1330,7 @@ pub const CodeIntel = struct {
         var wait: ?u64 = null;
         // A crashed server's restart, and its countdown each second.
         const restart_due: ?i96 = if (ci.mgr.nextRestartDue()) |d| @min(d, now + std.time.ns_per_s) else null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue(), restart_due }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue(), ci.mgr.nextWatchDue(), restart_due }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
