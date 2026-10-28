@@ -11,6 +11,7 @@ const view_mod = @import("core/view.zig");
 const text = @import("paint/text.zig");
 const controls = @import("widgets/controls.zig");
 const Host = @import("host.zig").Host;
+const zg_perf = @import("zg_perf");
 const FontText = @import("paint/font_text.zig").FontText;
 
 const Headless = zg_platform.headless.Headless;
@@ -83,6 +84,41 @@ fn openRenderClick(threaded: bool) !void {
     try hl.inject(.{ .window_close_requested = hw.id });
     _ = try host.pump();
     try std.testing.expectEqual(@as(usize, 0), host.windows.items.len);
+}
+
+test "host: presented frames reach the frame timeline with phase times and input" {
+    const gpa = std.testing.allocator;
+    const hl = try Headless.init(gpa, std.testing.io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var tl = try zg_perf.frame.FrameTimeline.init(gpa, 64);
+    defer tl.deinit();
+    var host = Host.init(gpa, std.testing.io, &app, hl.platform(), mono.system(), .{ .render_thread = false, .timeline = &tl });
+    defer host.deinit();
+    var v: Counter = .{};
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 200, .h = 100 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(u64, 1), tl.newest);
+
+    // A click: its frame carries the input time and kind.
+    const at: [2]f32 = .{ 15, 15 };
+    try hl.inject(.{ .pointer_button = .{ .win = hw.id, .button = .left, .pressed = true, .pos_px = at, .mods = .{}, .clicks = 1, .time_ns = 0 } });
+    try hl.inject(.{ .pointer_button = .{ .win = hw.id, .button = .left, .pressed = false, .pos_px = at, .mods = .{}, .clicks = 1, .time_ns = 0 } });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    var recs: [8]zg_perf.frame.FrameRecord = undefined;
+    const n = tl.snapshot(&recs);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expect(recs[0].t_input_os_ns == null);
+    try std.testing.expectEqual(zg_perf.frame.record.InputKind.pointer, recs[1].input_kind);
+    try std.testing.expect(recs[1].t_input_os_ns != null);
+    try std.testing.expect(recs[1].estimated);
+    try std.testing.expect(recs[1].t_frame_start_ns != 0 and recs[1].t_submit_ns >= recs[1].t_frame_start_ns);
 }
 
 /// Paints a block whose colour the test flips between frames.
