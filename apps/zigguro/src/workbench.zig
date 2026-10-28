@@ -3568,6 +3568,13 @@ test "workbench: the notes sidebar follows the editor; note search opens a hit" 
     try n.sidebar_model.sync();
     try std.testing.expectEqualStrings("Alpha", n.sidebar_model.title);
 
+    // Alt+Enter on the link follows it to b.
+    t.win.setFocus(wb.editor_node, false);
+    wb.view.setSelection(.caret(15));
+    t.press(.enter, .{ .alt = true });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.md", std.fs.path.basename(wb.path.?));
+
     // Saving a note indexes it again.
     try tmp.dir.writeFile(io, .{ .sub_path = "c.md", .data = "# Charlie\n\n[[a]]\n" });
     const c = try std.fs.path.join(gpa, &.{ root, "c.md" });
