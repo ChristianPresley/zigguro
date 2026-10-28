@@ -252,6 +252,9 @@ pub const NodeStore = struct {
         c.test_id = 0;
         c.scroll = .{};
         c.content = .{};
+        // A reused slot must not inherit the old node's scroll layer: its
+        // pixels belong to whatever lived here before.
+        c.layer = null;
         s.live += 1;
         return .{ .index = index, .gen = c.gen };
     }
@@ -405,4 +408,17 @@ test "alloc, free and generations" {
     try std.testing.expect(a.gen != b.gen);
     try std.testing.expect(s.valid(b));
     try std.testing.expectEqual(@as(u32, 1), s.live);
+}
+
+test "a reused slot starts without the old node's scroll layer" {
+    const box = @import("../widgets/box.zig");
+    box.registerBuiltins();
+    var s = try NodeStore.init(std.testing.allocator, 4);
+    defer s.deinit();
+    const a = try s.alloc(11, .box);
+    s.coldOf(a).layer = .{ .k = .{}, .si = .{ 0, 40 }, .origin = .{ 0, 40 }, .size = .{ 300, 200 }, .scale = 1 };
+    s.free(a);
+    const b = try s.alloc(12, .box);
+    try std.testing.expectEqual(a.index, b.index);
+    try std.testing.expect(s.coldOf(b).layer == null);
 }
