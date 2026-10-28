@@ -251,6 +251,17 @@ pub fn shapeCached(s: *Shaper, cache: *ShapeCache, inst: *const FaceInstance, in
     // reach across spaces; both shape the run as one piece.
     const whole = p.space_participates or p.ranged.len != 0 or
         (p.has_frac and std.mem.indexOf(u8, text, "\u{2044}") != null);
+    // A run that is one cached piece (one word, or the whole run) is
+    // copied out at its size without the builder.
+    if (whole or wordEnd(text, 0) == text.len) {
+        const key: ShapeKey = .{ .inst = inst_id, .script = script, .dir = dir, .feature_set = feature_set, .text_hash = std.hash.XxHash3.hash(0, text), .len = @intCast(text.len) };
+        if (cache.get(key)) |r| {
+            var copy = try GlyphRun.alloc(arena, r.len());
+            RunBuilder.copyInto(&copy, 0, r.*, r.len(), 0);
+            out.* = copy;
+            return;
+        }
+    }
     var b = try RunBuilder.init(arena, text.len + 8);
     // Glyph start of each word, for RTL reordering.
     var starts_buf: [128]usize = undefined;
