@@ -1,0 +1,42 @@
+# The agents' CodeIntel facade: a background document opened from disk,
+# qualified names through workspace/symbol, references, the outline,
+# rename and code actions proposed for review, the idle close, and a
+# deadline.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "hoverProvider": true, "referencesProvider": true, "documentSymbolProvider": true, "workspaceSymbolProvider": true, "renameProvider": true, "codeActionProvider": {"resolveProvider": true}, "callHierarchyProvider": true}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"uri": "file://${workspace}/lib.zig", "languageId": "zig"}}
+> textDocument/hover {"textDocument": {"uri": "file://${workspace}/lib.zig"}, "position": {"line": 1, "character": 11}}
+< {"id": $1, "result": {"contents": {"kind": "markdown", "value": "fn init() Pool"}}}
+> workspace/symbol {"query": "init"}
+< {"id": $1, "result": [{"name": "init", "kind": 12, "containerName": "Other", "location": {"uri": "file://${workspace}/other.zig", "range": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 20}}}}, {"name": "init", "kind": 6, "containerName": "Pool", "location": {"uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 5}}}}]}
+> textDocument/hover {"position": {"line": 1, "character": 11}}
+< {"id": $1, "result": {"contents": {"kind": "markdown", "value": "fn init() Pool"}}}
+> workspace/symbol {"query": "init"}
+< {"id": $1, "result": [{"name": "init", "kind": 12, "containerName": "Other", "location": {"uri": "file://${workspace}/other.zig", "range": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 20}}}}, {"name": "init", "kind": 6, "containerName": "Pool", "location": {"uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 5}}}}]}
+> textDocument/references {"position": {"line": 5, "character": 16}, "context": {"includeDeclaration": true}}
+< {"id": $1, "result": [{"uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 5, "character": 16}, "end": {"line": 5, "character": 20}}}, {"uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}}]}
+> textDocument/documentSymbol {"textDocument": {"uri": "file://${workspace}/lib.zig"}}
+< {"id": $1, "result": [{"name": "Pool", "kind": 23, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 2}}, "selectionRange": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 10}}, "children": [{"name": "init", "detail": "fn () Pool", "kind": 6, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 5}}, "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}}]}]}
+> textDocument/rename {"position": {"line": 1, "character": 11}, "newName": "create"}
+< {"id": $1, "result": {"changes": {"file://${workspace}/lib.zig": [{"range": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}, "newText": "create"}, {"range": {"start": {"line": 5, "character": 16}, "end": {"line": 5, "character": 20}}, "newText": "create"}]}}}
+> textDocument/rename {"position": {"line": 1, "character": 11}, "newName": "create"}
+< {"id": $1, "result": {"changes": {"file://${workspace}/lib.zig": [{"range": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}, "newText": "create"}, {"range": {"start": {"line": 5, "character": 16}, "end": {"line": 5, "character": 20}}, "newText": "create"}]}}}
+> textDocument/codeAction {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 2, "character": 0}}, "context": {"triggerKind": 1}}
+< {"id": $1, "result": [{"title": "Run", "command": "fake.run"}, {"title": "Later", "kind": "refactor", "data": {"x": 1}}, {"title": "Inline", "kind": "refactor.inline", "disabled": {"reason": "Nothing to inline"}}, {"title": "Make it const", "kind": "quickfix", "isPreferred": true, "edit": {"changes": {"file://${workspace}/lib.zig": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "newText": "pub const"}]}}}]}
+> codeAction/resolve {"title": "Later", "data": {"x": 1}}
+< {"id": $1, "result": {"title": "Later", "kind": "refactor", "edit": {"changes": {"file://${workspace}/lib.zig": [{"range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 0}}, "newText": "// later\n"}]}}}}
+> textDocument/prepareCallHierarchy {"position": {"line": 1, "character": 11}}
+< {"id": $1, "result": [{"name": "init", "kind": 6, "uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 5}}, "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}, "data": {"k": 1}}]}
+> callHierarchy/incomingCalls {"item": {"name": "init", "data": {"k": 1}}}
+< {"id": $1, "result": [{"from": {"name": "test", "kind": 12, "uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 26}}, "selectionRange": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 4}}}, "fromRanges": [{"start": {"line": 5, "character": 16}, "end": {"line": 5, "character": 20}}]}]}
+> callHierarchy/incomingCalls {"item": {"name": "test"}}
+< {"id": $1, "result": [{"from": {"name": "init", "kind": 6, "uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 5}}, "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}}, "fromRanges": [{"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 1}}, {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 4}}]}]}
+> textDocument/didClose {"textDocument": {"uri": "file://${workspace}/lib.zig"}}
+> textDocument/didOpen {"textDocument": {"uri": "file://${workspace}/lib.zig"}}
+> textDocument/hover {"position": {"line": 0, "character": 0}}
+~ 800ms
+< {"id": $1, "result": null}
+> shutdown
+< {"id": $1, "result": null}
+> exit
