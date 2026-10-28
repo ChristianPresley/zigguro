@@ -8,11 +8,17 @@
 //!            [--base-ref REF] [--head-ref REF]
 //!   perfgate baseline --from FILE --machine CLASS --out DIR
 //!   perfgate list-gated
+//!   perfgate calibrate [--reference FILE] [--out FILE] [--kernel-ms N]
+//!   perfgate env
 //!
 //! Inputs are E00 bench files or merged sets. `--calibration` is a JSON
 //! `{"scale": x}`; `--changed-baselines` lists the PR's changed paths one
-//! per line. Exit status: 0 pass, 1 blocking rows, 2 usage or input
-//! errors. See perf/baselines/README.md.
+//! per line. `calibrate` runs the four calibration kernels (build it
+//! optimized: `zig build perf-calibrate`) and writes the scale against the
+//! reference file; its output also serves as a new reference. `env` prints
+//! the captured environment and its variance warnings. Exit status: 0
+//! pass, 1 blocking rows, 2 usage or input errors. See
+//! perf/baselines/README.md.
 
 const std = @import("std");
 const zg_perf = @import("zg_perf");
@@ -49,6 +55,10 @@ pub fn main(init: std.process.Init) !u8 {
         cmdBaseline(arena, io, rest)
     else if (std.mem.eql(u8, cmd, "list-gated"))
         cmdListGated(w)
+    else if (std.mem.eql(u8, cmd, "calibrate"))
+        cmdCalibrate(arena, io, w, rest)
+    else if (std.mem.eql(u8, cmd, "env"))
+        cmdEnv(arena, io, w)
     else
         return usage();
     return r catch |e| {
@@ -58,7 +68,7 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn usage() u8 {
-    std.log.err("usage: perfgate merge|compare|baseline|list-gated ... (see tools/perfgate/main.zig)", .{});
+    std.log.err("usage: perfgate merge|compare|baseline|list-gated|calibrate|env ... (see tools/perfgate/main.zig)", .{});
     return 2;
 }
 
@@ -164,5 +174,36 @@ fn cmdListGated(w: *std.Io.Writer) !u8 {
             else => {},
         };
     }
+    return 0;
+}
+
+fn cmdCalibrate(arena: std.mem.Allocator, io: std.Io, w: *std.Io.Writer, args: []const []const u8) !u8 {
+    const cal = zg_perf.scenario.calibrate;
+    var opts: cal.Options = .{};
+    if (opt(args, "--kernel-ms")) |v| opts.kernel_ns = try std.fmt.parseInt(u64, v, 10) * std.time.ns_per_ms;
+    if (opt(args, "--reference")) |p| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(1 << 20))) |bytes| {
+            opts.reference = try cal.parseReference(arena, bytes);
+        } else |e| std.log.warn("calibrate: no reference ({s}: {t}); scale stays 1", .{ p, e });
+    }
+    const env = try zg_perf.scenario.captureEnv(io, arena);
+    _ = try zg_perf.scenario.env.warnings(env, w);
+    const st = zg_perf.scenario.stabilize(.{});
+    try w.writeAll("calibrate: ");
+    try st.describe(w);
+    try w.flush();
+    const c = try cal.calibrateWith(io, std.heap.smp_allocator, opts);
+    try w.print("calibrate: scale {d:.3} (int_alu {d:.3} ns/op, mem_bw {d:.2} ms/64 MiB, branchy {d:.2} ns/op, alloc {d:.2} ns/op)\n", .{ c.scale, c.ns_per_op.int_alu, c.ns_per_op.mem_bw / 1e6, c.ns_per_op.branchy, c.ns_per_op.alloc });
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    try cal.writeJson(c, &aw.writer);
+    if (opt(args, "--out")) |p| try writeOut(io, p, aw.written()) else try w.writeAll(aw.written());
+    return 0;
+}
+
+fn cmdEnv(arena: std.mem.Allocator, io: std.Io, w: *std.Io.Writer) !u8 {
+    const env = try zg_perf.scenario.captureEnv(io, arena);
+    try std.json.Stringify.value(env, .{ .whitespace = .indent_2 }, w);
+    try w.writeAll("\n");
+    _ = try zg_perf.scenario.env.warnings(env, w);
     return 0;
 }
