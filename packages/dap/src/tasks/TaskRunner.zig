@@ -26,6 +26,7 @@
 
 const TaskRunner = @This();
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_lsp = @import("zg_lsp");
@@ -709,13 +710,16 @@ fn monitor(r: *TaskRunner, node: *TaskRun) void {
     var code: ?u8 = null;
     while (true) {
         if (node.proc) |p| {
-            if (p.waitExit(.fromMilliseconds(quiet_ms + 5))) |term| {
+            const exited = p.waitExit(.fromMilliseconds(quiet_ms + 5));
+            zg_perf.idle.noteWake("dap.task.monitor", .timer);
+            if (exited) |term| {
                 p.drainOutput();
                 code = headless.Proc.exitCode(term);
                 break;
             }
         } else {
             node.term_exit.waitTimeout(r.io, .{ .duration = .{ .raw = .fromMilliseconds(quiet_ms + 5), .clock = .awake } }) catch {};
+            zg_perf.idle.noteWake("dap.task.monitor", .timer);
             if (node.term_exit.isSet()) {
                 code = node.term_code;
                 break;
