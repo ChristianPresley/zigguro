@@ -123,6 +123,8 @@ pub const Automation = struct {
     max_runs_per_hour: ?u32 = null,
     /// How many automations may trigger each other in a row.
     max_chain_depth: u8 = 3,
+    /// The E13.F09 project its runs belong to (they get its context).
+    project: ?[]const u8 = null,
 
     pub fn hasUnattended(a: *const Automation) bool {
         for (a.triggers) |t| if (t.unattended()) return true;

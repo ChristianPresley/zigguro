@@ -60,3 +60,40 @@ Today every real backend stamps input events with `nowNs` when it reads them, so
 The backend conformance suite (`packages/platform/src/testing/conformance.zig`) checks the input half on every backend that can synthesise keys: the key's `time_ns` must not be in the future and must be under 50 ms old when `pollEvents` returns it. Harnesses on a virtual clock (headless) declare `virtual_clock` and skip it. Presentation times are checked by the backends that send feedback (the Wayland `wp_presentation` test under Weston, the Win32 CPU present test).
 
 Still to verify on real hardware: Wayland presentation feedback with `hw_clock` on a GPU driver, X11 Present UST on non-Mesa drivers, and `VK_EXT_present_timing` on Windows.
+
+## 2. bench-latency
+
+`zig build bench-latency -Doptimize=ReleaseFast` types into a generated 100 000-line file in the real workbench and writes `zig-out/bench-results/latency.json` (E00 bench JSON, `package` "app"). The scenario runs inside the app (`zigguro --bench-scenario=latency`, `apps/zigguro/src/bench/latency.zig`); the build step passes the options below.
+
+| Build option | App flag | Default |
+|---|---|---|
+| `-Dbench-latency-injection=auto\|os\|ring` | `--bench-injection=` | `auto` |
+| `-Dbench-latency-keys=N` | `--bench-keys=N` | 1000 |
+| `-Dbench-latency-burst=true` | `--burst` (10 ms between keys) | 150 ms |
+| | `--bench-warmup=N` | 50 |
+| | `--bench-lines=N`, `--bench-corpus=PATH` | 100 000, in the temp folder |
+| | `--bench-out=PATH` | |
+
+The caret starts at line 50 000, column 10. The keys are a to z with a space every 8th key and 8 Backspaces after every 64, so the line stays short.
+
+### Injection
+
+- **os** opens a real window and types at the OS level, waiting the interval after each key so each key gets its own frame:
+  - Linux: a uinput virtual keyboard. The compositor reads it like real hardware, under Wayland and X11. It needs write access to `/dev/uinput`; on `EACCES` the app logs the udev rule to add (`KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"`).
+  - Windows: `SendInput` with scancodes. The window must be in the foreground.
+- **ring** runs on the headless platform and queues key events there, one frame per key, with no waiting. Presentation times are estimated (submit + one refresh), so the key result is named `latency.ring_to_photon`. It runs in CI on any machine.
+- **auto** tries `os` and falls back to `ring`.
+
+### Results
+
+| Result | Measures |
+|---|---|
+| `latency.key_to_photon` (or `latency.ring_to_photon`) | Input time to presentation |
+| `latency.input_to_dispatch` | Input time to frame start |
+| `latency.dispatch_to_submit` | Frame start to submit |
+| `latency.submit_to_present` | Submit to presentation |
+| `latency.frame_cpu` | UI-thread CPU of the frame |
+
+Each result has `p50_ns`, `p95_ns`, `p99_ns`, `p999_ns` and `max_ns`. The file also carries the backend's `profile` from section 1, the injection mode, the refresh period, and the counts of estimated frames and clock violations. The budget `input.key_to_photon` (8 ms p99) applies to `latency.key_to_photon` from an `os` run.
+
+A run fails (exit code 1) when nothing was measured, when the keys did not change the text, or when more than 5 % of the frames were estimated on a backend whose profile claims presentation feedback.

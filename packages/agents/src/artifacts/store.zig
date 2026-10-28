@@ -3,7 +3,7 @@
 //! with immutable versions and provenance.
 //!
 //! Layout under the store directory (`.zigguro/artifacts`):
-//!   <id>/meta.zon   {id, kind, title, created, run, versions: [...]}
+//!   <id>/meta.zon   {id, kind, title, created, run, project, versions: [...]}
 //!   <id>/v<N>.<ext> one file per version, never rewritten
 //! A version identical to the latest one (BLAKE3) isn't stored again.
 //! Files over `link_threshold` imported from program outputs are linked
@@ -103,6 +103,8 @@ pub const Artifact = struct {
     /// The producing run's id (text form).
     run: ?[]const u8 = null,
     source_lang: ?[]const u8 = null,
+    /// The E13.F09 project slug.
+    project: ?[]const u8 = null,
     versions: []const Version,
 
     pub fn latest(a: *const Artifact) *const Version {
@@ -129,6 +131,8 @@ pub const NewArtifact = struct {
     source_lang: ?[]const u8 = null,
     session: ?[]const u8 = null,
     tool_call: ?[]const u8 = null,
+    /// The run's project, or the active one when a person creates it.
+    project: ?[]const u8 = null,
 };
 
 pub const UpdateOpts = struct {
@@ -139,6 +143,20 @@ pub const UpdateOpts = struct {
 pub const ListFilter = struct {
     run: ?RunId = null,
     kind: ?ArtifactKind = null,
+    project: ?ProjectMatch = null,
+};
+
+/// A project filter chip: one project, or artifacts outside any.
+pub const ProjectMatch = union(enum) {
+    slug: []const u8,
+    none,
+
+    pub fn matches(m: ProjectMatch, project: ?[]const u8) bool {
+        return switch (m) {
+            .none => project == null,
+            .slug => |x| if (project) |p| std.mem.eql(u8, p, x) else false,
+        };
+    }
 };
 
 pub const Content = struct {
@@ -306,6 +324,7 @@ pub const ArtifactStore = struct {
             .created = t,
             .run = run_text,
             .source_lang = if (a.source_lang) |l| try ar.dupe(u8, l) else null,
+            .project = if (a.project) |x| try ar.dupe(u8, x) else null,
             .versions = vs,
         };
         try s.dir.createDirPath(s.io, &id_text);
@@ -384,6 +403,7 @@ pub const ArtifactStore = struct {
         meta.title = try ar.dupe(u8, meta.title);
         meta.run = if (meta.run) |r| try ar.dupe(u8, r) else null;
         meta.source_lang = if (meta.source_lang) |l| try ar.dupe(u8, l) else null;
+        meta.project = if (meta.project) |x| try ar.dupe(u8, x) else null;
         const vs = try ar.alloc(Version, meta.versions.len + 1);
         for (meta.versions, vs[0..meta.versions.len]) |v, *o| o.* = try dupeVersion(ar, v);
         vs[meta.versions.len] = try s.versionOf(ar, last.n + 1, s.now(), content, checked, null, uo.note, uo.prov);
@@ -440,6 +460,7 @@ pub const ArtifactStore = struct {
         const start = out.items.len;
         for (s.entries.values()) |e| {
             if (filter.kind) |k| if (e.meta.kind != k) continue;
+            if (filter.project) |m| if (!m.matches(e.meta.project)) continue;
             if (run_text) |rt| if (e.meta.run == null or !std.mem.eql(u8, e.meta.run.?, &rt)) continue;
             try out.append(a, try dupeArtifact(a, e.meta));
         }
@@ -459,6 +480,7 @@ pub const ArtifactStore = struct {
         kind: ?ArtifactKind = null,
         session: ?[]const u8 = null,
         tool_call: ?[]const u8 = null,
+        project: ?[]const u8 = null,
     };
 
     /// Creates an artifact from a file (F06 program outputs). The kind
@@ -475,7 +497,7 @@ pub const ArtifactStore = struct {
         const cwd = Io.Dir.cwd();
         const st = try cwd.statFile(s.io, path, .{});
         const title = io_.title orelse std.fs.path.basename(path);
-        var na: NewArtifact = .{ .kind = io_.kind orelse kinds.kindForPath(path), .title = title, .content = "", .run = io_.run, .session = io_.session, .tool_call = io_.tool_call };
+        var na: NewArtifact = .{ .kind = io_.kind orelse kinds.kindForPath(path), .title = title, .content = "", .run = io_.run, .session = io_.session, .tool_call = io_.tool_call, .project = io_.project };
         if (st.size > s.o.link_threshold) {
             const ext = std.fs.path.extension(path);
             return s.insert(na, .{ .ext = if (ext.len > 1) ext[1..] else "bin", .mime = "application/octet-stream" }, path);
@@ -529,6 +551,7 @@ pub fn dupeArtifact(a: Allocator, m: Artifact) !Artifact {
     o.title = try a.dupe(u8, m.title);
     o.run = try dupeOpt(a, m.run);
     o.source_lang = try dupeOpt(a, m.source_lang);
+    o.project = try dupeOpt(a, m.project);
     const vs = try a.alloc(Version, m.versions.len);
     for (m.versions, vs) |v, *x| x.* = try dupeVersion(a, v);
     o.versions = vs;

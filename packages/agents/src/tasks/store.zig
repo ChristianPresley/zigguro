@@ -49,6 +49,8 @@ pub const NewTask = struct {
     labels: []const []const u8 = &.{},
     depends_on: []const TaskId = &.{},
     due: ?Date = null,
+    /// The E13.F09 project (the app passes the active one).
+    project: ?[]const u8 = null,
     body: []const u8 = "",
 };
 
@@ -66,6 +68,7 @@ pub const TaskPatch = struct {
     rank: ??[]const u8 = null,
     claimed_by: ??[]const u8 = null,
     github: ??[]const u8 = null,
+    project: ??[]const u8 = null,
 };
 
 /// What a write did.
@@ -408,6 +411,7 @@ pub fn create(s: *TaskStore, t: NewTask, via: WriteVia) !struct { id: TaskId, ou
     if (t.labels.len > 0) try edits.append(a, .{ .set = .{ .name = task_mod.props.labels, .value = try stringListValue(a, t.labels) } });
     if (t.depends_on.len > 0) try edits.append(a, .{ .set = .{ .name = task_mod.props.depends_on, .value = try idListValue(a, t.depends_on) } });
     if (t.due) |d| try edits.append(a, .{ .set = .{ .name = task_mod.props.due, .value = .{ .date = d } } });
+    if (t.project) |x| try edits.append(a, .{ .set = .{ .name = task_mod.props.project, .value = .{ .string = x } } });
     try edits.append(a, .{ .set = .{ .name = task_mod.props.created, .value = .{ .datetime = s.nowDateTime() } } });
     const bytes = try fm_writer.applyPropEdits(a, seed, edits.items);
     const name = try ids.fileName(a, id, t.title);
@@ -454,6 +458,7 @@ pub fn render(s: *TaskStore, a: Allocator, id: TaskId, p: TaskPatch) !struct { n
     if (p.rank) |x| try optEdit(a, &edits, &fields, P.rank, if (x) |v| fm.Value{ .string = v } else null);
     if (p.claimed_by) |x| try optEdit(a, &edits, &fields, P.claimed_by, if (x) |v| fm.Value{ .string = v } else null);
     if (p.github) |x| try optEdit(a, &edits, &fields, P.github, if (x) |v| fm.Value{ .string = v } else null);
+    if (p.project) |x| try optEdit(a, &edits, &fields, P.project, if (x) |v| fm.Value{ .string = v } else null);
     var after = try fm_writer.applyPropEdits(a, before, edits.items);
     if (p.body) |b| {
         try fields.append(a, "body");

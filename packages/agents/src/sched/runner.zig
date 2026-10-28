@@ -154,6 +154,7 @@ pub fn buildSpec(r: *AutomationRunner, arena: Allocator, a: *const Automation, r
         .budgets = .{ .max_turns = a.budgets.max_turns, .max_wall_ms = a.budgets.max_wall_ms, .max_cost_micros = a.budgets.max_cost_micro_usd },
         .tags = &.{"automation"},
         .untrusted_payload = payload,
+        .project = a.project,
     };
 }
 

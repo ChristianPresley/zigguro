@@ -49,6 +49,7 @@ can run in CI).
 | `budgets.monthly_cap_micro_usd` | integer | none | Month-to-date cap across this automation's runs; fires past it are skipped (`budget_exhausted`) and you are warned once. |
 | `max_runs_per_hour` | integer | none | Fires past it in a sliding hour are skipped (`rate_limited`). Separately, all automations together fire at most 60 times an hour. |
 | `max_chain_depth` | integer | `3` | How many automations may trigger each other in a row. |
+| `project` | string | none | The slug of a [project](projects.md). Its runs belong to that project and get its instructions and knowledge index. Automations created while a project is active get it. |
 
 ### Triggers
 

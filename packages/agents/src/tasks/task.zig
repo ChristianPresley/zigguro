@@ -55,6 +55,7 @@ pub const props = struct {
     pub const rank = "rank";
     pub const claimed_by = "claimed_by";
     pub const github = "github";
+    pub const project = "project";
 };
 
 pub const Task = struct {
@@ -79,6 +80,8 @@ pub const Task = struct {
     claimed_by: ?[]const u8 = null,
     /// `owner/repo#123` when synced with GitHub Issues.
     github: ?[]const u8 = null,
+    /// The E13.F09 project slug.
+    project: ?[]const u8 = null,
     /// Why the file is not a valid task (it is still listed).
     problem: ?[]const u8 = null,
 
@@ -101,6 +104,7 @@ pub const Task = struct {
         if (t.rank) |s| c.rank = try a.dupe(u8, s);
         if (t.claimed_by) |s| c.claimed_by = try a.dupe(u8, s);
         if (t.github) |s| c.github = try a.dupe(u8, s);
+        if (t.project) |s| c.project = try a.dupe(u8, s);
         if (t.problem) |s| c.problem = try a.dupe(u8, s);
         return c;
     }
@@ -169,6 +173,7 @@ fn readProps(arena: Allocator, bytes: []const u8, t: *Task, root: *const fm.Node
         if (s.len > 0) t.claimed_by = s;
     };
     if (fm.get(root, props.github)) |n| t.github = scalarText(bytes, n);
+    if (fm.get(root, props.project)) |n| t.project = scalarText(bytes, n);
 }
 
 /// A scalar's text (numbers and dates as written), null for empty and
