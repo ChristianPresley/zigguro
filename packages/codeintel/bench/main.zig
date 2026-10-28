@@ -387,7 +387,8 @@ fn completionDecode5mb(f: *CompletionFixture, s: *State) void {
     for (0..s.iterations()) |_| {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
-        const v = std.json.parseFromSliceLeaky(zg_codeintel.features.CompletionService.Result, arena.allocator(), f.json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch unreachable;
+        // As the client decodes a completion response.
+        const v = zg_lsp.completion_parse.parse(arena.allocator(), f.json) catch unreachable;
         items.clearRetainingCapacity();
         _ = crank.decode(gpa, v, 0, &.{}, &items) catch unreachable;
         bench.doNotOptimizeAway(items.items.len);
