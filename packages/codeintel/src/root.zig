@@ -95,6 +95,14 @@ pub const agent = struct {
     pub const render = @import("agent/render.zig");
 };
 
+/// The language tooling without a GUI (E07.F05.S01.T04): `zg lsp` and
+/// the built-in MCP servers.
+pub const headless = struct {
+    pub const HeadlessHost = @import("headless/HeadlessHost.zig");
+    pub const Toolchain = @import("headless/Toolchain.zig");
+    pub const cli = @import("headless/cli.zig");
+};
+
 /// LSP language ids for zg_syntax languages.
 pub const language = @import("language.zig");
 
@@ -123,6 +131,7 @@ test {
     _ = @import("agent/locate_test.zig");
     _ = @import("agent/codeintel_test.zig");
     _ = @import("agent/agent_tools_test.zig");
+    _ = @import("headless/headless_test.zig");
     _ = @import("edits/wsedit_test.zig");
     _ = @import("features/refactor_test.zig");
     _ = @import("features/format_test.zig");
