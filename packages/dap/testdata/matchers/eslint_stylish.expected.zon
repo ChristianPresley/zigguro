@@ -1,0 +1,29 @@
+.{
+    .{ .problem = .{
+        .file = "/home/dev/proj/src/app.js",
+        .line = 1,
+        .column = 10,
+        .severity = .err,
+        .code = "no-unused-vars",
+        .message = "'x' is defined but never used",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "/home/dev/proj/src/app.js",
+        .line = 2,
+        .column = 3,
+        .severity = .warning,
+        .code = "no-console",
+        .message = "Unexpected console statement",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "/home/dev/proj/src/util.js",
+        .line = 14,
+        .column = 1,
+        .severity = .err,
+        .code = "",
+        .message = "Parsing error: Unexpected token",
+        .related = .{},
+    } },
+}
