@@ -1,0 +1,15 @@
+# Exception filters: the remembered choice for "raised", the default for
+# "uncaught"; then a condition goes in filterOptions.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsExceptionFilterOptions": true, "exceptionBreakpointFilters": [{"filter": "raised", "label": "Raised", "default": false}, {"filter": "uncaught", "label": "Uncaught", "default": true, "supportsCondition": true}]}}
+> launch
+< event initialized
+> setExceptionBreakpoints {"filters": ["raised", "uncaught"], "filterOptions": []}
+< {}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> setExceptionBreakpoints {"filters": ["raised"], "filterOptions": [{"filterId": "uncaught", "condition": "err == 3"}]}
+< {}
+> disconnect
+< {}
