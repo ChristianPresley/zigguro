@@ -7,6 +7,8 @@ pub fn build(b: *std.Build) void {
     // The budget registry sits outside src/ (E14.F01.S01.T01); the typed
     // `@import("budgets.zon")` in src/budget/registry.zig resolves here.
     const budgets_zon = b.createModule(.{ .root_source_file = b.path("budgets.zon") });
+    // The critical-path allowlist (E14.F05.S01.T02), next to the budgets.
+    const allowlist_zon = b.createModule(.{ .root_source_file = b.path("startup_allowlist.zon") });
     // docs/perf/tracing-conventions.md, embedded so a test checks that the
     // span taxonomy and the doc agree (E14.F02.S01.T03).
     const docs = b.addWriteFiles();
@@ -22,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zg_core", .module = core },
             .{ .name = "budgets.zon", .module = budgets_zon },
+            .{ .name = "startup_allowlist.zon", .module = allowlist_zon },
             .{ .name = "zg_perf_docs", .module = docs_mod },
         },
         .bench = "bench/main.zig",

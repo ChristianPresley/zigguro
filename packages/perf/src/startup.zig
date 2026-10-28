@@ -22,3 +22,15 @@ pub const global = StartupTimeline.global;
 pub fn mark(p: Phase) void {
     StartupTimeline.global().mark(p);
 }
+/// `Lazy(T)`: init on first use.
+pub const lazy = @import("startup/lazy.zig");
+/// `InitRegistry`: services by phase.
+pub const registry = @import("startup/registry.zig");
+/// See `lazy.Lazy`.
+pub const Lazy = lazy.Lazy;
+/// See `registry.InitRegistry`.
+pub const InitRegistry = registry.InitRegistry;
+/// See `registry.InitPhase`.
+pub const InitPhase = registry.InitPhase;
+/// The critical-path allowlist.
+pub const allowlist = @import("startup/allowlist.zig");

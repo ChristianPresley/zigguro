@@ -62,8 +62,39 @@ Interactive runs record each summary in `startup.json` in the state folder (the 
 
 `ZG_TRACE=startup` stops the trace 2 s after the first interactive frame.
 
+## Deferring work
+
+Anything that is not needed for the first frame waits.
+
+- `zg_perf.startup.Lazy(T)` initialises a value on first use, from any thread: `try lazy.get(io, "name", initFn, args)`. Once ready, `get` is one acquire load. The first call runs `initFn` in the trace zone `init.<name>`. A failed init stays failed unless `retry` is set. On the UI thread, use `peek()` (never blocks) and `getAsync()` (starts the init on a worker) for values whose init blocks.
+- `zg_perf.startup.InitRegistry` holds named services with a phase and dependencies:
+  - `critical` services run in dependency order before the first frame. Ones flagged `parallel_ok` (GPU bring-up) run on a worker alongside window creation, and their dependents wait for them.
+  - `after_first_frame` services run on one worker once `scheduleDeferred` is called at the first presented frame, highest priority first.
+  - `idle` services run after those, once the activity signal reads idle.
+  - `on_demand` services run only through `ensure(name)`.
+
+  Each run is timed (`timings`) and traced as the zone `init.service`.
+
+### Classification
+
+The app's list is `apps/zigguro/src/startup/services.zig`. Today `main` still runs the critical steps inline in this order; services move onto the registry's scheduling as their owners give them an init function.
+
+| Phase | Services |
+|---|---|
+| critical | runtime (E00), config and keymap (E15), fonts (E03), platform (E01), GPU (E02, parallel), window (E01), session model from its snapshot (E08), workbench (E04) |
+| after_first_frame | font database, file watcher, indexer (E08), SCM (E09), LSP registry (E07), MCP catalog (E11, 0 ms on the critical path), agent session list (E10), CA bundle (E00), update check (E17) |
+| idle | trigram index build, pipeline cache save, shader prewarm |
+| on_demand | debugger (E07), terminal (first open), notes graph |
+
+### Requesting a critical slot
+
+`packages/perf/startup_allowlist.zon` lists every service allowed on the critical path and the budget it counts against. `zig build test-startup-allowlist` (in PR CI, and part of `zig build test`) fails when the app registers a critical service that is not listed, or when a listed one is gone. To add one:
+
+1. Show that the service has to exist before the first frame, and that `Lazy`, `after_first_frame` or `idle` will not do.
+2. Measure its cost with `--startup-report` and name the `startup.phase.<owner>` budget it fits in.
+3. Add the entry to the allowlist in the same PR as the registration. E14 reviews changes to the file (CODEOWNERS).
+
 ## Not done yet
 
 - `gpu_ready` and the E08 `session_restored` marks belong to their owners.
 - The loader estimate for Linux (spawn to `main_entered`, measured by `bench-startup`) comes with the startup scenario (E14.F06).
-- Deferring work off the critical path (`Lazy`, `InitRegistry`, the critical-path allowlist) is E14.F05.S01.T02.

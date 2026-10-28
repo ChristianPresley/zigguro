@@ -88,6 +88,22 @@ fn register(b: *bench.Bench) !void {
             bench.doNotOptimizeAway(t.marks[i].load(.monotonic));
         }
     }.f);
+    // Lazy(T).get once ready: one acquire load (budget <= 2 ns,
+    // E14.F05.S01.T02).
+    try b.run("perf.lazy_get", {}, struct {
+        fn make() u64 {
+            return 42;
+        }
+        fn f(_: void, s: *bench.State) void {
+            var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            var l: zg_perf.startup.Lazy(u64) = .{};
+            var x: u64 = 0;
+            for (0..s.iterations()) |_| x +%= (l.get(io, "bench", make, .{}) catch unreachable).*;
+            bench.doNotOptimizeAway(x);
+        }
+    }.f);
     try b.run("perf.activity_level", {}, struct {
         fn f(_: void, s: *bench.State) void {
             var sig: zg_perf.ActivitySignal = .{};

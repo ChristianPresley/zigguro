@@ -2,7 +2,7 @@
 
 # Performance budgets
 
-162 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
+163 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
 
 ## Machines
 
@@ -248,6 +248,7 @@
 | `perf.perfetto_export_1m` | duration_ns | mean | 1.2 s | – | ref_laptop_2024 | bench `zg_perf` / `perf.perfetto_export_1m` (ns_per_op) | warn | E14.F02.S01.T01 |
 | `perf.flight_dump_10s` | duration_ns | max | 200 ms | – | ref_laptop_2024 | bench `zg_perf` / `perf.flight_dump_10s` (ns_per_op) | warn | E14.F02.S02.T01 |
 | `startup.mark` | duration_ns | mean | 50 ns | – | ref_laptop_2024 | bench `zg_perf` / `perf.startup_mark` (ns_per_op) | warn | E14.F05.S01.T01 |
+| `startup.lazy_get` | duration_ns | mean | 2 ns | – | ref_laptop_2024 | bench `zg_perf` / `perf.lazy_get` (ns_per_op) | warn | E14.F05.S01.T02 |
 
 ## E15
 
