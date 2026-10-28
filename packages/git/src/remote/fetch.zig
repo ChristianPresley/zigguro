@@ -238,7 +238,7 @@ fn mergeRef(repo: *Repository, a: Allocator, remote_name: []const u8) !?[]const 
 /// not-for-merge, as `git pull` reads them.
 fn writeFetchHead(repo: *Repository, a: Allocator, url: []const u8, planned: []const Planned) !void {
     var out: std.ArrayList(u8) = .empty;
-    const clean_url = std.mem.trimEnd(u8, url, "/");
+    const clean_url = try displayUrl(a, url);
     for ([_]bool{ true, false }) |pass| for (planned) |p| {
         if (p.for_merge != pass) continue;
         const n = p.remote.name;
@@ -252,4 +252,31 @@ fn writeFetchHead(repo: *Repository, a: Allocator, url: []const u8, planned: []c
         try out.print(a, "{s}\t{s}\t{s}{s}\n", .{ p.remote.oid.hex(&hb), if (p.for_merge) "" else "not-for-merge", desc, clean_url });
     };
     try repo.git_dir.writeFile(repo.io, .{ .sub_path = "FETCH_HEAD", .data = out.items });
+}
+
+/// The URL as git shows it in FETCH_HEAD and merge messages: no
+/// credentials, no trailing slash or ".git".
+pub fn displayUrl(a: Allocator, url: []const u8) ![]const u8 {
+    var u = url;
+    var out: std.ArrayList(u8) = .empty;
+    if (std.mem.indexOf(u8, u, "://")) |scheme_end| {
+        const rest = u[scheme_end + 3 ..];
+        const slash = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+        if (std.mem.lastIndexOfScalar(u8, rest[0..slash], '@')) |at| {
+            try out.appendSlice(a, u[0 .. scheme_end + 3]);
+            u = rest[at + 1 ..];
+        }
+    }
+    try out.appendSlice(a, u);
+    var s: []const u8 = std.mem.trimEnd(u8, out.items, "/");
+    if (std.mem.endsWith(u8, s, ".git")) s = s[0 .. s.len - 4];
+    return std.mem.trimEnd(u8, s, "/");
+}
+
+test "displayUrl drops credentials and .git" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("https://github.com/o/r", try displayUrl(a, "https://u:tok@github.com/o/r.git/"));
+    try std.testing.expectEqualStrings("../srv", try displayUrl(a, "../srv/"));
 }
