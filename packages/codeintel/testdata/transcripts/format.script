@@ -1,0 +1,43 @@
+# Formatting (document, the per-range fallback last range first, on
+# type), the save pipeline (willSaveWaitUntil, then a code action on save
+# resolved, then format; then one that runs out of time twice) and a
+# willRenameFiles edit before didRenameFiles.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": {"openClose": true, "change": 2, "willSaveWaitUntil": true}, "documentFormattingProvider": true, "documentRangeFormattingProvider": true, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": ";"}, "codeActionProvider": {"resolveProvider": true}, "workspace": {"fileOperations": {"willRename": {"filters": [{"pattern": {"glob": "**/*.zig", "matches": "file"}}]}, "didRename": {"filters": [{"pattern": {"glob": "**/*.zig"}}]}}}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/formatting {"options": {"tabSize": 2, "insertSpaces": true}}
+< {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 10}}, "newText": "const a = 1;"}]}
+> textDocument/didChange
+> textDocument/rangeFormatting {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 10}}}
+< {"id": $1, "result": [{"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 10}}, "newText": "const c = 3;"}]}
+> textDocument/didChange
+> textDocument/rangeFormatting {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 10}}}
+< {"id": $1, "result": [{"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 10}}, "newText": "const b = 2;"}]}
+> textDocument/didChange
+> textDocument/onTypeFormatting {"ch": ";", "position": {"line": 0, "character": 12}}
+< {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 12}, "end": {"line": 0, "character": 12}}, "newText": " // one"}]}
+> textDocument/didChange
+> textDocument/willSaveWaitUntil {"reason": 1}
+< {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// top\n"}]}
+> textDocument/didChange
+> textDocument/codeAction {"range": {"start": {"line": 0, "character": 0}}, "context": {"only": ["source.organizeImports"], "triggerKind": 2}}
+< {"id": $1, "result": [{"title": "Fix all", "kind": "source.fixAll"}, {"title": "Organize", "kind": "source.organizeImports", "data": 1}]}
+> codeAction/resolve {"title": "Organize", "data": 1}
+< {"id": $1, "result": {"title": "Organize", "kind": "source.organizeImports", "edit": {"changes": {"file://${workspace}/main.zig": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 0}}, "newText": ""}]}}}}
+> textDocument/didChange
+> textDocument/formatting
+< {"id": $1, "result": []}
+> textDocument/willSaveWaitUntil
+~ 150ms
+< {"id": $1, "result": []}
+> textDocument/willSaveWaitUntil
+~ 150ms
+< {"id": $1, "result": []}
+> workspace/willRenameFiles {"files": [{"oldUri": "file://${workspace}/main.zig", "newUri": "file://${workspace}/lib.zig"}]}
+< {"id": $1, "result": {"changes": {"file://${workspace}/main.zig": [{"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 0}}, "newText": "// renamed\n"}]}}}
+> textDocument/didChange
+> workspace/didRenameFiles {"files": [{"oldUri": "file://${workspace}/main.zig"}]}
+> shutdown
+< {"id": $1, "result": null}
+> exit
