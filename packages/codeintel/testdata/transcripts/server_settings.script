@@ -1,0 +1,18 @@
+# Server settings: the server pulls its section, a dotted path into it
+# and another server's section; then the settings change and it is told
+# to pull again.
+> initialize {"initializationOptions": {"x": 1}}
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "hoverProvider": true}}}
+> initialized
+> textDocument/didOpen
+< {"id": 1, "method": "client/registerCapability", "params": {"registrations": [{"id": "c1", "method": "workspace/didChangeConfiguration"}]}}
+> response {"id": 1, "result": null}
+< {"id": 2, "method": "workspace/configuration", "params": {"items": [{"section": "zls"}, {"section": "zls.zig_exe_path"}, {"section": "zlsx"}, {}]}}
+> response {"id": 2, "result": [{"zig_exe_path": "/z/zig", "semantic_tokens": "full"}, "/z/zig", null, {"zls": {"zig_exe_path": "/z/zig"}}]}
+> workspace/didChangeConfiguration {"settings": null}
+> textDocument/hover
+< {"id": $1, "result": {"contents": {"kind": "plaintext", "value": "ok"}}}
+> textDocument/didClose
+> shutdown
+< {"id": $1, "result": null}
+> exit
