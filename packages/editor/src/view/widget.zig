@@ -333,23 +333,32 @@ pub const Editor = struct {
     }
 
     /// Gutter marks (diagnostic severities, breakpoints): a dot per line
-    /// at the gutter's left, the highest `z` mark winning.
+    /// and lane at the gutter's left, the highest `z` mark winning; lane
+    /// 1 (the code action lightbulb) sits right of lane 0.
     fn paintGutterMarks(pc: *PaintCx, v: *EditorView, decos: []const deco_store.DecoRef, oy: f32, lh: f32) void {
         const lane: f32 = if (v.scm != null) scm_lane_w else 0;
         const d = @min(lh * 0.4, 8);
-        var last_line: ?u64 = null;
-        var last_z: i16 = std.math.minInt(i16);
+        var last_line: [2]?u64 = .{ null, null };
+        var last_z: [2]i16 = .{ std.math.minInt(i16), std.math.minInt(i16) };
         for (decos) |dr| {
             const g = switch (dr.deco.kind) {
                 .gutter => |g| g,
                 else => continue,
             };
+            const k = @min(g.lane, 1);
             const line = v.lineOf(dr.range.start);
-            if (last_line == line and dr.deco.z <= last_z) continue;
-            last_line = line;
-            last_z = dr.deco.z;
+            if (last_line[k] == line and dr.deco.z <= last_z[k]) continue;
+            last_line[k] = line;
+            last_z[k] = dr.deco.z;
+            const x = lane + 2 + @as(f32, @floatFromInt(k)) * (d + 3);
             const y = oy + v.lineTop(line) + (lh - d) / 2;
-            pc.rect(.{ .x = lane + 2, .y = y, .w = d, .h = d }, decoColor(v, g.style, pc.color(.danger)), .all(d / 2));
+            const c = decoColor(v, g.style, pc.color(.danger));
+            if (g.icon == deco_store.icon_lightbulb) {
+                // A bulb over its base.
+                const b = d * 0.8;
+                pc.rect(.{ .x = x + (d - b) / 2, .y = y - d * 0.2, .w = b, .h = b }, c, .all(b / 2));
+                pc.rect(.{ .x = x + d * 0.3, .y = y + b * 0.75, .w = d * 0.4, .h = d * 0.35 }, c, .{});
+            } else pc.rect(.{ .x = x, .y = y, .w = d, .h = d }, c, .all(d / 2));
         }
     }
 
