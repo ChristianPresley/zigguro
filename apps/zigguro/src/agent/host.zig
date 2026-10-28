@@ -3,9 +3,9 @@
 //! through `EditorFiles` (open documents are read and edited in the
 //! editor, other writes recorded by E12's `ReviewGlue`, which also takes
 //! a checkpoint per user turn), approvals through `ToolApprovals` over the workbench's
-//! approvals inbox (E12's `ApprovalBroker`, journaled in the review store), and command tools over child processes until E06's
-//! terminals take them. The other subsystems' tools come through zg_ai's
-//! adapters as each package exports them: the repository's (`scm_log`,
+//! approvals inbox (E12's `ApprovalBroker`, journaled in the review store), and command tools over child processes until the
+//! workbench hands them its agent terminals (`useTerminals`). The other
+//! subsystems' tools come through zg_ai's adapters as each package exports them: the repository's (`scm_log`,
 //! `scm_show`, `scm_status`, `scm_op_log`) when the working folder is in
 //! a zg repository (`scm_tools.zig`), and MCP servers' (below).
 //!
@@ -105,6 +105,14 @@ pub const AgentHost = struct {
     /// Adds the workspace tools (E08.F08); `e` must outlive the host.
     pub fn addWorkspaceTools(h: *AgentHost, e: zg_ai.tools.adapters.foreign.Exporter) !void {
         try h.adapters.registerAll(&h.tools, &.{ .workspace = e }, .{ .lsp = false, .debug = false, .tasks = false, .workspace = true, .notes = false, .scm = false, .mcp = false }, .{});
+    }
+
+    /// Runs the command tools in `t` (the workbench's agent terminals,
+    /// which fall back to `processes`) instead of child processes.
+    /// Before the first command; `t` must outlive the host.
+    pub fn useTerminals(h: *AgentHost, t: builtin_tools.terminal_host.TerminalHost) void {
+        h.run_tools.host = t;
+        h.run_tools.cfg.visible = true;
     }
 
     /// Adds the notes tools (E08.F08); `e` must outlive the host.
