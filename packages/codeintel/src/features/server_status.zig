@@ -48,6 +48,13 @@ mutex: Io.Mutex = .init,
 active: std.ArrayList(Active) = .empty,
 generation: std.atomic.Value(u64) = .init(0),
 last_wake_ns: i96 = 0,
+/// More lines for `details` (ZLS's toolchain and build-on-save).
+extra_details: ?DetailsHook = null,
+
+pub const DetailsHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, s: *const Server, w: *Io.Writer) Io.Writer.Error!void,
+};
 
 /// `st` must not move (it listens to the manager's progress).
 pub fn init(st: *ServerStatus, mgr: *Manager, waker: zg_core.runtime.Waker) !void {
@@ -256,6 +263,7 @@ pub fn details(st: *ServerStatus, s: *const Server, w: *Io.Writer) Io.Writer.Err
         var pb: [160]u8 = undefined;
         if (st.progressOf(s.id, &pb)) |p| try w.print("Progress: {s} {s}\n", .{ p.title, p.message });
     };
+    if (st.extra_details) |x| try x.f(x.ctx, s, w);
     if (s.status == .missing and s.def.install_hint.len > 0) try w.print("\nInstall: {s}\n", .{s.def.install_hint});
 }
 
