@@ -17,6 +17,10 @@ fn register(b: *bench.Bench) !void {
     try b.run("tasks.matcher.200mb: $zig over build output (MB/s)", {}, matchOutput);
     try b.run("tasks.load: 50 zig build steps, 20 tasks.zon and 20 tasks.json tasks", {}, loadTasks);
     try b.run("tasks.run.start: run() and wait of a 5-task graph without processes", {}, startRun);
+    var afx: AdapterFixture = undefined;
+    afx.init(std.heap.smp_allocator, b.io);
+    defer afx.deinit();
+    try b.run("dap.adapters.discover: resolve every built-in adapter on a typical PATH (warm)", &afx, discoverAdapters);
 }
 
 /// An upper bound of the UI-thread cost of starting a task: `run` (graph
@@ -231,4 +235,37 @@ fn decodeStack(_: void, s: *State) void {
         const r = zg_dap.json.parse(Body, arena.allocator(), body.items) catch unreachable;
         bench.doNotOptimizeAway(r.stackFrames.len);
     }
+}
+
+/// Every adapter looked up on a PATH where most are missing (the slow
+/// case: each directory is tried for each name), warm: the registry has
+/// probed the versions before (they are kept across rescans). Budget:
+/// < 20 ms.
+const AdapterFixture = struct {
+    env: std.process.Environ.Map,
+    r: zg_dap.adapters.Registry,
+
+    fn init(f: *AdapterFixture, gpa: std.mem.Allocator, io: std.Io) void {
+        f.env = .init(gpa);
+        f.env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") catch unreachable;
+        f.r = zg_dap.adapters.Registry.init(gpa, .{ .js_debug_path = "/opt/js-debug", .codelldb_command = &.{ "codelldb", "--port", "{port}" } }) catch unreachable;
+        for (f.r.defs) |*d| _ = f.r.resolve(io, d, &f.env) catch unreachable;
+    }
+
+    fn deinit(f: *AdapterFixture) void {
+        f.r.deinit();
+        f.env.deinit();
+    }
+};
+
+fn discoverAdapters(f: *AdapterFixture, s: *State) void {
+    const io = s.ioHandle();
+    var ok: usize = 0;
+    for (0..s.iterations()) |_| {
+        f.r.rescan();
+        for (f.r.defs) |*d| {
+            if ((f.r.resolve(io, d, &f.env) catch unreachable) == .ok) ok += 1;
+        }
+    }
+    bench.doNotOptimizeAway(ok);
 }

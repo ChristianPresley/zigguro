@@ -38,6 +38,7 @@ pub const client = struct {
     pub const watch_bridge = @import("client/watch_bridge.zig");
     pub const trace = @import("client/trace.zig");
     pub const transcript = @import("client/transcript.zig");
+    pub const executables = @import("client/executables.zig");
 };
 /// Document-bound request scheduling for the feature services.
 pub const sync = struct {
