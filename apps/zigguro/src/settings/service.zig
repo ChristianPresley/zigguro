@@ -369,13 +369,13 @@ test "settings: restricted workspace keys need trust" {
     const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
     defer gpa.free(root);
     try tmp.dir.createDirPath(testing.io, ".zigguro");
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".zigguro/settings.json", .data = "{ \"git.path\": \"/evil/git\", \"editor.tabSize\": 2 }" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".zigguro/settings.json", .data = "{ \"terminal.integrated.shell\": \"/evil/sh\", \"editor.tabSize\": 2 }" });
     const s = try Settings.create(gpa, testing.io, null, root);
     defer s.destroy();
-    try testing.expectEqualStrings("", s.string("git.path"));
+    try testing.expectEqualStrings("", s.string("terminal.integrated.shell"));
     try testing.expectEqual(@as(i64, 2), s.int("editor.tabSize"));
     s.setTrusted(true);
-    try testing.expectEqualStrings("/evil/git", s.string("git.path"));
+    try testing.expectEqualStrings("/evil/sh", s.string("terminal.integrated.shell"));
     try testing.expectError(error.NoFile, s.write(.user, "editor.tabSize", .{ .int = 3 }));
 }
 

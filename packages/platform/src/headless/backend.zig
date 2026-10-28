@@ -790,6 +790,9 @@ const Harness = struct {
     io: Io,
     last: ?*Headless = null,
 
+    /// Input times are on the virtual clock.
+    pub const virtual_clock = true;
+
     /// Conformance hook: a fresh headless platform.
     pub fn create(hn: *Harness) !Platform {
         const h = try Headless.init(testing.allocator, hn.io, .{});

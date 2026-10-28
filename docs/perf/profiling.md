@@ -1,11 +1,12 @@
 # Profiling zigguro
 
-How to find out where zigguro spends its time, from a one-off hitch to a hot function, on Linux and Windows. Budgets live in [budgets.md](budgets.md), the trace naming rules in [tracing-conventions.md](tracing-conventions.md), and the threading rules in [threading.md](threading.md).
+How to find out where zigguro spends its time, from a one-off hitch to a hot function, on Linux and Windows. Budgets live in [budgets.md](budgets.md), the trace naming rules in [tracing-conventions.md](tracing-conventions.md), the threading rules in [threading.md](threading.md), and how latency is measured in [latency.md](latency.md).
 
 ## Which tool when
 
 | Symptom | Start with | Then |
 |---|---|---|
+| Is it slow right now? | The HUD (`Ctrl+Alt+Shift+H`, **Toggle Performance HUD**, or `zigguro --hud`) | An in-app trace |
 | A hitch you just saw | The flight recorder dump (`perf.flightRecorder.*`, written on slow frames, UI stalls and crashes) | An in-app trace of the same steps |
 | A slow operation you can repeat | An in-app trace (`perf.trace.toggle` or `--trace=`) | Sampling with `perf` / WPA for the hot zone |
 | A hot function | Sampling: `perf record --call-graph fp` (Linux), WPR CPU sampling (Windows) | `-Dprofile=true` build for symbols and zones |
@@ -57,6 +58,15 @@ Recipes in `tools/perf/sql/`:
 | [`zone_self_time.sql`](../../tools/perf/sql/zone_self_time.sql) | Self time per zone name (duration minus direct children) |
 | [`key_to_photon.sql`](../../tools/perf/sql/key_to_photon.sql) | The worst key-to-photon samples |
 | [`ui_thread_blocking.sql`](../../tools/perf/sql/ui_thread_blocking.sql) | Top-level UI-thread work over 4 ms |
+
+## The HUD
+
+`Ctrl+Alt+Shift+H` (**Toggle Performance HUD**, `perf.hud.toggle`) or `zigguro --hud` shows an overlay in the top-right corner:
+
+- a graph of the last 240 frames, one stacked bar per frame: dispatch, build, layout, paint, submit and GPU time. Lines mark the refresh period and 16.67 ms. Bars over the refresh period are drawn in the theme's danger colour;
+- FPS, frame CPU p99 and the number of frames over budget, GPU p99, key-to-photon p50/p99 over the last 1 000 keys (`est` while no presentation feedback is wired up, so the photon time is submit + one refresh), wakeups per second and memory (the last two once E14.F04/F05 provide them).
+
+Clicking a bar asks the flight recorder for a dump. The recorder runs in builds with zones (`-Dprofile=true`); it also dumps on slow frames. The HUD costs nothing while the app is idle: it refreshes at 4 Hz only while other frames are being drawn, then shows "idle" with the last values.
 
 ## Linux: perf and ftrace
 
@@ -113,7 +123,7 @@ Before comparing numbers (see Google Benchmark's [reducing variance](https://git
 Attach:
 
 1. the flight recorder file (`flight-*.pftrace` in the trace folder) or an in-app trace of the steps;
-2. a screenshot of the HUD (E14.F03, once it lands);
+2. a screenshot of the HUD (`Ctrl+Alt+Shift+H`);
 3. machine info: OS, CPU, GPU and the zigguro version (shown on the welcome screen);
 4. the exact steps, the file sizes involved, and what you expected.
 

@@ -180,7 +180,10 @@ pub fn status(repo: *Repository, opts: Options) !Result {
     for (merged.items) |e| {
         if (e.x == .unmodified and e.y == .unmodified) continue;
         if (opts.pathspec.len > 0 and !inPathspec(e.path, opts.pathspec)) continue;
-        try kept.append(a, e);
+        // Index paths live in `ix`, which goes away on return.
+        var c = e;
+        c.path = try a.dupe(u8, e.path);
+        try kept.append(a, c);
     }
     res.entries = kept.items;
     return res;

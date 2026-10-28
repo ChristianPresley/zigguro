@@ -1,9 +1,11 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
-// user's keybindings.json win). VS Code's explorer and problems keys,
-// note search, and multiple terminals.
+// user's keybindings.json win). VS Code's explorer, problems and source
+// control keys, note search, and multiple terminals.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
+    // workbench.view.scm
+    .{ .key = "mod+shift+g", .command = "workbench.showScm" },
     // renameFile / deleteFile / filesExplorer.copy / cut / paste
     .{ .key = "f2", .command = "explorer.rename", .when = "explorerTreeFocus" },
     .{ .key = "delete", .macos = "cmd+backspace", .command = "explorer.delete", .when = "explorerTreeFocus" },
@@ -32,4 +34,8 @@
     .{ .key = "mod+shift+5", .macos = "mod+\\", .command = "terminal.split", .when = "terminalFocus" },
     .{ .key = "ctrl+pagedown", .macos = "mod+shift+]", .command = "terminal.focusNext", .when = "terminalFocus" },
     .{ .key = "ctrl+pageup", .macos = "mod+shift+[", .command = "terminal.focusPrevious", .when = "terminalFocus" },
+    // workbench.action.terminal.focusFind
+    .{ .key = "mod+f", .command = "terminal.find", .when = "terminalFocus" },
+    // The performance HUD (E14.F03.S01.T02 default).
+    .{ .key = "ctrl+alt+shift+h", .command = "perf.hud.toggle" },
 }

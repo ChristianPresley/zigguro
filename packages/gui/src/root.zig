@@ -64,6 +64,7 @@ test {
     _ = @import("paint/scroll_layer_test.zig");
     _ = @import("paint/font_text_test.zig");
     _ = @import("host_test.zig");
+    _ = @import("core/present_feedback.zig");
     _ = @import("widgets/scroll_test.zig");
     _ = @import("widgets/text_field/text_field_test.zig");
     _ = @import("widgets/text_field/ime_test.zig");

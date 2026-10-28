@@ -41,6 +41,8 @@ test {
     _ = @import("notes/service.zig");
     _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");
+    _ = @import("scm/git.zig");
+    _ = @import("scm/panel.zig");
     _ = @import("completion_popup.zig");
     _ = @import("signature_popup.zig");
     _ = @import("workspace_fs.zig");

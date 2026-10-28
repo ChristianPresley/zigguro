@@ -57,6 +57,7 @@ const is_linux = builtin.os.tag == .linux;
 const zg_text = @import("zg_text");
 const zg_core = @import("zg_core");
 const zg_perf = @import("zg_perf");
+const present_feedback = @import("core/present_feedback.zig");
 
 const r2d = zg_vulkan.r2d;
 const RenderThread = zg_vulkan.present.RenderThread;
@@ -104,6 +105,14 @@ pub const HostWindow = struct {
     images: image_textures.Mirror = .{},
     /// The UI Automation bridge (Windows).
     uia: ?*uia.Bridge = null,
+    /// The oldest input not yet in a frame (platform event time, 0 = none)
+    /// and its kind, for the frame timeline.
+    input_ns: u64 = 0,
+    input_kind: zg_perf.frame.record.InputKind = .none,
+    /// Time spent dispatching events since the last frame.
+    dispatch_ns: u64 = 0,
+    /// Present ids awaiting platform presentation feedback.
+    feedback: present_feedback.FeedbackMap = .{},
 
     fn createTexture(hw: *HostWindow, desc: r2d.TextureDesc) !r2d.TextureId {
         return switch (hw.out) {
@@ -221,6 +230,8 @@ pub const Host = struct {
     watchdog: ?*zg_perf.StallWatchdog = null,
     /// When `run` last handled input (`.awake` ns), for the activity signal.
     last_input_ns: u64 = 0,
+    /// Gets a record per presented frame (E14.F03.S01.T01), if any.
+    timeline: ?*zg_perf.frame.FrameTimeline = null,
     /// The AT-SPI2 bridge, made with the first window (Linux).
     atspi_bridge: if (is_linux) ?*atspi.Bridge else void = if (is_linux) null else {},
 
@@ -245,13 +256,15 @@ pub const Host = struct {
         /// A stall watchdog for the UI thread (`run` calls its heartbeat
         /// and enterWait).
         watchdog: ?*zg_perf.StallWatchdog = null,
+        /// A frame timeline fed after every presented frame.
+        timeline: ?*zg_perf.frame.FrameTimeline = null,
     };
 
     /// A host for `app` on `platform`; text goes through `text_sys`. The
     /// Host must not move once a window is open.
     pub fn init(gpa: std.mem.Allocator, io: std.Io, app: *app_mod.App, platform: Platform, text_sys: text.TextSystem, opts: Options) Host {
         if (zg_perf.runtime.activity.global.io == null) zg_perf.runtime.activity.global.install(io);
-        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread, .a11y = opts.a11y, .watchdog = opts.watchdog };
+        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread, .a11y = opts.a11y, .watchdog = opts.watchdog, .timeline = opts.timeline };
     }
 
     /// Closes every window.
@@ -554,10 +567,19 @@ pub const Host = struct {
         }
         const id = ev.window() orelse return;
         const hw = h.find(id) orelse return;
-        hw.win.handlePlatformEvent(ev, h.platform);
+        if (h.timeline != null) {
+            const t0 = zg_core.time.nowNs(h.io);
+            notePendingInput(hw, ev, t0);
+            hw.win.handlePlatformEvent(ev, h.platform);
+            hw.dispatch_ns += zg_core.time.nowNs(h.io) -| t0;
+        } else hw.win.handlePlatformEvent(ev, h.platform);
         switch (ev) {
             .window_configure => |c| hw.resize(.{ .w = c.size.w, .h = c.size.h }, c.scale.factor),
             .window_occluded => |o| hw.occluded = o.occluded,
+            .present_feedback => |f| if (h.timeline) |tl| {
+                if (hw.feedback.feedback(f.presented_ns, f.flags, zg_core.time.nowNs(h.io))) |m|
+                    tl.onPresentedEx(m.present_id, m.presented_ns, m.flags, m.discarded);
+            },
             .frame => {
                 hw.frame_requested = false;
                 if (hw.out == .thread) hw.out.thread.onPlatformFrame(.frame);
@@ -572,6 +594,7 @@ pub const Host = struct {
                 const pages_before = hw.pages.items.len;
                 hw.list.setGlyphPages(hw.pages.items);
                 _ = try hw.syncImages(h.gpa, true);
+                if (h.timeline != null) hw.win.timing_io = h.io;
                 var st = hw.win.frame();
                 // Images are mapped to textures as they are recorded too:
                 // one the frame put on the GPU is painted again once its
@@ -593,13 +616,63 @@ pub const Host = struct {
                 if (st.presented) {
                     const submit_zone = zg_core.trace.zone(@src(), "render.submit");
                     defer submit_zone.end();
+                    const t_submit = if (h.timeline != null) zg_core.time.nowNs(h.io) else 0;
                     try hw.submit();
                     hw.frames += 1;
                     zg_perf.os.frame(hw.frames);
+                    if (h.timeline) |tl| h.recordFrame(tl, hw, st, t_submit);
+                }
+                if (!st.idle) {
+                    hw.input_ns = 0;
+                    hw.input_kind = .none;
+                    hw.dispatch_ns = 0;
                 }
             },
             else => {},
         }
+    }
+
+    /// Remembers the oldest input event not yet in a frame.
+    fn notePendingInput(hw: *HostWindow, ev: Event, now_ns: u64) void {
+        const at: u64, const kind: zg_perf.frame.record.InputKind = switch (ev) {
+            .key => |k| switch (k.ev.action) {
+                .release => return,
+                .repeat => .{ k.ev.time_ns, .key_repeat },
+                else => .{ k.ev.time_ns, if (k.ev.text.len > 0) .text else .key },
+            },
+            .text_input => .{ now_ns, .text },
+            .pointer_button => |b| if (b.pressed) .{ b.time_ns, .pointer } else return,
+            else => return,
+        };
+        if (hw.input_ns != 0) return;
+        // Platform input times on another clock (the headless virtual
+        // clock, ms-based server times) fall back to the read time.
+        hw.input_ns = if (present_feedback.plausible(at, now_ns)) at else now_ns;
+        hw.input_kind = kind;
+    }
+
+    /// Hands a presented frame to the timeline. It waits for presentation
+    /// feedback once the window's backend has sent a plausible one;
+    /// otherwise it is final at once (estimated).
+    fn recordFrame(h: *Host, tl: *zg_perf.frame.FrameTimeline, hw: *HostWindow, st: window_mod.FrameStats, t_submit: u64) void {
+        const now = zg_core.time.nowNs(h.io);
+        const ms: u64 = std.math.maxInt(u32);
+        tl.onFrameStats(.{
+            .seq = hw.frames,
+            .win = @truncate(@intFromEnum(hw.id)),
+            .t_input_ns = hw.input_ns,
+            .input_kind = hw.input_kind,
+            .t_frame_start_ns = if (st.t_start_ns != 0) st.t_start_ns else t_submit,
+            .dispatch_ns = @intCast(@min(hw.dispatch_ns, ms)),
+            .build_ns = st.build_ns,
+            .layout_ns = st.layout_ns,
+            .paint_ns = st.paint_ns,
+            .submit_ns = @intCast(@min(now -| t_submit, ms)),
+            .t_submit_ns = now,
+            .present_id = hw.frames,
+            .expect_feedback = hw.feedback.expectFeedback(),
+        });
+        hw.feedback.submitted(hw.frames);
     }
 
     /// Uploads the atlas regions rasterized since the last call to every

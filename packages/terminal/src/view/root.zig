@@ -14,6 +14,10 @@ pub const palette = @import("palette.zig");
 pub const input_route = @import("input_route.zig");
 /// Selection and copy (E06.F05.S02).
 pub const selection = @import("selection.zig");
+/// Scrollback search (E06.F05.S03).
+pub const search = @import("search.zig");
+/// The find bar over a terminal.
+pub const find_bar = @import("find_bar.zig");
 /// Terminal tabs and split groups of the panel (E06.F07).
 pub const panel_model = @import("panel_model.zig");
 
