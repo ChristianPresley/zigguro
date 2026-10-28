@@ -136,7 +136,10 @@ scope). Shipped: `files.glob`, `scm.changed_files`, `lanes.collect`,
 
 `argv`, `cwd` (null: the workspace) and `expect_exit` (0; null accepts
 any). Runs through the E06 terminal service with approval; needs the
-workflow's `profile` to allow commands.
+workflow's `profile` to allow commands. With `shell = true`, `argv` is a
+single command line run by the platform shell (`sh -c` or `cmd /c`), so a
+user-supplied command such as `{{$args.cmd}}` can use pipes and quoting.
+A `loop_until` check's `command` takes the same `shell` flag.
 
 ## Running
 
@@ -164,6 +167,31 @@ added to the parent's.
   `lanes.collect` builtin lists them for review. Nothing lands on its own.
 - Pausing lets running agents finish and starts no new ones until the run
   continues.
+
+Bundled workflows, in the prompt library as `workflow/<name>` and runnable
+by name: `audit-files` (map an audit over a glob, verify findings with a
+two-vote judge, write a report and table), `migrate-files` (one writer lane
+per file, then a review gate), `review-changes` (review each changed file,
+then summarize), and `fix-until-green` (fix until a shell command passes).
+A project file `.zigguro/workflows/<name>.zon` with the same name wins.
+
+### `zg workflow`
+
+```
+zg workflow list | show NAME | validate FILE
+zg workflow run NAME [--args JSON] [--approve] [--json]
+zg workflow status RUN [--json] | resume RUN | stop RUN
+zg workflow save RUN --as NAME
+```
+
+`run` and `resume` run the workflow in this process and follow it to the
+end, printing each step as it changes (`--json`: `workflow.started`,
+`workflow.step`, `workflow.gate` and a final `result` line). They refuse
+(exit 3) while an agents host owns the workspace. Gates and commands are
+asked on the terminal; `--approve` answers yes, and without a terminal or
+`--approve` they are rejected. `stop` asks a running `run` to stop (from
+another terminal). `save` copies a run's definition to
+`.zigguro/workflows/NAME.zon`.
 
 Agents can use four tools: `workflow_list`, `workflow_run{name, args}`,
 `workflow_status{run}` and `workflow_create{name, zon}` (validated, then

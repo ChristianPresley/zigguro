@@ -1,7 +1,8 @@
 //! Built-in library entries (E13.F08.S02.T01): the document-mode actions
 //! (`doc/<id>`, from `docs.shortcuts`) and the research prompts
-//! (`research/*`, the deep-research workflow's prompts). A project or user
-//! file with the same id overrides one.
+//! (`research/*`, the deep-research workflow's prompts) and the bundled
+//! workflow templates' prompts (`workflow/*`). A project or user file with
+//! the same id overrides one.
 
 const std = @import("std");
 const template = @import("template.zig");
@@ -55,6 +56,77 @@ const research = [_]Builtin{
     },
 };
 
+fn wfVar(comptime name: []const u8, comptime required: bool) template.VarDecl {
+    return .{ .name = name, .kind = .multiline, .required = required };
+}
+
+const workflows = [_]Builtin{
+    .{
+        .id = "workflow/audit-file",
+        .title = "Audit one file",
+        .description = "Find instances of a problem in one file (audit-files workflow)",
+        .tags = &.{ "workflow", "audit" },
+        .variables = &.{ wfVar("file", true), wfVar("check", true) },
+        .body = @embedFile("../workflow/templates/prompts/audit-file.md"),
+    },
+    .{
+        .id = "workflow/verify-findings",
+        .title = "Verify audit findings",
+        .description = "Skeptically re-check another auditor's findings (audit-files workflow)",
+        .tags = &.{ "workflow", "audit" },
+        .variables = &.{ wfVar("findings", false), wfVar("check", true) },
+        .body = @embedFile("../workflow/templates/prompts/verify-findings.md"),
+    },
+    .{
+        .id = "workflow/judge-findings",
+        .title = "Judge verified findings",
+        .description = "Merge two reviewers' verified findings (audit-files workflow)",
+        .tags = &.{ "workflow", "audit" },
+        .variables = &.{wfVar("candidates", false)},
+        .body = @embedFile("../workflow/templates/prompts/judge-findings.md"),
+    },
+    .{
+        .id = "workflow/rank-findings",
+        .title = "Rank audit findings",
+        .description = "Write the ranked audit report (audit-files workflow)",
+        .tags = &.{ "workflow", "audit", "writing" },
+        .variables = &.{ wfVar("findings", false), wfVar("check", true) },
+        .body = @embedFile("../workflow/templates/prompts/rank-findings.md"),
+    },
+    .{
+        .id = "workflow/migrate-file",
+        .title = "Migrate one file",
+        .description = "Apply a change to one file and check it (migrate-files workflow)",
+        .tags = &.{ "workflow", "refactor" },
+        .variables = &.{ wfVar("file", true), wfVar("instructions", true), wfVar("verify_cmd", true) },
+        .body = @embedFile("../workflow/templates/prompts/migrate-file.md"),
+    },
+    .{
+        .id = "workflow/review-file",
+        .title = "Review one file's changes",
+        .description = "Review the diff of one file (review-changes workflow)",
+        .tags = &.{ "workflow", "review" },
+        .variables = &.{ wfVar("file", true), wfVar("revset", true) },
+        .body = @embedFile("../workflow/templates/prompts/review-file.md"),
+    },
+    .{
+        .id = "workflow/review-summary",
+        .title = "Summarize review comments",
+        .description = "Merge and rank per-file review comments (review-changes workflow)",
+        .tags = &.{ "workflow", "review", "writing" },
+        .variables = &.{wfVar("comments", false)},
+        .body = @embedFile("../workflow/templates/prompts/review-summary.md"),
+    },
+    .{
+        .id = "workflow/fix",
+        .title = "Fix until a command passes",
+        .description = "One round of fixing a failing command (fix-until-green workflow)",
+        .tags = &.{ "workflow", "fix" },
+        .variables = &.{ wfVar("cmd", true), wfVar("failure", false) },
+        .body = @embedFile("../workflow/templates/prompts/fix.md"),
+    },
+};
+
 const doc_entries: [shortcuts.default_shortcuts.len]Builtin = blk: {
     var out: [shortcuts.default_shortcuts.len]Builtin = undefined;
     for (shortcuts.default_shortcuts, &out) |s, *o| {
@@ -79,7 +151,7 @@ const doc_entries: [shortcuts.default_shortcuts.len]Builtin = blk: {
     break :blk out;
 };
 
-const all_entries = doc_entries ++ research;
+const all_entries = doc_entries ++ research ++ workflows;
 
 pub fn entries() []const Builtin {
     return &all_entries;

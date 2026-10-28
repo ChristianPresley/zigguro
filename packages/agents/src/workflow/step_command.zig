@@ -22,7 +22,7 @@ const Outcome = exec.Outcome;
 pub const Ran = union(enum) { ok: exec.CommandResult, failed: []const u8 };
 
 /// Runs `argv` (with placeholders filled in from `scope`).
-pub fn runArgv(x: *Exec, id: []const u8, argv: []const []const u8, cwd: ?[]const u8, scope: Value) Abort!Ran {
+pub fn runArgv(x: *Exec, id: []const u8, argv: []const []const u8, shell: bool, cwd: ?[]const u8, scope: Value) Abort!Ran {
     const a = x.allocator();
     const profile = x.def.profile orelse return .{ .failed = "command steps need a permission profile that allows commands" };
     const port = x.eng.svc.commands orelse return .{ .failed = "commands are not available here" };
@@ -37,7 +37,7 @@ pub fn runArgv(x: *Exec, id: []const u8, argv: []const []const u8, cwd: ?[]const
         const p = path_mod.Path.compile(a, c) catch return .{ .failed = "invalid cwd path" };
         break :blk try interp.render(a, try p.value(scope, a));
     } else c;
-    const r = port.exec(port.ctx, a, .{ .argv = args, .cwd = dir, .profile = profile, .run = x.id, .step = id }) catch |e| switch (e) {
+    const r = port.exec(port.ctx, a, .{ .argv = args, .shell = shell, .cwd = dir, .profile = profile, .run = x.id, .step = id }) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Denied => return .{ .failed = "command denied" },
         else => return .{ .failed = try std.fmt.allocPrint(a, "command failed: {t}", .{e}) },
@@ -47,7 +47,7 @@ pub fn runArgv(x: *Exec, id: []const u8, argv: []const []const u8, cwd: ?[]const
 
 pub fn run(x: *Exec, id: []const u8, c: *const def.CommandStep, scope: Value) Abort!Outcome {
     const a = x.allocator();
-    const r = switch (try runArgv(x, id, c.argv, c.cwd, scope)) {
+    const r = switch (try runArgv(x, id, c.argv, c.shell, c.cwd, scope)) {
         .ok => |r| r,
         .failed => |m| return .{ .failed = m },
     };

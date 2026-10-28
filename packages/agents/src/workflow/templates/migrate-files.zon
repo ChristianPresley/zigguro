@@ -1,0 +1,31 @@
+.{
+    .version = 1,
+    .name = "migrate-files",
+    .description = "Apply the same change to many files, each in its own lane, then review the lanes",
+    .profile = "default",
+    .args = .{
+        .{ .name = "glob", .description = "The files to migrate" },
+        .{ .name = "instructions", .description = "What to change in each file" },
+        .{ .name = "verify_cmd", .description = "A command that must pass after each change, e.g. zig build test" },
+    },
+    .steps = .{
+        .{ .id = "files", .phase = "Find files", .builtin = .{ .name = "files.glob", .input = "$args.glob" } },
+        .{ .id = "migrate", .phase = "Migrate", .map = .{
+            .over = "$.files",
+            .as = "file",
+            .agent = .{
+                .prompt = "@workflow/migrate-file",
+                .with = .{
+                    .{ .name = "file", .value = "$file" },
+                    .{ .name = "instructions", .value = "$args.instructions" },
+                    .{ .name = "verify_cmd", .value = "$args.verify_cmd" },
+                },
+                .tools = .{ "read_file", "edit_file", "write_file", "run_command" },
+                .isolation = .lane,
+                .label = "Migrate",
+            },
+        } },
+        .{ .id = "lanes", .phase = "Review", .builtin = .{ .name = "lanes.collect" } },
+        .{ .id = "review", .phase = "Review", .gate = .{ .title = "Review the lane changes", .show = "$.lanes" } },
+    },
+}

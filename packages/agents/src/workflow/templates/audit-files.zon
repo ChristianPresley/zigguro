@@ -1,0 +1,46 @@
+.{
+    .version = 1,
+    .name = "audit-files",
+    .description = "Find a class of problem across many files, verify the findings and rank them",
+    .args = .{
+        .{ .name = "glob", .description = "The files to audit, e.g. src/**/*.zig" },
+        .{ .name = "check", .description = "What to look for, e.g. unchecked integer overflow" },
+    },
+    .steps = .{
+        .{ .id = "files", .phase = "Find files", .builtin = .{ .name = "files.glob", .input = "$args.glob" } },
+        .{ .id = "audit", .phase = "Audit", .map = .{
+            .over = "$.files",
+            .as = "file",
+            .agent = .{
+                .prompt = "@workflow/audit-file",
+                .with = .{ .{ .name = "file", .value = "$file" }, .{ .name = "check", .value = "$args.check" } },
+                .tools = .{"read_file"},
+                .label = "Audit",
+                .schema = "{\"type\":\"object\",\"required\":[\"findings\"],\"properties\":{\"findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"file\",\"line\",\"severity\",\"description\"],\"properties\":{\"file\":{\"type\":\"string\"},\"line\":{\"type\":\"integer\"},\"severity\":{\"enum\":[\"high\",\"medium\",\"low\"]},\"description\":{\"type\":\"string\"}}}}}}",
+            },
+        } },
+        .{ .id = "verify", .phase = "Verify", .when = "$.audit[*].findings[*]", .vote = .{
+            .n = 2,
+            .decide = .judge,
+            .agent = .{
+                .prompt = "@workflow/verify-findings",
+                .with = .{ .{ .name = "findings", .value = "$.audit[*].findings[*]" }, .{ .name = "check", .value = "$args.check" } },
+                .tools = .{"read_file"},
+                .label = "Verify",
+                .schema = "{\"type\":\"object\",\"required\":[\"findings\"],\"properties\":{\"findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"file\",\"line\",\"severity\",\"description\"],\"properties\":{\"file\":{\"type\":\"string\"},\"line\":{\"type\":\"integer\"},\"severity\":{\"enum\":[\"high\",\"medium\",\"low\"]},\"description\":{\"type\":\"string\"}}}}}}",
+            },
+            .judge = .{
+                .prompt = "@workflow/judge-findings",
+                .with = .{.{ .name = "candidates", .value = "$candidates" }},
+                .label = "Judge",
+                .schema = "{\"type\":\"object\",\"required\":[\"findings\"],\"properties\":{\"findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"file\",\"line\",\"severity\",\"description\"],\"properties\":{\"file\":{\"type\":\"string\"},\"line\":{\"type\":\"integer\"},\"severity\":{\"enum\":[\"high\",\"medium\",\"low\"]},\"description\":{\"type\":\"string\"}}}}}}",
+            },
+        } },
+        .{ .id = "report", .phase = "Report", .reduce = .{
+            .prompt = "@workflow/rank-findings",
+            .with = .{ .{ .name = "findings", .value = "$.verify.findings" }, .{ .name = "check", .value = "$args.check" } },
+            .label = "Report",
+        } },
+        .{ .id = "table", .phase = "Report", .when = "$.verify.findings", .builtin = .{ .name = "artifact.write_table", .input = "$.verify.findings" } },
+    },
+}
