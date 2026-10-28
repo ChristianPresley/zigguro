@@ -509,6 +509,29 @@ pub const Editor = struct {
         return v.offsetAt(textPoint(ec, v, p));
     }
 
+    /// The offset of the character under `p` (window coordinates), or
+    /// null past the end of its line or below the text.
+    fn textAt(ec: *EventCx, v: *EditorView, p: Vec2) ?u64 {
+        if (ec.local(p).x < v.gutter_w) return null;
+        const t = textPoint(ec, v, p);
+        if (t.x < 0 or t.y < 0) return null;
+        const line = v.lineAtY(t.y);
+        if (t.y >= v.lineTop(line) + v.lineHeight()) return null;
+        const r = v.lineRange(line);
+        if (t.x >= v.posOf(r.end).x) return null;
+        const off = v.offsetAt(t);
+        // `offsetAt` rounds to the nearest boundary: take the character
+        // the point is on.
+        return if (off > r.start and v.posOf(off).x > t.x) off - 1 else off;
+    }
+
+    /// The text origin in window coordinates.
+    fn windowOrigin(ec: *EventCx, v: *EditorView) Vec2 {
+        const r = ec.rect();
+        const o = origin(v);
+        return .{ .x = r.x + o.x, .y = r.y + o.y };
+    }
+
     /// `p` relative to the text origin.
     fn textPoint(ec: *EventCx, v: *EditorView, p: Vec2) Vec2 {
         const l = ec.local(p);
@@ -595,6 +618,12 @@ pub const Editor = struct {
                     return true;
                 }
                 if (p.button != .left) return false;
+                if (p.clicks <= 1 and (p.mods.ctrl or p.mods.super) and !p.mods.alt and !p.mods.shift) {
+                    if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .click, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods })) {
+                        ec.focus();
+                        return true;
+                    };
+                }
                 ec.focus();
                 const at = hitAt(ec, v, p.pos);
                 switch (p.clicks) {
@@ -634,7 +663,10 @@ pub const Editor = struct {
             },
             .pointer_move => |p| {
                 ec.setCursor(.text);
-                if (state.drag == .none) return false;
+                if (state.drag == .none) {
+                    if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .move, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods });
+                    return false;
+                }
                 if (state.drag == .box) {
                     v.boxSelect(state.box_anchor, v.displayPosAt(textPoint(ec, v, p.pos)));
                     ec.repaint();
@@ -655,6 +687,10 @@ pub const Editor = struct {
                 v.revealPrimary();
                 ec.repaint();
                 return true;
+            },
+            .pointer_leave => {
+                if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .leave });
+                return false;
             },
             .pointer_up => {
                 if (state.drag == .none) return false;
@@ -698,6 +734,7 @@ pub const Editor = struct {
             },
             .key => |k| {
                 if (k.action == .release) return false;
+                if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .key, .key = k, .mods = k.mods })) return true;
                 if (v.key_hook) |h| if (h.f(h.ctx, v, k)) {
                     ec.respond(.{ .changed = true });
                     ec.repaint();
