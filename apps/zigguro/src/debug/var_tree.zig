@@ -17,6 +17,9 @@
 //!   opening into its children; nothing is edited there.
 //! - Node ids are the model's `NodeId`s (stable across stops); watch rows
 //!   take ids from a reserved range.
+//! - **Context menu** (right-click, Shift+F10): Set Value, Copy Value,
+//!   Copy as Expression, Add to Watch and, when the adapter has data
+//!   breakpoints, Break on Value Change; in Watch, add, edit and remove.
 //! - Accessible names read "name, value, type".
 //!
 //! `update` re-reads the models after they changed (not per frame). UI
@@ -497,8 +500,69 @@ pub const VarTree = struct {
         if (!vt.tv.node.isNone() and w.store.valid(vt.tv.node)) w.setFocus(vt.tv.node, true);
     }
 
+    /// The model node of the active row (a watch row: its result's).
+    pub fn activeNode(vt: *const VarTree) ?NodeId {
+        const id = vt.tv.active orelse return null;
+        return vt.varOf(id);
+    }
+
+    /// Whether Break on Value Change applies to the active row: the
+    /// adapter has data breakpoints and the row is a variable of this stop.
+    pub fn canBreakOnChange(vt: *const VarTree) bool {
+        const i = vt.insp orelse return false;
+        if (!(i.ch.caps().supportsDataBreakpoints orelse false)) return false;
+        const n = vt.activeNode() orelse return false;
+        return i.vars.containerRef(n) != null;
+    }
+
     pub fn build(vt: *VarTree, ui: *Ui) void {
         vt.tv.win = ui.window();
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } } });
+        defer ui.close();
+        vt.contextMenu(ui);
         vt.tv.build(ui);
+    }
+
+    /// Right-click or Shift+F10 on a row (the press selects it first).
+    fn contextMenu(vt: *VarTree, ui: *Ui) void {
+        if (vt.mode == .hover) return;
+        const MenuItem = zg_gui.w.MenuItem;
+        var items: [10]MenuItem = undefined;
+        var k: usize = 0;
+        const v = vt.activeVar();
+        const has_expr = v != null and v.?.evaluate_name != null;
+        const has_value = vt.activeValue() != null;
+        if (vt.mode == .watch) {
+            const w = vt.activeWatch() != null;
+            items[k] = .{ .action = .{ .label = "Add Expression\u{2026}", .action = "debug.addWatchExpression" } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Edit Expression", .action = "debug.editWatchExpression", .enabled = w } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Remove Expression", .action = "debug.removeWatchExpression", .enabled = w } };
+            k += 1;
+            items[k] = .separator;
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Copy Value", .action = "debug.copyValue", .enabled = has_value } };
+            k += 1;
+        } else {
+            items[k] = .{ .action = .{ .label = "Set Value", .action = "debug.setVariable", .enabled = v != null } };
+            k += 1;
+            items[k] = .separator;
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Copy Value", .action = "debug.copyValue", .enabled = has_value } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Copy as Expression", .action = "debug.copyAsExpression", .enabled = has_expr } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Add to Watch", .action = "debug.addToWatch", .enabled = has_expr } };
+            k += 1;
+            const i = vt.insp;
+            if (i != null and (i.?.ch.caps().supportsDataBreakpoints orelse false)) {
+                items[k] = .separator;
+                k += 1;
+                items[k] = .{ .action = .{ .label = "Break on Value Change", .action = "debug.breakOnValueChange", .enabled = vt.canBreakOnChange() } };
+                k += 1;
+            }
+        }
+        zg_gui.w.contextMenu(ui, items[0..k], .{ .test_id = if (vt.mode == .watch) "watch-menu" else "variables-menu" });
     }
 };

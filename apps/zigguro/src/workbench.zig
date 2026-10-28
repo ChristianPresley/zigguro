@@ -1339,6 +1339,7 @@ pub const Workbench = struct {
         .{ .id = "debug.copyValue", .title = "Copy Value", .category = "Debug", .run = copyDebugValue },
         .{ .id = "debug.copyAsExpression", .title = "Copy as Expression", .category = "Debug", .run = copyAsExpression },
         .{ .id = "debug.addToWatch", .title = "Add to Watch", .category = "Debug", .run = addToWatch },
+        .{ .id = "debug.breakOnValueChange", .title = "Break on Value Change", .category = "Debug", .run = breakOnValueChange },
         .{ .id = "debug.addWatchExpression", .title = "Add Watch Expression", .category = "Debug", .run = addWatchExpression },
         .{ .id = "debug.editWatchExpression", .title = "Edit Watch Expression", .category = "Debug", .run = editWatchExpression },
         .{ .id = "debug.removeWatchExpression", .title = "Remove Watch Expression", .category = "Debug", .run = removeWatchExpression },
@@ -3477,6 +3478,13 @@ pub const Workbench = struct {
         const v = t.activeVar() orelse return;
         const expr = v.evaluate_name orelse return wb.notify(.info, "The debugger gives no expression for {s}", .{v.name});
         Debug.watchAdd(d, expr);
+    }
+
+    fn breakOnValueChange(wb: *Workbench) !void {
+        const t = wb.debugTree(.variables) orelse return;
+        const d = wb.debug orelse return;
+        const n = t.activeNode() orelse return;
+        d.breakOnValueChange(n);
     }
 
     /// The Watch view's add row, in edit.
@@ -7346,6 +7354,29 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
         }
         try std.testing.expect(echoed);
         try std.testing.expectEqualStrings("", cv.input.slice());
+    }
+    // Right-click `b` in Variables: its menu.
+    {
+        const vars = &wb.debug_panel.?.vars;
+        const row = for (vars.tv.flat.rows.items, 0..) |r, i| {
+            if (std.mem.startsWith(u8, debug_var_tree.VarTree.labelOf(vars, r.node), "b, ")) break i;
+        } else return error.NoRow;
+        const rr = t.win.layoutRect(t.find(.{ .name = debug_var_tree.VarTree.labelOf(vars, vars.tv.flat.rows.items[row].node) }).?);
+        const at: zg_gui.core.Vec2 = .{ .x = rr.x + 20, .y = rr.y + rr.h / 2 };
+        t.win.dispatch(.{ .pointer_down = .{ .pos = at, .button = .right } });
+        t.win.dispatch(.{ .pointer_up = .{ .pos = at, .button = .right } });
+        _ = t.settle();
+        try std.testing.expect(t.find(.{ .test_id = "variables-menu" }) != null);
+        try std.testing.expect(t.find(.{ .name = "Copy as Expression" }) != null);
+        try std.testing.expect(t.find(.{ .name = "Add to Watch" }) != null);
+        // GDB has no data breakpoints: no Break on Value Change.
+        try std.testing.expect(t.find(.{ .name = "Break on Value Change" }) == null);
+        try std.testing.expect(!vars.canBreakOnChange());
+        // Copy Value from the menu.
+        try t.click(.{ .name = "Copy Value" });
+        _ = t.settle();
+        try std.testing.expect(t.find(.{ .test_id = "variables-menu" }) == null);
+        try std.testing.expectEqualStrings("40", t.app.clipboard.get());
     }
     // The keys follow the stop.
     try std.testing.expectEqualStrings("debug.continue", testCommandFor(&wb, K{ .key = .f5 }).?);
