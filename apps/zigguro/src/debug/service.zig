@@ -34,6 +34,7 @@ const zg_codeintel = @import("zg_codeintel");
 const configs_mod = @import("configs.zig");
 const call_stack = @import("call_stack.zig");
 const toolbar = @import("toolbar.zig");
+const var_tree = @import("var_tree.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -136,6 +137,9 @@ pub const Debug = struct {
     gutter: BreakpointGutter,
     /// The `generation` the execution pointer was drawn at.
     exec_seen: u64 = 0,
+    /// The models the views show without a session: the watch list
+    /// (saved to `watches.zon`; each session starts with a copy).
+    no_session: Inspector = undefined,
     mgr: DebugManager = undefined,
     vars: variables.VarContext = undefined,
     file_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -222,6 +226,8 @@ pub const Debug = struct {
         inbox.debug_ptr = d;
         d.bps.opts.host = d.gutter.host();
         try d.gutter.bind(&d.bps);
+        try d.no_session.init(gpa, rt.io, null, .none, .{});
+        if (root_dir) |rd| d.no_session.watches.persist_to = .{ .dir = rd, .path = state_dir ++ "/" ++ Watches.sub_path };
         d.reg_resolver = .{ .reg = &d.reg, .io = rt.io, .env = env };
         d.vars = .{
             .workspace_folder = root_copy,
@@ -270,6 +276,7 @@ pub const Debug = struct {
         d.bps.saveNow() catch {};
         d.bps.deinit();
         d.gutter.deinit();
+        d.no_session.deinit();
         d.inbox.release();
         d.entries.deinit(gpa);
         d.dropped.deinit(gpa);
@@ -345,11 +352,88 @@ pub const Debug = struct {
         defer workDone(q);
         const d = q.debug_ptr;
         const dir = d.root_dir orelse return;
+        if (dir.readFileAlloc(d.io, state_dir ++ "/" ++ Watches.sub_path, d.gpa, .limited(1 << 20))) |text| {
+            q.push(.{ .watches = text });
+        } else |_| {}
         const path = state_dir ++ "/" ++ zg_dap.breakpoints.persist.sub_path;
         const text = dir.readFileAlloc(d.io, path, d.gpa, .limited(16 << 20)) catch return;
         defer d.gpa.free(text);
         d.bps.load(text) catch |e| return log.warn("{s}: {t}", .{ path, e });
         q.push(.loaded);
+    }
+
+    /// The saved watch list arrived (UI thread): sessions already running
+    /// get it too.
+    fn onWatchesLoaded(d: *Debug, text: []const u8) void {
+        if (d.no_session.watches.results().len > 0) return; // edited meanwhile
+        const keep = d.no_session.watches.persist_to;
+        d.no_session.watches.persist_to = null;
+        defer d.no_session.watches.persist_to = keep;
+        d.no_session.watches.load(text) catch |e| return log.warn("{s}: {t}", .{ Watches.sub_path, e });
+        for (d.entries.items) |e| for (d.no_session.watches.results()) |w| e.insp.watches.add(w.expr);
+    }
+
+    // ---------------------------------------------------------- watches
+
+    /// The models the Variables and Watch views show: the active
+    /// session's, else the no-session ones (the watch list alone).
+    pub fn viewInspector(d: *Debug) *Inspector {
+        if (d.active()) |e| return &e.insp;
+        return &d.no_session;
+    }
+
+    pub fn varHooks(d: *Debug) var_tree.Hooks {
+        return .{ .ctx = d, .changed = varsChanged, .watch_add = watchAdd, .watch_edit = watchEdit, .watch_remove = watchRemove, .value_set = valueSet };
+    }
+
+    /// A value was set: the active session's watches are evaluated again.
+    fn valueSet(ctx: *anyopaque) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        const e = d.active() orelse return;
+        const frame = e.insp.vars.frame_id orelse return;
+        e.insp.watches.reevaluate(frame);
+        d.changed();
+    }
+
+    fn varsChanged(ctx: *anyopaque) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.changed();
+    }
+
+    /// Every list gets the change; the no-session one saves it.
+    pub fn watchAdd(ctx: *anyopaque, expr: []const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.no_session.watches.add(expr);
+        for (d.entries.items) |e| e.insp.watches.add(expr);
+        d.changed();
+    }
+
+    fn watchEdit(ctx: *anyopaque, i: u32, expr: []const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.no_session.watches.edit(i, expr);
+        for (d.entries.items) |e| e.insp.watches.edit(i, expr);
+        d.changed();
+    }
+
+    pub fn watchRemove(ctx: *anyopaque, i: u32) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.no_session.watches.remove(i);
+        for (d.entries.items) |e| e.insp.watches.remove(i);
+        d.changed();
+    }
+
+    pub fn removeAllWatchesCmd(d: *Debug) void {
+        var n = d.no_session.watches.results().len;
+        while (n > 0) : (n -= 1) watchRemove(d, @intCast(n - 1));
+    }
+
+    /// Values in hexadecimal, or back (when the adapter can).
+    pub fn toggleHexCmd(d: *Debug) void {
+        const e = d.active() orelse return d.say(.info, "Hexadecimal values need a debug session", .{});
+        const on = !e.insp.vars.hex;
+        e.insp.vars.setHex(on);
+        if (e.insp.vars.hex != on) return d.say(.info, "The debugger cannot show values in hexadecimal", .{});
+        d.changed();
     }
 
     /// The saved breakpoints are in: the open editors track theirs.
@@ -381,6 +465,8 @@ pub const Debug = struct {
     /// Once per frame, before the editors paint: the gutter marks and the
     /// execution pointer.
     pub fn onFrame(d: *Debug) void {
+        const vi = d.viewInspector();
+        if (vi.watches.pendingCount() > 0 and vi.watches.tick(Io.Timestamp.now(d.io, .awake))) d.changed();
         if (d.exec_seen != d.generation) {
             d.exec_seen = d.generation;
             d.updateExec();
@@ -581,13 +667,8 @@ pub const Debug = struct {
         try e.insp.initSession(d.gpa, d.io, s, .{ .host = .{ .ctx = d, .reveal = revealFrame } });
         errdefer e.insp.deinit();
         e.insp.ch.setWaker(.{ .ctx = d.inbox, .func = Inbox.wake });
-        if (d.root_dir) |rd| {
-            e.insp.watches.persist_to = .{ .dir = rd, .path = state_dir ++ "/" ++ Watches.sub_path };
-            if (rd.readFileAlloc(d.io, state_dir ++ "/" ++ Watches.sub_path, d.gpa, .limited(1 << 20))) |text| {
-                defer d.gpa.free(text);
-                e.insp.watches.load(text) catch {};
-            } else |_| {}
-        }
+        // The workspace's watch list (the no-session one saves it).
+        for (d.no_session.watches.results()) |w| e.insp.watches.add(w.expr);
         try d.entries.append(d.gpa, e);
         return e;
     }
@@ -1130,6 +1211,8 @@ const Msg = union(enum) {
     breakpoints,
     /// The saved breakpoints were read.
     loaded,
+    /// The saved watch list (owned).
+    watches: []u8,
     autos: struct { arena: *std.heap.ArenaAllocator, configs: []const LaunchConfig },
     targets: *TargetsMsg,
     goto_failed: ?[]u8,
@@ -1194,6 +1277,7 @@ const Inbox = struct {
                 q.gpa.destroy(t);
             },
             .goto_failed, .compound_done => |s| if (s) |x| q.gpa.free(x),
+            .watches => |text| q.gpa.free(text),
             else => {},
         }
     }
@@ -1276,6 +1360,10 @@ const Inbox = struct {
                 .session => |x| d.onSessionChange(x.s, x.id, x.change),
                 .pump, .breakpoints => {},
                 .loaded => d.onLoaded(),
+                .watches => |text| {
+                    d.onWatchesLoaded(text);
+                    q.gpa.free(text);
+                },
                 .autos => |x| d.applyAutos(x.arena, x.configs),
                 .targets => |t| {
                     d.openTargets(t) catch {};
