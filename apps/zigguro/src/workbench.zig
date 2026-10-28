@@ -32,12 +32,14 @@ const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
 const zg_syntax = @import("zg_syntax");
+const zg_terminal = @import("zg_terminal");
 const zg_terminal_view = @import("zg_terminal_view");
 const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const zg_codeintel = @import("zg_codeintel");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
+const term_persist = zg_terminal.session.persist;
 const TerminalId = zg_terminal_view.panel_model.TerminalId;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
@@ -159,6 +161,10 @@ pub const Workbench = struct {
     terminals: std.AutoArrayHashMapUnmanaged(TerminalId, *TerminalPanel) = .empty,
     term_tabs: zg_terminal_view.PanelModel = undefined,
     next_terminal: TerminalId = 1,
+    /// The terminals saved when the folder was last closed were looked
+    /// for (restored by the first `startTerminal`); until then closing
+    /// keeps the saved file as it is.
+    terminals_loaded: bool = false,
     /// A tab strip button clicked during the build; runs after the frame.
     term_click: ?TermClick = null,
     /// The active terminal's node.
@@ -902,6 +908,7 @@ pub const Workbench = struct {
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
         wb.saveLayoutNow();
+        wb.saveTerminals();
         if (wb.persister) |*p| p.deinit();
         wb.persister = null;
         // Floating panels come home before their windows close.
@@ -3317,26 +3324,106 @@ pub const Workbench = struct {
         return wb.terminals.get(wb.term_tabs.activeId() orelse return null);
     }
 
-    /// Creates the first terminal and starts its shell, once.
+    /// Creates the first terminal and starts its shell, once: the
+    /// terminals saved when the folder was last closed, else a new one.
     fn startTerminal(wb: *Workbench, w: *Window) !void {
+        if (!wb.terminals_loaded) {
+            wb.terminals_loaded = true;
+            if (wb.terminals.count() == 0) wb.restoreTerminals(w);
+        }
         if (wb.terminals.count() == 0) try wb.newTerminal(w, false);
+    }
+
+    fn persistentSessions(wb: *const Workbench) bool {
+        const st = wb.settings orelse return true;
+        return st.boolean("terminal.integrated.persistentSessions.enabled");
+    }
+
+    /// Reopens the terminals `saveTerminals` kept: their tabs and splits,
+    /// what they showed (above a "Restored session" line) and a fresh
+    /// shell in the folder each was in. Agent terminals come back as
+    /// history only.
+    fn restoreTerminals(wb: *Workbench, w: *Window) void {
+        const dir = wb.layout_dir orelse return;
+        if (!wb.persistentSessions()) return term_persist.remove(wb.io, dir);
+        var snap = (term_persist.read(wb.gpa, wb.io, dir) catch null) orelse return;
+        defer snap.deinit();
+        var sep_buf: [128]u8 = undefined;
+        const sep = term_persist.separator(&sep_buf, snap.saved_s);
+        var group: ?u32 = null;
+        for (snap.terminals) |*r| {
+            const split = group != null and group.? == r.group;
+            group = r.group;
+            wb.openTerminal(w, split, .{ .record = r, .separator = sep }) catch |e| {
+                log.warn("terminal {d} not restored: {t}", .{ r.id, e });
+            };
+        }
+        if (wb.term_tabs.groups.items.len > 0) wb.term_tabs.active = 0;
+    }
+
+    /// Saves every terminal (`terminals.zgts` beside the layout) for
+    /// `restoreTerminals`; with none open, or the setting off, deletes it.
+    fn saveTerminals(wb: *Workbench) void {
+        const dir = wb.layout_dir orelse return;
+        if (!wb.terminals_loaded) return;
+        if (!wb.persistentSessions() or wb.terminals.count() == 0) return term_persist.remove(wb.io, dir);
+        var arena_state: std.heap.ArenaAllocator = .init(wb.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var recs: std.ArrayList(term_persist.TerminalRecord) = .empty;
+        for (wb.term_tabs.groups.items, 0..) |g, gi| for (g.terminals.items) |id| {
+            const t = wb.terminals.get(id) orelse continue;
+            var content: std.ArrayList(u8) = .empty;
+            term_persist.capture(arena, &t.term, if (t.view.blocks) |b| b else null, .{}, &content) catch continue;
+            recs.append(arena, .{
+                .id = id,
+                .group = @intCast(gi),
+                .cols = t.term.cols(),
+                .rows = t.term.rows(),
+                .owner = if (wb.term_tabs.sectionOf(id) == .agents) .agent else .user,
+                .cwd = t.view.cwd.items,
+                .title = t.term.title.items,
+                .name = wb.term_tabs.nameOf(id) orelse "",
+                .content = content.items,
+            }) catch return;
+        };
+        const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(wb.io).nanoseconds, std.time.ns_per_s));
+        term_persist.write(wb.gpa, wb.io, dir, &.{ .saved_s = now, .terminals = recs.items }) catch |e| log.warn("terminals not saved: {t}", .{e});
     }
 
     /// Creates a terminal and starts its shell: a new tab, or (`split`)
     /// beside the active terminal in its group.
     fn newTerminal(wb: *Workbench, w: *Window, split: bool) !void {
+        return wb.openTerminal(w, split, null);
+    }
+
+    const Restore = struct { record: *const term_persist.TerminalRecord, separator: []const u8 };
+
+    /// `newTerminal`, showing `restore`'s saved content first and
+    /// starting the shell in its folder.
+    fn openTerminal(wb: *Workbench, w: *Window, split: bool, restore: ?Restore) !void {
         const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
         errdefer t.destroy();
         const id = wb.next_terminal;
         try wb.terminals.put(wb.gpa, id, t);
         errdefer _ = wb.terminals.swapRemove(id);
+        const agent = if (restore) |r| r.record.owner == .agent else false;
         if (split and wb.term_tabs.activeId() != null)
             try wb.term_tabs.split(wb.term_tabs.activeId().?, id)
         else
-            try wb.term_tabs.add(id, .user);
+            try wb.term_tabs.add(id, if (agent) .agents else .user);
         wb.next_terminal += 1;
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
         t.view.on_open_link = .{ .ctx = wb, .f = onTerminalLink };
+        if (restore) |r| {
+            if (r.record.name.len > 0) wb.term_tabs.rename(id, r.record.name) catch {};
+            t.view.feed(r.record.content);
+            t.view.feed(r.separator);
+            // History only: an agent's shell is not started again.
+            if (agent) return t.setNote("saved agent terminal", .{});
+            if (r.record.cwd.len > 0 and std.fs.path.isAbsolute(r.record.cwd) and exists(wb.io, r.record.cwd)) t.start_cwd = r.record.cwd;
+        }
+        defer t.start_cwd = null;
         const st = wb.settings orelse return t.start();
         var args: [32][]const u8 = undefined;
         var n: usize = 0;
@@ -4849,6 +4936,62 @@ test "workbench: terminals open as tabs and splits, cycle, and close" {
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), wb.terminals.count());
     try std.testing.expect(!wb.shown(wb.terminal_ref));
+}
+
+test "workbench: terminals come back after a restart with their output, splits and names" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(std.testing.io, &buf)];
+    const state = try std.fs.path.join(gpa, &.{ root, "state" });
+    defer gpa.free(state);
+
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, null);
+        defer wb.deinit();
+        _ = wb.loadLayout(state);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        try wb.toggleTerminal();
+        try wb.splitTerminal();
+        try wb.newTerminalCmd();
+        _ = t.settle();
+        wb.terminals.get(1).?.view.feed("\x1b[1mhello-from-one\x1b[0m\r\n");
+        wb.terminals.get(2).?.view.feed("hello-from-two\r\n");
+        try wb.term_tabs.rename(3, "build");
+    }
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, null);
+        defer wb.deinit();
+        _ = wb.loadLayout(state);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        try wb.focusTerminalCmd();
+        _ = t.settle();
+        try std.testing.expectEqual(@as(usize, 3), wb.terminals.count());
+        try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items.len);
+        try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items[0].terminals.items.len);
+        try std.testing.expectEqualStrings("build", wb.term_tabs.nameOf(wb.term_tabs.groups.items[1].terminals.items[0]).?);
+        const want = [_][]const u8{ "hello-from-one", "hello-from-two" };
+        for (want, wb.term_tabs.groups.items[0].terminals.items) |text, id| {
+            const d = try wb.terminals.get(id).?.term.dump(gpa);
+            defer gpa.free(d);
+            try std.testing.expect(std.mem.indexOf(u8, d, text) != null);
+            try std.testing.expect(std.mem.indexOf(u8, d, "Restored session, saved") != null);
+        }
+    }
 }
 
 test "workbench: Find in Terminal opens the bar on the selection and Escape returns focus" {
