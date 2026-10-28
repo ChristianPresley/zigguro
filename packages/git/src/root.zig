@@ -76,6 +76,7 @@ pub const remote = struct {
     pub const credential = @import("remote/credential.zig");
     pub const http = @import("remote/http.zig");
     pub const connect = @import("remote/connect.zig");
+    pub const local = @import("remote/local.zig");
 };
 /// The native SSH-2 client for `ssh://` and scp-like remotes.
 pub const ssh = struct {

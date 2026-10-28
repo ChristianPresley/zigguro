@@ -17,10 +17,13 @@ const Io = std.Io;
 const Env = struct {
     env: std.process.Environ.Map,
     v2: std.process.Environ.Map,
+    /// Serve the remote in-process (remote/local.zig) instead of git.
+    native: bool = false,
 };
 
 fn connect(ctx: ?*anyopaque, repo: *Repository, url: []const u8, service: transport.Service) anyerror!transport.Connection {
     const e: *Env = @ptrCast(@alignCast(ctx.?));
+    if (e.native) return (try @import("local.zig").Local.connect(repo, url, service)).connection();
     const cmd: []const u8 = switch (service) {
         .upload_pack => "upload-pack",
         .receive_pack => "receive-pack",
@@ -52,6 +55,7 @@ const Fixture = struct {
         try env.put("GIT_AUTHOR_DATE", "1700000000 +0000");
         try env.put("GIT_COMMITTER_DATE", "1700000000 +0000");
         f.e.v2 = try env.clone(gpa);
+        f.e.native = false;
         try f.e.v2.put("GIT_PROTOCOL", "version=2");
         if (!helpers.gitAvailable(gpa, io, env)) {
             f.deinit(gpa);
@@ -105,10 +109,11 @@ const Fixture = struct {
 const refs_snapshot = "git for-each-ref --format='%(refname) %(objectname)'; echo --; cat .git/FETCH_HEAD 2>/dev/null; echo --; " ++
     "for r in $(git for-each-ref --format='%(refname)' refs/remotes refs/tags); do git reflog -1 --format=\"$r %gs\" $r 2>/dev/null; done; git fsck --no-progress --no-dangling 2>&1";
 
-test "fetch: new commits, forced updates, tags and prune match git fetch" {
+fn fetchUpdates(native: bool) !void {
     const gpa = testing.allocator;
     var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
     defer f.deinit(gpa);
+    f.e.native = native;
     try f.run("", "mkdir srv && cd srv && git init -q -b main && printf 'a\\n' > a && git add a && git commit -qm one && git tag -a v1 -m v1 && " ++
         "git checkout -qb feature && printf 'f\\n' > f && git add f && git commit -qm feat && git checkout -q main && " ++
         "cd .. && git clone -q srv g && cp -a g n");
@@ -148,10 +153,11 @@ test "fetch: new commits, forced updates, tags and prune match git fetch" {
     try f.expectSame("cat .git/FETCH_HEAD; git fsck --no-progress --no-dangling 2>&1; git cat-file -t $(cut -f1 .git/FETCH_HEAD)");
 }
 
-test "fetch: into an empty repository" {
+fn fetchEmpty(native: bool) !void {
     const gpa = testing.allocator;
     var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
     defer f.deinit(gpa);
+    f.e.native = native;
     try f.run("", "mkdir srv && cd srv && git init -q -b main && for i in 1 2 3 4 5; do seq 1 $((i*200)) > f$i; git add f$i; git commit -qm c$i; done && git tag -a v1 -m v1 HEAD~2 && " ++
         "cd .. && for d in g n; do git init -q -b main $d && (cd $d && git remote add origin ../srv); done");
     try f.run("g", "git fetch origin 2>/dev/null");
@@ -168,10 +174,11 @@ test "fetch: into an empty repository" {
 const push_snapshot = "git -C ../srv.git for-each-ref --format='%(refname) %(objectname)'; git -C ../srv.git fsck --no-progress --no-dangling 2>&1; echo --; " ++
     "git for-each-ref --format='%(refname) %(objectname)' refs/remotes; git config --get-regexp '^branch\\.' || true";
 
-test "push: new, fast-forward, rejected, forced, deleted and tags match git push" {
+fn pushSteps(native: bool) !void {
     const gpa = testing.allocator;
     var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
     defer f.deinit(gpa);
+    f.e.native = native;
     // One bare server per side so both start equal.
     try f.run("", "mkdir seed && cd seed && git init -q -b main && printf 'a\\n' > a && git add a && git commit -qm one && git checkout -qb feature && printf 'f\\n' > f && git add f && git commit -qm f && git checkout -q main && " ++
         "cd .. && mkdir g n && git clone -q --bare seed g/srv.git && git clone -q --bare seed n/srv.git && git clone -q g/srv.git g/c && git clone -q n/srv.git n/c");
@@ -203,6 +210,30 @@ test "push: new, fast-forward, rejected, forced, deleted and tags match git push
     }
 }
 
+test "fetch: new commits, forced updates, tags and prune match git fetch" {
+    try fetchUpdates(false);
+}
+
+test "local remote: new commits, forced updates, tags and prune match git fetch" {
+    try fetchUpdates(true);
+}
+
+test "fetch: into an empty repository" {
+    try fetchEmpty(false);
+}
+
+test "local remote: into an empty repository" {
+    try fetchEmpty(true);
+}
+
+test "push: new, fast-forward, rejected, forced, deleted and tags match git push" {
+    try pushSteps(false);
+}
+
+test "local remote: new, fast-forward, rejected, forced, deleted and tags match git push" {
+    try pushSteps(true);
+}
+
 test "remote: add, set-url, rename and remove like git remote" {
     const gpa = testing.allocator;
     var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
@@ -224,4 +255,26 @@ test "remote: add, set-url, rename and remove like git remote" {
         try testing.expectError(error.RemoteExists, remote_mod.add(repo, "upstream", "x"));
     }
     try f.expectSame("git config --get-regexp '^(remote|branch)\\.' ; git for-each-ref --format='%(refname) %(objectname)'");
+}
+
+test "local remote: a non-bare remote refuses its checked-out branch" {
+    const gpa = testing.allocator;
+    var f = (try Fixture.init(gpa, testing.io)) orelse return error.SkipZigTest;
+    defer f.deinit(gpa);
+    f.e.native = true;
+    try f.run("", "mkdir srv && cd srv && git init -q -b main && git commit -q --allow-empty -m one && git branch other && cd .. && git clone -q srv n && " ++
+        "cd n && git commit -q --allow-empty -m two && git checkout -q -b other origin/other && git commit -q --allow-empty -m three");
+    const repo = try f.open(gpa, "n");
+    defer repo.close();
+    var r = try push_mod.push(repo, "origin", .{ .refspecs = &.{ "main", "other" } }, f.connector());
+    defer r.deinit();
+    try testing.expectEqual(@as(usize, 2), r.refs.len);
+    for (r.refs) |ref| {
+        if (std.mem.eql(u8, ref.remote, "refs/heads/main")) {
+            try testing.expectEqualStrings("branch is currently checked out", ref.reason.?);
+        } else try testing.expect(ref.ok());
+    }
+    const srv = try f.sh(gpa, "srv", "git log --format=%s main; git log --format=%s other");
+    defer gpa.free(srv);
+    try testing.expectEqualStrings("one\nthree\none\n", srv);
 }
