@@ -1,0 +1,99 @@
+  install (default)            Copy build artifacts to prefix path
+  uninstall                    Remove build artifacts from prefix path
+  setup-exe                    Build the Windows installer around -Dsetup-payload into zig-out/setup/
+  run                          Run the zigguro app
+  run-zg                       Run the zg headless CLI
+  test                         Run the tests of every package and tool
+  test-setup                   Run the tests of apps/zigguro-setup
+  test-apps                    Run the tests of apps/zigguro
+  test-startup-allowlist       Check the app's critical startup services against packages/perf/startup_allowlist.zon
+  fuzz                         Run every test (use with --fuzz to fuzz `fuzz:` tests)
+  test-core                    Run the zg_core tests
+  test-jsonrpc                 Run the zg_jsonrpc tests
+  test-net                     Run the zg_net tests
+  test-terminal                Run the zg_terminal tests
+  test-mcp                     Run the zg_mcp tests
+  test-lsp                     Run the zg_lsp tests
+  test-dap                     Run the zg_dap tests
+  test-text                    Run the zg_text tests
+  test-git                     Run the zg_git tests
+  test-scm                     Run the zg_scm tests
+  test-platform                Run the zg_platform tests
+  fuzz-wl                      Run the Wayland decoder fuzz test (use with --fuzz)
+  test-security                Run the zg_security tests
+  test-ai                      Run the zg_ai tests
+  test-release                 Run the zg_release tests
+  test-update                  Run the zg_update tests
+  test-crash                   Run the zg_crash tests
+  test-config                  Run the zg_config tests
+  test-workspace               Run the zg_workspace tests
+  test-notes                   Run the zg_notes tests
+  test-regex                   Run the zg_regex tests
+  test-editor                  Run the zg_editor tests
+  test-vulkan                  Run the zg_vulkan tests
+  test-golden                  Render the zg_vulkan scene corpus against its golden images
+  test-vulkan-gpu              Run the zg_vulkan tests that need a Vulkan loader (skipped without one)
+  check-vk-gen                 Compile all of the generated vk.zig for x86_64-windows, x86_64-linux-gnu and aarch64-linux-gnu
+  test-syntax                  Run the zg_syntax tests
+  test-gui                     Run the zg_gui tests
+  test-review                  Run the zg_review tests
+  test-install                 Run the zg_install tests
+  test-codeintel               Run the zg_codeintel tests
+  test-agents                  Run the zg_agents tests
+  test-diagram                 Run the zg_diagram tests
+  test-perf                    Run the zg_perf tests
+  test-perf_ui                 Run the zg_perf_ui tests
+  test-zg                      Run the zg CLI tests (unit and end to end)
+  test-enforcement             Prove every consumer denies under a deny-all engine (INV-01)
+  test-tools                   Run the tests of tools/*
+  check-frame-pointers         Check that the zigguro executable keeps frame pointers
+  corpus                       Generate a benchmark corpus: zig build corpus -- <profile> [--paths-only|--sparse] [--seed N]
+  test-wake-sites              Fail if a new blocking wait under packages/ lacks zg_perf.idle.noteWake
+  wake-sites-baseline          Rewrite tools/wake-sites/baseline.txt from the current tree
+  release-tool                 Run tools/release (zg-release <command> ...; args after --)
+  notices-check                Fail if a third-party data file has no packaging/notices entry
+  test-build-resources         Check the manifest, VERSIONINFO and icon of Windows executables
+  icons                        Regenerate packaging/icons/out from packaging/icons/logo.zig
+  icons-check                  Fail if packaging/icons/out is stale
+  package                      Build zig-out/dist/<t> and package it into zig-out/release (E17)
+  dist                         Install stripped binaries into zig-out/dist/<t> and symbols into zig-out/symbols/<t>
+  test-build-symbols           Check that release binaries split into a stripped binary and a matching .debug file
+  zg-transcript                Run zg-transcript (pass arguments after --)
+  check-gen                    Fail if a generated protocol file is out of date
+  lspgen                       Regenerate packages/lsp/src/gen/protocol.zig
+  dapgen                       Regenerate packages/dap/src/gen/protocol.zig
+  vkgen                        Regenerate packages/vulkan/src/vk/vk.zig
+  spirvgen                     Regenerate tools/spirv/spec.zig from the SPIR-V grammar
+  shaderc                      Regenerate the SPIR-V shaders in packages/vulkan/src/shaders/gen
+  spirv-dis                    Disassemble generated shaders (zig build spirv-dis -- prim_frag)
+  vkgen-mini                   Regenerate tools/vkgen/testdata/golden/mini_vk.zig
+  zig-pin                      Download, verify and pin the Zig toolchain (-Dzig-version=0.16.0)
+  test-ci-scripts              Run setup-zig.sh against a fixture mirror (Linux)
+  check-layers                 Check the package graph against tools/pkgtool/layers.zon
+  check-supply-chain           Fail on any third-party code: URL deps, @cImport, libc, C sources (E16.F01.S02.T01)
+  new-package                  Scaffold a package: -Dname=zg_demo -Ddir=demo -Dlayer=4
+  prlint                       Lint branch, PR title, commits and docs (args after --)
+  fuzz-list                    Print every `fuzz:` test target as JSON
+  keysym-gen                   Regenerate the XKB keysym tables (-- --check to verify)
+  tzdata-gen                   Regenerate zg_agents' embedded time zones (-- --zoneinfo <dir>, --check)
+  test-build                   Self-test the build graph (spawns zig build)
+  bench                        Run every package benchmark (-Dbench-quick, -Dbench-filter, -Dbench-repeats)
+  bench-build                  Compile the bench binaries, perfgate, the app and the startup harness without running them
+  bench-latency                Type into a 100k-line file in the app and write zig-out/bench-results/latency.json
+  test-bench-scenarios         Run every app scenario once in quick mode, headless
+  bench-startup                Launch the app repeatedly and write zig-out/bench-results/startup.json
+  test-bench-startup           Run bench-startup with 2 headless launches
+  eval                         Run the agent evaluation suite (-Deval-filter, -Deval-update-baseline, -Deval-live -Deval-model)
+  docs-terminal-modes          Regenerate packages/terminal/docs/{modes,xtgettcap}.md
+  test-terminal-conformance    Run the terminal .vtt conformance corpus
+  budgets-doc                  Regenerate docs/perf/budgets.md from packages/perf/budgets.zon
+  budgets-doc-check            Fail if docs/perf/budgets.md is stale
+  perfgate                     Run perfgate: zig build perfgate -- merge|compare|baseline|list-gated ...
+  bench-scenarios              Run every app scenario headless into zig-out/bench-results/scenarios.json (-Dbench-repeats)
+  perf-calibrate               Measure this machine against the reference laptop: zig-out/bench-results/calibration.json
+  perf-baseline                Write perf/baselines/<machine>/ from a merged bench set: zig build perf-baseline -Dmachine=M -- --from FILE
+  perf-docs-check              Fail if a tools/perf/sql recipe is missing from docs/perf/profiling.md
+  test-perf-compile-errors     Check that an invalid budget registry fails to compile
+  fmt-check                    Fail if any file is not zig fmt clean
+  cross                        Build both apps for every tier-1 target into zig-out/cross/<triple>/
+  docs                         Emit autodocs into zig-out/docs/<package>

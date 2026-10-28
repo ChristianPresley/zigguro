@@ -1,0 +1,43 @@
+// A workspace task file: a default build, a test run in sequence after
+// it, a shell task with an inline matcher and an unknown field.
+.{
+    .version = 1,
+    .tasks = .{
+        .{
+            .label = "build release",
+            .command = "zig",
+            .args = .{ "build", "-Doptimize=ReleaseFast" },
+            .group = .{ .kind = .build, .is_default = true },
+            .problem_matcher = "$zig",
+            .presentation = .{ .reveal = .silent, .reveal_problems = .on_problem },
+        },
+        .{
+            .label = "test all",
+            .command = "zig",
+            .args = .{ "build", "test", "--summary", "all" },
+            .group = .{ .kind = .@"test" },
+            .depends_on = .{"build release"},
+            .depends_order = .sequence,
+            .problem_matcher = "$zig",
+            .tags = .{"ci"},
+        },
+        .{
+            .label = "lint docs",
+            .type = .shell,
+            .command = "./tools/lint-docs.sh ${workspaceFolder}/docs",
+            .cwd = "${workspaceFolder}",
+            .env = .{.{ "LINT_STRICT", "1" }},
+            .problem_matchers = .{
+                .{ .inline_def = .{
+                    .owner = "lint-docs",
+                    .file_location = .{ .relative = "${workspaceFolder}" },
+                    .severity = .warning,
+                    .patterns = .{
+                        .{ .regexp = "^(.+):(\\d+): (.*)$", .file = 1, .line = 2, .message = 3 },
+                    },
+                } },
+            },
+            .future_field = "ignored",
+        },
+    },
+}

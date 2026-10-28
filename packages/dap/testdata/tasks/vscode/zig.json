@@ -1,0 +1,29 @@
+{
+    // A Zig project's tasks, as people write them for VS Code.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "zig build",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$zig"],
+        },
+        {
+            "label": "test",
+            "type": "process",
+            "command": "zig",
+            "args": ["build", "test"],
+            "group": "test",
+            "problemMatcher": "$zig",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+        },
+        {
+            "label": "run",
+            "type": "shell",
+            "command": "zig build run -- ${input:args}",
+            "dependsOn": "build",
+            "problemMatcher": [],
+        },
+    ],
+}

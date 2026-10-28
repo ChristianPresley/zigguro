@@ -1,0 +1,33 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "build",
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "webpack --mode production"
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch"
+    },
+    {
+      "label": "tsc",
+      "type": "shell",
+      "command": "npx tsc -p . --pretty false",
+      "problemMatcher": "$tsc",
+      "group": { "kind": "build", "isDefault": "**/*.ts" }
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "npx eslint src",
+      "problemMatcher": "$eslint-stylish",
+      "runOptions": { "runOn": "folderOpen" }
+    }
+  ]
+}

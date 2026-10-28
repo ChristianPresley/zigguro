@@ -16,8 +16,12 @@ pub const conn = struct {
     pub const message = @import("conn/message.zig");
 };
 
-/// Tasks (E07.F08): problem matchers.
+/// Tasks (E07.F08): the task model and its sources, problem matchers.
 pub const tasks = struct {
+    pub const Task = @import("tasks/Task.zig");
+    pub const TaskList = @import("tasks/TaskList.zig");
+    pub const zig_build = @import("tasks/sources/zig_build.zig");
+    pub const jsonc = @import("tasks/sources/jsonc.zig");
     pub const matcher = @import("tasks/matcher/ProblemMatcher.zig");
     pub const ansi = @import("tasks/matcher/ansi_strip.zig");
 };
@@ -29,4 +33,5 @@ test {
     _ = @import("testing/fake_adapter_test.zig");
     _ = @import("conn/conn_test.zig");
     _ = @import("tasks/matcher/matcher_test.zig");
+    _ = @import("tasks/task_sources_test.zig");
 }

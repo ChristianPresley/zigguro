@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    // Every task inherits these, Windows changes the shell and the env.
+    "options": { "env": { "MODE": "dev", "COLOR": "1" } },
+    "presentation": { "echo": false },
+    "windows": {
+        "options": { "shell": { "executable": "pwsh.exe", "args": ["-NoProfile", "-Command"] }, "env": { "MODE": "win" } }
+    },
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "./build.sh",
+            "args": ["--fast", { "value": "a b", "quoting": "strong" }],
+            "windows": { "command": ".\\build.ps1" },
+            "osx": { "command": "./build-mac.sh" },
+            "presentation": { "focus": true },
+            "problemMatcher": [
+                "$gcc",
+                {
+                    "owner": "custom",
+                    "severity": "warning",
+                    "fileLocation": "absolute",
+                    "pattern": { "regexp": "^W (.+)@(\\d+),(\\d+): (.*)$", "file": 1, "line": 2, "column": 3, "message": 4 }
+                }
+            ]
+        },
+        {
+            "label": "all",
+            "dependsOn": ["build", "lint"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "broken",
+            "type": "shell",
+            "command": "x",
+            "problemMatcher": [
+                "$nope",
+                { "owner": "half", "pattern": { "regexp": "^(.*)$", "message": 1 } }
+            ]
+        }
+    ]
+}
