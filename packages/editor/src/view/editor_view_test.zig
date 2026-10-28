@@ -155,6 +155,7 @@ test "view: pointer hook hears moves, leaves, Ctrl+clicks, keys and typing" {
                 .click, .key => h.last = e,
                 .text => return std.mem.eql(u8, e.text, "q"),
                 .typed => h.typed_at = e.offset,
+                .block => {},
             }
             if (e.kind == .move) h.last = e;
             return e.kind == .click or (e.kind == .key and e.key.?.key == .escape);
@@ -719,6 +720,30 @@ test "view: block decorations take rows, follow edits and give their slot" {
     try f.clickAt(4, 1, 1, no_mods);
     try testing.expectEqual(@as(u64, 9), f.head());
     try testing.expectEqual(@as(u64, 1), f.view.lineAtY(2.5 * lh));
+    // A click on the bar goes to the pointer hook, with the block and
+    // the x inside it; taken, it leaves the caret.
+    const Hook = struct {
+        got: ?view_mod.PointerEvent = null,
+        fn on(ctx: *anyopaque, _: *EditorView, e: view_mod.PointerEvent) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            if (e.kind != .block) return false;
+            h.got = e;
+            return true;
+        }
+    };
+    var hook: Hook = .{};
+    f.view.pointer_hook = .{ .ctx = &hook, .f = Hook.on };
+    try f.clickAt(2, 3, 1, no_mods);
+    try testing.expectEqual(@as(u64, 9), f.head());
+    try testing.expectEqual(@as(u64, 7), hook.got.?.block.?.payload);
+    try testing.expect(hook.got.?.block_x > 0);
+    f.view.pointer_hook = null;
+    // An owner's own painter wins over the view's.
+    var own: BlockLog = .{};
+    try testing.expect(f.view.setOwnerPainter(bar, .{ .ctx = &own, .paint = BlockLog.paint }));
+    try testing.expect(f.view.painterFor(bar).?.ctx == @as(?*anyopaque, &own));
+    try testing.expect(f.view.setOwnerPainter(bar, null));
+    try testing.expect(f.view.painterFor(bar).?.ctx == @as(?*anyopaque, &log));
     // Typing above moves the bar with its line.
     f.view.setSelection(.caret(0));
     f.t.typeText("zero\n");

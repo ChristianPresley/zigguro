@@ -81,6 +81,12 @@ const SignatureService = zg_codeintel.features.SignatureService;
 const FormatService = zg_codeintel.features.FormatService;
 pub const SaveActions = zg_codeintel.features.SaveActions;
 pub const FileOpHooks = zg_codeintel.features.FileOpHooks;
+const OutlineProvider = zg_codeintel.features.OutlineProvider;
+const WorkspaceSymbols = zg_codeintel.features.WorkspaceSymbols;
+const LinkedEditingService = zg_codeintel.features.LinkedEditingService;
+pub const HierarchyService = zg_codeintel.features.HierarchyService;
+pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
+pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
 const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
@@ -111,8 +117,8 @@ pub const CodeIntel = struct {
     lsp_tools: LspTools = undefined,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
-    /// A wake call is in the mailbox.
-    wake_posted: std.atomic.Value(bool) = .init(false),
+    /// What wakes post (it outlives `destroy` while a wake is queued).
+    wake_box: *WakeBox = undefined,
     timer: Window.TimerId = .none,
     /// The editor last reported visible.
     shown: ?DocHandle = null,
@@ -122,6 +128,8 @@ pub const CodeIntel = struct {
     popup: HoverPopup,
     /// Where the pointer rests: a hover is asked at `due_ms`.
     rest: ?struct { h: DocHandle, view: *EditorView, offset: u64, origin: Vec2, due_ms: u64 } = null,
+    /// The inlay hint under the pointer (its tooltip shows).
+    inlay_hover: ?struct { h: DocHandle, id: u64, view: *EditorView, origin: Vec2, shown: bool = false } = null,
     /// The editor and text origin the hover asked or shown is placed by.
     hover_at: ?struct { view: *EditorView, origin: Vec2 } = null,
     hover_seen: u64 = 0,
@@ -166,6 +174,21 @@ pub const CodeIntel = struct {
     save_actions: SaveActions = undefined,
     file_hooks: FileOpHooks = undefined,
     prefs: ?Prefs = null,
+    /// Document outlines and workspace symbols, and their pickers.
+    outline: OutlineProvider = undefined,
+    ws_symbols: WorkspaceSymbols = undefined,
+    pickers: SymbolPickers = undefined,
+    /// Inlay hints and code lenses.
+    inline_info: InlineInfo = undefined,
+    /// Linked editing (`editor.linkedEditing`): the session's editor and
+    /// decorations.
+    linked: LinkedEditingService = undefined,
+    linked_seen: u64 = 0,
+    linked_view: ?*EditorView = null,
+    linked_deco: ?*DecorationStore = null,
+    linked_owner: zg_editor.model.decorations.store.OwnerId = undefined,
+    /// Call and type hierarchies (the Hierarchy panel's tree).
+    hierarchy: HierarchyService = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -211,6 +234,9 @@ pub const CodeIntel = struct {
         const gpa = rt.gpa;
         const ci = try gpa.create(CodeIntel);
         errdefer gpa.destroy(ci);
+        const box = try gpa.create(WakeBox);
+        errdefer gpa.destroy(box);
+        box.* = .{ .ci = ci, .gpa = gpa };
         ci.* = .{
             .gpa = gpa,
             .app = app,
@@ -225,6 +251,7 @@ pub const CodeIntel = struct {
             .snippets = .init(gpa),
             .cpopup = .init(gpa),
             .spopup = .init(gpa),
+            .wake_box = box,
         };
         ci.cpopup.on_pick = .{ .ctx = ci, .f = onPick };
         errdefer ci.diags.deinit();
@@ -257,6 +284,14 @@ pub const CodeIntel = struct {
         ci.save_actions = .init(&ci.mgr, &ci.engine, &ci.refactor.commands);
         ci.save_actions.options = ci.format.options;
         ci.file_hooks = .init(&ci.mgr, &ci.engine);
+        ci.outline = .init(&ci.mgr, ci.waker(), .{});
+        ci.outline.structure = .{ .ctx = ci, .f = structureOf };
+        ci.ws_symbols = .init(&ci.mgr, ci.waker(), .{});
+        ci.pickers = .init(gpa, &ci.outline, &ci.ws_symbols);
+        try ci.outline.subscribe(.{ .ctx = ci, .f = onOutline });
+        try ci.inline_info.init(gpa, &ci.mgr, ci.waker(), style.inlay);
+        ci.linked = .init(&ci.mgr, ci.waker(), .{});
+        ci.hierarchy = .init(&ci.mgr, ci.waker());
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -270,7 +305,10 @@ pub const CodeIntel = struct {
             ci.unhook(f.view);
         }
         ci.clearHighlights();
+        ci.clearLinked();
         ci.refactor.close();
+        ci.pickers.deinit();
+        ci.inline_info.release();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -280,6 +318,11 @@ pub const CodeIntel = struct {
         ci.format.deinit();
         ci.save_actions.deinit();
         ci.file_hooks.deinit();
+        ci.outline.deinit();
+        ci.ws_symbols.deinit();
+        ci.inline_info.deinitServices();
+        ci.linked.deinit();
+        ci.hierarchy.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -294,6 +337,12 @@ pub const CodeIntel = struct {
         ci.files.deinit(ci.gpa);
         ci.names.deinit();
         ci.reg.deinit();
+        // No thread wakes any more (the servers are gone): a queued wake
+        // frees the box when it runs.
+        const box = ci.wake_box;
+        box.app = ci.app;
+        box.ci = null;
+        if (!box.posted.load(.acquire)) ci.gpa.destroy(box);
         ci.gpa.destroy(ci);
     }
 
@@ -359,6 +408,10 @@ pub const CodeIntel = struct {
         /// The code action lightbulb, and with a preferred fix.
         pub const bulb: StyleRef = @enumFromInt(0x0702_0009);
         pub const bulb_preferred: StyleRef = @enumFromInt(0x0702_000a);
+        /// Inlay hint text.
+        pub const inlay: StyleRef = @enumFromInt(0x0702_000b);
+        /// Ranges edited together (linked editing).
+        pub const linked: StyleRef = @enumFromInt(0x0702_000c);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -377,6 +430,8 @@ pub const CodeIntel = struct {
             style.write => th.color(.accent).fade(0.3),
             style.bulb => th.color(.fg_muted),
             style.bulb_preferred => th.color(.warning),
+            style.inlay => th.color(.fg_muted),
+            style.linked => th.color(.accent).fade(0.18),
             else => null,
         };
     }
@@ -420,6 +475,15 @@ pub const CodeIntel = struct {
             if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
             if (f.deco) |d| ci.refactor.forget(d);
             ci.save_actions.forget(h);
+            ci.outline.forget(h);
+            ci.inline_info.forget(h, f.view);
+            if (ci.linked_view == f.view) {
+                ci.linked.end();
+                ci.clearLinked();
+            }
+            if (ci.inlay_hover) |ih| if (ih.view == f.view) {
+                ci.inlay_hover = null;
+            };
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
             if (ci.comp_view == f.view) {
                 ci.closeCompletion();
@@ -455,6 +519,9 @@ pub const CodeIntel = struct {
         if (current) |h| {
             const vis = view.visibleLines();
             ci.semtok.onViewport(h, .{ .first = vis[0], .end = vis[1] + 1 });
+            if (ci.fileOf(h)) |f| if (f.view == view and f.attached) if (f.deco) |d| {
+                ci.inline_info.viewport(h, view, d, vis[0], vis[1] + 1, ci.nowMs());
+            };
         }
         const sel = view.primarySel();
         ci.highlight.onCursor(if (ci.fileOf(current)) |f| if (f.view == view and sel.anchor == sel.head) f.h else null else null, sel.head);
@@ -462,6 +529,9 @@ pub const CodeIntel = struct {
         if (ci.fileOf(current)) |f| if (f.view == view and f.attached) {
             const r = sel.range();
             ci.refactor.caret(f.h, .{ .start = r.start, .end = r.end }, f.doc.version, ci.nowMs());
+            if (sel.isCaret()) ci.linked.onCursor(f.h, sel.head, ci.nowMs()) else ci.linked.end();
+            // Edits since may have ended the session.
+            _ = ci.linked.active(f.h);
         };
         // A shown hover goes with an edit, and a keyboard hover when the
         // caret leaves its word.
@@ -520,14 +590,30 @@ pub const CodeIntel = struct {
         const f = ci.fileOfView(v) orelse return false;
         if (!ci.trusted or !f.attached) return false;
         switch (e.kind) {
-            .move => ci.pointerAt(f, e),
+            .move => {
+                ci.inline_info.modifiers(e.mods.ctrl, e.mods.alt);
+                if (ci.inlayHover(f, e)) return false;
+                if (ci.inlay_hover != null) {
+                    ci.inlay_hover = null;
+                    if (ci.hover.current() == null) ci.popup.hide();
+                }
+                ci.pointerAt(f, e);
+            },
+            .block => {
+                const b = e.block orelse return false;
+                if (!ci.inline_info.click(v, b, e.block_x, &ci.refactor.commands)) return false;
+                ci.tick();
+                return true;
+            },
             .leave => {
                 ci.rest = null;
+                ci.inlay_hover = null;
                 if (ci.hover.current() != null and ci.hover.current().?.source == .mouse) ci.hide_due_ms = ci.nowMs() + hide_grace_ms;
                 ci.tick();
             },
             .click => {
                 const off = e.offset orelse return false;
+                if (ci.inlayClick(f, off)) return true;
                 if (!ci.nav.available(.definition, f.h)) return false;
                 ci.hideHover();
                 _ = ci.goTo(.definition, f.h, off, false) catch return false;
@@ -540,7 +626,16 @@ pub const CodeIntel = struct {
             },
             .key => {
                 const k = e.key orelse return false;
+                const ctrl_key = k.key == .control_left or k.key == .control_right;
+                const alt_key = k.key == .alt_left or k.key == .alt_right;
+                ci.inline_info.modifiers(k.mods.ctrl or ctrl_key, k.mods.alt or alt_key);
+                if (ci.inline_info.tick(ci.nowMs())) if (ci.win) |w| w.markAllDirty();
                 if (isModifier(k.key)) return false;
+                if (k.key == .escape and ci.linked_view == v) {
+                    ci.linked.end();
+                    ci.tick();
+                    return true;
+                }
                 ci.comp_origin = e.origin;
                 if (ci.completionKey(f, k)) return true;
                 const showing = ci.popup.isOpen() or ci.hover.pending != null or ci.rest != null;
@@ -550,6 +645,51 @@ pub const CodeIntel = struct {
             },
         }
         return false;
+    }
+
+    /// The pointer over an inlay hint: its tooltip shows (resolved
+    /// first); true when it is over one.
+    fn inlayHover(ci: *CodeIntel, f: *File, e: PointerEvent) bool {
+        const off = e.offset orelse return false;
+        const hint = ci.inline_info.hintNear(f.h, off) orelse return false;
+        ci.rest = null;
+        if (ci.inlay_hover) |ih| if (ih.id == hint.id) return true;
+        if (hint.raw != null) ci.inline_info.inlay.resolve(f.h, hint.id) catch {};
+        ci.inlay_hover = .{ .h = f.h, .id = hint.id, .view = f.view, .origin = e.origin };
+        ci.showInlayTooltip();
+        ci.tick();
+        return true;
+    }
+
+    fn showInlayTooltip(ci: *CodeIntel) void {
+        if (ci.inlay_hover == null) return;
+        const ih = &ci.inlay_hover.?;
+        if (ih.shown) return;
+        const hint = for (ci.inline_info.inlay.hints(ih.h)) |*x| {
+            if (x.id == ih.id) break x;
+        } else return;
+        const tip = hint.tooltip orelse for (hint.parts) |p| {
+            if (p.tooltip) |t| break t;
+        } else return;
+        const p0 = ih.view.posOf(hint.offset);
+        ci.popup.win = ci.win;
+        ci.popup.show(tip, .{ .x = ih.origin.x + p0.x, .y = ih.origin.y + p0.y, .w = 8, .h = ih.view.lineHeight() }) catch return;
+        ih.shown = true;
+    }
+
+    /// Ctrl+click on an inlay hint part with a location goes there.
+    fn inlayClick(ci: *CodeIntel, f: *File, off: u64) bool {
+        const hint = ci.inline_info.hintNear(f.h, off) orelse return false;
+        const loc = for (hint.parts) |p| {
+            if (p.location) |l| break l;
+        } else return false;
+        const host = ci.pickers.host orelse return false;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        const path = zg_codeintel.protocol_uri.pathFromUri(fba.allocator(), loc.uri) catch null;
+        ci.hideHover();
+        host.to(host.ctx, .{ .uri = loc.uri, .path = path, .selection = loc.range, .range = loc.range, .enc = loc.enc });
+        return true;
     }
 
     fn isModifier(k: @FieldType(zg_gui.input.event.KeyPress, "key")) bool {
@@ -684,6 +824,32 @@ pub const CodeIntel = struct {
     fn formatOptions(ctx: *anyopaque, h: DocHandle) zg_codeintel.protocol.FormattingOptions {
         const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
         return if (ci.prefs) |p| p.options(p.ctx, h) else FormatService.default_options;
+    }
+
+    fn structureOf(ctx: *anyopaque, h: DocHandle, gpa: Allocator) ?zg_syntax.Structure {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const f = ci.fileOf(h) orelse return null;
+        if (f.syntax.version != f.doc.version) return null;
+        return f.syntax.fallbackStructure(gpa, &f.doc.tree) catch null;
+    }
+
+    fn onOutline(ctx: *anyopaque, h: DocHandle) void {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        ci.pickers.outlineChanged(h);
+    }
+
+    /// `quickOpen.symbolsInFile` over `view` showing `h`.
+    pub fn symbolsInFile(ci: *CodeIntel, view: *EditorView, h: DocHandle) !void {
+        const w = ci.win orelse return;
+        try ci.pickers.openDocument(w, view, h, ci.nowMs());
+        ci.tick();
+    }
+
+    /// `quickOpen.symbols`.
+    pub fn symbolsInWorkspace(ci: *CodeIntel) !void {
+        const w = ci.win orelse return;
+        ci.pickers.now_ms = ci.nowMs();
+        try ci.pickers.openWorkspace(w);
     }
 
     /// `editor.formatDocument`.
@@ -912,6 +1078,21 @@ pub const CodeIntel = struct {
         return n;
     }
 
+    /// Starts a hierarchy for the symbol at byte `offset` of `h`, listing
+    /// `dir`. Returns the servers asked (0: none provides it).
+    pub fn showHierarchy(ci: *CodeIntel, h: DocHandle, offset: u64, dir: HierarchyService.Direction) !u8 {
+        const f = ci.fileOf(h) orelse return 0;
+        if (!ci.trusted or !f.attached) return 0;
+        const kind: HierarchyService.Kind = switch (dir) {
+            .incoming, .outgoing => .calls,
+            .supertypes, .subtypes => .types,
+        };
+        if (!ci.hierarchy.available(kind, h)) return 0;
+        const n = try ci.hierarchy.prepare(h, offset, dir);
+        ci.tick();
+        return n;
+    }
+
     /// Puts the highlights for the caret's document into its editor's
     /// decorations.
     fn applyHighlights(ci: *CodeIntel) void {
@@ -937,6 +1118,45 @@ pub const CodeIntel = struct {
             list.appendAssumeCapacity(.{ .range = m.range, .owner = ci.hl_owner, .kind = .{ .overview = .{ .lane = 1, .style = st } } });
         }
         d.setOwnerDecorations(ci.hl_owner, ci.highlight.marks_version, list.items) catch {};
+    }
+
+    /// A linked editing session started or ended: a caret in every range
+    /// (the primary's column), drawn with `style.linked`; ending leaves
+    /// the primary caret.
+    fn applyLinked(ci: *CodeIntel) void {
+        ci.linked_seen = ci.linked.generation;
+        const ses = ci.linked.session orelse {
+            if (ci.linked_view) |v| if (v.sels.items.items.len > 1) v.setSelection(.caret(v.primarySel().head));
+            return ci.clearLinked();
+        };
+        const f = ci.fileOf(ses.h) orelse return ci.clearLinked();
+        const rs = ci.linked.active(ses.h) orelse return ci.clearLinked();
+        const p = ci.linked.primary();
+        const head = f.view.primarySel().head;
+        const col = head -| rs[p].start;
+        var sels: std.ArrayList(zg_editor.model.edit.selection.Selection) = .empty;
+        defer sels.deinit(ci.gpa);
+        for (rs) |r| sels.append(ci.gpa, .caret(@min(r.start + col, r.end))) catch return;
+        f.view.setSelections(sels.items, p) catch return;
+        ci.linked_view = f.view;
+        const d = f.deco orelse return;
+        if (ci.linked_deco != null and ci.linked_deco != d) ci.clearLinked();
+        ci.linked_view = f.view;
+        if (ci.linked_deco == null) {
+            ci.linked_owner = d.ownerByName("lsp.linked") orelse d.registerOwner("lsp.linked", -5) catch return;
+            ci.linked_deco = d;
+        }
+        var list: std.ArrayList(zg_editor.model.decorations.store.Decoration) = .empty;
+        defer list.deinit(ci.gpa);
+        for (rs) |r| list.append(ci.gpa, .{ .range = .{ .start = r.start, .end = r.end }, .owner = ci.linked_owner, .stick = .grow_both, .kind = .{ .highlight = style.linked } }) catch return;
+        d.setOwnerDecorations(ci.linked_owner, f.doc.version, list.items) catch {};
+    }
+
+    fn clearLinked(ci: *CodeIntel) void {
+        ci.linked_view = null;
+        const d = ci.linked_deco orelse return;
+        d.clearOwner(ci.linked_owner);
+        ci.linked_deco = null;
     }
 
     fn clearHighlights(ci: *CodeIntel) void {
@@ -968,6 +1188,20 @@ pub const CodeIntel = struct {
         if (ci.signature.tick() or ci.signature.generation != ci.sig_seen) ci.showSignature();
         ci.refactor.win = ci.win;
         const refactor_due = ci.refactor.tick(now_ms);
+        if (ci.outline.tick(now_ms)) changed = true;
+        if (ci.linked.tick(now_ms) or ci.linked.generation != ci.linked_seen) {
+            ci.applyLinked();
+            changed = true;
+        }
+        if (ci.inline_info.tick(now_ms)) {
+            changed = true;
+            ci.showInlayTooltip();
+        }
+        _ = ci.ws_symbols.tick(now_ms);
+        // The Hierarchy panel follows the service when it builds.
+        if (ci.hierarchy.tick()) changed = true;
+        ci.pickers.win = ci.win;
+        ci.pickers.tick(now_ms);
         if (ci.format.tick()) {
             if (ci.format.failure.items.len > 0) ci.refactor.say(false, "{s}", .{ci.format.failure.items});
             changed = true;
@@ -985,11 +1219,11 @@ pub const CodeIntel = struct {
         // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         var wait: ?u64 = null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue() }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue() }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
-        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due }) |due| if (due) |d| {
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue(), ci.inline_info.nextDue(), ci.linked.nextDue() }) |due| if (due) |d| {
             const ms = @max(1, d -| now_ms);
             wait = if (wait) |x| @min(x, ms) else ms;
         };
@@ -1003,25 +1237,38 @@ pub const CodeIntel = struct {
         ci.tick();
     }
 
+    /// The target of posted wakes: `destroy` clears `ci`, and a wake
+    /// still queued then frees the box when it runs.
+    const WakeBox = struct {
+        ci: ?*CodeIntel,
+        gpa: Allocator,
+        app: ?*zg_gui.App = null,
+        /// A wake call is in the mailbox.
+        posted: std.atomic.Value(bool) = .init(false),
+    };
+
     fn waker(ci: *CodeIntel) zg_core.runtime.Waker {
-        return .{ .ctx = ci, .wakeFn = wake };
+        return .{ .ctx = ci.wake_box, .wakeFn = wake };
     }
 
     /// Any thread: a server answered; tick on the UI thread.
     fn wake(ctx: ?*anyopaque) void {
-        const ci: *CodeIntel = @ptrCast(@alignCast(ctx.?));
-        if (ci.wake_posted.swap(true, .acq_rel)) return;
-        ci.app.post(.{ .ctx = ci, .f = onWake }) catch ci.wake_posted.store(false, .release);
+        const box: *WakeBox = @ptrCast(@alignCast(ctx.?));
+        if (box.posted.swap(true, .acq_rel)) return;
+        const app = box.app orelse (box.ci orelse return).app;
+        app.post(.{ .ctx = box, .f = onWake }) catch box.posted.store(false, .release);
     }
 
     fn onWake(ctx: *anyopaque, _: *zg_gui.App) void {
-        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
-        ci.wake_posted.store(false, .release);
+        const box: *WakeBox = @ptrCast(@alignCast(ctx));
+        box.posted.store(false, .release);
+        const ci = box.ci orelse return box.gpa.destroy(box);
         if (ci.trusted) ci.tick();
     }
 
     fn onDocChange(ctx: *anyopaque, _: *const zg_editor.model.document.ChangeEvent) void {
-        wake(ctx);
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        wake(ci.wake_box);
     }
 
     fn syntaxOf(ctx: *anyopaque, h: DocHandle) ?*DocumentSyntax {

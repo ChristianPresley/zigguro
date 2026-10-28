@@ -38,10 +38,13 @@ test {
     _ = @import("explorer/fs_tree.zig");
     _ = @import("explorer/panel.zig");
     _ = @import("problems_panel.zig");
+    _ = @import("hierarchy_panel.zig");
     _ = @import("notes/service.zig");
     _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");
     _ = @import("refactor_ui.zig");
+    _ = @import("lens_ui.zig");
+    _ = @import("symbol_pickers.zig");
     _ = @import("scm/git.zig");
     _ = @import("scm/panel.zig");
     _ = @import("completion_popup.zig");

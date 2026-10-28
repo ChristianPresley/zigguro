@@ -387,3 +387,66 @@ test "quick pick left open is freed with its window" {
     _ = f.t.frame();
     f.deinit();
 }
+
+test "a static provider hears the query, refreshes its items, and previews the active row until closed" {
+    const Live = struct {
+        h: Harness = .{},
+        list: [2]QpItem = undefined,
+        n: usize = 0,
+        last_q: [16]u8 = undefined,
+        q_len: usize = 0,
+        previews: [8]?u64 = undefined,
+        p_n: usize = 0,
+
+        fn items(ptr: ?*anyopaque) []const QpItem {
+            const l: *@This() = @ptrCast(@alignCast(ptr.?));
+            return l.list[0..l.n];
+        }
+        fn queryChanged(ptr: ?*anyopaque, q: []const u8) void {
+            const l: *@This() = @ptrCast(@alignCast(ptr.?));
+            l.q_len = @min(q.len, 16);
+            @memcpy(l.last_q[0..l.q_len], q[0..l.q_len]);
+        }
+        fn active(ptr: ?*anyopaque, it: ?QpItem) void {
+            const l: *@This() = @ptrCast(@alignCast(ptr.?));
+            if (l.p_n < 8) l.previews[l.p_n] = if (it) |x| x.id else null;
+            l.p_n += 1;
+        }
+        fn accept(ptr: ?*anyopaque, sel: []const QpItem, free: ?[]const u8, alt: bool) void {
+            const l: *@This() = @ptrCast(@alignCast(ptr.?));
+            Harness.accept(&l.h, sel, free, alt);
+        }
+        const vt: Provider.VTable = .{ .items = items, .query_changed = queryChanged, .active = active, .accept = accept };
+    };
+    var page: Page = .{};
+    const t = try TestApp.init(std.testing.allocator, .{ .root = .of(&page), .size = .{ .w = 800, .h = 600 } });
+    defer t.deinit();
+    var live: Live = .{};
+    const provs = [_]Provider{.{ .ptr = &live, .vtable = &Live.vt }};
+    var h = try qp_mod.openQuickPick(t.win, .{ .providers = &provs });
+    _ = t.settle();
+    t.typeText("ma");
+    try expectEqualStrings("ma", live.last_q[0..live.q_len]);
+    try expectEqual(@as(usize, 0), h.qp.?.results.items.len);
+    // Results arrive later: a refresh shows them, scored for the text.
+    live.list = .{ .{ .id = 7, .label = "main" }, .{ .id = 8, .label = "map" } };
+    live.n = 2;
+    h.refresh(t.win);
+    _ = t.settle();
+    try expectEqual(@as(usize, 2), h.qp.?.results.items.len);
+    try expectEqual(@as(?u64, h.qp.?.results.items[0].id), live.previews[0]);
+    t.press(.arrow_down, .{});
+    try expectEqual(@as(usize, 2), live.p_n);
+    try expectEqual(@as(?u64, h.qp.?.results.items[1].id), live.previews[1]);
+    // Escape: a null preview restores.
+    t.press(.escape, .{});
+    try expectEqual(@as(usize, 3), live.p_n);
+    try expect(live.previews[2] == null);
+    // An accepted pick sends no restore.
+    h = try qp_mod.openQuickPick(t.win, .{ .providers = &provs });
+    _ = t.settle();
+    const before = live.p_n;
+    t.press(.enter, .{});
+    try expectEqual(@as(u32, 1), live.h.accepts);
+    try expectEqual(before, live.p_n);
+}

@@ -9,7 +9,7 @@
 //! Remotes go over HTTPS (zg_net, credential helpers), SSH (zg_git's
 //! client, keys, agent and known_hosts) or the file system. Commits are
 //! signed when `commit.gpgSign` asks for it (SSH keys). Not built in
-//! yet: bisect and submodule add/update/sync; they report so.
+//! yet: `bisect run` and `submodule foreach`; they report so.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -654,6 +654,18 @@ fn describe(e: anyerror) []const u8 {
         error.SigningKeyMissing => "error: commit.gpgSign is on but user.signingKey is not set or not found",
         error.PassphraseRequired => "error: the signing key needs a passphrase; add it to ssh-agent",
         error.NothingToMerge => "fatal: no remote branch to merge",
+        error.NotBisecting => "error: We are not bisecting.",
+        error.OneBadCommit => "error: 'git bisect bad' can take only one argument.",
+        error.BothGoodAndBad => "error: a commit was marked both good and bad",
+        error.MergeBaseIsBad => "error: the merge base is bad: the change was undone between the bad commit and the good ones",
+        error.GoodNotAncestorOfBad => "error: some good commits are not ancestors of the bad one; maybe good and bad are swapped?",
+        error.InvalidTerm => "error: not a valid bisect term",
+        error.NoSuchSubmodule => "error: no submodule mapping found in .gitmodules for that path",
+        error.AlreadyInIndex => "fatal: that path already exists in the index",
+        error.ModuleDirExists => "fatal: a git directory for that submodule is already there; use --name to choose another",
+        error.LocalModifications => "fatal: the submodule has local modifications; use -f to discard them",
+        error.MissingPath => "fatal: say which submodule path",
+        error.NoUrl => "fatal: the submodule has no url in .gitmodules",
         error.Unsupported => "this git command is not built into zigguro yet",
         else => @errorName(e),
     };
@@ -735,10 +747,6 @@ fn command(g: *const Git, a: Allocator, words_in: []const []const u8, out: *Io.W
     const rest = words[1..];
     if (std.mem.eql(u8, cmd, "init")) return cmdInit(g, a, rest, out);
     if (std.mem.eql(u8, cmd, "clone")) return cmdClone(g, a, rest, out);
-    if (std.mem.eql(u8, cmd, "bisect") or std.mem.eql(u8, cmd, "submodule") and !(rest.len > 0 and std.mem.eql(u8, rest[0], "status"))) {
-        try err.print("git {s}: not built into zigguro yet\n", .{cmd});
-        return 1;
-    }
 
     const repo = try g.open();
     defer repo.close();
@@ -768,6 +776,7 @@ fn command(g: *const Git, a: Allocator, words_in: []const []const u8, out: *Io.W
         .{ "pull", cmdPull },
         .{ "push", cmdPush },
         .{ "submodule", cmdSubmodule },
+        .{ "bisect", cmdBisect },
     };
     for (table) |t| if (std.mem.eql(u8, t[0], cmd)) {
         // `revert` and `cherry-pick` share one function: pass the name.
@@ -1683,16 +1692,107 @@ fn cmdPick(g: *const Git, repo: *Repository, a: Allocator, words: []const []cons
     return 0;
 }
 
-fn cmdSubmodule(_: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, _: *Io.Writer) !u8 {
-    _ = rest;
-    var ix = try repo.readIndex();
-    defer ix.deinit();
-    var hb: [64]u8 = undefined;
-    for (ix.entries.items) |e| {
-        if (e.mode != 0o160000 or e.flags.stage != 0) continue;
-        const gitfile = try std.fs.path.join(a, &.{ e.path, ".git" });
-        const initialised = if (repo.work.statFile(repo.io, gitfile, .{})) |_| true else |_| false;
-        try out.print("{c}{s} {s}\n", .{ @as(u8, if (initialised) ' ' else '-'), e.oid.hex(&hb), e.path });
+fn cmdBisect(g: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const bisect = zg_git.bisect;
+    if (rest.len == 0) return error.Unsupported;
+    const sub = rest[0];
+    const args = rest[1..];
+    var next: bisect.Next = .waiting;
+    if (std.mem.eql(u8, sub, "start")) {
+        var t: bisect.Terms = .{};
+        var revs: std.ArrayList([]const u8) = .empty;
+        for (args) |w| {
+            if (std.mem.startsWith(u8, w, "--term-new=") or std.mem.startsWith(u8, w, "--term-bad=")) {
+                t.bad = w[11..];
+            } else if (std.mem.startsWith(u8, w, "--term-old=") or std.mem.startsWith(u8, w, "--term-good=")) {
+                t.good = w[std.mem.indexOfScalar(u8, w, '=').? + 1 ..];
+            } else if (std.mem.eql(u8, w, "--")) {
+                break;
+            } else if (std.mem.startsWith(u8, w, "-")) {
+                try err.print("git bisect start {s}: not built into zigguro yet\n", .{w});
+                return 1;
+            } else try revs.append(a, w);
+        }
+        next = try bisect.start(repo, g.gpa, .{
+            .bad = if (revs.items.len > 0) revs.items[0] else null,
+            .goods = if (revs.items.len > 1) revs.items[1..] else &.{},
+            .terms = t,
+            .tz_offset_min = g.tz_offset_min,
+        }, out);
+    } else if (std.mem.eql(u8, sub, "reset")) {
+        try bisect.reset(repo, g.gpa, if (args.len > 0) args[0] else null, g.tz_offset_min, null);
+        return 0;
+    } else if (std.mem.eql(u8, sub, "log")) {
+        const l = try bisect.readLog(repo, a);
+        try out.writeAll(l);
+        return 0;
+    } else if (std.mem.eql(u8, sub, "terms")) {
+        if (!bisect.inProgress(repo)) return error.NotBisecting;
+        const t = try bisect.terms(repo, a);
+        try out.print("Your current terms are {s} for the old state\nand {s} for the new state.\n", .{ t.good, t.bad });
+        return 0;
+    } else if (std.mem.eql(u8, sub, "skip")) {
+        next = try bisect.mark(repo, g.gpa, .skip, args, g.tz_offset_min, out);
+    } else {
+        if (!bisect.inProgress(repo)) return error.NotBisecting;
+        const t = try bisect.terms(repo, a);
+        const default_terms = std.mem.eql(u8, t.bad, "bad") and std.mem.eql(u8, t.good, "good");
+        const m: bisect.Mark = if (std.mem.eql(u8, sub, t.bad) or (default_terms and std.mem.eql(u8, sub, "new")))
+            .bad
+        else if (std.mem.eql(u8, sub, t.good) or (default_terms and std.mem.eql(u8, sub, "old")))
+            .good
+        else {
+            try err.print("git bisect {s}: not built into zigguro yet\n", .{sub});
+            return 1;
+        };
+        next = try bisect.mark(repo, g.gpa, m, args, g.tz_offset_min, out);
+    }
+    switch (next) {
+        // git shows the commit the way `git show --stat` does.
+        .found => |id| {
+            var hb: [64]u8 = undefined;
+            return cmdShow(g, repo, a, &.{ "--stat", id.hex(&hb) }, out, err);
+        },
+        .only_skipped => return 2,
+        else => return 0,
+    }
+}
+
+fn cmdSubmodule(g: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const sm = zg_git.submodule;
+    const sub = if (rest.len > 0 and !std.mem.startsWith(u8, rest[0], "-")) rest[0] else "status";
+    const args = try Args.parse(a, if (rest.len > 0 and !std.mem.startsWith(u8, rest[0], "-")) rest[1..] else rest, &.{ "-b", "--branch", "--name" });
+    const paths = try args.paths(a);
+    const common: sm.Options = .{ .env = &g.env, .tz_offset_min = g.tz_offset_min, .err = err };
+    var c: Connector = g.connector();
+    if (std.mem.eql(u8, sub, "status")) {
+        try sm.status(repo, a, out);
+    } else if (std.mem.eql(u8, sub, "add")) {
+        if (paths.len == 0) return error.MissingUrl;
+        try sm.add(repo, g.gpa, paths[0], if (paths.len > 1) paths[1] else null, c.get(), .{
+            .name = args.get("--name"),
+            .branch = args.get("-b") orelse args.get("--branch"),
+            .common = common,
+        });
+    } else if (std.mem.eql(u8, sub, "init")) {
+        try sm.initModules(repo, g.gpa, paths, common);
+    } else if (std.mem.eql(u8, sub, "update")) {
+        try sm.update(repo, g.gpa, paths, c.get(), .{ .init = args.has("--init"), .recursive = args.has("--recursive"), .common = common }, out);
+    } else if (std.mem.eql(u8, sub, "sync")) {
+        try sm.sync(repo, g.gpa, paths, common, out);
+    } else if (std.mem.eql(u8, sub, "deinit")) {
+        const all = args.has("--all");
+        if (paths.len == 0 and !all) return error.MissingPath;
+        var targets = paths;
+        if (all) {
+            var l: std.ArrayList([]const u8) = .empty;
+            for (try sm.list(repo, a)) |m| try l.append(a, m.path);
+            targets = l.items;
+        }
+        try sm.deinitModules(repo, g.gpa, targets, args.has("-f") or args.has("--force"), common, out);
+    } else {
+        try err.print("git submodule {s}: not built into zigguro yet\n", .{sub});
+        return 1;
     }
     return 0;
 }
@@ -1829,9 +1929,52 @@ test "git: a repository's status, commits, branches, tags and stash, natively" {
     defer bad.deinit(gpa);
     try testing.expect(!bad.ok());
     try testing.expect(bad.err.len > 0);
-    const unknown = try g.run(gpa, &.{ "bisect", "start" });
+    const unknown = try g.run(gpa, &.{ "bisect", "run", "make" });
     defer unknown.deinit(gpa);
     try testing.expect(!unknown.ok());
+}
+
+test "git: bisect finds the first bad commit" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var g = try testRepo(&tmp, &env);
+    defer g.deinit();
+    // c1..c6; the bug ("bad") arrives in c4.
+    for (1..7) |i| {
+        var buf: [16]u8 = undefined;
+        try tmp.dir.writeFile(io, .{ .sub_path = "f.txt", .data = if (i >= 4) "bad\n" else "good\n" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "n.txt", .data = try std.fmt.bufPrint(&buf, "{d}\n", .{i}) });
+        try expectRun(&g, &.{ "add", "-A" });
+        try expectRun(&g, &.{ "commit", "-q", "-m", try std.fmt.bufPrint(&buf, "c{d}", .{i}) });
+    }
+    try expectRun(&g, &.{ "bisect", "start", "HEAD", "HEAD~5" });
+    try testing.expectEqual(Op.bisect, g.operation());
+    var steps: usize = 0;
+    const found = while (steps < 10) : (steps += 1) {
+        const text = try tmp.dir.readFileAlloc(io, "f.txt", gpa, .limited(64));
+        defer gpa.free(text);
+        const r = try g.run(gpa, &.{ "bisect", if (std.mem.eql(u8, text, "bad\n")) "bad" else "good" });
+        defer r.deinit(gpa);
+        try testing.expect(r.ok());
+        if (std.mem.indexOf(u8, r.out, "is the first bad commit")) |_| {
+            try testing.expect(std.mem.indexOf(u8, r.out, "    c4\n") != null);
+            break true;
+        }
+    } else false;
+    try testing.expect(found);
+    const log = try g.run(gpa, &.{ "bisect", "log" });
+    defer log.deinit(gpa);
+    try testing.expect(std.mem.indexOf(u8, log.out, "# first bad commit: [") != null);
+    try expectRun(&g, &.{ "bisect", "reset" });
+    try testing.expectEqual(Op.none, g.operation());
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const st = try g.status(arena.allocator());
+    try testing.expectEqualStrings("main", st.branch.?);
 }
 
 test "git: clone, fetch, pull and push over a local remote" {
@@ -1874,4 +2017,50 @@ test "git: clone, fetch, pull and push over a local remote" {
     try expectRun(&c, &.{"pull"});
     const remotes = try c.remotes(a);
     try testing.expectEqual(@as(usize, 1), remotes.len);
+}
+
+test "git: submodules are added, updated, synced and removed natively" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var g = try testRepo(&tmp, &env);
+    defer g.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\n" });
+    try expectRun(&g, &.{ "add", "--", "a.txt" });
+    try expectRun(&g, &.{ "commit", "-m", "First" });
+
+    // A project next to it takes this repository as a submodule.
+    try expectRun(&g, &.{ "init", "-q", "app" });
+    const app_dir = try std.fs.path.join(gpa, &.{ g.root, "app" });
+    defer gpa.free(app_dir);
+    var p = try Git.init(gpa, io, null, &env, app_dir);
+    defer p.deinit();
+    try expectRun(&p, &.{ "submodule", "add", g.root, "deps/lib" });
+    try expectRun(&p, &.{ "commit", "-m", "Add lib" });
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const mods = try p.submodules(a);
+    try testing.expectEqual(@as(usize, 1), mods.len);
+    try testing.expectEqualStrings("deps/lib", mods[0].path);
+    _ = try tmp.dir.statFile(io, "app/deps/lib/a.txt", .{});
+
+    const st = try p.run(gpa, &.{ "submodule", "status" });
+    defer st.deinit(gpa);
+    try testing.expect(std.mem.startsWith(u8, st.out, " ") and std.mem.indexOf(u8, st.out, " deps/lib (heads/") != null);
+
+    try expectRun(&p, &.{ "submodule", "sync" });
+    try expectRun(&p, &.{ "submodule", "deinit", "deps/lib" });
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "app/deps/lib/a.txt", .{}));
+    const up = try p.run(gpa, &.{ "submodule", "update", "--init", "--recursive" });
+    defer up.deinit(gpa);
+    try testing.expect(up.ok());
+    try testing.expect(std.mem.indexOf(u8, up.out, "Submodule path 'deps/lib': checked out '") != null);
+    _ = try tmp.dir.statFile(io, "app/deps/lib/a.txt", .{});
+    const fe = try p.run(gpa, &.{ "submodule", "foreach", "ls" });
+    defer fe.deinit(gpa);
+    try testing.expect(!fe.ok());
 }

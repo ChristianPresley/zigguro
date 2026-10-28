@@ -274,6 +274,9 @@ pub fn valueMatches(comptime T: type, v: Value) bool {
             if (v != .object) return false;
             if (comptime isMap(T)) return true;
             inline for (s.fields) |f| {
+                // A field that is there must fit too (a bare-URI location
+                // is not a `Location`).
+                if (v.object.get(f.name)) |got| if (!valueMatches(f.type, got)) return false;
                 if (f.default_value_ptr == null) {
                     if (v.object.get(f.name) == null) return false;
                 } else if (comptime isLiteral(T, f.name)) {

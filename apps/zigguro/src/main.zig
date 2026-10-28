@@ -25,7 +25,8 @@
 //! `--trace=<path>` (with `--trace-format=perfetto|chrome`) records a
 //! performance trace until exit; `ZG_TRACE=startup` records startup to the
 //! first frame + 2 s (see `tracing.zig`). `--hud` opens the performance
-//! HUD (Ctrl+Alt+Shift+H, `perf.hud.toggle`).
+//! HUD (Ctrl+Alt+Shift+H, `perf.hud.toggle`). `--mem-report[=now]` and
+//! `--mem-report-exit` print the memory report (`perf.memory.report`).
 //!
 //! `--bench-scenario=latency` runs the typing-latency benchmark
 //! (`bench/latency.zig`, `zig build bench-latency`) and exits.
@@ -131,6 +132,11 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const want_review = hasFlag(min, rt.gpa, "--review");
     // `--hud` opens the performance HUD (perf.hud.toggle) at start.
     const want_hud = hasFlag(min, rt.gpa, "--hud");
+    // `--mem-report[=now]` prints the memory report once idle (or at
+    // once); `--mem-report-exit` then exits (E14.F04.S01.T02).
+    const mem_now = hasFlag(min, rt.gpa, "--mem-report=now");
+    const mem_exit = hasFlag(min, rt.gpa, "--mem-report-exit");
+    const want_mem = mem_now or mem_exit or hasFlag(min, rt.gpa, "--mem-report");
     const frames_arg = framesArg(min, rt.gpa);
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state_dir = zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf);
@@ -200,6 +206,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (want_agent and !wb.panelShown("agent")) try wb.toggleAgent();
         if (want_review and !wb.panelShown("review")) try wb.toggleReview();
         defer if (use_wb) wb.detach();
+        if (want_mem) tracing.armMemReport(mem_now, mem_exit);
         // `--frames N` exits after N presented frames (smoke tests,
         // screenshots); otherwise run until the window closes.
         const frames = frames_arg orelse {
@@ -248,6 +255,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     }
     _ = host.flush(5 * std.time.ns_per_s);
     try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
+    if (want_mem) tracing.writeMemReport(w) catch |e| std.log.err("memory report: {t}", .{e});
     if (stringArg(min, rt.gpa, "--screenshot")) |path| {
         defer rt.gpa.free(path);
         if (hl.lastFrame(hw.id)) |f| {

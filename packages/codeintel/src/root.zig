@@ -10,6 +10,8 @@ const std = @import("std");
 pub const uri = @import("zg_lsp").uri;
 /// The LSP protocol types.
 pub const protocol = @import("zg_lsp").protocol;
+/// `file:` URIs and paths.
+pub const protocol_uri = @import("zg_lsp").uri;
 
 /// Snippets: the VS Code grammar, variables, transforms and expansion.
 pub const snippet = struct {
@@ -53,6 +55,14 @@ pub const features = struct {
     pub const FormatService = @import("features/format.zig");
     pub const SaveActions = @import("features/save_actions.zig");
     pub const FileOpHooks = @import("features/file_ops.zig");
+    pub const OutlineProvider = @import("features/symbols.zig");
+    pub const WorkspaceSymbols = @import("features/workspace_symbols.zig");
+    pub const InlayService = @import("features/inlay.zig");
+    pub const CodeLensService = @import("features/codelens.zig");
+    pub const lens_commands = @import("features/lens_commands.zig");
+    pub const LinkedEditingService = @import("features/linked_editing.zig");
+    pub const HierarchyService = @import("features/hierarchy.zig");
+    pub const raw_json = @import("features/raw_json.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -101,4 +111,10 @@ test {
     _ = @import("edits/wsedit_test.zig");
     _ = @import("features/refactor_test.zig");
     _ = @import("features/format_test.zig");
+    _ = @import("features/symbols_test.zig");
+    _ = @import("features/inlay_test.zig");
+    _ = @import("features/codelens_test.zig");
+    _ = @import("features/linked_editing_test.zig");
+    _ = @import("features/hierarchy_test.zig");
+    _ = @import("features/raw_json.zig");
 }

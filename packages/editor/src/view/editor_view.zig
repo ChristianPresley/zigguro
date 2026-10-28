@@ -139,6 +139,10 @@ pub const PointerEvent = struct {
     key: ?zg_gui.input.event.KeyPress = null,
     /// The text typed (`kind == .text` and `.typed`).
     text: []const u8 = "",
+    /// The block clicked (`kind == .block`), and the click's x from the
+    /// block's left edge.
+    block: ?BlockInfo = null,
+    block_x: f32 = 0,
 
     pub const Kind = enum {
         /// The pointer moved over the text (not while dragging).
@@ -155,6 +159,9 @@ pub const PointerEvent = struct {
         text,
         /// Text was typed (completion and signature help triggers).
         typed,
+        /// A left click on a block row (code lens titles); returning
+        /// true consumes it.
+        block,
     };
 };
 
@@ -177,6 +184,9 @@ pub const BlockPainter = struct {
     ctx: ?*anyopaque = null,
     paint: *const fn (ctx: ?*anyopaque, pc: *zg_gui.paint.PaintCx, rect: zg_gui.core.Rect, b: BlockInfo) void,
 };
+
+/// A `BlockPainter` for the blocks of one decoration owner.
+pub const OwnerPainter = struct { owner: deco_store.OwnerId, painter: BlockPainter };
 
 /// Text drawn inside a row at `offset` (`after`: the caret at `offset`
 /// stays before it).
@@ -299,6 +309,9 @@ pub const EditorView = struct {
     foreign: bool = false,
     /// Paints block decorations' content (none: blocks stay empty).
     block_painter: ?BlockPainter = null,
+    /// Painters for one owner's blocks (code lens rows), tried before
+    /// `block_painter`; see `setOwnerPainter`.
+    owner_painters: [4]?OwnerPainter = @splat(null),
     /// The window and node the editor widget was last built as
     /// (`focusEditor`).
     ui_window: ?*zg_gui.Window = null,
@@ -698,6 +711,27 @@ pub const EditorView = struct {
             if (v.lineTop(mid) <= y) lo = mid else hi = mid;
         }
         return lo;
+    }
+
+    /// Paints `owner`'s blocks with `p` (null: no longer). False when
+    /// every slot is taken.
+    pub fn setOwnerPainter(v: *EditorView, owner: deco_store.OwnerId, p: ?BlockPainter) bool {
+        for (&v.owner_painters) |*slot| if (slot.*) |op| if (op.owner == owner) {
+            slot.* = if (p) |x| .{ .owner = owner, .painter = x } else null;
+            return true;
+        };
+        const x = p orelse return true;
+        for (&v.owner_painters) |*slot| if (slot.* == null) {
+            slot.* = .{ .owner = owner, .painter = x };
+            return true;
+        };
+        return false;
+    }
+
+    /// The painter for a block of `owner`.
+    pub fn painterFor(v: *const EditorView, owner: deco_store.OwnerId) ?BlockPainter {
+        for (v.owner_painters) |slot| if (slot) |op| if (op.owner == owner) return op.painter;
+        return v.block_painter;
     }
 
     /// The block decorations, sorted by line (valid until the next

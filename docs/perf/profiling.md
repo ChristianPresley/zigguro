@@ -64,7 +64,7 @@ Recipes in `tools/perf/sql/`:
 `Ctrl+Alt+Shift+H` (**Toggle Performance HUD**, `perf.hud.toggle`) or `zigguro --hud` shows an overlay in the top-right corner:
 
 - a graph of the last 240 frames, one stacked bar per frame: dispatch, build, layout, paint, submit and GPU time. Lines mark the refresh period and 16.67 ms. Bars over the refresh period are drawn in the theme's danger colour;
-- FPS, frame CPU p99 and the number of frames over budget, GPU p99, key-to-photon p50/p99 over the last 1 000 keys (`est` while no presentation feedback is wired up, so the photon time is submit + one refresh), wakeups per second and memory (the last two once E14.F04/F05 provide them).
+- FPS, frame CPU p99 and the number of frames over budget, GPU p99, key-to-photon p50/p99 over the last 1 000 keys (`est` while no presentation feedback is wired up, so the photon time is submit + one refresh), wakeups per second (once E14.F05 provides them) and memory (private and GPU, from the memory sampler; see [memory.md](memory.md)).
 
 Clicking a bar asks the flight recorder for a dump. The recorder runs in builds with zones (`-Dprofile=true`); it also dumps on slow frames. The HUD costs nothing while the app is idle: it refreshes at 4 Hz only while other frames are being drawn, then shows "idle" with the last values.
 

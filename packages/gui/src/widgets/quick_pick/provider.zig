@@ -51,6 +51,13 @@ pub const Provider = struct {
         /// when `alt`. Runs on the UI thread; the strings are valid only
         /// for the call.
         accept: *const fn (ptr: ?*anyopaque, items: []const QpItem, free_text: ?[]const u8, alt: bool) void,
+        /// Static providers: the query (prefix removed) changed, before
+        /// `items` is read for it (a provider that fetches as the user
+        /// types starts here and calls `QuickPickHandle.refresh`).
+        query_changed: ?*const fn (ptr: ?*anyopaque, q: []const u8) void = null,
+        /// The active row changed (preview it); null when the picker
+        /// closes without accepting (restore). UI thread.
+        active: ?*const fn (ptr: ?*anyopaque, item: ?QpItem) void = null,
     };
 
     /// The routing prefix.

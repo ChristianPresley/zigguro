@@ -59,6 +59,7 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const FileOpHooks = @import("codeintel.zig").FileOpHooks;
 const NavService = @import("codeintel.zig").NavService;
 const settings_mod = @import("settings/service.zig");
@@ -68,6 +69,8 @@ const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
 const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
+const HierarchyPanel = @import("hierarchy_panel.zig").HierarchyPanel;
+const HierarchyService = @import("codeintel.zig").HierarchyService;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
 const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
@@ -250,6 +253,11 @@ pub const Workbench = struct {
     /// The Problems panel (created on first show) and its dock panel.
     problems: ?*ProblemsPanel = null,
     problems_ref: ?PanelRef = null,
+    /// Call and type hierarchies.
+    hierarchy: ?*HierarchyPanel = null,
+    hierarchy_ref: ?PanelRef = null,
+    /// What the last Show ... Hierarchy asked, for Refresh.
+    hierarchy_ask: ?struct { h: zg_editor.model.api.registry.DocHandle, offset: u64 } = null,
     /// Where `pending_open` puts the caret.
     pending_goto: ?Goto = null,
     /// The message of the problem next/previous problem went to, shown
@@ -345,8 +353,9 @@ pub const Workbench = struct {
     const kind_notes: zg_gui.dock.model.PanelKindId = 9;
     const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
     const kind_scm: zg_gui.dock.model.PanelKindId = 11;
+    const kind_hierarchy: zg_gui.dock.model.PanelKindId = 12;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -822,6 +831,7 @@ pub const Workbench = struct {
                 kind_notes => wb.notes_ref = p,
                 kind_notes_search => wb.notes_search_ref = p,
                 kind_scm => wb.scm_ref = p,
+                kind_hierarchy => wb.hierarchy_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -956,6 +966,11 @@ pub const Workbench = struct {
             wb.gpa.destroy(pp);
         }
         wb.problems = null;
+        if (wb.hierarchy) |hp| {
+            hp.deinit();
+            wb.gpa.destroy(hp);
+        }
+        wb.hierarchy = null;
         wb.problem_note.deinit(wb.gpa);
         if (wb.notes) |n| n.destroy();
         wb.notes = null;
@@ -1042,6 +1057,8 @@ pub const Workbench = struct {
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
+            ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
+            ci.inline_info.on_action = .{ .ctx = wb, .f = onLensAction };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1154,6 +1171,10 @@ pub const Workbench = struct {
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
         .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
         .{ .id = "workbench.showProblems", .title = "Show Problems", .category = "View", .run = showProblems },
+        .{ .id = "editor.showCallHierarchy", .title = "Show Call Hierarchy", .category = "Go", .run = showCallHierarchy },
+        .{ .id = "editor.showOutgoingCalls", .title = "Show Outgoing Calls", .category = "Go", .run = showOutgoingCalls },
+        .{ .id = "editor.showTypeHierarchy", .title = "Show Type Hierarchy", .category = "Go", .run = showTypeHierarchy },
+        .{ .id = "editor.showSubtypes", .title = "Show Subtypes", .category = "Go", .run = showSubtypes },
         .{ .id = "editor.nextProblem", .title = "Go to Next Problem (Error, Warning, Info)", .category = "Go", .run = nextProblem },
         .{ .id = "editor.previousProblem", .title = "Go to Previous Problem (Error, Warning, Info)", .category = "Go", .run = previousProblem },
         .{ .id = "editor.nextProblemInFile", .title = "Go to Next Problem in File", .category = "Go", .run = nextProblemInFile },
@@ -1168,6 +1189,8 @@ pub const Workbench = struct {
         .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Editor", .run = renameSymbol },
         .{ .id = "editor.quickFix", .title = "Quick Fix...", .category = "Editor", .run = quickFix },
         .{ .id = "editor.formatDocument", .title = "Format Document", .category = "Editor", .run = formatDocument },
+        .{ .id = "quickOpen.symbolsInFile", .title = "Go to Symbol in Editor...", .category = "Go", .run = symbolsInFile },
+        .{ .id = "quickOpen.symbols", .title = "Go to Symbol in Workspace...", .category = "Go", .run = symbolsInWorkspace },
         .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
@@ -1852,6 +1875,12 @@ pub const Workbench = struct {
         const want: KeyMode = if (st.boolean("keyboard.vim.enabled")) .vim else if (st.boolean("keyboard.emacs.enabled")) .emacs else .standard;
         if (want != wb.key_mode) wb.setKeyMode(want);
         wb.setCompletionsEnabled(st.boolean("editor.inlineCompletions.enabled"));
+        if (wb.codeintel) |ci| {
+            const m = st.string("editor.inlayHints.enabled");
+            const mode: InlineInfo.Mode = if (std.mem.eql(u8, m, "off")) .off else if (std.mem.eql(u8, m, "onUnlessPressed")) .on_unless_pressed else if (std.mem.eql(u8, m, "offUnlessPressed")) .off_unless_pressed else .on;
+            ci.inline_info.configure(mode, st.boolean("editor.codeLens"));
+            ci.linked.setEnabled(st.boolean("editor.linkedEditing"));
+        }
         wb.armAutosave();
         wb.applyExplorerSettings();
         wb.applyScmSettings();
@@ -2005,6 +2034,47 @@ pub const Workbench = struct {
         const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
         const sel = wb.view.primarySel().range();
         ci.quickFix(wb.view, h, .{ .start = sel.start, .end = sel.end }, origin);
+    }
+
+    /// `quickOpen.symbolsInFile` (Ctrl+Shift+O).
+    fn symbolsInFile(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "This file has no symbols", .{});
+        try ci.symbolsInFile(wb.view, h);
+    }
+
+    /// `quickOpen.symbols` (Ctrl+T).
+    fn symbolsInWorkspace(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        try ci.symbolsInWorkspace();
+    }
+
+    fn symbolHere(ctx: *anyopaque, view: *EditorView, sel: zg_editor.model.edit.selection.Selection) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.rememberHere();
+        view.setSelection(sel);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn symbolTo(ctx: *anyopaque, t: NavService.Target) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.jumpTo(t);
+    }
+
+    /// A run or debug code lens. Tasks and debugging (E07.F06, F08) are
+    /// not in the app yet.
+    fn onLensAction(ctx: *anyopaque, action: InlineInfo.Action, command: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const what = switch (action) {
+            .run_task => "Running",
+            .debug_launch => "Debugging",
+        };
+        wb.notify(.info, "{s} from a code lens ({s}) needs tasks and the debugger, which are not available yet", .{ what, command });
+    }
+
+    fn symbolNotice(ctx: *anyopaque, msg: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.notify(.info, "{s}", .{msg});
     }
 
     /// `editor.formatDocument`.
@@ -2513,6 +2583,66 @@ pub const Workbench = struct {
     fn focusProblems(ctx: *anyopaque, w: *Window) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.problems) |pp| pp.focus(w);
+    }
+
+    // -- call and type hierarchy ---------------------------------------------------
+
+    fn ensureHierarchy(wb: *Workbench) !void {
+        if (wb.hierarchy != null) return;
+        const ci = wb.codeintel orelse return;
+        const hp = try wb.gpa.create(HierarchyPanel);
+        errdefer wb.gpa.destroy(hp);
+        try hp.init(wb.gpa, &ci.hierarchy, .{ .ctx = wb, .open = onHierarchyOpen, .again = onHierarchyAgain });
+        wb.hierarchy = hp;
+    }
+
+    /// Asks the hierarchy at the caret and shows the Hierarchy panel in
+    /// the bottom area.
+    fn showHierarchy(wb: *Workbench, dir: HierarchyService.Direction) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server for this file", .{});
+        const offset = wb.view.primarySel().head;
+        const n = try ci.showHierarchy(h, offset, dir);
+        const types = dir == .supertypes or dir == .subtypes;
+        if (n == 0) return wb.notify(.info, "No language server provides {s} hierarchies for this file", .{if (types) "type" else "call"});
+        wb.hierarchy_ask = .{ .h = h, .offset = offset };
+        try wb.ensureHierarchy();
+        if (wb.hierarchy_ref == null) wb.hierarchy_ref = try wb.dock.addPanel(kind_hierarchy, null);
+        try wb.reveal(wb.hierarchy_ref.?, .bottom);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `editor.showCallHierarchy` (Shift+Alt+H): who calls the symbol.
+    fn showCallHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.incoming);
+    }
+
+    fn showOutgoingCalls(wb: *Workbench) !void {
+        try wb.showHierarchy(.outgoing);
+    }
+
+    fn showTypeHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.supertypes);
+    }
+
+    fn showSubtypes(wb: *Workbench) !void {
+        try wb.showHierarchy(.subtypes);
+    }
+
+    fn onHierarchyOpen(ctx: *anyopaque, t: NavService.Target, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.jumpTo(t);
+        // A click shows the place; the tree keeps the keyboard.
+        if (!focus) wb.pending_focus = false;
+    }
+
+    /// Refresh: the same position again, in the panel's direction.
+    fn onHierarchyAgain(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const a = wb.hierarchy_ask orelse return;
+        const ci = wb.codeintel orelse return;
+        const n = ci.showHierarchy(a.h, a.offset, ci.hierarchy.dir) catch 0;
+        if (n == 0) wb.notify(.info, "The file is no longer open in a language server", .{});
     }
 
     /// The panel shows a problem: open its file at the next build, with
@@ -3835,6 +3965,7 @@ pub const Workbench = struct {
             kind_notes => .{ .title = "Notes" },
             kind_notes_search => .{ .title = "Search Notes" },
             kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
+            kind_hierarchy => .{ .title = "Hierarchy" },
             else => .{ .title = "?" },
         };
     }
@@ -3882,6 +4013,14 @@ pub const Workbench = struct {
                 wb.ensureScm() catch |e| log.warn("git tab: {t}", .{e});
                 if (wb.scm) |g| g.build(ui);
             },
+            kind_hierarchy => {
+                wb.ensureHierarchy() catch {};
+                if (wb.hierarchy) |hp| hp.build(ui) else {
+                    ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                    ui.text("Language services are not running.", .{ .color = .fg_muted });
+                    ui.close();
+                }
+            },
             else => {},
         }
     }
@@ -3918,7 +4057,7 @@ pub const Workbench = struct {
             wb.scm_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -4544,6 +4683,67 @@ test "workbench: go to definition jumps, Back and Forward return; several target
     try std.testing.expectEqualStrings("https://ziglang.org/documentation/", t.win.app.clipboard.get());
     Workbench.onHoverLink(&wb, .{ .url = "command:workbench.action.quit" }, false);
     _ = t.settle();
+}
+
+test "workbench: Go to Symbol in File lists the outline, previews, restores on Escape and jumps on Enter" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "class C:\n    def f(self):\n        pass\n\n\ndef g():\n    pass\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.py" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    wb.view.setSelection(.caret(0));
+    // No language server: the syntax layer's outline stands in.
+    try Workbench.symbolsInFile(&wb);
+    _ = t.settle();
+    const pk = &wb.codeintel.?.pickers;
+    try std.testing.expect(pk.doc_pick.isOpen(t.win));
+    try std.testing.expect(pk.items.items.len >= 3);
+    try std.testing.expectEqualStrings("C", pk.items.items[0].label);
+    try std.testing.expectEqualStrings("  f", pk.items.items[1].label);
+    // The first row previews: C's name is selected.
+    try std.testing.expectEqual(@as(u64, 6), wb.view.primarySel().start());
+    t.press(.arrow_down, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 17), wb.view.primarySel().start());
+    t.press(.escape, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 0), wb.view.primarySel().head);
+    try std.testing.expect(wb.view.primarySel().isCaret());
+
+    // Enter jumps; Go Back returns.
+    try Workbench.symbolsInFile(&wb);
+    _ = t.settle();
+    t.typeText("g");
+    _ = t.settle();
+    t.press(.enter, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 45), wb.view.primarySel().head);
+    try Workbench.navigateBack(&wb);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 0), wb.view.primarySel().head);
+
+    // The workspace picker needs a server.
+    try Workbench.symbolsInWorkspace(&wb);
+    try std.testing.expect(!pk.ws_pick.isOpen(t.win));
 }
 
 test "workbench: opening the terminal focuses it; the Agent button shows and hides the pane" {

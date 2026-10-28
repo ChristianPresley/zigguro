@@ -100,6 +100,10 @@ pub const sign = struct {
 };
 /// `git init` and `git clone`.
 pub const init_repo = @import("init.zig");
+/// `git bisect`.
+pub const bisect = @import("bisect.zig");
+/// `git submodule`.
+pub const submodule = @import("submodule.zig");
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -170,6 +174,8 @@ test {
     std.testing.refAllDecls(ssh);
     _ = @import("sign/sign_test.zig");
     _ = @import("init_test.zig");
+    _ = @import("bisect_test.zig");
+    _ = @import("submodule_test.zig");
     std.testing.refAllDecls(sign);
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
