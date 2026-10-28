@@ -8,14 +8,18 @@
 //! (errors only, errors and warnings, everything) and to the current
 //! file. A click on a diagnostic shows it in its editor; Enter or a
 //! double click also moves focus there. The context menu copies the
-//! diagnostic or its message. Files start open; the tree keeps its
+//! diagnostic or its message, offers the code actions at it (Quick
+//! Fix...), asks the agent to fix it (`fixPrompt`: the diagnostic and
+//! the code around it) and hides diagnostics of its source until Show
+//! All Sources. Files start open; the tree keeps its
 //! selection and open files across updates (the model's node ids are
 //! stable).
 //!
 //! The workbench calls `refresh` every frame (cheap when nothing
 //! changed) and owns the commands (`workbench.showProblems`,
 //! `editor.nextProblem`, `editor.previousProblem`, `problems.copy`,
-//! `problems.copyMessage`). UI thread only.
+//! `problems.copyMessage`, `problems.quickFix`, `problems.askAgentToFix`,
+//! `problems.hideSource`, `problems.showAllSources`). UI thread only.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -59,6 +63,8 @@ pub const ProblemsPanel = struct {
     /// The current editor's store key (for "current file only").
     current_key: std.ArrayList(u8) = .empty,
     has_current: bool = false,
+    /// Sources whose diagnostics are hidden (owned).
+    hidden: std.ArrayList([]u8) = .empty,
     /// Model revision the tree rows were built from.
     rev_seen: u64 = 0,
     /// Files seen open (new ones start open; closed ones stay closed).
@@ -88,6 +94,8 @@ pub const ProblemsPanel = struct {
         p.model.deinit();
         p.filter_buf.deinit();
         p.current_key.deinit(p.gpa);
+        for (p.hidden.items) |h| p.gpa.free(h);
+        p.hidden.deinit(p.gpa);
         p.seen_files.deinit(p.gpa);
     }
 
@@ -104,7 +112,36 @@ pub const ProblemsPanel = struct {
             },
             .text = std.mem.trim(u8, p.filter_buf.slice(), " "),
             .key = if (p.current_only and p.has_current) p.current_key.items else null,
+            .hidden_sources = p.hidden.items,
         };
+    }
+
+    /// Hides the diagnostics of the active row's source (none: false).
+    pub fn hideActiveSource(p: *ProblemsPanel) bool {
+        const l = p.activeItem() orelse return false;
+        const src = p.model.item(l).diag.source;
+        if (src.len == 0) return false;
+        for (p.hidden.items) |h| if (std.mem.eql(u8, h, src)) return false;
+        const copy = p.gpa.dupe(u8, src) catch return false;
+        p.hidden.append(p.gpa, copy) catch {
+            p.gpa.free(copy);
+            return false;
+        };
+        _ = p.refresh();
+        return true;
+    }
+
+    /// Shows every source again.
+    pub fn showAllSources(p: *ProblemsPanel) void {
+        for (p.hidden.items) |h| p.gpa.free(h);
+        p.hidden.clearRetainingCapacity();
+        _ = p.refresh();
+    }
+
+    /// The active row's diagnostic and its file's store key.
+    pub fn active(p: *const ProblemsPanel) ?struct { key: []const u8, item: Problems.Item, loc: Problems.Loc } {
+        const l = p.activeItem() orelse return null;
+        return .{ .key = p.model.files.items[l.file].key, .item = p.model.item(l), .loc = l };
     }
 
     /// The current editor's file changed (its store key; null: none).
@@ -316,7 +353,7 @@ pub const ProblemsPanel = struct {
         p.header(ui);
         if (p.model.files.items.len == 0) {
             ui.open(.{ .style = .{ .padding = .xy(12, 6), .shrink = 0 } });
-            ui.text(if (p.filter_buf.len() > 0 or p.level != .all or p.current_only) "No problems match the filter." else "No problems have been detected in the workspace.", .{ .color = .fg_muted });
+            ui.text(if (p.filter_buf.len() > 0 or p.level != .all or p.current_only or p.hidden.items.len > 0) "No problems match the filter." else "No problems have been detected in the workspace.", .{ .color = .fg_muted });
             ui.close();
             return;
         }
@@ -340,19 +377,69 @@ pub const ProblemsPanel = struct {
             if (zg_gui.w.button(ui, .{ .label = lv[1], .variant = if (p.level == lv[0]) .primary else .ghost }).clicked) p.level = lv[0];
         }
         _ = zg_gui.w.checkbox(ui, "Current file", &p.current_only);
+        if (p.hidden.items.len > 0) {
+            var hb: [48]u8 = undefined;
+            const show_all = std.fmt.bufPrint(&hb, "Show all sources ({d} hidden)", .{p.hidden.items.len}) catch "Show all sources";
+            if (zg_gui.w.button(ui, .{ .label = show_all, .variant = .ghost }).clicked) p.showAllSources();
+        }
     }
 
     fn contextMenu(p: *ProblemsPanel, ui: *Ui) void {
         const on_item = p.activeItem() != null;
+        const src = if (p.activeItem()) |l| p.model.item(l).diag.source else "";
+        var hb: [96]u8 = undefined;
+        const hide = if (src.len > 0) std.fmt.bufPrint(&hb, "Hide Source '{s}'", .{src[0..@min(src.len, 60)]}) catch "Hide Source" else "Hide Source";
         const items = [_]zg_gui.w.MenuItem{
             .{ .action = .{ .label = "Go to Problem", .action = "problems.open", .enabled = on_item } },
+            .{ .action = .{ .label = "Quick Fix...", .action = "problems.quickFix", .enabled = on_item } },
+            .{ .action = .{ .label = "Ask Agent to Fix", .action = "problems.askAgentToFix", .enabled = on_item } },
             .separator,
             .{ .action = .{ .label = "Copy", .action = "problems.copy", .enabled = on_item } },
             .{ .action = .{ .label = "Copy Message", .action = "problems.copyMessage", .enabled = on_item } },
+            .separator,
+            .{ .action = .{ .label = hide, .action = "problems.hideSource", .enabled = src.len > 0 } },
+            .{ .action = .{ .label = "Show All Sources", .action = "problems.showAllSources", .enabled = p.hidden.items.len > 0 } },
         };
         zg_gui.w.contextMenu(ui, &items, .{ .test_id = "problems-menu" });
     }
 };
+
+/// Lines of code either side of the problem in `fixPrompt`.
+pub const fix_context_lines = 20;
+
+/// The "Ask Agent to Fix" prompt: the diagnostic compiler-style (`path`
+/// as shown), then lines around it from `text` (the file's current text;
+/// null: none), numbered.
+pub fn fixPrompt(gpa: Allocator, path: []const u8, it: Problems.Item, text: ?[]const u8) Allocator.Error![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    const d = it.diag;
+    const line = d.start.line + 1;
+    w.print("Fix this problem:\n\n{s}:{d}:{d}: {s}: {s}", .{ path, line, d.start.character + 1, d.severity.label(), d.message }) catch return error.OutOfMemory;
+    if (d.source.len > 0) w.print(" [{s}{s}{s}{s}]", .{ d.source, if (d.code.len > 0) "(" else "", d.code, if (d.code.len > 0) ")" else "" }) catch return error.OutOfMemory;
+    w.writeByte('\n') catch return error.OutOfMemory;
+    const t = text orelse return out.toOwnedSlice();
+    const first = line -| fix_context_lines;
+    const last = line + fix_context_lines;
+    var it_lines = std.mem.splitScalar(u8, t, '\n');
+    var n: u32 = 0;
+    var shown_any = false;
+    while (it_lines.next()) |l| {
+        n += 1;
+        if (n < @max(first, 1)) continue;
+        if (n > last) break;
+        // The empty piece after a final newline is not a line.
+        if (l.len == 0 and it_lines.peek() == null) break;
+        if (!shown_any) {
+            w.print("\nThe code around it:\n```\n", .{}) catch return error.OutOfMemory;
+            shown_any = true;
+        }
+        w.print("{d:>5} {s} {s}\n", .{ n, if (n == line) ">" else "|", std.mem.trimEnd(u8, l, "\r") }) catch return error.OutOfMemory;
+    }
+    if (shown_any) w.writeAll("```\n") catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
 
 const testing = std.testing;
 
@@ -445,4 +532,55 @@ test "problems panel: files open, rows name their diagnostics, a click shows one
     try testing.expect(p.refresh());
     try testing.expectEqual(@as(usize, 2), p.tv.flat.len());
     try testing.expectEqualStrings("src/b.zig", ProblemsPanel.label(&p, p.tv.flat.rows.items[0].node));
+}
+
+test "problems panel: hide a source, show all again; the fix prompt for the agent" {
+    const gpa = testing.allocator;
+    var rt: @import("zg_core").Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var st = try Store.init(gpa, rt.io, .posix);
+    defer st.deinit();
+    const o: Store.Owner = .{ .server = 0 };
+    try st.replace("/w/a.zig", o, try testSet(o, &.{
+        .{ .start = .{ .line = 1, .character = 10 }, .end = .{ .line = 1, .character = 11 }, .message = "unexpected token", .source = "zls", .code = "E1" },
+        .{ .start = .{ .line = 2, .character = 0 }, .end = .{ .line = 2, .character = 1 }, .message = "build failed here", .source = "zig" },
+    }));
+    st.commit();
+    var host: TestHost = .{};
+    defer host.opened.deinit(gpa);
+    var p: ProblemsPanel = undefined;
+    try p.init(gpa, &st, "/w", .{ .ctx = &host, .open = TestHost.open });
+    defer p.deinit();
+    try testing.expectEqual(@as(usize, 3), p.tv.flat.len());
+
+    // Nothing active: nothing to hide.
+    try testing.expect(!p.hideActiveSource());
+    p.tv.moveTo(1, .replace);
+    const a = p.active().?;
+    try testing.expectEqualStrings("/w/a.zig", a.key);
+    try testing.expect(p.hideActiveSource());
+    try testing.expectEqual(@as(usize, 2), p.tv.flat.len());
+    try testing.expectEqualStrings("error: build failed here, a.zig line 3", ProblemsPanel.label(&p, p.tv.flat.rows.items[1].node));
+    p.showAllSources();
+    try testing.expectEqual(@as(usize, 3), p.tv.flat.len());
+
+    const prompt = try fixPrompt(gpa, "a.zig", a.item, "const a = 1;\nconst x = $2;\nconst y = x;\n");
+    defer gpa.free(prompt);
+    try testing.expectEqualStrings(
+        \\Fix this problem:
+        \\
+        \\a.zig:2:11: error: unexpected token [zls(E1)]
+        \\
+        \\The code around it:
+        \\```
+        \\    1 | const a = 1;
+        \\    2 > const x = $2;
+        \\    3 | const y = x;
+        \\```
+        \\
+    , prompt);
+    const bare = try fixPrompt(gpa, "a.zig", a.item, null);
+    defer gpa.free(bare);
+    try testing.expectEqualStrings("Fix this problem:\n\na.zig:2:11: error: unexpected token [zls(E1)]\n", bare);
 }
