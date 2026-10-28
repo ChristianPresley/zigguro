@@ -174,6 +174,8 @@ pub const CodeIntel = struct {
     /// Told when the completion list opens or closes over an editor (the
     /// workbench hides the AI ghost text meanwhile).
     popup_hook: ?PopupHook = null,
+    /// Resolves the keys of the popups (`completionKey`).
+    key_hook: ?KeyHook = null,
     /// Applies workspace edits (server `workspace/applyEdit` now; rename,
     /// code actions and formatting through it).
     fs: DiskFs = undefined,
@@ -262,6 +264,14 @@ pub const CodeIntel = struct {
     pub const NoticeHook = struct {
         ctx: *anyopaque,
         f: *const fn (ctx: *anyopaque, msg: []const u8) void,
+    };
+
+    /// The popup command a key press is bound to in `view`'s editor
+    /// (the workbench's keymap, with the popup context keys set from
+    /// `popupState`), or null.
+    pub const KeyHook = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, view: *EditorView, k: zg_gui.input.event.KeyPress) ?PopupCommand,
     };
 
     pub const PopupHook = struct {
@@ -817,84 +827,185 @@ pub const CodeIntel = struct {
         };
     }
 
+    /// The commands of the completion list, signature help and snippet
+    /// sessions. The workbench registers them (`id`) and binds their keys
+    /// (keybindings.zon, under `suggestWidgetVisible`,
+    /// `parameterHintsVisible` and `inSnippetMode`); the editor's keys
+    /// reach them through `key_hook` before the editor moves the caret.
+    pub const PopupCommand = enum {
+        trigger_suggest,
+        trigger_parameter_hints,
+        select_next,
+        select_previous,
+        select_next_page,
+        select_previous_page,
+        select_first,
+        select_last,
+        accept,
+        accept_alternative,
+        hide,
+        toggle_details,
+        next_hint,
+        previous_hint,
+        close_hints,
+        next_placeholder,
+        previous_placeholder,
+        leave_snippet,
+
+        pub fn id(c: PopupCommand) []const u8 {
+            return switch (c) {
+                .trigger_suggest => "editor.triggerSuggest",
+                .trigger_parameter_hints => "editor.triggerParameterHints",
+                .select_next => "editor.selectNextSuggestion",
+                .select_previous => "editor.selectPreviousSuggestion",
+                .select_next_page => "editor.selectNextPageSuggestion",
+                .select_previous_page => "editor.selectPreviousPageSuggestion",
+                .select_first => "editor.selectFirstSuggestion",
+                .select_last => "editor.selectLastSuggestion",
+                .accept => "editor.acceptSuggestion",
+                .accept_alternative => "editor.acceptAlternativeSuggestion",
+                .hide => "editor.hideSuggest",
+                .toggle_details => "editor.toggleSuggestionDetails",
+                .next_hint => "editor.nextParameterHint",
+                .previous_hint => "editor.previousParameterHint",
+                .close_hints => "editor.closeParameterHints",
+                .next_placeholder => "editor.nextSnippetPlaceholder",
+                .previous_placeholder => "editor.previousSnippetPlaceholder",
+                .leave_snippet => "editor.leaveSnippet",
+            };
+        }
+
+        pub fn title(c: PopupCommand) []const u8 {
+            return switch (c) {
+                .trigger_suggest => "Trigger Suggest",
+                .trigger_parameter_hints => "Trigger Parameter Hints",
+                .select_next => "Select Next Suggestion",
+                .select_previous => "Select Previous Suggestion",
+                .select_next_page => "Select Next Page of Suggestions",
+                .select_previous_page => "Select Previous Page of Suggestions",
+                .select_first => "Select First Suggestion",
+                .select_last => "Select Last Suggestion",
+                .accept => "Accept Suggestion",
+                .accept_alternative => "Accept Suggestion (Replace)",
+                .hide => "Hide Suggestions",
+                .toggle_details => "Toggle Suggestion Details",
+                .next_hint => "Next Signature",
+                .previous_hint => "Previous Signature",
+                .close_hints => "Close Parameter Hints",
+                .next_placeholder => "Go to Next Snippet Placeholder",
+                .previous_placeholder => "Go to Previous Snippet Placeholder",
+                .leave_snippet => "Leave Snippet",
+            };
+        }
+    };
+
+    /// What the popup context keys say for `v`.
+    pub const PopupState = struct {
+        suggest: bool = false,
+        suggest_many: bool = false,
+        hints: bool = false,
+        hints_many: bool = false,
+        snippet: bool = false,
+    };
+
+    pub fn popupState(ci: *CodeIntel, v: *EditorView) PopupState {
+        var st: PopupState = .{};
+        if (ci.completionOpen(v)) {
+            st.suggest = true;
+            st.suggest_many = ci.completion.active().?.list().len > 1;
+        }
+        if (ci.comp_view == v) if (ci.signature.current()) |sig| {
+            st.hints = true;
+            st.hints_many = sig.signatures.len > 1;
+        };
+        if (ci.snippets.top()) |t| st.snippet = t.view == v;
+        return st;
+    }
+
+    /// Runs `cmd` in `v`'s editor; false when it does not apply there
+    /// now (the key then goes on to the editor).
+    pub fn popupCommand(ci: *CodeIntel, v: *EditorView, cmd: PopupCommand) bool {
+        const f = ci.fileOfView(v) orelse return false;
+        return ci.runPopupCommand(f, cmd);
+    }
+
+    fn runPopupCommand(ci: *CodeIntel, f: *File, cmd: PopupCommand) bool {
+        switch (cmd) {
+            .trigger_suggest, .trigger_parameter_hints => {
+                if (!ci.trusted or !f.attached) return false;
+                const head = f.view.primarySel().head;
+                ci.comp_view = f.view;
+                if (cmd == .trigger_parameter_hints) {
+                    ci.signature.invoke(f.h, head) catch {};
+                } else {
+                    _ = ci.completion.start(f.h, head, .invoked) catch false;
+                }
+                ci.rememberCaret(f);
+                ci.tick();
+                return true;
+            },
+            .select_next, .select_previous, .select_next_page, .select_previous_page, .select_first, .select_last, .accept, .accept_alternative, .hide, .toggle_details => {
+                if (!ci.completionOpen(f.view)) return false;
+                const ses = ci.completion.active().?;
+                const n: u32 = @intCast(ses.list().len);
+                const sel = ses.selected orelse 0;
+                const page: u32 = @import("completion_popup.zig").max_rows - 1;
+                const to: u32 = switch (cmd) {
+                    .select_next => (sel + 1) % n,
+                    .select_previous => (sel + n - 1) % n,
+                    .select_next_page => @min(n - 1, sel + page),
+                    .select_previous_page => sel -| page,
+                    .select_first => 0,
+                    .select_last => n - 1,
+                    .accept, .accept_alternative => {
+                        ci.acceptCompletion(f, sel, if (cmd == .accept) .insert else .replace, null);
+                        return true;
+                    },
+                    .hide => {
+                        ci.closeCompletion();
+                        return true;
+                    },
+                    .toggle_details => {
+                        ci.cpopup.toggleDocs();
+                        return true;
+                    },
+                    else => unreachable,
+                };
+                ci.completion.select(to);
+                ci.tick();
+                return true;
+            },
+            .next_hint, .previous_hint, .close_hints => {
+                if (ci.comp_view != f.view) return false;
+                const st = ci.signature.current() orelse return false;
+                if (cmd == .close_hints) {
+                    ci.closeSignature();
+                    return true;
+                }
+                if (st.signatures.len < 2) return false;
+                _ = ci.signature.cycle(cmd == .next_hint);
+                ci.tick();
+                return true;
+            },
+            .next_placeholder, .previous_placeholder, .leave_snippet => {
+                const t = ci.snippets.top() orelse return false;
+                if (t.view != f.view) return false;
+                if (cmd == .leave_snippet) return ci.snippets.escape();
+                const ok = (if (cmd == .previous_placeholder) ci.snippets.prev() else ci.snippets.next()) catch false;
+                ci.rememberCaret(f);
+                return ok;
+            },
+        }
+    }
+
     /// Keys for the completion list, signature help and snippet
     /// sessions; true when taken.
     fn completionKey(ci: *CodeIntel, f: *File, k: zg_gui.input.event.KeyPress) bool {
-        const ctrl = k.mods.ctrl or k.mods.super;
-        const plain = !ctrl and !k.mods.alt;
-        if (ci.completionOpen(f.view)) {
-            const ses = ci.completion.active().?;
-            const n: u32 = @intCast(ses.list().len);
-            const sel = ses.selected orelse 0;
-            const page: u32 = @import("completion_popup.zig").max_rows - 1;
-            const to: ?u32 = if (!plain or k.mods.shift) null else switch (k.key) {
-                .arrow_down => (sel + 1) % n,
-                .arrow_up => (sel + n - 1) % n,
-                .page_down => @min(n - 1, sel + page),
-                .page_up => sel -| page,
-                .home => 0,
-                .end => n - 1,
-                else => null,
-            };
-            if (to) |t| {
-                ci.completion.select(t);
-                ci.tick();
-                return true;
-            }
-            switch (k.key) {
-                .enter, .numpad_enter => if (plain) {
-                    ci.acceptCompletion(f, sel, if (k.mods.shift) .replace else .insert, null);
-                    return true;
-                },
-                .tab => if (plain and !k.mods.shift) {
-                    ci.acceptCompletion(f, sel, .insert, null);
-                    return true;
-                },
-                .escape => {
-                    ci.closeCompletion();
-                    return true;
-                },
-                .arrow_left, .arrow_right => ci.closeCompletion(),
-                .space => if (ctrl and !k.mods.shift) {
-                    ci.cpopup.toggleDocs();
-                    return true;
-                },
-                else => {},
-            }
-            return false;
-        }
-        if (k.key == .space and ctrl and !k.mods.alt) {
-            if (!ci.trusted or !f.attached) return false;
-            const head = f.view.primarySel().head;
-            ci.comp_view = f.view;
-            if (k.mods.shift) {
-                ci.signature.invoke(f.h, head) catch {};
-            } else {
-                _ = ci.completion.start(f.h, head, .invoked) catch false;
-            }
-            ci.rememberCaret(f);
-            ci.tick();
-            return true;
-        }
-        if (ci.signature.current()) |st| if (ci.comp_view == f.view) {
-            if (plain and !k.mods.shift and st.signatures.len > 1 and (k.key == .arrow_up or k.key == .arrow_down)) {
-                _ = ci.signature.cycle(k.key == .arrow_down);
-                ci.tick();
-                return true;
-            }
-            if (k.key == .escape) {
-                ci.closeSignature();
-                return true;
-            }
+        if (ci.key_hook) |hk| if (hk.f(hk.ctx, f.view, k)) |cmd| {
+            if (ci.runPopupCommand(f, cmd)) return true;
         };
-        if (ci.snippets.top()) |t| if (t.view == f.view) {
-            if (k.key == .tab and !ctrl and !k.mods.alt) {
-                const ok = (if (k.mods.shift) ci.snippets.prev() else ci.snippets.next()) catch false;
-                ci.rememberCaret(f);
-                return ok;
-            }
-            if (k.key == .escape and plain) return ci.snippets.escape();
-        };
+        // Left and Right move the caret and close the list.
+        if (ci.completionOpen(f.view) and (k.key == .arrow_left or k.key == .arrow_right)) ci.closeCompletion();
         return false;
     }
 
