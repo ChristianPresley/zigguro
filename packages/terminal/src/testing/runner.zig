@@ -412,7 +412,7 @@ test "a passing case" {
         \\@expect-cursor 1,3
         \\@expect-cell 1,2 bold fg=1 !italic
         \\@expect-cell 1,1 plain char=a
-        \\@expect-reply "\e[?62;22c"
+        \\@expect-reply "\e[?62;4;22c"
     );
     defer r.deinit(std.testing.allocator);
     if (!r.passed) std.debug.print("{s}", .{r.report});

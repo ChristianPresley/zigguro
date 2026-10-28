@@ -1,20 +1,21 @@
 //! DCS routing and the DCS queries: DECRQSS (`DCS $ q`) and XTGETTCAP
 //! (`DCS + q`), plus the legacy synchronized-update DCS (`DCS = 1 s` /
-//! `DCS = 2 s`). Sixel (`DCS q`) arrives with E06.F08; tmux passthrough is
-//! rejected.
+//! `DCS = 2 s`), and sixel images (`DCS q`, `graphics/sixel.zig`); tmux
+//! passthrough is rejected.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Terminal = @import("Terminal.zig");
 const Csi = @import("../vt/Parser.zig").Csi;
 const sgr = @import("sgr.zig");
+const graphics = @import("../graphics.zig");
 
 /// Longest query payload kept; longer ones are answered as invalid.
 pub const max_payload = 4096;
 
 /// The DCS in progress.
 pub const State = struct {
-    kind: enum { none, decrqss, xtgettcap } = .none,
+    kind: enum { none, decrqss, xtgettcap, sixel } = .none,
     buf: std.ArrayList(u8) = .empty,
     overflow: bool = false,
 
@@ -37,6 +38,11 @@ pub fn hook(t: *Terminal, c: *const Csi) bool {
     const st = &t.dcs_state;
     st.reset();
     const inter = c.intermediates();
+    if (c.private == 0 and inter.len == 0 and c.final == 'q') {
+        if (!graphics.sixel.hook(t, c.get(1, 0))) return false;
+        st.kind = .sixel;
+        return true;
+    }
     if (c.private == 0 and inter.len == 1 and c.final == 'q') {
         st.kind = switch (inter[0]) {
             '$' => .decrqss,
@@ -60,6 +66,7 @@ pub fn hook(t: *Terminal, c: *const Csi) bool {
 /// Buffers query payload.
 pub fn put(t: *Terminal, bytes: []const u8) void {
     const st = &t.dcs_state;
+    if (st.kind == .sixel) return graphics.sixel.put(t, bytes);
     if (st.kind == .none or st.overflow) return;
     if (st.buf.items.len + bytes.len > max_payload) {
         st.overflow = true;
@@ -77,6 +84,7 @@ pub fn unhook(t: *Terminal) void {
     defer st.reset();
     switch (st.kind) {
         .none => {},
+        .sixel => graphics.sixel.unhook(t),
         .decrqss => if (st.overflow) t.reply("\x1bP0$r\x1b\\") else decrqss(t, st.buf.items),
         .xtgettcap => if (!st.overflow) xtgettcap(t, st.buf.items),
     }

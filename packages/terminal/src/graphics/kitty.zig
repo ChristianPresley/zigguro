@@ -44,6 +44,9 @@ pub const Options = struct {
     /// Largest image, as `w * h * 4` bytes.
     max_image_bytes: usize = 100 << 20,
     decode: ?Decoder = null,
+    /// `terminal.graphics.sixel`: sixel images are decoded and DA1
+    /// advertises them.
+    sixel: bool = true,
     /// `$TMPDIR`, a temporary folder besides /tmp and /dev/shm.
     tmpdir: []const u8 = "",
 };
