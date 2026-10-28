@@ -1336,6 +1336,8 @@ pub const Workbench = struct {
         .{ .id = "debug.focusVariables", .title = "Focus on Variables View", .category = "Debug", .run = focusVariables },
         .{ .id = "debug.focusWatch", .title = "Focus on Watch View", .category = "Debug", .run = focusWatch },
         .{ .id = "debug.focusLoadedScripts", .title = "Focus on Loaded Scripts View", .category = "Debug", .run = focusLoadedScripts },
+        .{ .id = "debug.focusModules", .title = "Focus on Modules View", .category = "Debug", .run = focusModules },
+        .{ .id = "debug.copyModulePath", .title = "Copy Module Path", .category = "Debug", .run = copyModulePath },
         .{ .id = "debug.setVariable", .title = "Set Value", .category = "Debug", .run = setVariable },
         .{ .id = "debug.copyValue", .title = "Copy Value", .category = "Debug", .run = copyDebugValue },
         .{ .id = "debug.copyAsExpression", .title = "Copy as Expression", .category = "Debug", .run = copyAsExpression },
@@ -3445,6 +3447,19 @@ pub const Workbench = struct {
     fn focusLoadedScripts(wb: *Workbench) !void {
         wb.debug_focus = .loaded_scripts;
         try wb.showDebugPanel(true);
+    }
+
+    fn focusModules(wb: *Workbench) !void {
+        wb.debug_focus = .modules;
+        try wb.showDebugPanel(true);
+    }
+
+    /// The Modules view's menu: the active module's path to the clipboard.
+    fn copyModulePath(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        const path = dp.mods.activePath() orelse return;
+        const w = wb.win orelse return;
+        w.app.clipboard.set(w.gpa, path);
     }
 
     /// The Variables or Watch tree that has focus (`fallback` when
@@ -7308,6 +7323,26 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
         } else return error.TestExpectedEqual;
         try std.testing.expect(row.depth == 1);
         try std.testing.expectEqualStrings(".", dp.srcs.labelOf(dp.srcs.tv.flat.rows.items[0].node));
+    }
+    // Modules: GDB's `modules` answer lists the program; Copy Path puts
+    // its path on the clipboard.
+    const Mods = struct {
+        fn listed(dd: *Debug) bool {
+            const x = dd.active() orelse return false;
+            return x.s.modulesCount() > 0;
+        }
+    };
+    try Wait.until(t, d, Mods.listed);
+    _ = t.settle();
+    {
+        const dp = wb.debug_panel.?;
+        const i = for (dp.mods.tv.flat.rows.items, 0..) |r, i| {
+            const p = (dp.mods.nodes.get(r.node) orelse continue).item.path orelse continue;
+            if (std.mem.endsWith(u8, p, "/a")) break i;
+        } else return error.TestExpectedEqual;
+        dp.mods.tv.moveTo(i, .replace);
+        try wb.copyModulePath();
+        try std.testing.expect(std.mem.endsWith(u8, t.app.clipboard.get(), "/a"));
     }
     // The Variables view: the locals, with their types.
     const Find = struct {
