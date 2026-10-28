@@ -10,6 +10,7 @@
         .zg_editor = .{ .path = "../editor" },
         .zg_jsonrpc = .{ .path = "../jsonrpc" },
         .zg_syntax = .{ .path = "../syntax" },
+        .zg_regex = .{ .path = "../regex" },
     },
     .paths = .{
         "build.zig",

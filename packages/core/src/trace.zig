@@ -39,6 +39,7 @@ pub const Zone = if (enabled) struct {
 
     /// Records the completed zone into this thread's ring.
     pub fn end(z: Zone) void {
+        if (zone_hook) |h| h.end();
         record(.{ .ts = z.start, .site_or_name = @intFromPtr(z.site), .kind = @intFromEnum(Kind.zone), .tid = 0, .value = @intCast(time.fastTicks() -% z.start) });
     }
 } else struct {
@@ -49,8 +50,23 @@ pub const Zone = if (enabled) struct {
 /// Opens a zone named `name` at `src` (pass `@src()`).
 pub inline fn zone(comptime src: std.builtin.SourceLocation, comptime name: []const u8) Zone {
     if (!enabled) return .{};
-    return .{ .start = time.fastTicks(), .site = siteFor(src, name) };
+    const site = siteFor(src, name);
+    if (zone_hook) |h| h.begin(site);
+    return .{ .start = time.fastTicks(), .site = site };
 }
+
+/// Per-thread callbacks run when a zone opens and closes. zg_perf installs
+/// one on the UI thread to keep a shadow stack of open zones for the stall
+/// watchdog (E14.F01.S02.T01); core never imports zg_perf.
+pub const ZoneHook = struct {
+    /// Called with the zone's site when it opens.
+    begin: *const fn (site: *const Site) void,
+    /// Called when the innermost open zone closes.
+    end: *const fn () void,
+};
+
+/// This thread's zone hook, or null (the default: one TLS load per zone).
+pub threadlocal var zone_hook: ?*const ZoneHook = null;
 
 /// Records a counter sample.
 pub inline fn counter(comptime name: []const u8, value: i64) void {
@@ -66,8 +82,17 @@ pub inline fn frameMark() void {
     record(.{ .ts = time.fastTicks(), .site_or_name = @intFromPtr(&frame_site), .kind = @intFromEnum(Kind.instant), .tid = 0, .value = 0 });
 }
 
-/// Event kinds stored in `Event.kind`.
-pub const Kind = enum(u8) { zone, counter, instant, thread_name };
+/// Event kinds stored in `Event.kind`. For the async and flow kinds
+/// (E14.F02.S01.T03) `value` carries the span or flow id; zg_perf records
+/// them and exports them, `writeChromeJson` skips them.
+pub const Kind = enum(u8) { zone, counter, instant, thread_name, async_begin, async_end, async_instant, flow_out, flow_in };
+
+/// Records an event of `kind` with `value` at the current time on this
+/// thread (zg_perf's async span and flow API; most code wants `zone`).
+pub inline fn recordRaw(kind: Kind, site: *const Site, value: i64) void {
+    if (!enabled) return;
+    record(.{ .ts = time.fastTicks(), .site_or_name = @intFromPtr(site), .kind = @intFromEnum(kind), .tid = 0, .value = value });
+}
 
 /// One recorded event. In rings `ts` is in ticks; after `collect` it is
 /// nanoseconds on the `.awake` clock and zone `value`s are durations in ns.
@@ -114,11 +139,23 @@ fn threadRing() ?*Ring {
     return r;
 }
 
+/// Called (on the recording thread) when a ring reaches a quarter full, so
+/// a drain can run before it overflows; zg_perf's drain installs it. Must
+/// not record events.
+pub var fill_hook: std.atomic.Value(?*const fn () void) = .init(null);
+
 fn record(e: Event) void {
     const r = threadRing() orelse return;
     var ev = e;
     ev.tid = r.tid;
-    if (!r.events.push(ev)) _ = r.dropped.fetchAdd(1, .monotonic);
+    if (!r.events.push(ev)) {
+        _ = r.dropped.fetchAdd(1, .monotonic);
+        return;
+    }
+    // Occupancy grows by one per push, so it passes the mark exactly here.
+    if (r.events.tail.raw -% r.events.head.load(.monotonic) == ring_capacity / 4) {
+        if (fill_hook.load(.acquire)) |h| h();
+    }
 }
 
 /// Names the calling thread in exported traces (truncated to 32 bytes).
@@ -164,8 +201,14 @@ pub fn collect(gpa: std.mem.Allocator, out: *std.ArrayList(Event)) !void {
 /// thread-name metadata. Times are microseconds.
 pub fn writeChromeJson(events: []const Event, w: *std.Io.Writer) !void {
     try w.writeAll("[");
-    for (events, 0..) |e, i| {
-        if (i != 0) try w.writeAll(",\n");
+    var written: usize = 0;
+    for (events) |e| {
+        switch (@as(Kind, @enumFromInt(e.kind))) {
+            .zone, .counter, .instant, .thread_name => {},
+            else => continue,
+        }
+        if (written != 0) try w.writeAll(",\n");
+        written += 1;
         const site: *const Site = @ptrFromInt(e.site_or_name);
         const ts_us = @as(f64, @floatFromInt(e.ts)) / 1000.0;
         try w.writeAll("{\"name\":");
@@ -179,6 +222,7 @@ pub fn writeChromeJson(events: []const Event, w: *std.Io.Writer) !void {
                 try std.json.Stringify.encodeJsonString(site.name, .{}, w);
                 try w.writeAll("}");
             },
+            else => unreachable,
         }
         try w.writeAll("}");
     }
@@ -255,6 +299,48 @@ test "trace: chrome json parses with std.json" {
     try std.testing.expectEqual(@as(usize, 4), arr.len);
     try std.testing.expectEqualStrings("X", arr[0].object.get("ph").?.string);
     try std.testing.expectEqualStrings("layout \"q\"", arr[0].object.get("name").?.string);
+}
+
+test "trace: async and flow kinds round-trip through ring and collect" {
+    if (!enabled) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var events: std.ArrayList(Event) = .empty;
+    defer events.deinit(gpa);
+    const Worker = struct {
+        fn run() void {
+            const s = siteFor(@src(), "ai.request");
+            recordRaw(.async_begin, s, 42);
+            recordRaw(.flow_out, s, 7);
+            recordRaw(.flow_in, s, 7);
+            recordRaw(.async_instant, s, 42);
+            recordRaw(.async_end, s, 42);
+        }
+    };
+    const t = try std.Thread.spawn(.{}, Worker.run, .{});
+    t.join();
+    try collect(gpa, &events);
+    var kinds: [5]Kind = undefined;
+    var n: usize = 0;
+    for (events.items) |e| {
+        const k: Kind = @enumFromInt(e.kind);
+        switch (k) {
+            .async_begin, .async_end, .async_instant, .flow_out, .flow_in => {
+                if (n < kinds.len) kinds[n] = k;
+                n += 1;
+                try std.testing.expect(e.value == 42 or e.value == 7);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expectEqualSlices(Kind, &.{ .async_begin, .flow_out, .flow_in, .async_instant, .async_end }, &kinds);
+    // The Chrome writer skips them.
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    defer buf.deinit();
+    try writeChromeJson(events.items, &buf.writer);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, buf.written(), .{});
+    defer parsed.deinit();
+    comptime std.debug.assert(@sizeOf(Event) == 32);
 }
 
 test "trace: ring overflow increments dropped" {

@@ -22,6 +22,10 @@
 //! vulkan|software|auto` overrides it, and `--doctor-gpu [--json]` prints
 //! the GPU report (`zg doctor gpu`) and exits.
 //!
+//! `--trace=<path>` (with `--trace-format=perfetto|chrome`) records a
+//! performance trace until exit; `ZG_TRACE=startup` records startup to the
+//! first frame + 2 s (see `tracing.zig`).
+//!
 //! Text is drawn with system fonts through `zg_gui.FontText` (see
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
 
@@ -37,6 +41,8 @@ const zg_gui = @import("zg_gui");
 const zg_vulkan = @import("zg_vulkan");
 const Welcome = @import("welcome.zig").Welcome;
 const Workbench = @import("workbench.zig").Workbench;
+const tracing_mod = @import("tracing.zig");
+const Tracing = tracing_mod.Tracing;
 const fonts = @import("fonts.zig");
 const early_update = @import("startup/early_update_check.zig");
 const install_kind = @import("startup/install_kind.zig");
@@ -97,6 +103,14 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var app = zg_gui.App.init(rt.gpa);
     defer app.deinit();
     app.attachRuntime(&rt);
+    // `--trace=`, `--trace-format=`, `ZG_TRACE` and the perf.trace.*
+    // commands (E14.F02.S01.T02).
+    var tracing: Tracing = undefined;
+    tracing.init(rt.gpa, rt.io, &env);
+    defer tracing.deinit();
+    tracing.app = &app;
+    const trace_req = traceRequest(min, &kind_arena, &env);
+    if (trace_req) |r| tracing.applyRequest(r);
     var mono: zg_gui.paint.text.MonoText = .{};
     const font_files = fonts.load(rt.gpa, rt.io, &env);
     defer if (font_files) |f| f.deinit(rt.gpa);
@@ -135,6 +149,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         const cp = kind.paths;
         wb.useSettings(if (cp) |p| p.userSettings() else null, if (cp) |p| p.userKeybindings() else null) catch |e|
             std.log.err("settings: {t}", .{e});
+        tracing.registerCommands(wb.reg) catch |e| std.log.err("trace commands: {t}", .{e});
     }
     defer if (use_wb) wb.deinit();
     const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
@@ -162,10 +177,11 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (use_wb and frames_arg == null) {
             if (state_dir) |state| {
                 wb.enableUndoFiles(state);
-                if (wb.loadLayout(state)) |s| size = s;
+                if (wb.loadLayout(state)) |s| size = fitOnScreen(s, platform);
             }
         }
         const hw = try host.open(.{ .title = "zigguro", .size = size, .root = root });
+        if (trace_req) |r| if (r.startup) tracing.armStartupStop();
         if (use_wb) try wb.attach(hw.win);
         if (use_wb) wb.enableFloating(host.windowOpener());
         if (want_terminal and !wb.panelShown("terminal")) try wb.toggleTerminal();
@@ -230,6 +246,26 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Runs until the window closes. In a managed install the version counts
 /// as healthy 30 s after the window opened, or at a clean quit.
+/// A saved window size, shrunk to the primary monitor's work area: the
+/// layout may come from a larger screen or a smaller scale, and a window
+/// larger than its output cannot be moved or resized back.
+fn fitOnScreen(s: zg_gui.core.geom.Size, platform: zg_platform.Platform) zg_gui.core.geom.Size {
+    var mons: [8]zg_platform.types.MonitorInfo = undefined;
+    const n = @min(platform.monitors(&mons), mons.len);
+    if (n == 0) return s;
+    var m = &mons[0];
+    for (mons[0..n]) |*x| if (x.primary) {
+        m = x;
+    };
+    const scale = if (m.scale.factor > 0) m.scale.factor else 1;
+    const area = if (m.work_px.w > 0 and m.work_px.h > 0) m.work_px else m.rect_px;
+    if (area.w == 0 or area.h == 0) return s;
+    return .{
+        .w = @min(s.w, @as(f32, @floatFromInt(area.w)) / scale),
+        .h = @min(s.h, @as(f32, @floatFromInt(area.h)) / scale),
+    };
+}
+
 fn runInteractive(rt: *zg_core.Runtime, host: *zg_gui.Host, boot: *early_update.Boot) !void {
     const h = if (boot.health) |*h| h else return host.run();
     h.markFirstFrame(0);
@@ -242,6 +278,14 @@ fn runInteractive(rt: *zg_core.Runtime, host: *zg_gui.Host, boot: *early_update.
 fn healthTimer(io: std.Io, h: *zg_update.boot_health.BootHealth) std.Io.Cancelable!void {
     try io.sleep(.fromMilliseconds(zg_update.boot_health.healthy_after_ms), .awake);
     h.markHealthy();
+}
+
+/// The trace the command line or `ZG_TRACE` asks for (strings in `arena`).
+fn traceRequest(min: std.process.Init.Minimal, arena: *std.heap.ArenaAllocator, env: *const std.process.Environ.Map) ?tracing_mod.Request {
+    var args: std.ArrayList([]const u8) = .empty;
+    var it = min.args.iterateAllocator(arena.allocator()) catch return null;
+    while (it.next()) |a| args.append(arena.allocator(), arena.allocator().dupe(u8, a) catch return null) catch return null;
+    return tracing_mod.parseRequest(args.items, env.get("ZG_TRACE"));
 }
 
 /// The value after flag `name`, if given (owned).

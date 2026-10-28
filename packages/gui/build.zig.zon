@@ -9,6 +9,7 @@
         .zg_platform = .{ .path = "../platform" },
         .zg_text = .{ .path = "../text" },
         .zg_vulkan = .{ .path = "../vulkan" },
+        .zg_perf = .{ .path = "../perf" },
     },
     .paths = .{
         "build.zig",

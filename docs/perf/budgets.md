@@ -2,7 +2,7 @@
 
 # Performance budgets
 
-158 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`).
+159 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
 
 ## Machines
 
@@ -176,7 +176,8 @@
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
 | `ai.chunk_to_photon` | duration_ns | p99 | 16.7 ms | 8.33 ms | ref_laptop_2024 | scenario `agents_10_streaming` / `chunk_to_photon` | warn | E14.F02.S01.T03 |
-| `ai.tool_dispatch_overhead` | duration_ns | p99 | 1 ms | 200 µs | ref_laptop_2024 | runtime `pending` | warn | E10.F04 |
+| `ai.tool_dispatch_overhead` | duration_ns | p99 | 1 ms | 200 µs | ref_laptop_2024 | scenario `agents_10_streaming` / `tool_dispatch_overhead` | warn | E14.F02.S01.T03 |
+| `ai.ttft` | duration_ns | p50 | 2 s | – | ref_laptop_2024 | scenario `agents_10_streaming` / `ttft` | track | E14.F02.S01.T03 |
 | `ai.pane_open` | duration_ns | max | 16 ms | – | ref_laptop_2024 | runtime `pending` | track | E10.F06 |
 | `ai.resume_10k_first_paint` | duration_ns | max | 50 ms | – | ref_laptop_2024 | runtime `pending` | track | E10.F07 |
 | `ai.per_delta` | duration_ns | p99 | 20 µs | – | ref_laptop_2024 | runtime `pending` | track | E10.F02 |

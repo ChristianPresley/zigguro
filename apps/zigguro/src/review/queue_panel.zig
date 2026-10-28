@@ -261,10 +261,12 @@ pub const QueuePanel = struct {
             .changeset => std.fmt.bufPrint(&lb, "{s} {s}", .{ if (r.expanded) "▾" else "▸", r.label }),
             .file => std.fmt.bufPrint(&lb, "{s}", .{r.label}),
         } catch r.label;
+        // The label takes the room left by the counts and buttons and is
+        // clipped when the panel is narrow (the buttons keep their size).
+        ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .grow = 1, .basis = .{ .px = 0 }, .clip = true } });
         if (r.kind == .file) {
             ui.text(label, .{ .wrap = false });
         } else if (zg_gui.w.button(ui, .{ .label = label, .variant = .ghost }).clicked) p.toggle_row = i;
-        ui.open(.{ .style = .{ .grow = 1 } });
         ui.close();
         if (r.kind == .group) return;
         var sb: [96]u8 = undefined;
@@ -276,7 +278,11 @@ pub const QueuePanel = struct {
             var ab: [16]u8 = undefined;
             w.print("  {s}", .{age(&ab, now - r.created_ms)}) catch {};
         }
+        ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .clip = true } });
         ui.text(w.buffered(), .{ .color = if (r.conflicts > 0) .danger else .fg_muted, .wrap = false });
+        ui.close();
+        ui.open(.{ .style = .{ .dir = .row, .align_items = .center, .shrink = 0 } });
+        defer ui.close();
         if (r.kind == .changeset) if (r.cs) |id| if (p.glue.q.get(id)) |c| switch (c.state) {
             .applied => p.actionButton(ui, id, .undo, "Undo"),
             .pending, .partially_applied => {
@@ -426,4 +432,51 @@ test "queue panel: a turn's changeset shows, expands and filters" {
     p.filter.setText("colour:red") catch unreachable;
     p.applyFilter(g.model);
     try testing.expect(p.filter_error != null);
+}
+
+test "queue panel: a narrow panel keeps a pending turn's buttons on screen" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\n" });
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{});
+    defer g.destroy();
+    g.mode = .review;
+
+    const Root = struct {
+        p: ?*QueuePanel = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.p) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const width = 220;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = width, .h = 300 }, .root = .of(&view) });
+    defer t.deinit();
+    const p = try QueuePanel.create(gpa, testing.io, &t.app, g);
+    defer p.destroy();
+    view.p = p;
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x53 };
+    const abs = (try fs.resolve(testing.io, arena_state.allocator(), "a.txt")).abs;
+    _ = try fs.propose(testing.io, arena_state.allocator(), abs, .{ .str_replace = .{ .old = "one", .new = "ONE" } }, .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" });
+    _ = (try fs.endTurn(testing.io, s1, 1)).?;
+    t.win.markAllDirty();
+    _ = t.settle();
+    // Expand the session group to show the turn's row.
+    if (t.find(.{ .role = .button, .name = "Accept" }) == null) {
+        try t.click(.{ .role = .button, .name_contains = "Session" });
+        _ = t.settle();
+    }
+    const accept = try t.rectOf(.{ .role = .button, .name = "Accept" });
+    const reject = try t.rectOf(.{ .role = .button, .name = "Reject" });
+    try testing.expect(reject.x + reject.w <= width);
+    try testing.expect(accept.x + accept.w <= reject.x);
+    try testing.expect(accept.w > 20);
 }

@@ -542,6 +542,47 @@ pub const ReviewGlue = struct {
         return id;
     }
 
+    /// One file of a `proposeChange`d change: its text before (null: the file
+    /// is created) and after.
+    pub const ProposedFile = struct { path: []const u8, base: ?[]const u8, new: []const u8 };
+
+    /// Queues a change made outside an agent turn (note link updates after
+    /// a rename, a note edited from the notes sidebar) as one changeset,
+    /// pending review, or accepted at once with `auto_apply`. Paths are
+    /// workspace-relative. Null when no file changes. Any thread.
+    pub fn proposeChange(g: *ReviewGlue, label: []const u8, origin: model.Origin, files_in: []const ProposedFile, auto_apply: bool) !?model.ChangesetId {
+        g.mutex.lockUncancelable(g.io);
+        defer g.mutex.unlock(g.io);
+        defer g.flushLocked();
+        g.ensureStoreLocked();
+        const b = try g.q.beginBatch(.{ .origin = origin, .label = label, .workspace = g.root, .created_ms = nowMs(g.io) });
+        var n: usize = 0;
+        for (files_in) |f| {
+            if (f.base) |base| {
+                if (std.mem.eql(u8, base, f.new)) continue;
+                var e = try model.merge3.lineChangeSet(g.gpa, base, f.new);
+                defer e.deinit();
+                try g.q.addEdit(b, f.path, base, null, &e);
+            } else try g.q.addCreate(b, f.path, f.new);
+            n += 1;
+        }
+        if (n == 0) {
+            g.q.abortBatch(b);
+            return null;
+        }
+        const id = try g.q.commitBatch(b, .{});
+        if (auto_apply) {
+            var arena: std.heap.ArenaAllocator = .init(g.gpa);
+            defer arena.deinit();
+            switch (try g.actLocked(arena.allocator(), id, .accept)) {
+                .ok => {},
+                .refused => |r| log.warn("{s}: not applied: {s} ({s})", .{ label, r.reason, r.path }),
+                .failed => |f| log.warn("{s}: not applied: {s}: {t}", .{ label, f.path, f.err }),
+            }
+        }
+        return id;
+    }
+
     /// Records the write of `rel` (whose content was `before`); null when
     /// nothing changed. Locked.
     fn record(g: *ReviewGlue, arena: Allocator, rel: []const u8, before: ?zg_review.apply.files.Entry, agent: zg_ai_proto.AgentRef) !?u64 {
@@ -758,9 +799,11 @@ pub const ReviewGlue = struct {
         if (r.apply != null) _ = g.conflicts.rebaseApplied() catch |e| log.warn("rebasing after an apply failed: {t}", .{e});
     }
 
-    /// Writes what changed to the store (when persisting). Locked. A
-    /// failure is logged: the change stands, and the next flush retries.
-    fn flushLocked(g: *ReviewGlue) void {
+    /// Writes what changed to the store (when persisting). Callers hold
+    /// `mutex`; views that act on the queue through their own session
+    /// call it after each action. A failure is logged: the change stands,
+    /// and the next flush retries.
+    pub fn flushLocked(g: *ReviewGlue) void {
         const st = g.store orelse return;
         st.flush() catch |e| log.warn("review store: flush failed: {t}", .{e});
     }

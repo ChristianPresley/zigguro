@@ -6,6 +6,17 @@
 
 const std = @import("std");
 
+/// `file:` URIs and paths (zg_lsp's), for callers that open targets.
+pub const uri = @import("zg_lsp").uri;
+
+/// Snippets: the VS Code grammar, variables, transforms and expansion.
+pub const snippet = struct {
+    pub const Snippet = @import("snippet/Snippet.zig");
+    pub const variables = @import("snippet/variables.zig");
+    pub const transform = @import("snippet/transform.zig");
+    pub const Session = @import("snippet/Session.zig");
+};
+
 /// Text synchronization: the `LspSink` that serializes `didOpen`,
 /// `didChange`, `didSave` and `didClose` for one server.
 pub const sync = struct {
@@ -27,6 +38,10 @@ pub const features = struct {
     pub const SelectionDriver = @import("features/selection.zig");
     pub const LinkDriver = @import("features/links.zig");
     pub const position = @import("features/position.zig");
+    pub const request = @import("features/request.zig");
+    pub const HoverService = @import("features/hover.zig");
+    pub const HighlightService = @import("features/highlight.zig");
+    pub const NavService = @import("features/navigation.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -59,6 +74,8 @@ test {
     _ = @import("Manager_test.zig");
     _ = @import("features/semtok_test.zig");
     _ = @import("features/features_test.zig");
+    _ = @import("features/nav_hover_test.zig");
+    _ = @import("snippet/Snippet.zig");
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
     _ = @import("agent/tools_test.zig");

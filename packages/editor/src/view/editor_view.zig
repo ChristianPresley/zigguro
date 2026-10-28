@@ -120,6 +120,37 @@ pub const KeyHook = struct {
     f: *const fn (ctx: *anyopaque, v: *EditorView, k: zg_gui.input.event.KeyPress) bool,
 };
 
+/// Told where the pointer rests and of Ctrl/Cmd+clicks and key presses,
+/// for hover popups and go to definition (E07). Offsets are null where
+/// no text is (past a line's end, below the last line).
+pub const PointerHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *EditorView, e: PointerEvent) bool,
+};
+
+/// What `PointerHook` hears. `origin` is the text origin in window
+/// coordinates (`posOf` plus `origin` places an offset in the window).
+pub const PointerEvent = struct {
+    kind: Kind,
+    offset: ?u64 = null,
+    origin: Vec2 = .{},
+    mods: @FieldType(zg_gui.input.event.KeyPress, "mods") = .{},
+    /// The key pressed (`kind == .key`).
+    key: ?zg_gui.input.event.KeyPress = null,
+
+    pub const Kind = enum {
+        /// The pointer moved over the text (not while dragging).
+        move,
+        /// The pointer left the editor.
+        leave,
+        /// A left click with Ctrl or Cmd held; returning true consumes it.
+        click,
+        /// A key press, before anything else sees it (returning true
+        /// consumes it; Escape hides a hover this way).
+        key,
+    };
+};
+
 /// Horizontal moves.
 pub const Unit = enum { char, word };
 
@@ -224,6 +255,8 @@ pub const EditorView = struct {
     capture: ?*Capture = null,
     /// Offered every key press before `mode` (release events are not).
     key_hook: ?KeyHook = null,
+    /// Told of pointer moves, Ctrl+clicks and key presses (hover).
+    pointer_hook: ?PointerHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
     /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and
@@ -1090,6 +1123,45 @@ pub const EditorView = struct {
         try v.undo.record(cs, inverse, before, v.sels.slice(), .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = key });
         v.revealPrimary();
         v.touch();
+    }
+
+    /// Applies `edits` (non-overlapping, any order) as one undo step of
+    /// its own; selections follow the text. For inserts that are not
+    /// typing: snippets, completions, snippet choices.
+    pub fn applyEdits(v: *EditorView, edits: []const Replace) !void {
+        if (v.opts.read_only) return error.ReadOnly;
+        var cs = try ChangeSet.fromEdits(v.gpa, v.doc.len(), edits);
+        var cs_owned = true;
+        defer if (cs_owned) cs.deinit();
+        if (cs.isIdentity()) return;
+        var inverse = try cs.invert(v.doc.tree, v.gpa);
+        var inv_owned = true;
+        defer if (inv_owned) inverse.deinit();
+        const before = try sel_mod.dupe(v.gpa, v.sels.slice());
+        defer v.gpa.free(before);
+
+        v.in_edit = true;
+        defer v.in_edit = false;
+        try v.doc.applyChangeSet(&cs, .{ .user = 0 });
+        for (v.sels.items.items) |*s| {
+            s.anchor = cs.mapPos(s.anchor, .right);
+            s.head = cs.mapPos(s.head, .right);
+        }
+        v.sels.clearHistory();
+        v.normalize();
+        v.undo.breakGroup();
+        cs_owned = false;
+        inv_owned = false;
+        try v.undo.record(cs, inverse, before, v.sels.slice(), .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = null });
+        v.undo.breakGroup();
+        v.revealPrimary();
+        v.touch();
+    }
+
+    /// Replaces the selections; `sels[primary]` becomes the primary.
+    pub fn setSelections(v: *EditorView, sels: []const Selection, primary: usize) !void {
+        try v.sels.set(sels, primary);
+        v.afterMove();
     }
 
     /// Typed text: one character goes through smart typing (pairs,

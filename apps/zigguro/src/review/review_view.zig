@@ -463,8 +463,10 @@ pub const ReviewView = struct {
         }
     }
 
-    /// Runs a button's action (locked).
+    /// Runs a button's action (locked), then writes what it decided to
+    /// the review store, so `zg review` and the next run see it.
     fn run(v: *ReviewView, a: Action) void {
+        defer v.glue.flushLocked();
         const s = v.session;
         const r: anyerror!?zg_review.session.Failure = switch (a) {
             .accept_hunk => |h| blk: {
@@ -1015,6 +1017,53 @@ test "review view: split lines" {
     try std.testing.expectEqualStrings("a", l[0]);
     try std.testing.expectEqualStrings("", l[2]);
     try std.testing.expectEqual(@as(usize, 2), (try splitLines(arena.allocator(), "x\ny\n")).len);
+}
+
+test "review view: decisions reach the review store at once" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\n.\n.\n.\n.\ntwo\n" });
+    const g = try ReviewGlue.create(gpa, testing.io, root, .{ .persist = true });
+    defer g.destroy();
+    g.mode = .review;
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const fs = g.files();
+    const s1: @import("zg_ai").proto.AgentRef = .{ .session = 0x52 };
+    const origin: @import("zg_ai").tools.builtin.files.Origin = .{ .agent = s1, .turn = 1, .tool = "edit_file", .tool_call_id = "t" };
+    const abs = (try fs.resolve(testing.io, ar, "a.txt")).abs;
+    _ = try fs.propose(testing.io, ar, abs, .{ .whole_file = .{ .text = "ONE\n.\n.\n.\n.\nTWO\n", .base_version = null } }, origin);
+    const id: zg_review.model.ChangesetId = @enumFromInt((try fs.endTurn(testing.io, s1, 1)).?);
+
+    const Root = struct {
+        v: ?*ReviewView = null,
+        pub fn build(r: *@This(), ui: *Ui) void {
+            if (r.v) |x| x.build(ui);
+        }
+    };
+    var view: Root = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 500 }, .root = .of(&view) });
+    defer t.deinit();
+    const v = try ReviewView.create(gpa, testing.io, &t.app, g, .{ .changeset = id });
+    defer v.destroy();
+    view.v = v;
+    t.win.markAllDirty();
+    _ = t.settle();
+    try t.click(.{ .role = .button, .name = "Accept all" });
+    _ = t.settle();
+    try testing.expectEqual(zg_review.model.State.applied, g.q.get(id).?.state);
+
+    // Another process (`zg review list`) sees the decision while the IDE
+    // is still running.
+    const other = try ReviewGlue.create(gpa, testing.io, root, .{ .persist = true });
+    defer other.destroy();
+    try testing.expectEqual(zg_review.model.State.applied, other.q.get(id).?.state);
 }
 
 test "review view: accept, reject and undo hunks of a held turn" {

@@ -93,7 +93,7 @@ fn fixture(e: *Env) !void {
 }
 
 test "tools: schemas are valid JSON and the exporter lists read-only tools" {
-    inline for (.{ tools.schemas.list_dir, tools.schemas.glob, tools.schemas.find_files }) |s| {
+    inline for (.{ tools.schemas.list_dir, tools.schemas.glob, tools.schemas.find_files, tools.schemas.grep }) |s| {
         const v = try std.json.parseFromSlice(std.json.Value, testing.allocator, s, .{});
         defer v.deinit();
         try testing.expectEqualStrings("object", v.value.object.get("type").?.string);
@@ -169,4 +169,53 @@ test "tools: fuzzyScore prefers basename and run matches" {
     try testing.expect(s3 == null or s3.? < s2);
     try testing.expect(tools.fuzzyScore("xyz", "src/main.zig", 4) == null);
     try testing.expect(tools.fuzzyScore("MAIN", "src/main.zig", 4) != null);
+}
+
+/// File contents for `grep` by root-relative path.
+const Contents = struct {
+    fn read(_: *anyopaque, arena: std.mem.Allocator, root: @import("../ids.zig").RootId, rel: []const u8) ?[]const u8 {
+        _ = root;
+        const files = [_][2][]const u8{
+            .{ "src/main.zig", "const std = @import(\"std\");\r\npub fn main() void {}\n// TODO: main loop\n" },
+            .{ "src/ws/model.zig", "pub const Model = struct {};\n// todo later\n" },
+            .{ "docs/guide.md", "# Guide\nSee main.\n" },
+            .{ "config/secrets.env", "TODO=1\n" },
+            .{ "build.zig", "pub fn build() void {}\x00binary" },
+            .{ "zig-out/bin/app", "TODO ignored" },
+        };
+        for (files) |f| if (std.mem.eql(u8, f[0], rel)) return arena.dupe(u8, f[1]) catch null;
+        return null;
+    }
+};
+
+test "tools: grep finds matching lines in path order, skipping binary, ignored and denied files" {
+    var e: Env = try .init(1);
+    defer e.deinit();
+    try fixture(&e);
+    var ctx: u8 = 0;
+    const src: tools.Source = .{ .store = e.ps, .roots = &.{.{ .id = .of(0), .name = "app" }}, .policy = .{ .ctx = &e, .check = denySecrets }, .read = .{ .ctx = &ctx, .read = Contents.read } };
+    var x: tools.ToolExporter(FakeForeign) = .{ .src = src };
+    const ex = x.exporter();
+    try testing.expectEqual(@as(usize, 4), (try ex.list(ex.ctx, e.arena.allocator())).len);
+
+    const Out = struct { items: []const struct { path: []const u8, line: u32, text: []const u8 }, truncated: bool };
+    const a = e.arena.allocator();
+    var r = try std.json.parseFromSliceLeaky(Out, a, try e.call(&src, "grep", "{\"pattern\": \"(?i)todo\"}", false), .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(@as(usize, 2), r.items.len);
+    try testing.expectEqualStrings("src/main.zig", r.items[0].path);
+    try testing.expectEqual(@as(u32, 3), r.items[0].line);
+    try testing.expectEqualStrings("// TODO: main loop", r.items[0].text);
+    try testing.expectEqualStrings("src/ws/model.zig", r.items[1].path);
+    try testing.expectEqual(@as(u32, 2), r.items[1].line);
+
+    // Literal text, a glob, one line per hit, CR dropped.
+    r = try std.json.parseFromSliceLeaky(Out, a, try e.call(&src, "grep", "{\"pattern\": \"@import(\\\"std\\\")\", \"literal\": true, \"glob\": \"src/*.zig\"}", false), .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(@as(usize, 1), r.items.len);
+    try testing.expectEqualStrings("const std = @import(\"std\");", r.items[0].text);
+    r = try std.json.parseFromSliceLeaky(Out, a, try e.call(&src, "grep", "{\"pattern\": \"main\", \"limit\": 2}", false), .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(@as(usize, 2), r.items.len);
+    try testing.expect(r.truncated);
+
+    _ = try e.call(&src, "grep", "{\"pattern\": \"(unclosed\"}", true);
+    _ = try e.call(&src, "grep", "{\"pattern\": \"\"}", true);
 }

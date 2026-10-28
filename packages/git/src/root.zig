@@ -63,6 +63,41 @@ pub const revparse = @import("revparse.zig");
 pub const checkout = @import("checkout.zig");
 /// Branches, upstreams and tags.
 pub const branch = @import("branch.zig");
+/// Remotes and the network: refspecs, `git remote`, transports, the wire
+/// protocol, fetch and push.
+pub const remote = struct {
+    pub const refspec = @import("remote/refspec.zig");
+    pub const config = @import("remote/remote.zig");
+    pub const transport = @import("remote/transport.zig");
+    pub const protocol = @import("remote/protocol.zig");
+    pub const objects = @import("remote/objects.zig");
+    pub const fetch = @import("remote/fetch.zig");
+    pub const push = @import("remote/push.zig");
+    pub const credential = @import("remote/credential.zig");
+    pub const http = @import("remote/http.zig");
+    pub const connect = @import("remote/connect.zig");
+    pub const local = @import("remote/local.zig");
+};
+/// The native SSH-2 client for `ssh://` and scp-like remotes.
+pub const ssh = struct {
+    pub const wire = @import("ssh/wire.zig");
+    pub const cipher = @import("ssh/cipher.zig");
+    pub const pubkey = @import("ssh/pubkey.zig");
+    pub const keys = @import("ssh/keys.zig");
+    pub const agent = @import("ssh/agent.zig");
+    pub const known_hosts = @import("ssh/known_hosts.zig");
+    pub const config = @import("ssh/config.zig");
+    pub const url = @import("ssh/url.zig");
+    pub const client = @import("ssh/client.zig");
+    pub const session = @import("ssh/session.zig");
+};
+/// SSH signatures for commits and tags (`gpg.format = ssh`).
+pub const sign = struct {
+    pub const sshsig = @import("sign/sshsig.zig");
+    pub const allowed_signers = @import("sign/allowed_signers.zig");
+    pub const embed = @import("sign/embed.zig");
+    pub const signing = @import("sign/signing.zig");
+};
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -125,6 +160,14 @@ test {
     _ = @import("refs/refs_test.zig");
     _ = @import("status_test.zig");
     _ = @import("ops_test.zig");
+    _ = @import("remote/remote_test.zig");
+    _ = @import("remote/refspec.zig");
+    _ = @import("remote/http_test.zig");
+    _ = @import("remote/connect.zig");
+    _ = @import("ssh/ssh_test.zig");
+    std.testing.refAllDecls(ssh);
+    _ = @import("sign/sign_test.zig");
+    std.testing.refAllDecls(sign);
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
