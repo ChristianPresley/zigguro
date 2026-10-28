@@ -10,6 +10,10 @@
 //! only copies the rows out and swaps the result in (`zg_terminal`'s
 //! `Compactor`).
 //!
+//! Shells zigguro has scripts for (bash, zsh, fish, PowerShell, cmd) start
+//! with them loaded, so their prompts and commands become command blocks
+//! (`zg_terminal.shell`).
+//!
 //! Several panels live side by side (E06.F07), so a panel waits only for
 //! its own workers when torn down, and a drain still queued then reaches
 //! a ref-counted `Poster` that outlives the panel instead of the panel.
@@ -22,6 +26,7 @@ const zg_terminal = @import("zg_terminal");
 const zg_terminal_view = @import("zg_terminal_view");
 
 const Pty = zg_platform.process.Pty;
+const inject = zg_terminal.shell.inject;
 const TerminalView = zg_terminal_view.TerminalView;
 
 /// See the module doc.
@@ -52,6 +57,11 @@ pub const TerminalPanel = struct {
     /// Why no shell runs, or how it ended (shown in the panel header).
     note: [96]u8 = undefined,
     note_len: usize = 0,
+    /// Load zigguro's shell integration scripts into the shell
+    /// (`terminal.integrated.shellIntegration.enabled`).
+    shell_integration: bool = true,
+    /// This session's shell-integration nonce.
+    nonce: [32]u8 = undefined,
     /// Called after output arrives (the workbench repaints).
     on_output: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
 
@@ -127,10 +137,14 @@ pub const TerminalPanel = struct {
         const n = @min(args.len, argv_buf.len - 1);
         @memcpy(argv_buf[1..][0..n], args[0..n]);
         const argv = argv_buf[0 .. n + 1];
+        var plan = if (p.shell_integration) p.integrationPlan(argv) else null;
+        defer if (plan) |*x| x.deinit();
+        const policy: zg_platform.process.pty.SpawnPolicy = .{ .env_set = if (plan) |x| x.env else &.{} };
         p.pty = Pty.spawn(p.gpa, p.io, .{
-            .argv = argv,
+            .argv = if (plan) |x| x.argv else argv,
             .env = p.env,
             .size = .{ .cols = p.term.cols(), .rows = p.term.rows() },
+            .policy = &policy,
         }) catch |e| {
             p.setNote("no shell: {t}", .{e});
             return;
@@ -145,6 +159,23 @@ pub const TerminalPanel = struct {
             p.pty.?.close();
             p.pty = null;
         };
+    }
+
+    /// How to start `argv` with shell integration (zigguro's scripts
+    /// loaded, a fresh nonce), or null for a shell it does not support or
+    /// when the scripts cannot be written.
+    fn integrationPlan(p: *TerminalPanel, argv: []const []const u8) ?inject.Plan {
+        if (!inject.shouldInject(inject.kindOf(argv[0]), argv[1..])) return null;
+        const root = (inject.cacheRoot(p.gpa, p.env) catch return null) orelse return null;
+        defer p.gpa.free(root);
+        const dir = inject.ensureExtracted(p.gpa, p.io, root) catch |e| {
+            std.log.scoped(.terminal).warn("shell integration: cannot write the scripts: {t}", .{e});
+            return null;
+        };
+        defer p.gpa.free(dir);
+        p.nonce = inject.newNonce(p.io);
+        p.term.opts.shell_nonce = &p.nonce;
+        return inject.plan(p.gpa, argv, p.env, dir, &p.nonce) catch null;
     }
 
     fn startJob(p: *TerminalPanel) void {
