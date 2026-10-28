@@ -252,3 +252,43 @@ test "manager: watched-file changes reach the servers that registered for them" 
     try testing.expectEqualStrings("ok", r.ok.value.?.contents.markup_content.value);
     h.mgr.closeDoc(d);
 }
+
+const TestSettings = struct {
+    asked: std.atomic.Value(u32) = .init(0),
+
+    fn get(ctx: *anyopaque, _: *Manager.Server, arena: std.mem.Allocator) std.json.Value {
+        const t: *TestSettings = @ptrCast(@alignCast(ctx));
+        _ = t.asked.fetchAdd(1, .acq_rel);
+        return std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"zig_exe_path\": \"/z/zig\", \"semantic_tokens\": \"full\"}", .{}) catch .null;
+    }
+};
+
+var test_settings: TestSettings = .{};
+
+fn settingsPulled(h: *Harness) bool {
+    _ = h;
+    return test_settings.asked.load(.acquire) >= 3;
+}
+
+test "manager: servers pull their settings section and are told when it changes" {
+    var h: Harness = undefined;
+    try h.init("server_settings.script", &.{.{ .id = "fake", .settings_section = "zls" }});
+    defer h.deinit();
+    test_settings = .{};
+    h.mgr.config_provider = .{ .ctx = &test_settings, .get = TestSettings.get };
+    const d = try h.open("main.zig", "const a = 1;\n");
+    defer h.docs.release(d);
+    try h.waitFor(fakeSettled);
+    try h.waitFor(settingsPulled);
+    h.mgr.settingsChanged();
+
+    var out: [4]*Client = undefined;
+    try testing.expectEqual(@as(usize, 1), h.mgr.clientsFor(d, .hover, &out));
+    const r = try out[0].requestBlocking(.@"textDocument/hover", .{
+        .textDocument = .{ .uri = h.docs.uri(d).? },
+        .position = .{ .line = 0, .character = 0 },
+    }, .{});
+    defer r.deinit();
+    try testing.expectEqualStrings("ok", r.ok.value.?.contents.markup_content.value);
+    h.mgr.closeDoc(d);
+}
