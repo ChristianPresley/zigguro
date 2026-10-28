@@ -19,4 +19,6 @@
     .{ .key = "mod+c", .command = "problems.copy", .when = "problemsFocus" },
     // Note search (E08.F06.S03.T02 default).
     .{ .key = "mod+shift+n", .command = "notes.search" },
+    // Obsidian's "follow link under cursor".
+    .{ .key = "alt+enter", .command = "notes.followLink", .when = "editorTextFocus" },
 }
