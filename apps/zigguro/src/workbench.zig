@@ -55,6 +55,9 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const settings_mod = @import("settings/service.zig");
+const Settings = settings_mod.Settings;
+const SettingsView = @import("settings/view.zig").SettingsView;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -190,6 +193,23 @@ pub const Workbench = struct {
     undo_dir: ?std.Io.Dir = null,
     /// Language servers and semantic colours (from `attach`).
     codeintel: ?*CodeIntel = null,
+    /// The user and workspace settings.json (`useSettings`).
+    settings: ?*Settings = null,
+    /// The settings editor tab, while open.
+    settings_view: ?*SettingsView = null,
+    settings_ref: ?PanelRef = null,
+    /// Polls the settings and keybindings files (live reload).
+    settings_timer: Window.TimerId = .none,
+    /// The user's keybindings.json, its stamp and parsed layer.
+    keys_path: ?[]u8 = null,
+    keys_stamp: ?KeysStamp = null,
+    keys_doc: ?zg_config.zon_load.Doc = null,
+    /// Saves dirty files with `files.autoSave` = afterDelay.
+    autosave_timer: Window.TimerId = .none,
+    /// Saves the workbench started without asking (no toast for them).
+    quiet_saves: std.ArrayList(*FileSync) = .empty,
+
+    const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
     /// Which keys editors use.
     const KeyMode = enum { standard, vim, emacs };
@@ -221,6 +241,11 @@ pub const Workbench = struct {
         panel: PanelRef = undefined,
         /// The editor widget (last build).
         node: zg_gui.core.NodeId = .none,
+        /// The document version autosave last saw (it saves once a dirty
+        /// file stays unchanged for a delay).
+        autosave_seen: u64 = 0,
+        /// The version a quiet save failed at (no retry until it changes).
+        autosave_failed: u64 = std.math.maxInt(u64),
     };
 
     /// Dock panel kinds.
@@ -229,8 +254,9 @@ pub const Workbench = struct {
     const kind_agent: zg_gui.dock.model.PanelKindId = 3;
     const kind_review: zg_gui.dock.model.PanelKindId = 4;
     const kind_review_view: zg_gui.dock.model.PanelKindId = 5;
+    const kind_settings: zg_gui.dock.model.PanelKindId = 6;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -298,7 +324,7 @@ pub const Workbench = struct {
         } else try wb.docs.openUntitled(bytes);
         f.doc = wb.docs.get(h).?;
         if (f.path != null) f.handle = h;
-        f.view = try EditorView.init(gpa, f.doc, .{});
+        f.view = try EditorView.init(gpa, f.doc, wb.editorOptions(null));
         errdefer f.view.deinit();
         wb.setMode(&f, wb.key_mode);
         errdefer wb.setMode(&f, .standard);
@@ -324,6 +350,7 @@ pub const Workbench = struct {
             sx.* = try DocumentSyntax.init(gpa, lang, &wb.langs, &f.doc.tree, f.doc.version);
             f.syntax = sx;
             f.view.syntax = sx;
+            f.view.opts = wb.editorOptions(lang.name);
         };
         if (wb.codeintel) |ci| if (f.handle) |fh| ci.open(fh, f.syntax, f.view);
         return f;
@@ -662,6 +689,7 @@ pub const Workbench = struct {
                 kind_terminal => wb.terminal_ref = p,
                 kind_agent => wb.agent_ref = p,
                 kind_review => wb.review_ref = p,
+                kind_settings => wb.settings_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -743,6 +771,10 @@ pub const Workbench = struct {
         wb.review_view = null;
         if (wb.review_timer != .none) w.cancelTimer(wb.review_timer);
         wb.review_timer = .none;
+        if (wb.settings_timer != .none) w.cancelTimer(wb.settings_timer);
+        wb.settings_timer = .none;
+        if (wb.autosave_timer != .none) w.cancelTimer(wb.autosave_timer);
+        wb.autosave_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         if (wb.agent_cmds) |c| c.target = null;
@@ -813,6 +845,11 @@ pub const Workbench = struct {
         wb.gpa.free(wb.cwd);
         if (wb.layout_dir) |d| d.close(wb.io);
         if (wb.undo_dir) |d| d.close(wb.io);
+        if (wb.settings_view) |v| v.destroy();
+        if (wb.settings) |st| st.destroy();
+        if (wb.keys_doc) |*d| d.deinit();
+        if (wb.keys_path) |p| wb.gpa.free(p);
+        wb.quiet_saves.deinit(wb.gpa);
     }
 
     /// Hooks the keymap and the palette into `win` and focuses the editor.
@@ -859,6 +896,10 @@ pub const Workbench = struct {
         if (wb.inLayout(wb.terminal_ref)) try wb.startTerminal(win);
         if (wb.inLayout(wb.agent_ref)) try wb.startAgent(win);
         if (wb.inLayout(wb.review_ref)) try wb.startReview(win);
+        // Settings that need the window: the theme, auto save, live reload.
+        wb.applySettings();
+        wb.armSettingsPoll(win);
+        if (wb.mode_queue.items.len > 0) wb.postModeQueue();
     }
 
     /// Whether `p` is in a group (docked or floating) of a shown area.
@@ -885,6 +926,8 @@ pub const Workbench = struct {
             if (wb.emacs_layer == null) wb.emacs_layer = try zg_config.zon_load.loadZon(wb.gpa, zg_editor.modes.emacs.keymap_source, &wb.diags);
             try inputs.append(wb.gpa, .{ .layer = .mode_layer, .doc = &wb.emacs_layer.? });
         }
+        // The user's keybindings.json wins over everything.
+        if (wb.keys_doc) |*d| try inputs.append(wb.gpa, .{ .layer = .user, .doc = d, .source_path = wb.keys_path });
         const km = try zg_config.keymap.Keymap.build(wb.gpa, inputs.items, wb.reg, &wb.keys, zg_config.keyspec.Platform.of(@import("builtin").os.tag), &wb.diags);
         const old = wb.keymap;
         wb.keymap = km;
@@ -924,6 +967,10 @@ pub const Workbench = struct {
         .{ .id = "completions.dismiss", .title = "Dismiss Inline Completion", .category = "AI", .run = completionDismiss },
         .{ .id = "completions.snooze", .title = "Snooze Inline Completions (5 Minutes)", .category = "AI", .run = completionSnooze },
         .{ .id = "completions.toggle", .title = "Toggle Inline Completions", .category = "AI", .run = completionToggle },
+        .{ .id = "workbench.openSettings", .title = "Open Settings", .category = "Preferences", .run = openSettings },
+        .{ .id = "workbench.openSettingsFile", .title = "Open User Settings (JSON)", .category = "Preferences", .run = openUserSettingsFile },
+        .{ .id = "workbench.openWorkspaceSettingsFile", .title = "Open Workspace Settings (JSON)", .category = "Preferences", .run = openWorkspaceSettingsFile },
+        .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -1028,11 +1075,25 @@ pub const Workbench = struct {
             .{ .label = "Overwrite", .action = "file.saveOverwrite" },
             .{ .label = "Reload", .action = "file.revert", .primary = true },
         };
+        const quiet = switch (o) {
+            .saved, .save_failed => wb.takeQuiet(fs),
+            else => false,
+        };
         switch (o) {
             .saved => |s| {
                 if (wb.codeintel) |ci| ci.saved(fs.doc);
-                wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
+                if (!quiet) wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
+                // A settings or keybindings file applies at once.
+                wb.reloadSettings();
             },
+            .save_failed => if (quiet) for (wb.files.items) |*f| {
+                // An auto save is not retried until the text changes.
+                if (f.sync == fs) f.autosave_failed = f.doc.version;
+            },
+            else => {},
+        }
+        switch (o) {
+            .saved => {},
             .save_failed => |e| switch (e) {
                 error.ExternalChangeConflict => wb.notifyActions(.warning, keep_or_reload, "{s} changed on disk; not saved", .{name}),
                 error.Unrepresentable => wb.notify(.error_, "{s}: a character has no encoding in {t}; not saved", .{ name, fs.file.encoding }),
@@ -1065,14 +1126,22 @@ pub const Workbench = struct {
         _ = try wb.view.cursorCommand(.add_below);
     }
 
-    /// Vim keys on or off in every editor.
+    /// Vim keys on or off in every editor (saved as
+    /// `keyboard.vim.enabled` when settings are on).
     fn toggleVim(wb: *Workbench) !void {
-        wb.setKeyMode(if (wb.key_mode == .vim) .standard else .vim);
+        const on = wb.key_mode != .vim;
+        if (on) _ = wb.persistSetting("keyboard.emacs.enabled", .{ .bool = false });
+        if (wb.persistSetting("keyboard.vim.enabled", .{ .bool = on })) return;
+        wb.setKeyMode(if (on) .vim else .standard);
     }
 
-    /// Emacs keys on or off in every editor.
+    /// Emacs keys on or off in every editor (saved as
+    /// `keyboard.emacs.enabled` when settings are on).
     fn toggleEmacs(wb: *Workbench) !void {
-        wb.setKeyMode(if (wb.key_mode == .emacs) .standard else .emacs);
+        const on = wb.key_mode != .emacs;
+        if (on) _ = wb.persistSetting("keyboard.vim.enabled", .{ .bool = false });
+        if (wb.persistSetting("keyboard.emacs.enabled", .{ .bool = on })) return;
+        wb.setKeyMode(if (on) .emacs else .standard);
     }
 
     fn setKeyMode(wb: *Workbench, m: KeyMode) void {
@@ -1294,7 +1363,14 @@ pub const Workbench = struct {
 
     fn completionToggle(wb: *Workbench) !void {
         const svc = wb.completions_svc orelse return wb.notify(.info, "Inline completions need ZG_COMPLETION_URL or a model API key", .{});
-        svc.enabled = !svc.enabled;
+        if (wb.persistSetting("editor.inlineCompletions.enabled", .{ .bool = !svc.enabled })) return;
+        wb.setCompletionsEnabled(!svc.enabled);
+    }
+
+    fn setCompletionsEnabled(wb: *Workbench, on: bool) void {
+        const svc = wb.completions_svc orelse return;
+        if (svc.enabled == on) return;
+        svc.enabled = on;
         if (!svc.enabled) for (wb.files.items) |f| if (f.completions) |c| c.ctl.dismiss(.escape);
     }
 
@@ -1415,11 +1491,282 @@ pub const Workbench = struct {
         wb.notify(.info, "Floating windows {s}", .{if (fl.policy.always_on_top) "stay on top" else "no longer stay on top"});
     }
 
+    /// Switches between the light and dark theme (saved as
+    /// `workbench.colorTheme` when settings are on).
     fn toggleTheme(wb: *Workbench) !void {
         const w = wb.win orelse return;
-        wb.dark = !wb.dark;
+        wb.dark = w.app.theme.kind != .dark and w.app.theme.kind != .hc_dark;
+        if (wb.persistSetting("workbench.colorTheme", .{ .string = if (wb.dark) "zigguro-dark" else "zigguro-light" })) return;
         w.app.follow_system = false;
         w.app.setTheme(if (wb.dark) &themes.zigguro_dark else &themes.zigguro_light);
+    }
+
+    // -- settings ----------------------------------------------------------
+
+    /// How often settings.json and keybindings.json are checked for
+    /// changes made outside the settings editor.
+    const settings_poll_ms = 1000;
+
+    const user_settings_template =
+        \\// zigguro user settings: JSON with comments. Settings (Ctrl+,) lists every
+        \\// key; whatever is set here applies as soon as the file is saved.
+        \\{
+        \\}
+        \\
+    ;
+    const workspace_settings_template =
+        \\// Settings for this folder only; they win over the user settings.
+        \\{
+        \\}
+        \\
+    ;
+    const keybindings_template =
+        \\// zigguro key bindings, on top of the VS Code preset. Each entry looks like
+        \\//   { "key": "ctrl+shift+e", "command": "explorer.focus", "when": "editorFocus" }
+        \\// Show All Commands (Ctrl+Shift+P) lists the commands.
+        \\[
+        \\]
+        \\
+    ;
+
+    /// Turns settings on: the user's settings.json at `user_path` and
+    /// keybindings.json at `keys_path` (null: no config folder) and the
+    /// working folder's `.zigguro/settings.json`. Call after `init`.
+    pub fn useSettings(wb: *Workbench, user_path: ?[]const u8, keys_path: ?[]const u8) !void {
+        const st = try Settings.create(wb.gpa, wb.io, user_path, wb.cwd);
+        errdefer st.destroy();
+        try st.addListener(.{ .ctx = wb, .f = onSettingsChanged });
+        st.setTrusted(wb.trust == .trusted);
+        wb.settings = st;
+        if (keys_path) |k| wb.keys_path = try wb.gpa.dupe(u8, k);
+        wb.pollKeybindings();
+        wb.applySettings();
+    }
+
+    fn onSettingsChanged(ctx: *anyopaque, _: *const zg_config.store.Change) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.applySettings();
+    }
+
+    /// Sets `key` in the user settings.json (which applies it). False
+    /// when settings are off or the file cannot be written.
+    fn persistSetting(wb: *Workbench, key: []const u8, v: zg_config.Value) bool {
+        const st = wb.settings orelse return false;
+        st.write(.user, key, v) catch |e| {
+            wb.notify(.warning, "{s} was not saved to settings.json: {t}", .{ key, e });
+            return false;
+        };
+        return true;
+    }
+
+    /// The editor options from the settings, for files of `lang`.
+    fn editorOptions(wb: *Workbench, lang: ?[]const u8) zg_editor.view.editor_view.Options {
+        const st = wb.settings orelse return .{};
+        const tab = st.getFor("editor.tabSize", lang);
+        const spaces = st.getFor("editor.insertSpaces", lang);
+        const smart = st.getFor("editor.smartTyping", lang);
+        return .{
+            .font_size = @floatFromInt(std.math.clamp(st.int("editor.fontSize"), 6, 72)),
+            .tab_size = if (tab == .int) @intCast(std.math.clamp(tab.int, 1, 16)) else 4,
+            .insert_spaces = spaces != .bool or spaces.bool,
+            .line_numbers = !std.mem.eql(u8, st.string("editor.lineNumbers"), "off"),
+            .smart_typing = smart != .bool or smart.bool,
+        };
+    }
+
+    /// Applies every setting the workbench reads (at start and after
+    /// each change).
+    fn applySettings(wb: *Workbench) void {
+        const st = wb.settings orelse return;
+        if (wb.win) |w| {
+            const t = st.string("workbench.colorTheme");
+            if (std.mem.eql(u8, t, "zigguro-light") or std.mem.eql(u8, t, "zigguro-dark")) {
+                const want: *const zg_gui.theme.theme.Theme = if (t[8] == 'l') &themes.zigguro_light else &themes.zigguro_dark;
+                w.app.follow_system = false;
+                if (w.app.theme != want) w.app.setTheme(want);
+            } else if (!w.app.follow_system) w.app.followSystem();
+            wb.dark = w.app.theme.kind == .dark or w.app.theme.kind == .hc_dark;
+        }
+        for (wb.files.items) |*f| {
+            const o = wb.editorOptions(if (f.syntax) |sx| sx.lang.name else null);
+            if (!std.meta.eql(o, f.view.opts)) {
+                f.view.opts = o;
+                f.view.generation +%= 1;
+            }
+        }
+        const want: KeyMode = if (st.boolean("keyboard.vim.enabled")) .vim else if (st.boolean("keyboard.emacs.enabled")) .emacs else .standard;
+        if (want != wb.key_mode) wb.setKeyMode(want);
+        wb.setCompletionsEnabled(st.boolean("editor.inlineCompletions.enabled"));
+        wb.armAutosave();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Re-reads changed settings and keybindings files.
+    fn reloadSettings(wb: *Workbench) void {
+        if (wb.settings) |st| _ = st.poll();
+        wb.pollKeybindings();
+    }
+
+    fn armSettingsPoll(wb: *Workbench, w: *Window) void {
+        if (wb.settings == null) return;
+        wb.settings_timer = w.setTimer(w.app.now_ms + settings_poll_ms, .{ .ctx = wb, .f = pollSettingsTimer }) catch .none;
+    }
+
+    fn pollSettingsTimer(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.settings_timer = .none;
+        wb.reloadSettings();
+        wb.armSettingsPoll(w);
+    }
+
+    /// Loads the user's keybindings.json again when it changed, and
+    /// rebuilds the keymap with it.
+    fn pollKeybindings(wb: *Workbench) void {
+        const p = wb.keys_path orelse return;
+        const now: KeysStamp = if (std.Io.Dir.cwd().statFile(wb.io, p, .{})) |st|
+            .{ .size = st.size, .mtime = st.mtime.nanoseconds, .missing = false }
+        else |_|
+            .{ .size = 0, .mtime = 0, .missing = true };
+        if (wb.keys_stamp) |old| if (std.meta.eql(old, now)) return;
+        const first = wb.keys_stamp == null;
+        wb.keys_stamp = now;
+        var next: ?zg_config.zon_load.Doc = null;
+        if (!now.missing) {
+            const src = std.Io.Dir.cwd().readFileAlloc(wb.io, p, wb.gpa, .limited(zg_config.zon_load.max_file_bytes)) catch |e| {
+                wb.notify(.warning, "keybindings.json: {t}", .{e});
+                return;
+            };
+            defer wb.gpa.free(src);
+            if (std.mem.trim(u8, src, " \t\r\n").len > 0) {
+                var diags: zg_config.diag.Diags = .init(wb.gpa);
+                defer diags.deinit();
+                next = zg_config.jsonc.loadJsonc(wb.gpa, src, &diags) catch {
+                    if (diags.items().len > 0) {
+                        const d = diags.items()[0];
+                        const lc = zg_config.diag.lineCol(src, d.span.start);
+                        wb.notify(.warning, "keybindings.json:{d}:{d}: {s}", .{ lc.line, lc.col, d.message });
+                    }
+                    return;
+                };
+            }
+        }
+        // A missing file at startup changes nothing.
+        if (first and next == null) return;
+        var old = wb.keys_doc;
+        wb.keys_doc = next;
+        wb.rebuildKeymap() catch |e| wb.notify(.error_, "Keymap: {t}", .{e});
+        if (old) |*d| d.deinit();
+    }
+
+    pub fn openSettings(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        if (wb.settings == null) return wb.notify(.warning, "Settings are not available", .{});
+        try wb.ensureSettingsView();
+        if (wb.settings_ref == null) wb.settings_ref = try wb.dock.addPanel(kind_settings, null);
+        try wb.reveal(wb.settings_ref.?, .center);
+        w.markAllDirty();
+    }
+
+    fn ensureSettingsView(wb: *Workbench) !void {
+        if (wb.settings_view != null) return;
+        const st = wb.settings orelse return;
+        const v = try SettingsView.create(wb.gpa, st);
+        v.open_json = .{ .ctx = wb, .f = openSettingsJson };
+        wb.settings_view = v;
+    }
+
+    fn openSettingsJson(ctx: *anyopaque, scope: settings_mod.Scope) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.openSettingsFileOf(scope);
+    }
+
+    fn openUserSettingsFile(wb: *Workbench) !void {
+        wb.openSettingsFileOf(.user);
+    }
+
+    fn openWorkspaceSettingsFile(wb: *Workbench) !void {
+        wb.openSettingsFileOf(.workspace);
+    }
+
+    fn openSettingsFileOf(wb: *Workbench, scope: settings_mod.Scope) void {
+        const st = wb.settings orelse return wb.notify(.warning, "Settings are not available", .{});
+        const p = st.path(scope) orelse return wb.notify(.warning, "There is no user settings folder (no home directory)", .{});
+        wb.openConfigFile(p, if (scope == .user) user_settings_template else workspace_settings_template);
+    }
+
+    fn openKeybindingsFile(wb: *Workbench) !void {
+        const p = wb.keys_path orelse return wb.notify(.warning, "There is no user settings folder (no home directory)", .{});
+        wb.openConfigFile(p, keybindings_template);
+    }
+
+    /// Opens `p` in an editor at the next build, creating it from
+    /// `template` when it does not exist.
+    fn openConfigFile(wb: *Workbench, p: []const u8, template: []const u8) void {
+        _ = std.Io.Dir.cwd().statFile(wb.io, p, .{}) catch |e| switch (e) {
+            error.FileNotFound => zg_config.json_edit.writeAtomic(wb.io, std.Io.Dir.cwd(), p, template) catch |we| {
+                return wb.notify(.error_, "Could not create {s}: {t}", .{ p, we });
+            },
+            else => {},
+        };
+        const dup = wb.gpa.dupe(u8, p) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = dup;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    // -- auto save -----------------------------------------------------------
+
+    /// Runs the afterDelay timer while `files.autoSave` asks for it.
+    fn armAutosave(wb: *Workbench) void {
+        const w = wb.win orelse return;
+        const st = wb.settings orelse return;
+        if (!std.mem.eql(u8, st.string("files.autoSave"), "afterDelay")) {
+            if (wb.autosave_timer != .none) w.cancelTimer(wb.autosave_timer);
+            wb.autosave_timer = .none;
+            return;
+        }
+        if (wb.autosave_timer != .none) return;
+        const delay: u64 = @intCast(std.math.clamp(st.int("files.autoSaveDelay"), 100, 600_000));
+        wb.autosave_timer = w.setTimer(w.app.now_ms + delay, .{ .ctx = wb, .f = autosaveTick }) catch .none;
+    }
+
+    /// Saves files that stayed dirty and unchanged since the last tick.
+    fn autosaveTick(ctx: *anyopaque, _: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.autosave_timer = .none;
+        for (wb.files.items) |*f| {
+            if (f.sync == null or !f.doc.isDirty()) continue;
+            if (f.doc.version != f.autosave_seen) {
+                f.autosave_seen = f.doc.version;
+                continue;
+            }
+            wb.quietSave(f);
+        }
+        wb.armAutosave();
+    }
+
+    /// `files.autoSave` = onFocusChange: the window lost focus.
+    fn autosaveOnBlur(wb: *Workbench) void {
+        const st = wb.settings orelse return;
+        if (!std.mem.eql(u8, st.string("files.autoSave"), "onFocusChange")) return;
+        for (wb.files.items) |*f| if (f.sync != null and f.doc.isDirty()) wb.quietSave(f);
+    }
+
+    /// Saves `f` without a toast unless it fails.
+    fn quietSave(wb: *Workbench, f: *OpenFile) void {
+        const fs = f.sync orelse return;
+        if (f.doc.version == f.autosave_failed) return;
+        fs.save(.{}) catch return;
+        wb.quiet_saves.append(wb.gpa, fs) catch {};
+    }
+
+    /// Whether `fs`'s save was a quiet one (forgotten once asked).
+    fn takeQuiet(wb: *Workbench, fs: *FileSync) bool {
+        for (wb.quiet_saves.items, 0..) |q, i| if (q == fs) {
+            _ = wb.quiet_saves.swapRemove(i);
+            return true;
+        };
+        return false;
     }
 
     /// Shows the terminal panel (starting its shell) and focuses it, or
@@ -1445,7 +1792,15 @@ pub const Workbench = struct {
         const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
         wb.terminal = t;
-        t.start();
+        const st = wb.settings orelse return t.start();
+        var args: [32][]const u8 = undefined;
+        var n: usize = 0;
+        if (st.get("terminal.integrated.shellArgs") == .array) for (st.get("terminal.integrated.shellArgs").array) |a| {
+            if (a != .string or n == args.len) continue;
+            args[n] = a.string;
+            n += 1;
+        };
+        t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
     }
 
     /// Shows the agent pane (starting the agent) and focuses its prompt,
@@ -1668,6 +2023,8 @@ pub const Workbench = struct {
     fn onTrust(ctx: ?*anyopaque, c: zg_security_ui.TrustChoice) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
         wb.trust = if (c == .restricted) .restricted else .trusted;
+        // Restricted workspace settings (shells, executables) apply.
+        if (wb.settings) |st| st.setTrusted(wb.trust == .trusted);
         // A trusted folder's MCP servers may start.
         if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
         // So may its language servers.
@@ -1704,7 +2061,11 @@ pub const Workbench = struct {
         };
         // Back in the window: files may have changed on disk.
         const focused = ui.win.chrome.focused;
-        if (focused and !wb.was_focused) wb.checkFiles();
+        if (focused and !wb.was_focused) {
+            wb.checkFiles();
+            wb.reloadSettings();
+        }
+        if (!focused and wb.was_focused) wb.autosaveOnBlur();
         wb.was_focused = focused;
         if (wb.pending_open) |p| {
             wb.pending_open = null;
@@ -1830,6 +2191,7 @@ pub const Workbench = struct {
             kind_agent => .{ .title = "Agent" },
             kind_review => .{ .title = "Review", .badge = if (wb.review_panel) |r| r.badge(&wb.review_badge) else "" },
             kind_review_view => .{ .title = if (wb.review_view) |v| v.title else "Review" },
+            kind_settings => .{ .title = "Settings" },
             else => .{ .title = "?" },
         };
     }
@@ -1855,6 +2217,11 @@ pub const Workbench = struct {
             },
             kind_review => if (wb.review_panel) |r| r.build(ui),
             kind_review_view => if (wb.review_view) |v| v.build(ui),
+            kind_settings => {
+                // A restored layout shows the tab before anything opened it.
+                wb.ensureSettingsView() catch {};
+                if (wb.settings_view) |v| v.build(ui);
+            },
             else => {},
         }
     }
@@ -1877,6 +2244,10 @@ pub const Workbench = struct {
         // The review view's tab closes; the view stays until the next one.
         if (p == wb.review_view_ref) {
             wb.review_view_ref = null;
+            return true;
+        }
+        if (p == wb.settings_ref) {
+            wb.settings_ref = null;
             return true;
         }
         if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref) {
@@ -1906,6 +2277,7 @@ pub const Workbench = struct {
             .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.shown(wb.agent_ref), .priority = 20 },
             .{ .id = "review", .label = "Review", .tooltip = "Toggle Review Queue", .action = "review.queue.toggle", .toggled = wb.shown(wb.review_ref), .priority = 15 },
             .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
+            .{ .id = "settings", .label = "Settings", .tooltip = "Open Settings (Ctrl+,)", .action = "workbench.openSettings", .priority = 2, .toggled = if (wb.settings_ref) |r| wb.dock.groupOf(r) != null else false },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });
     }
