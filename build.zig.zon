@@ -34,6 +34,7 @@
         .zg_codeintel = .{ .path = "packages/codeintel" },
         .zg_agents = .{ .path = "packages/agents" },
         .zg_perf = .{ .path = "packages/perf" },
+        .zg_perf_ui = .{ .path = "packages/perf-ui" },
         // pkgtool:insert
     },
     .paths = .{
