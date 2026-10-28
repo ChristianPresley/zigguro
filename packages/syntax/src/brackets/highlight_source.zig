@@ -52,10 +52,13 @@ pub const HighlightBrackets = struct {
         const n = s.h.lineCount();
         var line = s.index.lineOfFn(s.index.ctx, from);
         while (line < n) : (line += 1) {
+            // Lines without tokens (never lexed) hold no brackets: skip
+            // them before fetching their text.
+            const toks = s.h.tokens(line);
+            if (toks.len == 0) continue;
             const start = s.index.startFn(s.index.ctx, line);
             const col: u64 = if (from > start) from - start else 0;
             const text = try s.lines.get(line, &s.scratch, s.gpa);
-            const toks = s.h.tokens(line);
             for (toks, 0..) |t, i| {
                 if (t.start < col or t.hl != .punctuation_bracket) continue;
                 const end = if (i + 1 < toks.len) toks[i + 1].start else text.len;
