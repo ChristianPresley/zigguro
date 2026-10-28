@@ -248,6 +248,8 @@ pub const Workbench = struct {
     pending_focus: bool = true,
     /// `pending_open` came from the explorer (`openFromExplorer`).
     pending_explorer: bool = false,
+    /// `pending_open` is a language server's URI for a virtual document.
+    pending_virtual: bool = false,
     /// The editor the explorer last revealed (`explorer.autoReveal`).
     revealed_panel: ?PanelRef = null,
     /// The Problems panel (created on first show) and its dock panel.
@@ -339,6 +341,11 @@ pub const Workbench = struct {
         /// version: the next such click replaces the tab while the file
         /// stays unedited (a preview, as in VS Code).
         preview: ?u64 = null,
+        /// A virtual document (read-only, from a language server), with
+        /// the workbench's own reference.
+        virtual: ?zg_editor.model.api.registry.DocHandle = null,
+        /// Where the caret goes once the virtual document's text arrives.
+        virtual_goto: ?Goto = null,
     };
 
     /// Dock panel kinds.
@@ -502,6 +509,10 @@ pub const Workbench = struct {
             wb.gpa.destroy(sx);
         }
         if (f.path) |p| wb.gpa.free(p);
+        if (f.virtual) |vh| {
+            if (wb.codeintel) |ci| ci.virtual.release(vh);
+            wb.docs.release(vh);
+        }
     }
 
     /// Makes `f` the edited file and points the breadcrumbs at it.
@@ -688,6 +699,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, a) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -2000,6 +2012,7 @@ pub const Workbench = struct {
         const dup = wb.gpa.dupe(u8, p) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = dup;
+        wb.pending_virtual = false;
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -2207,9 +2220,72 @@ pub const Workbench = struct {
     /// Opens `t` (in a tab, loading it the first time) with the caret at
     /// its selection start, remembering where the caret was for Go Back.
     fn jumpTo(wb: *Workbench, t: NavService.Target) void {
-        const path = t.path orelse return wb.notify(.info, "Can't open {s}", .{t.uri});
+        const path = t.path orelse {
+            // A location outside the file system: its server's text.
+            if (wb.codeintel == null) return wb.notify(.info, "Can't open {s}", .{t.uri});
+            wb.rememberHere();
+            wb.openAt(t.uri, .{ .pos = .{ .line = t.selection.start.line, .character = t.selection.start.character, .enc = t.enc } });
+            wb.pending_virtual = true;
+            return;
+        };
         wb.rememberHere();
         wb.openAt(path, .{ .pos = .{ .line = t.selection.start.line, .character = t.selection.start.character, .enc = t.enc } });
+    }
+
+    /// Opens the virtual document `uri` (a language server's location
+    /// outside the file system) read-only in a tab, or shows its tab.
+    fn openVirtual(wb: *Workbench, uri: []const u8) !void {
+        const ci = wb.codeintel orelse return error.NoLanguageServices;
+        for (wb.files.items) |*f| if (f.virtual) |vh| if (std.mem.eql(u8, wb.docs.uri(vh) orelse "", uri)) {
+            try wb.showEditor(f);
+            wb.setCurrent(f.*);
+            return;
+        };
+        const h = try ci.virtual.open(uri);
+        errdefer ci.virtual.release(h);
+        // The workbench's reference keeps the document until the tab
+        // closes, even after language services stop.
+        try wb.docs.retain(h);
+        errdefer wb.docs.release(h);
+        const gpa = wb.gpa;
+        var f: OpenFile = .{ .path = null, .doc = wb.docs.get(h).?, .view = undefined, .syntax = null, .virtual = h };
+        const name = wb.docs.name(h) orelse "";
+        var opts = wb.editorOptions(null);
+        opts.read_only = true;
+        f.view = try EditorView.init(gpa, f.doc, opts);
+        errdefer f.view.deinit();
+        wb.setMode(&f, wb.key_mode);
+        if (wb.langs.detect(name, "")) |id| if (wb.langs.get(id)) |lang| {
+            const sx = try gpa.create(DocumentSyntax);
+            errdefer gpa.destroy(sx);
+            sx.* = try DocumentSyntax.init(gpa, lang, &wb.langs, &f.doc.tree, f.doc.version);
+            f.syntax = sx;
+            f.view.syntax = sx;
+            f.view.opts = wb.editorOptions(lang.name);
+            f.view.opts.read_only = true;
+        };
+        const nf = try wb.addFile(f);
+        wb.setCurrent(nf.*);
+    }
+
+    /// Puts the caret where a virtual document was opened at, once its
+    /// text is there (current editor only).
+    fn virtualGoto(wb: *Workbench) void {
+        const cp = wb.cur_panel orelse return;
+        const f = wb.fileOf(cp) orelse return;
+        const g = f.virtual_goto orelse return;
+        const ci = wb.codeintel orelse {
+            f.virtual_goto = null;
+            return;
+        };
+        const e = ci.virtual.entryOf(f.virtual.?) orelse return;
+        if (e.state == .loading) return;
+        f.virtual_goto = null;
+        switch (g) {
+            .pos => |p| wb.gotoPos(p.line, p.character, p.enc),
+            .offset => |o| wb.gotoOffset(o),
+            .problem => |it| wb.gotoProblem(it),
+        }
     }
 
     /// Opens `abs` at the next build with the caret at `g`.
@@ -2217,6 +2293,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = g;
@@ -2494,6 +2571,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = null;
@@ -2652,6 +2730,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, key) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = focus;
         wb.pending_explorer = false;
         wb.pending_goto = .{ .problem = it };
@@ -2820,6 +2899,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = null;
@@ -2986,6 +3066,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = focus;
         wb.pending_explorer = true;
         if (wb.win) |w| w.markAllDirty();
@@ -3832,8 +3913,15 @@ pub const Workbench = struct {
             wb.pending_goto = null;
             const range = wb.pending_range;
             wb.pending_range = null;
-            if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
-                if (goto) |g| switch (g) {
+            const virtual = wb.pending_virtual;
+            wb.pending_virtual = false;
+            if (if (virtual) wb.openVirtual(p) else if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
+                if (virtual) if (goto) |g| if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |f| {
+                    // The text may still be on its way.
+                    f.virtual_goto = g;
+                    wb.virtualGoto();
+                };
+                if (!virtual) if (goto) |g| switch (g) {
                     .problem => |it| wb.gotoProblem(it),
                     .pos => |p_| wb.gotoPos(p_.line, p_.character, p_.enc),
                     .offset => |o| wb.gotoOffset(o),
@@ -3842,6 +3930,7 @@ pub const Workbench = struct {
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
+        wb.virtualGoto();
         wb.followFocus();
         wb.autoReveal();
         wb.dv.beginFrame(ui);
@@ -3951,9 +4040,9 @@ pub const Workbench = struct {
     fn panelTab(ctx: *anyopaque, p: PanelRef) zg_gui.dock.view.TabInfo {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.fileOf(p)) |f| return .{
-            .title = if (f.path) |path| std.fs.path.basename(path) else "Untitled",
+            .title = if (f.path) |path| std.fs.path.basename(path) else if (f.virtual) |vh| wb.docs.name(vh) orelse "Untitled" else "Untitled",
             .dirty = f.doc.isDirty(),
-            .tooltip = f.path,
+            .tooltip = f.path orelse if (f.virtual) |vh| wb.docs.uri(vh) else null,
         };
         return switch (wb.kindOf(p) orelse 0) {
             kind_terminal => .{ .title = "Terminal", .badge = if (wb.activeTerminal()) |t| t.noteText() else "" },

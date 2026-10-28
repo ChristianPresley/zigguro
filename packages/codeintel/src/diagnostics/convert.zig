@@ -83,6 +83,26 @@ pub fn severityOf(s: ?protocol.DiagnosticSeverity) Store.Severity {
     };
 }
 
+/// A copy of `src` (its own strings, no byte ranges), to be given byte
+/// ranges for a document opened since `src` was reported.
+pub fn copySet(gpa: Allocator, src: *const Store.Set) Allocator.Error!*Store.Set {
+    const set = try Store.Set.create(gpa, src.owner);
+    errdefer set.destroy();
+    const a = set.allocator();
+    const out = try a.alloc(Store.Diagnostic, src.diags.len);
+    for (src.diags, out) |d, *o| {
+        o.* = d;
+        o.bytes = null;
+        o.message = try a.dupe(u8, d.message);
+        o.source = try a.dupe(u8, d.source);
+        o.code = try a.dupe(u8, d.code);
+        o.data = if (d.data) |x| try a.dupe(u8, x) else null;
+    }
+    set.diags = out;
+    set.counts = src.counts;
+    return set;
+}
+
 /// Sets the byte ranges of `set`'s diagnostics from `tree` (document
 /// version `version`), whose columns are in `enc` units. The diagnostics
 /// are sorted by start, so the starts are found in one forward walk; the

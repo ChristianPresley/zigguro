@@ -73,6 +73,45 @@ fn register(b: *bench.Bench) !void {
             }
         }
     }.f);
+    // A first startup mark: clock read, CAS, trace instant (budget
+    // < 50 ns, E14.F05.S01.T01).
+    try b.run("perf.startup_mark", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+            defer threaded.deinit();
+            var t: zg_perf.startup.StartupTimeline = .{ .io = threaded.io() };
+            const i = @intFromEnum(zg_perf.startup.Phase.workbench_built);
+            for (0..s.iterations()) |_| {
+                t.marks[i].store(0, .monotonic);
+                t.mark(.workbench_built);
+            }
+            bench.doNotOptimizeAway(t.marks[i].load(.monotonic));
+        }
+    }.f);
+    // Lazy(T).get once ready: one acquire load (budget <= 2 ns,
+    // E14.F05.S01.T02).
+    try b.run("perf.lazy_get", {}, struct {
+        fn make() u64 {
+            return 42;
+        }
+        fn f(_: void, s: *bench.State) void {
+            var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            var l: zg_perf.startup.Lazy(u64) = .{};
+            var x: u64 = 0;
+            for (0..s.iterations()) |_| x +%= (l.get(io, "bench", make, .{}) catch unreachable).*;
+            bench.doNotOptimizeAway(x);
+        }
+    }.f);
+    // noteWake after a wait returns: a few plain stores into this thread's
+    // record (budget <= 10 ns with tracing off, E14.F05.S02.T01).
+    try b.run("perf.note_wake", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            for (0..s.iterations()) |_| zg_perf.idle.noteWake("bench.wait", .timer);
+            bench.doNotOptimizeAway(zg_perf.idle.wake_count.totalWakes());
+        }
+    }.f);
     try b.run("perf.activity_level", {}, struct {
         fn f(_: void, s: *bench.State) void {
             var sig: zg_perf.ActivitySignal = .{};

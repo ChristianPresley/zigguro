@@ -106,6 +106,12 @@ pub fn build(b: *std.Build) void {
         b.step("test-apps", "Run the tests of apps/zigguro").dependOn(&run.step);
         test_step.dependOn(&run.step);
     }
+    // The critical-path allowlist check alone (E14.F05.S01.T02; it also
+    // runs in test-apps).
+    {
+        const t = b.addTest(.{ .name = "zigguro-startup-allowlist", .root_module = appModule(b, "apps/zigguro/src/startup/services.zig", f.target, f.optimize, &mods, options), .filters = &.{"startup allowlist"} });
+        b.step("test-startup-allowlist", "Check the app's critical startup services against packages/perf/startup_allowlist.zon").dependOn(&b.addRunArtifact(t).step);
+    }
     const fuzz_step = b.step("fuzz", "Run every test (use with --fuzz to fuzz `fuzz:` tests)");
     inline for (packages.all, 0..) |p, i| {
         const tm = zg_build.testModule(b, f, mods[i]);
@@ -256,6 +262,20 @@ pub fn build(b: *std.Build) void {
     check_fp_run.addArtifactArg(zigguro_exe);
     check_fp_run.expectExitCode(0);
     b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
+    // Blocking waits stay annotated with noteWake (E14.F05.S02.T01).
+    const wake_sites = addTool(b, "wake-sites", "tools/wake-sites/main.zig", test_filters, f.optimize, tools_test_step);
+    const wake_sites_run = b.addRunArtifact(wake_sites);
+    wake_sites_run.setCwd(b.path("."));
+    wake_sites_run.has_side_effects = true;
+    wake_sites_run.expectExitCode(0);
+    const wake_sites_step = b.step("test-wake-sites", "Fail if a new blocking wait under packages/ lacks zg_perf.idle.noteWake");
+    wake_sites_step.dependOn(&wake_sites_run.step);
+    test_step.dependOn(wake_sites_step);
+    const wake_sites_write = b.addRunArtifact(wake_sites);
+    wake_sites_write.setCwd(b.path("."));
+    wake_sites_write.has_side_effects = true;
+    wake_sites_write.addArg("--write-baseline");
+    b.step("wake-sites-baseline", "Rewrite tools/wake-sites/baseline.txt from the current tree").dependOn(&wake_sites_write.step);
     // `latency-probe` reads the photodiode rig (E14.F03.S02.T03).
     const latency_probe = addToolImports(b, "latency-probe", "tools/latency-probe/main.zig", test_filters, f.optimize, tools_test_step, &.{
         .{ .name = "latency_histogram", .module = b.createModule(.{ .root_source_file = b.path("packages/perf/src/frame/histogram.zig") }) },

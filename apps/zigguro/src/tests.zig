@@ -32,6 +32,8 @@ test {
     _ = @import("startup/install_kind.zig");
     _ = @import("workbench.zig");
     _ = @import("tracing.zig");
+    _ = @import("startup/report.zig");
+    _ = @import("startup/services.zig");
     _ = @import("codeintel.zig");
     _ = @import("settings/service.zig");
     _ = @import("settings/view.zig");

@@ -12,6 +12,7 @@
 //! tags with more than 1 MiB live.
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const zg_core = @import("zg_core");
 const tags = @import("tags.zig");
 const gpu = @import("gpu.zig");
@@ -228,6 +229,7 @@ pub const Sampler = struct {
             const requested = s.requests.swap(0, .acquire) > 0;
             if (!observed and !requested) {
                 try io.futexWait(u32, &s.gen.raw, g);
+                wake_count.noteWake("perf.mem_sampler", .signal);
                 continue;
             }
             s.sampleSync();
@@ -239,6 +241,7 @@ pub const Sampler = struct {
                 const g2 = s.gen.load(.acquire);
                 if (zg_core.time.nowNs(io) >= deadline.raw.nanoseconds) break;
                 try io.futexWaitTimeout(u32, &s.gen.raw, g2, .{ .deadline = deadline });
+                wake_count.noteWake("perf.mem_sampler", .timer);
             }
         }
     }

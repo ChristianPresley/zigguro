@@ -7,9 +7,7 @@
 //!
 //! Start and the stop request are cheap on the UI thread; the final drain,
 //! export and file write run on a worker, which posts a toast back.
-//! `ZG_TRACE=startup` stops 2 s after the window opens (the first frame
-//! follows within a frame or two) until the present-feedback hook of
-//! E14.F05 lands.
+//! `ZG_TRACE=startup` stops 2 s after the first interactive frame.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -90,6 +88,11 @@ pub const Tracing = struct {
     mem: ?*zg_perf.mem.Sampler = null,
     /// Held while the HUD is visible.
     mem_obs: ?zg_perf.mem.Observation = null,
+    /// Wakeups per second and CPU percent (E14.F05.S02.T01); samples only
+    /// while the HUD is visible.
+    idle: ?*zg_perf.idle.IdleMonitor = null,
+    /// Held while the HUD is visible.
+    idle_obs: ?zg_perf.idle.IdleMonitor.Observation = null,
     /// Runs reclaimers on ceiling breaches and OS memory pressure.
     pressure: ?*zg_perf.mem.PressureMonitor = null,
     /// The `--mem-report` task (cancelled at exit).
@@ -119,12 +122,13 @@ pub const Tracing = struct {
         tl.* = try .init(t.gpa, 1024);
         errdefer tl.deinit();
         t.mem = zg_perf.mem.Sampler.start(t.gpa, t.io, .{}) catch null;
+        t.idle = zg_perf.idle.IdleMonitor.start(t.gpa, t.io, .{}) catch null;
         zg_perf.mem.pressure.loadBudgetCeilings();
         t.pressure = zg_perf.mem.PressureMonitor.start(t.gpa, t.io, .{}) catch null;
         if (t.mem) |s| if (t.pressure) |pm| {
             s.on_sample = pm.samplerHook();
         };
-        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory } });
+        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory, .wakeups_per_s = hudWakeups } });
         t.hud = hud;
         t.timeline = tl;
         const dir = t.dir orelse return;
@@ -154,14 +158,28 @@ pub const Tracing = struct {
 
     /// Keeps the sampler sampling exactly while the HUD is visible.
     fn syncMemObservation(t: *Tracing) void {
-        const s = t.mem orelse return;
         const visible = if (t.hud) |h| h.isVisible() else false;
+        if (t.idle) |m| {
+            if (visible and t.idle_obs == null) {
+                t.idle_obs = m.observe();
+            } else if (!visible) if (t.idle_obs) |o| {
+                o.release();
+                t.idle_obs = null;
+            };
+        }
+        const s = t.mem orelse return;
         if (visible and t.mem_obs == null) {
             t.mem_obs = s.observe();
         } else if (!visible) if (t.mem_obs) |o| {
             o.release();
             t.mem_obs = null;
         };
+    }
+
+    fn hudWakeups(ctx: ?*anyopaque) ?f64 {
+        const t: *Tracing = @ptrCast(@alignCast(ctx.?));
+        const w = (t.idle orelse return null).wakeupsPerSecond() orelse return null;
+        return w;
     }
 
     fn hudMemory(ctx: ?*anyopaque) ?zg_perf_ui.hud_model.Memory {
@@ -246,6 +264,8 @@ pub const Tracing = struct {
         if (t.probe) |p| p.destroy();
         t.mem_group.cancel(t.io);
         if (t.mem) |s| s.stop();
+        if (t.idle_obs) |o| o.release();
+        if (t.idle) |m| m.stop();
         if (t.pressure) |pm| pm.stop();
         if (t.recorder) |fr| fr.deinit();
         if (t.timeline) |tl| {
@@ -268,12 +288,18 @@ pub const Tracing = struct {
         t.startNamed(req.path, if (req.startup) "startup" else "trace") catch |e| log.err("cannot start the trace: {t}", .{e});
     }
 
-    /// For `ZG_TRACE=startup`: stops the startup trace 2 s from now.
+    /// For `ZG_TRACE=startup`: stops the startup trace 2 s after the first
+    /// interactive frame.
     pub fn armStartupStop(t: *Tracing) void {
         t.group.concurrent(t.io, startupTimer, .{t}) catch {};
     }
 
     fn startupTimer(t: *Tracing) std.Io.Cancelable!void {
+        // 2 s after the first interactive frame (startup marks), or after
+        // 10 s if it never comes.
+        const st = zg_perf.startup.global();
+        var waited: u32 = 0;
+        while (!st.isSet(.interactive) and waited < 200) : (waited += 1) try t.io.sleep(.fromMilliseconds(50), .awake);
         try t.io.sleep(.fromSeconds(2), .awake);
         if (t.takeActive()) |s| finish(t, s);
     }

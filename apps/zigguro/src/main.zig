@@ -27,6 +27,8 @@
 //! first frame + 2 s (see `tracing.zig`). `--hud` opens the performance
 //! HUD (Ctrl+Alt+Shift+H, `perf.hud.toggle`). `--mem-report[=now]` and
 //! `--mem-report-exit` print the memory report (`perf.memory.report`).
+//! `--startup-report` prints the startup phases once the first frame is
+//! interactive (`startup/report.zig`).
 //!
 //! `--bench-scenario=latency` runs the typing-latency benchmark
 //! (`bench/latency.zig`, `zig build bench-latency`) and exits.
@@ -51,6 +53,8 @@ const Tracing = tracing_mod.Tracing;
 const fonts = @import("fonts.zig");
 const early_update = @import("startup/early_update_check.zig");
 const install_kind = @import("startup/install_kind.zig");
+const StartupReport = @import("startup/report.zig").StartupReport;
+const zg_perf = @import("zg_perf");
 const bench_latency = @import("bench/latency.zig");
 
 pub const std_options: std.Options = .{
@@ -67,6 +71,8 @@ pub const debug = struct {
 };
 
 pub fn main(min: std.process.Init.Minimal) !u8 {
+    // Startup phase marks (E14.F05.S01.T01; docs/perf/startup.md).
+    zg_perf.startup.mark(.main_entered);
     // Before any runtime init: no allocator, no worker threads.
     if (zg_release.cli.handleVersionFlag(min, &zg_release.current, "zigguro")) return 0;
     installCrashHandler(min, "zigguro");
@@ -77,6 +83,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     var rt: zg_core.Runtime = undefined;
     try rt.init(min, .{});
     defer _ = rt.deinit();
+    zg_perf.startup.global().install(rt.io);
+    zg_perf.startup.mark(.runtime_ready);
     // Before GPU and window init: apply a staged update or roll back one
     // that cannot start (may re-execute the process).
     var boot = early_update.run(&rt, min, running.first);
@@ -123,6 +131,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const font_text: ?*zg_gui.paint.FontText = if (font_files) |f| zg_gui.paint.FontText.create(rt.gpa, .{ .ui = f.ui, .mono = f.mono }) catch null else null;
     defer if (font_text) |ft| ft.destroy();
     const text_sys = if (font_text) |ft| ft.system() else mono.system();
+    zg_perf.startup.mark(.fonts_ready);
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
     if (try benchScenario(min, &rt, &env, &app, &tracing, text_sys, font_text, backend, w)) |code| return code;
     const path_arg = pathArg(min, rt.gpa);
@@ -140,6 +149,12 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const frames_arg = framesArg(min, rt.gpa);
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state_dir = zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf);
+    // `--startup-report` prints the startup report once the first frame
+    // is interactive; interactive runs (not --frames or headless ones)
+    // record it in startup.json.
+    var startup_report: StartupReport = .{ .gpa = rt.gpa, .io = rt.io, .print = hasFlag(min, rt.gpa, "--startup-report"), .state_dir = if (frames_arg == null and backend != .headless) state_dir else null };
+    defer startup_report.deinit();
+    startup_report.arm();
     // `zigguro DIR` opens the folder; with no path, interactive runs open
     // the last folder (or the working folder). `--welcome` shows the
     // welcome window instead.
@@ -163,6 +178,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         const cp = kind.paths;
         wb.useSettings(if (cp) |p| p.userSettings() else null, if (cp) |p| p.userKeybindings() else null) catch |e|
             std.log.err("settings: {t}", .{e});
+        zg_perf.startup.mark(.config_loaded);
         tracing.registerCommands(wb.reg) catch |e| std.log.err("trace commands: {t}", .{e});
     }
     defer if (use_wb) wb.deinit();
@@ -175,6 +191,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             break :native;
         };
         defer platform.deinit();
+        zg_perf.startup.mark(.platform_ready);
         // Screen readers on Linux reach the app through AT-SPI2 on the
         // session bus.
         var bus_buf: [256]u8 = undefined;
@@ -193,15 +210,18 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             if (state_dir) |state| {
                 wb.enableUndoFiles(state);
                 if (wb.loadLayout(state)) |s| size = fitOnScreen(s, platform);
+                zg_perf.startup.mark(.session_restored);
             }
         }
         const hw = try host.open(.{ .title = "zigguro", .size = size, .root = root });
+        zg_perf.startup.mark(.window_created);
         tracing.hud_win = hw.win;
         defer tracing.detachWindow();
         if (want_hud) tracing.toggleHud() catch {};
         if (trace_req) |r| if (r.startup) tracing.armStartupStop();
         if (use_wb) try wb.attach(hw.win);
         if (use_wb) wb.enableFloating(host.windowOpener());
+        zg_perf.startup.mark(.workbench_built);
         if (want_terminal and !wb.panelShown("terminal")) try wb.toggleTerminal();
         if (want_agent and !wb.panelShown("agent")) try wb.toggleAgent();
         if (want_review and !wb.panelShown("review")) try wb.toggleReview();
@@ -225,6 +245,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             platform.waitEvents(null);
         }
         const drawn = if (host.windows.items.len > 0) hw.frames else seen;
+        startup_report.finishNow();
         try w.print("zigguro {s}: rendered {d} frame(s) on the {t} platform\n", .{ zg_release.current.version_string, drawn, backend });
         try w.flush();
         return 0;
@@ -233,13 +254,16 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const frames = frames_arg orelse 3;
     const hl = try zg_platform.headless.Headless.init(rt.gpa, rt.io, .{});
     defer hl.deinit();
+    zg_perf.startup.mark(.platform_ready);
     var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), text_sys, .{ .fonts = font_text, .timeline = tracing.timeline });
     defer host.deinit();
     const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = root });
+    zg_perf.startup.mark(.window_created);
     tracing.hud_win = hw.win;
     defer tracing.detachWindow();
     if (want_hud) tracing.toggleHud() catch {};
     if (use_wb) try wb.attach(hw.win);
+    zg_perf.startup.mark(.workbench_built);
     if (want_terminal) try wb.toggleTerminal();
     if (want_agent) try wb.toggleAgent();
     if (want_review) try wb.toggleReview();
@@ -256,6 +280,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     _ = host.flush(5 * std.time.ns_per_s);
     try w.print("zigguro {s}: rendered {d} frame(s) on the headless platform\n", .{ zg_release.current.version_string, drawn });
     if (want_mem) tracing.writeMemReport(w) catch |e| std.log.err("memory report: {t}", .{e});
+    try w.flush();
+    startup_report.finishNow();
     if (stringArg(min, rt.gpa, "--screenshot")) |path| {
         defer rt.gpa.free(path);
         if (hl.lastFrame(hw.id)) |f| {
