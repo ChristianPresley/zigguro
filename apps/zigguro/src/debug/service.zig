@@ -20,7 +20,8 @@
 //!   edits (zg_codeintel's `BreakpointGutter`, flushed by `onFrame`); the
 //!   saved ones are read on a worker.
 //! - While paused, an expression under the pointer shows its value
-//!   (`hover.zig`, ahead of the language hover).
+//!   (`hover.zig`, ahead of the language hover), and a stop on an
+//!   exception shows what it was under its line (`exception_view.zig`).
 //! - State: `.zigguro/debug/breakpoints.zon`, `watches.zon` and
 //!   `repl_history.zon` under the workspace (written on change).
 //!
@@ -39,6 +40,7 @@ const toolbar = @import("toolbar.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
 const hover_mod = @import("hover.zig");
+const exception_view = @import("exception_view.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -149,6 +151,8 @@ pub const Debug = struct {
     /// The editors' debug hover, and the `generation` it was read at.
     hover: hover_mod.DebugHover = undefined,
     hover_seen: u64 = 0,
+    /// The exception widget.
+    exc_view: exception_view.ExceptionView = undefined,
     mgr: DebugManager = undefined,
     vars: variables.VarContext = undefined,
     file_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -238,6 +242,7 @@ pub const Debug = struct {
         try d.no_session.init(gpa, rt.io, null, .none, .{});
         try d.hover.init(gpa, d.varHooks());
         d.hover.target_of = hoverTargetOf;
+        d.exc_view = .init(gpa);
         if (root_dir) |rd| d.no_session.watches.persist_to = .{ .dir = rd, .path = state_dir ++ "/" ++ Watches.sub_path };
         d.reg_resolver = .{ .reg = &d.reg, .io = rt.io, .env = env };
         d.vars = .{
@@ -280,6 +285,7 @@ pub const Debug = struct {
         for (d.entries.items) |e| e.s.stop();
         while (d.entries.items.len > 0) d.dropEntry(d.entries.items[d.entries.items.len - 1], false);
         d.hover.deinit();
+        d.exc_view.deinit();
         d.idle.waitUncancelable(d.io);
         // Freeing sessions waits for their adapters: on a worker.
         var done: Io.Event = .unset;
@@ -458,6 +464,12 @@ pub const Debug = struct {
                 return true;
             },
             .leave => h.away(now),
+            .block => {
+                const b = e.block orelse return false;
+                if (!d.exc_view.click(v, b, e.block_x)) return false;
+                d.changed();
+                return true;
+            },
             .key => {
                 if (!h.busy()) return false;
                 const k = e.key orelse return false;
@@ -471,6 +483,34 @@ pub const Debug = struct {
             else => {},
         }
         return false;
+    }
+
+    /// Where the exception the active session stopped on shows: its
+    /// thread's top frame (null: none, or not known yet).
+    pub const ExceptionSpot = struct {
+        exc: *const zg_dap.inspect.exception.Exception,
+        stop: exception_view.ExceptionView.Stop,
+        path: []const u8,
+        /// 1-based.
+        line: u32,
+    };
+
+    pub fn exceptionSpot(d: *Debug) ?ExceptionSpot {
+        const e = d.active() orelse return null;
+        if (!e.insp.stopped()) return null;
+        const x = if (e.insp.exception) |*ex| ex else return null;
+        const rows = e.insp.stack.frames(x.thread);
+        if (rows.len == 0) return null;
+        const src = rows[0].source orelse return null;
+        const path = src.path orelse return null;
+        return .{ .exc = x, .stop = .{ .session = e.id, .gen = e.insp.gen }, .path = path, .line = @max(rows[0].line, 1) };
+    }
+
+    /// `debug.closeExceptionWidget`.
+    pub fn closeExceptionCmd(d: *Debug) void {
+        if (!d.exc_view.shown()) return;
+        d.exc_view.close();
+        d.changed();
     }
 
     /// The debug hover at the caret of `v` (`editor.showHover` while

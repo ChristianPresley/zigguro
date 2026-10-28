@@ -545,6 +545,7 @@ pub const Workbench = struct {
         if (f.completions) |c| c.detach();
         // Before the decoration store goes (diagnostics draw there).
         if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
+        if (wb.debug) |d| d.exc_view.forget(f.view);
         if (wb.debug) |d| if (f.path) |p| {
             const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch null;
             defer if (abs) |x| wb.gpa.free(x);
@@ -1328,6 +1329,7 @@ pub const Workbench = struct {
         .{ .id = "debug.removeWatchExpression", .title = "Remove Watch Expression", .category = "Debug", .run = removeWatchExpression },
         .{ .id = "debug.removeAllWatchExpressions", .title = "Remove All Watch Expressions", .category = "Debug", .run = dbg(Debug.removeAllWatchesCmd) },
         .{ .id = "debug.toggleHexValues", .title = "Toggle Hexadecimal Values", .category = "Debug", .run = dbg(Debug.toggleHexCmd) },
+        .{ .id = "debug.closeExceptionWidget", .title = "Close Exception Widget", .category = "Debug", .run = dbg(Debug.closeExceptionCmd) },
         .{ .id = "debug.focusBreakpoints", .title = "Focus on Breakpoints View", .category = "Debug", .run = focusBreakpoints },
         .{ .id = "debug.addFunctionBreakpoint", .title = "Add Function Breakpoint", .category = "Debug", .run = addFunctionBreakpoint },
         .{ .id = "debug.addConditionalBreakpoint", .title = "Add Conditional Breakpoint...", .category = "Debug", .run = addConditionalBreakpoint },
@@ -3221,6 +3223,22 @@ pub const Workbench = struct {
         return true;
     }
 
+    /// The exception the active session stopped on, under its line in
+    /// the editor showing that file (if one does).
+    fn syncException(wb: *Workbench, d: *Debug) void {
+        const spot = d.exceptionSpot() orelse return d.exc_view.hide();
+        for (wb.files.items) |*f| {
+            const p = f.path orelse continue;
+            if (f.virtual != null) continue;
+            const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch continue;
+            defer wb.gpa.free(abs);
+            if (!std.mem.eql(u8, abs, spot.path)) continue;
+            const store = wb.ensureDeco(f) catch break;
+            return d.exc_view.apply(spot.exc, spot.stop, f.view, store, spot.line - 1);
+        }
+        d.exc_view.hide();
+    }
+
     /// The editors' first pointer hook: while paused, the debug hover
     /// takes the pointer ahead of the language hover.
     fn onDebugPointer(ctx: *anyopaque, v: *EditorView, e: zg_editor.view.editor_view.PointerEvent) bool {
@@ -5025,8 +5043,12 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
-        // Breakpoint and execution marks, before the editors paint.
-        if (wb.debug) |d| d.onFrame();
+        // Breakpoint and execution marks and the exception widget, before
+        // the editors paint.
+        if (wb.debug) |d| {
+            d.onFrame();
+            wb.syncException(d);
+        }
         if (wb.inline_edit) |h| if (h.done) {
             h.destroy();
             wb.inline_edit = null;
@@ -7015,4 +7037,99 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), (try testGutterLines(arena.allocator(), f, 0x27A4)).len);
     try std.testing.expectEqualStrings("debug.start", testCommandFor(&wb, K{ .key = .f5 }).?);
+}
+
+test "workbench: a C program crashing under GDB shows the signal under its line; Close hides it" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "c.c", .data =
+        \\int main(void) {
+        \\    volatile int *p = 0;
+        \\    return *p;
+        \\}
+        \\
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    // GDB 14+ and a C compiler, or skip.
+    const cc = std.process.run(gpa, io, .{ .argv = &.{ "cc", "-g", "-O0", "-o", "c", "c.c" }, .cwd = .{ .path = root } }) catch return error.SkipZigTest;
+    gpa.free(cc.stdout);
+    gpa.free(cc.stderr);
+    if (cc.term != .exited or cc.term.exited != 0) return error.SkipZigTest;
+    const gv = std.process.run(gpa, io, .{ .argv = &.{ "gdb", "--version" } }) catch return error.SkipZigTest;
+    defer gpa.free(gv.stdout);
+    gpa.free(gv.stderr);
+    const ver = @import("zg_lsp").client.executables.parseVersion(gv.stdout) orelse return error.SkipZigTest;
+    if (ver.major < 14) return error.SkipZigTest;
+
+    try tmp.dir.createDirPath(io, ".zigguro");
+    const launch = try std.fmt.allocPrint(gpa,
+        \\.{{ .version = 1, .configurations = .{{
+        \\    .{{ .name = "Crash", .type = "gdb", .request = .launch, .args = .{{ .program = "{s}/c" }} }},
+        \\}} }}
+    , .{root});
+    defer gpa.free(launch);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/launch.zon", .data = launch });
+    const src = try std.fs.path.join(gpa, &.{ root, "c.c" });
+    defer gpa.free(src);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("HOME", root);
+    try env.put("PATH", "/usr/bin:/bin:/usr/local/bin");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, src);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    const d = try wb.ensureDebug();
+    d.selectConfig(.config, "Crash");
+    try (Workbench.dbg(Workbench.startDebugging))(&wb);
+    var tries: u32 = 0;
+    while (!d.exc_view.shown() and tries < 2000) : (tries += 1) {
+        _ = t.settle();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expect(d.exc_view.shown());
+    // Under `return *p;` (line 3), in the editor showing c.c.
+    const at = d.exc_view.at.?;
+    try std.testing.expectEqual(@as(u64, 2), at.line);
+    try std.testing.expect(at.view == wb.view);
+    try std.testing.expectEqualStrings("The program received a signal", d.exc_view.lines[0].text);
+    var found: std.ArrayList(zg_editor.model.decorations.store.DecoRef) = .empty;
+    defer found.deinit(gpa);
+    var mask: zg_editor.model.decorations.store.KindMask = .initEmpty();
+    mask.insert(.block_below);
+    try at.deco.query(.{ .start = 0, .end = wb.doc.len() }, mask, gpa, &found);
+    try std.testing.expectEqual(@as(usize, 1), found.items.len);
+    // Close: gone until the next stop.
+    try (Workbench.dbg(Debug.closeExceptionCmd))(&wb);
+    _ = t.settle();
+    try std.testing.expect(!d.exc_view.shown());
+    found.clearRetainingCapacity();
+    try at.deco.query(.{ .start = 0, .end = wb.doc.len() }, mask, gpa, &found);
+    try std.testing.expectEqual(@as(usize, 0), found.items.len);
+
+    try (Workbench.dbg(Debug.stopCmd))(&wb);
+    tries = 0;
+    while ((d.sessionCount() > 0 or d.busy > 0) and tries < 2000) : (tries += 1) {
+        _ = t.settle();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(usize, 0), d.sessionCount());
 }

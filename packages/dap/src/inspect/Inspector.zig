@@ -1,7 +1,7 @@
 //! The inspection model of one debug session (E07.F06.S04): the call
 //! stacks (`stack`), the selected frame's variables (`vars`), sources
 //! without a path, evaluation and completions (`eval`) and the watches
-//! (`watches`), as the debug views (E07.F07) and the agent tools
+//! (`watches`), and the exception a stop broke on (`exception`), as the debug views (E07.F07) and the agent tools
 //! (E07.F05.S02) show them.
 //!
 //! The app forwards the session's changes from its `DebugManager`
@@ -22,6 +22,7 @@ const VariablesModel = @import("VariablesModel.zig");
 const sources = @import("sources.zig");
 const Evaluator = @import("Evaluator.zig");
 const Watches = @import("Watches.zig");
+const exception_mod = @import("exception.zig");
 const DebugSession = @import("../session/DebugSession.zig");
 
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,7 @@ const log = std.log.scoped(.dap_inspect);
 
 pub const FrameRow = StackModel.FrameRow;
 pub const NodeId = VariablesModel.NodeId;
+pub const Exception = exception_mod.Exception;
 
 /// What the model asks of the app.
 pub const Host = struct {
@@ -74,6 +76,8 @@ source_cache: sources.Cache,
 gen: u64 = 0,
 /// Between `continued` and the next stop (or before the first).
 running: bool = true,
+/// The exception the last stop broke on (until the program runs).
+exception: ?Exception = null,
 
 /// `port` is normally `Channel.Port.ofSession(s)` with `session = s`.
 pub fn init(i: *Inspector, gpa: Allocator, io: Io, session: ?*DebugSession, port: Channel.Port, opts: Options) Allocator.Error!void {
@@ -97,6 +101,7 @@ pub fn initSession(i: *Inspector, gpa: Allocator, io: Io, s: *DebugSession, opts
 }
 
 pub fn deinit(i: *Inspector) void {
+    i.clearException();
     i.eval.deinit();
     i.watches.deinit();
     i.vars.deinit();
@@ -166,11 +171,13 @@ fn apply(i: *Inspector, it: Channel.Item) Allocator.Error!void {
             },
             .continued => {
                 i.running = true;
+                i.clearException();
                 i.watches.markNotStopped();
             },
             .invalidated => i.applyInvalidated(c.bytes),
             .state => {
                 i.running = true;
+                i.clearException();
                 i.eval.failAll("the debug session ended");
                 i.watches.markNotStopped();
                 i.stack.clear();
@@ -188,7 +195,9 @@ fn apply(i: *Inspector, it: Channel.Item) Allocator.Error!void {
 pub fn applyStop(i: *Inspector, pf: DebugSession.Prefetch) Allocator.Error!void {
     i.gen = pf.gen;
     i.running = false;
+    i.clearException();
     i.vars.newStop(pf.gen);
+    try i.askException(pf.thread);
     _ = try i.stack.applyPage(pf.thread, 0, i.opts.page, pf.gen, true, pf.stack);
     if (i.stack.autoSelect(pf.thread)) |idx| {
         const row = &i.stack.frames(pf.thread)[idx];
@@ -197,6 +206,32 @@ pub fn applyStop(i: *Inspector, pf: DebugSession.Prefetch) Allocator.Error!void 
     } else i.stack.selected_ = null;
     // The second page alongside the scopes.
     if (!i.stack.complete(pf.thread)) i.stack.loadMore(pf.thread, i.opts.page);
+}
+
+fn clearException(i: *Inspector) void {
+    if (i.exception) |*e| e.deinit();
+    i.exception = null;
+}
+
+/// A stop on an exception: what it was (`exceptionInfo`, else the stop's
+/// own text).
+fn askException(i: *Inspector, thread: i64) Allocator.Error!void {
+    const s = i.session orelse return;
+    var arena: std.heap.ArenaAllocator = .init(i.gpa);
+    defer arena.deinit();
+    const ts = try s.threads(arena.allocator());
+    const t = for (ts) |t| {
+        if (t.id == thread) break t;
+    } else return;
+    const r = t.stop_reason orelse return;
+    const signal = std.mem.eql(u8, r.reason, "signal");
+    if (!signal and !std.mem.eql(u8, r.reason, "exception")) return;
+    if (!signal and (i.ch.caps().supportsExceptionInfoRequest orelse false)) {
+        var buf: [48]u8 = undefined;
+        const args = std.fmt.bufPrint(&buf, "{{\"threadId\":{d}}}", .{thread}) catch unreachable;
+        if (i.send("exceptionInfo", args, .{ .kind = .exception_info, .a = @bitCast(thread) })) return;
+    }
+    i.exception = try exception_mod.fromStop(i.gpa, thread, r.description, r.text, signal);
 }
 
 /// Selects `row` of `thread` (`scopes`: its `scopes` body when known).
@@ -252,6 +287,14 @@ pub fn deliver(i: *Inspector, tag: Channel.Tag, gen: u64, ok: bool, bytes: []con
         .variables => try i.vars.applyVariables(@enumFromInt(tag.a), tag.b, gen, ok, bytes),
         .lazy => try i.vars.applyLazy(@enumFromInt(tag.a), gen, ok, bytes),
         .set_value => try i.vars.applySet(tag.b, gen, ok, bytes),
+        .exception_info => {
+            const thread: i64 = @bitCast(tag.a);
+            i.clearException();
+            i.exception = if (ok) exception_mod.parse(i.gpa, thread, bytes) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidBody => try exception_mod.fromStop(i.gpa, thread, null, null, false),
+            } else try exception_mod.fromStop(i.gpa, thread, null, bytes, false);
+        },
         .source, .evaluate, .completions => unreachable,
     }
 }

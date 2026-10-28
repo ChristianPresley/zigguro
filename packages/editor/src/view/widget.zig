@@ -696,18 +696,23 @@ pub const Editor = struct {
                         }
                     }
                 };
-                if (p.clicks <= 1) if (v.pointer_hook) |h| {
+                if (p.clicks <= 1 and (v.pointer_hook != null or v.priority_hook != null)) {
                     const lp = ec.local(p.pos);
                     for (v.blockList(), 0..) |b, i| {
                         const br = v.blockRectAt(i);
                         if (lp.y < br.y or lp.y >= br.y + br.h or lp.x < br.x) continue;
-                        if (h.f(h.ctx, v, .{ .kind = .block, .block = b, .block_x = lp.x - br.x, .mods = p.mods, .origin = windowOrigin(ec, v) })) {
+                        const be: PointerEvent = .{ .kind = .block, .block = b, .block_x = lp.x - br.x, .mods = p.mods, .origin = windowOrigin(ec, v) };
+                        const taken = for ([_]?view_mod.PointerHook{ v.priority_hook, v.pointer_hook }) |hk| {
+                            if (hk) |h| if (h.f(h.ctx, v, be)) break true;
+                        } else false;
+                        if (taken) {
                             ec.focus();
+                            ec.repaint();
                             return true;
                         }
                         break;
                     }
-                };
+                }
                 if (p.clicks <= 1 and (p.mods.ctrl or p.mods.super) and !p.mods.alt and !p.mods.shift) {
                     if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .click, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods })) {
                         ec.focus();
