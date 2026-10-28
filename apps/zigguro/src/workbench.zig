@@ -71,6 +71,7 @@ const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
 const HierarchyPanel = @import("hierarchy_panel.zig").HierarchyPanel;
 const doc_links = @import("doc_links.zig");
+const server_menu = @import("server_menu.zig");
 const HierarchyService = @import("codeintel.zig").HierarchyService;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
@@ -261,6 +262,8 @@ pub const Workbench = struct {
     hierarchy_ref: ?PanelRef = null,
     /// What the last Show ... Hierarchy asked, for Refresh.
     hierarchy_ask: ?struct { h: zg_editor.model.api.registry.DocHandle, offset: u64 } = null,
+    /// The language server menu (the status bar's server item).
+    server_menu: server_menu.ServerMenu = .{},
     /// Where `pending_open` puts the caret.
     pending_goto: ?Goto = null,
     /// The message of the problem next/previous problem went to, shown
@@ -1074,6 +1077,8 @@ pub const Workbench = struct {
             ci.inline_info.on_action = .{ .ctx = wb, .f = onLensAction };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             ci.link_hook = .{ .ctx = wb, .open = onDocLink };
+            ci.crash_hook = .{ .ctx = wb, .f = onServerCrash };
+            wb.server_menu.host = .{ .ctx = wb, .run = onServerAction };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
             ci.setTrusted(wb.trust == .trusted);
@@ -1207,6 +1212,13 @@ pub const Workbench = struct {
         .{ .id = "quickOpen.symbols", .title = "Go to Symbol in Workspace...", .category = "Go", .run = symbolsInWorkspace },
         .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
         .{ .id = "editor.expandSelection", .title = "Expand Selection", .category = "Selection", .run = expandSelection },
+        .{ .id = "lsp.showServerMenu", .title = "Language Server Actions...", .category = "Language Server", .run = lspShowMenu },
+        .{ .id = "lsp.restartServer", .title = "Restart Language Server", .category = "Language Server", .run = lspRestart },
+        .{ .id = "lsp.stopServer", .title = "Stop Language Server", .category = "Language Server", .run = lspStop },
+        .{ .id = "lsp.enableServer", .title = "Enable Language Server", .category = "Language Server", .run = lspEnable },
+        .{ .id = "lsp.cancelProgress", .title = "Cancel Language Server Task", .category = "Language Server", .run = lspCancel },
+        .{ .id = "lsp.showLogs", .title = "Show Language Server Logs", .category = "Language Server", .run = lspLogs },
+        .{ .id = "lsp.showServerDetails", .title = "Show Language Server Details", .category = "Language Server", .run = lspDetails },
         .{ .id = "editor.shrinkSelection", .title = "Shrink Selection", .category = "Selection", .run = shrinkSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
@@ -2430,6 +2442,132 @@ pub const Workbench = struct {
                 wb.reg.execute(cid, null, .palette) catch |e| wb.notify(.error_, "{s}: {t}", .{ id, e });
             },
         }
+    }
+
+    // -- language servers (E07.F01.S02.T06) ---------------------------------
+
+    /// The server the `lsp.*` commands act on: the current file's, or the
+    /// one that crashed last.
+    fn lspServer(wb: *Workbench) ?*CodeIntel.Server {
+        const ci = wb.codeintel orelse {
+            wb.notify(.info, "Language services are not running", .{});
+            return null;
+        };
+        return ci.commandServer(wb.currentHandle()) orelse {
+            wb.notify(.info, "No language server for this file", .{});
+            return null;
+        };
+    }
+
+    fn lspShowMenu(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        const w = wb.win orelse return;
+        try wb.server_menu.open(w, s, &wb.codeintel.?.status);
+    }
+
+    fn lspRestart(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.restart, s);
+    }
+
+    fn lspStop(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.stop, s);
+    }
+
+    fn lspEnable(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.enable, s);
+    }
+
+    fn lspCancel(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.cancel_progress, s);
+    }
+
+    fn lspLogs(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.show_logs, s);
+    }
+
+    fn lspDetails(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        wb.serverAction(.show_details, s);
+    }
+
+    fn onServerAction(ctx: *anyopaque, action: server_menu.Action, id: u32) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const ci = wb.codeintel orelse return;
+        const list = ci.mgr.serverList();
+        if (id < list.len) wb.serverAction(action, list[id]);
+    }
+
+    fn serverAction(wb: *Workbench, action: server_menu.Action, s: *CodeIntel.Server) void {
+        const ci = wb.codeintel orelse return;
+        switch (action) {
+            .restart => {
+                if (s.status == .missing) return wb.notify(.info, "{s} is not installed: {s}", .{ s.def.id, s.def.install_hint });
+                ci.mgr.restart(s);
+            },
+            .stop => ci.mgr.stop(s),
+            .enable => ci.mgr.enable(s),
+            .cancel_progress => if (!ci.status.cancelProgress(s.id)) wb.notify(.info, "{s} has no task that can be cancelled", .{s.def.id}),
+            .show_logs, .show_details => {
+                var w: std.Io.Writer.Allocating = .init(wb.gpa);
+                defer w.deinit();
+                const ok = if (action == .show_logs) ci.status.logs(s, &w.writer) else ci.status.details(s, &w.writer);
+                ok catch return wb.notify(.error_, "{s}: the report failed", .{s.def.id});
+                var ub: [96]u8 = undefined;
+                var nb: [96]u8 = undefined;
+                const what = if (action == .show_logs) "logs" else "details";
+                const uri = std.fmt.bufPrint(&ub, "zigguro-lsp:{s}/{d}/{s}", .{ what, s.id, s.def.id }) catch return;
+                const name = std.fmt.bufPrint(&nb, "{s} {s}", .{ s.def.id, what }) catch return;
+                wb.openReport(uri, name, w.written()) catch |e| wb.notify(.error_, "{s}: {t}", .{ name, e });
+            },
+        }
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Shows `text` in a read-only tab named `name` (the same tab again
+    /// for the same `uri`, with the new text).
+    fn openReport(wb: *Workbench, uri: []const u8, name: []const u8, text: []const u8) !void {
+        for (wb.files.items) |*f| if (f.virtual) |vh| if (std.mem.eql(u8, wb.docs.uri(vh) orelse "", uri)) {
+            const doc = wb.docs.get(vh).?;
+            if (try zg_editor.model.buffer.external.reloadChanges(wb.gpa, doc.tree, text)) |cs_in| {
+                var cs = cs_in;
+                defer cs.deinit();
+                try doc.applyChangeSet(&cs, .reload);
+                doc.saved_version = doc.version;
+            }
+            try wb.showEditor(f);
+            wb.setCurrent(f.*);
+            return;
+        };
+        const h = try wb.docs.openVirtual(uri, name, text);
+        errdefer wb.docs.release(h);
+        var f: OpenFile = .{ .path = null, .doc = wb.docs.get(h).?, .view = undefined, .syntax = null, .virtual = h };
+        var opts = wb.editorOptions(null);
+        opts.read_only = true;
+        f.view = try EditorView.init(wb.gpa, f.doc, opts);
+        errdefer f.view.deinit();
+        const nf = try wb.addFile(f);
+        wb.setCurrent(nf.*);
+    }
+
+    /// A language server crashed: a notice with its last stderr line.
+    fn onServerCrash(ctx: *anyopaque, s: *CodeIntel.Server) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const acts = &[_]zg_gui.w.notification_center.ToastAction{
+            .{ .label = "Show Logs", .action = "lsp.showLogs" },
+            .{ .label = if (s.status == .disabled) "Enable" else "Restart Now", .action = if (s.status == .disabled) "lsp.enableServer" else "lsp.restartServer", .primary = true },
+        };
+        var log_text = std.mem.trimEnd(u8, s.crash_log.items, "\n");
+        if (std.mem.lastIndexOfScalar(u8, log_text, '\n')) |i| log_text = log_text[i + 1 ..];
+        if (log_text.len > 120) log_text = log_text[0..120];
+        if (s.status == .disabled)
+            wb.notifyActions(.error_, acts, "{s} crashed {d} times and was disabled. {s}", .{ s.def.id, s.crashes, log_text })
+        else
+            wb.notifyActions(.warning, acts, "{s} crashed and restarts on its own. {s}", .{ s.def.id, log_text });
     }
 
     /// `editor.expandSelection` (Shift+Alt+Right).
@@ -4354,6 +4492,27 @@ pub const Workbench = struct {
             items[n] = .{ .id = "language", .text = sx.lang.name, .side = .right, .priority = 50 };
             n += 1;
         }
+        var lsp_buf: [96]u8 = undefined;
+        var lsp_tip: [256]u8 = undefined;
+        if (wb.codeintel) |ci| if (wb.currentHandle()) |h| {
+            var out: [1]*CodeIntel.Server = undefined;
+            if (ci.status.serversOf(h, &out) > 0) {
+                const s = out[0];
+                items[n] = .{
+                    .id = "lsp",
+                    .text = ci.status.label(s, &lsp_buf),
+                    .side = .right,
+                    .priority = 49,
+                    .tone = switch (s.status) {
+                        .crashed, .failed, .disabled => .warning,
+                        else => .normal,
+                    },
+                    .tooltip = CodeIntel.ServerStatus.explain(s, &lsp_tip),
+                    .action = "lsp.showServerMenu",
+                };
+                n += 1;
+            }
+        };
         var probs_buf: [48]u8 = undefined;
         if (wb.codeintel) |ci| {
             const tot = problems_panel.Problems.totals(&ci.diags);
