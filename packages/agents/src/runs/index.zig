@@ -6,8 +6,11 @@
 //! CRC-32 of everything before it. Rows:
 //! `{id[16], kind u8, status u8, flags u8 (bit 0 pinned), pad[5], created i64, started i64,
 //! ended i64, cost_micros u64, input_tokens u64, output_tokens u64,
-//! title_off u32, title_len u16, pad[2], revision u64, pad[8]}`;
-//! `started`/`ended` are `minInt(i64)` when unset. Pure.
+//! title_off u32, title_len u16, pad[2], revision u64, project_off u32,
+//! project_len u16, pad[2]}`; offsets are into the string pool (titles,
+//! then E13.F09 project slugs). `started`/`ended` are `minInt(i64)` when
+//! unset; a zero `project_len` is no project (files written before projects
+//! had zeros there). Pure.
 
 const std = @import("std");
 const run = @import("run.zig");
@@ -31,6 +34,7 @@ pub const Row = struct {
     title: []const u8,
     revision: u64,
     pinned: bool = false,
+    project: ?[]const u8 = null,
 
     pub fn of(r: *const run.RunRecord) Row {
         return .{
@@ -44,14 +48,20 @@ pub const Row = struct {
             .title = r.spec.title,
             .revision = r.revision,
             .pinned = r.pinned,
+            .project = r.spec.project,
         };
     }
 };
 
+fn projectLen(r: Row) usize {
+    const p: []const u8 = r.project orelse "";
+    return @min(p.len, std.math.maxInt(u16));
+}
+
 /// Encodes `rows` into a fresh buffer.
 pub fn encode(gpa: Allocator, rows: []const Row) Allocator.Error![]u8 {
     var pool_len: usize = 0;
-    for (rows) |r| pool_len += @min(r.title.len, std.math.maxInt(u16));
+    for (rows) |r| pool_len += @min(r.title.len, std.math.maxInt(u16)) + projectLen(r);
     const total = header_len + rows.len * row_len + pool_len + 4;
     const out = try gpa.alloc(u8, total);
     @memset(out, 0);
@@ -79,6 +89,15 @@ pub fn encode(gpa: Allocator, rows: []const Row) Allocator.Error![]u8 {
         @memcpy(out[pool_off..][0..tl], r.title[0..tl]);
         pool_off += tl;
     }
+    for (rows, 0..) |r, i| {
+        const pl = projectLen(r);
+        if (pl == 0) continue;
+        const row = out[header_len + i * row_len ..][0..row_len];
+        std.mem.writeInt(u32, row[88..92], @intCast(pool_off - pool_base), .little);
+        std.mem.writeInt(u16, row[92..94], @intCast(pl), .little);
+        @memcpy(out[pool_off..][0..pl], r.project.?[0..pl]);
+        pool_off += pl;
+    }
     std.mem.writeInt(u32, out[total - 4 ..][0..4], std.hash.Crc32.hash(out[0 .. total - 4]), .little);
     return out;
 }
@@ -102,6 +121,9 @@ pub fn decode(gpa: Allocator, bytes: []const u8) DecodeError![]Row {
         const off = std.mem.readInt(u32, row[72..76], .little);
         const len = std.mem.readInt(u16, row[76..78], .little);
         if (@as(usize, off) + len > pool.len) return error.InvalidIndex;
+        const poff = std.mem.readInt(u32, row[88..92], .little);
+        const plen = std.mem.readInt(u16, row[92..94], .little);
+        if (@as(usize, poff) + plen > pool.len) return error.InvalidIndex;
         const started = std.mem.readInt(i64, row[32..40], .little);
         const ended = std.mem.readInt(i64, row[40..48], .little);
         r.* = .{
@@ -119,6 +141,7 @@ pub fn decode(gpa: Allocator, bytes: []const u8) DecodeError![]Row {
             .title = pool[off..][0..len],
             .revision = std.mem.readInt(u64, row[80..88], .little),
             .pinned = row[18] & 1 != 0,
+            .project = if (plen == 0) null else pool[poff..][0..plen],
         };
     }
     return rows;
@@ -129,7 +152,7 @@ const testing = std.testing;
 test "index round trip and corruption" {
     const rows = [_]Row{
         .{ .id = .fromInt(1), .kind = .task, .status = .completed, .created_ms = 5, .started_ms = 6, .ended_ms = null, .cost = .{ .micros = 9 }, .title = "first", .revision = 3, .pinned = true },
-        .{ .id = .fromInt(2), .kind = .background, .status = .working, .created_ms = 7, .started_ms = null, .ended_ms = null, .cost = .{}, .title = "", .revision = 1 },
+        .{ .id = .fromInt(2), .kind = .background, .status = .working, .created_ms = 7, .started_ms = null, .ended_ms = null, .cost = .{}, .title = "", .revision = 1, .project = "book" },
     };
     const bytes = try encode(testing.allocator, &rows);
     defer testing.allocator.free(bytes);
@@ -142,6 +165,8 @@ test "index round trip and corruption" {
     try testing.expect(got[0].pinned and !got[1].pinned);
     try testing.expectEqual(run.RunStatus.working, got[1].status);
     try testing.expectEqual(@as(u64, 3), got[0].revision);
+    try testing.expect(got[0].project == null);
+    try testing.expectEqualStrings("book", got[1].project.?);
 
     const bad = try testing.allocator.dupe(u8, bytes);
     defer testing.allocator.free(bad);
