@@ -1,28 +1,32 @@
-//! The Run and Debug panel (E07.F07.S01.T01): the debug toolbar, the
-//! configuration row and the Call Stack, over the debug service. The
-//! Variables, Watch, Breakpoints and console views join it later
-//! (E07.F07.S01.T03).
+//! The Run and Debug panel (E07.F07.S01.T01, .T03): the debug toolbar,
+//! the configuration row, then the Variables, Watch and Call Stack
+//! views, over the debug service. The Breakpoints and console views join
+//! it later.
 //!
-//! The call stack is rebuilt only when the service's `generation`
-//! changed, so a stop paints in the frame after the models applied it.
-//! UI thread only.
+//! The trees are rebuilt only when the service's `generation` changed,
+//! so a stop paints in the frame after the models applied it. UI thread
+//! only.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
 const service = @import("service.zig");
 const toolbar = @import("toolbar.zig");
 const call_stack = @import("call_stack.zig");
+const var_tree = @import("var_tree.zig");
 
 const Allocator = std.mem.Allocator;
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
 const Debug = service.Debug;
 const CallStack = call_stack.CallStack;
+const VarTree = var_tree.VarTree;
 
 pub const DebugPanel = struct {
     gpa: Allocator,
     d: *Debug,
     stack: CallStack = undefined,
+    vars: VarTree = undefined,
+    watch: VarTree = undefined,
     /// The service generation the tree was built from.
     seen: u64 = 0,
     snap_arena: std.heap.ArenaAllocator,
@@ -31,9 +35,17 @@ pub const DebugPanel = struct {
     pub fn init(p: *DebugPanel, gpa: Allocator, d: *Debug) !void {
         p.* = .{ .gpa = gpa, .d = d, .snap_arena = .init(gpa) };
         try p.stack.init(gpa, d.stackHooks());
+        errdefer p.stack.deinit();
+        try p.vars.init(gpa, .variables, d.varHooks());
+        errdefer p.vars.deinit();
+        try p.watch.init(gpa, .watch, d.varHooks());
+        p.vars.update(d.viewInspector()) catch {};
+        p.watch.update(d.viewInspector()) catch {};
     }
 
     pub fn deinit(p: *DebugPanel) void {
+        p.watch.deinit();
+        p.vars.deinit();
         p.stack.deinit();
         p.snap_arena.deinit();
     }
@@ -45,6 +57,8 @@ pub const DebugPanel = struct {
         _ = p.snap_arena.reset(.retain_capacity);
         const snap = p.d.snapshot(p.snap_arena.allocator()) catch return true;
         p.stack.update(snap, p.d.selectedFrame()) catch {};
+        p.vars.update(p.d.viewInspector()) catch {};
+        p.watch.update(p.d.viewInspector()) catch {};
         if (p.d.reveal_req) |id| {
             if (p.d.entryById(id) == null) {
                 p.d.reveal_req = null;
@@ -58,6 +72,17 @@ pub const DebugPanel = struct {
     /// Focuses the call stack.
     pub fn focus(p: *DebugPanel, w: *Window) void {
         p.stack.focus(w);
+    }
+
+    pub const View = enum { variables, watch, call_stack };
+
+    /// Focuses one of the views.
+    pub fn focusView(p: *DebugPanel, w: *Window, v: View) void {
+        switch (v) {
+            .variables => p.vars.focus(w),
+            .watch => p.watch.focus(w),
+            .call_stack => p.stack.focus(w),
+        }
     }
 
     /// The call stack's text for the thread of the active row, else the
@@ -75,17 +100,30 @@ pub const DebugPanel = struct {
         defer ui.close();
         p.toolbarRow(ui);
         p.configRow(ui);
-        ui.open(.{ .style = .{ .padding = .xy(10, 2), .shrink = 0 } });
-        ui.text("CALL STACK", .{ .color = .fg_muted, .wrap = false });
+        const debugging = p.d.sessionCount() > 0;
+        heading(ui, "VARIABLES");
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "variablesFocus" });
+        if (debugging) p.vars.build(ui) else hint(ui, "Not debugging. Pick a configuration and press F5 (Start Debugging); F9 or a click left of the line numbers sets a breakpoint.");
         ui.close();
-        if (p.d.sessionCount() == 0) {
-            ui.open(.{ .style = .{ .padding = .xy(12, 6), .shrink = 0 } });
-            ui.text("Not debugging. Pick a configuration and press F5 (Start Debugging); F9 sets a breakpoint on the caret's line.", .{ .color = .fg_muted });
-            ui.close();
-            return;
-        }
+        heading(ui, "WATCH");
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "watchExpressionsFocus" });
+        p.watch.build(ui);
+        ui.close();
+        heading(ui, "CALL STACK");
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "callStackFocus" });
-        p.stack.build(ui);
+        if (debugging) p.stack.build(ui);
+        ui.close();
+    }
+
+    fn heading(ui: *Ui, text: []const u8) void {
+        ui.open(.{ .style = .{ .padding = .xy(10, 2), .shrink = 0 } });
+        ui.text(text, .{ .color = .fg_muted, .wrap = false });
+        ui.close();
+    }
+
+    fn hint(ui: *Ui, text: []const u8) void {
+        ui.open(.{ .style = .{ .padding = .xy(12, 6), .shrink = 0 } });
+        ui.text(text, .{ .color = .fg_muted });
         ui.close();
     }
 
