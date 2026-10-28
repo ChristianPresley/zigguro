@@ -45,9 +45,9 @@ pub const ReplyLimiter = struct {
     }
 };
 
-/// DA1: VT220-class with ANSI colour.
+/// DA1: VT220-class with ANSI colour, and sixel graphics when on.
 pub fn da1(t: *Terminal) void {
-    t.reply("\x1b[?62;22c");
+    t.reply(if (t.opts.graphics.sixel) "\x1b[?62;4;22c" else "\x1b[?62;22c");
 }
 
 /// DA2: a low, stable firmware number (apps should use XTVERSION).

@@ -50,6 +50,9 @@ pub const Image = struct {
     pixels: *Pixels,
     /// The store's use clock when it was last placed or transmitted.
     last_use: u64 = 0,
+    /// Freed with its last placement (sixel images, which have no id a
+    /// client could place again).
+    transient: bool = false,
 };
 
 pub const ScreenId = enum(u1) { primary, alternate };
@@ -166,6 +169,7 @@ pub const Store = struct {
         const p = s.placements.orderedRemove(i);
         pls[@intFromEnum(p.screen)].untrack(p.pin);
         s.serial +%= 1;
+        if (s.images.get(p.image_id)) |img| if (img.transient and !s.hasPlacements(p.image_id)) s.removeImage(pls, p.image_id);
     }
 
     pub fn hasPlacements(s: *const Store, id: u32) bool {

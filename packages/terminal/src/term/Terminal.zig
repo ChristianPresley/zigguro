@@ -139,6 +139,8 @@ dcs_state: dcs.State = .{},
 images: graphics.Store,
 /// The kitty graphics APC in progress.
 kitty: graphics.kitty.Kitty = .{},
+/// The sixel image being received.
+sixel: ?*graphics.sixel.SixelDecoder = null,
 stats: Stats = .{},
 
 /// Creates a blank terminal.
@@ -165,6 +167,10 @@ pub fn init(gpa: Allocator, o: Options) !Terminal {
 
 /// Frees everything.
 pub fn deinit(t: *Terminal) void {
+    if (t.sixel) |d| {
+        d.deinit();
+        t.gpa.destroy(d);
+    }
     t.images.deinit(.{ &t.primary.pages, &t.alternate.pages });
     t.kitty.deinit(t.gpa);
     t.parser.deinit();

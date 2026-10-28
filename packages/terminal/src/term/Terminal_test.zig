@@ -440,8 +440,8 @@ test "DECSCUSR and DECRQSS" {
 test "DA1, DA2, DA3, XTVERSION, DSR" {
     var t = try small();
     defer t.deinit();
-    try expectReply(&t, "\x1b[c", "\x1b[?62;22c");
-    try expectReply(&t, "\x1b[0c", "\x1b[?62;22c");
+    try expectReply(&t, "\x1b[c", "\x1b[?62;4;22c");
+    try expectReply(&t, "\x1b[0c", "\x1b[?62;4;22c");
     try expectReply(&t, "\x1b[>c", "\x1b[>1;10;0c");
     try expectReply(&t, "\x1b[=c", "\x1bP!|7A475552\x1b\\");
     try expectReply(&t, "\x1b[>q", "\x1bP>|zigguro(0.1.0)\x1b\\");
