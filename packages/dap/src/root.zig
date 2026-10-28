@@ -16,10 +16,17 @@ pub const conn = struct {
     pub const message = @import("conn/message.zig");
 };
 
+/// Tasks (E07.F08): problem matchers.
+pub const tasks = struct {
+    pub const matcher = @import("tasks/matcher/ProblemMatcher.zig");
+    pub const ansi = @import("tasks/matcher/ansi_strip.zig");
+};
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("config/variables_test.zig");
     _ = @import("proto/protocol_test.zig");
     _ = @import("testing/fake_adapter_test.zig");
     _ = @import("conn/conn_test.zig");
+    _ = @import("tasks/matcher/matcher_test.zig");
 }
