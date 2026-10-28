@@ -20,6 +20,8 @@ pub const os = @import("os.zig");
 pub const mem = @import("mem.zig");
 /// Startup timing (E14.F05).
 pub const startup = @import("startup.zig");
+/// Wakeup attribution, CPU time and the idle monitor (E14.F05.S02).
+pub const idle = @import("idle.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -49,4 +51,5 @@ test {
     std.testing.refAllDecls(os);
     std.testing.refAllDecls(mem);
     std.testing.refAllDecls(startup);
+    std.testing.refAllDecls(idle);
 }
