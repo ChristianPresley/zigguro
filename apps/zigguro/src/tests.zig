@@ -46,6 +46,8 @@ test {
     _ = @import("hover_popup.zig");
     _ = @import("refactor_ui.zig");
     _ = @import("lens_ui.zig");
+    _ = @import("smart_select.zig");
+    _ = @import("doc_links.zig");
     _ = @import("symbol_pickers.zig");
     _ = @import("scm/git.zig");
     _ = @import("scm/panel.zig");
@@ -53,5 +55,6 @@ test {
     _ = @import("signature_popup.zig");
     _ = @import("bench/keys.zig");
     _ = @import("bench/latency.zig");
+    _ = @import("bench/startup.zig");
     _ = @import("workspace_fs.zig");
 }

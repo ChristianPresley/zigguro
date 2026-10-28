@@ -88,6 +88,9 @@ pub const HierarchyService = zg_codeintel.features.HierarchyService;
 const VirtualDocs = zg_codeintel.features.VirtualDocs;
 pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
 pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
+pub const SmartSelect = @import("smart_select.zig").SmartSelect;
+pub const DocLinks = @import("doc_links.zig").DocLinks;
+const LinkDriver = @import("doc_links.zig").LinkDriver;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
 const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
@@ -192,6 +195,12 @@ pub const CodeIntel = struct {
     hierarchy: HierarchyService = undefined,
     /// Read-only documents for servers' non-file locations.
     virtual: VirtualDocs = undefined,
+    /// Expand and shrink selection.
+    smart: SmartSelect = undefined,
+    smart_seen: u64 = 0,
+    /// Document links: underlined, Ctrl+click follows (`link_hook`).
+    links: DocLinks = undefined,
+    link_hook: ?LinkHook = null,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -210,6 +219,13 @@ pub const CodeIntel = struct {
         ctx: *anyopaque,
         options: *const fn (ctx: *anyopaque, h: DocHandle) zg_codeintel.protocol.FormattingOptions,
         format_on_type: *const fn (ctx: *anyopaque, h: DocHandle) bool,
+    };
+
+    /// Follows a document link (`file:` in the editor, web in the
+    /// browser, an allowed `command:`).
+    pub const LinkHook = struct {
+        ctx: *anyopaque,
+        open: *const fn (ctx: *anyopaque, kind: LinkDriver.TargetKind, target: []const u8) void,
     };
 
     pub const PopupHook = struct {
@@ -296,6 +312,9 @@ pub const CodeIntel = struct {
         ci.linked = .init(&ci.mgr, ci.waker(), .{});
         ci.hierarchy = .init(&ci.mgr, ci.waker());
         try ci.virtual.init(&ci.mgr, ci.waker());
+        ci.smart = .init(gpa, &ci.mgr, ci.waker());
+        ci.smart.structure = .{ .ctx = ci, .f = selectionStructureOf };
+        ci.links.init(gpa, &ci.mgr, ci.waker(), .{ .ctx = ci, .open = onLinkOpen }, style.link);
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -313,6 +332,8 @@ pub const CodeIntel = struct {
         ci.refactor.close();
         ci.pickers.deinit();
         ci.inline_info.release();
+        ci.smart.release();
+        ci.links.release();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -328,6 +349,8 @@ pub const CodeIntel = struct {
         ci.linked.deinit();
         ci.hierarchy.deinit();
         ci.virtual.deinit();
+        ci.smart.deinitDriver();
+        ci.links.deinitDriver();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -417,6 +440,8 @@ pub const CodeIntel = struct {
         pub const inlay: StyleRef = @enumFromInt(0x0702_000b);
         /// Ranges edited together (linked editing).
         pub const linked: StyleRef = @enumFromInt(0x0702_000c);
+        /// Document link underlines.
+        pub const link: StyleRef = @enumFromInt(0x0702_000d);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -437,6 +462,7 @@ pub const CodeIntel = struct {
             style.bulb_preferred => th.color(.warning),
             style.inlay => th.color(.fg_muted),
             style.linked => th.color(.accent).fade(0.18),
+            style.link => th.color(.fg_link),
             else => null,
         };
     }
@@ -463,6 +489,7 @@ pub const CodeIntel = struct {
         };
         f.listener = f.doc.subscribe(.{ .ctx = ci, .onChange = onDocChange }) catch null;
         ci.semtok.track(f.h) catch {};
+        ci.links.track(f.h, f.deco);
         if (f.deco) |d| if (ci.diag.keyOfDoc(f.h)) |k| ci.decor.attach(k, d) catch {};
         f.attached = true;
     }
@@ -473,6 +500,7 @@ pub const CodeIntel = struct {
             if (f.attached) {
                 if (f.deco) |d| ci.decor.detach(d);
                 ci.semtok.untrack(h);
+                ci.links.untrack(h);
                 ci.mgr.closeDoc(h);
             }
             if (f.listener) |l| f.doc.unsubscribe(l);
@@ -482,6 +510,7 @@ pub const CodeIntel = struct {
             ci.save_actions.forget(h);
             ci.outline.forget(h);
             ci.inline_info.forget(h, f.view);
+            ci.smart.forgetView(f.view);
             if (ci.linked_view == f.view) {
                 ci.linked.end();
                 ci.clearLinked();
@@ -619,6 +648,11 @@ pub const CodeIntel = struct {
             .click => {
                 const off = e.offset orelse return false;
                 if (ci.inlayClick(f, off)) return true;
+                if (ci.links.click(f.h, off)) {
+                    ci.hideHover();
+                    ci.tick();
+                    return true;
+                }
                 if (!ci.nav.available(.definition, f.h)) return false;
                 ci.hideHover();
                 _ = ci.goTo(.definition, f.h, off, false) catch return false;
@@ -836,6 +870,18 @@ pub const CodeIntel = struct {
         const f = ci.fileOf(h) orelse return null;
         if (f.syntax.version != f.doc.version) return null;
         return f.syntax.fallbackStructure(gpa, &f.doc.tree) catch null;
+    }
+
+    /// The structure expand selection walks: the language's parser
+    /// (node spans) where it has one, the fallback otherwise. Parsed
+    /// here, on the UI thread: it runs on a key press.
+    fn selectionStructureOf(ctx: *anyopaque, h: DocHandle, gpa: Allocator) ?zg_syntax.Structure {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const f = ci.fileOf(h) orelse return null;
+        const parse = f.syntax.lang.structure orelse return structureOf(ctx, h, gpa);
+        const text = f.doc.tree.copyRange(gpa, .{ .start = 0, .end = f.doc.len() }) catch return null;
+        defer gpa.free(text);
+        return parse(gpa, text, f.doc.version) catch null;
     }
 
     fn onOutline(ctx: *anyopaque, h: DocHandle) void {
@@ -1098,6 +1144,25 @@ pub const CodeIntel = struct {
         return n;
     }
 
+    /// `editor.expandSelection`: grows the selections of `view` (showing
+    /// `h`) to the next syntax range around them.
+    pub fn expandSelection(ci: *CodeIntel, view: *EditorView, h: DocHandle) void {
+        ci.smart.expand(view, h);
+        if (ci.trusted) ci.tick();
+    }
+
+    /// `editor.shrinkSelection`: back to the selection before the last
+    /// expand.
+    pub fn shrinkSelection(ci: *CodeIntel, view: *EditorView) void {
+        ci.smart.shrink(view);
+    }
+
+    fn onLinkOpen(ctx: *anyopaque, kind: LinkDriver.TargetKind, target: []const u8) void {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const hk = ci.link_hook orelse return;
+        hk.open(hk.ctx, kind, target);
+    }
+
     /// Puts the highlights for the caret's document into its editor's
     /// decorations.
     fn applyHighlights(ci: *CodeIntel) void {
@@ -1206,6 +1271,12 @@ pub const CodeIntel = struct {
         // The Hierarchy panel follows the service when it builds.
         if (ci.hierarchy.tick()) changed = true;
         if (ci.virtual.tick()) changed = true;
+        ci.smart.tick();
+        if (ci.smart.generation != ci.smart_seen) {
+            ci.smart_seen = ci.smart.generation;
+            changed = true;
+        }
+        if (ci.links.tick()) changed = true;
         ci.pickers.win = ci.win;
         ci.pickers.tick(now_ms);
         if (ci.format.tick()) {
@@ -1225,7 +1296,7 @@ pub const CodeIntel = struct {
         // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         var wait: ?u64 = null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue() }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue() }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
@@ -1315,6 +1386,22 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     defer ci.destroy();
     ci.open(h, &sx, view, &deco);
     try testing.expect(view.hl_names == ci.highlightNames());
+    // Expand selection works without a server, on the editor's own
+    // structure; shrink steps back to where it started.
+    view.setSelection(.caret(6));
+    ci.expandSelection(view, h);
+    const s1 = view.primarySel();
+    try testing.expect(!s1.isCaret() and s1.start() <= 6 and s1.end() >= 6);
+    ci.expandSelection(view, h);
+    const s2 = view.primarySel();
+    try testing.expect(s2.start() <= s1.start() and s2.end() >= s1.end() and (s2.start() < s1.start() or s2.end() > s1.end()));
+    ci.shrinkSelection(view);
+    try testing.expect(view.primarySel().start() == s1.start() and view.primarySel().end() == s1.end());
+    ci.shrinkSelection(view);
+    try testing.expect(view.primarySel().isCaret() and view.primarySel().head == 6);
+    // Nothing more to shrink.
+    ci.shrinkSelection(view);
+    try testing.expect(view.primarySel().isCaret() and view.primarySel().head == 6);
     // Hovers and Ctrl+click go through the view's pointer hook; nothing
     // is asked before the folder is trusted.
     const hk = view.pointer_hook.?;

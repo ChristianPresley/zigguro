@@ -17,7 +17,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e00` | duration_ns | p95 | 2 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e00` | warn | E14.F05.S01 |
+| `startup.phase.e00` | duration_ns | p95 | 2 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e00` (p95_ns) | warn | E14.F05.S01 |
 | `core.runtime_init` | duration_ns | p99 | 2 ms | – | ref_laptop_2024 | runtime `pending` | track | E00.F04.S02 |
 | `core.mailbox_push_pop` | duration_ns | p99 | 1 µs | – | ref_laptop_2024 | bench `zg_core` / `mailbox post+drain (1 producer)` (p99_ns) | warn | E00.F04.S02 |
 | `core.mailbox_allocs` | count | mean | 0.001 | – | any | bench `zg_core` / `mailbox post+drain (1 producer)` (allocs_per_op) | warn | E00.F04.S02 |
@@ -33,7 +33,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e01` | duration_ns | p95 | 15 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e01` | warn | E14.F05.S01 |
+| `startup.phase.e01` | duration_ns | p95 | 15 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e01` (p95_ns) | warn | E14.F05.S01 |
 | `platform.first_window_wayland` | duration_ns | p95 | 10 ms | – | ref_laptop_2024 | runtime `pending` | track | E01.F04 |
 | `platform.first_window_win32` | duration_ns | p95 | 15 ms | – | ref_laptop_2024 | runtime `pending` | track | E01.F02 |
 | `platform.input_to_ring` | duration_ns | p99 | 50 µs | – | ref_laptop_2024 | runtime `pending` | track | E01.F01 |
@@ -50,7 +50,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e02` | duration_ns | p95 | 40 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e02` | warn | E14.F05.S01 |
+| `startup.phase.e02` | duration_ns | p95 | 40 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e02` (p95_ns) | warn | E14.F05.S01 |
 | `vulkan.gpu_frame` | duration_ns | p95 | 1 ms | – | ref_laptop_2024 | runtime `gpu.frame` | warn | E02.F06.S04 |
 | `vulkan.gpu_keystroke_frame` | duration_ns | p95 | 250 µs | – | ref_laptop_2024 | runtime `pending` | track | E02.F04 |
 | `vulkan.encode` | duration_ns | p99 | 500 µs | – | ref_laptop_2024 | runtime `render.encode` | warn | E02.F03 |
@@ -64,7 +64,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e03` | duration_ns | p95 | 12 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e03` | warn | E14.F05.S01 |
+| `startup.phase.e03` | duration_ns | p95 | 12 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e03` (p95_ns) | warn | E14.F05.S01 |
 | `text.glyph_cache_hit` | duration_ns | p99 | 50 ns | 10 ns | ref_laptop_2024 | bench `zg_text` / `text.cache_hit` (p99_ns) | warn | E03.F07 |
 | `text.layout_200col` | duration_ns | p99 | 20 µs | 3 µs | ref_laptop_2024 | bench `zg_text` / `text.layout_200col` (p99_ns) | warn | E03.F06 |
 | `text.shape_latin_1k` | duration_ns | p99 | 60 µs | – | ref_laptop_2024 | bench `zg_text` / `text.shape_latin_1k` (p99_ns) | warn | E03.F04 |
@@ -84,7 +84,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e04` | duration_ns | p95 | 10 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e04` | warn | E14.F05.S01 |
+| `startup.phase.e04` | duration_ns | p95 | 10 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e04` (p95_ns) | warn | E14.F05.S01 |
 | `gui.full_frame` | duration_ns | p99 | 2 ms | – | ref_laptop_2024 | runtime `pending` | track | E04.F01 |
 | `gui.incremental_frame` | duration_ns | p99 | 300 µs | – | ref_laptop_2024 | runtime `pending` | track | E04.F01 |
 | `gui.reconcile_unchanged_1k` | duration_ns | p99 | 20 µs | – | ref_laptop_2024 | bench `zg_gui` / `gui.reconcile.unchanged_1k` (p99_ns) | warn | E04.F01 |
@@ -145,7 +145,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e08` | duration_ns | p95 | 10 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e08` | warn | E14.F05.S01 |
+| `startup.phase.e08` | duration_ns | p95 | 10 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e08` (p95_ns) | warn | E14.F05.S01 |
 | `workspace.open_folder_root` | duration_ns | max | 16 ms | – | ref_laptop_2024 | runtime `pending` | track | E08.F01 |
 | `workspace.scan_100k` | duration_ns | p99 | 350 ms | – | ref_laptop_2024 | bench `zg_workspace` / `workspace/scan_100k` (p99_ns) | warn | E08.F01 |
 | `workspace.fs_change_reflect` | duration_ns | p99 | 100 ms | – | ref_laptop_2024 | runtime `pending` | track | E08.F02 |
@@ -228,7 +228,7 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.first_interactive_frame` | duration_ns | p95 | 150 ms | 100 ms | ref_laptop_2024 | scenario `startup` / `first_interactive_frame` | block | CONVENTIONS |
+| `startup.first_interactive_frame` | duration_ns | p95 | 150 ms | 100 ms | ref_laptop_2024 | bench `startup` / `startup.first_interactive_frame` (p95_ns) | block | CONVENTIONS |
 | `input.key_to_photon` | duration_ns | p99 | 8 ms | 5 ms | ref_laptop_2024 | scenario `editing_100k` / `key_to_photon` | block | CONVENTIONS |
 | `ui.view_switch` | duration_ns | p99 | 16 ms | 8 ms | ref_laptop_2024 | scenario `view_switch` / `command_to_frame` | block | CONVENTIONS |
 | `ui.frame_cpu_keystroke` | duration_ns | p99 | 2 ms | 1 ms | ref_laptop_2024 | scenario `editing_100k` / `frame_cpu` | block | E14.F03 |
@@ -255,4 +255,4 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `startup.phase.e15` | duration_ns | p95 | 5 ms | – | ref_laptop_2024 | scenario `startup` / `phase.e15` | warn | E14.F05.S01 |
+| `startup.phase.e15` | duration_ns | p95 | 5 ms | – | ref_laptop_2024 | bench `startup` / `startup.phase.e15` (p95_ns) | warn | E14.F05.S01 |
