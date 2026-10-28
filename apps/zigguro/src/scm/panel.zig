@@ -12,10 +12,14 @@
 //!   files with Stage, Unstage, Discard; a click shows the diff, a double
 //!   click opens the file.
 //! - History: the log (`git.logLimit`, this branch or all); a commit's
-//!   patch, and Checkout, New Branch, New Tag, Cherry-Pick, Revert and
-//!   Reset (soft, mixed, hard) at it.
+//!   patch, and Checkout, New Branch, New Tag, Cherry-Pick, Revert,
+//!   Rebase After This (interactive) and Reset (soft, mixed, hard) at it.
 //! - Branches: local and remote branches: New, Checkout, Merge, Rebase
-//!   onto, Rename, Delete, Publish, delete on the remote.
+//!   onto (plain or interactive), Rename, Delete, Publish, delete on the
+//!   remote.
+//! - An interactive rebase writes a plan and opens it in the editor; the
+//!   banner offers Edit Plan, Start and Cancel, and while a rebase is
+//!   stopped, Edit Todo, Continue, Skip and Abort.
 //! - Stashes: Stash (with untracked files), Apply, Pop, Drop, the patch.
 //! - Tags: New, Delete, Push, Push All, delete on the remote, Checkout.
 //! - Remotes: Add, Rename, Set URL, Fetch, Prune, Remove.
@@ -402,6 +406,7 @@ pub const ScmPanel = struct {
                 p.appendOutput(j.out.items);
                 if (j.code == 0) {
                     p.say(false, "{s}: done", .{j.label});
+                    p.openAfter(j.cmds);
                     switch (j.after) {
                         .none => {},
                         .clear_message => {
@@ -425,6 +430,29 @@ pub const ScmPanel = struct {
             },
         }
         p.markDirty();
+    }
+
+    /// Opens a file in the repository folder in the editor.
+    fn openGitFile(p: *ScmPanel, name: []const u8) void {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = p.git.gitPath(&buf, name) orelse return;
+        p.hooks.open(p.hooks.ctx, path);
+    }
+
+    /// `rebase -i <upstream>` and `rebase --edit-todo` open what they
+    /// leave to edit, as git opens its editor.
+    fn openAfter(p: *ScmPanel, cmds: []const []const []const u8) void {
+        for (cmds) |words| {
+            if (words.len == 0 or !std.mem.eql(u8, words[0], "rebase")) continue;
+            var interactive = false;
+            var other = false;
+            for (words[1..]) |w| {
+                if (std.mem.eql(u8, w, "--edit-todo")) return p.openGitFile("rebase-merge" ++ std.fs.path.sep_str ++ "git-rebase-todo");
+                if (std.mem.eql(u8, w, "-i") or std.mem.eql(u8, w, "--interactive")) interactive = true;
+                if (std.mem.eql(u8, w, "--start") or std.mem.eql(u8, w, "--cancel")) other = true;
+            }
+            if (interactive and !other) return p.openGitFile(git_mod.plan_file);
+        }
     }
 
     fn appendOutput(p: *ScmPanel, text: []const u8) void {
@@ -756,10 +784,29 @@ pub const ScmPanel = struct {
         defer ui.close();
         const conflicts = s.count(isConflict);
         var bb: [200]u8 = undefined;
-        ui.text(std.fmt.bufPrint(&bb, "{s}: {d} conflict{s} left. Resolve them, stage the files, then Continue.", .{ s.op.label(), conflicts, if (conflicts == 1) "" else "s" }) catch s.op.label(), .{ .color = .warning });
+        const text = if (s.op == .rebase_plan)
+            "Interactive rebase planned: edit the plan, save it, then Start."
+        else if (s.op == .rebase and conflicts == 0)
+            "Rebasing: stopped. Amend or commit what you need, then Continue."
+        else
+            std.fmt.bufPrint(&bb, "{s}: {d} conflict{s} left. Resolve them, stage the files, then Continue.", .{ s.op.label(), conflicts, if (conflicts == 1) "" else "s" }) catch s.op.label();
+        ui.text(text, .{ .color = .warning });
         ui.open(.{ .style = .{ .grow = 1 } });
         ui.close();
         const cmd = s.op.command();
+        if (s.op == .rebase_plan) {
+            ui.id(4);
+            if (zg_gui.w.button(ui, .{ .label = "Edit Plan" }).clicked) p.openGitFile(git_mod.plan_file);
+            ui.id(5);
+            if (zg_gui.w.button(ui, .{ .label = "Start", .variant = .primary }).clicked) p.run("Rebase", &.{&.{ "rebase", "-i", "--start" }});
+            ui.id(6);
+            if (zg_gui.w.button(ui, .{ .label = "Cancel", .variant = .ghost }).clicked) p.run("Cancel rebase plan", &.{&.{ "rebase", "-i", "--cancel" }});
+            return;
+        }
+        if (s.op == .rebase) {
+            ui.id(7);
+            if (zg_gui.w.button(ui, .{ .label = "Edit Todo" }).clicked) p.openGitFile("rebase-merge" ++ std.fs.path.sep_str ++ "git-rebase-todo");
+        }
         if (s.op == .bisect) {
             ui.id(1);
             if (zg_gui.w.button(ui, .{ .label = "Good" }).clicked) p.run("Bisect good", &.{&.{ "bisect", "good" }});
@@ -1080,6 +1127,8 @@ pub const ScmPanel = struct {
             if (zg_gui.w.button(ui, .{ .label = "Cherry-Pick", .variant = .ghost }).clicked) p.run("Cherry-pick", &.{&.{ "cherry-pick", c.hash }});
             ui.id(5);
             if (zg_gui.w.button(ui, .{ .label = "Revert", .variant = .ghost }).clicked) p.run("Revert", &.{&.{ "revert", "--no-edit", c.hash }});
+            ui.id(10);
+            if (zg_gui.w.button(ui, .{ .label = "Rebase After This\u{2026}", .variant = .ghost }).clicked) p.run("Plan rebase", &.{&.{ "rebase", "-i", c.hash }});
             ui.id(6);
             if (zg_gui.w.button(ui, .{ .label = "Reset Soft", .variant = .ghost }).clicked) p.run("Reset", &.{&.{ "reset", "--soft", c.hash }});
             ui.id(7);
@@ -1149,6 +1198,8 @@ pub const ScmPanel = struct {
                 if (zg_gui.w.button(ui, .{ .label = std.fmt.bufPrint(&lb, "Merge into {s}", .{cur.?}) catch "Merge", .variant = .ghost }).clicked) p.run("Merge", &.{&.{ "merge", "--no-edit", b.name }});
                 ui.id(4);
                 if (zg_gui.w.button(ui, .{ .label = std.fmt.bufPrint(&lb, "Rebase {s} onto it", .{cur.?}) catch "Rebase", .variant = .ghost }).clicked) p.run("Rebase", &.{&.{ "rebase", b.name }});
+                ui.id(10);
+                if (zg_gui.w.button(ui, .{ .label = "Rebase Interactively\u{2026}", .variant = .ghost }).clicked) p.run("Plan rebase", &.{&.{ "rebase", "-i", b.name }});
             }
             if (!b.remote) {
                 ui.id(5);
