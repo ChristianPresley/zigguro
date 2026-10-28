@@ -59,7 +59,7 @@ const Call = struct {
         c.text.deinit();
         c.arena.deinit();
     }
-    fn run(c: *Call, src: *const tools.Source, io: Io, tool: []const u8, json: []const u8) ![]const u8 {
+    fn run(c: *Call, src: *tools.Source, io: Io, tool: []const u8, json: []const u8) ![]const u8 {
         c.text.clearRetainingCapacity();
         c.ok = try tools.run(src, io, c.arena.allocator(), tool, json, &c.text.writer);
         return c.text.written();
@@ -80,7 +80,7 @@ test "agent tools: diagnostics for a file and the workspace; paths outside refus
         try st.replace(x[0], a, s);
     }
     st.commit();
-    const src: tools.Source = .{ .mgr = undefined, .store = &st, .roots = &.{"/w"}, .ui = .{ .ctx = undefined, .run = runHere } };
+    var src: tools.Source = .{ .mgr = undefined, .store = &st, .roots = &.{"/w"}, .ui = .{ .ctx = undefined, .run = runHere } };
     var c: Call = .init();
     defer c.deinit();
 
@@ -142,7 +142,7 @@ test "agent tools: hover by name one line off, definition by column, no answer" 
         if (running(&h)) break;
         try h.rt.io.sleep(.fromMilliseconds(5), .awake);
     } else return error.Timeout;
-    const src: tools.Source = .{ .mgr = &h.mgr, .store = &st, .roots = (&h.ws)[0..1], .ui = .{ .ctx = undefined, .run = runHere } };
+    var src: tools.Source = .{ .mgr = &h.mgr, .store = &st, .roots = (&h.ws)[0..1], .ui = .{ .ctx = undefined, .run = runHere } };
     var c: Call = .init();
     defer c.deinit();
 
