@@ -1087,6 +1087,7 @@ pub const Workbench = struct {
         .{ .id = "notes.search", .title = "Search Notes", .category = "Notes", .run = notesSearch },
         .{ .id = "notes.searchSelection", .title = "Search Notes for Selection", .category = "Notes", .run = notesSearchSelection },
         .{ .id = "notes.saveSearch", .title = "Save Note Search", .category = "Notes", .run = notesSaveSearch },
+        .{ .id = "notes.followLink", .title = "Follow Link Under Cursor", .category = "Notes", .run = notesFollowLink },
         .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
         .{ .id = "explorer.open", .title = "Open", .category = "Explorer", .run = explorerOpen },
         .{ .id = "explorer.newFile", .title = "New File...", .category = "Explorer", .run = explorerNewFile },
@@ -1962,6 +1963,18 @@ pub const Workbench = struct {
         }
         try q.append(wb.gpa, '"');
         try wb.showNotesSearch(q.items);
+    }
+
+    /// `notes.followLink` (Alt+Enter): opens the target of the note link
+    /// at the caret, creating a missing note.
+    fn notesFollowLink(wb: *Workbench) !void {
+        const path = wb.path orelse return;
+        try wb.ensureNotes();
+        const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path });
+        defer wb.gpa.free(abs);
+        const text = wb.view.text(.{ .start = 0, .end = wb.doc.len() });
+        const at: u32 = @intCast(@min(wb.view.primarySel().head, std.math.maxInt(u32)));
+        if (!try wb.notes.?.followLink(abs, text, at)) wb.notify(.info, "No note link at the cursor", .{});
     }
 
     /// `notes.saveSearch`: keeps the current query in the saved list.
