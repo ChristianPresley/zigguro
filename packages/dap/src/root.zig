@@ -46,6 +46,15 @@ pub const breakpoints = struct {
     pub const persist = @import("breakpoints/persist.zig");
     pub const decorate = @import("breakpoints/decorate.zig");
 };
+/// Inspecting a stopped program (E07.F06.S04): call stacks, the
+/// variables tree and sources without a path.
+pub const inspect = struct {
+    pub const Inspector = @import("inspect/Inspector.zig");
+    pub const StackModel = @import("inspect/StackModel.zig");
+    pub const VariablesModel = @import("inspect/VariablesModel.zig");
+    pub const Channel = @import("inspect/Channel.zig");
+    pub const sources = @import("inspect/sources.zig");
+};
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
     pub const DapConnection = @import("conn/DapConnection.zig");
@@ -92,4 +101,5 @@ test {
     _ = @import("session/reverse_requests_test.zig");
     _ = @import("session/compounds_test.zig");
     _ = @import("breakpoints/breakpoints_test.zig");
+    _ = @import("inspect/inspect_test.zig");
 }
