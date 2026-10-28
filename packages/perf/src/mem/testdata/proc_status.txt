@@ -1,0 +1,17 @@
+Name:	zigguro
+Umask:	0022
+State:	S (sleeping)
+Tgid:	4242
+Pid:	4242
+VmPeak:	 1203520 kB
+VmSize:	 1189000 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   70412 kB
+VmRSS:	   61448 kB
+RssAnon:	   34000 kB
+RssFile:	   27448 kB
+RssShmem:	       0 kB
+VmData:	  200000 kB
+VmStk:	     132 kB
+Threads:	9
