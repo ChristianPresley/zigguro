@@ -1,0 +1,15 @@
+# Work-done progress for the status bar: the server creates a token,
+# reports cancellable indexing, and ends it when the client cancels.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 1}, "serverInfo": {"name": "fake", "version": "1.2"}}}
+> initialized
+> textDocument/didOpen
+< {"id": 7, "method": "window/workDoneProgress/create", "params": {"token": "idx"}}
+> response
+< {"method": "$/progress", "params": {"token": "idx", "value": {"kind": "begin", "title": "indexing", "percentage": 42, "cancellable": true}}}
+> window/workDoneProgress/cancel {"token": "idx"}
+< {"method": "$/progress", "params": {"token": "idx", "value": {"kind": "end"}}}
+> textDocument/didClose
+> shutdown
+< {"id": $1, "result": null}
+> exit
