@@ -81,6 +81,34 @@ while (i < data.len) {
 
 `zg_perf.runtime.activity.global` is the UI's published activity: `idle`, `interactive` or `frame_busy`. `Host.run` publishes `frame_busy` around each pump and `interactive` after it; `idle` is derived lazily (no input for 2 s), so no timer runs. Reads are wait-free (one atomic load). Schedulers use `level()`, `waitUntilNot` and `recommendedWorkers(cpu_count)` (all cores but one when idle, half otherwise).
 
+### Idle
+
+Idle means 0 wakeups per second (`idle.wakeups`). Every blocking wait notes why it returned, right after it returns:
+
+```zig
+h.platform.waitEvents(deadline_ns);
+zg_perf.idle.noteWake("gui.host.wait", if (timer) .timer else .input);
+```
+
+The reasons are `input`, `timer`, `mailbox`, `io_completion`, `frame`, `present`, `signal` and `unknown`. `noteWake` costs about 1 ns (`idle.note_wake`): each thread counts into its own record, and with tracing on it also records the instant `perf.wake` at the site, with the reason as its value. Name threads with `zg_perf.idle.wake_count.nameThread`, and `wakeSnapshot` lists each thread's count, reasons and last site.
+
+`zg_perf.idle.IdleMonitor` turns the counts into wakeups per second and process CPU percent (`processCpuTimes`/`threadCpuTimes`: `getrusage` on Linux, `GetProcessTimes`/`GetThreadTimes` on Windows). It samples once a second, only while something observes it (the HUD's "wakeups" row in the app), and leaves its own wakes (`perf.idle_monitor`) out.
+
+Annotated sites today:
+
+| Site | Wait | Reason |
+|---|---|---|
+| `gui.host.wait` | the UI thread's `waitEvents` | `timer` past the earliest window deadline, else `input` |
+| `perf.drain` | the trace drain worker | `timer` or `signal` |
+| `perf.flight_recorder` | the flight recorder's dump worker | `signal` or `timer` |
+| `perf.watchdog` | the stall watchdog | `timer` or `signal` |
+| `perf.activity_wait` | `activity.waitUntilNot` | `signal` |
+| `perf.mem_sampler` | the memory sampler worker | `timer` or `signal` |
+| `perf.pressure` | the memory pressure worker | `signal` |
+| `perf.idle_monitor` | the idle monitor itself (not counted) | `timer` or `signal` |
+
+`zig build test-wake-sites` (part of `zig build test`) scans `packages/` outside tests for `waitEvents(`, `.wait(io`, `futexWait`, `io.sleep(`, `Event.wait`, `Condition.wait` and `Futex.wait`, and fails when one has no `noteWake(` on its line or within 5 lines after it. Waits that predate the check are counted per file in `tools/wake-sites/baseline.txt`; a file may not go over its count. Owners annotate their waits and lower the count (`zig build wake-sites-baseline` rewrites the file). The idle scenario that measures `idle.wakeups` comes with the scenario runner (E14.F06).
+
 ## 5. Measuring
 
 - **Trace zones**: `const z = zg_core.trace.zone(@src(), "editor.view.paint"); defer z.end();`. Name zones `<pkg>.<area>.<op>`. Build with `-Dtracing=zones`.
