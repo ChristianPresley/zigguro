@@ -53,5 +53,6 @@ test {
     _ = @import("signature_popup.zig");
     _ = @import("bench/keys.zig");
     _ = @import("bench/latency.zig");
+    _ = @import("bench/startup.zig");
     _ = @import("workspace_fs.zig");
 }
