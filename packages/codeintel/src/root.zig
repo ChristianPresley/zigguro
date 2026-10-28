@@ -57,6 +57,9 @@ pub const features = struct {
     pub const FileOpHooks = @import("features/file_ops.zig");
     pub const OutlineProvider = @import("features/symbols.zig");
     pub const WorkspaceSymbols = @import("features/workspace_symbols.zig");
+    pub const InlayService = @import("features/inlay.zig");
+    pub const CodeLensService = @import("features/codelens.zig");
+    pub const lens_commands = @import("features/lens_commands.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -106,4 +109,6 @@ test {
     _ = @import("features/refactor_test.zig");
     _ = @import("features/format_test.zig");
     _ = @import("features/symbols_test.zig");
+    _ = @import("features/inlay_test.zig");
+    _ = @import("features/codelens_test.zig");
 }

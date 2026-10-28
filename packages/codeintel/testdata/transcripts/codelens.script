@@ -1,0 +1,15 @@
+# Code lenses: two resolved run/debug lenses, two placeholders of which
+# only the visible one is resolved; a reference lens runs on the server.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "codeLensProvider": {"resolveProvider": true}, "executeCommandProvider": {"commands": ["x.show"]}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/codeLens
+< {"id": $1, "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "command": {"title": "Run", "command": "rust-analyzer.runSingle", "arguments": [{"k": 1}]}}, {"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 9}}, "command": {"title": "Debug", "command": "rust-analyzer.debugSingle"}}, {"range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 5}}, "data": {"r": 1}}, {"range": {"start": {"line": 30, "character": 0}, "end": {"line": 30, "character": 5}}, "data": {"r": 2}}]}
+> codeLens/resolve {"data": {"r": 1}}
+< {"id": $1, "result": {"range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 5}}, "command": {"title": "3 references", "command": "x.show", "arguments": [1]}}}
+> workspace/executeCommand {"command": "x.show", "arguments": [1]}
+< {"id": $1, "result": null}
+> shutdown
+< {"id": $1, "result": null}
+> exit

@@ -57,6 +57,7 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const FileOpHooks = @import("codeintel.zig").FileOpHooks;
 const NavService = @import("codeintel.zig").NavService;
 const settings_mod = @import("settings/service.zig");
@@ -1036,6 +1037,7 @@ pub const Workbench = struct {
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
             ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
+            ci.inline_info.on_action = .{ .ctx = wb, .f = onLensAction };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1848,6 +1850,11 @@ pub const Workbench = struct {
         const want: KeyMode = if (st.boolean("keyboard.vim.enabled")) .vim else if (st.boolean("keyboard.emacs.enabled")) .emacs else .standard;
         if (want != wb.key_mode) wb.setKeyMode(want);
         wb.setCompletionsEnabled(st.boolean("editor.inlineCompletions.enabled"));
+        if (wb.codeintel) |ci| {
+            const m = st.string("editor.inlayHints.enabled");
+            const mode: InlineInfo.Mode = if (std.mem.eql(u8, m, "off")) .off else if (std.mem.eql(u8, m, "onUnlessPressed")) .on_unless_pressed else if (std.mem.eql(u8, m, "offUnlessPressed")) .off_unless_pressed else .on;
+            ci.inline_info.configure(mode, st.boolean("editor.codeLens"));
+        }
         wb.armAutosave();
         wb.applyExplorerSettings();
         wb.applyScmSettings();
@@ -2026,6 +2033,17 @@ pub const Workbench = struct {
     fn symbolTo(ctx: *anyopaque, t: NavService.Target) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         wb.jumpTo(t);
+    }
+
+    /// A run or debug code lens. Tasks and debugging (E07.F06, F08) are
+    /// not in the app yet.
+    fn onLensAction(ctx: *anyopaque, action: InlineInfo.Action, command: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const what = switch (action) {
+            .run_task => "Running",
+            .debug_launch => "Debugging",
+        };
+        wb.notify(.info, "{s} from a code lens ({s}) needs tasks and the debugger, which are not available yet", .{ what, command });
     }
 
     fn symbolNotice(ctx: *anyopaque, msg: []const u8) void {

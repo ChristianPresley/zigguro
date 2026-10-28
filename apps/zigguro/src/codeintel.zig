@@ -84,6 +84,7 @@ pub const FileOpHooks = zg_codeintel.features.FileOpHooks;
 const OutlineProvider = zg_codeintel.features.OutlineProvider;
 const WorkspaceSymbols = zg_codeintel.features.WorkspaceSymbols;
 pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
+pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
 const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
@@ -125,6 +126,8 @@ pub const CodeIntel = struct {
     popup: HoverPopup,
     /// Where the pointer rests: a hover is asked at `due_ms`.
     rest: ?struct { h: DocHandle, view: *EditorView, offset: u64, origin: Vec2, due_ms: u64 } = null,
+    /// The inlay hint under the pointer (its tooltip shows).
+    inlay_hover: ?struct { h: DocHandle, id: u64, view: *EditorView, origin: Vec2, shown: bool = false } = null,
     /// The editor and text origin the hover asked or shown is placed by.
     hover_at: ?struct { view: *EditorView, origin: Vec2 } = null,
     hover_seen: u64 = 0,
@@ -173,6 +176,8 @@ pub const CodeIntel = struct {
     outline: OutlineProvider = undefined,
     ws_symbols: WorkspaceSymbols = undefined,
     pickers: SymbolPickers = undefined,
+    /// Inlay hints and code lenses.
+    inline_info: InlineInfo = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -273,6 +278,7 @@ pub const CodeIntel = struct {
         ci.ws_symbols = .init(&ci.mgr, ci.waker(), .{});
         ci.pickers = .init(gpa, &ci.outline, &ci.ws_symbols);
         try ci.outline.subscribe(.{ .ctx = ci, .f = onOutline });
+        try ci.inline_info.init(gpa, &ci.mgr, ci.waker(), style.inlay);
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -288,6 +294,7 @@ pub const CodeIntel = struct {
         ci.clearHighlights();
         ci.refactor.close();
         ci.pickers.deinit();
+        ci.inline_info.release();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -299,6 +306,7 @@ pub const CodeIntel = struct {
         ci.file_hooks.deinit();
         ci.outline.deinit();
         ci.ws_symbols.deinit();
+        ci.inline_info.deinitServices();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -384,6 +392,8 @@ pub const CodeIntel = struct {
         /// The code action lightbulb, and with a preferred fix.
         pub const bulb: StyleRef = @enumFromInt(0x0702_0009);
         pub const bulb_preferred: StyleRef = @enumFromInt(0x0702_000a);
+        /// Inlay hint text.
+        pub const inlay: StyleRef = @enumFromInt(0x0702_000b);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -402,6 +412,7 @@ pub const CodeIntel = struct {
             style.write => th.color(.accent).fade(0.3),
             style.bulb => th.color(.fg_muted),
             style.bulb_preferred => th.color(.warning),
+            style.inlay => th.color(.fg_muted),
             else => null,
         };
     }
@@ -446,6 +457,10 @@ pub const CodeIntel = struct {
             if (f.deco) |d| ci.refactor.forget(d);
             ci.save_actions.forget(h);
             ci.outline.forget(h);
+            ci.inline_info.forget(h, f.view);
+            if (ci.inlay_hover) |ih| if (ih.view == f.view) {
+                ci.inlay_hover = null;
+            };
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
             if (ci.comp_view == f.view) {
                 ci.closeCompletion();
@@ -481,6 +496,9 @@ pub const CodeIntel = struct {
         if (current) |h| {
             const vis = view.visibleLines();
             ci.semtok.onViewport(h, .{ .first = vis[0], .end = vis[1] + 1 });
+            if (ci.fileOf(h)) |f| if (f.view == view and f.attached) if (f.deco) |d| {
+                ci.inline_info.viewport(h, view, d, vis[0], vis[1] + 1, ci.nowMs());
+            };
         }
         const sel = view.primarySel();
         ci.highlight.onCursor(if (ci.fileOf(current)) |f| if (f.view == view and sel.anchor == sel.head) f.h else null else null, sel.head);
@@ -546,14 +564,30 @@ pub const CodeIntel = struct {
         const f = ci.fileOfView(v) orelse return false;
         if (!ci.trusted or !f.attached) return false;
         switch (e.kind) {
-            .move => ci.pointerAt(f, e),
+            .move => {
+                ci.inline_info.modifiers(e.mods.ctrl, e.mods.alt);
+                if (ci.inlayHover(f, e)) return false;
+                if (ci.inlay_hover != null) {
+                    ci.inlay_hover = null;
+                    if (ci.hover.current() == null) ci.popup.hide();
+                }
+                ci.pointerAt(f, e);
+            },
+            .block => {
+                const b = e.block orelse return false;
+                if (!ci.inline_info.click(v, b, e.block_x, &ci.refactor.commands)) return false;
+                ci.tick();
+                return true;
+            },
             .leave => {
                 ci.rest = null;
+                ci.inlay_hover = null;
                 if (ci.hover.current() != null and ci.hover.current().?.source == .mouse) ci.hide_due_ms = ci.nowMs() + hide_grace_ms;
                 ci.tick();
             },
             .click => {
                 const off = e.offset orelse return false;
+                if (ci.inlayClick(f, off)) return true;
                 if (!ci.nav.available(.definition, f.h)) return false;
                 ci.hideHover();
                 _ = ci.goTo(.definition, f.h, off, false) catch return false;
@@ -566,6 +600,10 @@ pub const CodeIntel = struct {
             },
             .key => {
                 const k = e.key orelse return false;
+                const ctrl_key = k.key == .control_left or k.key == .control_right;
+                const alt_key = k.key == .alt_left or k.key == .alt_right;
+                ci.inline_info.modifiers(k.mods.ctrl or ctrl_key, k.mods.alt or alt_key);
+                if (ci.inline_info.tick(ci.nowMs())) if (ci.win) |w| w.markAllDirty();
                 if (isModifier(k.key)) return false;
                 ci.comp_origin = e.origin;
                 if (ci.completionKey(f, k)) return true;
@@ -576,6 +614,51 @@ pub const CodeIntel = struct {
             },
         }
         return false;
+    }
+
+    /// The pointer over an inlay hint: its tooltip shows (resolved
+    /// first); true when it is over one.
+    fn inlayHover(ci: *CodeIntel, f: *File, e: PointerEvent) bool {
+        const off = e.offset orelse return false;
+        const hint = ci.inline_info.hintNear(f.h, off) orelse return false;
+        ci.rest = null;
+        if (ci.inlay_hover) |ih| if (ih.id == hint.id) return true;
+        if (hint.raw != null) ci.inline_info.inlay.resolve(f.h, hint.id) catch {};
+        ci.inlay_hover = .{ .h = f.h, .id = hint.id, .view = f.view, .origin = e.origin };
+        ci.showInlayTooltip();
+        ci.tick();
+        return true;
+    }
+
+    fn showInlayTooltip(ci: *CodeIntel) void {
+        if (ci.inlay_hover == null) return;
+        const ih = &ci.inlay_hover.?;
+        if (ih.shown) return;
+        const hint = for (ci.inline_info.inlay.hints(ih.h)) |*x| {
+            if (x.id == ih.id) break x;
+        } else return;
+        const tip = hint.tooltip orelse for (hint.parts) |p| {
+            if (p.tooltip) |t| break t;
+        } else return;
+        const p0 = ih.view.posOf(hint.offset);
+        ci.popup.win = ci.win;
+        ci.popup.show(tip, .{ .x = ih.origin.x + p0.x, .y = ih.origin.y + p0.y, .w = 8, .h = ih.view.lineHeight() }) catch return;
+        ih.shown = true;
+    }
+
+    /// Ctrl+click on an inlay hint part with a location goes there.
+    fn inlayClick(ci: *CodeIntel, f: *File, off: u64) bool {
+        const hint = ci.inline_info.hintNear(f.h, off) orelse return false;
+        const loc = for (hint.parts) |p| {
+            if (p.location) |l| break l;
+        } else return false;
+        const host = ci.pickers.host orelse return false;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        const path = zg_codeintel.protocol_uri.pathFromUri(fba.allocator(), loc.uri) catch null;
+        ci.hideHover();
+        host.to(host.ctx, .{ .uri = loc.uri, .path = path, .selection = loc.range, .range = loc.range, .enc = loc.enc });
+        return true;
     }
 
     fn isModifier(k: @FieldType(zg_gui.input.event.KeyPress, "key")) bool {
@@ -1021,6 +1104,10 @@ pub const CodeIntel = struct {
         ci.refactor.win = ci.win;
         const refactor_due = ci.refactor.tick(now_ms);
         if (ci.outline.tick(now_ms)) changed = true;
+        if (ci.inline_info.tick(now_ms)) {
+            changed = true;
+            ci.showInlayTooltip();
+        }
         _ = ci.ws_symbols.tick(now_ms);
         ci.pickers.win = ci.win;
         ci.pickers.tick(now_ms);
@@ -1041,11 +1128,11 @@ pub const CodeIntel = struct {
         // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         var wait: ?u64 = null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue() }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue() }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
-        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue() }) |due| if (due) |d| {
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue(), ci.inline_info.nextDue() }) |due| if (due) |d| {
             const ms = @max(1, d -| now_ms);
             wait = if (wait) |x| @min(x, ms) else ms;
         };

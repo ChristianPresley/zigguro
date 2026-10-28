@@ -16,6 +16,8 @@ pub const frame = @import("frame.zig");
 pub const @"export" = @import("export.zig");
 /// ftrace and ETW bridges.
 pub const os = @import("os.zig");
+/// Memory tags, the tracked allocator and GPU memory (E14.F04).
+pub const mem = @import("mem.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -43,4 +45,5 @@ test {
     std.testing.refAllDecls(frame);
     std.testing.refAllDecls(@"export");
     std.testing.refAllDecls(os);
+    std.testing.refAllDecls(mem);
 }

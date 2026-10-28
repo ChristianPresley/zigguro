@@ -1,0 +1,14 @@
+# Inlay hints mapped through edits until the visible lines are asked again.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "inlayHintProvider": true}}}
+> initialized
+> textDocument/didOpen
+> textDocument/inlayHint {"range": {"start": {"line": 0, "character": 0}}}
+< {"id": $1, "result": [{"position": {"line": 1, "character": 5}, "label": ": i32", "kind": 1, "paddingLeft": true}, {"position": {"line": 2, "character": 10}, "label": [{"value": "x"}, {"value": ":"}], "kind": 2}]}
+> textDocument/didChange
+> textDocument/didChange
+> textDocument/inlayHint {"range": {"start": {"line": 0, "character": 0}}}
+< {"id": $1, "result": []}
+> shutdown
+< {"id": $1, "result": null}
+> exit
