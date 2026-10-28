@@ -1,0 +1,24 @@
+# Call hierarchy (items sent back as they came, unknown fields and data
+# kept; incoming then recursive; outgoing), then a type hierarchy with
+# two prepared items, supertypes and subtypes.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2, "callHierarchyProvider": true, "typeHierarchyProvider": true}}}
+> initialized
+> textDocument/didOpen
+> textDocument/prepareCallHierarchy {"position": {"line": 0, "character": 3}}
+< {"id": $1, "result": [{"data": {"id": "A"}, "x-extra": 1, "name": "a", "kind": 12, "uri": "file://${workspace}/main.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 20}}, "selectionRange": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}}]}
+> callHierarchy/incomingCalls {"item": {"x-extra": 1, "data": {"id": "A"}}}
+< {"id": $1, "result": [{"from": {"name": "b", "kind": 12, "uri": "file://${workspace}/b.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 20}}, "selectionRange": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}, "data": {"id": "B"}}, "fromRanges": [{"start": {"line": 0, "character": 14}, "end": {"line": 0, "character": 15}}]}]}
+> callHierarchy/incomingCalls {"item": {"data": {"id": "B"}}}
+< {"id": $1, "result": [{"from": {"data": {"id": "A"}, "x-extra": 1, "name": "a", "kind": 12, "uri": "file://${workspace}/main.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 20}}, "selectionRange": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}}, "fromRanges": [{"start": {"line": 0, "character": 14}, "end": {"line": 0, "character": 15}}]}]}
+> callHierarchy/outgoingCalls {"item": {"data": {"id": "A"}}}
+< {"id": $1, "result": [{"to": {"name": "b", "kind": 12, "uri": "file://${workspace}/b.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 20}}, "selectionRange": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}, "data": {"id": "B"}}, "fromRanges": [{"start": {"line": 0, "character": 14}, "end": {"line": 0, "character": 15}}]}]}
+> textDocument/prepareTypeHierarchy {"position": {"line": 0, "character": 3}}
+< {"id": $1, "result": [{"name": "T", "kind": 23, "uri": "file://${workspace}/main.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "data": 7}, {"name": "T2", "kind": 23, "uri": "file://${workspace}/main.zig", "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}}, "selectionRange": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 1}}}]}
+> typeHierarchy/supertypes {"item": {"name": "T", "data": 7}}
+< {"id": $1, "result": [{"name": "Base", "kind": 11, "uri": "file://${workspace}/base.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}}]}
+> typeHierarchy/subtypes {"item": {"name": "T", "data": 7}}
+< {"id": $1, "result": [{"name": "U1", "kind": 23, "uri": "file://${workspace}/u.zig", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}}, {"name": "U2", "kind": 23, "uri": "file://${workspace}/u.zig", "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}}, "selectionRange": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 2}}}]}
+> shutdown
+< {"id": $1, "result": null}
+> exit

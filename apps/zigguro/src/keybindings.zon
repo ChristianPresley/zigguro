@@ -27,6 +27,8 @@
     // preset's); workbench.action.navigateBack / navigateForward
     .{ .key = "mod+f12", .command = "editor.goToImplementation", .when = "editorTextFocus" },
     .{ .key = "shift+f12", .command = "editor.findReferences", .when = "editorTextFocus" },
+    // editor.showCallHierarchy
+    .{ .key = "shift+alt+h", .command = "editor.showCallHierarchy", .when = "editorTextFocus" },
     // workbench.action.showAllSymbols (gotoSymbol is the preset's)
     .{ .key = "mod+t", .command = "quickOpen.symbols" },
     // editor.action.formatSelection (formatDocument is the preset's)
