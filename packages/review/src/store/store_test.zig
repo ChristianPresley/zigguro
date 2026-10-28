@@ -277,3 +277,43 @@ test "store: decisions reach another process as one decided event, not journaled
     defer c.close();
     try testing.expectEqual(@as(u32, 0), try c.tail());
 }
+
+test "store: a large load decodes snapshots on several threads and applies them in journal order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const n = 300;
+    var ids: [n]model.ChangesetId = undefined;
+    var snaps: [n]?[]u8 = @splat(null);
+    defer for (snaps) |s| if (s) |x| testing.allocator.free(x);
+    {
+        var p: Proc = undefined;
+        _ = try p.open(tmp.dir, .{});
+        defer p.close();
+        var name: [16]u8 = undefined;
+        for (&ids, 0..) |*id, i| id.* = try submit(p.q, try std.fmt.bufPrint(&name, "f{d}.txt", .{i}), "base\n", 0, "x\n");
+        // Later snapshots of some changesets, and removals: the load must
+        // apply them after the snapshots they replace.
+        for (ids, 0..) |id, i| {
+            if (i % 7 == 0) {
+                p.q.getMut(id).?.files[0].hunks[0].decision = .rejected;
+                p.q.persist(id);
+            }
+            if (i % 11 == 0) p.q.remove(id);
+        }
+        for (ids, &snaps, 0..) |id, *s, i| {
+            if (i % 11 != 0) s.* = try snapshot(p.q, p.store.blobs(), id);
+        }
+        try p.store.flush();
+    }
+    var p: Proc = undefined;
+    const rep = try p.open(tmp.dir, .{});
+    defer p.close();
+    try testing.expect(rep.records >= n);
+    for (ids, snaps) |id, s| {
+        if (s) |want| {
+            const got = try snapshot(p.q, p.store.blobs(), id);
+            defer testing.allocator.free(got);
+            try testing.expectEqualStrings(want, got);
+        } else try testing.expect(p.q.get(id) == null);
+    }
+}
