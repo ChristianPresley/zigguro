@@ -48,14 +48,14 @@ const scenarios = [_]Scenario{
     .{ .name = "files untracked by git rm --cached", .script = base ++ "git rm -rq --cached src" },
 };
 
-fn gitAvailable(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) bool {
+pub fn gitAvailable(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) bool {
     const r = std.process.run(gpa, io, .{ .argv = &.{ "git", "--version" }, .environ_map = env }) catch return false;
     gpa.free(r.stdout);
     gpa.free(r.stderr);
     return r.term == .exited and r.term.exited == 0;
 }
 
-fn sh(gpa: std.mem.Allocator, io: std.Io, cwd: []const u8, env: *const std.process.Environ.Map, script: []const u8) ![]u8 {
+pub fn sh(gpa: std.mem.Allocator, io: std.Io, cwd: []const u8, env: *const std.process.Environ.Map, script: []const u8) ![]u8 {
     const r = try std.process.run(gpa, io, .{
         .argv = &.{ "sh", "-c", script },
         .cwd = .{ .path = cwd },
