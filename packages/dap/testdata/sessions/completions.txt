@@ -1,0 +1,21 @@
+# REPL completions: 1-based column, local ranking.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsCompletionsRequest": true, "completionTriggerCharacters": [".", "::"]}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "main", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> completions {"text": "foo.ba", "column": 7, "frameId": 1}
+< {"body": {"targets": [{"label": "abc"}, {"label": "bxa"}, {"label": "baz_long", "type": "field"}, {"label": "bar", "text": "bar()", "type": "method"}]}}
+> disconnect
+< {}
