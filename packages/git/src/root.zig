@@ -55,6 +55,14 @@ pub const stage = @import("stage.zig");
 pub const write_tree = @import("write_tree.zig");
 /// `git commit`.
 pub const commit_cmd = @import("commit_cmd.zig");
+/// Merge bases, ahead/behind and the log.
+pub const revwalk = @import("revwalk.zig");
+/// Revision names (`HEAD~2`, `main@{u}`, abbreviated ids, `rev:path`).
+pub const revparse = @import("revparse.zig");
+/// Switching branches, reset, restore and clean.
+pub const checkout = @import("checkout.zig");
+/// Branches, upstreams and tags.
+pub const branch = @import("branch.zig");
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -116,6 +124,7 @@ test {
     _ = @import("object_test.zig");
     _ = @import("refs/refs_test.zig");
     _ = @import("status_test.zig");
+    _ = @import("ops_test.zig");
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
