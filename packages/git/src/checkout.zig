@@ -146,6 +146,13 @@ pub fn setUpstream(repo: *Repository, b: []const u8, tracking: []const u8) !void
 
 /// Points HEAD at `v` and logs the move in HEAD's reflog.
 pub fn setHead(repo: *Repository, v: @import("refs/refs.zig").RefValue, old: ?Oid, new: Oid, who: @import("commit.zig").Ident, msg: []const u8) !void {
+    // A detached HEAD already there is neither written nor logged (git's
+    // ref store skips updates that change nothing).
+    if (v == .direct) {
+        const hr = try repo.headRef(repo.gpa);
+        defer if (hr) |r| repo.gpa.free(r);
+        if (hr == null) if (try repo.head()) |h| if (h.eql(v.direct)) return;
+    }
     var tx = repo.refs.transaction();
     defer tx.deinit();
     try tx.update("HEAD", v, null, msg, who);
