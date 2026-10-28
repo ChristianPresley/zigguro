@@ -1,0 +1,16 @@
+# Modules: events add and remove by id (number or string); the `modules`
+# request replaces the list with the adapter's full answer.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsModulesRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event module {"reason": "new", "module": {"id": 1, "name": "app", "path": "/w/app"}}
+< event module {"reason": "new", "module": {"id": "libc", "name": "libc.so.6"}}
+< event module {"reason": "removed", "module": {"id": "libc", "name": "libc.so.6"}}
+> modules {"startModule": 0, "moduleCount": 0}
+< {"body": {"modules": [{"id": 1, "name": "app", "path": "/w/app", "symbolStatus": "Symbols loaded", "addressRange": "0x1000-0x2000", "isUserCode": true}, {"id": "libm", "name": "libm.so.6", "version": "2.39", "isOptimized": true}], "totalModules": 2}}
+> disconnect
+< {}
