@@ -32,6 +32,8 @@ pub const TerminalPanel = struct {
     env: *const std.process.Environ.Map,
     term: zg_terminal.Terminal,
     view: TerminalView,
+    /// The find bar shown over this terminal.
+    find: zg_terminal_view.find_bar.FindBar,
     compactor: zg_terminal.term.Compactor = .{},
     pty: ?Pty = null,
     /// Guards `pending`.
@@ -57,7 +59,8 @@ pub const TerminalPanel = struct {
     pub fn create(gpa: std.mem.Allocator, io: std.Io, app: *zg_gui.App, env: *const std.process.Environ.Map) !*TerminalPanel {
         const p = try gpa.create(TerminalPanel);
         errdefer gpa.destroy(p);
-        p.* = .{ .gpa = gpa, .io = io, .app = app, .env = env, .term = undefined, .view = undefined };
+        p.* = .{ .gpa = gpa, .io = io, .app = app, .env = env, .term = undefined, .view = undefined, .find = try .init(gpa) };
+        errdefer p.find.deinit();
         p.poster = try gpa.create(Poster);
         p.poster.* = .{ .gpa = gpa, .panel = p };
         errdefer gpa.destroy(p.poster);
@@ -83,6 +86,7 @@ pub const TerminalPanel = struct {
         p.poster.panel = null;
         p.poster.release();
         p.pending.deinit(p.gpa);
+        p.find.deinit();
         p.view.deinit();
         p.term.deinit();
         p.gpa.destroy(p);
