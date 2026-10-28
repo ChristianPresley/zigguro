@@ -53,6 +53,9 @@ const GpuSample = struct { seq: u64, gpu_ns: u32 };
 /// frames.
 pub const feedback_window = 8;
 
+/// Frames awaiting feedback at most; older ones finalize as estimated.
+const max_pending = 64;
+
 /// The frame timeline.
 pub const FrameTimeline = struct {
     gpa: std.mem.Allocator,
@@ -61,6 +64,9 @@ pub const FrameTimeline = struct {
     final: []bool,
     /// Highest seq seen.
     newest: u64 = 0,
+    /// Slots awaiting presentation feedback (unordered).
+    pending: [max_pending]u32 = undefined,
+    pending_len: u32 = 0,
     gpu_queue: zg_core.containers.SpscRing(GpuSample, 256) = .empty,
     /// Key/text frames: OS input to presentation (real feedback only).
     key_to_photon: LatencyHistogram = .{},
@@ -149,12 +155,25 @@ pub const FrameTimeline = struct {
             // Nothing presented: nothing to wait for.
             t.ring[i].discarded = true;
             t.finalize(i);
+        } else {
+            if (t.pending_len == max_pending) t.finalizeEstimated(t.pending[0]);
+            t.pending[t.pending_len] = @intCast(i);
+            t.pending_len += 1;
         }
         // Frames older than the feedback window finalize as estimated.
-        var k: usize = 0;
-        while (k < t.ring.len) : (k += 1) {
-            if (!t.final[k] and t.ring[k].seq + feedback_window <= t.newest) t.finalizeEstimated(k);
+        var k: u32 = 0;
+        while (k < t.pending_len) {
+            const j = t.pending[k];
+            if (t.ring[j].seq + feedback_window <= t.newest) t.finalizeEstimated(j) else k += 1;
         }
+    }
+
+    fn unpend(t: *FrameTimeline, i: usize) void {
+        for (t.pending[0..t.pending_len], 0..) |j, k| if (j == i) {
+            t.pending[k] = t.pending[t.pending_len - 1];
+            t.pending_len -= 1;
+            return;
+        };
     }
 
     /// UI thread: presentation feedback (`flags` from E01; `discarded`
@@ -165,7 +184,9 @@ pub const FrameTimeline = struct {
 
     /// `onPresented` with a discard flag.
     pub fn onPresentedEx(t: *FrameTimeline, present_id: u64, t_presented_ns: u64, flags: u8, discarded: bool) void {
-        for (t.ring, 0..) |*r, i| {
+        for (t.pending[0..t.pending_len]) |j| {
+            const i: usize = j;
+            const r = &t.ring[i];
             if (t.final[i] or r.present_id != present_id) continue;
             r.present_flags = flags;
             if (discarded) {
@@ -189,6 +210,7 @@ pub const FrameTimeline = struct {
     }
 
     fn finalize(t: *FrameTimeline, i: usize) void {
+        if (!t.final[i]) t.unpend(i);
         t.final[i] = true;
         t.finalized += 1;
         const r = &t.ring[i];
