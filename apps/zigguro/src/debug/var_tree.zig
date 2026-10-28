@@ -13,6 +13,8 @@
 //! - **Editing.** Enter, a double click or F2 edits the active row in
 //!   place: a variable's value (`setValue`; a refusal shows under the
 //!   field, which stays open) or a watch's expression (empty removes it).
+//! - **Hover.** The debug hover's one result as the root (`hover_root`),
+//!   opening into its children; nothing is edited there.
 //! - Node ids are the model's `NodeId`s (stable across stops); watch rows
 //!   take ids from a reserved range.
 //! - Accessible names read "name, value, type".
@@ -38,11 +40,22 @@ const VariablesModel = zg_dap.inspect.VariablesModel;
 const Watches = zg_dap.inspect.Watches;
 const NodeId = VariablesModel.NodeId;
 
-pub const Mode = enum { variables, watch };
+pub const Mode = enum { variables, watch, hover };
 
 /// Watch rows: `watch_base + index`; the add row is `add_row`.
 const watch_base: u64 = 0xffff_ff00_0000_0000;
 const add_row: u64 = 0xffff_ffff_ffff_fffe;
+/// The hover's root row.
+const hover_row: u64 = 0xffff_ffff_ffff_fffd;
+
+/// The debug hover's result (its strings belong to the hover).
+pub const HoverRoot = struct {
+    expr: []const u8,
+    value: []const u8,
+    type: ?[]const u8 = null,
+    /// Its children's model node (null: a plain value).
+    node: ?NodeId = null,
+};
 
 pub const add_label = "Add Expression\u{2026}";
 
@@ -67,6 +80,8 @@ pub const VarTree = struct {
     tv: TreeView = undefined,
     /// The models shown (null: no session).
     insp: ?*Inspector = null,
+    /// What the hover shows (hover mode).
+    hover_root: ?HoverRoot = null,
     /// Rows waiting for their children.
     loading: std.AutoArrayHashMapUnmanaged(u64, void) = .empty,
     done: ?LoadDone = null,
@@ -86,9 +101,17 @@ pub const VarTree = struct {
         vt.* = .{ .gpa = gpa, .mode = mode, .hooks = hooks, .edit_buf = try .init(gpa, ""), .label_arena = .init(gpa) };
         errdefer vt.edit_buf.deinit();
         vt.tv = try TreeView.init(gpa, vt.source(), .{
-            .label = if (mode == .variables) "Variables" else "Watch",
-            .test_id = if (mode == .variables) "debug-variables" else "debug-watch",
-            .expand_on_click = mode == .variables,
+            .label = switch (mode) {
+                .variables => "Variables",
+                .watch => "Watch",
+                .hover => "Debug Hover",
+            },
+            .test_id = switch (mode) {
+                .variables => "debug-variables",
+                .watch => "debug-watch",
+                .hover => "debug-hover-tree",
+            },
+            .expand_on_click = mode != .watch,
             .on_open = .{ .ctx = vt, .f = onOpen },
             .on_click = .{ .ctx = vt, .f = onClick },
             .on_toggle = .{ .ctx = vt, .f = onToggle },
@@ -166,6 +189,7 @@ pub const VarTree = struct {
 
     /// The model node under row `id` (a watch row: its result's).
     fn varOf(vt: *const VarTree, id: u64) ?NodeId {
+        if (id == hover_row) return if (vt.hover_root) |r| r.node else null;
         if (id == add_row) return null;
         if (id >= watch_base) {
             const i = id - watch_base;
@@ -183,6 +207,7 @@ pub const VarTree = struct {
         return switch (vt.mode) {
             .variables => if (vt.vm()) |m| @intCast(m.roots().len) else 0,
             .watch => @intCast(vt.watches().len + 1),
+            .hover => if (vt.hover_root != null) 1 else 0,
         };
     }
 
@@ -209,6 +234,7 @@ pub const VarTree = struct {
         const p = parent orelse return switch (vt.mode) {
             .variables => @intFromEnum(vt.vm().?.roots()[i]),
             .watch => if (i < vt.watches().len) watch_base + i else add_row,
+            .hover => hover_row,
         };
         const kids = vt.vm().?.peekChildren(vt.varOf(p).?).?;
         return @intFromEnum(kids.ids[i]);
@@ -241,6 +267,10 @@ pub const VarTree = struct {
     };
 
     fn rowText(vt: *VarTree, id: u64) Text {
+        if (id == hover_row) {
+            const r = vt.hover_root orelse return .{ .name = "" };
+            return .{ .name = r.expr, .value = r.value, .type = r.type };
+        }
         if (id == add_row) return .{ .name = add_label, .tone = .link };
         if (id >= watch_base) {
             const ws = vt.watches();
@@ -304,6 +334,7 @@ pub const VarTree = struct {
 
     /// Whether row `id` can be edited.
     fn editable(vt: *VarTree, id: u64) bool {
+        if (vt.mode == .hover) return false;
         if (id == add_row or id >= watch_base) return vt.mode == .watch;
         const m = vt.vm() orelse return false;
         const n: NodeId = @enumFromInt(id);
