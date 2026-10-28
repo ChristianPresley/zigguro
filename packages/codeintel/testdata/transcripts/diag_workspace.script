@@ -1,0 +1,17 @@
+# Workspace diagnostics: a long poll that streams a partial result, then
+# completes; the next poll carries the result ids and is cancelled by the
+# server asking to be retriggered; the retrigger completes empty.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "diagnosticProvider": {"interFileDependencies": true, "workspaceDiagnostics": true}}}}
+> initialized
+> textDocument/didOpen
+> workspace/diagnostic {"previousResultIds": [], "partialResultToken": "zg/1"}
+< {"method": "$/progress", "params": {"token": "zg/1", "value": {"items": [{"kind": "full", "uri": "file:///w/closed.zig", "resultId": "c1", "items": [{"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 3}}, "severity": 1, "message": "closed file error"}]}]}}}
+< {"id": $1, "result": {"items": [{"kind": "unchanged", "uri": "file:///w/other.zig", "resultId": "o1"}]}}
+> workspace/diagnostic {"previousResultIds": [{"uri": "file:///w/closed.zig", "value": "c1"}, {"uri": "file:///w/other.zig", "value": "o1"}], "partialResultToken": "zg/2"}
+< {"id": $1, "error": {"code": -32802, "message": "busy", "data": {"retriggerRequest": true}}}
+> workspace/diagnostic {"partialResultToken": "zg/3"}
+< {"id": $1, "result": {"items": [{"kind": "full", "uri": "file:///w/closed.zig", "items": []}]}}
+> shutdown
+< {"id": $1, "result": null}
+> exit
