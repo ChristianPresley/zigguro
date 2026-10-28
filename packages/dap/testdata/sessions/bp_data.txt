@@ -1,0 +1,14 @@
+# "Break when value changes": dataBreakpointInfo, then setDataBreakpoints.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsDataBreakpoints": true}}
+> launch
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> dataBreakpointInfo {"variablesReference": 7, "name": "count"}
+< {"body": {"dataId": "0x1000", "description": "count", "accessTypes": ["write", "read"], "canPersist": false}}
+> setDataBreakpoints {"breakpoints": [{"dataId": "0x1000", "accessType": "write"}]}
+< {"body": {"breakpoints": [{"id": 5, "verified": true}]}}
+> disconnect
+< {}
