@@ -90,3 +90,40 @@ untracked 50.5 MiB (private - tagged)
 ```
 
 `untracked` is private memory no tag accounts for: untracked packages, allocator overhead, thread stacks, and driver allocations counted as private.
+
+## Pressure and reclaimers
+
+Caches give memory back through `zg_perf.mem.registerReclaimer(.{ .ctx, .tag, .name, .reclaim, .reclaimable })`. `reclaimable(ctx)` says how many bytes the cache could free; `reclaim(ctx, level, target_bytes)` frees up to the target and returns what it freed. It runs on the reclaim worker, must return within 5 ms (a warning is logged otherwise), and should free in slices of 2 ms or less. A cache whose data belongs to the UI thread posts the work there in slices. `unregisterReclaimer` waits for a running reclaim, so a reclaimer is never called after it returns.
+
+A reclaim run asks the reclaimers in order of `reclaimable()`, largest first, until the target is met. It shows up in traces as the `mem.reclaim` zone and the `mem.reclaim_bytes` counter.
+
+The `PressureMonitor` (started by the app) triggers runs from three places:
+
+| Source | Level | Target |
+|---|---|---|
+| A tag above its ceiling (`mem.tag.<name>` byte budgets in budgets.zon, or `setCeiling`) | moderate, that tag's reclaimers only | live − 80 % of the ceiling |
+| Linux PSI: `some 150000 2000000` (150 ms stalled in 2 s) | moderate | 50 % of everything reclaimable |
+| Linux PSI: `full 100000 2000000`; Windows low-memory notification | critical | 50 % of everything reclaimable |
+
+- Ceilings are checked on each sampler sample (HUD visible, reports, scenarios), at most once per 5 s per tag. No tag has a ceiling yet.
+- On Linux one task blocks in `poll` on the two trigger fds. If `/proc/pressure` is missing, PSI is skipped.
+- On Windows one task waits on the low-memory notification. While memory is low it checks every 5 s for the high-memory notification or for low clearing, and reclaims again every 30 s.
+- With no pressure the monitor never wakes.
+
+The command `perf.memory.simulatePressure` (Simulate Memory Pressure, argument `"moderate"` or `"critical"`, default critical) runs the same path.
+
+### What each epic should register
+
+E14 provides the mechanism; the caches belong to their epics:
+
+| Epic | Cache | On reclaim |
+|---|---|---|
+| E03 | Glyph and shaping caches | Drop least recently used entries |
+| E04 | Layout and text measurement caches | Drop entries for hidden views |
+| E05 | Syntax trees of hidden buffers | Free; re-parse on demand |
+| E06 | Cold scrollback | Compress |
+| E07 | LSP caches (completions, semantic tokens) | Drop |
+| E08 | Index pages | Release mapped regions (`madvise(MADV_DONTNEED)` / `DiscardVirtualMemory`; E08 decides) |
+| E10 | Old transcript text | Offload to disk |
+
+The `idle_memory` scenario (open a large workspace, idle 10 s, check `mem.idle_private` < 150 MB) comes with the E14.F06 scenario runner.
