@@ -27,6 +27,8 @@
     // preset's); workbench.action.navigateBack / navigateForward
     .{ .key = "mod+f12", .command = "editor.goToImplementation", .when = "editorTextFocus" },
     .{ .key = "shift+f12", .command = "editor.findReferences", .when = "editorTextFocus" },
+    // editor.action.formatSelection (formatDocument is the preset's)
+    .{ .key = "mod+k mod+f", .command = "editor.formatSelection", .when = "editorTextFocus" },
     .{ .key = "alt+left", .macos = "ctrl+-", .command = "navigation.back" },
     .{ .key = "alt+right", .macos = "ctrl+shift+-", .command = "navigation.forward" },
     // workbench.action.terminal.new / split / focusNext / focusPrevious
