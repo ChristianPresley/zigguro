@@ -51,6 +51,13 @@ pub const SlowFrameHook = struct {
     f: *const fn (ctx: *anyopaque, rec: *const FrameRecord, reason: SlowReason) void,
 };
 
+/// Called with every finalized frame (UI thread), e.g. by `bench-latency`.
+/// `violation` is set when the frame broke the clock contract.
+pub const FinalSink = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, rec: *const FrameRecord, violation: bool) void,
+};
+
 /// Called after each `onFrameStats` (UI thread), e.g. by the HUD to
 /// learn that frames are arriving.
 pub const FrameListener = struct {
@@ -96,6 +103,7 @@ pub const FrameTimeline = struct {
     slow_factor: f64 = 2.0,
     hook: ?SlowFrameHook = null,
     listener: ?FrameListener = null,
+    sink: ?FinalSink = null,
     /// Frames finalized, discarded, estimated (diagnostics).
     finalized: u64 = 0,
     discarded: u64 = 0,
@@ -244,6 +252,7 @@ pub const FrameTimeline = struct {
             if (t.clock_violations == 0) log.info("frame timeline: {t} in frame {d}; check the clock domain (docs/perf/latency.md)", .{ v, r.seq });
             t.clock_violations += 1;
             zg_core.trace.counter("perf.clock_violation", @intCast(t.clock_violations));
+            if (t.sink) |k| k.f(k.ctx, r, true);
             return;
         }
         var reason: ?SlowReason = null;
@@ -262,6 +271,7 @@ pub const FrameTimeline = struct {
             if (reason == null and @as(f64, @floatFromInt(g)) > t.slow_factor * registry.get("vulkan.gpu_frame").limit) reason = .gpu;
         }
         if (reason) |why| if (t.hook) |h| h.f(h.ctx, r, why);
+        if (t.sink) |k| k.f(k.ctx, r, false);
     }
 
     /// Copies the final records, oldest first, into `out`; returns the count.

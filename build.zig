@@ -570,6 +570,21 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // bench-latency (E14.F03.S02.T02): the typing-latency scenario in the
+    // app; build with -Doptimize=ReleaseFast for real numbers.
+    {
+        const run = b.addRunArtifact(zigguro_exe);
+        run.has_side_effects = true;
+        run.addArg("--bench-scenario=latency");
+        const injection = b.option([]const u8, "bench-latency-injection", "bench-latency: auto, os or ring (headless)") orelse "auto";
+        run.addArg(b.fmt("--bench-injection={s}", .{injection}));
+        if (b.option(u32, "bench-latency-keys", "bench-latency: keys to type (default 1000)")) |n| run.addArg(b.fmt("--bench-keys={d}", .{n}));
+        if (b.option(bool, "bench-latency-burst", "bench-latency: 10 ms between keys") orelse false) run.addArg("--burst");
+        const out = run.addPrefixedOutputFileArg("--bench-out=", "latency.json");
+        const install = b.addInstallFileWithDir(out, .prefix, "bench-results/latency.json");
+        b.step("bench-latency", "Type into a 100k-line file in the app and write zig-out/bench-results/latency.json").dependOn(&install.step);
+    }
+
     // Agent evaluations (packages/ai/eval): scenarios against fixture
     // workspaces, offline from scripts and cassettes.
     const eval_step = b.step("eval", "Run the agent evaluation suite (-Deval-filter, -Deval-update-baseline, -Deval-live -Deval-model)");

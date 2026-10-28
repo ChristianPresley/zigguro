@@ -27,6 +27,9 @@
 //! first frame + 2 s (see `tracing.zig`). `--hud` opens the performance
 //! HUD (Ctrl+Alt+Shift+H, `perf.hud.toggle`).
 //!
+//! `--bench-scenario=latency` runs the typing-latency benchmark
+//! (`bench/latency.zig`, `zig build bench-latency`) and exits.
+//!
 //! Text is drawn with system fonts through `zg_gui.FontText` (see
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
 
@@ -47,6 +50,7 @@ const Tracing = tracing_mod.Tracing;
 const fonts = @import("fonts.zig");
 const early_update = @import("startup/early_update_check.zig");
 const install_kind = @import("startup/install_kind.zig");
+const bench_latency = @import("bench/latency.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -119,6 +123,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (font_text) |ft| ft.destroy();
     const text_sys = if (font_text) |ft| ft.system() else mono.system();
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
+    if (try benchScenario(min, &rt, &env, &app, &tracing, text_sys, font_text, backend, w)) |code| return code;
     const path_arg = pathArg(min, rt.gpa);
     defer if (path_arg) |p| rt.gpa.free(p);
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
@@ -252,6 +257,37 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     }
     try w.flush();
     return 0;
+}
+
+/// Runs `--bench-scenario=latency` when asked: returns the exit code.
+fn benchScenario(
+    min: std.process.Init.Minimal,
+    rt: *zg_core.Runtime,
+    env: *std.process.Environ.Map,
+    app: *zg_gui.App,
+    tracing: *Tracing,
+    text_sys: zg_gui.paint.text.TextSystem,
+    font_text: ?*zg_gui.paint.FontText,
+    backend: zg_platform.platform.Backend,
+    w: *std.Io.Writer,
+) !?u8 {
+    var arena: std.heap.ArenaAllocator = .init(rt.gpa);
+    defer arena.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    var it = try min.args.iterateAllocator(arena.allocator());
+    while (it.next()) |a| try args.append(arena.allocator(), try arena.allocator().dupe(u8, a));
+    if (!bench_latency.requested(args.items)) return null;
+    const opts = bench_latency.Options.parse(args.items);
+    const tl = tracing.timeline orelse return error.NoFrameTimeline;
+    const corpus = opts.corpus orelse try bench_latency.defaultCorpus(arena.allocator(), env, opts.file_lines);
+    try bench_latency.writeCorpus(rt.io, corpus, opts.file_lines);
+    var wb: Workbench = undefined;
+    try wb.init(rt, env, corpus);
+    defer wb.deinit();
+    const o = try bench_latency.run(.{ .gpa = rt.gpa, .io = rt.io, .app = app, .wb = &wb, .text_sys = text_sys, .fonts = font_text, .timeline = tl, .env = env, .backend = backend }, opts);
+    try bench_latency.writeResults(rt.io, o, opts, w);
+    try w.flush();
+    return if (o.ok()) 0 else 1;
 }
 
 /// Runs until the window closes. In a managed install the version counts
