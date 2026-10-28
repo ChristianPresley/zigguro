@@ -63,6 +63,17 @@ pub const revparse = @import("revparse.zig");
 pub const checkout = @import("checkout.zig");
 /// Branches, upstreams and tags.
 pub const branch = @import("branch.zig");
+/// Remotes and the network: refspecs, `git remote`, transports, the wire
+/// protocol, fetch and push.
+pub const remote = struct {
+    pub const refspec = @import("remote/refspec.zig");
+    pub const config = @import("remote/remote.zig");
+    pub const transport = @import("remote/transport.zig");
+    pub const protocol = @import("remote/protocol.zig");
+    pub const objects = @import("remote/objects.zig");
+    pub const fetch = @import("remote/fetch.zig");
+    pub const push = @import("remote/push.zig");
+};
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -125,6 +136,8 @@ test {
     _ = @import("refs/refs_test.zig");
     _ = @import("status_test.zig");
     _ = @import("ops_test.zig");
+    _ = @import("remote/remote_test.zig");
+    _ = @import("remote/refspec.zig");
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
