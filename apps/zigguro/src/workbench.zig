@@ -85,6 +85,7 @@ const ScmPanel = scm_panel.ScmPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
 const Tasks = @import("tasks.zig").Tasks;
 const debug_service = @import("debug/service.zig");
+const debug_var_tree = @import("debug/var_tree.zig");
 const zg_dap = @import("zg_dap");
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
@@ -315,6 +316,8 @@ pub const Workbench = struct {
     /// dock panel.
     debug: ?*Debug = null,
     debug_panel: ?*DebugPanel = null,
+    /// The Run and Debug view the next `showDebugPanel(true)` focuses.
+    debug_focus: DebugPanel.View = .call_stack,
     debug_ref: ?PanelRef = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
@@ -1310,6 +1313,17 @@ pub const Workbench = struct {
         .{ .id = "debug.selectSession", .title = "Select Debug Session", .category = "Debug", .run = dbg(selectDebugSession) },
         .{ .id = "debug.focusCallStack", .title = "Focus on Call Stack View", .category = "Debug", .run = focusCallStack },
         .{ .id = "debug.copyCallStack", .title = "Copy Call Stack", .category = "Debug", .run = copyCallStack },
+        .{ .id = "debug.focusVariables", .title = "Focus on Variables View", .category = "Debug", .run = focusVariables },
+        .{ .id = "debug.focusWatch", .title = "Focus on Watch View", .category = "Debug", .run = focusWatch },
+        .{ .id = "debug.setVariable", .title = "Set Value", .category = "Debug", .run = setVariable },
+        .{ .id = "debug.copyValue", .title = "Copy Value", .category = "Debug", .run = copyDebugValue },
+        .{ .id = "debug.copyAsExpression", .title = "Copy as Expression", .category = "Debug", .run = copyAsExpression },
+        .{ .id = "debug.addToWatch", .title = "Add to Watch", .category = "Debug", .run = addToWatch },
+        .{ .id = "debug.addWatchExpression", .title = "Add Watch Expression", .category = "Debug", .run = addWatchExpression },
+        .{ .id = "debug.editWatchExpression", .title = "Edit Watch Expression", .category = "Debug", .run = editWatchExpression },
+        .{ .id = "debug.removeWatchExpression", .title = "Remove Watch Expression", .category = "Debug", .run = removeWatchExpression },
+        .{ .id = "debug.removeAllWatchExpressions", .title = "Remove All Watch Expressions", .category = "Debug", .run = dbg(Debug.removeAllWatchesCmd) },
+        .{ .id = "debug.toggleHexValues", .title = "Toggle Hexadecimal Values", .category = "Debug", .run = dbg(Debug.toggleHexCmd) },
         .{ .id = "debug.restartFrame", .title = "Restart Frame", .category = "Debug", .run = dbg(Debug.restartFrameCmd) },
         .{ .id = "debug.takeControl", .title = "Take Control from Agent", .category = "Debug", .run = dbg(Debug.takeControlCmd) },
         .{ .id = "debug.handBackToAgent", .title = "Hand Back to Agent", .category = "Debug", .run = dbg(Debug.handBackCmd) },
@@ -3305,11 +3319,83 @@ pub const Workbench = struct {
 
     fn focusDebug(ctx: *anyopaque, w: *Window) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
-        if (wb.debug_panel) |dp| dp.focus(w);
+        if (wb.debug_panel) |dp| dp.focusView(w, wb.debug_focus);
     }
 
     fn focusCallStack(wb: *Workbench) !void {
+        wb.debug_focus = .call_stack;
         try wb.showDebugPanel(true);
+    }
+
+    fn focusVariables(wb: *Workbench) !void {
+        wb.debug_focus = .variables;
+        try wb.showDebugPanel(true);
+    }
+
+    fn focusWatch(wb: *Workbench) !void {
+        wb.debug_focus = .watch;
+        try wb.showDebugPanel(true);
+    }
+
+    /// The Variables or Watch tree that has focus (`fallback` when
+    /// neither has).
+    fn debugTree(wb: *Workbench, fallback: DebugPanel.View) ?*debug_var_tree.VarTree {
+        const dp = wb.debug_panel orelse return null;
+        if (wb.win) |w| {
+            if (!w.focus.isNone() and w.focus == dp.watch.tv.node) return &dp.watch;
+            if (!w.focus.isNone() and w.focus == dp.vars.tv.node) return &dp.vars;
+        }
+        return switch (fallback) {
+            .watch => &dp.watch,
+            else => &dp.vars,
+        };
+    }
+
+    /// F2 in the Variables view: the value, in place.
+    fn setVariable(wb: *Workbench) !void {
+        const t = wb.debugTree(.variables) orelse return;
+        if (!t.editActive()) wb.notify(.info, "This value cannot be changed", .{});
+    }
+
+    fn copyDebugValue(wb: *Workbench) !void {
+        const t = wb.debugTree(.variables) orelse return;
+        const w = wb.win orelse return;
+        const v = t.activeValue() orelse return;
+        w.app.clipboard.set(w.gpa, v);
+    }
+
+    fn copyAsExpression(wb: *Workbench) !void {
+        const t = wb.debugTree(.variables) orelse return;
+        const w = wb.win orelse return;
+        const v = t.activeVar() orelse return;
+        w.app.clipboard.set(w.gpa, v.evaluate_name orelse v.name);
+    }
+
+    fn addToWatch(wb: *Workbench) !void {
+        const t = wb.debugTree(.variables) orelse return;
+        const d = wb.debug orelse return;
+        const v = t.activeVar() orelse return;
+        const expr = v.evaluate_name orelse return wb.notify(.info, "The debugger gives no expression for {s}", .{v.name});
+        Debug.watchAdd(d, expr);
+    }
+
+    /// The Watch view's add row, in edit.
+    fn addWatchExpression(wb: *Workbench) !void {
+        wb.debug_focus = .watch;
+        try wb.showDebugPanel(false);
+        if (wb.debug_panel) |dp| dp.watch.addExpression();
+    }
+
+    fn editWatchExpression(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        _ = dp.watch.editActive();
+    }
+
+    fn removeWatchExpression(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        const d = wb.debug orelse return;
+        const i = dp.watch.activeWatch() orelse return;
+        Debug.watchRemove(d, i);
     }
 
     fn copyCallStack(wb: *Workbench) !void {
@@ -6546,6 +6632,26 @@ test "workbench: Run and Debug lists configurations with reasons, F9 sets breakp
     try std.testing.expectEqualStrings("Add Configuration\u{2026}", d.pick_items[1].label);
     d.pick.close(t.win);
 
+    // A watch without a session: listed as not available, saved; F2
+    // edits it in place, an empty expression removes it.
+    Debug.watchAdd(d, "count * 2");
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "count * 2, not available" }) != null);
+    try std.testing.expect(t.find(.{ .name = "Add Expression\u{2026}" }) != null);
+    const saved = try tmp.dir.readFileAlloc(io, ".zigguro/debug/watches.zon", gpa, .limited(4096));
+    defer gpa.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"count * 2\"") != null);
+    const dp = wb.debug_panel.?;
+    dp.watch.tv.active = dp.watch.tv.flat.rows.items[0].node;
+    try std.testing.expect(dp.watch.editActive());
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "Watch expression" }) != null);
+    try dp.watch.edit_buf.setText("");
+    dp.watch.submitEdit();
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "count * 2, not available" }) == null);
+    try std.testing.expectEqual(@as(usize, 0), d.viewInspector().watches.results().len);
+
     // F9 on the caret's line, twice.
     wb.openAt(a, .{ .offset = 14 });
     _ = t.settle();
@@ -6741,6 +6847,37 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     // The call stack: add, then main.
     try std.testing.expect(t.find(.{ .name = "add, a.c line 2" }) != null);
     try std.testing.expect(t.find(.{ .name = "main, a.c line 6" }) != null);
+    // The Variables view: the locals, with their types.
+    const Find = struct {
+        fn until(tt: *zg_gui.testing.TestApp, name: []const u8) !void {
+            var tries: u32 = 0;
+            while (tries < 500) : (tries += 1) {
+                _ = tt.settle();
+                if (tt.find(.{ .name = name }) != null) return;
+                std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+            }
+            std.debug.print("no row \"{s}\"\n", .{name});
+            return error.Timeout;
+        }
+    };
+    try Find.until(t, "a, 1, int");
+    try Find.until(t, "b, 2, int");
+    // A watch, evaluated in the stopped frame and saved.
+    Debug.watchAdd(d, "a + b");
+    try Find.until(t, "a + b, 3, int");
+    const saved = try tmp.dir.readFileAlloc(io, ".zigguro/debug/watches.zon", gpa, .limited(4096));
+    defer gpa.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"a + b\"") != null);
+    // Set Value on `b`, in place: the watch follows.
+    const dp = wb.debug_panel.?;
+    const b_row = for (dp.vars.tv.flat.rows.items) |r| {
+        if (std.mem.startsWith(u8, debug_var_tree.VarTree.labelOf(&dp.vars, r.node), "b, ")) break r.node;
+    } else return error.NoRow;
+    try std.testing.expect(dp.vars.startEdit(b_row));
+    try dp.vars.edit_buf.setText("40");
+    dp.vars.submitEdit();
+    try Find.until(t, "b, 40, int");
+    try Find.until(t, "a + b, 41, int");
     // The keys follow the stop.
     try std.testing.expectEqualStrings("debug.continue", testCommandFor(&wb, K{ .key = .f5 }).?);
     try std.testing.expectEqualStrings("debug.stepOver", testCommandFor(&wb, K{ .key = .f10 }).?);

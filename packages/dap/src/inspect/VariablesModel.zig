@@ -87,8 +87,14 @@ pub const ChildrenResult = union(enum) {
 
 pub const SetCb = struct {
     ctx: ?*anyopaque,
+    /// Passed back to `func`.
+    user: u64 = 0,
     /// `message` (on failure) is valid during the call.
-    func: *const fn (ctx: ?*anyopaque, ok: bool, message: ?[]const u8) void,
+    func: *const fn (ctx: ?*anyopaque, user: u64, ok: bool, message: ?[]const u8) void,
+
+    fn call(cb: SetCb, ok: bool, message: ?[]const u8) void {
+        cb.func(cb.ctx, cb.user, ok, message);
+    }
 };
 
 pub const lazy_label = "(click to evaluate)";
@@ -189,6 +195,26 @@ pub fn children(m: *VariablesModel, n: NodeId, range: ?[2]u32) ChildrenResult {
     if (!nd.loading) m.fetchChildren(nd, gen);
     if (nd.children_gen == gen) return .{ .ready = clamp(nd.children.items, range) };
     return if (old.len > 0) .{ .ready = old } else .loading;
+}
+
+/// What a view shows under `n` without fetching: the children of this
+/// stop (`current`), an earlier stop's for greying, or null while none
+/// were fetched.
+pub const Peek = struct { ids: []const NodeId, current: bool };
+
+pub fn peekChildren(m: *VariablesModel, n: NodeId) ?Peek {
+    const nd = m.nodes.get(n) orelse return null;
+    const gen = m.inspector().liveGen();
+    const current = gen != null and nd.gen == gen.? and nd.children_gen == gen.?;
+    if (!current and nd.children.items.len == 0) return null;
+    return .{ .ids = nd.children.items, .current = current };
+}
+
+/// Whether `n` is of this stop (requests may use it).
+pub fn isLive(m: *VariablesModel, n: NodeId) bool {
+    const nd = m.nodes.get(n) orelse return false;
+    const gen = m.inspector().liveGen() orelse return false;
+    return nd.gen == gen;
 }
 
 fn clamp(items: []const NodeId, range: ?[2]u32) []const NodeId {
@@ -589,9 +615,9 @@ pub const EvalRoot = struct {
 /// The scope is fetched again afterwards (other variables may alias).
 pub fn setValue(m: *VariablesModel, n: NodeId, text: []const u8, cb: SetCb) void {
     const insp = m.inspector();
-    const nd = m.nodes.get(n) orelse return cb.func(cb.ctx, false, "no such variable");
-    const gen = insp.liveGen() orelse return cb.func(cb.ctx, false, "the program is running");
-    if (nd.gen != gen or nd.v.kind != .variable) return cb.func(cb.ctx, false, "the program is running");
+    const nd = m.nodes.get(n) orelse return cb.call(false, "no such variable");
+    const gen = insp.liveGen() orelse return cb.call(false, "the program is running");
+    if (nd.gen != gen or nd.v.kind != .variable) return cb.call(false, "the program is running");
     const caps = insp.ch.caps();
     var aw: std.Io.Writer.Allocating = .init(m.gpa);
     defer aw.deinit();
@@ -600,36 +626,36 @@ pub fn setValue(m: *VariablesModel, n: NodeId, text: []const u8, cb: SetCb) void
     const format: ?Format = if (m.hex) .{ .hex = true } else null;
     const command = blk: {
         if ((caps.supportsSetExpression orelse false) and nd.v.evaluate_name != null) {
-            js.write(.{ .expression = nd.v.evaluate_name.?, .value = text, .frameId = m.frame_id, .format = format }) catch return cb.func(cb.ctx, false, "out of memory");
+            js.write(.{ .expression = nd.v.evaluate_name.?, .value = text, .frameId = m.frame_id, .format = format }) catch return cb.call(false, "out of memory");
             break :blk "setExpression";
         }
         if (caps.supportsSetVariable orelse false) {
-            const parent = m.nodes.get(nd.parent orelse return cb.func(cb.ctx, false, "no parent")) orelse return cb.func(cb.ctx, false, "no parent");
-            js.write(.{ .variablesReference = parent.var_ref, .name = nd.v.name, .value = text, .format = format }) catch return cb.func(cb.ctx, false, "out of memory");
+            const parent = m.nodes.get(nd.parent orelse return cb.call(false, "no parent")) orelse return cb.call(false, "no parent");
+            js.write(.{ .variablesReference = parent.var_ref, .name = nd.v.name, .value = text, .format = format }) catch return cb.call(false, "out of memory");
             break :blk "setVariable";
         }
-        return cb.func(cb.ctx, false, "the debug adapter cannot set values");
+        return cb.call(false, "the debug adapter cannot set values");
     };
     const args = aw.written();
     const token = m.next_token;
     m.next_token += 1;
-    m.pending_sets.put(m.gpa, token, .{ .cb = cb, .node = n }) catch return cb.func(cb.ctx, false, "out of memory");
+    m.pending_sets.put(m.gpa, token, .{ .cb = cb, .node = n }) catch return cb.call(false, "out of memory");
     if (!insp.send(command, args, .{ .kind = .set_value, .a = @intFromEnum(n), .b = token })) {
         _ = m.pending_sets.remove(token);
-        cb.func(cb.ctx, false, "the debug session ended");
+        cb.call(false, "the debug session ended");
     }
 }
 
 /// A set answer that can no longer be applied.
 pub fn failSet(m: *VariablesModel, token: u64, message: []const u8) void {
     const p = m.pending_sets.fetchRemove(token) orelse return;
-    p.value.cb.func(p.value.cb.ctx, false, message);
+    p.value.cb.call(false, message);
 }
 
 pub fn applySet(m: *VariablesModel, token: u64, gen: u64, ok: bool, body: []const u8) Allocator.Error!void {
     const p = (m.pending_sets.fetchRemove(token) orelse return).value;
-    if (!ok) return p.cb.func(p.cb.ctx, false, body);
-    const n = m.nodes.get(p.node) orelse return p.cb.func(p.cb.ctx, true, null);
+    if (!ok) return p.cb.call(false, body);
+    const n = m.nodes.get(p.node) orelse return p.cb.call(true, null);
     var arena: std.heap.ArenaAllocator = .init(m.gpa);
     defer arena.deinit();
     const B = struct {
@@ -661,7 +687,7 @@ pub fn applySet(m: *VariablesModel, token: u64, gen: u64, ok: bool, body: []cons
         m.budget = m.inspector().opts.reexpand_nodes;
         if (m.nodes.get(n.root)) |root| m.fetchChildren(root, gen);
     }
-    p.cb.func(p.cb.ctx, true, null);
+    p.cb.call(true, null);
 }
 
 // ---------------------------------------------------------------------
@@ -704,7 +730,7 @@ pub fn clear(m: *VariablesModel) void {
     m.roots_.clearRetainingCapacity();
     m.frame_id = null;
     var ps = m.pending_sets.valueIterator();
-    while (ps.next()) |p| p.cb.func(p.cb.ctx, false, "the debug session ended");
+    while (ps.next()) |p| p.cb.call(false, "the debug session ended");
     m.pending_sets.clearRetainingCapacity();
 }
 

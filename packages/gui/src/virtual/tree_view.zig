@@ -59,6 +59,13 @@ pub const NodeHook = struct {
     f: *const fn (ctx: *anyopaque, node: u64) void,
 };
 
+/// Called when a node was opened (`expanded`) or closed by the user or a
+/// command.
+pub const ToggleHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, node: u64, expanded: bool) void,
+};
+
 /// Called when the selection changed.
 pub const SelectionHook = struct {
     ctx: *anyopaque,
@@ -86,6 +93,8 @@ pub const TreeProps = struct {
     /// opens a file on one click).
     on_click: ?NodeHook = null,
     on_selection: ?SelectionHook = null,
+    /// `expandRow`, `collapseRow` and `*` (each sibling opened).
+    on_toggle: ?ToggleHook = null,
 };
 
 /// Type-ahead resets after this pause.
@@ -148,7 +157,7 @@ pub const TreeView = struct {
         tv.markDirty();
     }
 
-    fn markDirty(tv: *TreeView) void {
+    pub fn markDirty(tv: *TreeView) void {
         const w = tv.win orelse return;
         if (tv.view != 0) w.markViewDirty(tv.view);
     }
@@ -177,8 +186,12 @@ pub const TreeView = struct {
 
     /// Opens row `i`.
     pub fn expandRow(tv: *TreeView, i: usize) Allocator.Error!bool {
+        const node = tv.flat.rows.items[i].node;
         const opened = try tv.flat.expand(tv.source, i, tv.loadDone());
-        if (opened) tv.markDirty();
+        if (opened) {
+            tv.markDirty();
+            if (tv.props.on_toggle) |h| h.f(h.ctx, node, true);
+        }
         return opened;
     }
 
@@ -186,9 +199,11 @@ pub const TreeView = struct {
     pub fn collapseRow(tv: *TreeView, i: usize) bool {
         const a = tv.activeRow();
         const end = tv.flat.subtreeEnd(i);
+        const node = tv.flat.rows.items[i].node;
         if (!tv.flat.collapse(i)) return false;
         if (a) |r| if (r > i and r < end) tv.setActive(i);
         tv.markDirty();
+        if (tv.props.on_toggle) |h| h.f(h.ctx, node, false);
         return true;
     }
 
@@ -337,9 +352,28 @@ pub const TreeView = struct {
     }
 
     fn expandAllSiblings(tv: *TreeView, i: usize) Allocator.Error!bool {
+        const was: ?[]u64 = if (tv.props.on_toggle != null) try tv.closedSiblings(i) else null;
+        defer if (was) |x| tv.gpa.free(x);
         const opened = try tv.flat.expandSiblings(tv.source, i, tv.loadDone());
         if (opened > 0) tv.markDirty();
+        if (tv.props.on_toggle) |h| for (was.?) |node| if (tv.flat.isExpanded(node)) h.f(h.ctx, node, true);
         return true;
+    }
+
+    /// The closed siblings of row `i` (itself included).
+    fn closedSiblings(tv: *TreeView, i: usize) Allocator.Error![]u64 {
+        var out: std.ArrayList(u64) = .empty;
+        errdefer out.deinit(tv.gpa);
+        const depth = tv.flat.rows.items[i].depth;
+        const first = if (tv.flat.parentRow(i)) |p| p + 1 else 0;
+        var r = first;
+        while (r < tv.flat.len()) {
+            const it = tv.flat.rows.items[r];
+            if (it.depth < depth) break;
+            if (it.depth == depth and !it.flags.placeholder and !it.flags.expanded) try out.append(tv.gpa, it.node);
+            r = if (it.depth == depth) tv.flat.subtreeEnd(r) else r + 1;
+        }
+        return out.toOwnedSlice(tv.gpa);
     }
 
     /// Handles typed text (type-ahead and `*`); true when used.
