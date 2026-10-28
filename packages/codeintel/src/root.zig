@@ -60,6 +60,7 @@ pub const features = struct {
     pub const InlayService = @import("features/inlay.zig");
     pub const CodeLensService = @import("features/codelens.zig");
     pub const lens_commands = @import("features/lens_commands.zig");
+    pub const LinkedEditingService = @import("features/linked_editing.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -111,4 +112,5 @@ test {
     _ = @import("features/symbols_test.zig");
     _ = @import("features/inlay_test.zig");
     _ = @import("features/codelens_test.zig");
+    _ = @import("features/linked_editing_test.zig");
 }
