@@ -1,0 +1,33 @@
+.{
+    .version = 1,
+    .configurations = .{
+        .{
+            .name = "Debug app",
+            .type = "lldb-dap",
+            .request = .launch,
+            .args = .{
+                .program = "${workspaceFolder}/zig-out/bin/app",
+                .args = .{ "--port", "8080" },
+                .env = .{ .LOG = "debug", .@"MY-VAR" = "1" },
+                .initCommands = .{"settings set target.x86-disassembly-flavor intel"},
+                .stopOnEntry = false,
+                .nested = .{ .depth = .{ .level = 3 }, .ratio = 0.5, .none = null },
+            },
+            .pre_launch_task = "zig build",
+            .windows = .{ .args = .{ .program = "${workspaceFolder}/zig-out/bin/app.exe", .env = .{ .LOG = "win" } } },
+            .presentation = .{ .group = "app", .order = 1 },
+        },
+        .{
+            .name = "Attach",
+            .type = "gdb",
+            .request = .attach,
+            .args = .{ .pid = "${input:pid}" },
+        },
+    },
+    .compounds = .{
+        .{ .name = "Both", .configurations = .{ "Debug app", "Attach" }, .stop_all = true },
+    },
+    .inputs = .{
+        .{ .id = "pid", .type = .promptString, .description = "Process id" },
+    },
+}

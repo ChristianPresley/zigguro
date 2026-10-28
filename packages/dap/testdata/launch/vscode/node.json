@@ -1,0 +1,34 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "Server",
+            "skipFiles": ["<node_internals>/**"],
+            "program": "${workspaceFolder}/server.js",
+            "env": { "PORT": "3000" },
+            "presentation": { "group": "app", "order": 1 }
+        },
+        {
+            "type": "pwa-chrome",
+            "request": "launch",
+            "name": "Client",
+            "url": "http://localhost:3000",
+            "webRoot": "${workspaceFolder}/public",
+            "presentation": { "group": "app", "order": 2 }
+        },
+        {
+            "type": "extensionHost",
+            "request": "launch",
+            "name": "Run Extension",
+            "args": ["--extensionDevelopmentPath=${workspaceFolder}"]
+        }
+    ],
+    "compounds": [
+        { "name": "Server + Client", "configurations": ["Server", { "name": "Client", "folder": "web" }], "preLaunchTask": "npm: build", "stopAll": true }
+    ],
+    "inputs": [
+        { "id": "env", "type": "pickString", "description": "Environment", "options": ["dev", { "label": "Production", "value": "prod" }], "default": "dev" }
+    ]
+}
