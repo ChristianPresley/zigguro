@@ -30,6 +30,9 @@
 //! - Links (`links.zig`): hovering one underlines it; Ctrl+click hands its
 //!   target to `on_open_link` (a plain click never opens). The shell's
 //!   working folder (OSC 7) is kept for resolving relative paths.
+//! - Blocks (`zg_terminal.shell.Blocks`, after `enableBlocks`): the shell's
+//!   marks become command blocks, updated after each `feed` and put back
+//!   on their rows after a resize.
 //!
 //! Single-threaded for now: the owner feeds output on the UI thread. The
 //! locked session and atomically mirrored mode bits of E06.F01 replace
@@ -45,6 +48,7 @@ const links_mod = @import("links.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
+const Blocks = zg_terminal.shell.Blocks;
 const input = zg_terminal.input;
 const KeyPress = zg_gui.input.event.KeyPress;
 const TextSystem = zg_gui.paint.TextSystem;
@@ -156,6 +160,8 @@ pub const TerminalView = struct {
     /// The last query (its pattern copied), searched again after a resize.
     find_query: search_mod.Query = .{ .pattern = "" },
     find_pattern: std.ArrayList(u8) = .empty,
+    /// Command blocks from the shell's marks (`enableBlocks`).
+    blocks: ?*Blocks = null,
 
     /// Where a selection drag started.
     pub const Press = struct { at: sel_mod.Point, cell: [2]u16, rect: bool };
@@ -167,6 +173,10 @@ pub const TerminalView = struct {
 
     /// Frees the paste buffers and search results.
     pub fn deinit(v: *TerminalView) void {
+        if (v.blocks) |b| {
+            b.deinit();
+            v.gpa.destroy(b);
+        }
         v.search.deinit();
         v.find_pattern.deinit(v.gpa);
         if (v.links) |d| {
@@ -176,6 +186,16 @@ pub const TerminalView = struct {
         v.cwd.deinit(v.gpa);
         v.pending_paste.deinit(v.gpa);
         v.paste_buf.deinit(v.gpa);
+    }
+
+    /// Turns the terminal's shell-integration marks into command blocks.
+    pub fn enableBlocks(v: *TerminalView, opts: zg_terminal.shell.blocks.Options) !*Blocks {
+        if (v.blocks) |b| return b;
+        const b = try v.gpa.create(Blocks);
+        b.* = .init(v.gpa, v.term, opts);
+        b.attach();
+        v.blocks = b;
+        return b;
     }
 
     fn defaultBubble(_: ?*anyopaque, kp: KeyPress) bool {
@@ -215,6 +235,7 @@ pub const TerminalView = struct {
         v.clearSelection();
         v.search.clear();
         v.term.resize(g[0], g[1]) catch return false;
+        if (v.blocks) |b| b.resync();
         if (v.find_active) v.runFind() catch {};
         v.generation +%= 1;
         if (v.on_resize) |h_| h_.f(h_.ctx, g[0], g[1], @intFromFloat(@as(f32, @floatFromInt(g[0])) * v.cell_w), @intFromFloat(@as(f32, @floatFromInt(g[1])) * v.cell_h));
@@ -232,6 +253,10 @@ pub const TerminalView = struct {
         v.term.feed(bytes);
         v.flushReplies();
         v.takeEffects();
+        if (v.blocks) |b| {
+            b.afterFeed();
+            b.flush();
+        }
         v.checkSelection();
         // The text under the pointer may have changed.
         v.hover_link = null;
