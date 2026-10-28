@@ -1032,6 +1032,7 @@ pub const Workbench = struct {
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
+            ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1150,6 +1151,8 @@ pub const Workbench = struct {
         .{ .id = "editor.findReferences", .title = "Go to References", .category = "Go", .run = findReferences },
         .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Editor", .run = renameSymbol },
         .{ .id = "editor.quickFix", .title = "Quick Fix...", .category = "Editor", .run = quickFix },
+        .{ .id = "editor.formatDocument", .title = "Format Document", .category = "Editor", .run = formatDocument },
+        .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
@@ -1240,6 +1243,7 @@ pub const Workbench = struct {
 
     fn startSave(wb: *Workbench, o: file_sync.SaveOptions) void {
         const fs = wb.currentSync() orelse return;
+        wb.runSaveActions(fs.doc, .Manual);
         fs.save(o) catch |e| switch (e) {
             error.Busy => wb.notify(.info, "{s} is still being saved", .{std.fs.path.basename(fs.path)}),
             else => wb.notify(.error_, "Save failed: {t}", .{e}),
@@ -1985,6 +1989,72 @@ pub const Workbench = struct {
         const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
         const sel = wb.view.primarySel().range();
         ci.quickFix(wb.view, h, .{ .start = sel.start, .end = sel.end }, origin);
+    }
+
+    /// `editor.formatDocument`.
+    fn formatDocument(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can format this file", .{});
+        ci.formatDocument(h);
+    }
+
+    /// `editor.formatSelection` (the whole file without a selection).
+    fn formatSelection(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can format this file", .{});
+        const sel = wb.view.primarySel().range();
+        ci.formatSelection(h, .{ .start = sel.start, .end = sel.end });
+    }
+
+    fn openFileOfHandle(wb: *Workbench, h: zg_editor.model.api.registry.DocHandle) ?*OpenFile {
+        for (wb.files.items) |*f| if (f.handle) |x| if (std.meta.eql(x, h)) return f;
+        return null;
+    }
+
+    fn langOfHandle(wb: *Workbench, h: zg_editor.model.api.registry.DocHandle) ?[]const u8 {
+        const f = wb.openFileOfHandle(h) orelse return null;
+        return if (f.syntax) |sx| sx.lang.name else null;
+    }
+
+    fn formatOptionsOf(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) zg_codeintel.protocol.FormattingOptions {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const o = wb.editorOptions(wb.langOfHandle(h));
+        return .{ .tabSize = o.tab_size, .insertSpaces = o.insert_spaces };
+    }
+
+    fn formatOnTypeOf(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const st = wb.settings orelse return false;
+        const v = st.getFor("editor.formatOnType", wb.langOfHandle(h));
+        return v == .bool and v.bool;
+    }
+
+    /// The save pipeline before `doc` is written: willSaveWaitUntil, the
+    /// code actions on save, then format on save (1 s in all).
+    fn runSaveActions(wb: *Workbench, doc: *Document, reason: zg_codeintel.protocol.TextDocumentSaveReason) void {
+        const ci = wb.codeintel orelse return;
+        const f = for (wb.files.items) |*x| {
+            if (x.doc == doc) break x;
+        } else return;
+        const h = f.handle orelse return;
+        const lang = if (f.syntax) |sx| sx.lang.name else null;
+        var kinds: [8][]const u8 = undefined;
+        var n: usize = 0;
+        var format = false;
+        if (wb.settings) |st| {
+            const fos = st.getFor("editor.formatOnSave", lang);
+            format = fos != .bool or fos.bool;
+            const cas = st.getFor("editor.codeActionsOnSave", lang);
+            if (cas == .object) for (cas.object) |fl| {
+                if (n == kinds.len) break;
+                if (fl.value == .bool and fl.value.bool) {
+                    kinds[n] = fl.key;
+                    n += 1;
+                }
+            };
+        }
+        const r = ci.beforeSave(h, .{ .code_actions = kinds[0..n], .format = format, .reason = reason });
+        if (r.warn) wb.notify(.warning, "{s}: formatting on save took too long and was skipped", .{std.fs.path.basename(f.path orelse "Untitled")});
     }
 
     fn onRefactorNotice(ctx: *anyopaque, warning: bool, msg: []const u8) void {
@@ -2947,6 +3017,7 @@ pub const Workbench = struct {
     fn quietSave(wb: *Workbench, f: *OpenFile) void {
         const fs = f.sync orelse return;
         if (f.doc.version == f.autosave_failed) return;
+        wb.runSaveActions(f.doc, .AfterDelay);
         fs.save(.{}) catch return;
         wb.quiet_saves.append(wb.gpa, fs) catch {};
     }

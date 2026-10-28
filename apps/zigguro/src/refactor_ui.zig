@@ -116,7 +116,7 @@ pub const Refactor = struct {
         r.menu_arena.deinit();
     }
 
-    fn say(r: *Refactor, warning: bool, comptime fmt: []const u8, args: anytype) void {
+    pub fn say(r: *Refactor, warning: bool, comptime fmt: []const u8, args: anytype) void {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
         if (r.notice) |n| n.f(n.ctx, warning, msg) else log.info("{s}", .{msg});

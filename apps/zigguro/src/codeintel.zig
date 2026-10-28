@@ -38,6 +38,12 @@
 //! engine; a resting caret shows a lightbulb when quick fixes exist.
 //! Edits a server sends while an agent's command runs go to review.
 //!
+//! Formatting (E07.F04.S02.T03): `formatDocument`, `formatSelection`,
+//! format on type (`Prefs.format_on_type`), and `beforeSave`, the save
+//! pipeline the workbench runs before writing a file (willSaveWaitUntil,
+//! code actions on save, format on save, in 1 s). `file_hooks` sends the
+//! workspace file-operation requests around the Explorer's operations.
+//!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
 //! attached when `setTrusted(true)` comes.
@@ -72,6 +78,9 @@ const HighlightService = zg_codeintel.features.HighlightService;
 pub const NavService = zg_codeintel.features.NavService;
 const CompletionService = zg_codeintel.features.CompletionService;
 const SignatureService = zg_codeintel.features.SignatureService;
+const FormatService = zg_codeintel.features.FormatService;
+pub const SaveActions = zg_codeintel.features.SaveActions;
+pub const FileOpHooks = zg_codeintel.features.FileOpHooks;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
 const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
@@ -151,6 +160,12 @@ pub const CodeIntel = struct {
     engine: WorkspaceEditEngine = undefined,
     /// Rename, code actions and the lightbulb.
     refactor: Refactor = undefined,
+    /// Formatting, the save pipeline and the file-operation hooks the
+    /// Explorer's operations call (`file_hooks`).
+    format: FormatService = undefined,
+    save_actions: SaveActions = undefined,
+    file_hooks: FileOpHooks = undefined,
+    prefs: ?Prefs = null,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -162,6 +177,13 @@ pub const CodeIntel = struct {
     pub const NavHook = struct {
         ctx: *anyopaque,
         done: *const fn (ctx: *anyopaque, r: NavService.Results) void,
+    };
+
+    /// Per-file formatting settings (the workbench's).
+    pub const Prefs = struct {
+        ctx: *anyopaque,
+        options: *const fn (ctx: *anyopaque, h: DocHandle) zg_codeintel.protocol.FormattingOptions,
+        format_on_type: *const fn (ctx: *anyopaque, h: DocHandle) bool,
     };
 
     pub const PopupHook = struct {
@@ -230,6 +252,11 @@ pub const CodeIntel = struct {
         ci.mgr.apply_edit_hook = .{ .ctx = ci, .f = onApplyEdit };
         ci.refactor.init(&ci.mgr, &ci.engine, &ci.diags, ci.waker(), .{ style.bulb, style.bulb_preferred });
         ci.refactor.decos = .{ .ctx = ci, .f = decoOf };
+        ci.format = .init(&ci.mgr, &ci.engine, ci.waker());
+        ci.format.options = .{ .ctx = ci, .f = formatOptions };
+        ci.save_actions = .init(&ci.mgr, &ci.engine, &ci.refactor.commands);
+        ci.save_actions.options = ci.format.options;
+        ci.file_hooks = .init(&ci.mgr, &ci.engine);
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -250,6 +277,9 @@ pub const CodeIntel = struct {
         ci.snippets.deinit();
         ci.mgr.deinit();
         ci.refactor.deinit();
+        ci.format.deinit();
+        ci.save_actions.deinit();
+        ci.file_hooks.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -389,6 +419,7 @@ pub const CodeIntel = struct {
             ci.unhook(f.view);
             if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
             if (f.deco) |d| ci.refactor.forget(d);
+            ci.save_actions.forget(h);
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
             if (ci.comp_view == f.view) {
                 ci.closeCompletion();
@@ -645,8 +676,43 @@ pub const CodeIntel = struct {
             _ = ci.completion.start(f.h, head, trig) catch false;
         };
         ci.signature.onType(f.h, cp, head) catch {};
+        if (ci.prefs) |p| if (p.format_on_type(p.ctx, f.h)) ci.format.onType(f.h, cp, head) catch {};
         ci.rememberCaret(f);
         ci.tick();
+    }
+
+    fn formatOptions(ctx: *anyopaque, h: DocHandle) zg_codeintel.protocol.FormattingOptions {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        return if (ci.prefs) |p| p.options(p.ctx, h) else FormatService.default_options;
+    }
+
+    /// `editor.formatDocument`.
+    pub fn formatDocument(ci: *CodeIntel, h: DocHandle) void {
+        ci.refactor.win = ci.win;
+        if (!ci.format.canFormat(h)) return ci.refactor.say(false, "No language server can format this file", .{});
+        ci.format.document(h, .user) catch |e| ci.refactor.say(true, "Format failed: {t}", .{e});
+        ci.tick();
+    }
+
+    /// `editor.formatSelection`: bytes `range` of `h` (the whole file
+    /// when empty).
+    pub fn formatSelection(ci: *CodeIntel, h: DocHandle, range: zg_codeintel.features.position.ByteRange) void {
+        if (range.start == range.end) return ci.formatDocument(h);
+        ci.refactor.win = ci.win;
+        if (!ci.format.canFormatRanges(h)) return ci.refactor.say(false, "No language server can format a selection of this file", .{});
+        ci.format.ranges(h, &.{range}, .user) catch |e| ci.refactor.say(true, "Format failed: {t}", .{e});
+        ci.tick();
+    }
+
+    /// Runs the save pipeline for `h` (blocks for `plan.budget_ms` at
+    /// most); a document with no attached server returns at once.
+    pub fn beforeSave(ci: *CodeIntel, h: DocHandle, plan: SaveActions.Plan) SaveActions.Result {
+        const f = ci.fileOf(h) orelse return .{};
+        if (!ci.trusted or !f.attached) return .{};
+        ci.format.cancel();
+        const r = ci.save_actions.beforeSave(h, plan, ci.save_actions.clock());
+        if (ci.win) |w| if (r.edited > 0) w.markAllDirty();
+        return r;
     }
 
     fn tokenClass(_: *CodeIntel, f: *File, head: u64) CompletionService.TokenClass {
@@ -902,6 +968,10 @@ pub const CodeIntel = struct {
         if (ci.signature.tick() or ci.signature.generation != ci.sig_seen) ci.showSignature();
         ci.refactor.win = ci.win;
         const refactor_due = ci.refactor.tick(now_ms);
+        if (ci.format.tick()) {
+            if (ci.format.failure.items.len > 0) ci.refactor.say(false, "{s}", .{ci.format.failure.items});
+            changed = true;
+        }
         if (ci.nav.tick() and ci.nav_waiting) if (ci.nav.results()) |r| if (r.complete) {
             ci.nav_waiting = false;
             if (ci.nav_hook) |hk| hk.done(hk.ctx, r);
@@ -1053,6 +1123,13 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     try testing.expectEqualStrings("No language server offers code actions here", notices.last[0..notices.len]);
     try testing.expect(ci.refactor.rest == null and ci.refactor.menu_at == null);
     try testing.expectEqual(app.theme.color(.warning), sc.color(sc.ctx, CodeIntel.style.bulb_preferred).?);
+    ci.formatDocument(h);
+    try testing.expectEqualStrings("No language server can format this file", notices.last[0..notices.len]);
+    ci.formatSelection(h, .{ .start = 0, .end = 5 });
+    try testing.expectEqualStrings("No language server can format a selection of this file", notices.last[0..notices.len]);
+    // Not attached: the save pipeline returns at once.
+    const sr = ci.beforeSave(h, .{ .format = true });
+    try testing.expect(!sr.timed_out and sr.edited == 0);
     ci.close(h);
     try testing.expect(view.pointer_hook == null);
 }

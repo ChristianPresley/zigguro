@@ -50,6 +50,9 @@ pub const features = struct {
     pub const RenameService = @import("features/rename.zig");
     pub const CodeActionService = @import("features/code_action.zig");
     pub const CommandService = @import("features/commands.zig");
+    pub const FormatService = @import("features/format.zig");
+    pub const SaveActions = @import("features/save_actions.zig");
+    pub const FileOpHooks = @import("features/file_ops.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -97,4 +100,5 @@ test {
     _ = @import("agent/tools_test.zig");
     _ = @import("edits/wsedit_test.zig");
     _ = @import("features/refactor_test.zig");
+    _ = @import("features/format_test.zig");
 }
