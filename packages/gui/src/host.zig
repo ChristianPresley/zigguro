@@ -55,6 +55,8 @@ const uia = @import("a11y/uia/root.zig");
 const atspi = @import("a11y/root.zig").atspi;
 const is_linux = builtin.os.tag == .linux;
 const zg_text = @import("zg_text");
+const zg_core = @import("zg_core");
+const zg_perf = @import("zg_perf");
 
 const r2d = zg_vulkan.r2d;
 const RenderThread = zg_vulkan.present.RenderThread;
@@ -215,6 +217,10 @@ pub const Host = struct {
     atlas_updates: std.ArrayList(zg_text.cache.AtlasUpdate) = .empty,
     render_thread: bool,
     a11y: Accessibility = .{},
+    /// The UI stall watchdog `run` feeds (E14.F01.S02.T01), if any.
+    watchdog: ?*zg_perf.StallWatchdog = null,
+    /// When `run` last handled input (`.awake` ns), for the activity signal.
+    last_input_ns: u64 = 0,
     /// The AT-SPI2 bridge, made with the first window (Linux).
     atspi_bridge: if (is_linux) ?*atspi.Bridge else void = if (is_linux) null else {},
 
@@ -236,12 +242,16 @@ pub const Host = struct {
         /// the `Io` cannot spawn one).
         render_thread: bool = true,
         a11y: Accessibility = .{},
+        /// A stall watchdog for the UI thread (`run` calls its heartbeat
+        /// and enterWait).
+        watchdog: ?*zg_perf.StallWatchdog = null,
     };
 
     /// A host for `app` on `platform`; text goes through `text_sys`. The
     /// Host must not move once a window is open.
     pub fn init(gpa: std.mem.Allocator, io: std.Io, app: *app_mod.App, platform: Platform, text_sys: text.TextSystem, opts: Options) Host {
-        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread, .a11y = opts.a11y };
+        if (zg_perf.runtime.activity.global.io == null) zg_perf.runtime.activity.global.install(io);
+        return .{ .gpa = gpa, .io = io, .app = app, .platform = platform, .text_sys = text_sys, .make_renderer = opts.renderer, .fonts = opts.fonts, .render_thread = opts.render_thread, .a11y = opts.a11y, .watchdog = opts.watchdog };
     }
 
     /// Closes every window.
@@ -615,14 +625,23 @@ pub const Host = struct {
 
     /// Runs until every window is closed, sleeping between events.
     pub fn run(h: *Host) !void {
+        const signal = &zg_perf.runtime.activity.global;
         while (h.windows.items.len > 0) {
-            _ = try h.pump();
+            if (h.watchdog) |w| w.heartbeat();
+            // Background schedulers yield while the frame is built
+            // (E14.F01.S02.T02); idle is derived from last_input_ns.
+            const start = zg_core.time.nowNs(h.io);
+            signal.publish(.frame_busy, start);
+            const handled = try h.pump();
+            if (handled > 0) h.last_input_ns = start;
+            signal.publish(.interactive, h.last_input_ns);
             if (h.windows.items.len == 0) break;
             // Sleep until the next event or the earliest window timer.
             var deadline: ?u64 = null;
             for (h.windows.items) |hw| if (hw.win.nextDeadline()) |d| {
                 deadline = if (deadline) |x| @min(x, d) else d;
             };
+            if (h.watchdog) |w| w.enterWait();
             h.platform.waitEvents(if (deadline) |d| d *| std.time.ns_per_ms else null);
         }
     }

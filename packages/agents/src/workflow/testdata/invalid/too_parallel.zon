@@ -1,0 +1,2 @@
+// expect: limits.max_parallel must be between 1 and 64
+.{ .version = 1, .name = "x", .limits = .{ .max_parallel = 65 }, .steps = .{.{ .id = "a", .agent = .{ .prompt = "A" } }} }

@@ -23,6 +23,7 @@ fn register(b: *bench.Bench) !void {
     try registerChart(b);
     try registerGrid(b);
     try registerDiagram(b);
+    try registerLibrary(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -761,6 +762,56 @@ fn registerDiagram(b: *bench.Bench) !void {
                 defer arena.deinit();
                 const l = zg_diagram.layout(arena.allocator(), &c.d, .{ .ctx = c, .text = Lay.text }, .{}) catch unreachable;
                 bench.doNotOptimizeAway(l.size);
+            }
+        }
+    }.f);
+}
+
+/// `library/search_5k`: a fuzzy query over 5,000 prompt entries (budget
+/// 10 ms); `library/index_5k` opens the library (headers only).
+fn registerLibrary(b: *bench.Bench) !void {
+    const PromptLibrary = zg_agents.library.PromptLibrary;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    const cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/bench-library";
+    cwd.deleteTree(io, root) catch {};
+    try cwd.createDirPath(io, root);
+    defer cwd.deleteTree(io, root) catch {};
+    var dir = try cwd.openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
+    const topics = [_][]const u8{ "research", "writing", "review", "release", "planning", "data", "support", "legal" };
+    var name: [96]u8 = undefined;
+    var body: [512]u8 = undefined;
+    for (0..5000) |i| {
+        const topic = topics[i % topics.len];
+        if (i < topics.len) try dir.createDirPath(io, topic);
+        const n = try std.fmt.bufPrint(&name, "{s}/prompt-{d}.md", .{ topic, i });
+        const data = try std.fmt.bufPrint(&body, "---\ntitle: {s} prompt number {d}\ndescription: Helps with {s} tasks of kind {d}\ntags: [{s}, kind-{d}]\n---\nDo the {s} thing for {{{{subject}}}}.\n", .{ topic, i, topic, i % 17, topic, i % 17, topic });
+        try dir.writeFile(io, .{ .sub_path = n, .data = data });
+    }
+    const Ctx = struct { dir: std.Io.Dir, io: std.Io };
+    const ctx: Ctx = .{ .dir = dir, .io = io };
+    try b.run("library/index_5k", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                const l = PromptLibrary.open(std.heap.smp_allocator, c.io, .{ .project = c.dir }, null) catch unreachable;
+                bench.doNotOptimizeAway(l.count());
+                l.deinit();
+            }
+        }
+    }.f);
+    const lib = try PromptLibrary.open(gpa, io, .{ .project = dir }, null);
+    defer lib.deinit();
+    try b.run("library/search_5k", lib, struct {
+        fn f(l: *PromptLibrary, s: *bench.State) void {
+            var hits: std.ArrayList(PromptLibrary.Hit) = .empty;
+            defer hits.deinit(std.heap.smp_allocator);
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                l.search("planning 12", 50, &hits, std.heap.smp_allocator) catch unreachable;
+                bench.doNotOptimizeAway(hits.items.len);
             }
         }
     }.f);

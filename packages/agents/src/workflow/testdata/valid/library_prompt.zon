@@ -1,0 +1,8 @@
+.{
+    .version = 1,
+    .name = "library-prompt",
+    .args = .{.{ .name = "question" }},
+    .steps = .{
+        .{ .id = "plan", .agent = .{ .prompt = "@research/lead", .with = .{ .{ .name = "question", .value = "$args.question" }, .{ .name = "effort", .value = "deep" } }, .model_role = "plan" } },
+    },
+}

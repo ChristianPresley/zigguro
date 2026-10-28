@@ -1,0 +1,2 @@
+// expect: step "a": prompt: $item is only valid inside a map
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "a", .agent = .{ .prompt = "Do {{$item}}" } }} }

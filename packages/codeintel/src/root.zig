@@ -37,6 +37,7 @@ pub const diagnostics = struct {
     pub const Driver = @import("diagnostics/Driver.zig");
     pub const Decorator = @import("diagnostics/decorate.zig");
     pub const SettleDetector = @import("diagnostics/settle.zig");
+    pub const Problems = @import("diagnostics/problems.zig");
 };
 
 /// Language-server tools for agents (zg_ai's foreign-tool contract).

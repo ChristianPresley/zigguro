@@ -36,6 +36,7 @@ const zg_terminal_view = @import("zg_terminal_view");
 const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
+const zg_codeintel = @import("zg_codeintel");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
@@ -59,6 +60,8 @@ const settings_mod = @import("settings/service.zig");
 const Settings = settings_mod.Settings;
 const SettingsView = @import("settings/view.zig").SettingsView;
 const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
+const problems_panel = @import("problems_panel.zig");
+const ProblemsPanel = problems_panel.ProblemsPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
 
 const Ui = zg_gui.Ui;
@@ -222,6 +225,16 @@ pub const Workbench = struct {
     pending_explorer: bool = false,
     /// The editor the explorer last revealed (`explorer.autoReveal`).
     revealed_panel: ?PanelRef = null,
+    /// The Problems panel (created on first show) and its dock panel.
+    problems: ?*ProblemsPanel = null,
+    problems_ref: ?PanelRef = null,
+    /// Where `pending_open` puts the caret: a problem's start.
+    pending_goto: ?problems_panel.Problems.Item = null,
+    /// The message of the problem next/previous problem went to, shown
+    /// in the status line until the caret leaves it.
+    problem_note: std.ArrayList(u8) = .empty,
+    problem_note_at: u64 = 0,
+    problems_badge: [16]u8 = undefined,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -274,8 +287,9 @@ pub const Workbench = struct {
     const kind_review_view: zg_gui.dock.model.PanelKindId = 5;
     const kind_settings: zg_gui.dock.model.PanelKindId = 6;
     const kind_explorer: zg_gui.dock.model.PanelKindId = 7;
+    const kind_problems: zg_gui.dock.model.PanelKindId = 8;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -745,6 +759,7 @@ pub const Workbench = struct {
                 kind_review => wb.review_ref = p,
                 kind_settings => wb.settings_ref = p,
                 kind_explorer => wb.explorer_ref = p,
+                kind_problems => wb.problems_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -868,6 +883,13 @@ pub const Workbench = struct {
     /// Frees everything (after `detach`).
     pub fn deinit(wb: *Workbench) void {
         wb.detach();
+        // Before language services: it holds a diagnostics snapshot.
+        if (wb.problems) |pp| {
+            pp.deinit();
+            wb.gpa.destroy(pp);
+        }
+        wb.problems = null;
+        wb.problem_note.deinit(wb.gpa);
         // Before the documents: the servers' text sync listens to them.
         if (wb.codeintel) |ci| ci.destroy();
         wb.codeintel = null;
@@ -1037,6 +1059,14 @@ pub const Workbench = struct {
         .{ .id = "workbench.openWorkspaceSettingsFile", .title = "Open Workspace Settings (JSON)", .category = "Preferences", .run = openWorkspaceSettingsFile },
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
         .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
+        .{ .id = "workbench.showProblems", .title = "Show Problems", .category = "View", .run = showProblems },
+        .{ .id = "editor.nextProblem", .title = "Go to Next Problem (Error, Warning, Info)", .category = "Go", .run = nextProblem },
+        .{ .id = "editor.previousProblem", .title = "Go to Previous Problem (Error, Warning, Info)", .category = "Go", .run = previousProblem },
+        .{ .id = "editor.nextProblemInFile", .title = "Go to Next Problem in File", .category = "Go", .run = nextProblemInFile },
+        .{ .id = "editor.previousProblemInFile", .title = "Go to Previous Problem in File", .category = "Go", .run = previousProblemInFile },
+        .{ .id = "problems.open", .title = "Go to Problem", .category = "Problems", .run = problemsOpen },
+        .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
+        .{ .id = "problems.copyMessage", .title = "Copy Problem Message", .category = "Problems", .run = problemsCopyMessage },
         .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
         .{ .id = "explorer.open", .title = "Open", .category = "Explorer", .run = explorerOpen },
         .{ .id = "explorer.newFile", .title = "New File...", .category = "Explorer", .run = explorerNewFile },
@@ -1808,6 +1838,144 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    // -- problems --------------------------------------------------------------
+
+    fn ensureProblems(wb: *Workbench) !void {
+        if (wb.problems != null) return;
+        const ci = wb.codeintel orelse return;
+        const pp = try wb.gpa.create(ProblemsPanel);
+        errdefer wb.gpa.destroy(pp);
+        try pp.init(wb.gpa, &ci.diags, wb.cwd, .{ .ctx = wb, .open = onProblemOpen });
+        pp.win = wb.win;
+        wb.problems = pp;
+    }
+
+    /// The Problems tab's badge: the error count.
+    fn problemsBadge(wb: *Workbench) []const u8 {
+        const ci = wb.codeintel orelse return "";
+        const errs = problems_panel.Problems.totals(&ci.diags)[0];
+        if (errs == 0) return "";
+        return std.fmt.bufPrint(&wb.problems_badge, "{d}", .{errs}) catch "";
+    }
+
+    /// `workbench.showProblems` (Ctrl+Shift+M): shows the Problems panel
+    /// in the bottom area and focuses it.
+    fn showProblems(wb: *Workbench) !void {
+        try wb.ensureProblems();
+        if (wb.problems_ref == null) wb.problems_ref = try wb.dock.addPanel(kind_problems, null);
+        try wb.reveal(wb.problems_ref.?, .bottom);
+        if (wb.win) |w| {
+            w.markAllDirty();
+            w.afterNextFrame(.{ .ctx = wb, .f = focusProblems });
+        }
+    }
+
+    fn focusProblems(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.problems) |pp| pp.focus(w);
+    }
+
+    /// The panel shows a problem: open its file at the next build, with
+    /// the caret at its start.
+    fn onProblemOpen(ctx: *anyopaque, key: []const u8, it: problems_panel.Problems.Item, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const copy = wb.gpa.dupe(u8, key) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = copy;
+        wb.pending_focus = focus;
+        wb.pending_explorer = false;
+        wb.pending_goto = it;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Puts the current editor's caret at problem `it`'s start (its byte
+    /// range mapped to the current text when it has one, else its line
+    /// and UTF-16 column) and remembers its message for the status line.
+    fn gotoProblem(wb: *Workbench, it: problems_panel.Problems.Item) void {
+        const v = wb.view;
+        const off: u64 = blk: {
+            if (it.diag.bytes) |b| if (it.version) |ver| if (wb.doc.mapForward(ver, .{ .start = b.start, .end = b.start }, .right)) |r| break :blk r.start;
+            const line = @min(@as(u64, it.diag.start.line), v.lineCount() - 1);
+            const lr = v.lineRange(line);
+            break :blk lr.start + zg_core.utf8.columnToByte(v.text(lr), it.diag.start.character, .utf16);
+        };
+        v.setSelection(.caret(off));
+        v.revealPrimary();
+        wb.problem_note.clearRetainingCapacity();
+        const msg = it.diag.message[0 .. std.mem.indexOfScalar(u8, it.diag.message, '\n') orelse it.diag.message.len];
+        wb.problem_note.print(wb.gpa, "{s}: {s}", .{ it.diag.severity.label(), msg }) catch {};
+        wb.problem_note_at = off;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// The status line's note of the problem last gone to, while the
+    /// caret stays there.
+    fn problemNote(wb: *Workbench) ?[]const u8 {
+        if (wb.problem_note.items.len == 0) return null;
+        if (wb.view.primarySel().head != wb.problem_note_at) {
+            wb.problem_note.clearRetainingCapacity();
+            return null;
+        }
+        return wb.problem_note.items;
+    }
+
+    /// F8 and Shift+F8: the next or previous problem from the caret, in
+    /// the Problems panel's order (wrapping across files; `in_file`:
+    /// within the current file).
+    fn stepProblem(wb: *Workbench, dir: problems_panel.Problems.Direction, in_file: bool) !void {
+        try wb.ensureProblems();
+        const pp = wb.problems orelse return wb.notify(.info, "Language services are not running", .{});
+        _ = pp.refresh();
+        if (pp.model.count() == 0) return wb.notify(.info, "No problems", .{});
+        const ci = wb.codeintel.?;
+        var key: []u8 = &.{};
+        defer wb.gpa.free(key);
+        if (wb.path) |path| {
+            const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path });
+            defer wb.gpa.free(abs);
+            key = try ci.diags.keyOfPath(wb.gpa, abs);
+        }
+        const head = wb.view.primarySel().head;
+        const line = wb.view.lineOf(head);
+        const lr = wb.view.lineRange(line);
+        const col = zg_core.utf8.byteToColumn(wb.view.text(lr), @intCast(head - lr.start), .utf16);
+        const at: problems_panel.Problems.Pos = .{ .line = @intCast(line), .character = col };
+        const l = pp.model.step(key, at, dir, in_file) orelse return wb.notify(.info, "No problems in this file", .{});
+        pp.select(l);
+        const it = pp.model.item(l);
+        if (std.mem.eql(u8, pp.model.files.items[l.file].key, key)) return wb.gotoProblem(it);
+        pp.show(l, true);
+    }
+
+    fn nextProblem(wb: *Workbench) !void {
+        try wb.stepProblem(.next, false);
+    }
+
+    fn previousProblem(wb: *Workbench) !void {
+        try wb.stepProblem(.prev, false);
+    }
+
+    fn nextProblemInFile(wb: *Workbench) !void {
+        try wb.stepProblem(.next, true);
+    }
+
+    fn previousProblemInFile(wb: *Workbench) !void {
+        try wb.stepProblem(.prev, true);
+    }
+
+    fn problemsOpen(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        if (pp.activeItem()) |l| pp.show(l, true);
+    }
+
+    fn problemsCopy(wb: *Workbench) !void {
+        if (wb.problems) |pp| pp.copyActive(false);
+    }
+
+    fn problemsCopyMessage(wb: *Workbench) !void {
+        if (wb.problems) |pp| pp.copyActive(true);
+    }
+
     // -- the explorer --------------------------------------------------------
 
     /// Whether `workbench.startupView` shows the explorer.
@@ -2413,7 +2581,10 @@ pub const Workbench = struct {
             const from_explorer = wb.pending_explorer;
             wb.pending_focus = true;
             wb.pending_explorer = false;
+            const goto = wb.pending_goto;
+            wb.pending_goto = null;
             if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
+                if (goto) |it| wb.gotoProblem(it);
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
@@ -2537,6 +2708,7 @@ pub const Workbench = struct {
             kind_review_view => .{ .title = if (wb.review_view) |v| v.title else "Review" },
             kind_settings => .{ .title = "Settings" },
             kind_explorer => .{ .title = "Explorer" },
+            kind_problems => .{ .title = "Problems", .badge = wb.problemsBadge() },
             else => .{ .title = "?" },
         };
     }
@@ -2571,6 +2743,14 @@ pub const Workbench = struct {
                 wb.ensureExplorer() catch {};
                 if (wb.explorer) |e| e.build(ui);
             },
+            kind_problems => {
+                wb.ensureProblems() catch {};
+                if (wb.problems) |pp| pp.build(ui) else {
+                    ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                    ui.text("Language services are not running.", .{ .color = .fg_muted });
+                    ui.close();
+                }
+            },
             else => {},
         }
     }
@@ -2599,7 +2779,7 @@ pub const Workbench = struct {
             wb.settings_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -2665,7 +2845,7 @@ pub const Workbench = struct {
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d} ({d} selections)", .{ line + 1, col + 1, wb.view.selections().len }) catch ""
         else
             std.fmt.bufPrint(&wb.pos_text, "Ln {d}, Col {d}", .{ line + 1, col + 1 }) catch "";
-        var items: [12]zg_gui.w.StatusItem = undefined;
+        var items: [16]zg_gui.w.StatusItem = undefined;
         var n: usize = 0;
         items[n] = .{ .id = "file", .text = if (wb.doc.isDirty()) "" else name, .priority = 1000 };
         n += 1;
@@ -2689,6 +2869,16 @@ pub const Workbench = struct {
         }
         if (wb.syntax) |sx| {
             items[n] = .{ .id = "language", .text = sx.lang.name, .side = .right, .priority = 50 };
+            n += 1;
+        }
+        var probs_buf: [48]u8 = undefined;
+        if (wb.codeintel) |ci| {
+            const tot = problems_panel.Problems.totals(&ci.diags);
+            items[n] = .{ .id = "problems", .text = std.fmt.bufPrint(&probs_buf, "\u{2297} {d}  \u{26a0} {d}", .{ tot[0], tot[1] }) catch "", .priority = 90, .tooltip = "Errors and warnings: click to show Problems", .action = "workbench.showProblems" };
+            n += 1;
+        }
+        if (wb.problemNote()) |note| {
+            items[n] = .{ .id = "problem.note", .text = note, .priority = 80 };
             n += 1;
         }
         var ab: [32]u8 = undefined;
@@ -2993,6 +3183,74 @@ test "workbench: Vim and Emacs reach files, editors and the clipboard" {
     try Workbench.toggleEmacs(&wb);
     _ = t.settle();
     try std.testing.expect(wb.view.mode == null);
+}
+
+test "workbench: F8 goes through problems across files; the Problems panel and status line show them" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\nconst x = é2;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.zig", .data = "const b = 2;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+    const b = try std.fs.path.join(gpa, &.{ root, "b.zig" });
+    defer gpa.free(b);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // As if a server reported them (no byte ranges: line and UTF-16
+    // column; the é is one UTF-16 unit, two bytes).
+    const Store = zg_codeintel.diagnostics.Store;
+    const st = &wb.codeintel.?.diags;
+    const o: Store.Owner = .{ .server = 0 };
+    inline for (.{ .{ a, 1, 11, "unexpected token" }, .{ b, 0, 6, "unused b" } }) |d| {
+        const set = try Store.Set.create(gpa, o);
+        set.diags = try set.allocator().dupe(Store.Diagnostic, &.{.{ .start = .{ .line = d[1], .character = d[2] }, .end = .{ .line = d[1], .character = d[2] + 1 }, .message = d[3], .source = "zls" }});
+        set.finish();
+        const key = try st.keyOfPath(gpa, d[0]);
+        defer gpa.free(key);
+        try st.replace(key, o, set);
+    }
+    st.commit();
+    t.win.markAllDirty();
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "\u{2297} 2  \u{26a0} 0" }) != null);
+
+    wb.view.setSelection(.caret(0));
+    try Workbench.nextProblem(&wb);
+    // Line 2, after "const x = é" (12 bytes).
+    try std.testing.expectEqual(@as(u64, 13 + 12), wb.view.primarySel().head);
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "error: unexpected token" }) != null);
+    // On to the next file, opened with the caret at its problem.
+    try Workbench.nextProblem(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("b.zig", std.fs.path.basename(wb.path.?));
+    try std.testing.expectEqual(@as(u64, 6), wb.view.primarySel().head);
+    // And around, backwards.
+    try Workbench.previousProblem(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("a.zig", std.fs.path.basename(wb.path.?));
+
+    try Workbench.showProblems(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.shown(wb.problems_ref));
+    try std.testing.expect(t.find(.{ .name = "error: unused b, b.zig line 1" }) != null);
 }
 
 test "workbench: opening the terminal focuses it; the Agent button shows and hides the pane" {

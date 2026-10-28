@@ -26,6 +26,10 @@ fn register(b: *bench.Bench) !void {
     var wide: WideFixture = undefined;
     wide.init(std.heap.smp_allocator);
     defer wide.deinit();
+    var probs: ProblemsFixture = undefined;
+    probs.init(std.heap.smp_allocator);
+    defer probs.deinit();
+    try b.run("codeintel.problems.filter_100k: rebuild the Problems model, 100k diagnostics in 1000 files, text filter", &probs, problemsFilter100k);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -206,4 +210,47 @@ fn positionWide(fx: *WideFixture, s: *State) void {
         acc +%= (m.positionOf(off) catch unreachable).character;
     }
     bench.doNotOptimizeAway(acc);
+}
+
+/// 100k diagnostics in 1000 files, committed once.
+const ProblemsFixture = struct {
+    threaded: std.Io.Threaded,
+    store: diag.Store,
+
+    fn init(fx: *ProblemsFixture, gpa: std.mem.Allocator) void {
+        fx.threaded = .init(gpa, .{});
+        fx.store = diag.Store.init(gpa, fx.threaded.io(), .posix) catch unreachable;
+        var key: [32]u8 = undefined;
+        for (0..1000) |f| {
+            const set = diag.Store.Set.create(gpa, .{ .server = 0 }) catch unreachable;
+            const a = set.allocator();
+            set.diags = a.alloc(diag.Store.Diagnostic, 100) catch unreachable;
+            for (set.diags, 0..) |*d, i| d.* = .{
+                .start = .{ .line = @intCast(i), .character = 4 },
+                .end = .{ .line = @intCast(i), .character = 9 },
+                .severity = @enumFromInt(1 + i % 4),
+                .message = if (i % 7 == 0) "use of undeclared identifier 'Needle'" else "unused local constant",
+                .source = "zls",
+            };
+            set.finish();
+            fx.store.replace(std.fmt.bufPrint(&key, "/w/src/f{d:0>4}.zig", .{f}) catch unreachable, .{ .server = 0 }, set) catch unreachable;
+        }
+        fx.store.commit();
+    }
+
+    fn deinit(fx: *ProblemsFixture) void {
+        fx.store.deinit();
+        fx.threaded.deinit();
+    }
+};
+
+/// Typing in the Problems filter: a rebuild per keystroke. Budget:
+/// < 16 ms.
+fn problemsFilter100k(fx: *ProblemsFixture, s: *State) void {
+    var p = diag.Problems.init(s.allocator());
+    defer p.deinit();
+    for (0..s.iterations()) |i| {
+        _ = p.update(&fx.store, .{ .text = if (i % 2 == 0) "needle" else "need" }) catch unreachable;
+        bench.doNotOptimizeAway(p.count());
+    }
 }

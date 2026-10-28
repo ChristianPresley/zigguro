@@ -1,0 +1,2 @@
+// expect: name "Bad Name" must match [a-z][a-z0-9-]*
+.{ .version = 1, .name = "Bad Name", .steps = .{.{ .id = "a", .agent = .{ .prompt = "A" } }} }
