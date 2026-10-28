@@ -15,6 +15,7 @@ fn register(b: *bench.Bench) !void {
     try b.run("lsp.fuzzy.20k: 20k identifiers x 3 patterns", {}, fuzzy20k);
     try b.run("lsp.caps.supports: 50 registrations, selector match", {}, capsSupports);
     try b.run("lsp.sched.keystroke: onDocChanged + schedule, 6 keys", {}, schedKeystroke);
+    try b.run("lsp.watch.filter_10k: 10k events x 20 watchers", {}, watchFilter10k);
 }
 
 const paths = [_][]const u8{
@@ -120,4 +121,38 @@ fn schedKeystroke(_: void, s: *State) void {
         q.schedule(.{ .doc = 1, .feature = .inlay_hint }, q.debounceFor(.inlay_hint), run) catch unreachable;
     }
     bench.doNotOptimizeAway(q.version(1));
+}
+
+fn watchFilter10k(_: void, s: *State) void {
+    const gpa = s.allocator();
+    const wb = zg_lsp.client.watch_bridge;
+    const Noop = struct {
+        fn send(_: ?*anyopaque, _: u32, _: zg_lsp.protocol.DidChangeWatchedFilesParams) void {}
+    };
+    var br = wb.WatchBridge.init(gpa, s.ioHandle(), &.{"/home/u/repo"}, .{ .sender = .{ .ctx = null, .send = Noop.send }, .windows = false }) catch unreachable;
+    defer br.deinit();
+    const patterns = [_][]const u8{
+        "**/*.zig",          "**/*.zon",     "**/build.zig",      "**/*.{ts,tsx,js}", "**/package.json",
+        "**/tsconfig.json",  "**/*.rs",      "**/Cargo.toml",     "**/Cargo.lock",    "**/*.py",
+        "**/pyproject.toml", "**/setup.cfg", "**/*.go",           "**/go.mod",        "**/go.sum",
+        "**/*.c",            "**/*.h",       "**/CMakeLists.txt", "**/.clang-format", "**/compile_commands.json",
+    };
+    for (patterns, 0..) |p, i| {
+        var id: [8]u8 = undefined;
+        const reg = std.fmt.bufPrint(&id, "r{d}", .{i}) catch unreachable;
+        br.setWatchers(@intCast(i / 5), reg, &.{.{ .globPattern = .{ .pattern = p } }}) catch unreachable;
+    }
+    const exts = [_][]const u8{ "zig", "md", "txt", "o", "png", "json", "c", "lock" };
+    var events: [10_000]zg_lsp.client.watch_bridge.FsEvent = undefined;
+    var store: [10_000][64]u8 = undefined;
+    for (&events, &store, 0..) |*e, *buf, i| {
+        const path = std.fmt.bufPrint(buf, "/home/u/repo/src/dir{d}/sub/file_{d}.{s}", .{ i % 97, i, exts[i % exts.len] }) catch unreachable;
+        e.* = .{ .path = path, .kind = .changed };
+    }
+    var t: i96 = 0;
+    for (0..s.iterations()) |_| {
+        br.onFsEventsAt(&events, t);
+        t += std.time.ns_per_s;
+        br.flushAt(t);
+    }
 }

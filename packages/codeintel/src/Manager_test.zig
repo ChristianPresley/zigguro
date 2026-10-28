@@ -215,3 +215,40 @@ test "manager: crashed servers restart with backoff until disabled; restart, sto
     try testing.expectEqual(Manager.Status.stopped, s.status);
     h.mgr.closeDoc(d);
 }
+
+fn fakeWatching(h: *Harness) bool {
+    const s = h.server("fake") orelse return false;
+    return s.status == .running and h.mgr.watch.?.active();
+}
+
+fn watchSent(h: *Harness) bool {
+    return h.mgr.nextWatchDue() == null;
+}
+
+test "manager: watched-file changes reach the servers that registered for them" {
+    var h: Harness = undefined;
+    try h.init("watched_files.script", &.{});
+    defer h.deinit();
+    const d = try h.open("main.zig", "const a = 1;\n");
+    defer h.docs.release(d);
+    try h.waitFor(fakeWatching);
+
+    const gpa = testing.allocator;
+    const zon = try std.fs.path.join(gpa, &.{ h.ws, "build.zig.zon" });
+    defer gpa.free(zon);
+    const main = try std.fs.path.join(gpa, &.{ h.ws, "main.zig" });
+    defer gpa.free(main);
+    h.mgr.onFsEvents(&.{ .{ .path = zon, .kind = .created }, .{ .path = main, .kind = .changed } });
+    try testing.expect(h.mgr.nextWatchDue() != null);
+    try h.waitFor(watchSent);
+
+    var out: [4]*Client = undefined;
+    try testing.expectEqual(@as(usize, 1), h.mgr.clientsFor(d, .hover, &out));
+    const r = try out[0].requestBlocking(.@"textDocument/hover", .{
+        .textDocument = .{ .uri = h.docs.uri(d).? },
+        .position = .{ .line = 0, .character = 6 },
+    }, .{});
+    defer r.deinit();
+    try testing.expectEqualStrings("ok", r.ok.value.?.contents.markup_content.value);
+    h.mgr.closeDoc(d);
+}

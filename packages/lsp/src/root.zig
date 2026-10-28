@@ -33,6 +33,7 @@ pub const client = struct {
     pub const progress = @import("client/progress.zig");
     pub const server_requests = @import("client/server_requests.zig");
     pub const restart = @import("client/restart.zig");
+    pub const watch_bridge = @import("client/watch_bridge.zig");
     pub const trace = @import("client/trace.zig");
     pub const transcript = @import("client/transcript.zig");
 };
@@ -59,5 +60,6 @@ test {
     _ = @import("client/client_test.zig");
     _ = @import("client/server_requests_test.zig");
     _ = @import("client/progress_test.zig");
+    _ = @import("client/watch_bridge_test.zig");
     _ = @import("sync/scheduler_test.zig");
 }
