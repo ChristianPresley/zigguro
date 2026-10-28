@@ -957,6 +957,11 @@ pub const Workbench = struct {
         // this thread or on an approval dialog.
         if (wb.agent_panel) |p| p.destroy();
         wb.agent_panel = null;
+        if (wb.codeintel) |ci| {
+            ci.popup.highlighter = null;
+            ci.cpopup.highlighter = null;
+            ci.spopup.highlighter = null;
+        }
         if (wb.md_highlight) |*h| h.deinit(wb.gpa);
         wb.md_highlight = null;
         if (wb.review_view) |v| v.destroy();
@@ -1123,6 +1128,14 @@ pub const Workbench = struct {
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.key_hook = .{ .ctx = wb, .f = popupKey };
+            // Code in hover, completion and signature docs is highlighted
+            // like the editor's.
+            if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
+            if (wb.md_highlight) |*mh| {
+                ci.popup.highlighter = mh.highlighter();
+                ci.cpopup.highlighter = mh.highlighter();
+                ci.spopup.highlighter = mh.highlighter();
+            }
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
             ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
