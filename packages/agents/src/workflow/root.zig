@@ -15,6 +15,9 @@ pub const BuiltinRegistry = @import("builtins.zig");
 pub const progress = @import("progress.zig");
 pub const tools = @import("tools.zig");
 pub const templates = @import("templates.zig");
+/// The progress view's model and actions (E13.F08.S01.T02).
+pub const vm = @import("vm.zig");
+pub const WorkflowVM = vm.WorkflowVM;
 pub const HostWorkers = @import("host_workers.zig").HostWorkers;
 pub const step_agent = @import("step_agent.zig");
 pub const step_loop = @import("step_loop.zig");
@@ -48,4 +51,5 @@ test {
     _ = @import("exec_test.zig");
     _ = @import("steps_test.zig");
     _ = @import("templates_test.zig");
+    _ = @import("vm_test.zig");
 }
