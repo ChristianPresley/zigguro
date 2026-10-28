@@ -12,6 +12,7 @@ const text = @import("paint/text.zig");
 const controls = @import("widgets/controls.zig");
 const Host = @import("host.zig").Host;
 const zg_perf = @import("zg_perf");
+const zg_core = @import("zg_core");
 const FontText = @import("paint/font_text.zig").FontText;
 
 const Headless = zg_platform.headless.Headless;
@@ -119,6 +120,62 @@ test "host: presented frames reach the frame timeline with phase times and input
     try std.testing.expect(recs[1].t_input_os_ns != null);
     try std.testing.expect(recs[1].estimated);
     try std.testing.expect(recs[1].t_frame_start_ns != 0 and recs[1].t_submit_ns >= recs[1].t_frame_start_ns);
+    try std.testing.expectEqual(@as(u64, 0), tl.clock_violations);
+}
+
+test "host: presentation feedback on the monotonic clock finalizes frames" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const hl = try Headless.init(gpa, io, .{});
+    defer hl.deinit();
+    var app = app_mod.App.init(gpa);
+    defer app.deinit();
+    var mono: text.MonoText = .{};
+    var tl = try zg_perf.frame.FrameTimeline.init(gpa, 64);
+    defer tl.deinit();
+    var host = Host.init(gpa, io, &app, hl.platform(), mono.system(), .{ .render_thread = false, .timeline = &tl });
+    defer host.deinit();
+    var v: Counter = .{};
+    const hw = try host.open(.{ .title = "test", .size = .{ .w = 200, .h = 100 }, .root = view_mod.AnyView.of(&v) });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(u64, 1), tl.estimated);
+    const fb = struct {
+        fn at(h: *Headless, win: zg_platform.types.WindowId, ns: u64) !void {
+            try h.inject(.{ .present_feedback = .{ .win = win, .presented_ns = ns, .seq = 0, .flags = zg_platform.event.PresentFlags.vsync } });
+        }
+    };
+    // Feedback for frame 1 on the monotonic clock: later frames wait for it.
+    try fb.at(hl, hw.id, zg_core.time.nowNs(io));
+    _ = try host.pump();
+    try std.testing.expect(hw.feedback.expectFeedback());
+
+    const at: [2]f32 = .{ 15, 15 };
+    try hl.inject(.{ .pointer_button = .{ .win = hw.id, .button = .left, .pressed = true, .pos_px = at, .mods = .{}, .clicks = 1, .time_ns = 0 } });
+    try hl.inject(.{ .pointer_button = .{ .win = hw.id, .button = .left, .pressed = false, .pos_px = at, .mods = .{}, .clicks = 1, .time_ns = 0 } });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    var recs: [8]zg_perf.frame.FrameRecord = undefined;
+    try std.testing.expectEqual(@as(usize, 1), tl.snapshot(&recs));
+    try fb.at(hl, hw.id, zg_core.time.nowNs(io));
+    _ = try host.pump();
+    try std.testing.expectEqual(@as(usize, 2), tl.snapshot(&recs));
+    try std.testing.expect(!recs[1].estimated);
+    try std.testing.expect(recs[1].t_presented_ns.? >= recs[1].t_submit_ns);
+    try std.testing.expectEqual(@as(u64, 0), tl.clock_violations);
+
+    // Feedback on another clock (the headless virtual one): estimates
+    // from now on.
+    try hl.inject(.{ .pointer_button = .{ .win = hw.id, .button = .left, .pressed = true, .pos_px = at, .mods = .{}, .clicks = 1, .time_ns = 0 } });
+    _ = try host.pump();
+    try hl.tick(hl.opts.refresh_ns);
+    _ = try host.pump();
+    try fb.at(hl, hw.id, hl.clock_ns);
+    _ = try host.pump();
+    try std.testing.expect(!hw.feedback.expectFeedback());
+    try std.testing.expectEqual(@as(u64, 0), tl.clock_violations);
 }
 
 /// Paints a block whose colour the test flips between frames.
