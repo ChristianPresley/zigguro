@@ -256,6 +256,11 @@ pub fn build(b: *std.Build) void {
     check_fp_run.addArtifactArg(zigguro_exe);
     check_fp_run.expectExitCode(0);
     b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
+    // `latency-probe` reads the photodiode rig (E14.F03.S02.T03).
+    const latency_probe = addToolImports(b, "latency-probe", "tools/latency-probe/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "latency_histogram", .module = b.createModule(.{ .root_source_file = b.path("packages/perf/src/frame/histogram.zig") }) },
+    });
+    b.installArtifact(latency_probe);
     _ = addTool(b, "wayland-scanner", "packages/build/wayland_scanner/main.zig", test_filters, f.optimize, tools_test_step);
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const tzdata_gen = addTool(b, "tzdata-gen", "tools/tzdata_gen/main.zig", test_filters, f.optimize, tools_test_step);
