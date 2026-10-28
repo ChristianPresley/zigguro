@@ -57,6 +57,7 @@ const is_linux = builtin.os.tag == .linux;
 const zg_text = @import("zg_text");
 const zg_core = @import("zg_core");
 const zg_perf = @import("zg_perf");
+const present_feedback = @import("core/present_feedback.zig");
 
 const r2d = zg_vulkan.r2d;
 const RenderThread = zg_vulkan.present.RenderThread;
@@ -110,6 +111,8 @@ pub const HostWindow = struct {
     input_kind: zg_perf.frame.record.InputKind = .none,
     /// Time spent dispatching events since the last frame.
     dispatch_ns: u64 = 0,
+    /// Present ids awaiting platform presentation feedback.
+    feedback: present_feedback.FeedbackMap = .{},
 
     fn createTexture(hw: *HostWindow, desc: r2d.TextureDesc) !r2d.TextureId {
         return switch (hw.out) {
@@ -573,6 +576,10 @@ pub const Host = struct {
         switch (ev) {
             .window_configure => |c| hw.resize(.{ .w = c.size.w, .h = c.size.h }, c.scale.factor),
             .window_occluded => |o| hw.occluded = o.occluded,
+            .present_feedback => |f| if (h.timeline) |tl| {
+                if (hw.feedback.feedback(f.presented_ns, f.flags, zg_core.time.nowNs(h.io))) |m|
+                    tl.onPresentedEx(m.present_id, m.presented_ns, m.flags, m.discarded);
+            },
             .frame => {
                 hw.frame_requested = false;
                 if (hw.out == .thread) hw.out.thread.onPlatformFrame(.frame);
@@ -638,12 +645,15 @@ pub const Host = struct {
             else => return,
         };
         if (hw.input_ns != 0) return;
-        hw.input_ns = if (at != 0) at else now_ns;
+        // Platform input times on another clock (the headless virtual
+        // clock, ms-based server times) fall back to the read time.
+        hw.input_ns = if (present_feedback.plausible(at, now_ns)) at else now_ns;
         hw.input_kind = kind;
     }
 
-    /// Hands a presented frame to the timeline. No presentation feedback
-    /// is wired up yet, so the frame is final at once (estimated).
+    /// Hands a presented frame to the timeline. It waits for presentation
+    /// feedback once the window's backend has sent a plausible one;
+    /// otherwise it is final at once (estimated).
     fn recordFrame(h: *Host, tl: *zg_perf.frame.FrameTimeline, hw: *HostWindow, st: window_mod.FrameStats, t_submit: u64) void {
         const now = zg_core.time.nowNs(h.io);
         const ms: u64 = std.math.maxInt(u32);
@@ -660,8 +670,9 @@ pub const Host = struct {
             .submit_ns = @intCast(@min(now -| t_submit, ms)),
             .t_submit_ns = now,
             .present_id = hw.frames,
-            .expect_feedback = false,
+            .expect_feedback = hw.feedback.expectFeedback(),
         });
+        hw.feedback.submitted(hw.frames);
     }
 
     /// Uploads the atlas regions rasterized since the last call to every
