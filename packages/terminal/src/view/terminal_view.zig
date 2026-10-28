@@ -166,6 +166,10 @@ pub const TerminalView = struct {
     find_pattern: std.ArrayList(u8) = .empty,
     /// Command blocks from the shell's marks (`enableBlocks`).
     blocks: ?*Blocks = null,
+    /// The command `scrollToCommand` / `selectOutput` last went to: the
+    /// next step starts there (the screen may not have scrolled). Typing
+    /// forgets it.
+    nav_block: ?zg_terminal.shell.BlockId = null,
     /// Width of the gutter left of the grid where block marks go (set by
     /// `enableBlocks`).
     gutter: f32 = 0,
@@ -301,6 +305,7 @@ pub const TerminalView = struct {
     /// Sends typed input: the viewport returns to the bottom first.
     pub fn sendInput(v: *TerminalView, bytes: []const u8) void {
         if (bytes.len == 0) return;
+        v.nav_block = null;
         if (v.scrolledBack()) {
             v.scrollToBottom();
             v.changed();
@@ -523,6 +528,7 @@ pub const TerminalView = struct {
     /// is there, which has no row above it), else the cursor's.
     fn navRow(v: *TerminalView) u64 {
         const pl = &v.term.primary.pages;
+        if (v.nav_block) |id| if (v.blocks.?.get(id)) |blk| return blk.prompt;
         if (v.scrolledBack()) {
             const top = sel_mod.absRow(pl, pl.viewportRow(0));
             if (v.blocks) |b| if (b.indexAt(top)) |i| if (b.items()[i].prompt == top) return top;
@@ -560,12 +566,14 @@ pub const TerminalView = struct {
     /// follows output again. Returns whether there was a command to go to.
     pub fn scrollToCommand(v: *TerminalView, dir: Direction) bool {
         const blk = v.neighbour(dir, false) orelse {
-            if (dir == .next and v.scrolledBack()) {
+            if (dir == .next and (v.scrolledBack() or v.nav_block != null)) {
+                v.nav_block = null;
                 v.scrollToBottom();
                 return true;
             }
             return false;
         };
+        v.nav_block = blk.id;
         v.scrollRowToTop(blk.prompt -| 1);
         return true;
     }
@@ -574,6 +582,7 @@ pub const TerminalView = struct {
     /// command's output (whole lines) and scrolls to its prompt.
     pub fn selectOutput(v: *TerminalView, dir: Direction) bool {
         const blk = v.neighbour(dir, true) orelse return false;
+        v.nav_block = blk.id;
         const range = v.blocks.?.outputRange(blk.id).?;
         if (range[1] <= range[0]) {
             v.clearSelection();
