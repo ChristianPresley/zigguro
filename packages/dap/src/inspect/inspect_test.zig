@@ -159,6 +159,22 @@ test "stack: subtle frames skipped for auto-selection" {
     try f.finish();
 }
 
+test "exception: a stop on an exception asks exceptionInfo; continuing clears it" {
+    var f: Fixture = undefined;
+    try f.init("inspect_exception.txt", .{});
+    defer f.deinit();
+    const e = f.insp.exception orelse return error.NoException;
+    try testing.expectEqual(@as(i64, 1), e.thread);
+    try testing.expectEqualStrings("SIGSEGV", e.title());
+    try testing.expectEqualStrings("Segmentation fault", e.description.?);
+    try testing.expectEqualStrings("address 0x0", e.message.?);
+    try testing.expectEqualStrings("f\nmain", e.stack_trace.?);
+    f.s.continue_(1);
+    try f.fwd.settleAfter(.continued, 1);
+    try testing.expect(f.insp.exception == null);
+    try f.finish();
+}
+
 test "stack: sourceReference fetch opens dap-source document" {
     var f: Fixture = undefined;
     try f.init("inspect_stack_source.txt", .{});
