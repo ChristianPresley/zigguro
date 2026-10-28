@@ -1,0 +1,1 @@
+{"type":"object","properties":{"id":{"type":"integer","minimum":1,"description":"An action id from lsp_code_actions (valid for 5 minutes)."}},"additionalProperties":false,"required":["id"]}

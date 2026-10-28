@@ -1,0 +1,1 @@
+{"type":"object","properties":{"path":{"type":"string","description":"File, absolute or relative to the workspace root."},"depth":{"type":"integer","minimum":0,"maximum":8,"description":"Nesting levels below the top (default 2)."}},"additionalProperties":false,"required":["path"]}

@@ -1,0 +1,4 @@
+C:/w/src/c.zig:1:1: hint: style [E9]
+src/a.zig:2:9: error: use of undeclared identifier 'x'
+src/a.zig:3:1: warning: unused local constant [zls unused]
+src/b.zig:12:5: error: expected type 'u32', found '[]const u8' [zls]

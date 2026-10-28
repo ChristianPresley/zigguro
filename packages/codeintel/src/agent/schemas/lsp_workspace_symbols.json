@@ -1,0 +1,1 @@
+{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Symbol name or part of it (servers match fuzzily)."},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Most listed (default 50)."}},"additionalProperties":false,"required":["query"]}

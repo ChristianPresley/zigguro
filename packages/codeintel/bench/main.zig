@@ -48,6 +48,7 @@ fn register(b: *bench.Bench) !void {
     afx.init(std.heap.smp_allocator);
     defer afx.deinit();
     try b.run("lsp.agent.overhead: an agent's lookup without the server: a name 2 lines off in a 10k-line file, plus a qualified name picked from 1000 workspace symbols", &afx, agentOverhead);
+    try b.run("lsp.agent.render_1k_refs: render 1000 references in 100 files with excerpts, 4000-token budget", &afx, render1kRefs);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -552,5 +553,36 @@ fn agentOverhead(f: *AgentFixture, s: *State) void {
         bench.doNotOptimizeAway(found);
         const p = locate.pick(a, &f.cands, "mod_42.Type_300.init") catch unreachable;
         bench.doNotOptimizeAway(p);
+    }
+}
+
+/// The references tool's text for 1000 references (budget: 5 ms).
+fn render1kRefs(f: *AgentFixture, s: *State) void {
+    const gpa = s.allocator();
+    const render = zg_codeintel.agent.render;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ts: [1000]render.Target = undefined;
+    for (&ts, 0..) |*t, i| t.* = .{
+        .path = std.fmt.allocPrint(a, "/w/src/mod_{d}.zig", .{i % 100}) catch unreachable,
+        .line = @intCast((i * 37) % 9000),
+        .column = 10,
+        .end_line = @intCast((i * 37) % 9000),
+        .end_column = 15,
+    };
+    const Text = struct {
+        fn get(ctx: *anyopaque, _: []const u8) ?[]const u8 {
+            const fx: *AgentFixture = @ptrCast(@alignCast(ctx));
+            return fx.text.items;
+        }
+    };
+    const pinned = arena.state;
+    for (0..s.iterations()) |_| {
+        arena.state = pinned;
+        const out = render.renderTargets(a, &ts, .{ .root = "/w" }, .{ .ctx = f, .get = Text.get }, .{ .one = "reference", .many = "references" }, 0) catch unreachable;
+        bench.doNotOptimizeAway(out.len);
+        const js = render.structuredJson(a, &ts, .{ .root = "/w" }) catch unreachable;
+        bench.doNotOptimizeAway(js.len);
     }
 }

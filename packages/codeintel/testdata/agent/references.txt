@@ -1,0 +1,16 @@
+5 references in 3 files:
+lib/other.zig:41:3
+src/main.zig:4:18
+  3│ pub fn main() void {
+> 4│     var p = Pool.init();
+  5│     p.reset();
+> 6│     var q = Pool.init();
+  7│     q.reset();
+src/pool.zig:6:12
+   5│
+>  6│     pub fn init() Pool {
+   7│         return .{};
+src/pool.zig:11:14
+  10│     pub fn reset(p: *Pool) void {
+> 11│         p.* = init();
+  12│     }

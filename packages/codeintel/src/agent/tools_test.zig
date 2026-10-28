@@ -111,12 +111,16 @@ test "agent tools: diagnostics for a file and the workspace; paths outside refus
     _ = try c.run(&src, rt.io, "lsp_hover", "{\"path\": \"a.zig\"}");
     try testing.expect(!c.ok);
 
-    // The exporter lists three read-only tools.
+    // The exporter lists the 14 tools; the two that propose edits mutate.
     var x: tools.ToolExporter(FakeForeign) = .{ .src = src };
     const e = x.exporter();
     const ts = try e.list(e.ctx, c.arena.allocator());
-    try testing.expectEqual(@as(usize, 3), ts.len);
-    for (ts) |t| try testing.expect(t.read_only and !t.mutates);
+    try testing.expectEqual(@as(usize, 14), ts.len);
+    for (ts) |t| {
+        const control = std.mem.eql(u8, t.name, "lsp_rename_apply") or std.mem.eql(u8, t.name, "lsp_apply_code_action");
+        try testing.expectEqual(!control, t.read_only);
+        try testing.expectEqual(control, t.mutates);
+    }
     const r = try e.call(e.ctx, rt.io, c.arena.allocator(), "lsp_diagnostics", "{\"path\": \"/nope\"}");
     try testing.expect(std.mem.indexOf(u8, r.json, "\"isError\":true") != null);
 }
@@ -147,7 +151,12 @@ test "agent tools: hover by name one line off, definition by column, no answer" 
     defer c.deinit();
 
     try testing.expectEqualStrings("(found on line 2, not 1)\n```zig\nconst b: u32\n```", try c.run(&src, h.rt.io, "lsp_hover", "{\"path\": \"main.zig\", \"line\": 1, \"name\": \"b\"}"));
-    try testing.expectEqualStrings("main.zig:1:7", try c.run(&src, h.rt.io, "lsp_definition", "{\"path\": \"main.zig\", \"line\": 2, \"column\": 16}"));
+    try testing.expectEqualStrings(
+        \\1 definition in 1 file:
+        \\main.zig:1:7
+        \\> 1│ const a = 1;
+        \\  2│ const b: u32 = a;
+    , try c.run(&src, h.rt.io, "lsp_definition", "{\"path\": \"main.zig\", \"line\": 2, \"column\": 16}"));
     try testing.expectEqualStrings("No hover information here.", try c.run(&src, h.rt.io, "lsp_hover", "{\"path\": \"main.zig\", \"line\": 1, \"column\": 1}"));
     // Refusals say why.
     try testing.expect(std.mem.indexOf(u8, try c.run(&src, h.rt.io, "lsp_hover", "{\"path\": \"main.zig\", \"line\": 9}"), "past the end") != null);

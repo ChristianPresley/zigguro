@@ -1,0 +1,11 @@
+```zig
+pub fn init(gpa: *Allocator) **Pool
+```
+
+Pool
+
+Creates a new pool, see the guide (https://example.com/guide) and Pool.reset.
+Keeps `snake_case`, a_b and 2*3 *as is*.
+
+- first
+- second

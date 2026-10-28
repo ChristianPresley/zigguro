@@ -1,0 +1,1 @@
+{"type":"object","properties":{"path":{"type":"string","description":"The file just edited, absolute or relative to the workspace root."}},"additionalProperties":false,"required":["path"]}

@@ -185,6 +185,9 @@ pub fn reason(err: anyerror) []const u8 {
         error.Changed => "the file changed since the edit was computed",
         error.ReadOnly => "the document is read-only",
         error.OutOfMemory => "out of memory",
+        error.ReviewUnavailable => "review is not available (it starts with the agent)",
+        error.DeletesNotReviewable => "the review queue cannot take file deletions yet",
+        error.OutsideWorkspace => "the edit touches files outside the workspace",
         else => @errorName(err),
     };
 }
