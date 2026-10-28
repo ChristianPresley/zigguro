@@ -22,6 +22,7 @@ const builtin = @import("builtin");
 const zg_gui = @import("zg_gui");
 const zg_notes = @import("zg_notes");
 const zg_notes_ui = @import("zg_notes_ui");
+const zg_ai = @import("zg_ai");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -45,7 +46,14 @@ pub const Hooks = struct {
     /// changeset and returns its id; null when it cannot (the service
     /// then writes the files itself).
     apply: ?*const fn (ctx: *anyopaque, label: []const u8, changes: []const FileChange) anyerror!?u64 = null,
+    /// Queues the agent's note edits (folder-relative paths) for review as
+    /// one changeset; any thread. Null: the notes tools cannot write.
+    propose: ?*const fn (ctx: *anyopaque, label: []const u8, changes: []const FileChange) anyerror!u64 = null,
 };
+
+/// The agent's notes tools (search_notes, read_note, note_links,
+/// create_note, update_note, daily_note).
+const NotesTools = zg_notes.ai.tools.ToolExporter(zg_ai.tools.adapters.foreign);
 
 /// Notes larger than this are not indexed.
 const max_note_bytes = 4 << 20;
@@ -90,13 +98,19 @@ pub const NotesService = struct {
     search_model: *zg_notes_ui.NoteSearchViewModel = undefined,
     search_view: *zg_notes_ui.SearchView = undefined,
     saved: zg_notes_ui.search_view.SavedSearches,
+    /// The agent's tools: their file reads, time zone and exporter.
+    dir: Io.Dir,
+    dir_files: zg_notes.daily.commands.DirFiles = undefined,
+    tz: zg_notes.daily.localtime.LocalTz,
+    tools: NotesTools = undefined,
     /// The current editor's note: its folder-relative path (empty: none)
     /// and id (null until the scan reaches it).
     active_rel: std.ArrayList(u8) = .empty,
     active: ?FileId = null,
 
-    /// The notes of folder `root` (absolute); starts the scan.
-    pub fn create(gpa: Allocator, io: Io, app: *zg_gui.App, root: []const u8, hooks: Hooks) !*NotesService {
+    /// The notes of folder `root` (absolute); starts the scan. `env`
+    /// gives the local time zone of daily notes (null: UTC).
+    pub fn create(gpa: Allocator, io: Io, app: *zg_gui.App, root: []const u8, env: ?*const std.process.Environ.Map, hooks: Hooks) !*NotesService {
         const s = try gpa.create(NotesService);
         errdefer gpa.destroy(s);
         s.* = .{
@@ -111,7 +125,11 @@ pub const NotesService = struct {
             .ix = undefined,
             .search = undefined,
             .saved = .init(gpa),
+            .dir = try Io.Dir.cwd().openDir(io, root, .{}),
+            .tz = if (env) |e| zg_notes.daily.localtime.LocalTz.load(gpa, io, e) catch .utc(gpa) else .utc(gpa),
         };
+        errdefer s.dir.close(io);
+        errdefer s.tz.deinit();
         s.waker = try gpa.create(Waker);
         s.waker.* = .{ .gpa = gpa, .svc = s };
         errdefer s.waker.release();
@@ -161,6 +179,17 @@ pub const NotesService = struct {
         });
         errdefer s.search_model.deinit();
         s.search_view = try .init(gpa, s.search_model, .{ .saved = &s.saved });
+        s.dir_files = .{ .dir = s.dir, .io = io };
+        s.tools = .{ .src = .{
+            .gpa = gpa,
+            .ix = s.ix,
+            .search = s.search,
+            .vault = &s.vault,
+            .files = s.dir_files.port(),
+            .changes = .{ .ctx = s, .propose = proposePort },
+            .tz = &s.tz,
+            .io = io,
+        } };
         s.startJob();
         s.app.spawn(scan, .{s});
         return s;
@@ -187,6 +216,8 @@ pub const NotesService = struct {
         s.ids.deinit(s.gpa);
         s.active_rel.deinit(s.gpa);
         s.saved.deinit();
+        s.tz.deinit();
+        s.dir.close(s.io);
         s.arena.deinit();
         s.gpa.free(s.root);
         s.gpa.destroy(s);
@@ -541,6 +572,22 @@ pub const NotesService = struct {
         s.hooks.search(s.hooks.ctx, query);
     }
 
+    /// The agent's notes tools; the service must outlive the agent.
+    pub fn agentTools(s: *NotesService) zg_ai.tools.adapters.foreign.Exporter {
+        return s.tools.exporter();
+    }
+
+    /// The agent's note edits: queued for review through the host; the
+    /// notes are indexed again (an edit applied at once shows).
+    fn proposePort(ctx: *anyopaque, label: []const u8, tool: []const u8, changes: []const FileChange) anyerror!u64 {
+        _ = tool;
+        const s: *NotesService = @ptrCast(@alignCast(ctx));
+        const f = s.hooks.propose orelse return error.Unsupported;
+        const id = try f(s.hooks.ctx, label, changes);
+        for (changes) |c| if (s.vault.isNotePath(c.path)) s.reindex(c.path) catch |e| log.warn("indexing {s}: {t}", .{ c.path, e });
+        return id;
+    }
+
     /// Sidebar edits (a property, a linked mention, a new note).
     fn applyPort(ctx: *anyopaque, label: []const u8, changes: []const FileChange) anyerror!u64 {
         const s: *NotesService = @ptrCast(@alignCast(ctx));
@@ -659,7 +706,7 @@ test "notes service: scans the folder's notes, follows the editor and finds note
     const t = try zg_gui.testing.TestApp.init(gpa, .{});
     defer t.deinit();
     var rec: Rec = .{};
-    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    const s = try NotesService.create(gpa, io, &t.app, root, null, rec.hooks());
     defer s.destroy();
     // No runtime: the scan ran inline.
     try testing.expectEqual(State.ready, s.stateNow());
@@ -693,6 +740,16 @@ test "notes service: scans the folder's notes, follows the editor and finds note
     try testing.expectEqualStrings("a.md", s.search_model.shown.rows[0].path);
     s.search_model.openSelected(false);
     try testing.expect(std.mem.endsWith(u8, rec.opened[0..rec.opened_len], "a.md"));
+
+    // The agent's notes tools search the same index.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const x = s.agentTools();
+    const r = try x.call(x.ctx, io, arena.allocator(), "search_notes", "{\"query\":\"zebra\"}");
+    try testing.expect(std.mem.indexOf(u8, r.json, "a.md") != null);
+    // Without a review store the agent cannot write.
+    const w = try x.call(x.ctx, io, arena.allocator(), "create_note", "{\"path\":\"n.md\",\"content\":\"# N\\n\"}");
+    try testing.expect(std.mem.indexOf(u8, w.json, "isError") != null);
 }
 
 test "notes service: a saved note is indexed again; sidebar edits are written and indexed" {
@@ -706,7 +763,7 @@ test "notes service: a saved note is indexed again; sidebar edits are written an
     const t = try zg_gui.testing.TestApp.init(gpa, .{});
     defer t.deinit();
     var rec: Rec = .{};
-    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    const s = try NotesService.create(gpa, io, &t.app, root, null, rec.hooks());
     defer s.destroy();
 
     // A new note saved from the editor joins the index.
@@ -743,7 +800,7 @@ test "notes service: renaming a note rewrites links to it; deleting forgets it" 
     const t = try zg_gui.testing.TestApp.init(gpa, .{});
     defer t.deinit();
     var rec: Rec = .{};
-    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    const s = try NotesService.create(gpa, io, &t.app, root, null, rec.hooks());
     defer s.destroy();
     const b_id = s.idOf("b.md").?;
 
@@ -785,7 +842,7 @@ test "notes service: following a link opens its heading or creates the note" {
     const t = try zg_gui.testing.TestApp.init(gpa, .{});
     defer t.deinit();
     var rec: Rec = .{};
-    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    const s = try NotesService.create(gpa, io, &t.app, root, null, rec.hooks());
     defer s.destroy();
     const a = try std.fs.path.join(gpa, &.{ root, "a.md" });
     defer gpa.free(a);
