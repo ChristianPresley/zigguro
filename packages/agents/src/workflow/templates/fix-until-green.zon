@@ -1,0 +1,22 @@
+.{
+    .version = 1,
+    .name = "fix-until-green",
+    .description = "Fix the code until a command passes, stopping when a round makes no progress",
+    .profile = "default",
+    .args = .{
+        .{ .name = "cmd", .required = false, .default = "zig build test", .description = "The command that must pass" },
+    },
+    .steps = .{
+        .{ .id = "fix", .phase = "Fix", .loop_until = .{
+            .agent = .{
+                .prompt = "@workflow/fix",
+                .with = .{ .{ .name = "cmd", .value = "$args.cmd" }, .{ .name = "failure", .value = "$check.output" } },
+                .tools = .{ "read_file", "edit_file", "write_file", "run_command" },
+                .label = "Fix",
+            },
+            .check = .{ .command = .{"{{$args.cmd}}"}, .shell = true },
+            .max_rounds = 8,
+            .stop_when_no_progress = 2,
+        } },
+    },
+}

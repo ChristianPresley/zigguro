@@ -10,6 +10,8 @@ test {
     _ = @import("scm_model.zig");
     _ = @import("scm_tools.zig");
     _ = @import("cmd_runs.zig");
+    _ = @import("cmd_workflow.zig");
+    _ = @import("agent_runtime.zig");
     _ = @import("cmd_automation.zig");
     _ = @import("cmd_tasks.zig");
     _ = @import("cmd_library.zig");

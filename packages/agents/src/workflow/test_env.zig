@@ -30,6 +30,8 @@ pub const Env = struct {
         validator: ?@import("zg_ai").schema.validate.Validator = null,
         runs_dir: ?std.Io.Dir = null,
         delay_ms: u32 = 0,
+        library: ?*@import("../library/index.zig") = null,
+        ports: BuiltinRegistry.Ports = .{},
     };
 
     pub fn init(e: *Env, script: fake_workers.Script, opts: Opts) !void {
@@ -38,13 +40,14 @@ pub const Env = struct {
         e.reg = try RunRegistry.init(gpa, io, null, .{});
         try e.fake.init(gpa, io, script);
         e.fake.delay_ms = opts.delay_ms;
-        e.builtins = try BuiltinRegistry.standard(gpa, .{});
+        e.builtins = try BuiltinRegistry.standard(gpa, opts.ports);
         e.eng = try WorkflowEngine.init(gpa, io, e.reg, .{
             .workers = e.fake.port(),
             .commands = opts.commands,
             .validator = opts.validator,
             .builtins = &e.builtins,
             .runs_dir = opts.runs_dir,
+            .library = opts.library,
             .stall_poll_ms = 10,
         });
         e.fake.eng = e.eng;
