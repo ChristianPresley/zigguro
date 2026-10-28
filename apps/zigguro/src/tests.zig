@@ -45,4 +45,6 @@ test {
     _ = @import("scm/panel.zig");
     _ = @import("completion_popup.zig");
     _ = @import("signature_popup.zig");
+    _ = @import("bench/keys.zig");
+    _ = @import("bench/latency.zig");
 }
