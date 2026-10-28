@@ -1,0 +1,36 @@
+# Expansion survives a step by key path; changed values are flagged.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "main", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}
+> variables {"variablesReference": 10}
+< {"body": {"variables": [{"name": "x", "value": "1", "variablesReference": 0}, {"name": "s", "value": "{...}", "variablesReference": 11, "namedVariables": 1}]}}
+> variables {"variablesReference": 11}
+< {"body": {"variables": [{"name": "a", "value": "5", "variablesReference": 0}]}}
+> continue {"threadId": 1}
+< {}
+< event stopped {"reason": "step", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 2, "name": "main", "line": 2, "column": 1, "source": {"path": "/w/f2.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 2}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 20}]}}
+> variables {"variablesReference": 20}
+< {"body": {"variables": [{"name": "x", "value": "2", "variablesReference": 0}, {"name": "s", "value": "{...}", "variablesReference": 21, "namedVariables": 1}]}}
+> variables {"variablesReference": 21}
+< {"body": {"variables": [{"name": "a", "value": "5", "variablesReference": 0}]}}
+> disconnect
+< {}
