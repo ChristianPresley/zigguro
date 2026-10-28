@@ -27,6 +27,9 @@ pub const HoverPopup = struct {
     overlay: OverlayId = .none,
     md: ?*Md = null,
     on_link: @FieldType(markdown.MdViewProps, "on_link") = null,
+    /// Highlights code fences (the editor's highlighter, set by the
+    /// workbench).
+    highlighter: @FieldType(markdown.MdViewProps, "highlighter") = null,
 
     /// The parsed text (on the heap: the view state points at the
     /// document).
@@ -113,7 +116,7 @@ pub const HoverPopup = struct {
         const m = p.md orelse return;
         ui.open(.{ .style = .{ .dir = .column, .max_w = max_width, .max_h = 320, .scroll_y = true } });
         defer ui.close();
-        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = max_width, .on_link = p.on_link, .test_id = "hover-text" });
+        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = max_width, .on_link = p.on_link, .highlighter = p.highlighter, .test_id = "hover-text" });
     }
 };
 
