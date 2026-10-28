@@ -18,6 +18,12 @@
 //! - Paste: `encodePaste` sanitises it; a multi-line paste the application
 //!   cannot bracket asks first (`zg_gui.w.dialog.confirm`).
 //! - Focus: reported when the application enabled focus events.
+//! - Selection (`selection.zig`): drag selects (Alt+drag a rectangle),
+//!   double-click a word, triple-click a line, Shift+click extends; with
+//!   mouse reporting on, Shift selects instead. Ctrl+Shift+C, Ctrl+Insert
+//!   and Ctrl+C (while something is selected) copy, Escape clears, typing
+//!   clears. Output clears it on the alternate screen, a resize clears it,
+//!   and so does evicting its first row.
 //!
 //! Single-threaded for now: the owner feeds output on the UI thread. The
 //! locked session and atomically mirrored mode bits of E06.F01 replace
@@ -27,6 +33,7 @@ const std = @import("std");
 const zg_gui = @import("zg_gui");
 const zg_terminal = @import("zg_terminal");
 const route = @import("input_route.zig");
+const sel_mod = @import("selection.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
@@ -110,6 +117,16 @@ pub const TerminalView = struct {
     confirming: bool = false,
     /// Total bytes sent to the sink (tests, diagnostics).
     bytes_sent: u64 = 0,
+    /// The selection, and whether it was made on the alternate screen.
+    selection: ?sel_mod.Selection = null,
+    selection_alt: bool = false,
+    /// A left press that becomes a selection once the pointer moves.
+    press: ?Press = null,
+    /// A selection drag is in progress.
+    selecting: bool = false,
+
+    /// Where a selection drag started.
+    pub const Press = struct { at: sel_mod.Point, cell: [2]u16, rect: bool };
 
     /// A view of `term` (which must outlive it).
     pub fn init(gpa: Allocator, term: *Terminal, opts: Options) TerminalView {
@@ -154,6 +171,8 @@ pub const TerminalView = struct {
         const g = v.gridFor(w, h);
         v.term.cell_px = .{ .w = @intFromFloat(v.cell_w), .h = @intFromFloat(v.cell_h) };
         if (g[0] == v.term.cols() and g[1] == v.term.rows()) return false;
+        // Reflow moves rows: the selection's points no longer hold.
+        v.clearSelection();
         v.term.resize(g[0], g[1]) catch return false;
         v.generation +%= 1;
         if (v.on_resize) |h_| h_.f(h_.ctx, g[0], g[1], @intFromFloat(@as(f32, @floatFromInt(g[0])) * v.cell_w), @intFromFloat(@as(f32, @floatFromInt(g[1])) * v.cell_h));
@@ -170,6 +189,7 @@ pub const TerminalView = struct {
     pub fn feed(v: *TerminalView, bytes: []const u8) void {
         v.term.feed(bytes);
         v.flushReplies();
+        v.checkSelection();
         v.changed();
     }
 
@@ -241,6 +261,70 @@ pub const TerminalView = struct {
         return .{ .top = top, .total = sb + v.term.rows() };
     }
 
+    // -- selection -----------------------------------------------------------
+
+    /// The absolute point of viewport cell `cell`.
+    pub fn pointAt(v: *TerminalView, cell: [2]u16) sel_mod.Point {
+        const pl = &v.term.screen().pages;
+        return .{ .row = sel_mod.absRow(pl, pl.viewportRow(cell[1])), .col = cell[0] };
+    }
+
+    /// Starts a selection of `kind` at `at`.
+    pub fn beginSelection(v: *TerminalView, at: sel_mod.Point, kind: sel_mod.Kind) void {
+        v.selection = sel_mod.begin(&v.term.screen().pages, at, kind);
+        v.selection_alt = v.term.alt_active;
+        v.generation +%= 1;
+    }
+
+    /// Moves the selection's free end to `to`.
+    pub fn extendSelection(v: *TerminalView, to: sel_mod.Point) void {
+        const s = &(v.selection orelse return);
+        const before = s.*;
+        sel_mod.extend(&v.term.screen().pages, s, to);
+        if (!std.meta.eql(before, s.*)) v.generation +%= 1;
+    }
+
+    /// Drops the selection.
+    pub fn clearSelection(v: *TerminalView) void {
+        v.press = null;
+        v.selecting = false;
+        if (v.selection == null) return;
+        v.selection = null;
+        v.generation +%= 1;
+    }
+
+    /// The selected text (caller frees), or null.
+    pub fn selectionText(v: *TerminalView, gpa: Allocator) !?[]u8 {
+        const s = &(v.selection orelse return null);
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try sel_mod.copyText(&v.term.screen().pages, s, &out, gpa);
+        return try out.toOwnedSlice(gpa);
+    }
+
+    /// After output: a selection on the alternate screen goes (the
+    /// application redraws it), as does one whose rows were evicted or
+    /// that belongs to the other screen.
+    fn checkSelection(v: *TerminalView) void {
+        const s = v.selection orelse return;
+        if (v.selection_alt != v.term.alt_active or v.term.alt_active or s.lo.row < v.term.screen().pages.evicted) v.clearSelection();
+    }
+
+    /// What a key does to the selection.
+    pub const SelectionKey = enum { none, copy, clear };
+
+    /// Copy keys (Ctrl+Shift+C, Ctrl+Insert, and Ctrl+C) and Escape act on
+    /// the selection; other keys that reach the application clear it.
+    pub fn selectionKey(v: *const TerminalView, kp: KeyPress) SelectionKey {
+        if (v.selection == null or kp.action == .release) return .none;
+        const m = kp.mods;
+        if (m.alt or m.super) return .none;
+        if (m.ctrl and kp.key == .key_c) return .copy;
+        if (m.ctrl and !m.shift and kp.key == .insert) return .copy;
+        if (!m.ctrl and !m.shift and kp.key == .escape) return .clear;
+        return .none;
+    }
+
     // -- keys and text -------------------------------------------------------
 
     /// Routes a key event (see the module doc). Returns false when the key
@@ -278,6 +362,7 @@ pub const TerminalView = struct {
         const bytes = input.encodeKey(st, k, &out);
         // Nothing to send (a modifier alone): the IDE may use it.
         if (bytes.len == 0) return false;
+        if (kp.action != .release) v.clearSelection();
         if (kp.action != .release) v.skip_text = kp.codepoint != 0;
         v.sendInput(bytes);
         return true;
