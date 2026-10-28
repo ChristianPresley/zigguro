@@ -118,6 +118,7 @@ test {
     _ = @import("snippet/Snippet.zig");
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
+    _ = @import("diagnostics/settle_test.zig");
     _ = @import("agent/tools_test.zig");
     _ = @import("agent/locate_test.zig");
     _ = @import("agent/codeintel_test.zig");
