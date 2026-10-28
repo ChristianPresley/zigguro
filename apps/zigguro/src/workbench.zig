@@ -38,6 +38,7 @@ const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const zg_codeintel = @import("zg_codeintel");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
+const TerminalId = zg_terminal_view.panel_model.TerminalId;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
@@ -146,8 +147,14 @@ pub const Workbench = struct {
     dark: bool = true,
     editor_node: zg_gui.core.NodeId = .none,
     focused: bool = false,
-    /// Created on first show.
-    terminal: ?*TerminalPanel = null,
+    /// The terminals by id (the first one is created on first show), and
+    /// their tabs and split groups (E06.F07).
+    terminals: std.AutoArrayHashMapUnmanaged(TerminalId, *TerminalPanel) = .empty,
+    term_tabs: zg_terminal_view.PanelModel = undefined,
+    next_terminal: TerminalId = 1,
+    /// A tab strip button clicked during the build; runs after the frame.
+    term_click: ?TermClick = null,
+    /// The active terminal's node.
     terminal_node: zg_gui.core.NodeId = .none,
     /// Focus the terminal once it is in the tree.
     focus_terminal: bool = false,
@@ -345,6 +352,7 @@ pub const Workbench = struct {
             .resolver = undefined,
             .crumbs = .init(gpa, io),
             .dock = try .init(gpa),
+            .term_tabs = .init(gpa),
         };
         wb.dv = .init(gpa, &wb.dock, wb.panelHost());
         wb.cwd = try std.process.currentPathAlloc(io, gpa);
@@ -893,8 +901,9 @@ pub const Workbench = struct {
             wb.gpa.destroy(pe);
         }
         wb.pending_edits = null;
-        if (wb.terminal) |t| t.destroy();
-        wb.terminal = null;
+        for (wb.terminals.values()) |t| t.destroy();
+        wb.terminals.deinit(wb.gpa);
+        wb.term_tabs.deinit();
         if (wb.approvals_inbox) |i| i.destroy();
         wb.approvals_inbox = null;
         wb.approvals.deinit();
@@ -1074,6 +1083,13 @@ pub const Workbench = struct {
         .{ .id = "file.saveOverwrite", .title = "Save, Overwriting Changes on Disk", .category = "File", .run = saveOverwrite },
         .{ .id = "file.revert", .title = "Revert File (Reload from Disk)", .category = "File", .run = revert },
         .{ .id = "terminal.toggle", .title = "Toggle Terminal", .category = "View", .run = toggleTerminal },
+        .{ .id = "terminal.focus", .title = "Focus Terminal", .category = "Terminal", .run = focusTerminalCmd },
+        .{ .id = "terminal.new", .title = "Create New Terminal", .category = "Terminal", .run = newTerminalCmd },
+        .{ .id = "terminal.split", .title = "Split Terminal", .category = "Terminal", .run = splitTerminal },
+        .{ .id = "terminal.kill", .title = "Kill the Active Terminal", .category = "Terminal", .run = killTerminal },
+        .{ .id = "terminal.killAll", .title = "Kill All Terminals", .category = "Terminal", .run = killAllTerminals },
+        .{ .id = "terminal.focusNext", .title = "Focus Next Terminal", .category = "Terminal", .run = focusNextTerminal },
+        .{ .id = "terminal.focusPrevious", .title = "Focus Previous Terminal", .category = "Terminal", .run = focusPreviousTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
         .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
@@ -2747,6 +2763,11 @@ pub const Workbench = struct {
             return;
         }
         try wb.startTerminal(w);
+        try wb.showTerminal(w);
+    }
+
+    /// Shows the terminal panel and focuses the active terminal.
+    fn showTerminal(wb: *Workbench, w: *Window) !void {
         if (wb.terminal_ref == null) wb.terminal_ref = try wb.dock.addPanel(kind_terminal, null);
         try wb.reveal(wb.terminal_ref.?, .bottom);
         wb.focus_terminal = true;
@@ -2754,12 +2775,30 @@ pub const Workbench = struct {
         w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
     }
 
-    /// Creates the terminal and starts its shell, once.
+    /// The terminal the panel shows focused.
+    pub fn activeTerminal(wb: *const Workbench) ?*TerminalPanel {
+        return wb.terminals.get(wb.term_tabs.activeId() orelse return null);
+    }
+
+    /// Creates the first terminal and starts its shell, once.
     fn startTerminal(wb: *Workbench, w: *Window) !void {
-        if (wb.terminal != null) return;
+        if (wb.terminals.count() == 0) try wb.newTerminal(w, false);
+    }
+
+    /// Creates a terminal and starts its shell: a new tab, or (`split`)
+    /// beside the active terminal in its group.
+    fn newTerminal(wb: *Workbench, w: *Window, split: bool) !void {
         const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
+        errdefer t.destroy();
+        const id = wb.next_terminal;
+        try wb.terminals.put(wb.gpa, id, t);
+        errdefer _ = wb.terminals.swapRemove(id);
+        if (split and wb.term_tabs.activeId() != null)
+            try wb.term_tabs.split(wb.term_tabs.activeId().?, id)
+        else
+            try wb.term_tabs.add(id, .user);
+        wb.next_terminal += 1;
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
-        wb.terminal = t;
         const st = wb.settings orelse return t.start();
         var args: [32][]const u8 = undefined;
         var n: usize = 0;
@@ -2769,6 +2808,63 @@ pub const Workbench = struct {
             n += 1;
         };
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
+    }
+
+    fn focusTerminalCmd(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.startTerminal(w);
+        try wb.showTerminal(w);
+    }
+
+    fn newTerminalCmd(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.newTerminal(w, false);
+        try wb.showTerminal(w);
+    }
+
+    fn splitTerminal(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.newTerminal(w, true);
+        try wb.showTerminal(w);
+    }
+
+    /// Ends the active terminal's shell and closes it; the panel hides
+    /// with the last one.
+    fn killTerminal(wb: *Workbench) !void {
+        const id = wb.term_tabs.activeId() orelse return;
+        wb.closeTerminal(id);
+        try wb.afterTerminalClosed();
+    }
+
+    fn killAllTerminals(wb: *Workbench) !void {
+        while (wb.term_tabs.activeId()) |id| wb.closeTerminal(id);
+        try wb.afterTerminalClosed();
+    }
+
+    fn closeTerminal(wb: *Workbench, id: TerminalId) void {
+        wb.term_tabs.remove(id);
+        const kv = wb.terminals.fetchSwapRemove(id) orelse return;
+        kv.value.destroy();
+    }
+
+    fn afterTerminalClosed(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        if (wb.terminals.count() > 0) return wb.showTerminal(w);
+        if (wb.terminal_ref) |r| if (wb.areaOf(r) != .center) wb.conceal(r);
+        if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
+        w.markAllDirty();
+    }
+
+    fn focusNextTerminal(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        _ = wb.term_tabs.focusNext(.next) orelse return;
+        try wb.showTerminal(w);
+    }
+
+    fn focusPreviousTerminal(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        _ = wb.term_tabs.focusNext(.prev) orelse return;
+        try wb.showTerminal(w);
     }
 
     /// Shows the agent pane (starting the agent) and focuses its prompt,
@@ -3182,7 +3278,7 @@ pub const Workbench = struct {
             .tooltip = f.path,
         };
         return switch (wb.kindOf(p) orelse 0) {
-            kind_terminal => .{ .title = "Terminal", .badge = if (wb.terminal) |t| t.noteText() else "" },
+            kind_terminal => .{ .title = "Terminal", .badge = if (wb.activeTerminal()) |t| t.noteText() else "" },
             kind_agent => .{ .title = "Agent" },
             kind_review => .{ .title = "Review", .badge = if (wb.review_panel) |r| r.badge(&wb.review_badge) else "" },
             kind_review_view => .{ .title = if (wb.review_view) |v| v.title else "Review" },
@@ -3208,7 +3304,7 @@ pub const Workbench = struct {
             return;
         }
         switch (wb.kindOf(p) orelse 0) {
-            kind_terminal => if (wb.terminal) |t| wb.terminalPanel(ui, t),
+            kind_terminal => wb.terminalPanel(ui),
             kind_agent => if (wb.agent_panel) |a| {
                 ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "agentPaneFocus" });
                 defer ui.close();
@@ -3305,18 +3401,82 @@ pub const Workbench = struct {
         if (w.focus.isNone() and !wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
     }
 
-    fn terminalPanel(wb: *Workbench, ui: *Ui, t: *TerminalPanel) void {
+    const TermClick = union(enum) { select: TerminalId, new, split, kill };
+
+    /// A terminal's tab label: its rename, its title, else "Terminal N".
+    fn terminalLabel(wb: *const Workbench, ui: *Ui, id: TerminalId) []const u8 {
+        if (wb.term_tabs.nameOf(id)) |n| return n;
+        if (wb.terminals.get(id)) |t| if (t.term.title.items.len > 0) return t.term.title.items;
+        return std.fmt.allocPrint(ui.arena(), "Terminal {d}", .{id}) catch "Terminal";
+    }
+
+    /// The tab strip (one tab per group; New, Split, Kill), then the
+    /// active group's terminals side by side.
+    fn terminalPanel(wb: *Workbench, ui: *Ui) void {
+        const main = ui.window() == wb.win;
+        // Clicking into a split terminal makes it the active one (unless a
+        // command just picked another and focus has yet to follow).
+        if (main and !wb.focus_terminal) if (wb.term_tabs.activeGroup()) |g| for (g.terminals.items) |id| {
+            const t = wb.terminals.get(id) orelse continue;
+            if (!t.view.node.isNone() and ui.window().focus.eql(t.view.node)) wb.term_tabs.select(id);
+        };
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .bg = .{ .token = .bg_elevated } } });
         defer ui.close();
-        const title = t.term.title.items;
-        if (title.len > 0 or t.noteText().len > 0) {
-            ui.open(.{ .style = .{ .dir = .row, .gap = 12, .padding = .xy(10, 3), .shrink = 0 } });
-            if (title.len > 0) ui.text(title, .{ .color = .fg_muted, .wrap = false });
-            if (t.noteText().len > 0) ui.text(t.noteText(), .{ .color = .warning, .wrap = false });
-            ui.close();
+        ui.open(.{ .style = .{ .dir = .row, .gap = 4, .padding = .xy(6, 2), .shrink = 0, .align_items = .center }, .role = .tablist, .label = "Terminals" });
+        for (wb.term_tabs.groups.items, 0..) |g, gi| {
+            var label: std.ArrayList(u8) = .empty;
+            for (g.terminals.items, 0..) |id, i| {
+                if (i > 0) label.appendSlice(ui.arena(), " | ") catch {};
+                label.appendSlice(ui.arena(), wb.terminalLabel(ui, id)) catch {};
+            }
+            ui.id(g.id);
+            const active = gi == wb.term_tabs.active;
+            if (zg_gui.w.button(ui, .{ .label = label.items, .variant = if (active) .primary else .ghost }).clicked)
+                wb.clickTerminal(ui, .{ .select = g.activeId() });
         }
-        _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = "Terminal" });
-        if (ui.window() == wb.win) wb.terminal_node = t.view.node;
+        ui.open(.{ .style = .{ .grow = 1 } });
+        ui.close();
+        if (wb.activeTerminal()) |t| if (t.noteText().len > 0) ui.text(t.noteText(), .{ .color = .warning, .wrap = false });
+        if (zg_gui.w.button(ui, .{ .label = "New", .variant = .ghost }).clicked) wb.clickTerminal(ui, .new);
+        if (zg_gui.w.button(ui, .{ .label = "Split", .variant = .ghost }).clicked) wb.clickTerminal(ui, .split);
+        if (zg_gui.w.button(ui, .{ .label = "Kill", .variant = .ghost, .disabled = wb.terminals.count() == 0 }).clicked) wb.clickTerminal(ui, .kill);
+        ui.close();
+
+        if (main) wb.terminal_node = .none;
+        const g = wb.term_tabs.activeGroup() orelse return;
+        ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 }, .gap = 1, .align_items = .stretch } });
+        defer ui.close();
+        for (g.terminals.items) |id| {
+            const t = wb.terminals.get(id) orelse continue;
+            ui.id(id);
+            ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 }, .bg = .{ .token = .bg_base } } });
+            defer ui.close();
+            _ = zg_terminal_view.terminal(ui, .{ .view = &t.view, .a11y_label = wb.terminalLabel(ui, id) });
+            if (main and id == g.activeId()) wb.terminal_node = t.view.node;
+        }
+    }
+
+    /// Runs a tab strip click once the frame is built (it may add or close
+    /// terminals, and hide the panel).
+    fn clickTerminal(wb: *Workbench, ui: *Ui, c: TermClick) void {
+        wb.term_click = c;
+        ui.window().afterNextFrame(.{ .ctx = wb, .f = runTermClick });
+    }
+
+    fn runTermClick(ctx: *anyopaque, _: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const c = wb.term_click orelse return;
+        wb.term_click = null;
+        const r = switch (c) {
+            .select => |id| blk: {
+                wb.term_tabs.select(id);
+                break :blk wb.focusTerminalCmd();
+            },
+            .new => wb.newTerminalCmd(),
+            .split => wb.splitTerminal(),
+            .kill => wb.killTerminal(),
+        };
+        r catch |e| wb.notify(.error_, "Terminal: {t}", .{e});
     }
 
     fn statusBar(wb: *Workbench, ui: *Ui) void {
@@ -3853,6 +4013,70 @@ test "workbench: opening the terminal focuses it; the Agent button shows and hid
     try t.click(.{ .role = .button, .name = "Agent" });
     _ = t.settle();
     try std.testing.expect(!wb.shown(wb.agent_ref));
+}
+
+test "workbench: terminals open as tabs and splits, cycle, and close" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // The terminal keys parse.
+    try std.testing.expectEqual(@as(usize, 0), wb.diags.errorCount());
+
+    try wb.toggleTerminal();
+    _ = t.settle();
+    try wb.newTerminalCmd();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items.len);
+    try std.testing.expectEqual(@as(?TerminalId, 2), wb.term_tabs.activeId());
+
+    // Split beside terminal 2, from the tab strip; focus follows.
+    try t.click(.{ .role = .button, .name = "Split" });
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items.len);
+    try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.activeGroup().?.terminals.items.len);
+    try std.testing.expectEqual(@as(?TerminalId, 3), wb.term_tabs.activeId());
+    try std.testing.expect(t.win.focus.eql(wb.activeTerminal().?.view.node));
+
+    // Cycling wraps from the split back to the first tab, and focus moves.
+    try wb.focusNextTerminal();
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(?TerminalId, 1), wb.term_tabs.activeId());
+    try std.testing.expect(t.win.focus.eql(wb.terminals.get(1).?.view.node));
+    try wb.focusPreviousTerminal();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(?TerminalId, 3), wb.term_tabs.activeId());
+
+    // The first tab's button shows it again.
+    try t.click(.{ .role = .button, .name = "Terminal 1" });
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(?TerminalId, 1), wb.term_tabs.activeId());
+
+    try t.click(.{ .role = .button, .name = "Kill" });
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), wb.terminals.count());
+    try std.testing.expect(wb.terminals.get(1) == null);
+    try std.testing.expect(wb.shown(wb.terminal_ref));
+
+    try wb.killAllTerminals();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 0), wb.terminals.count());
+    try std.testing.expect(!wb.shown(wb.terminal_ref));
 }
 
 test "workbench: the notes sidebar follows the editor; note search opens a hit" {

@@ -9,6 +9,10 @@
 //! Old scrollback is compacted (and deflated) on a worker: the UI thread
 //! only copies the rows out and swaps the result in (`zg_terminal`'s
 //! `Compactor`).
+//!
+//! Several panels live side by side (E06.F07), so a panel waits only for
+//! its own workers when torn down, and a drain still queued then reaches
+//! a ref-counted `Poster` that outlives the panel instead of the panel.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -33,14 +37,16 @@ pub const TerminalPanel = struct {
     /// Guards `pending`.
     mutex: std.Io.Mutex = .init,
     pending: std.ArrayList(u8) = .empty,
-    /// A drain is queued on the UI thread.
-    posted: std.atomic.Value(bool) = .init(false),
+    /// Where drains are posted; outlives the panel while one is queued.
+    poster: *Poster = undefined,
+    /// Workers running for this panel; `idle` is set when none runs.
+    jobs_mutex: std.Io.Mutex = .init,
+    jobs: u32 = 0,
+    idle: std.Io.Event = .is_set,
     /// Tells the reader to stop.
     stop: std.atomic.Value(bool) = .init(false),
     /// The child side closed.
     ended: std.atomic.Value(bool) = .init(false),
-    /// Set once torn down; drains still queued then do nothing.
-    closed: bool = false,
     /// Why no shell runs, or how it ended (shown in the panel header).
     note: [96]u8 = undefined,
     note_len: usize = 0,
@@ -52,6 +58,9 @@ pub const TerminalPanel = struct {
         const p = try gpa.create(TerminalPanel);
         errdefer gpa.destroy(p);
         p.* = .{ .gpa = gpa, .io = io, .app = app, .env = env, .term = undefined, .view = undefined };
+        p.poster = try gpa.create(Poster);
+        p.poster.* = .{ .gpa = gpa, .panel = p };
+        errdefer gpa.destroy(p.poster);
         p.term = try .init(gpa, .{ .cols = 80, .rows = 24, .deflate_scrollback = true, .background_compaction = true });
         p.view = .init(gpa, &p.term, .{});
         p.view.sink = .{ .ctx = p, .write = write };
@@ -64,13 +73,15 @@ pub const TerminalPanel = struct {
         p.stop.store(true, .release);
         if (p.pty) |*pty| pty.kill(.hangup);
         // The reader polls `stop` every 50 ms.
-        p.app.joinWork();
+        p.idle.waitUncancelable(p.io);
         if (p.pty) |*pty| {
             _ = pty.tryWait() catch {};
             pty.close();
         }
         p.compactor.deinit(&p.term);
-        p.closed = true;
+        // UI thread, like the drains: none runs against the panel now.
+        p.poster.panel = null;
+        p.poster.release();
         p.pending.deinit(p.gpa);
         p.view.deinit();
         p.term.deinit();
@@ -116,7 +127,9 @@ pub const TerminalPanel = struct {
             return;
         };
         p.note_len = 0;
+        p.startJob();
         p.app.spawnLoop(readLoop, .{p}) catch |e| {
+            p.endJob();
             p.setNote("no reader thread: {t}", .{e});
             p.pty.?.kill(.hangup);
             _ = p.pty.?.tryWait() catch {};
@@ -125,7 +138,53 @@ pub const TerminalPanel = struct {
         };
     }
 
+    fn startJob(p: *TerminalPanel) void {
+        p.jobs_mutex.lockUncancelable(p.io);
+        defer p.jobs_mutex.unlock(p.io);
+        p.jobs += 1;
+        p.idle.reset();
+    }
+
+    fn endJob(p: *TerminalPanel) void {
+        p.jobs_mutex.lockUncancelable(p.io);
+        defer p.jobs_mutex.unlock(p.io);
+        p.jobs -= 1;
+        if (p.jobs == 0) p.idle.set(p.io);
+    }
+
+    /// Queues one drain on the UI thread (any thread; one in flight).
+    fn postDrain(p: *TerminalPanel) void {
+        const q = p.poster;
+        if (q.posted.swap(true, .acq_rel)) return;
+        _ = q.refs.fetchAdd(1, .monotonic);
+        p.app.post(.{ .ctx = q, .f = Poster.run }) catch {
+            q.posted.store(false, .release);
+            _ = q.refs.fetchSub(1, .monotonic);
+        };
+    }
+
+    /// A posted drain's target: the panel until it is destroyed.
+    const Poster = struct {
+        gpa: std.mem.Allocator,
+        refs: std.atomic.Value(u32) = .init(1),
+        posted: std.atomic.Value(bool) = .init(false),
+        /// Read and cleared on the UI thread only.
+        panel: ?*TerminalPanel,
+
+        fn release(q: *Poster) void {
+            if (q.refs.fetchSub(1, .acq_rel) == 1) q.gpa.destroy(q);
+        }
+
+        fn run(ctx: *anyopaque, _: *zg_gui.App) void {
+            const q: *Poster = @ptrCast(@alignCast(ctx));
+            q.posted.store(false, .release);
+            if (q.panel) |p| p.drain();
+            q.release();
+        }
+    };
+
     fn readLoop(p: *TerminalPanel) void {
+        defer p.endJob();
         var buf: [64 << 10]u8 = undefined;
         const pty = &p.pty.?;
         while (!p.stop.load(.acquire)) {
@@ -140,15 +199,12 @@ pub const TerminalPanel = struct {
                 defer p.mutex.unlock(p.io);
                 p.pending.appendSlice(p.gpa, buf[0..n]) catch {};
             }
-            if (!p.posted.swap(true, .acq_rel)) p.app.post(.{ .ctx = p, .f = drain }) catch p.posted.store(false, .release);
+            p.postDrain();
             if (n == 0) return;
         }
     }
 
-    fn drain(ctx: *anyopaque, _: *zg_gui.App) void {
-        const p: *TerminalPanel = @ptrCast(@alignCast(ctx));
-        if (p.closed) return;
-        p.posted.store(false, .release);
+    fn drain(p: *TerminalPanel) void {
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(p.gpa);
         {
@@ -157,7 +213,10 @@ pub const TerminalPanel = struct {
             std.mem.swap(std.ArrayList(u8), &bytes, &p.pending);
         }
         if (bytes.items.len > 0) p.view.feed(bytes.items);
-        if (p.compactor.poll(&p.term)) p.app.spawn(compactWork, .{p});
+        if (p.compactor.poll(&p.term)) {
+            p.startJob();
+            p.app.spawn(compactWork, .{p});
+        }
         if (p.ended.load(.acquire) and p.note_len == 0) {
             const status = if (p.pty) |*pty| (pty.tryWait() catch null) else null;
             if (status) |s| switch (s) {
@@ -170,8 +229,9 @@ pub const TerminalPanel = struct {
 
     /// Worker: encodes the compaction job, then has the UI thread swap it in.
     fn compactWork(p: *TerminalPanel) void {
+        defer p.endJob();
         p.compactor.work();
-        if (!p.posted.swap(true, .acq_rel)) p.app.post(.{ .ctx = p, .f = drain }) catch p.posted.store(false, .release);
+        p.postDrain();
     }
 
     fn write(ctx: *anyopaque, bytes: []const u8) void {
