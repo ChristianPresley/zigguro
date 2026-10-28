@@ -29,6 +29,7 @@ const ServerProcess = @import("ServerProcess.zig");
 const caps_mod = @import("caps.zig");
 const client_capabilities = @import("client_capabilities.zig");
 const position = @import("../proto/position.zig");
+const completion_parse = @import("../proto/completion_parse.zig");
 const trace_mod = @import("trace.zig");
 const DocMatch = @import("doc_selector.zig").DocMatch;
 const server_requests = @import("server_requests.zig");
@@ -518,6 +519,14 @@ fn Thunk(comptime M: protocol.Method) type {
                     if (@typeInfo(T) == .optional) break :blk null;
                     return invalid(resp);
                 };
+                // Completion lists can be megabytes: a direct decoder,
+                // falling back to std.json for what it does not take.
+                if (comptime M == .@"textDocument/completion") {
+                    if (completion_parse.parse(resp.arena.allocator(), raw.bytes)) |v| break :blk v else |e| switch (e) {
+                        error.OutOfMemory => return invalid(resp),
+                        error.Unsupported => {},
+                    }
+                }
                 break :blk raw.parseLeaky(T, resp.arena.allocator(), .{ .allocate = .alloc_always }) catch return invalid(resp);
             };
             return .{ .ok = .{ .value = value, .resp = resp } };
