@@ -215,6 +215,13 @@ loaded_sources_: std.ArrayList([]const u8) = .empty,
 progress_: std.ArrayList(Progress) = .empty,
 top_frame_: ?FrameInfo = null,
 top_scopes_: []const ScopeInfo = &.{},
+/// The stopped thread's first `stackTrace` page and the top frame's
+/// `scopes`, as body JSON (in `inspect_arena`), for the inspection model.
+stack_body_: ?[]const u8 = null,
+stack_thread_: i64 = 0,
+scopes_body_: ?[]const u8 = null,
+/// The last `invalidated` event body (gpa).
+invalidated_: std.ArrayList(u8) = .empty,
 /// Stack prefetch results; reset on every stop.
 inspect_arena: std.heap.ArenaAllocator,
 prompt_: ?Prompt = null,
@@ -283,6 +290,7 @@ fn freeParts(s: *DebugSession) void {
     s.modules_.deinit(s.gpa);
     s.loaded_sources_.deinit(s.gpa);
     s.progress_.deinit(s.gpa);
+    s.invalidated_.deinit(s.gpa);
     s.arena.deinit();
 }
 
@@ -454,6 +462,37 @@ pub fn topFrame(s: *DebugSession, a: Allocator) Allocator.Error!?struct { frame:
     const scopes = try a.alloc(ScopeInfo, s.top_scopes_.len);
     for (scopes, s.top_scopes_) |*o, sc| o.* = .{ .name = try a.dupe(u8, sc.name), .variables_reference = sc.variables_reference, .expensive = sc.expensive };
     return .{ .frame = frame, .scopes = scopes };
+}
+
+/// What the session fetched after the last stop, for the inspection
+/// model (E07.F06.S04): set once the `stack` change is sent.
+pub const Prefetch = struct {
+    gen: u64,
+    thread: i64,
+    /// The `stackTrace` body (`startFrame: 0, levels: 20`).
+    stack: []const u8,
+    /// The top frame's `scopes` body.
+    scopes: ?[]const u8,
+};
+
+/// The last stop's prefetch, copied into `a`.
+pub fn prefetch(s: *DebugSession, a: Allocator) Allocator.Error!?Prefetch {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    const stack = s.stack_body_ orelse return null;
+    return .{
+        .gen = s.generation_,
+        .thread = s.stack_thread_,
+        .stack = try a.dupe(u8, stack),
+        .scopes = if (s.scopes_body_) |b| try a.dupe(u8, b) else null,
+    };
+}
+
+/// The last `invalidated` event body, copied into `a`.
+pub fn lastInvalidated(s: *DebugSession, a: Allocator) Allocator.Error![]u8 {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    return a.dupe(u8, s.invalidated_.items);
 }
 
 /// Runs `f(ctx, console)` under the session lock.
@@ -1073,7 +1112,13 @@ fn handleEvent(s: *DebugSession, a: Allocator, event: []const u8, body: ?RawJson
             s.mutex.unlock(s.io);
             s.notify(.process);
         },
-        .invalidated => s.notify(.invalidated),
+        .invalidated => {
+            s.mutex.lockUncancelable(s.io);
+            s.invalidated_.clearRetainingCapacity();
+            s.invalidated_.appendSlice(s.gpa, if (body) |b| b.bytes else "{}") catch {};
+            s.mutex.unlock(s.io);
+            s.notify(.invalidated);
+        },
         .memory => s.notify(.memory),
         .breakpoint => if (s.manager.cfg.breakpoints) |bp| if (bp.onEvent) |f| {
             if (body) |b| f(bp.ctx, s, b.bytes);
@@ -1104,6 +1149,8 @@ fn onStopped(s: *DebugSession, a: Allocator, b: ev.Stopped) Allocator.Error!void
     if (s.state_ == .running) s.state_ = .stopped;
     s.top_frame_ = null;
     s.top_scopes_ = &.{};
+    s.stack_body_ = null;
+    s.scopes_body_ = null;
     _ = s.inspect_arena.reset(.retain_capacity);
     const focus = s.table.current;
     s.mutex.unlock(s.io);
@@ -1175,6 +1222,10 @@ fn onStackTrace(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
     const ia = s.inspect_arena.allocator();
     const b = parseBody(Body, ia, o.response.body);
     const top = if (b) |bb| (if (bb.stackFrames.len > 0) bb.stackFrames[0] else null) else null;
+    if (o.response.body) |body| {
+        s.stack_body_ = ia.dupe(u8, body.bytes) catch null;
+        s.stack_thread_ = c.thread;
+    }
     if (top) |f| s.top_frame_ = .{
         .id = f.id,
         .name = f.name,
@@ -1203,6 +1254,7 @@ fn onScopes(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
             s.mutex.lockUncancelable(s.io);
             if (s.generation_ == c.gen) {
                 const ia = s.inspect_arena.allocator();
+                if (o.response.body) |body| s.scopes_body_ = ia.dupe(u8, body.bytes) catch null;
                 if (parseBody(Body, ia, o.response.body)) |b| {
                     if (ia.alloc(ScopeInfo, b.scopes.len)) |out| {
                         for (out, b.scopes) |*x, sc| x.* = .{ .name = sc.name, .variables_reference = sc.variablesReference, .expensive = sc.expensive };
