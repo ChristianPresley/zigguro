@@ -1,6 +1,7 @@
-//! The inspection model of one debug session (E07.F06.S04.T01): the call
-//! stacks (`stack`), the selected frame's variables (`vars`) and sources
-//! without a path, as the debug views (E07.F07) and the agent tools
+//! The inspection model of one debug session (E07.F06.S04): the call
+//! stacks (`stack`), the selected frame's variables (`vars`), sources
+//! without a path, evaluation and completions (`eval`) and the watches
+//! (`watches`), as the debug views (E07.F07) and the agent tools
 //! (E07.F05.S02) show them.
 //!
 //! The app forwards the session's changes from its `DebugManager`
@@ -19,6 +20,8 @@ const Channel = @import("Channel.zig");
 const StackModel = @import("StackModel.zig");
 const VariablesModel = @import("VariablesModel.zig");
 const sources = @import("sources.zig");
+const Evaluator = @import("Evaluator.zig");
+const Watches = @import("Watches.zig");
 const DebugSession = @import("../session/DebugSession.zig");
 
 const Allocator = std.mem.Allocator;
@@ -50,6 +53,11 @@ pub const Options = struct {
     /// Nodes fetched again after a stop, and how deep below the scopes.
     reexpand_nodes: u32 = 200,
     reexpand_depth: u8 = 3,
+    /// Hover evaluation may use the `repl` context when the adapter has
+    /// no `hover` one (`debug.hoverEvaluateWithRepl`).
+    hover_with_repl: bool = false,
+    /// A watch not answered within this is `timed_out`.
+    watch_timeout: Io.Duration = .fromSeconds(2),
 };
 
 gpa: Allocator,
@@ -59,6 +67,8 @@ session: ?*DebugSession,
 ch: Channel,
 stack: StackModel,
 vars: VariablesModel,
+eval: Evaluator,
+watches: Watches,
 source_cache: sources.Cache,
 /// The generation of the last stop applied.
 gen: u64 = 0,
@@ -75,6 +85,8 @@ pub fn init(i: *Inspector, gpa: Allocator, io: Io, session: ?*DebugSession, port
         .ch = try .init(gpa, io, port),
         .stack = .init(gpa),
         .vars = .init(gpa),
+        .eval = .init(gpa),
+        .watches = .init(gpa),
         .source_cache = .init(gpa),
     };
 }
@@ -85,6 +97,8 @@ pub fn initSession(i: *Inspector, gpa: Allocator, io: Io, s: *DebugSession, opts
 }
 
 pub fn deinit(i: *Inspector) void {
+    i.eval.deinit();
+    i.watches.deinit();
     i.vars.deinit();
     i.stack.deinit();
     i.source_cache.deinit();
@@ -127,13 +141,16 @@ pub fn send(i: *Inspector, command: []const u8, args: []const u8, tag: Channel.T
 
 /// Applies what arrived; true when anything did. UI thread.
 pub fn pump(i: *Inspector) bool {
-    const items = i.ch.take() catch return false;
+    // Deadlines first: an answer after its watch's deadline is late even
+    // when it arrives in this batch.
+    const timed_out = i.watches.tick(Io.Timestamp.now(i.io, .awake));
+    const items = i.ch.take() catch return timed_out;
     defer i.gpa.free(items);
     for (items) |it| {
         defer it.deinit(i.gpa);
         i.apply(it) catch |e| log.warn("inspection update dropped: {t}", .{e});
     }
-    return items.len > 0;
+    return items.len > 0 or timed_out;
 }
 
 fn apply(i: *Inspector, it: Channel.Item) Allocator.Error!void {
@@ -147,10 +164,15 @@ fn apply(i: *Inspector, it: Channel.Item) Allocator.Error!void {
                 if (pf.gen != s.generation()) return;
                 try i.applyStop(pf);
             },
-            .continued => i.running = true,
+            .continued => {
+                i.running = true;
+                i.watches.markNotStopped();
+            },
             .invalidated => i.applyInvalidated(c.bytes),
             .state => {
                 i.running = true;
+                i.eval.failAll("the debug session ended");
+                i.watches.markNotStopped();
                 i.stack.clear();
                 i.vars.clear();
                 i.source_cache.clear();
@@ -181,6 +203,7 @@ pub fn applyStop(i: *Inspector, pf: DebugSession.Prefetch) Allocator.Error!void 
 pub fn selectRow(i: *Inspector, thread: i64, row: *const FrameRow, scopes: ?[]const u8) void {
     i.stack.selected_ = .{ .thread = thread, .frame = row.id };
     i.vars.setFrame(row.id, row.name, scopes);
+    i.watches.reevaluate(row.id);
     if (i.opts.host.reveal) |f| f(i.opts.host.ctx, row);
     const src = row.source orelse return;
     if (!sources.needsFetch(src.path, src.reference)) return;
@@ -209,6 +232,11 @@ pub fn deliver(i: *Inspector, tag: Channel.Tag, gen: u64, ok: bool, bytes: []con
         const ref: i64 = @bitCast(tag.a);
         return i.openSource(ref, try i.source_cache.put(ref, c));
     }
+    if (tag.kind == .evaluate or tag.kind == .completions) {
+        // REPL input works while the program runs; references count only
+        // for the stop they came from.
+        return i.eval.apply(tag.a, gen, gen == i.gen and !i.running, ok, bytes);
+    }
     if (gen != i.gen or i.running) {
         if (tag.kind == .set_value) i.vars.failSet(tag.b, "the program is running");
         return;
@@ -224,7 +252,7 @@ pub fn deliver(i: *Inspector, tag: Channel.Tag, gen: u64, ok: bool, bytes: []con
         .variables => try i.vars.applyVariables(@enumFromInt(tag.a), tag.b, gen, ok, bytes),
         .lazy => try i.vars.applyLazy(@enumFromInt(tag.a), gen, ok, bytes),
         .set_value => try i.vars.applySet(tag.b, gen, ok, bytes),
-        .source => unreachable,
+        .source, .evaluate, .completions => unreachable,
     }
 }
 

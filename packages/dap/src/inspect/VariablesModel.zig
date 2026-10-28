@@ -156,7 +156,7 @@ pub fn deinit(m: *VariablesModel) void {
 }
 
 fn inspector(m: *VariablesModel) *Inspector {
-    return @fieldParentPtr("vars", m);
+    return @alignCast(@fieldParentPtr("vars", m));
 }
 
 fn destroyNode(m: *VariablesModel, n: *Node) void {
@@ -553,6 +553,33 @@ pub fn applyLazy(m: *VariablesModel, id: NodeId, gen: u64, ok: bool, body: []con
     try m.setVar(n, v, gen);
     n.children_gen = 0;
 }
+
+/// An `evaluate` result with children (a watch, a REPL or hover result):
+/// an expandable root for `expr`, outside the scopes. Like every node it
+/// holds for the stop it came from; the same expression keeps its id, so
+/// its expansion carries over.
+pub fn addEvalRoot(m: *VariablesModel, gen: u64, r: EvalRoot) Allocator.Error!NodeId {
+    const id = key(0xe7a1, 'r', r.expr);
+    const n = try m.upsert(id, .variable, null, id, 0);
+    try setStrings(m.gpa, n, .{ .name = r.expr, .value = r.value, .type = r.type, .evaluate_name = r.expr, .memory_ref = r.memory_ref });
+    if (n.gen == gen and n.var_ref != r.ref) n.children_gen = 0;
+    n.var_ref = r.ref;
+    n.v.child_count = counts(r.ref, r.named, r.indexed);
+    n.gen = gen;
+    n.loading = false;
+    noteValue(n, gen);
+    return id;
+}
+
+pub const EvalRoot = struct {
+    expr: []const u8,
+    value: []const u8,
+    type: ?[]const u8 = null,
+    ref: i64,
+    named: ?i64 = null,
+    indexed: ?i64 = null,
+    memory_ref: ?[]const u8 = null,
+};
 
 // ---------------------------------------------------------------------
 // Setting values.

@@ -77,7 +77,7 @@ pub fn deinit(m: *StackModel) void {
 }
 
 fn inspector(m: *StackModel) *Inspector {
-    return @fieldParentPtr("stack", m);
+    return @alignCast(@fieldParentPtr("stack", m));
 }
 
 fn find(m: *const StackModel, thread: i64) ?*Thread {
