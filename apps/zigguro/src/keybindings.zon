@@ -29,6 +29,9 @@
     .{ .key = "shift+f12", .command = "editor.findReferences", .when = "editorTextFocus" },
     // editor.showCallHierarchy
     .{ .key = "shift+alt+h", .command = "editor.showCallHierarchy", .when = "editorTextFocus" },
+    // editor.action.smartSelect.expand / shrink
+    .{ .key = "shift+alt+right", .macos = "ctrl+shift+cmd+right", .command = "editor.expandSelection", .when = "editorTextFocus" },
+    .{ .key = "shift+alt+left", .macos = "ctrl+shift+cmd+left", .command = "editor.shrinkSelection", .when = "editorTextFocus" },
     // workbench.action.showAllSymbols (gotoSymbol is the preset's)
     .{ .key = "mod+t", .command = "quickOpen.symbols" },
     // editor.action.formatSelection (formatDocument is the preset's)
