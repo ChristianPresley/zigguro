@@ -85,7 +85,7 @@ pub const DiskState = struct {
     mtime: Io.Timestamp,
     /// Inode number (POSIX) or file index (Windows).
     file_id: u128,
-    /// XxHash3 of the bytes last read or written.
+    /// `hashBytes` of the bytes last read or written.
     content_hash: u64,
 
     /// The state of a file with metadata `st` and contents hashing to
@@ -145,10 +145,86 @@ pub fn withReadOnly(p: File.Permissions, ro: bool) File.Permissions {
 const windows_readonly = 0x1;
 const windows_normal = 0x80;
 
-/// The content hash `DiskState` records.
-pub fn hashBytes(bytes: []const u8) u64 {
-    return std.hash.XxHash3.hash(0, bytes);
+/// Content hashes (`DiskState.content_hash`) hash each `hash_chunk`
+/// bytes with XxHash3, then the chunk digests (little-endian u64) with
+/// XxHash3, so a large file hashes on several threads.
+pub const hash_chunk: usize = 16 << 20;
+
+fn chunkDigest(bytes: []const u8) [8]u8 {
+    var d: [8]u8 = undefined;
+    std.mem.writeInt(u64, &d, std.hash.XxHash3.hash(0, bytes), .little);
+    return d;
 }
+
+/// The content hash of `bytes`.
+pub fn hashBytes(bytes: []const u8) u64 {
+    var outer: std.hash.XxHash3 = .init(0);
+    var i: usize = 0;
+    while (i < bytes.len) : (i += hash_chunk) outer.update(&chunkDigest(bytes[i..@min(bytes.len, i + hash_chunk)]));
+    return outer.final();
+}
+
+/// `hashBytes` with the chunks hashed on up to `max_hash_tasks` of the
+/// `Io`'s workers (inline on a single-threaded `Io`).
+pub fn hashBytesParallel(io: Io, bytes: []const u8) u64 {
+    const n_chunks = std.math.divCeil(usize, bytes.len, hash_chunk) catch unreachable;
+    if (n_chunks <= 2) return hashBytes(bytes);
+    var digests_buf: [256][8]u8 = undefined;
+    if (n_chunks > digests_buf.len) return hashBytes(bytes);
+    const digests = digests_buf[0..n_chunks];
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const n_tasks = std.math.clamp(cpus, 1, @min(max_hash_tasks, n_chunks));
+    const Task = struct {
+        fn run(b: []const u8, out: [][8]u8, first: usize, stride: usize) void {
+            var k = first;
+            while (k < out.len) : (k += stride) {
+                const start = k * hash_chunk;
+                out[k] = chunkDigest(b[start..@min(b.len, start + hash_chunk)]);
+            }
+        }
+    };
+    var group: Io.Group = .init;
+    for (1..n_tasks) |t| group.concurrent(io, Task.run, .{ bytes, digests, t, n_tasks }) catch Task.run(bytes, digests, t, n_tasks);
+    Task.run(bytes, digests, 0, n_tasks);
+    group.await(io) catch {};
+    var outer: std.hash.XxHash3 = .init(0);
+    for (digests) |*d| outer.update(d);
+    return outer.final();
+}
+
+const max_hash_tasks = 8;
+
+/// `hashBytes` over bytes fed in pieces.
+pub const ContentHasher = struct {
+    outer: std.hash.XxHash3 = .init(0),
+    inner: std.hash.XxHash3 = .init(0),
+    in_chunk: usize = 0,
+
+    pub fn update(h: *ContentHasher, bytes: []const u8) void {
+        var rest = bytes;
+        while (rest.len > 0) {
+            const n = @min(rest.len, hash_chunk - h.in_chunk);
+            h.inner.update(rest[0..n]);
+            h.in_chunk += n;
+            rest = rest[n..];
+            if (h.in_chunk == hash_chunk) h.flush();
+        }
+    }
+
+    fn flush(h: *ContentHasher) void {
+        var d: [8]u8 = undefined;
+        std.mem.writeInt(u64, &d, h.inner.final(), .little);
+        h.outer.update(&d);
+        h.inner = .init(0);
+        h.in_chunk = 0;
+    }
+
+    pub fn final(h: ContentHasher) u64 {
+        var c = h;
+        if (c.in_chunk > 0) c.flush();
+        return c.outer.final();
+    }
+};
 
 /// Where a document lives on disk and how it is stored there.
 pub const FileState = struct {
@@ -349,7 +425,7 @@ const encode_piece = 1 << 20;
 /// encodability), hashing what it writes.
 const Sink = struct {
     w: ?*Io.Writer = null,
-    hasher: std.hash.XxHash3 = .init(0),
+    hasher: ContentHasher = .{},
     written: u64 = 0,
     fail_after: ?u64 = null,
 
@@ -394,13 +470,13 @@ fn statOrNull(dir: Dir, io: Io, path: []const u8, follow: bool) SaveError!?File.
     };
 }
 
-/// XxHash3 of the file at `path`, streamed.
+/// `hashBytes` of the file at `path`, streamed.
 pub fn hashFile(dir: Dir, io: Io, path: []const u8) (File.OpenError || File.Reader.Error)!u64 {
     var f = try dir.openFile(io, path, .{});
     defer f.close(io);
     var rbuf: [64 << 10]u8 = undefined;
     var r = f.reader(io, &rbuf);
-    var h: std.hash.XxHash3 = .init(0);
+    var h: ContentHasher = .{};
     while (true) {
         const chunk = r.interface.peekGreedy(1) catch |e| switch (e) {
             error.EndOfStream => break,
