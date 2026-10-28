@@ -19,6 +19,8 @@ pub const Options = struct {
     tz_offset_min: i32 = 0,
     /// Receives the paths whose local changes block the merge.
     blocked: common.Blocked = .{},
+    /// Passphrase prompt and agent for `commit.gpgSign`.
+    signing: common.Signing = .{},
 };
 
 /// Merges `name` (a branch, tag or any revision) into HEAD. Local
@@ -81,7 +83,7 @@ pub fn merge(repo: *Repository, name: []const u8, opts: Options) !common.Result 
     }
     const tree_id = try git.write_tree.writeTree(repo, &ix);
     const author = try common.ident(repo, a, .author, opts.tz_offset_min);
-    const id = try common.writeCommit(repo, a, tree_id, &.{ head, theirs }, author, who, msg);
+    const id = try common.writeCommit(repo, a, tree_id, &.{ head, theirs }, author, who, msg, opts.signing);
     try common.moveHead(repo, a, head, id, try std.fmt.allocPrint(a, "merge {s}: Merge made by the 'ort' strategy.", .{name}), who);
     res.kind = .committed;
     res.oid = id;
