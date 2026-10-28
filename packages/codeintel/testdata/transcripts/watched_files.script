@@ -1,0 +1,16 @@
+# Watched files: the server registers a watcher for Zon files after the
+# first document opens; a created Zon file reaches it, a changed Zig file
+# does not. The hover after it proves the server saw nothing else.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "hoverProvider": true}}}
+> initialized
+> textDocument/didOpen
+< {"id": 1, "method": "client/registerCapability", "params": {"registrations": [{"id": "w1", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.zon"}]}}]}}
+> response {"id": 1, "result": null}
+> workspace/didChangeWatchedFiles {"changes": [{"type": 1}]}
+> textDocument/hover
+< {"id": $1, "result": {"contents": {"kind": "plaintext", "value": "ok"}}}
+> textDocument/didClose
+> shutdown
+< {"id": $1, "result": null}
+> exit
