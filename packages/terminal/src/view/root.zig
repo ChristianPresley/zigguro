@@ -33,4 +33,5 @@ pub const PanelModel = panel_model.PanelModel;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("terminal_view_test.zig");
+    _ = @import("shell_integration_test.zig");
 }
