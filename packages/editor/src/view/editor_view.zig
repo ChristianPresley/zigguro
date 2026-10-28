@@ -1125,6 +1125,45 @@ pub const EditorView = struct {
         v.touch();
     }
 
+    /// Applies `edits` (non-overlapping, any order) as one undo step of
+    /// its own; selections follow the text. For inserts that are not
+    /// typing: snippets, completions, snippet choices.
+    pub fn applyEdits(v: *EditorView, edits: []const Replace) !void {
+        if (v.opts.read_only) return error.ReadOnly;
+        var cs = try ChangeSet.fromEdits(v.gpa, v.doc.len(), edits);
+        var cs_owned = true;
+        defer if (cs_owned) cs.deinit();
+        if (cs.isIdentity()) return;
+        var inverse = try cs.invert(v.doc.tree, v.gpa);
+        var inv_owned = true;
+        defer if (inv_owned) inverse.deinit();
+        const before = try sel_mod.dupe(v.gpa, v.sels.slice());
+        defer v.gpa.free(before);
+
+        v.in_edit = true;
+        defer v.in_edit = false;
+        try v.doc.applyChangeSet(&cs, .{ .user = 0 });
+        for (v.sels.items.items) |*s| {
+            s.anchor = cs.mapPos(s.anchor, .right);
+            s.head = cs.mapPos(s.head, .right);
+        }
+        v.sels.clearHistory();
+        v.normalize();
+        v.undo.breakGroup();
+        cs_owned = false;
+        inv_owned = false;
+        try v.undo.record(cs, inverse, before, v.sels.slice(), .{ .origin = .{ .user = 0 }, .timestamp = v.timestamp(), .coalesce_key = null });
+        v.undo.breakGroup();
+        v.revealPrimary();
+        v.touch();
+    }
+
+    /// Replaces the selections; `sels[primary]` becomes the primary.
+    pub fn setSelections(v: *EditorView, sels: []const Selection, primary: usize) !void {
+        try v.sels.set(sels, primary);
+        v.afterMove();
+    }
+
     /// Typed text: one character goes through smart typing (pairs,
     /// electric indent); anything longer (an IME commit) is inserted as
     /// is.
