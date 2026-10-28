@@ -139,11 +139,23 @@ fn threadRing() ?*Ring {
     return r;
 }
 
+/// Called (on the recording thread) when a ring reaches a quarter full, so
+/// a drain can run before it overflows; zg_perf's drain installs it. Must
+/// not record events.
+pub var fill_hook: std.atomic.Value(?*const fn () void) = .init(null);
+
 fn record(e: Event) void {
     const r = threadRing() orelse return;
     var ev = e;
     ev.tid = r.tid;
-    if (!r.events.push(ev)) _ = r.dropped.fetchAdd(1, .monotonic);
+    if (!r.events.push(ev)) {
+        _ = r.dropped.fetchAdd(1, .monotonic);
+        return;
+    }
+    // Occupancy grows by one per push, so it passes the mark exactly here.
+    if (r.events.tail.raw -% r.events.head.load(.monotonic) == ring_capacity / 4) {
+        if (fill_hook.load(.acquire)) |h| h();
+    }
 }
 
 /// Names the calling thread in exported traces (truncated to 32 bytes).
