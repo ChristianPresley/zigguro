@@ -1,0 +1,27 @@
+install
++- install demo
+   +- compile exe demo Debug native 2 errors
+src/main.zig:11:9: error: unused local variable
+    var unused = 3;
+        ^~~~~~
+src/main.zig:9:27: error: expected type 'u32', found '[]const u8'
+    const n: u32 = add(1, s);
+                          ^
+src/main.zig:3:19: note: parameter type declared here
+fn add(a: u32, b: u32) u32 {
+                  ^~~
+referenced by:
+    callMain [inlined]: /opt/zig/lib/std/start.zig:698:59
+    callMainWithArgs [inlined]: /opt/zig/lib/std/start.zig:638:20
+    posixCallMainAndExit: /opt/zig/lib/std/start.zig:590:38
+    2 reference(s) hidden; use '-freference-trace=5' to see all references
+error: 2 compilation errors
+failed command: /opt/zig/zig build-exe -Mroot=/home/dev/proj/src/main.zig --cache-dir .zig-cache --global-cache-dir /home/dev/.cache/zig --name demo --zig-lib-dir /opt/zig/lib/ --listen=-
+
+Build Summary: 0/3 steps succeeded (1 failed)
+install transitive failure
++- install demo transitive failure
+   +- compile exe demo Debug native 2 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/51555f65325ae1daa73c6b311d009f60/build /opt/zig/zig /opt/zig/lib /home/dev/proj .zig-cache /home/dev/.cache/zig --seed 0xc2cbcb2a -Z6058950ad1ded8c5 --color off
