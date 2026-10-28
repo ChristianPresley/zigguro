@@ -598,8 +598,14 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run every package benchmark (-Dbench-quick, -Dbench-filter, -Dbench-repeats)");
     const bench_repeats = @max(1, b.option(u32, "bench-repeats", "Runs of each bench binary, merged into bench-results/all.json (default 1)") orelse 1);
     var bench_outputs: std.ArrayList(std.Build.LazyPath) = .empty;
+    // bench-build (E14.F06.S02.T02): compiles what the perf gate runs
+    // without running it: bench binaries and perfgate into
+    // zig-out/bench-bin/, the app and the startup harness into zig-out/bin/.
+    const bench_build = b.step("bench-build", "Compile the bench binaries, perfgate, the app and the startup harness without running them");
+    bench_build.dependOn(&b.addInstallArtifact(zigguro_exe, .{}).step);
     inline for (packages.all, 0..) |p, i| {
         if (p.has_bench) {
+            bench_build.dependOn(&b.addInstallArtifact(deps[i].artifact(p.name ++ "-bench"), .{ .dest_dir = .{ .override = .{ .custom = "bench-bin" } }, .pdb_dir = .disabled }).step);
             for (0..bench_repeats) |k| {
                 const run = b.addRunArtifact(deps[i].artifact(p.name ++ "-bench"));
                 run.has_side_effects = true;
@@ -662,6 +668,7 @@ pub fn build(b: *std.Build) void {
     {
         const harness = b.addExecutable(.{ .name = "zigguro-bench-startup", .root_module = appModule(b, "apps/zigguro/src/bench/startup.zig", f.target, f.optimize, &mods, options) });
         b.installArtifact(harness);
+        bench_build.dependOn(&b.addInstallArtifact(harness, .{}).step);
         const run = b.addRunArtifact(harness);
         run.has_side_effects = true;
         run.addArg("--exe");
@@ -767,6 +774,7 @@ pub fn build(b: *std.Build) void {
         {
             // Calibration needs optimized kernels whatever -Doptimize says.
             const fast = b.addExecutable(.{ .name = "perfgate", .root_module = toolModule(b, "tools/perfgate/main.zig", .ReleaseFast, &.{.{ .name = "zg_perf", .module = perf_host }}) });
+            bench_build.dependOn(&b.addInstallArtifact(fast, .{ .dest_dir = .{ .override = .{ .custom = "bench-bin" } }, .pdb_dir = .disabled }).step);
             const run = b.addRunArtifact(fast);
             run.setCwd(b.path("."));
             run.addArgs(&.{ "calibrate", "--reference", "perf/baselines/ref_laptop_2024/calibration.json", "--out" });
