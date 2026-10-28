@@ -114,8 +114,10 @@ pub const App = struct {
     /// `spawn` runs work inline and `post` queues locally.
     rt: ?*zg_core.Runtime = null,
     work: ?zg_core.runtime.Subsystem = null,
-    /// Calls posted while no runtime is attached.
+    /// Calls posted while no runtime is attached (`local_lock` held:
+    /// workers post too).
     local_calls: std.ArrayList(Call) = .empty,
+    local_lock: std.atomic.Mutex = .unlocked,
     /// Receives mailbox messages that are not `gui_call`s (other
     /// subsystems' kinds).
     on_message: ?MessageHandler = null,
@@ -214,15 +216,28 @@ pub const App = struct {
     /// never blocks. Fails when the mailbox is full or closed.
     pub fn post(app: *App, c: Call) zg_core.runtime.Runtime.PostError!void {
         if (app.rt) |rt| return rt.post(.{ .kind = gui_call, .a = @intFromPtr(c.f), .b = @intFromPtr(c.ctx) });
+        app.lockLocal();
+        defer app.local_lock.unlock();
         app.local_calls.append(app.gpa, c) catch return error.Full;
+    }
+
+    fn lockLocal(app: *App) void {
+        while (!app.local_lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    /// The oldest locally posted call, taken off the queue.
+    fn nextLocal(app: *App) ?Call {
+        app.lockLocal();
+        defer app.local_lock.unlock();
+        if (app.local_calls.items.len == 0) return null;
+        return app.local_calls.orderedRemove(0);
     }
 
     /// UI thread: runs posted calls and hands other messages to
     /// `on_message`. Returns how many were handled.
     pub fn drainMessages(app: *App) usize {
         var n: usize = 0;
-        while (app.local_calls.items.len > 0) {
-            const c = app.local_calls.orderedRemove(0);
+        while (app.nextLocal()) |c| {
             c.f(c.ctx, app);
             n += 1;
         }
