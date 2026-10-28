@@ -22,6 +22,7 @@ pub const Fake = struct {
         unattended: bool,
         session: u128,
         resumed: ?u128,
+        system_append: ?[]u8 = null,
         submits: std.ArrayList([]u8) = .empty,
         cancels: [2]u32 = .{ 0, 0 },
         disposed: bool = false,
@@ -32,6 +33,7 @@ pub const Fake = struct {
             for (a.submits.items) |s| gpa.free(s);
             a.submits.deinit(gpa);
             gpa.free(a.cwd);
+            if (a.system_append) |x| gpa.free(x);
             gpa.destroy(a);
         }
         f.agents.deinit(gpa);
@@ -52,6 +54,7 @@ pub const Fake = struct {
             .unattended = req.unattended,
             .session = 1000 + f.agents.items.len,
             .resumed = req.session,
+            .system_append = if (req.system_append) |x| try gpa.dupe(u8, x) else null,
         };
         try f.agents.append(gpa, a);
         return .{ .handle = @intFromPtr(a), .session = req.session orelse a.session };

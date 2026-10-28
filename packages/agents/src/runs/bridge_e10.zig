@@ -61,6 +61,7 @@ pub const E10Agents = struct {
                 .max_cost_micros = req.budgets.max_cost_micros,
             },
             .session = req.session,
+            .system_append = req.system_append,
         };
         const deps = if (req.unattended) (e.opts.unattended_deps orelse e.mgr.deps) else e.mgr.deps;
         const agent = try e.mgr.createWith(cfg, deps);

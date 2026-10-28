@@ -1,0 +1,14 @@
+.{
+    .version = 1,
+    .title = "The \"Zig\" book",
+    .description = "Chapters, sources and notes.",
+    .knowledge = .{
+        .{ .folder = .{ .path = "docs/book" } },
+        .{ .folder = .{ .path = "notes", .glob = "**/*.md" } },
+        .{ .notes_query = "tag:#book" },
+        .{ .file = "README.md" },
+        .{ .source = "zig comptime" },
+    },
+    .defaults = .{ .agent_def = "writer", .model = "fast" },
+    .pinned = true,
+}

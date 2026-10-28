@@ -222,6 +222,28 @@ test "untrusted payload, unattended profile and attach" {
     try testing.expectError(error.UnknownProfile, e.host.start(s));
 }
 
+const Sections = struct {
+    fn section(_: *anyopaque, arena: std.mem.Allocator, project: []const u8) anyerror!?[]const u8 {
+        if (!std.mem.eql(u8, project, "book")) return null;
+        return try arena.dupe(u8, "# Project: Book");
+    }
+};
+
+test "project runs get the project section, others start unchanged" {
+    var ctx: u8 = 0;
+    var e: Env = .{ .reg = undefined, .host = undefined };
+    try e.init(.{ .context = .{ .ctx = &ctx, .section = Sections.section } }, null);
+    defer e.deinit();
+    var s = bg("in project");
+    s.project = "book";
+    _ = try e.host.start(s);
+    try e.waitAgents(1);
+    _ = try e.host.start(bg("outside"));
+    try e.waitAgents(2);
+    try testing.expectEqualStrings("# Project: Book", e.fake.agent(0).system_append.?);
+    try testing.expect(e.fake.agent(1).system_append == null);
+}
+
 test "interrupted runs resume their session" {
     var e: Env = .{ .reg = undefined, .host = undefined };
     try e.init(.{}, null);

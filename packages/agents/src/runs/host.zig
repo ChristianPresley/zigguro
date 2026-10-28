@@ -39,6 +39,9 @@ pub const HostConfig = struct {
     /// Sees every agent signal before the host handles it (the workflow
     /// engine reads activity and full final texts here).
     observer: ?Observer = null,
+    /// Adds the project section to the system prompt of runs that belong
+    /// to a project (runs outside one start unchanged).
+    context: ?port.ContextPort = null,
 };
 
 /// Called on the agent's thread with the run the signal belongs to.
@@ -68,6 +71,7 @@ const Live = struct {
     unattended: bool,
     isolation: run.Isolation,
     budgets: run.Budgets,
+    project: ?[]const u8,
     // Under host.mutex:
     handle: ?usize = null,
     session: ?u128 = null,
@@ -182,6 +186,7 @@ fn newLive(h: *RunHost, id: RunId, spec: run.RunSpec, profile: port.Profile) !*L
         .unattended = profile.unattended,
         .isolation = spec.isolation,
         .budgets = spec.budgets,
+        .project = null,
     };
     errdefer l.arena.deinit();
     const a = l.arena.allocator();
@@ -189,6 +194,7 @@ fn newLive(h: *RunHost, id: RunId, spec: run.RunSpec, profile: port.Profile) !*L
     l.model = if (spec.model) |m| try a.dupe(u8, m) else null;
     l.agent_def = if (spec.agent_def) |d| try a.dupe(u8, d) else null;
     l.profile = try a.dupe(u8, spec.profile);
+    l.project = if (spec.project) |p| try a.dupe(u8, p) else null;
     return l;
 }
 
@@ -260,6 +266,7 @@ fn launchOrFail(h: *RunHost, l: *Live) !void {
             try h.reg.update(l.id, .{ .lane = name });
         }
     }
+    const system_append: ?[]const u8 = if (l.project) |p| if (h.cfg.context) |c| try c.section(c.ctx, l.arena.allocator(), p) else null else null;
     const started = try h.agents.start(.{
         .model = l.model,
         .agent_def = l.agent_def,
@@ -268,6 +275,7 @@ fn launchOrFail(h: *RunHost, l: *Live) !void {
         .session = if (resuming) l.session else null,
         .profile = l.profile,
         .unattended = l.unattended,
+        .system_append = system_append,
         .sink = .{ .ctx = l, .f = onSignal },
     });
     {
