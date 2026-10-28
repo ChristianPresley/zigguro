@@ -30,6 +30,7 @@ fn register(b: *bench.Bench) !void {
     probs.init(std.heap.smp_allocator);
     defer probs.deinit();
     try b.run("codeintel.problems.filter_100k: rebuild the Problems model, 100k diagnostics in 1000 files, text filter", &probs, problemsFilter100k);
+    try b.run("codeintel.snippet.expand_2k: parse and expand a 2 KB snippet (stops, choices, variables, a transform)", {}, snippetExpand2k);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -252,5 +253,29 @@ fn problemsFilter100k(fx: *ProblemsFixture, s: *State) void {
     for (0..s.iterations()) |i| {
         _ = p.update(&fx.store, .{ .text = if (i % 2 == 0) "needle" else "need" }) catch unreachable;
         bench.doNotOptimizeAway(p.count());
+    }
+}
+
+/// A 2 KB snippet in the shape completion items send. Budget: < 50 µs
+/// for parse plus expand.
+fn snippetExpand2k(_: void, s: *State) void {
+    const Snippet = zg_codeintel.snippet.Snippet;
+    var src: [2048]u8 = undefined;
+    var n: usize = 0;
+    const unit = "fn ${1:name}(${2:arg}: ${3|u8,u16,u32|}) ${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/} {\n\t$2\n}\n";
+    while (n + unit.len <= src.len) : (n += unit.len) @memcpy(src[n..][0..unit.len], unit);
+    const Vars = struct {
+        fn get(_: ?*anyopaque, name: []const u8, _: std.mem.Allocator) ?[]const u8 {
+            return if (std.mem.eql(u8, name, "TM_FILENAME_BASE")) "my_file" else null;
+        }
+    };
+    const gpa = s.allocator();
+    var e: Snippet.Expansion = .{};
+    defer e.deinit(gpa);
+    for (0..s.iterations()) |_| {
+        var sn = Snippet.parse(gpa, src[0..n]) catch unreachable;
+        defer sn.deinit();
+        sn.expand(gpa, .{ .get = Vars.get }, .{ .line_indent = "    ", .indent_unit = "    " }, &e) catch unreachable;
+        bench.doNotOptimizeAway(e.stops.items.len);
     }
 }
