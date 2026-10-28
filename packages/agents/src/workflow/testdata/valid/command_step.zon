@@ -1,0 +1,8 @@
+.{
+    .version = 1,
+    .name = "command-step",
+    .profile = "unattended-lane-write",
+    .steps = .{
+        .{ .id = "build", .command = .{ .argv = .{ "zig", "build" }, .expect_exit = 0 } },
+    },
+}

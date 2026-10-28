@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "map-command",
+    .profile = "unattended-lane-write",
+    .steps = .{
+        .{ .id = "files", .builtin = .{ .name = "files.glob" } },
+        .{ .id = "fmt", .map = .{ .over = "$.files", .command = .{ .argv = .{ "zig", "fmt", "--check" } } } },
+    },
+}
