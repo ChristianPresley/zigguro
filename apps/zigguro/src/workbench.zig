@@ -320,6 +320,8 @@ pub const Workbench = struct {
     debug_panel: ?*DebugPanel = null,
     /// The Run and Debug view the next `showDebugPanel(true)` focuses.
     debug_focus: DebugPanel.View = .call_stack,
+    /// The gutter's breakpoint menu.
+    gutter_menu: zg_gui.w.menu.MenuHandle = .{},
     debug_ref: ?PanelRef = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
@@ -598,6 +600,7 @@ pub const Workbench = struct {
             nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
             nf.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
             nf.view.priority_hook = .{ .ctx = wb, .f = onDebugPointer };
+            nf.view.gutter_menu_hook = .{ .ctx = wb, .f = onGutterMenu };
             wb.attachCompletions(nf);
         }
         if (wb.debug) |d| wb.debugAttach(d, nf);
@@ -1138,6 +1141,7 @@ pub const Workbench = struct {
             f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
             f.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
             f.view.priority_hook = .{ .ctx = wb, .f = onDebugPointer };
+            f.view.gutter_menu_hook = .{ .ctx = wb, .f = onGutterMenu };
         }
         wb.completions_svc = completions.Service.create(wb.rt, wb.env, win.app) catch |e| blk: {
             log.err("completions: {t}", .{e});
@@ -1310,6 +1314,7 @@ pub const Workbench = struct {
         .{ .id = "debug.runToCursor", .title = "Run to Cursor", .category = "Debug", .run = dbg(Debug.runToCursorCmd) },
         .{ .id = "debug.jumpToCursor", .title = "Jump to Cursor", .category = "Debug", .run = dbg(Debug.jumpToCursorCmd) },
         .{ .id = "debug.toggleBreakpoint", .title = "Toggle Breakpoint", .category = "Debug", .run = dbg(Debug.toggleBreakpointCmd) },
+        .{ .id = "debug.enableOrDisableBreakpoint", .title = "Enable or Disable Breakpoint", .category = "Debug", .run = dbg(Debug.toggleEnabledCmd) },
         .{ .id = "debug.removeAllBreakpoints", .title = "Remove All Breakpoints", .category = "Debug", .run = dbg(Debug.removeAllBreakpointsCmd) },
         .{ .id = "debug.enableAllBreakpoints", .title = "Enable All Breakpoints", .category = "Debug", .run = dbg(enableAllBreakpoints) },
         .{ .id = "debug.disableAllBreakpoints", .title = "Disable All Breakpoints", .category = "Debug", .run = dbg(disableAllBreakpoints) },
@@ -3248,6 +3253,39 @@ pub const Workbench = struct {
             if (f.view == v) break f;
         } else return false;
         return d.hoverPointer(v, f.doc, e);
+    }
+
+    /// A right click in an editor's gutter: the line's breakpoint menu
+    /// (add one, or edit, disable and remove the one there). The items
+    /// are the `debug.*` commands, run on the caret's line.
+    fn onGutterMenu(ctx: *anyopaque, v: *EditorView, line: u64, at: zg_gui.core.Vec2) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return false;
+        const f = for (wb.files.items) |*f| {
+            if (f.view == v) break f;
+        } else return false;
+        const p = f.path orelse return false;
+        if (f.virtual != null) return false;
+        const d = wb.ensureDebug() catch return false;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return false;
+        defer wb.gpa.free(abs);
+        wb.debugAttach(d, f);
+        if (v.lineOf(v.primarySel().head) != line) v.setSelection(.caret(v.lineRange(line).start));
+        wb.setCurrent(f.*);
+        const menu = zg_gui.w.menu;
+        const items: []const menu.MenuItem = if (d.breakpointOn(abs, @intCast(line + 1))) |b| &.{
+            .{ .action = .{ .label = "&Remove Breakpoint", .action = "debug.toggleBreakpoint" } },
+            .{ .action = .{ .label = "&Edit Condition\u{2026}", .action = "debug.addConditionalBreakpoint" } },
+            .{ .action = .{ .label = "Edit &Log Message\u{2026}", .action = "debug.addLogpoint" } },
+            .{ .action = .{ .label = if (b.enabled) "&Disable Breakpoint" else "E&nable Breakpoint", .action = "debug.enableOrDisableBreakpoint" } },
+        } else &.{
+            .{ .action = .{ .label = "Add &Breakpoint", .action = "debug.toggleBreakpoint" } },
+            .{ .action = .{ .label = "Add &Conditional Breakpoint\u{2026}", .action = "debug.addConditionalBreakpoint" } },
+            .{ .action = .{ .label = "Add &Logpoint\u{2026}", .action = "debug.addLogpoint" } },
+        };
+        wb.gutter_menu.close(w);
+        wb.gutter_menu = menu.openMenu(w, items, .{ .pointer = at }, .{ .test_id = "gutter-menu" }) catch return false;
+        return true;
     }
 
     /// Whether `f`'s gutter shows the code action lightbulb on `line`.
@@ -6788,6 +6826,28 @@ test "workbench: Run and Debug lists configurations with reasons, F9 sets breakp
     try std.testing.expect(t.find(.{ .name = "a.zig line 2, when a > 1, disabled" }) != null);
     dp.bpv.tv.moveTo(row, .replace);
     try Workbench.removeBreakpoint(&wb);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 0), (try d.bps.list(arena.allocator())).len);
+
+    // A right click in the gutter: the line's breakpoint menu. Add
+    // Breakpoint sets one there; then the menu edits, disables, removes.
+    try std.testing.expect(Workbench.onGutterMenu(&wb, f.view, 2, .{ .x = 40, .y = 40 }));
+    _ = t.settle();
+    try std.testing.expect(wb.gutter_menu.isOpen(t.win));
+    try t.click(.{ .name = "Add Breakpoint" });
+    _ = t.settle();
+    try std.testing.expect(!wb.gutter_menu.isOpen(t.win));
+    try std.testing.expectEqualSlices(u64, &.{2}, try testGutterLines(arena.allocator(), f, 0x25CF));
+    try std.testing.expect(Workbench.onGutterMenu(&wb, f.view, 2, .{ .x = 40, .y = 40 }));
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "Edit Condition\u{2026}" }) != null);
+    try t.click(.{ .name = "Disable Breakpoint" });
+    _ = t.settle();
+    try std.testing.expectEqualSlices(u64, &.{2}, try testGutterLines(arena.allocator(), f, 0x25CB));
+    try std.testing.expect(Workbench.onGutterMenu(&wb, f.view, 2, .{ .x = 40, .y = 40 }));
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "Enable Breakpoint" }) != null);
+    try t.click(.{ .name = "Remove Breakpoint" });
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), (try d.bps.list(arena.allocator())).len);
 }

@@ -791,7 +791,16 @@ pub const Editor = struct {
                 if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .leave });
                 return false;
             },
-            .pointer_up => {
+            .pointer_up => |p| {
+                if (p.button == .right and state.drag == .none) if (v.gutter_menu_hook) |h| {
+                    const lp = ec.local(p.pos);
+                    const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+                    if (lp.x >= lane and lp.x < v.gutter_w) {
+                        const t = textPoint(ec, v, p.pos);
+                        const line = v.lineAtY(t.y);
+                        if (t.y >= 0 and t.y < v.lineTop(line) + v.lineHeight() and h.f(h.ctx, v, line, p.pos)) return true;
+                    }
+                };
                 if (state.drag == .none) return false;
                 state.drag = .none;
                 ec.releaseCapture();

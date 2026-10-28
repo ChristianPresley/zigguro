@@ -137,6 +137,14 @@ pub const GutterHook = struct {
     f: *const fn (ctx: *anyopaque, v: *EditorView, line: u64, lane: u8) bool,
 };
 
+/// Told of a right click (on release) in the gutter, on document line
+/// `line` (0-based); `at` is the pointer in window coordinates, for a
+/// context menu. Returning true consumes it.
+pub const GutterMenuHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *EditorView, line: u64, at: Vec2) bool,
+};
+
 /// What `PointerHook` hears. `origin` is the text origin in window
 /// coordinates (`posOf` plus `origin` places an offset in the window).
 pub const PointerEvent = struct {
@@ -291,6 +299,8 @@ pub const EditorView = struct {
     priority_hook: ?PointerHook = null,
     /// Told of clicks on the gutter's mark lanes (breakpoints, E07).
     gutter_hook: ?GutterHook = null,
+    /// Told of right clicks in the gutter (the breakpoint menu, E07).
+    gutter_menu_hook: ?GutterMenuHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
     /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and

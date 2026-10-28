@@ -964,3 +964,34 @@ test "view: clicks on the gutter's mark lanes go to the gutter hook" {
     click(&f, .{ .x = r.x + f.view.gutter_w - 4, .y = r.y + lh * 0.5 });
     try testing.expect(hook.line == null);
 }
+
+test "view: a right click in the gutter goes to the gutter menu hook" {
+    var f: Fx = undefined;
+    try f.init("one\ntwo\nthree\n");
+    defer f.deinit();
+    const Hook = struct {
+        line: ?u64 = null,
+        at: zg_gui.core.Vec2 = .{},
+        fn on(ctx: *anyopaque, _: *EditorView, line: u64, at: zg_gui.core.Vec2) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            h.line = line;
+            h.at = at;
+            return true;
+        }
+    };
+    var hook: Hook = .{};
+    f.view.gutter_menu_hook = .{ .ctx = &hook, .f = Hook.on };
+    const r = try f.t.rectOf(.{ .role = .textbox });
+    const lh = f.view.lineHeight();
+    const p: zg_gui.core.Vec2 = .{ .x = r.x + f.view.gutter_w - 4, .y = r.y + lh * 2.5 };
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = p, .clicks = 1, .button = .right } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = p, .clicks = 1, .button = .right } });
+    try testing.expectEqual(@as(?u64, 2), hook.line);
+    try testing.expectEqual(p.x, hook.at.x);
+    // Over the text: not the gutter's.
+    hook.line = null;
+    const q: zg_gui.core.Vec2 = .{ .x = r.x + f.view.gutter_w + 20, .y = r.y + lh * 0.5 };
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = q, .clicks = 1, .button = .right } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = q, .clicks = 1, .button = .right } });
+    try testing.expect(hook.line == null);
+}

@@ -1287,6 +1287,24 @@ pub const Debug = struct {
         return d.bps.add(.{ .kind = .{ .source = .{ .path = c.path, .line = c.line } } }) catch null;
     }
 
+    /// The source breakpoint on 1-based `line` of `path` (absolute).
+    pub fn breakpointOn(d: *Debug, path: []const u8, line: u32) ?struct { id: BreakpointManager.BpId, enabled: bool } {
+        var arena: std.heap.ArenaAllocator = .init(d.gpa);
+        defer arena.deinit();
+        const here = d.bps.inSource(arena.allocator(), path) catch return null;
+        for (here) |v| if (v.bp.kind.source.line == line) return .{ .id = v.bp.id, .enabled = v.bp.enabled };
+        return null;
+    }
+
+    /// `debug.enableOrDisableBreakpoint`: the caret line's breakpoint on
+    /// or off.
+    pub fn toggleEnabledCmd(d: *Debug) void {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const c = d.host.cursor(d.host.ctx, &buf) orelse return;
+        const b = d.breakpointOn(c.path, c.line) orelse return d.say(.info, "No breakpoint on this line", .{});
+        d.bps.update(b.id, .{ .enabled = !b.enabled }) catch {};
+    }
+
     /// The Breakpoints view's rows (in `a`): the active session's
     /// exception filters and every breakpoint.
     pub fn bpSnapshot(d: *Debug, a: Allocator) Allocator.Error!bp_view.Snapshot {
