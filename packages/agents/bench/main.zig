@@ -24,6 +24,7 @@ fn register(b: *bench.Bench) !void {
     try registerGrid(b);
     try registerDiagram(b);
     try registerLibrary(b);
+    try registerWorkflow(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -812,6 +813,89 @@ fn registerLibrary(b: *bench.Bench) !void {
             while (i < s.iterations()) : (i += 1) {
                 l.search("planning 12", 50, &hits, std.heap.smp_allocator) catch unreachable;
                 bench.doNotOptimizeAway(hits.items.len);
+            }
+        }
+    }.f);
+}
+
+/// `workflow/dispatch_1k`: a workflow mapping 1,000 items to agents whose
+/// worker answers at once, so the time is the engine's own overhead per
+/// run (budget 1 ms per dispatched agent: 1 s per iteration);
+/// `workflow/progress_snapshot`: copying a 20-step run's progress for
+/// one frame (budget 10 us).
+fn registerWorkflow(b: *bench.Bench) !void {
+    const wf = zg_agents.workflow;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    const Instant = struct {
+        eng: *wf.WorkflowEngine = undefined,
+        fn start(ctx: *anyopaque, req: *const wf.WorkerRequest) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.eng.workerEvent(req.child, .{ .result = "ok" });
+        }
+        fn stop(_: *anyopaque, _: runs.RunId) void {}
+    };
+    var instant: Instant = .{};
+    const reg = try runs.RunRegistry.init(gpa, io, null, .{});
+    defer reg.deinit();
+    const eng = try wf.WorkflowEngine.init(gpa, io, reg, .{ .workers = .{ .ctx = &instant, .start = Instant.start, .stop = Instant.stop } });
+    defer eng.deinit();
+    instant.eng = eng;
+
+    var diags: wf.Diagnostics = .init(gpa);
+    defer diags.deinit();
+    var p = try wf.parse.parseOnly(gpa,
+        \\.{ .version = 1, .name = "bench",
+        \\  .args = .{ .{ .name = "items", .type = .json } },
+        \\  .steps = .{ .{ .id = "each", .map = .{ .over = "$args.items", .agent = .{ .prompt = "check {{$item}} for problems" } } } },
+        \\}
+    , &diags);
+    defer p.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var items: std.json.Array = .init(arena.allocator());
+    for (0..1000) |i| try items.append(.{ .integer = @intCast(i) });
+    var args: std.json.ObjectMap = .empty;
+    try args.put(arena.allocator(), "items", .{ .array = items });
+    const Ctx = struct { eng: *wf.WorkflowEngine, def: *const wf.WorkflowDef, args: std.json.Value };
+    const ctx: Ctx = .{ .eng = eng, .def = &p.def, .args = .{ .object = args } };
+    try b.run("workflow/dispatch_1k", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                const id = c.eng.start(c.def, c.args, .{}) catch unreachable;
+                _ = c.eng.wait(id) catch unreachable;
+                c.eng.forget(id);
+            }
+        }
+    }.f);
+
+    var big = try wf.parse.parseOnly(gpa,
+        \\.{ .version = 1, .name = "steps", .steps = .{
+        \\  .{ .id = "s0", .agent = .{ .prompt = "p" } }, .{ .id = "s1", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "s2", .agent = .{ .prompt = "p" } }, .{ .id = "s3", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "s4", .agent = .{ .prompt = "p" } }, .{ .id = "s5", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "s6", .agent = .{ .prompt = "p" } }, .{ .id = "s7", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "s8", .agent = .{ .prompt = "p" } }, .{ .id = "s9", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "t0", .agent = .{ .prompt = "p" } }, .{ .id = "t1", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "t2", .agent = .{ .prompt = "p" } }, .{ .id = "t3", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "t4", .agent = .{ .prompt = "p" } }, .{ .id = "t5", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "t6", .agent = .{ .prompt = "p" } }, .{ .id = "t7", .agent = .{ .prompt = "p" } },
+        \\  .{ .id = "t8", .agent = .{ .prompt = "p" } }, .{ .id = "t9", .agent = .{ .prompt = "p" } },
+        \\} }
+    , &diags);
+    defer big.deinit();
+    const id = try eng.start(&big.def, .null, .{});
+    _ = try eng.wait(id);
+    const PCtx = struct { eng: *wf.WorkflowEngine, id: runs.RunId };
+    const pctx: PCtx = .{ .eng = eng, .id = id };
+    try b.run("workflow/progress_snapshot", &pctx, struct {
+        fn f(c: *const PCtx, s: *bench.State) void {
+            var buf: [8192]u8 = undefined;
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                var fba: std.heap.FixedBufferAllocator = .init(&buf);
+                bench.doNotOptimizeAway(c.eng.progress(c.id, fba.allocator()) catch unreachable);
             }
         }
     }.f);

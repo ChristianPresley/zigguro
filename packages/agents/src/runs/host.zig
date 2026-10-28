@@ -36,6 +36,15 @@ pub const HostConfig = struct {
     /// Waits `ms` (tests pass a fake); defaults to `Io.sleep`.
     sleep: ?*const fn (ctx: ?*anyopaque, io: Io, ms: u32) void = null,
     sleep_ctx: ?*anyopaque = null,
+    /// Sees every agent signal before the host handles it (the workflow
+    /// engine reads activity and full final texts here).
+    observer: ?Observer = null,
+};
+
+/// Called on the agent's thread with the run the signal belongs to.
+pub const Observer = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, id: RunId, s: port.Signal) void,
 };
 
 pub const continue_text = "Continue from where you paused.";
@@ -276,6 +285,7 @@ fn launchOrFail(h: *RunHost, l: *Live) !void {
 
 fn onSignal(ctx: *anyopaque, s: port.Signal) void {
     const l: *Live = @ptrCast(@alignCast(ctx));
+    if (l.host.cfg.observer) |o| o.f(o.ctx, l.id, s);
     l.host.signal(l, s) catch {};
 }
 
