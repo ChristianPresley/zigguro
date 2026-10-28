@@ -73,6 +73,9 @@ pub const remote = struct {
     pub const objects = @import("remote/objects.zig");
     pub const fetch = @import("remote/fetch.zig");
     pub const push = @import("remote/push.zig");
+    pub const credential = @import("remote/credential.zig");
+    pub const http = @import("remote/http.zig");
+    pub const connect = @import("remote/connect.zig");
 };
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
@@ -138,6 +141,8 @@ test {
     _ = @import("ops_test.zig");
     _ = @import("remote/remote_test.zig");
     _ = @import("remote/refspec.zig");
+    _ = @import("remote/http_test.zig");
+    _ = @import("remote/connect.zig");
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
