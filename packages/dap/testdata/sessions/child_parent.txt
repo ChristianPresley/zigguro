@@ -1,0 +1,14 @@
+# startDebugging from a stdio adapter: answered at once; the child gets
+# its own adapter (child_child.txt). Stopping the parent stops the child
+# first.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< reverse startDebugging {"request": "launch", "configuration": {"name": "worker", "program": "/w/worker"}}
+> response startDebugging {"success": true}
+> disconnect {"terminateDebuggee": true}
+< {}
