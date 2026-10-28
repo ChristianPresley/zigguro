@@ -1,0 +1,11 @@
+# The child of child_parent.txt: its own start sequence with the
+# configuration as its launch arguments.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"name": "worker", "program": "/w/worker"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> disconnect {"terminateDebuggee": true}
+< {}
