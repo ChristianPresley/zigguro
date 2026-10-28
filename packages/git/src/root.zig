@@ -49,6 +49,12 @@ pub const repository = @import("repository.zig");
 pub const Repository = repository.Repository;
 /// `git status`: staged, unstaged, untracked and ignored files.
 pub const status = @import("status.zig");
+/// Staging: add, add -u, add -N, partial content, unstage, rm.
+pub const stage = @import("stage.zig");
+/// `git write-tree`.
+pub const write_tree = @import("write_tree.zig");
+/// `git commit`.
+pub const commit_cmd = @import("commit_cmd.zig");
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
