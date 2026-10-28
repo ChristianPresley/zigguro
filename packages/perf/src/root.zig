@@ -22,6 +22,8 @@ pub const mem = @import("mem.zig");
 pub const startup = @import("startup.zig");
 /// Wakeup attribution, CPU time and the idle monitor (E14.F05.S02).
 pub const idle = @import("idle.zig");
+/// Macro scenarios, environment capture and calibration (E14.F06.S01).
+pub const scenario = @import("scenario.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -52,4 +54,9 @@ test {
     std.testing.refAllDecls(mem);
     std.testing.refAllDecls(startup);
     std.testing.refAllDecls(idle);
+    std.testing.refAllDecls(scenario);
+    std.testing.refAllDecls(scenario.scenario);
+    std.testing.refAllDecls(scenario.context);
+    std.testing.refAllDecls(scenario.env);
+    std.testing.refAllDecls(scenario.calibrate);
 }
