@@ -95,6 +95,10 @@ jobs:
       - name: zig build test-core -Dtracing=zones
         if: matrix.os == 'ubuntu-24.04' && matrix.optimize == 'Debug'
         run: zig build test-core -Dtracing=zones --summary line
+      - name: zig build check-frame-pointers -Dprofile=true
+        if: (matrix.os == 'ubuntu-24.04' || matrix.os == 'windows-2025') && matrix.optimize == 'ReleaseSafe'
+        shell: bash
+        run: zig build check-frame-pointers -Dprofile=true --summary line
 
   cross:
     runs-on: ubuntu-24.04
