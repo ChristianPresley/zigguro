@@ -64,12 +64,19 @@ pub fn ident(repo: *Repository, a: Allocator, role: enum { author, committer }, 
 }
 
 /// Writes a commit object. `message` should end with a newline.
-pub fn writeCommit(repo: *Repository, a: Allocator, tree: Oid, parents: []const Oid, author: Ident, committer: Ident, message: []const u8) !Oid {
-    if (repo.config.getBool("commit.gpgsign") orelse false) return error.SigningUnsupported;
+/// How commits are signed: with `commit.gpgSign`, through these options.
+pub const Signing = git.sign.signing.Options;
+
+/// Writes a commit object. `signing` null never signs (stash commits);
+/// otherwise the commit is signed when `commit.gpgSign` is set.
+pub fn writeCommit(repo: *Repository, a: Allocator, tree: Oid, parents: []const Oid, author: Ident, committer: Ident, message: []const u8, signing: ?Signing) !Oid {
+    const signer = if (signing != null and git.sign.signing.wanted(repo)) try git.sign.signing.fromConfig(repo, signing.?) else null;
+    defer if (signer) |k| k.deinit();
     const c: git.commit.Commit = .{ .tree = tree, .parents = parents, .author = author, .committer = committer, .message = message };
     var aw: std.Io.Writer.Allocating = .init(a);
     try git.commit.serializeCommit(&c, &aw.writer);
-    return repo.odb.writeLoose(.commit, aw.written());
+    const raw = if (signer) |k| try git.sign.signing.signCommit(a, k.signer(), aw.written(), repo.format) else aw.written();
+    return repo.odb.writeLoose(.commit, raw);
 }
 
 /// Moves the current branch (or a detached HEAD) from `old` to `new`.
