@@ -152,7 +152,21 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     // `--startup-report` prints the startup report once the first frame
     // is interactive; interactive runs (not --frames or headless ones)
     // record it in startup.json.
-    var startup_report: StartupReport = .{ .gpa = rt.gpa, .io = rt.io, .print = hasFlag(min, rt.gpa, "--startup-report"), .state_dir = if (frames_arg == null and backend != .headless) state_dir else null };
+    // `--startup-report-json=PATH` and `--exit-after-startup` serve
+    // zigguro-bench-startup (E14.F05.S01.T03).
+    const startup_json = prefixArg(min, rt.gpa, "--startup-report-json=");
+    defer if (startup_json) |p| rt.gpa.free(p);
+    const bench_run = startup_json != null;
+    var startup_report: StartupReport = .{
+        .gpa = rt.gpa,
+        .io = rt.io,
+        .print = hasFlag(min, rt.gpa, "--startup-report"),
+        .state_dir = if (frames_arg == null and backend != .headless and !bench_run) state_dir else null,
+        .json_path = startup_json,
+        .exit_after = hasFlag(min, rt.gpa, "--exit-after-startup"),
+        .refresh_ns = if (tracing.timeline) |tl| &tl.refresh_ns else null,
+    };
+    const inject_key = hasFlag(min, rt.gpa, "--bench-inject-key-after-first-frame");
     defer startup_report.deinit();
     startup_report.arm();
     // `zigguro DIR` opens the folder; with no path, interactive runs open
@@ -275,6 +289,12 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         try hl.tick(hl.opts.refresh_ns);
         _ = try host.pump();
         drawn = hw.frames;
+        // The bench's interactive check: one key right after the first
+        // frame, handled by the next pump.
+        if (i == 0 and inject_key) {
+            for ([_]zg_platform.keys.KeyAction{ .press, .release }) |action|
+                hl.inject(.{ .key = .{ .win = hw.id, .ev = .{ .key = .f24, .keysym = 0, .codepoint = 0, .mods = .{}, .action = action, .text = .empty, .native_scancode = 0, .time_ns = hl.clock_ns } } }) catch {};
+        }
         hw.win.themeChanged(false); // force a full repaint next frame
     }
     _ = host.flush(5 * std.time.ns_per_s);
@@ -374,6 +394,16 @@ fn stringArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator, name: []cons
     defer it.deinit();
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, name)) return gpa.dupe(u8, it.next() orelse return null) catch null;
+    }
+    return null;
+}
+
+/// The value of `--name=value` (`prefix` includes the `=`).
+fn prefixArg(min: std.process.Init.Minimal, gpa: std.mem.Allocator, prefix: []const u8) ?[]u8 {
+    var it = min.args.iterateAllocator(gpa) catch return null;
+    defer it.deinit();
+    while (it.next()) |a| {
+        if (std.mem.startsWith(u8, a, prefix)) return gpa.dupe(u8, a[prefix.len..]) catch null;
     }
     return null;
 }
