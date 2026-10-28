@@ -332,12 +332,12 @@ pub const Editor = struct {
         }
     }
 
-    /// Gutter marks (diagnostic severities, breakpoints): a dot per line
+    /// Gutter marks (diagnostic severities, breakpoints): a mark per line
     /// and lane at the gutter's left, the highest `z` mark winning; lane
-    /// 1 (the code action lightbulb) sits right of lane 0.
+    /// 1 (the code action lightbulb) sits right of lane 0. The icon picks
+    /// the shape (`paintGlyph`).
     fn paintGutterMarks(pc: *PaintCx, v: *EditorView, decos: []const deco_store.DecoRef, oy: f32, lh: f32) void {
-        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
-        const d = @min(lh * 0.4, 8);
+        const d = markSize(lh);
         var last_line: [2]?u64 = .{ null, null };
         var last_z: [2]i16 = .{ std.math.minInt(i16), std.math.minInt(i16) };
         for (decos) |dr| {
@@ -350,15 +350,71 @@ pub const Editor = struct {
             if (last_line[k] == line and dr.deco.z <= last_z[k]) continue;
             last_line[k] = line;
             last_z[k] = dr.deco.z;
-            const x = lane + 2 + @as(f32, @floatFromInt(k)) * (d + 3);
+            const x = markX(v, k, d);
             const y = oy + v.lineTop(line) + (lh - d) / 2;
-            const c = decoColor(v, g.style, pc.color(.danger));
-            if (g.icon == deco_store.icon_lightbulb) {
+            paintGlyph(pc, g.icon, .{ .x = x, .y = y, .w = d, .h = d }, decoColor(v, g.style, pc.color(.danger)));
+        }
+    }
+
+    /// The size of a gutter mark for line height `lh`.
+    fn markSize(lh: f32) f32 {
+        return @min(lh * 0.4, 8);
+    }
+
+    /// The left edge of gutter lane `k`'s marks.
+    fn markX(v: *const EditorView, k: u8, d: f32) f32 {
+        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+        return lane + 2 + @as(f32, @floatFromInt(k)) * (d + 3);
+    }
+
+    /// The mark lane under node-local x `x`, if any (the SCM bar and the
+    /// line numbers are not lanes).
+    fn laneAt(v: *const EditorView, x: f32) ?u8 {
+        const d = markSize(v.lineHeight());
+        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+        if (x < lane or x >= v.gutter_w) return null;
+        if (x < markX(v, 0, d) + d + 1.5) return 0;
+        if (x < markX(v, 1, d) + d + 1.5) return 1;
+        return null;
+    }
+
+    /// One gutter mark in `r`: a dot, or the shape its icon names (VS
+    /// Code's breakpoint glyphs and the execution arrow).
+    fn paintGlyph(pc: *PaintCx, icon: u32, r: Rect, c: Color) void {
+        const d = r.w;
+        switch (icon) {
+            deco_store.icon_lightbulb => {
                 // A bulb over its base.
                 const b = d * 0.8;
-                pc.rect(.{ .x = x + (d - b) / 2, .y = y - d * 0.2, .w = b, .h = b }, c, .all(b / 2));
-                pc.rect(.{ .x = x + d * 0.3, .y = y + b * 0.75, .w = d * 0.4, .h = d * 0.35 }, c, .{});
-            } else pc.rect(.{ .x = x, .y = y, .w = d, .h = d }, c, .all(d / 2));
+                pc.rect(.{ .x = r.x + (d - b) / 2, .y = r.y - d * 0.2, .w = b, .h = b }, c, .all(b / 2));
+                pc.rect(.{ .x = r.x + d * 0.3, .y = r.y + b * 0.75, .w = d * 0.4, .h = d * 0.35 }, c, .{});
+            },
+            // Hollow: disabled or unverified.
+            0x25CB => pc.border(r, @max(1, d / 6), c, d / 2),
+            // A ring around a dot: a hit count.
+            0x25CE => {
+                pc.border(r, @max(1, d / 6), c, d / 2);
+                const i = d * 0.4;
+                pc.rect(.{ .x = r.x + (d - i) / 2, .y = r.y + (d - i) / 2, .w = i, .h = i }, c, .all(i / 2));
+            },
+            // A dot with a bar across: a condition.
+            0x229C => {
+                pc.rect(r, c, .all(d / 2));
+                const bh = @max(1, d / 5);
+                pc.rect(.{ .x = r.x + d * 0.2, .y = r.y + (d - bh) / 2, .w = d * 0.6, .h = bh }, pc.color(.bg_base), .{});
+            },
+            // A diamond (a logpoint) and a right-pointing arrow (the
+            // execution pointer), in one-pixel rows.
+            0x25C6, 0x27A4 => {
+                const n: usize = @intFromFloat(@max(1, @round(d)));
+                for (0..n) |i| {
+                    const t = (@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, @floatFromInt(n));
+                    const span = d * (1 - @abs(2 * t - 1));
+                    const x = if (icon == 0x27A4) r.x else r.x + (d - span) / 2;
+                    pc.rect(.{ .x = x, .y = r.y + @as(f32, @floatFromInt(i)), .w = @max(span, 1), .h = 1 }, c, .{});
+                }
+            },
+            else => pc.rect(r, c, .all(d / 2)),
         }
     }
 
@@ -627,6 +683,18 @@ pub const Editor = struct {
                     return true;
                 }
                 if (p.button != .left) return false;
+                if (p.clicks <= 1 and !p.mods.ctrl and !p.mods.super and !p.mods.alt and !p.mods.shift) if (v.gutter_hook) |h| {
+                    const lp = ec.local(p.pos);
+                    if (laneAt(v, lp.x)) |k| {
+                        const t = textPoint(ec, v, p.pos);
+                        const line = v.lineAtY(t.y);
+                        if (t.y >= 0 and t.y < v.lineTop(line) + v.lineHeight() and h.f(h.ctx, v, line, k)) {
+                            ec.focus();
+                            ec.repaint();
+                            return true;
+                        }
+                    }
+                };
                 if (p.clicks <= 1) if (v.pointer_hook) |h| {
                     const lp = ec.local(p.pos);
                     for (v.blockList(), 0..) |b, i| {
@@ -683,7 +751,8 @@ pub const Editor = struct {
                 return true;
             },
             .pointer_move => |p| {
-                ec.setCursor(.text);
+                const on_lane = state.drag == .none and v.gutter_hook != null and laneAt(v, ec.local(p.pos).x) != null;
+                ec.setCursor(if (on_lane) .default else .text);
                 if (state.drag == .none) {
                     if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .move, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods });
                     return false;
