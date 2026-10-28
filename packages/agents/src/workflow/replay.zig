@@ -1,8 +1,10 @@
 //! Resuming workflows (E13.F08.S01.T04), with the replay semantics Claude
-//! Code documents for dynamic workflows. Agents are walked in start order
-//! (`seq`); while every earlier agent was reused, an agent whose key
-//! matches a completed result in the previous journal returns that result
-//! without starting. The first agent that differs (changed prompt, tools,
+//! Code documents for dynamic workflows. Agents are walked in plan order
+//! (their deterministic start order; the engine runs lookups one at a time
+//! in that order while replaying); while every earlier agent was reused,
+//! an agent whose key matches a completed result at the same plan
+//! position in the previous journal returns that result without
+//! starting. The first agent that differs (changed prompt, tools,
 //! model, schema or library text; a different agent in that position; a
 //! failed, stopped or unfinished one) re-runs, and so does every agent
 //! started after it.
@@ -27,11 +29,12 @@ pub const Replayer = struct {
         return .{ .prev = prev, .diverged = prev == null };
     }
 
-    /// The saved result for agent `seq` with `key`, or null when it must
-    /// run (which also makes every later lookup miss).
-    pub fn lookup(r: *Replayer, seq: u32, key: ReplayKey) ?std.json.Value {
+    /// The saved result for the agent at plan position `pos` with `key`,
+    /// or null when it must run (which also makes every later lookup
+    /// miss).
+    pub fn lookup(r: *Replayer, pos: []const u8, key: ReplayKey) ?std.json.Value {
         if (r.diverged) return null;
-        const e = r.prev.?.get(seq) orelse return r.diverge();
+        const e = r.prev.?.atPos(pos) orelse return r.diverge();
         if (!std.mem.eql(u8, &e.key, &key)) return r.diverge();
         const o = e.outcome orelse return r.diverge();
         switch (o) {

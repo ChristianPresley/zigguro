@@ -7,6 +7,7 @@
 //! dirty does no work at all (idle-zero).
 
 const std = @import("std");
+const trace = @import("zg_core").trace;
 const a11y_tree = @import("../a11y/tree.zig");
 const zg_platform = @import("zg_platform");
 const geom = @import("geom.zig");
@@ -623,6 +624,9 @@ pub const Window = struct {
             w.stats.animations = @intCast(w.anim.count());
         }
         if (!w.needs_frame and !w.anyDirtyView()) return w.stats;
+        const zone = trace.zone(@src(), "gui.frame");
+        defer zone.end();
+        trace.frameMark();
         w.needs_frame = false;
         w.frame_no += 1;
         w.app.frame_epoch +%= 1;
@@ -633,6 +637,7 @@ pub const Window = struct {
 
         // BUILD: dirty views, shallowest first; a parent rebuild builds its
         // dirty children inline.
+        const build_zone = trace.zone(@src(), "gui.build");
         w.building = true;
         w.ui.emitted = 0;
         // The root is rebuilt when overlays open or close, which a view's
@@ -658,10 +663,13 @@ pub const Window = struct {
         }
         w.stats.nodes_emitted = w.ui.emitted;
         w.app.flushEffects();
+        build_zone.end();
 
         // LAYOUT.
         const rfl = w.store.flags(w.root);
         if (rfl.subtree_dirty or rfl.layout_dirty) {
+            const layout_zone = trace.zone(@src(), "gui.layout");
+            defer layout_zone.end();
             w.engine.run(w.root, w.size);
             w.stats.layout = w.engine.stats;
             // Views that build from a viewport size see the new one next frame.
@@ -674,6 +682,8 @@ pub const Window = struct {
 
         // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
         if (w.store.paint_pending or w.full_repaint) {
+            const paint_zone = trace.zone(@src(), "gui.paint");
+            defer paint_zone.end();
             w.paintPass();
             w.present();
         }

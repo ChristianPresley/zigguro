@@ -11,6 +11,8 @@ const common = @import("common.zig");
 const merge = @import("merge.zig");
 const pick = @import("pick.zig");
 const stash = @import("stash.zig");
+const rebase = @import("rebase.zig");
+const pull_mod = @import("pull.zig");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -26,6 +28,10 @@ const Op = union(enum) {
     stash_pop: usize,
     stash_drop: usize,
     stash_clear,
+    rebase: struct { upstream: []const u8, opts: rebase.Options = .{} },
+    rebase_continue,
+    rebase_skip,
+    rebase_abort,
 };
 
 const Scenario = struct {
@@ -74,6 +80,17 @@ const scenarios = [_]Scenario{
     .{ .name = "stash: drop from the middle", .setup = diverged ++ " && for i in 1 2 3; do printf \"$i\\n\" >> a.txt; git stash -q; done", .git = "git stash drop -q stash@{1}", .op = .{ .stash_drop = 1 } },
     .{ .name = "stash: drop the last", .setup = diverged ++ " && printf 'x\\n' >> a.txt && git stash -q", .git = "git stash drop -q", .op = .{ .stash_drop = 0 } },
     .{ .name = "stash: clear", .setup = diverged ++ " && printf 'x\\n' >> a.txt && git stash -q && printf 'y\\n' >> a.txt && git stash -q", .git = "git stash clear", .op = .stash_clear },
+    .{ .name = "rebase: replay onto main", .setup = diverged ++ " && git checkout -q feature", .git = "git rebase -q main", .op = .{ .rebase = .{ .upstream = "main" } } },
+    .{ .name = "rebase: --onto", .setup = diverged ++ " && git checkout -q feature && printf 'x\\n' > x.txt && git add x.txt && git commit -qm 'feature three'", .git = "git rebase -q --onto main feature~1", .op = .{ .rebase = .{ .upstream = "feature~1", .opts = .{ .onto = "main" } } } },
+    .{ .name = "rebase: fast-forward", .setup = diverged ++ " && git checkout -qb behind main~1", .git = "git rebase -q main", .op = .{ .rebase = .{ .upstream = "main" } } },
+    .{ .name = "rebase: up to date", .setup = diverged, .git = "git rebase -q main~1", .op = .{ .rebase = .{ .upstream = "main~1" } } },
+    .{ .name = "rebase: drops a commit already upstream", .setup = diverged ++ " && git cherry-pick feature~1 >/dev/null && git checkout -q feature", .git = "git rebase -q main", .op = .{ .rebase = .{ .upstream = "main" } } },
+    .{ .name = "rebase: a merge in the branch is flattened", .setup = diverged ++ " && git checkout -q feature && git checkout -qb side main~1 && printf 's\\n' > s.txt && git add s.txt && git commit -qm side && git checkout -q feature && git merge -q --no-edit side && git checkout -qb up main && printf 'u\\n' > u.txt && git add u.txt && git commit -qm up && git checkout -q feature", .git = "git rebase -q up", .op = .{ .rebase = .{ .upstream = "up" } } },
+    .{ .name = "rebase: stops on a conflict", .setup = conflicting ++ " && sed -i 's/^6$/six/' a.txt && git commit -qam 'main six' && git checkout -q feature && printf 'g\\n' > g.txt && git add g.txt && git commit -qm 'feature g'", .git = "git rebase -q main >/dev/null 2>&1 || true", .op = .{ .rebase = .{ .upstream = "main" } } },
+    .{ .name = "rebase: --continue after git stopped", .setup = conflicting ++ " && git checkout -q feature && printf 'g\\n' > g.txt && git add g.txt && git commit -qm 'feature g' && { git rebase -q main >/dev/null 2>&1 || true; } && printf 'resolved\\n' > a.txt && git add a.txt", .git = "GIT_EDITOR=true git rebase --continue >/dev/null 2>&1", .op = .rebase_continue },
+    .{ .name = "rebase: --skip", .setup = conflicting ++ " && git checkout -q feature && printf 'g\\n' > g.txt && git add g.txt && git commit -qm 'feature g' && { git rebase -q main >/dev/null 2>&1 || true; }", .git = "git rebase --skip >/dev/null 2>&1", .op = .rebase_skip },
+    .{ .name = "rebase: --abort", .setup = conflicting ++ " && git checkout -q feature && { git rebase -q main >/dev/null 2>&1 || true; }", .git = "git rebase --abort", .op = .rebase_abort },
+    .{ .name = "rebase: refused with local changes", .setup = diverged ++ " && git checkout -q feature && printf 'x\\n' >> keep.txt", .git = "git rebase -q main >/dev/null 2>&1 || true", .op = .{ .rebase = .{ .upstream = "main" } }, .fails = error.UncommittedChanges },
 };
 
 /// What both copies are compared on.
@@ -81,8 +98,8 @@ const snapshot =
     "git log --all --format='%H %P %an %cn %s' 2>&1; echo --; " ++
     "git status --porcelain --untracked-files=all; echo --; git ls-files -s; echo --; " ++
     "for f in $(git ls-files | uniq; git ls-files -o --exclude-standard); do echo \"== $f\"; cat \"$f\"; done; echo --; " ++
-    "for s in MERGE_HEAD MERGE_MSG MERGE_MODE CHERRY_PICK_HEAD REVERT_HEAD ORIG_HEAD; do test -f .git/$s && { echo \"== $s\"; cat .git/$s; }; done; echo --; " ++
-    "git stash list --format='%H %gs'; git cat-file -p stash 2>/dev/null; git ls-tree -r stash 2>/dev/null; echo --; git reflog -3 --format='%gs'; git fsck --no-progress --no-dangling 2>&1";
+    "for s in MERGE_HEAD MERGE_MSG MERGE_MODE CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD ORIG_HEAD rebase-merge/head-name rebase-merge/onto rebase-merge/orig-head rebase-merge/done rebase-merge/git-rebase-todo rebase-merge/msgnum rebase-merge/end rebase-merge/stopped-sha rebase-merge/message rebase-merge/author-script; do test -f .git/$s && { echo \"== $s\"; cat .git/$s; }; done; echo --; git symbolic-ref -q HEAD || git rev-parse HEAD; " ++
+    "git stash list --format='%H %gs'; git cat-file -p stash 2>/dev/null; git ls-tree -r stash 2>/dev/null; echo --; git reflog -3 --format='%gs'; b=$(git symbolic-ref -q HEAD) && git reflog show -2 --format='%gs' $b; git fsck --no-progress --no-dangling 2>&1";
 
 fn sh(gpa: Allocator, io: Io, cwd: []const u8, env: *const std.process.Environ.Map, script: []const u8) ![]u8 {
     const r = try std.process.run(gpa, io, .{
@@ -131,6 +148,19 @@ fn runNative(repo: *git.Repository, op: Op) !void {
         },
         .stash_drop => |n| try stash.drop(repo, n),
         .stash_clear => try stash.clear(repo),
+        .rebase => |rb| {
+            var r = try rebase.rebase(repo, rb.upstream, rb.opts);
+            r.deinit();
+        },
+        .rebase_continue => {
+            var r = try rebase.continueRebase(repo, .{});
+            r.deinit();
+        },
+        .rebase_skip => {
+            var r = try rebase.skip(repo, .{});
+            r.deinit();
+        },
+        .rebase_abort => try rebase.abort(repo),
     }
 }
 
@@ -183,6 +213,90 @@ test "gitbridge: merge, cherry-pick, revert and stash match git" {
         const want = try sh(gpa, io, g_dir, &env, snapshot);
         defer gpa.free(want);
         const got = try sh(gpa, io, n_dir, &env, snapshot);
+        defer gpa.free(got);
+        if (!std.mem.eql(u8, want, got)) {
+            std.debug.print("scenario '{s}' differs\n--- git:\n{s}\n--- native:\n{s}\n", .{ sc.name, want, got });
+            failures += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), failures);
+}
+
+const PullScenario = struct {
+    name: []const u8,
+    /// Run in the clone `n` after the server moved on.
+    setup: []const u8,
+    git: []const u8,
+    opts: pull_mod.Options,
+};
+
+const pull_scenarios = [_]PullScenario{
+    .{ .name = "pull: merge", .setup = "printf 'l\\n' > l.txt && git add l.txt && git commit -qm local", .git = "git pull -q --no-rebase", .opts = .{ .mode = .merge, .reflog_action = "pull -q --no-rebase" } },
+    .{ .name = "pull: rebase", .setup = "printf 'l\\n' > l.txt && git add l.txt && git commit -qm local", .git = "git pull -q --rebase", .opts = .{ .mode = .rebase, .reflog_action = "pull -q --rebase" } },
+    .{ .name = "pull: fast-forward only", .setup = "true", .git = "git pull -q --ff-only", .opts = .{ .ff = .only, .reflog_action = "pull -q --ff-only" } },
+    .{ .name = "pull: pull.rebase from the config", .setup = "git config pull.rebase true && printf 'l\\n' > l.txt && git add l.txt && git commit -qm local", .git = "git pull -q", .opts = .{ .reflog_action = "pull -q" } },
+    .{ .name = "pull: merge into a topic branch", .setup = "git checkout -q -b topic --track origin/main && printf 'l\\n' > l.txt && git add l.txt && git commit -qm local", .git = "git pull -q --no-rebase", .opts = .{ .mode = .merge, .reflog_action = "pull -q --no-rebase" } },
+};
+
+fn localConnect(_: ?*anyopaque, repo: *git.Repository, url: []const u8, service: git.remote.transport.Service) anyerror!git.remote.transport.Connection {
+    return (try git.remote.local.Local.connect(repo, url, service)).connection();
+}
+
+test "gitbridge: pull matches git" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("PATH", "/usr/local/bin:/usr/bin:/bin");
+    try env.put("HOME", root);
+    try env.put("LANG", "C");
+    try env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try env.put("GIT_CEILING_DIRECTORIES", root);
+    try env.put("GIT_AUTHOR_NAME", "A");
+    try env.put("GIT_AUTHOR_EMAIL", "a@example.com");
+    try env.put("GIT_COMMITTER_NAME", "C");
+    try env.put("GIT_COMMITTER_EMAIL", "c@example.com");
+    try env.put("GIT_AUTHOR_DATE", "1700000000 +0100");
+    try env.put("GIT_COMMITTER_DATE", "1700000000 +0100");
+    const probe = sh(gpa, io, root, &env, "git --version") catch return error.SkipZigTest;
+    gpa.free(probe);
+
+    const pull_snapshot = snapshot ++ "; echo --; cat .git/FETCH_HEAD; git reflog show -1 --format='%gs' refs/remotes/origin/main";
+    var failures: usize = 0;
+    for (pull_scenarios, 0..) |sc, i| {
+        var name_buf: [32]u8 = undefined;
+        const dir_name = try std.fmt.bufPrint(&name_buf, "p{d}", .{i});
+        const setup = try std.fmt.allocPrint(gpa, "mkdir {s} && cd {s} && mkdir srv && cd srv && {s}true && cd .. && " ++
+            "git clone -q srv n && cd srv && printf 'up\\n' > up.txt && git add up.txt && git commit -qm upstream && cd ../n && {s} && cd .. && cp -a n g", .{ dir_name, dir_name, base, sc.setup });
+        defer gpa.free(setup);
+        gpa.free(try sh(gpa, io, root, &env, setup));
+        const n_dir = try std.fs.path.join(gpa, &.{ root, dir_name, "n" });
+        defer gpa.free(n_dir);
+        const g_dir = try std.fs.path.join(gpa, &.{ root, dir_name, "g" });
+        defer gpa.free(g_dir);
+
+        gpa.free(try sh(gpa, io, g_dir, &env, sc.git));
+        const repo = (try git.Repository.discover(gpa, io, n_dir, .{ .env = &env })).?;
+        var opts = sc.opts;
+        opts.tz_offset_min = 60;
+        if (pull_mod.pull(repo, .{ .connect = localConnect }, opts)) |r| {
+            var res = r;
+            res.deinit();
+        } else |e| {
+            std.debug.print("scenario '{s}': native returned {}\n", .{ sc.name, e });
+            failures += 1;
+            repo.close();
+            continue;
+        }
+        repo.close();
+        const want = try sh(gpa, io, g_dir, &env, pull_snapshot);
+        defer gpa.free(want);
+        const got = try sh(gpa, io, n_dir, &env, pull_snapshot);
         defer gpa.free(got);
         if (!std.mem.eql(u8, want, got)) {
             std.debug.print("scenario '{s}' differs\n--- git:\n{s}\n--- native:\n{s}\n", .{ sc.name, want, got });

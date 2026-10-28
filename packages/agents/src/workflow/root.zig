@@ -10,6 +10,15 @@ pub const parse = @import("parse.zig");
 pub const validate = @import("validate.zig");
 pub const JournalStore = @import("journal.zig");
 pub const replay = @import("replay.zig");
+pub const WorkflowEngine = @import("exec.zig");
+pub const BuiltinRegistry = @import("builtins.zig");
+pub const progress = @import("progress.zig");
+pub const tools = @import("tools.zig");
+pub const HostWorkers = @import("host_workers.zig").HostWorkers;
+pub const step_agent = @import("step_agent.zig");
+pub const step_loop = @import("step_loop.zig");
+/// A scripted worker port for tests and benches.
+pub const fake_workers = @import("fake_workers.zig");
 
 pub const WorkflowDef = def.WorkflowDef;
 pub const NamedStep = def.NamedStep;
@@ -23,6 +32,11 @@ pub const parseDef = parse.parseDef;
 pub const ReplayKey = JournalStore.ReplayKey;
 pub const replayKey = JournalStore.replayKey;
 pub const Replayer = replay.Replayer;
+pub const WorkflowProgress = progress.WorkflowProgress;
+pub const WorkerPort = WorkflowEngine.WorkerPort;
+pub const WorkerRequest = WorkflowEngine.WorkerRequest;
+pub const WorkerEvent = WorkflowEngine.WorkerEvent;
+pub const CommandPort = WorkflowEngine.CommandPort;
 
 test {
     _ = @import("parse_test.zig");
@@ -30,4 +44,6 @@ test {
     _ = @import("interpolate_test.zig");
     _ = @import("journal_test.zig");
     _ = @import("replay_test.zig");
+    _ = @import("exec_test.zig");
+    _ = @import("steps_test.zig");
 }

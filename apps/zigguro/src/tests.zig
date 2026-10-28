@@ -31,6 +31,7 @@ test {
     _ = @import("startup/early_update_check.zig");
     _ = @import("startup/install_kind.zig");
     _ = @import("workbench.zig");
+    _ = @import("tracing.zig");
     _ = @import("codeintel.zig");
     _ = @import("settings/service.zig");
     _ = @import("settings/view.zig");
@@ -38,5 +39,6 @@ test {
     _ = @import("explorer/panel.zig");
     _ = @import("problems_panel.zig");
     _ = @import("notes/service.zig");
+    _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");
 }

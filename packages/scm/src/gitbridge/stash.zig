@@ -92,7 +92,7 @@ pub fn push(repo: *Repository, opts: PushOptions) !Oid {
     for (untracked.items) |p| git.checkout.removeWorktreeFile(repo, p);
     // As the `git reset --hard` stash runs: ORIG_HEAD and a reflog entry.
     try common.writeOrigHead(repo, a, head);
-    try common.moveHead(repo, a, head, head, "reset: moving to HEAD", who);
+    try common.logHead(repo, head, head, "reset: moving to HEAD", who);
     return w;
 }
 
