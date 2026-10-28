@@ -44,6 +44,8 @@ pub const Repository = struct {
     config: Config,
     /// The user's home directory (from the environment), owned.
     home: ?[]u8 = null,
+    /// The environment it was opened with (borrowed).
+    env: ?*const std.process.Environ.Map = null,
 
     /// Opens the repository whose working tree holds `abs_path`; null
     /// when there is none (stopping at `GIT_CEILING_DIRECTORIES`).
@@ -104,6 +106,7 @@ pub const Repository = struct {
             .odb = odb,
             .config = cfg,
             .home = home,
+            .env = opts.env,
         };
         // RefStore keeps a copy of the borrowed dir handle.
         r.refs.git_dir = r.git_dir;
@@ -124,6 +127,10 @@ pub const Repository = struct {
         gpa.free(r.common_dir_path);
         if (r.home) |h| gpa.free(h);
         gpa.destroy(r);
+    }
+
+    pub fn envMap(r: *const Repository) ?*const std.process.Environ.Map {
+        return r.env;
     }
 
     /// Reads the config again (after `git config` edits).
