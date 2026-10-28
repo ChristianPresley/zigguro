@@ -5,9 +5,12 @@
 //! in multi-root workspaces. Results are MCP `CallToolResult` JSON capped
 //! at `max_output` bytes, with `truncated` and a hint when cut.
 //!
-//! `find_files` ranks with a subsequence scorer until the E08.F04
-//! FuzzyEngine lands; `grep` (E08.F05 `searchBlocking`) and `find_symbol`
-//! (the symbol index) come with those engines.
+//! `grep` reads the snapshot's files through `Source.read` and reports
+//! matching lines (one per line, binary files skipped); it scans every
+//! candidate file until the E08.F05 search engine and its trigram
+//! prefilter are wired. `find_files` ranks with a subsequence scorer
+//! until the E08.F04 FuzzyEngine lands; `find_symbol` comes with the
+//! symbol index.
 //!
 //! ```zig
 //! const X = zg_workspace.ai.tools.ToolExporter(zg_ai.tools.adapters.foreign);
@@ -19,6 +22,7 @@ const std = @import("std");
 const path_store = @import("../paths/path_store.zig");
 const globset = @import("zg_ignore");
 const ids = @import("../ids.zig");
+const zg_regex = @import("zg_regex");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -30,6 +34,14 @@ pub const schemas = struct {
     pub const list_dir = @embedFile("schemas/list_dir.json");
     pub const glob = @embedFile("schemas/glob.json");
     pub const find_files = @embedFile("schemas/find_files.json");
+    pub const grep = @embedFile("schemas/grep.json");
+};
+
+/// Reads a file for `grep`: its bytes (in `arena`), or null when it
+/// cannot be read or is larger than the reader allows.
+pub const ReadPort = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, arena: Allocator, root: RootId, rel: []const u8) ?[]const u8,
 };
 
 /// E16 path policy: null allows, else the reason for refusing. Paths are
@@ -45,6 +57,8 @@ pub const Source = struct {
     store: *path_store.PathStore,
     roots: []const Root,
     policy: ?PathPolicy = null,
+    /// File contents for `grep` (null: `grep` is not offered).
+    read: ?ReadPort = null,
     max_output: usize = 32 << 10,
 };
 
@@ -61,12 +75,14 @@ pub fn ToolExporter(comptime Foreign: type) type {
         }
 
         fn list(ctx: *anyopaque, arena: Allocator) anyerror![]const Foreign.ForeignTool {
-            _ = ctx;
-            return arena.dupe(Foreign.ForeignTool, &.{
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const all = [_]Foreign.ForeignTool{
                 .{ .name = "list_dir", .description = "List a workspace folder (up to 3 levels), without ignored files.", .input_schema_json = schemas.list_dir, .read_only = true },
                 .{ .name = "glob", .description = "Workspace files matching a glob such as src/**/*.zig, in path order.", .input_schema_json = schemas.glob, .read_only = true },
                 .{ .name = "find_files", .description = "Fuzzy-find files by name or partial path, best matches first.", .input_schema_json = schemas.find_files, .read_only = true },
-            });
+                .{ .name = "grep", .description = "Search the contents of workspace files (without ignored ones) for a regular expression or text; returns matching lines with their paths and line numbers.", .input_schema_json = schemas.grep, .read_only = true },
+            };
+            return arena.dupe(Foreign.ForeignTool, if (self.src.read != null) &all else all[0..3]);
         }
 
         fn call(ctx: *anyopaque, io: Io, arena: Allocator, tool: []const u8, input_json: []const u8) anyerror!Foreign.Result {
@@ -93,6 +109,8 @@ pub fn run(src: *const Source, arena: Allocator, tool: []const u8, input_json: [
             glob(src, snap, arena, input, &msg)
         else if (std.mem.eql(u8, tool, "find_files"))
             findFiles(src, snap, arena, input, &msg)
+        else if (std.mem.eql(u8, tool, "grep") and src.read != null)
+            grep(src, snap, arena, input, &msg)
         else
             return error.UnknownTool;
         break :blk r catch |e| switch (e) {
@@ -320,4 +338,91 @@ fn isBoundary(prev: u8, cur: u8) bool {
         'a'...'z' => cur >= 'A' and cur <= 'Z',
         else => false,
     };
+}
+
+const Line = struct { path: []const u8, line: u32, text: []const u8 };
+
+/// Longest line text returned (longer lines are cut around the match).
+const max_line_text = 300;
+
+fn grep(src: *const Source, snap: *const Snapshot, arena: Allocator, input: []const u8, msg: *[]const u8) Error![]const u8 {
+    const In = struct { pattern: []const u8, glob: ?[]const u8 = null, literal: bool = false, case_insensitive: bool = false, limit: u32 = 200 };
+    const in = try parse(In, arena, input, msg);
+    if (in.pattern.len == 0) return bad(arena, msg, "`pattern` is empty", .{});
+    const port = src.read.?;
+    var diag: zg_regex.Error = undefined;
+    var re = zg_regex.Regex.compile(arena, in.pattern, .{ .literal = in.literal, .case_insensitive = in.case_insensitive, .multi_line = true, .diag = &diag }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Syntax => return bad(arena, msg, "invalid pattern: {s}", .{zg_regex.errorMessage(diag)}),
+        error.SizeLimitExceeded => return bad(arena, msg, "the pattern is too large", .{}),
+    };
+    var cache = re.newCache(arena) catch return error.OutOfMemory;
+    var gs: ?globset.GlobSet = if (in.glob) |g| globset.GlobSet.compile(arena, g, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return bad(arena, msg, "invalid glob \"{s}\": {t}", .{ g, e }),
+    } else null;
+    const limit = @min(@max(in.limit, 1), 1000);
+    var out: std.ArrayList(Line) = .empty;
+    var more = false;
+    var buf: [4096]u8 = undefined;
+    var scratch: std.heap.ArenaAllocator = .init(arena);
+    roots: for (src.roots) |r| {
+        const top = snap.rootDir(r.id) orelse continue;
+        // Depth-first in name order (results come out in path order).
+        var stack: std.ArrayList(FileId) = .empty;
+        try stack.append(arena, top);
+        while (stack.pop()) |dir| {
+            const kids = snap.children(dir);
+            var i = kids.len;
+            while (i > 0) {
+                i -= 1;
+                const kid = kids[i];
+                const info = snap.info(kid);
+                if (hiddenNode(info, false)) continue;
+                const rel = snap.pathOf(kid, &buf);
+                if (info.isDir()) {
+                    if (gs == null or gs.?.matchesDirPrefix(rel) != .no) try stack.append(arena, kid);
+                    continue;
+                }
+                if (gs) |*g| if (!g.matches(rel)) continue;
+                _ = scratch.reset(.retain_capacity);
+                const bytes = port.read(port.ctx, scratch.allocator(), r.id, rel) orelse continue;
+                if (std.mem.indexOfScalar(u8, bytes[0..@min(bytes.len, 8000)], 0) != null) continue;
+                var path: ?[]const u8 = null;
+                var pos: usize = 0;
+                var line_no: u32 = 1;
+                var counted: usize = 0;
+                while (pos <= bytes.len) {
+                    const m = re.find(&cache, zg_regex.Input.fromSlice(bytes).withSpan(.{ .start = pos, .end = bytes.len })) orelse break;
+                    const ms: usize = @intCast(m.start);
+                    const ls = if (std.mem.lastIndexOfScalar(u8, bytes[0..ms], '\n')) |nl| nl + 1 else 0;
+                    const le = std.mem.indexOfScalarPos(u8, bytes, ms, '\n') orelse bytes.len;
+                    line_no += @intCast(std.mem.count(u8, bytes[counted..ls], "\n"));
+                    counted = ls;
+                    if (path == null) {
+                        path = try display(src, snap, arena, kid);
+                        if (denied(src, path.?) != null) break;
+                    }
+                    if (out.items.len == limit) {
+                        more = true;
+                        break :roots;
+                    }
+                    try out.append(arena, .{ .path = path.?, .line = line_no, .text = try lineText(arena, bytes[ls..le], ms - ls) });
+                    pos = le + 1;
+                }
+            }
+        }
+    }
+    return boundedList(arena, Line, out.items, more, src.max_output, "narrow the pattern or pass `glob`");
+}
+
+/// `line` without its CR, cut to `max_line_text` bytes around `at`.
+fn lineText(arena: Allocator, line_in: []const u8, at: usize) ![]const u8 {
+    const line = std.mem.trimEnd(u8, line_in, "\r");
+    if (line.len <= max_line_text) return arena.dupe(u8, line);
+    var start = at -| max_line_text / 3;
+    while (start > 0 and start < line.len and line[start] & 0xC0 == 0x80) start -= 1;
+    var end = @min(line.len, start + max_line_text);
+    while (end < line.len and line[end] & 0xC0 == 0x80) end -= 1;
+    return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ if (start > 0) "..." else "", line[start..end], if (end < line.len) "..." else "" });
 }
