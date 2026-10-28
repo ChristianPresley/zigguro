@@ -38,6 +38,29 @@ pub const StepProgress = struct {
 
 pub const Gate = struct { step: []const u8, title: []const u8, show: []const u8 };
 
+pub const WorkerState = enum { running, done, failed, stopped };
+
+/// One agent attempt of the workflow (a child run).
+pub const Worker = struct {
+    child: run.RunId,
+    step: []const u8,
+    /// Plan position (`audit#3`).
+    pos: []const u8,
+    /// 0 for the first try.
+    attempt: u8,
+    prompt: []const u8,
+    state: WorkerState = .running,
+    started_ms: i64,
+    ended_ms: ?i64 = null,
+    cost: run.Cost = .{},
+    /// The answer (at most `max_text` bytes) or why the attempt ended.
+    text: []const u8 = "",
+};
+
+/// Answers longer than this are cut in the progress (the full result is
+/// in the step's result and the child's transcript).
+pub const max_text = 16 * 1024;
+
 pub const WorkflowProgress = struct {
     run: run.RunId,
     name: []const u8,
@@ -48,6 +71,11 @@ pub const WorkflowProgress = struct {
     cost: run.Cost,
     gate: ?Gate = null,
     error_: ?[]const u8 = null,
+    /// Every agent attempt, in start order.
+    workers: []const Worker = &.{},
+    started_ms: i64 = 0,
+    /// `limits.max_cost_micros`.
+    budget_micros: ?u64 = null,
     /// Bumped by every change.
     version: u64,
 };
@@ -64,6 +92,11 @@ agents: u32 = 0,
 cost: run.Cost = .{},
 gate: ?Gate = null,
 error_: ?[]const u8 = null,
+workers: std.ArrayList(Worker) = .empty,
+/// Child run → index in `workers`.
+by_child: std.AutoHashMapUnmanaged(u128, u32) = .empty,
+started_ms: i64 = 0,
+budget_micros: ?u64 = null,
 version: u64 = 1,
 
 const Tracker = @This();
@@ -75,7 +108,7 @@ pub fn init(arena: Allocator, io: Io, id: run.RunId, d: *const def.WorkflowDef) 
         try rows.append(arena, row(s, null));
         if (s.parallel) |br| for (br) |*b| try rows.append(arena, row(b, s.id));
     }
-    return .{ .io = io, .arena = arena, .name = d.name, .id = id, .steps = rows.items };
+    return .{ .io = io, .arena = arena, .name = d.name, .id = id, .steps = rows.items, .budget_micros = d.limits.max_cost_micros };
 }
 
 fn row(s: *const def.NamedStep, parent: ?[]const u8) StepProgress {
@@ -160,6 +193,39 @@ pub fn fail(t: *Tracker, id: []const u8, msg: []const u8) void {
     t.version += 1;
 }
 
+/// Records an agent attempt that just started (`prompt` must outlive the
+/// tracker; the engine's arena owns it).
+pub fn workerStarted(t: *Tracker, w: Worker) void {
+    t.mutex.lockUncancelable(t.io);
+    defer t.mutex.unlock(t.io);
+    t.by_child.put(t.arena, w.child.toInt(), @intCast(t.workers.items.len)) catch return;
+    t.workers.append(t.arena, w) catch {
+        _ = t.by_child.remove(w.child.toInt());
+        return;
+    };
+    t.version += 1;
+}
+
+pub fn workerEnded(t: *Tracker, child: run.RunId, state: WorkerState, text: []const u8, now_ms: i64) void {
+    t.mutex.lockUncancelable(t.io);
+    defer t.mutex.unlock(t.io);
+    const i = t.by_child.get(child.toInt()) orelse return;
+    const w = &t.workers.items[i];
+    w.state = state;
+    w.ended_ms = now_ms;
+    w.text = t.arena.dupe(u8, text[0..@min(text.len, max_text)]) catch "";
+    t.version += 1;
+}
+
+/// The child's cumulative cost.
+pub fn workerCost(t: *Tracker, child: run.RunId, c: run.Cost) void {
+    t.mutex.lockUncancelable(t.io);
+    defer t.mutex.unlock(t.io);
+    const i = t.by_child.get(child.toInt()) orelse return;
+    t.workers.items[i].cost = c;
+    t.version += 1;
+}
+
 pub fn setCost(t: *Tracker, c: run.Cost) void {
     t.mutex.lockUncancelable(t.io);
     defer t.mutex.unlock(t.io);
@@ -196,6 +262,9 @@ pub fn snapshot(t: *Tracker, arena: Allocator) Allocator.Error!WorkflowProgress 
         .cost = t.cost,
         .gate = t.gate,
         .error_ = t.error_,
+        .workers = try arena.dupe(Worker, t.workers.items),
+        .started_ms = t.started_ms,
+        .budget_micros = t.budget_micros,
         .version = t.version,
     };
 }

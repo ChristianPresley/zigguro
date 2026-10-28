@@ -193,6 +193,21 @@ asked on the terminal; `--approve` answers yes, and without a terminal or
 another terminal). `save` copies a run's definition to
 `.zigguro/workflows/NAME.zon`.
 
+### The progress view
+
+`zg_agents_ui.WorkflowView` shows a run: a header (status, elapsed,
+agents done of started, cost, tokens, budget bar, Pause/Stop/Resume/Save
+as workflow), the steps grouped in collapsible phases with a
+done/failed/running/queued bar each, and the waiting gate's approval card.
+Enter on a step lists its agents (`f` cycles all/running/failed/done);
+Space shows an agent's prompt, last activity, result (indented JSON) or
+error, attempts and cost; `x` stops and `r` restarts a running agent;
+Enter opens its transcript. Plans with parallel or vote steps get a
+mini-map coloured by step state. Every action is a palette command
+`workflow.*` (`zg_agents.workflow.vm.actions`); stop, resume, status and
+save are also `zg workflow` subcommands. The engine records every agent
+attempt in the progress (`WorkflowProgress.workers`) for the view.
+
 Agents can use four tools: `workflow_list`, `workflow_run{name, args}`,
 `workflow_status{run}` and `workflow_create{name, zon}` (validated, then
 proposed for review).

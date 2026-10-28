@@ -226,6 +226,7 @@ pub fn start(e: *WorkflowEngine, d: *const def.WorkflowDef, args: Value, opts: S
     }
     x.id = id;
     x.tracker.id = id;
+    x.tracker.started_ms = e.nowMs();
     try x.openJournal(opts);
     {
         e.mutex.lockUncancelable(e.io);
@@ -293,6 +294,17 @@ pub fn restartAgent(e: *WorkflowEngine, id: RunId, child: RunId) Error!void {
         break :blk p;
     };
     e.svc.workers.stop(e.svc.workers.ctx, p.child);
+}
+
+/// Stops child `child`; its agent fails ("the agent was stopped").
+pub fn stopAgent(e: *WorkflowEngine, id: RunId, child: RunId) Error!void {
+    _ = e.find(id) orelse return error.UnknownRun;
+    {
+        e.mutex.lockUncancelable(e.io);
+        defer e.mutex.unlock(e.io);
+        if (!e.children.contains(child.toInt())) return error.UnknownChild;
+    }
+    e.svc.workers.stop(e.svc.workers.ctx, child);
 }
 
 /// Answers the gate run `id` waits at.
@@ -702,6 +714,7 @@ pub const Pending = struct {
                     p.cost = c;
                     break :blk d;
                 };
+                x.tracker.workerCost(p.child, c);
                 x.addCost(delta);
             },
             .lane => |l| x.addLane(.{ .step = p.step, .pos = p.pos, .child = p.child, .lane = x.allocator().dupe(u8, l) catch return }),

@@ -16,6 +16,9 @@ pub const automations_view = @import("automations_view.zig");
 /// The task board.
 pub const board = @import("board/board_view.zig");
 
+/// The workflow progress view.
+pub const workflow_view = @import("workflow_view.zig");
+
 /// The prompt library picker.
 pub const library_view = @import("library_view.zig");
 
@@ -52,6 +55,7 @@ pub const AutomationsView = automations_view.AutomationsView;
 pub const ToastBridge = toast_bridge.ToastBridge;
 pub const ArtifactPane = artifact_pane.ArtifactPane;
 pub const LibraryPicker = library_view.LibraryPicker;
+pub const WorkflowView = workflow_view.WorkflowView;
 pub const missionControl = mission_control.missionControl;
 
 test {
@@ -67,6 +71,7 @@ test {
     _ = @import("chart_view_test.zig");
     _ = @import("diagram_view_test.zig");
     _ = @import("library_view_test.zig");
+    _ = @import("workflow_view_test.zig");
     _ = data;
     std.testing.refAllDecls(doc_mode);
 }
