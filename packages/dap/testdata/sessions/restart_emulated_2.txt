@@ -1,0 +1,11 @@
+# Second run: launched again with the restart data as __restart.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app", "__restart": {"token": 42}}
+< {}
+< event initialized
+> configurationDone
+< {}
+< event terminated
+> disconnect
+< {}
