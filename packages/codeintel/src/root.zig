@@ -63,6 +63,7 @@ pub const features = struct {
     pub const LinkedEditingService = @import("features/linked_editing.zig");
     pub const HierarchyService = @import("features/hierarchy.zig");
     pub const raw_json = @import("features/raw_json.zig");
+    pub const VirtualDocs = @import("features/virtual_docs.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -117,4 +118,5 @@ test {
     _ = @import("features/linked_editing_test.zig");
     _ = @import("features/hierarchy_test.zig");
     _ = @import("features/raw_json.zig");
+    _ = @import("features/virtual_docs_test.zig");
 }

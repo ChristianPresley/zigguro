@@ -99,8 +99,10 @@ pub const null_host: ClientHost = .{
     }.f,
 };
 
-/// A feature whose results the server asked the client to refetch.
-pub const RefreshFeature = enum { semantic_tokens, inlay_hint, inline_value, diagnostic, code_lens, folding_range };
+/// A feature whose results the server asked the client to refetch (the
+/// `workspace/*/refresh` requests). `text_document_content` carries no
+/// URI here: listeners fetch every virtual document of that server.
+pub const RefreshFeature = enum { semantic_tokens, inlay_hint, inline_value, diagnostic, code_lens, folding_range, text_document_content };
 
 pub const RefreshEvent = struct { server: ServerId, feature: RefreshFeature };
 

@@ -85,6 +85,7 @@ const OutlineProvider = zg_codeintel.features.OutlineProvider;
 const WorkspaceSymbols = zg_codeintel.features.WorkspaceSymbols;
 const LinkedEditingService = zg_codeintel.features.LinkedEditingService;
 pub const HierarchyService = zg_codeintel.features.HierarchyService;
+const VirtualDocs = zg_codeintel.features.VirtualDocs;
 pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
 pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
@@ -189,6 +190,8 @@ pub const CodeIntel = struct {
     linked_owner: zg_editor.model.decorations.store.OwnerId = undefined,
     /// Call and type hierarchies (the Hierarchy panel's tree).
     hierarchy: HierarchyService = undefined,
+    /// Read-only documents for servers' non-file locations.
+    virtual: VirtualDocs = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -292,6 +295,7 @@ pub const CodeIntel = struct {
         try ci.inline_info.init(gpa, &ci.mgr, ci.waker(), style.inlay);
         ci.linked = .init(&ci.mgr, ci.waker(), .{});
         ci.hierarchy = .init(&ci.mgr, ci.waker());
+        try ci.virtual.init(&ci.mgr, ci.waker());
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -323,6 +327,7 @@ pub const CodeIntel = struct {
         ci.inline_info.deinitServices();
         ci.linked.deinit();
         ci.hierarchy.deinit();
+        ci.virtual.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -1200,6 +1205,7 @@ pub const CodeIntel = struct {
         _ = ci.ws_symbols.tick(now_ms);
         // The Hierarchy panel follows the service when it builds.
         if (ci.hierarchy.tick()) changed = true;
+        if (ci.virtual.tick()) changed = true;
         ci.pickers.win = ci.win;
         ci.pickers.tick(now_ms);
         if (ci.format.tick()) {
