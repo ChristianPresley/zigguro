@@ -1,0 +1,12 @@
+# Function breakpoints when the adapter has them.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsFunctionBreakpoints": true}}
+> launch
+< event initialized
+> setFunctionBreakpoints {"breakpoints": [{"name": "main"}]}
+< {"body": {"breakpoints": [{"id": 4, "verified": true}]}}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> disconnect
+< {}
