@@ -1,0 +1,17 @@
+# The adapter restarts itself: `restart` with the launch arguments, then
+# the configuration again after the new initialized.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsRestartRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> restart {"arguments": {"program": "/w/app"}}
+< {}
+< event initialized
+> configurationDone
+< {}
+< event terminated
+> disconnect
+< {}
