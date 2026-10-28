@@ -124,7 +124,8 @@ pub const Editor = struct {
     pub fn paintHash(props: *const Props) u64 {
         const scm: u64 = if (props.view.scm) |s| s.version() else 0;
         const blocks: u64 = if (props.view.decorations) |d| d.inline_generation else 0;
-        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f) ^ (blocks *% 0x1656_67b1_9e37_79f9);
+        const decos: u64 = if (props.view.decorations) |d| d.generation else 0;
+        return @intFromPtr(props.view) ^ (props.view.generation *% 0x9e37_79b9_7f4a_7c15) ^ (scm *% 0xc2b2_ae3d_27d4_eb4f) ^ (blocks *% 0x1656_67b1_9e37_79f9) ^ (decos *% 0x27d4_eb2f_1656_67c5);
     }
 
     /// Takes whatever room the parent offers (80x24 cells otherwise).
@@ -190,6 +191,8 @@ pub const Editor = struct {
             mask.insert(.highlight);
             mask.insert(.underline);
             mask.insert(.strike);
+            mask.insert(.text_style);
+            mask.insert(.gutter);
             ds.query(span, mask, pc.gpa, &state.decos) catch {};
         }
 
@@ -245,17 +248,17 @@ pub const Editor = struct {
             // Text, in syntax-coloured runs.
             drawRow(pc, v, row_text, rowTokens(state, v, line), palette, fg, .{ .x = o.x, .y = y + base }, ins, lr.start);
             drawInlays(pc, v, rx, fg, .{ .x = o.x, .y = y + base });
-            // Underlines and strikes.
+            // Faded text, underlines and strikes.
             for (state.decos.items) |d| {
-                const c: Color, const yy: f32 = switch (d.deco.kind) {
-                    .underline => |u| .{ decoColor(v, u.style, ul_default), y + lh - 2 },
-                    .strike => .{ fg, y + lh / 2 },
-                    else => continue,
-                };
-                if (rowSpan(lr, d.range)) |sp| {
-                    const x0 = rx.at(sp[0]);
-                    const x1 = rx.at(sp[1]);
-                    pc.rect(.{ .x = o.x + x0, .y = yy, .w = @max(x1 - x0, 2), .h = 1 }, c, .{});
+                const sp = rowSpan(lr, d.range) orelse continue;
+                const x0 = o.x + rx.at(sp[0]);
+                const w = @max(rx.at(sp[1]) - rx.at(sp[0]), 2);
+                switch (d.deco.kind) {
+                    // A wash of the background over the text.
+                    .text_style => |ts| pc.rect(.{ .x = x0, .y = y, .w = w, .h = lh }, decoColor(v, ts, bg.fade(0.45)), .{}),
+                    .underline => |u| underline(pc, u.kind, decoColor(v, u.style, ul_default), x0, w, y + lh - 3),
+                    .strike => pc.rect(.{ .x = x0, .y = y + lh / 2, .w = w, .h = 1 }, fg, .{}),
+                    else => {},
                 }
             }
             // Carets.
@@ -297,7 +300,77 @@ pub const Editor = struct {
             }
         }
         if (v.scm) |*src| paintScm(pc, v, src, vis, o.y, lh);
+        paintGutterMarks(pc, v, state.decos.items, o.y, lh);
+        if (v.decorations) |ds| paintOverview(pc, v, ds, state, r);
         pc.focusRing(r, 0);
+    }
+
+    /// Width of the overview ruler at the editor's right edge.
+    const overview_w: f32 = 4;
+
+    /// An underline of `kind` from `x` over `w` pixels, its top at `y`.
+    fn underline(pc: *PaintCx, kind: @FieldType(deco_store.UnderlineStyle, "kind"), c: Color, x: f32, w: f32, y: f32) void {
+        switch (kind) {
+            .straight => pc.rect(.{ .x = x, .y = y + 1, .w = w, .h = 1 }, c, .{}),
+            .double => {
+                pc.rect(.{ .x = x, .y = y, .w = w, .h = 1 }, c, .{});
+                pc.rect(.{ .x = x, .y = y + 2, .w = w, .h = 1 }, c, .{});
+            },
+            .dotted => {
+                var dx: f32 = 0;
+                while (dx < w) : (dx += 3) pc.rect(.{ .x = x + dx, .y = y + 1, .w = @min(1.5, w - dx), .h = 1.5 }, c, .{});
+            },
+            // A zigzag: 2-pixel steps up and down.
+            .squiggle => {
+                var dx: f32 = 0;
+                var up = false;
+                while (dx < w) : (dx += 2) {
+                    pc.rect(.{ .x = x + dx, .y = if (up) y else y + 1.5, .w = @min(2, w - dx), .h = 1.5 }, c, .{});
+                    up = !up;
+                }
+            },
+        }
+    }
+
+    /// Gutter marks (diagnostic severities, breakpoints): a dot per line
+    /// at the gutter's left, the highest `z` mark winning.
+    fn paintGutterMarks(pc: *PaintCx, v: *EditorView, decos: []const deco_store.DecoRef, oy: f32, lh: f32) void {
+        const lane: f32 = if (v.scm != null) scm_lane_w else 0;
+        const d = @min(lh * 0.4, 8);
+        var last_line: ?u64 = null;
+        var last_z: i16 = std.math.minInt(i16);
+        for (decos) |dr| {
+            const g = switch (dr.deco.kind) {
+                .gutter => |g| g,
+                else => continue,
+            };
+            const line = v.lineOf(dr.range.start);
+            if (last_line == line and dr.deco.z <= last_z) continue;
+            last_line = line;
+            last_z = dr.deco.z;
+            const y = oy + v.lineTop(line) + (lh - d) / 2;
+            pc.rect(.{ .x = lane + 2, .y = y, .w = d, .h = d }, decoColor(v, g.style, pc.color(.danger)), .all(d / 2));
+        }
+    }
+
+    /// The overview ruler: a mark per decoration at its line's place in
+    /// the whole document, over the editor's right edge.
+    fn paintOverview(pc: *PaintCx, v: *EditorView, ds: *const deco_store.DecorationStore, state: *State, r: Rect) void {
+        var mask: deco_store.KindMask = .initEmpty();
+        mask.insert(.overview);
+        state.decos.clearRetainingCapacity();
+        ds.query(.{ .start = 0, .end = v.doc.len() }, mask, pc.gpa, &state.decos) catch return;
+        if (state.decos.items.len == 0) return;
+        const n: f32 = @floatFromInt(@max(v.lineCount(), 1));
+        for (state.decos.items) |dr| {
+            const ov = switch (dr.deco.kind) {
+                .overview => |ov| ov,
+                else => continue,
+            };
+            const line: f32 = @floatFromInt(v.lineOf(dr.range.start));
+            const y = @floor(line / n * (r.h - 2));
+            pc.rect(.{ .x = r.w - overview_w, .y = y, .w = overview_w, .h = 2 }, decoColor(v, ov.style, pc.color(.danger)), .{});
+        }
     }
 
     /// The SCM bar: added lines solid, modified lines striped, deletions
