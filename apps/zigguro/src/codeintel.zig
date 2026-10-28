@@ -20,6 +20,19 @@
 //! references; Ctrl+click asks for the definition. The answers go to
 //! `nav_hook` (the workbench jumps or offers a list).
 //!
+//! Completion and signature help (E07.F03.S01): typing an identifier
+//! character in code, or a server's trigger character, asks for
+//! completions (Ctrl+Space asks anywhere); the list (`CompletionPopup`)
+//! opens under the word and follows the typing. Up/Down/PageUp/PageDown/
+//! Home/End select, Enter or Tab accepts (Shift+Enter replaces the word
+//! after the caret too), a commit character accepts and is typed, Escape
+//! or Left/Right close, Ctrl+Space shows or hides the docs. While the
+//! list is open the AI ghost text steps aside (`popup_hook`). Snippet
+//! items start a snippet session: Tab and Shift+Tab move between its
+//! stops, Escape ends it. Signature help opens above the caret on the
+//! servers' trigger characters (Ctrl+Shift+Space asks), follows edits,
+//! cycles with Up/Down and closes on Escape or when the caret leaves.
+//!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
 //! attached when `setTrusted(true)` comes.
@@ -52,7 +65,12 @@ const diagnostics = zg_codeintel.diagnostics;
 const HoverService = zg_codeintel.features.HoverService;
 const HighlightService = zg_codeintel.features.HighlightService;
 pub const NavService = zg_codeintel.features.NavService;
+const CompletionService = zg_codeintel.features.CompletionService;
+const SignatureService = zg_codeintel.features.SignatureService;
+const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
+const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
+const SignaturePopup = @import("signature_popup.zig").SignaturePopup;
 const PointerEvent = zg_editor.view.editor_view.PointerEvent;
 const Vec2 = zg_gui.core.Vec2;
 const Rect = zg_gui.core.Rect;
@@ -100,6 +118,25 @@ pub const CodeIntel = struct {
     /// A navigation request waits for its answers.
     nav_waiting: bool = false,
     nav_hook: ?NavHook = null,
+    completion: CompletionService = undefined,
+    signature: SignatureService = undefined,
+    snippets: SnippetStack,
+    cpopup: CompletionPopup,
+    spopup: SignaturePopup,
+    /// The editor completion and signature help are for, and its text
+    /// origin in the window (from its last key or typing).
+    comp_view: ?*EditorView = null,
+    comp_origin: Vec2 = .{},
+    comp_seen: u64 = 0,
+    sig_seen: u64 = 0,
+    /// The list was showing (for `popup_hook`).
+    comp_shown: bool = false,
+    /// The caret and version last seen, so `frame` follows edits and
+    /// moves that were not typing.
+    last_caret: ?struct { view: *EditorView, head: u64, version: u64 } = null,
+    /// Told when the completion list opens or closes over an editor (the
+    /// workbench hides the AI ghost text meanwhile).
+    popup_hook: ?PopupHook = null,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -111,6 +148,11 @@ pub const CodeIntel = struct {
     pub const NavHook = struct {
         ctx: *anyopaque,
         done: *const fn (ctx: *anyopaque, r: NavService.Results) void,
+    };
+
+    pub const PopupHook = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, view: *EditorView, open: bool) void,
     };
 
     const File = struct {
@@ -144,7 +186,11 @@ pub const CodeIntel = struct {
             .names = .init(gpa),
             .diags = try .init(gpa, rt.io, docs.style),
             .popup = .init(gpa),
+            .snippets = .init(gpa),
+            .cpopup = .init(gpa),
+            .spopup = .init(gpa),
         };
+        ci.cpopup.on_pick = .{ .ctx = ci, .f = onPick };
         errdefer ci.diags.deinit();
         errdefer ci.reg.deinit();
         ci.mgr.init(rt, &ci.reg, docs, .{
@@ -162,6 +208,8 @@ pub const CodeIntel = struct {
         ci.hover = .init(&ci.mgr, &ci.diags, ci.waker());
         ci.highlight = .init(&ci.mgr, ci.waker(), .{});
         ci.nav.init(&ci.mgr, ci.waker());
+        ci.completion = .init(&ci.mgr, ci.waker(), .{});
+        ci.signature = .init(&ci.mgr, ci.waker());
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -176,7 +224,12 @@ pub const CodeIntel = struct {
         }
         ci.clearHighlights();
         ci.popup.deinit();
+        ci.cpopup.release();
+        ci.spopup.release();
+        ci.snippets.deinit();
         ci.mgr.deinit();
+        ci.completion.deinit();
+        ci.signature.deinit();
         ci.hover.deinit();
         ci.highlight.deinit();
         ci.nav.deinit();
@@ -307,6 +360,15 @@ pub const CodeIntel = struct {
             ci.unhook(f.view);
             if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
+            if (ci.comp_view == f.view) {
+                ci.closeCompletion();
+                ci.closeSignature();
+                ci.comp_view = null;
+            }
+            if (ci.snippets.top()) |t| if (t.view == f.view) ci.snippets.endAll();
+            if (ci.last_caret) |lc| if (lc.view == f.view) {
+                ci.last_caret = null;
+            };
             if (ci.rest) |r| if (r.view == f.view) {
                 ci.rest = null;
             };
@@ -335,6 +397,7 @@ pub const CodeIntel = struct {
         }
         const sel = view.primarySel();
         ci.highlight.onCursor(if (ci.fileOf(current)) |f| if (f.view == view and sel.anchor == sel.head) f.h else null else null, sel.head);
+        ci.followCaret(current, view);
         // A shown hover goes with an edit, and a keyboard hover when the
         // caret leaves its word.
         if (ci.hover.current()) |r| {
@@ -386,9 +449,16 @@ pub const CodeIntel = struct {
                 _ = ci.goTo(.definition, f.h, off, false) catch return false;
                 return true;
             },
+            .text => return ci.onText(f, e.text),
+            .typed => {
+                ci.comp_origin = e.origin;
+                ci.afterTyped(f, e.text);
+            },
             .key => {
                 const k = e.key orelse return false;
                 if (isModifier(k.key)) return false;
+                ci.comp_origin = e.origin;
+                if (ci.completionKey(f, k)) return true;
                 const showing = ci.popup.isOpen() or ci.hover.pending != null or ci.rest != null;
                 if (!showing) return false;
                 ci.hideHover();
@@ -403,6 +473,235 @@ pub const CodeIntel = struct {
             .shift_left, .shift_right, .control_left, .control_right, .alt_left, .alt_right, .meta_left, .meta_right => true,
             else => false,
         };
+    }
+
+    /// Keys for the completion list, signature help and snippet
+    /// sessions; true when taken.
+    fn completionKey(ci: *CodeIntel, f: *File, k: zg_gui.input.event.KeyPress) bool {
+        const ctrl = k.mods.ctrl or k.mods.super;
+        const plain = !ctrl and !k.mods.alt;
+        if (ci.completionOpen(f.view)) {
+            const ses = ci.completion.active().?;
+            const n: u32 = @intCast(ses.list().len);
+            const sel = ses.selected orelse 0;
+            const page: u32 = @import("completion_popup.zig").max_rows - 1;
+            const to: ?u32 = if (!plain or k.mods.shift) null else switch (k.key) {
+                .arrow_down => (sel + 1) % n,
+                .arrow_up => (sel + n - 1) % n,
+                .page_down => @min(n - 1, sel + page),
+                .page_up => sel -| page,
+                .home => 0,
+                .end => n - 1,
+                else => null,
+            };
+            if (to) |t| {
+                ci.completion.select(t);
+                ci.tick();
+                return true;
+            }
+            switch (k.key) {
+                .enter, .numpad_enter => if (plain) {
+                    ci.acceptCompletion(f, sel, if (k.mods.shift) .replace else .insert, null);
+                    return true;
+                },
+                .tab => if (plain and !k.mods.shift) {
+                    ci.acceptCompletion(f, sel, .insert, null);
+                    return true;
+                },
+                .escape => {
+                    ci.closeCompletion();
+                    return true;
+                },
+                .arrow_left, .arrow_right => ci.closeCompletion(),
+                .space => if (ctrl and !k.mods.shift) {
+                    ci.cpopup.toggleDocs();
+                    return true;
+                },
+                else => {},
+            }
+            return false;
+        }
+        if (k.key == .space and ctrl and !k.mods.alt) {
+            if (!ci.trusted or !f.attached) return false;
+            const head = f.view.primarySel().head;
+            ci.comp_view = f.view;
+            if (k.mods.shift) {
+                ci.signature.invoke(f.h, head) catch {};
+            } else {
+                _ = ci.completion.start(f.h, head, .invoked) catch false;
+            }
+            ci.rememberCaret(f);
+            ci.tick();
+            return true;
+        }
+        if (ci.signature.current()) |st| if (ci.comp_view == f.view) {
+            if (plain and !k.mods.shift and st.signatures.len > 1 and (k.key == .arrow_up or k.key == .arrow_down)) {
+                _ = ci.signature.cycle(k.key == .arrow_down);
+                ci.tick();
+                return true;
+            }
+            if (k.key == .escape) {
+                ci.closeSignature();
+                return true;
+            }
+        };
+        if (ci.snippets.top()) |t| if (t.view == f.view) {
+            if (k.key == .tab and !ctrl and !k.mods.alt) {
+                const ok = (if (k.mods.shift) ci.snippets.prev() else ci.snippets.next()) catch false;
+                ci.rememberCaret(f);
+                return ok;
+            }
+            if (k.key == .escape and plain) return ci.snippets.escape();
+        };
+        return false;
+    }
+
+    fn completionOpen(ci: *const CodeIntel, v: *EditorView) bool {
+        const ses = ci.completion.active() orelse return false;
+        return ci.comp_view == v and ses.list().len > 0;
+    }
+
+    /// Text about to be typed: a commit character accepts the selected
+    /// item first (and is typed by the accept).
+    fn onText(ci: *CodeIntel, f: *File, t: []const u8) bool {
+        if (!ci.completionOpen(f.view)) return false;
+        const ses = ci.completion.active().?;
+        const sel = ses.selected orelse return false;
+        if (!ci.completion.isCommit(sel, t)) return false;
+        ci.acceptCompletion(f, sel, .insert, t);
+        return true;
+    }
+
+    /// Text was typed into `f`: follow or start completion and
+    /// signature help.
+    fn afterTyped(ci: *CodeIntel, f: *File, t: []const u8) void {
+        if (!ci.trusted or !f.attached or t.len == 0) return;
+        const head = f.view.primarySel().head;
+        var cp: u21 = t[t.len - 1];
+        if (std.unicode.Utf8View.init(t)) |uv| {
+            var it = uv.iterator();
+            while (it.nextCodepoint()) |c| cp = c;
+        } else |_| {}
+        ci.comp_view = f.view;
+        var is_open = ci.completion.active() != null;
+        if (is_open) {
+            const act = ci.completion.update(f.h, head) catch .close;
+            is_open = act != .close;
+        }
+        if (!is_open) if (ci.completion.shouldTrigger(f.h, cp, ci.tokenClass(f, head))) |trig| {
+            _ = ci.completion.start(f.h, head, trig) catch false;
+        };
+        ci.signature.onType(f.h, cp, head) catch {};
+        ci.rememberCaret(f);
+        ci.tick();
+    }
+
+    fn tokenClass(_: *CodeIntel, f: *File, head: u64) CompletionService.TokenClass {
+        if (head == 0) return .code;
+        var q: zg_editor.model.syntax.SyntaxTokens = .{ .ds = f.syntax, .tree = &f.doc.tree };
+        return switch (q.query().kindAt(head - 1)) {
+            .comment => .comment,
+            .string, .char, .regex => .string,
+            .code => .code,
+        };
+    }
+
+    fn rememberCaret(ci: *CodeIntel, f: *File) void {
+        ci.last_caret = .{ .view = f.view, .head = f.view.primarySel().head, .version = f.doc.version };
+    }
+
+    /// Per frame: edits and caret moves that were not typing (deleting,
+    /// arrows, clicks) refilter or close the list and the help.
+    fn followCaret(ci: *CodeIntel, current: ?DocHandle, view: *EditorView) void {
+        const f = ci.fileOf(current) orelse return;
+        if (f.view != view) return;
+        const head = view.primarySel().head;
+        const lc = ci.last_caret;
+        ci.rememberCaret(f);
+        const same_view = lc != null and lc.?.view == view;
+        if (same_view and lc.?.head == head and lc.?.version == f.doc.version) return;
+        ci.snippets.cursorMoved();
+        if (ci.comp_view != view) return;
+        const edited = same_view and lc.?.version != f.doc.version;
+        if (ci.completion.active() != null) _ = ci.completion.update(f.h, head) catch ci.completion.close();
+        if (edited) ci.signature.onEdit(f.h, head) catch {} else ci.signature.cursorMoved(f.h, head);
+    }
+
+    fn acceptCompletion(ci: *CodeIntel, f: *File, pos: u32, mode: CompletionService.AcceptMode, commit: ?[]const u8) void {
+        var vars: zg_codeintel.snippet.variables.Context = .{
+            .io = ci.mgr.rt.io,
+            .file_path = ci.docs.name(f.h),
+            .workspace_folder = ci.cwd,
+        };
+        _ = ci.completion.accept(f.view, pos, mode, commit, &ci.snippets, vars.resolver()) catch |e| log.debug("completion accept: {t}", .{e});
+        if (commit) |c| ci.afterTyped(f, c) else {
+            ci.rememberCaret(f);
+            ci.tick();
+        }
+        if (ci.win) |w| w.markAllDirty();
+    }
+
+    /// A row of the list was clicked.
+    fn onPick(ctx: *anyopaque, pos: u32) void {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const v = ci.comp_view orelse return;
+        const f = ci.fileOfView(v) orelse return;
+        ci.acceptCompletion(f, pos, .insert, null);
+    }
+
+    pub fn closeCompletion(ci: *CodeIntel) void {
+        ci.completion.close();
+        ci.showCompletion();
+    }
+
+    pub fn closeSignature(ci: *CodeIntel) void {
+        ci.signature.close();
+        ci.sig_seen = ci.signature.generation;
+        ci.spopup.hide();
+    }
+
+    /// Whether the completion list shows (the AI ghost text waits).
+    pub fn completionVisible(ci: *const CodeIntel) bool {
+        return ci.comp_shown;
+    }
+
+    /// Opens, moves or closes the list after the engine changed.
+    fn showCompletion(ci: *CodeIntel) void {
+        ci.comp_seen = ci.completion.generation;
+        ci.cpopup.win = ci.win;
+        const v = ci.comp_view;
+        const shown = blk: {
+            const ses = ci.completion.active() orelse break :blk false;
+            const view = v orelse break :blk false;
+            if (ses.list().len == 0) break :blk false;
+            if (ci.fileOf(ses.h)) |f| {
+                if (f.view != view) break :blk false;
+                ci.cpopup.lang = zg_codeintel.language.lspId(f.syntax.lang);
+            }
+            const p0 = view.posOf(ses.start);
+            const rect: Rect = .{ .x = ci.comp_origin.x + p0.x, .y = ci.comp_origin.y + p0.y, .w = 1, .h = view.lineHeight() };
+            ci.cpopup.editor_w = view.viewport.w;
+            ci.cpopup.show(.{ .items = ses.items.items, .ranked = ses.list(), .ranker = &ses.ranker, .selected = ses.selected }, rect) catch |e| {
+                log.warn("completion popup: {t}", .{e});
+                break :blk false;
+            };
+            break :blk true;
+        };
+        if (!shown) ci.cpopup.hide();
+        if (shown != ci.comp_shown) {
+            ci.comp_shown = shown;
+            if (v) |view| if (ci.popup_hook) |hk| hk.f(hk.ctx, view, shown);
+        }
+    }
+
+    fn showSignature(ci: *CodeIntel) void {
+        ci.sig_seen = ci.signature.generation;
+        ci.spopup.win = ci.win;
+        const st = ci.signature.current() orelse return ci.spopup.hide();
+        const view = ci.comp_view orelse return ci.spopup.hide();
+        const p0 = view.posOf(view.primarySel().head);
+        const rect: Rect = .{ .x = ci.comp_origin.x + p0.x, .y = ci.comp_origin.y + p0.y, .w = 1, .h = view.lineHeight() };
+        ci.spopup.show(st, rect) catch |e| log.warn("signature popup: {t}", .{e});
     }
 
     /// The pointer moved over `f`'s text.
@@ -528,6 +827,8 @@ pub const CodeIntel = struct {
             ci.applyHighlights();
             changed = true;
         }
+        if (ci.completion.tick() or ci.completion.generation != ci.comp_seen) ci.showCompletion();
+        if (ci.signature.tick() or ci.signature.generation != ci.sig_seen) ci.showSignature();
         if (ci.nav.tick() and ci.nav_waiting) if (ci.nav.results()) |r| if (r.complete) {
             ci.nav_waiting = false;
             if (ci.nav_hook) |hk| hk.done(hk.ctx, r);
@@ -541,7 +842,7 @@ pub const CodeIntel = struct {
         // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         var wait: ?u64 = null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue() }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue() }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };

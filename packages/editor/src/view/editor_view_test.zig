@@ -138,7 +138,7 @@ test "view: key hook sees keys first and can consume them" {
     try testing.expectEqual(@as(u32, 2), h.seen);
 }
 
-test "view: pointer hook hears moves, leaves, Ctrl+clicks and keys" {
+test "view: pointer hook hears moves, leaves, Ctrl+clicks, keys and typing" {
     var f: Fx = undefined;
     try f.init("abcd\nef");
     defer f.deinit();
@@ -146,12 +146,15 @@ test "view: pointer hook hears moves, leaves, Ctrl+clicks and keys" {
         last: ?view_mod.PointerEvent = null,
         moves: u32 = 0,
         leaves: u32 = 0,
+        typed_at: ?u64 = null,
         fn on(ctx: *anyopaque, _: *EditorView, e: view_mod.PointerEvent) bool {
             const h: *@This() = @ptrCast(@alignCast(ctx));
             switch (e.kind) {
                 .move => h.moves += 1,
                 .leave => h.leaves += 1,
                 .click, .key => h.last = e,
+                .text => return std.mem.eql(u8, e.text, "q"),
+                .typed => h.typed_at = e.offset,
             }
             if (e.kind == .move) h.last = e;
             return e.kind == .click or (e.kind == .key and e.key.?.key == .escape);
@@ -180,6 +183,10 @@ test "view: pointer hook hears moves, leaves, Ctrl+clicks and keys" {
     f.press(.{ .key = .escape });
     try testing.expect(h.last.?.key.?.key == .escape);
     f.t.typeText("x");
+    try f.expectText("xabcd\nef");
+    // Typing: told after, with the caret; text it takes is not typed.
+    try testing.expectEqual(@as(?u64, 1), h.typed_at);
+    f.t.typeText("q");
     try f.expectText("xabcd\nef");
 }
 

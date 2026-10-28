@@ -759,6 +759,16 @@ pub const Window = struct {
         w.store.paint_pending = false;
     }
 
+    /// Marks `id` and its painted descendants unpainted: a subtree that
+    /// is skipped keeps no paint ranges into op lists that are reused.
+    fn unpaint(w: *Window, id: NodeId) void {
+        const s = &w.store;
+        if (!s.hot.items(.flags)[id.index].painted) return;
+        s.hot.items(.flags)[id.index].painted = false;
+        var it = s.children(id);
+        while (it.next()) |c| w.unpaint(c);
+    }
+
     /// Paints `id` and its subtree. `clip` is what shows of it; `cull`
     /// (children of a scroll container) skips subtrees whose box lies
     /// outside `cull_clip` (the clip, or a scroll layer's extent); content
@@ -773,7 +783,7 @@ pub const Window = struct {
         if (fl.hidden) {
             if (fl.painted) {
                 w.addNodeDamage(old_abs.outset(w.ringExtent(fl)), clip_in, true);
-                s.hot.items(.flags)[i].painted = false;
+                w.unpaint(id);
             }
             return;
         }
@@ -802,7 +812,7 @@ pub const Window = struct {
             if (abs.outset(ext).intersect(cull_clip).isEmpty()) {
                 if (fl.painted) {
                     w.addNodeDamage(old_abs.outset(ext), clip.outset(ext), true);
-                    s.hot.items(.flags)[i].painted = false;
+                    w.unpaint(id);
                 }
                 return;
             }
