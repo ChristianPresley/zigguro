@@ -339,17 +339,17 @@ test "diag: push with stale version maps ranges / drops edited; settle detector"
         try testing.expectEqual(Store.ByteRange{ .start = 23, .end = 24 }, ds[1].bytes.?);
         try testing.expectEqualStrings("42", ds[1].code);
         try testing.expectEqual(@as(u32, 1), st.current.errors());
-        // The summary the agent sees.
-        const snap = st.acquire();
-        defer snap.release();
+        // The summary the agent sees: the server answered version 1.
         var arena: std.heap.ArenaAllocator = .init(testing.allocator);
         defer arena.deinit();
-        const text = (try d.settle.summarize(arena.allocator(), snap, d.keyOfDoc(doc).?, "main.zig")).?;
+        const path = try std.fs.path.join(arena.allocator(), &.{ h.ws, "main.zig" });
+        const r = try d.settle.wait(h.rt.io, arena.allocator(), .{ .paths = &.{path}, .timeout = .fromSeconds(3) });
+        try testing.expect(r.settled and !r.heuristic and r.reason == null);
         try testing.expectEqualStrings(
             \\1 error, 1 warning:
-            \\main.zig:2:11: error: use of undeclared identifier 'x' (fake)
-            \\main.zig:1:7: warning: unused constant (fake)
-        , text);
+            \\main.zig:1:7: warning: unused constant [fake]
+            \\main.zig:2:11: error: use of undeclared identifier 'x' [fake 42]
+        , try d.settle.renderResult(arena.allocator(), r, &.{path}, h.ws));
     }
 
     // The server answers the edit with a push about the old text: the
