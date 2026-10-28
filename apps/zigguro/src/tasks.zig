@@ -296,11 +296,14 @@ pub const Tasks = struct {
 
     /// Starts the loader unless it runs (it then loads again).
     fn reload(t: *Tasks) void {
-        t.pending_mutex.lockUncancelable(t.io);
-        defer t.pending_mutex.unlock(t.io);
-        if (t.loading) return;
-        t.loading = true;
-        t.load_done.reset();
+        {
+            t.pending_mutex.lockUncancelable(t.io);
+            defer t.pending_mutex.unlock(t.io);
+            if (t.loading) return;
+            t.loading = true;
+            t.load_done.reset();
+        }
+        // Without workers it runs here, taking the lock itself.
         t.app.spawn(loadWork, .{t});
     }
 
