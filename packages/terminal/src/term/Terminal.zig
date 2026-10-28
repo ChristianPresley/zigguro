@@ -29,6 +29,7 @@ const reports = @import("reports.zig");
 const dcs = @import("dcs.zig");
 const osc = @import("osc.zig");
 const mark = @import("../shell/mark.zig");
+const graphics = @import("../graphics.zig");
 const input = @import("../input/key_encode.zig");
 
 const log = std.log.scoped(.terminal);
@@ -65,6 +66,8 @@ pub const Options = struct {
     hostname: []const u8 = "",
     /// The shell-integration nonce (hex) that marks OSC 633;E as trusted.
     shell_nonce: ?[]const u8 = null,
+    /// Inline images (kitty graphics).
+    graphics: graphics.kitty.Options = .{},
     parser: Parser.Options = .{},
 };
 
@@ -132,6 +135,10 @@ user_vars: std.StringArrayHashMapUnmanaged([]u8) = .empty,
 /// The OSC 52 read awaiting a decision, if any.
 clip_read: ?StringTerm = null,
 dcs_state: dcs.State = .{},
+/// Inline images and their placements.
+images: graphics.Store,
+/// The kitty graphics APC in progress.
+kitty: graphics.kitty.Kitty = .{},
 stats: Stats = .{},
 
 /// Creates a blank terminal.
@@ -150,6 +157,7 @@ pub fn init(gpa: Allocator, o: Options) !Terminal {
         .alternate = alternate,
         .tabs = tabs,
         .effects = .init(gpa),
+        .images = .init(gpa),
     };
     t.syncScreenModes();
     return t;
@@ -157,6 +165,8 @@ pub fn init(gpa: Allocator, o: Options) !Terminal {
 
 /// Frees everything.
 pub fn deinit(t: *Terminal) void {
+    t.images.deinit(.{ &t.primary.pages, &t.alternate.pages });
+    t.kitty.deinit(t.gpa);
     t.parser.deinit();
     t.primary.deinit();
     t.alternate.deinit();
@@ -286,22 +296,31 @@ pub fn dcsUnhook(t: *Terminal) void {
     dcs.unhook(t);
 }
 
-/// See `Parser`. Kitty graphics (APC G) arrive with E06.F08; until then
-/// every APC is discarded.
+/// See `Parser`. Kitty graphics (`APC G`); other APCs are discarded.
 pub fn apcStart(t: *Terminal) bool {
-    _ = t;
-    return false;
+    return graphics.kitty.apcStart(t);
 }
 
 /// See `Parser`.
 pub fn apcPut(t: *Terminal, bytes: []const u8) void {
-    _ = t;
-    _ = bytes;
+    graphics.kitty.apcPut(t, bytes);
 }
 
 /// See `Parser`.
 pub fn apcEnd(t: *Terminal) void {
-    _ = t;
+    graphics.kitty.apcEnd(t);
+}
+
+/// The placements' screen lists, for the image store.
+pub fn imageLists(t: *Terminal) [2]*PageList {
+    return .{ &t.primary.pages, &t.alternate.pages };
+}
+
+/// Moves the cursor down a line, scrolling at the bottom margin, without
+/// a carriage return (IND).
+pub fn lineFeedNoCr(t: *Terminal) void {
+    const s = t.screen();
+    s.index(.{ .bce = s.cursor.style }) catch t.allocFailed();
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +410,8 @@ pub fn switchScreen(t: *Terminal, to_alt: bool) void {
     to.charsets = from.charsets;
     to.region = from.region;
     if (from.cursor.link) |l| to.setLink(.{ .uri = l.uri, .id = l.id }) catch t.allocFailed() else to.setLink(null) catch {};
+    // Leaving the alternate screen deletes its images.
+    if (!to_alt) t.images.clearScreen(t.imageLists(), .alternate, true);
     t.alt_active = to_alt;
 }
 
@@ -513,6 +534,8 @@ pub fn emitMark(t: *Terminal, m: mark.Mark) void {
 
 /// RIS: full reset of both screens, modes, palette, tabs and titles.
 pub fn fullReset(t: *Terminal) void {
+    t.images.clearScreen(t.imageLists(), .alternate, false);
+    t.images.clearScreen(t.imageLists(), .primary, true);
     t.alt_active = false;
     inline for (.{ &t.primary, &t.alternate }) |s| {
         s.setLink(null) catch {};
