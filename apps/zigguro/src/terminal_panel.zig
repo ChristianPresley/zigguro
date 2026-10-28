@@ -68,6 +68,11 @@ pub const TerminalPanel = struct {
         p.view = .init(gpa, &p.term, .{});
         p.view.sink = .{ .ctx = p, .write = write };
         p.view.on_resize = .{ .ctx = p, .f = onResize };
+        _ = p.view.enableBlocks(.{}) catch |e| {
+            p.view.deinit();
+            p.term.deinit();
+            return e;
+        };
         return p;
     }
 
@@ -216,6 +221,7 @@ pub const TerminalPanel = struct {
             defer p.mutex.unlock(p.io);
             std.mem.swap(std.ArrayList(u8), &bytes, &p.pending);
         }
+        p.term.now_ms = p.app.now_ms;
         if (bytes.items.len > 0) p.view.feed(bytes.items);
         if (p.compactor.poll(&p.term)) {
             p.startJob();
