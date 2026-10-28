@@ -115,7 +115,7 @@ pub const Pull = struct {
 
     pub fn int(p: *Pull, comptime T: type) Error!T {
         return switch (try p.next()) {
-            .number => |s| std.fmt.parseInt(T, s, 10) catch error.InvalidRecord,
+            .number => |s| parseInt(T, s),
             else => error.InvalidRecord,
         };
     }
@@ -205,54 +205,87 @@ pub const Pull = struct {
     fn string(p: *Pull) Error![]const u8 {
         const s = p.src;
         const start = p.pos + 1;
-        const end = std.mem.indexOfScalarPos(u8, s, start, '"') orelse return error.InvalidRecord;
-        if (std.mem.indexOfScalarPos(u8, s[0..end], start, '\\') == null) {
-            p.pos = end + 1;
-            return s[start..end];
+        var i = quoteOrBackslash(s, start);
+        if (i >= s.len) return error.InvalidRecord;
+        if (s[i] == '"') {
+            p.pos = i + 1;
+            return s[start..i];
         }
-        var out: std.ArrayList(u8) = .empty;
-        var i = start;
+        // Escaped: copy the runs between escapes.
+        var out: std.ArrayList(u8) = try .initCapacity(p.a, i - start + 64);
+        out.appendSliceAssumeCapacity(s[start..i]);
         while (true) {
-            if (i >= s.len) return error.InvalidRecord;
-            const c = s[i];
+            // s[i] is a backslash.
             i += 1;
-            switch (c) {
-                '"' => break,
-                '\\' => {
-                    if (i >= s.len) return error.InvalidRecord;
-                    const e = s[i];
-                    i += 1;
-                    try out.append(p.a, switch (e) {
-                        '"', '\\', '/' => e,
-                        'b' => 0x08,
-                        'f' => 0x0c,
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        'u' => {
-                            var cp: u21 = try hex4(s, &i);
-                            if (cp >= 0xd800 and cp < 0xdc00) {
-                                if (i + 2 > s.len or s[i] != '\\' or s[i + 1] != 'u') return error.InvalidRecord;
-                                i += 2;
-                                const lo = try hex4(s, &i);
-                                if (lo < 0xdc00 or lo >= 0xe000) return error.InvalidRecord;
-                                cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
-                            } else if (cp >= 0xdc00 and cp < 0xe000) return error.InvalidRecord;
-                            var buf: [4]u8 = undefined;
-                            const n = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidRecord;
-                            try out.appendSlice(p.a, buf[0..n]);
-                            continue;
-                        },
-                        else => return error.InvalidRecord,
-                    });
+            if (i >= s.len) return error.InvalidRecord;
+            const e = s[i];
+            i += 1;
+            switch (e) {
+                '"', '\\', '/' => try out.append(p.a, e),
+                'b' => try out.append(p.a, 0x08),
+                'f' => try out.append(p.a, 0x0c),
+                'n' => try out.append(p.a, '\n'),
+                'r' => try out.append(p.a, '\r'),
+                't' => try out.append(p.a, '\t'),
+                'u' => {
+                    var cp: u21 = try hex4(s, &i);
+                    if (cp >= 0xd800 and cp < 0xdc00) {
+                        if (i + 2 > s.len or s[i] != '\\' or s[i + 1] != 'u') return error.InvalidRecord;
+                        i += 2;
+                        const lo = try hex4(s, &i);
+                        if (lo < 0xdc00 or lo >= 0xe000) return error.InvalidRecord;
+                        cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
+                    } else if (cp >= 0xdc00 and cp < 0xe000) return error.InvalidRecord;
+                    var buf: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidRecord;
+                    try out.appendSlice(p.a, buf[0..n]);
                 },
-                else => try out.append(p.a, c),
+                else => return error.InvalidRecord,
             }
+            const j = quoteOrBackslash(s, i);
+            if (j >= s.len) return error.InvalidRecord;
+            try out.appendSlice(p.a, s[i..j]);
+            i = j;
+            if (s[j] == '"') break;
         }
-        p.pos = i;
+        p.pos = i + 1;
         return out.items;
     }
 };
+
+/// The index of the first `"` or `\` at or after `from`, or `s.len`.
+fn quoteOrBackslash(s: []const u8, from: usize) usize {
+    const L = 16;
+    const V = @Vector(L, u8);
+    var i = from;
+    while (i + L <= s.len) : (i += L) {
+        const v: V = s[i..][0..L].*;
+        const quotes: u16 = @bitCast(v == @as(V, @splat('"')));
+        const slashes: u16 = @bitCast(v == @as(V, @splat('\\')));
+        const mask = quotes | slashes;
+        if (mask != 0) return i + @ctz(mask);
+    }
+    while (i < s.len and s[i] != '"' and s[i] != '\\') i += 1;
+    return i;
+}
+
+/// A JSON integer (the token's syntax is already checked); short ones
+/// skip `std.fmt.parseInt`.
+fn parseInt(comptime T: type, s: []const u8) Error!T {
+    const neg = s[0] == '-';
+    const digits = s[@intFromBool(neg)..];
+    if (digits.len == 0 or digits.len > 18) return std.fmt.parseInt(T, s, 10) catch error.InvalidRecord;
+    var v: u64 = 0;
+    for (digits) |c| {
+        if (c < '0' or c > '9') return error.InvalidRecord;
+        v = v * 10 + (c - '0');
+    }
+    if (neg) {
+        if (@typeInfo(T).int.signedness == .unsigned) return if (v == 0) 0 else error.InvalidRecord;
+        return std.math.cast(T, -@as(i64, @intCast(v))) orelse error.InvalidRecord;
+    }
+    return std.math.cast(T, v) orelse error.InvalidRecord;
+}
 
 fn hex4(s: []const u8, i: *usize) Error!u21 {
     if (i.* + 4 > s.len) return error.InvalidRecord;
