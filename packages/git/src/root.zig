@@ -39,6 +39,16 @@ pub const pack_writer = @import("pack/writer.zig");
 pub const indexer = @import("pack/indexer.zig");
 /// commit-graph reader.
 pub const commit_graph = @import("commit_graph.zig");
+/// git config files: syntax, scopes, includes, and the in-place writer.
+pub const config = @import("config.zig");
+/// The index (staging area): versions 2 to 4 and extensions.
+pub const index = @import("index/index.zig");
+/// An open repository: refs, objects and config together.
+pub const repository = @import("repository.zig");
+/// See `repository.Repository`.
+pub const Repository = repository.Repository;
+/// `git status`: staged, unstaged, untracked and ignored files.
+pub const status = @import("status.zig");
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -99,6 +109,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("object_test.zig");
     _ = @import("refs/refs_test.zig");
+    _ = @import("status_test.zig");
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
