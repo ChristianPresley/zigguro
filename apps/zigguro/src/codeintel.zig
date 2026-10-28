@@ -9,6 +9,17 @@
 //! agent also gets
 //! language-server tools (`agentTools`: diagnostics, hover, definition).
 //!
+//! Hover, highlights and navigation (E07.F03.S02.T01, E07.F04.S01.T01):
+//! the pointer resting on a word for `hover_delay_ms` asks for a hover,
+//! shown in a popup above it (`HoverPopup`) until the pointer moves to
+//! another word or leaves for longer than `hide_grace_ms` (not into the
+//! popup), a key is pressed or the text changes; `showHoverAt` asks from
+//! the keyboard. The symbol under the caret has its other occurrences
+//! highlighted (read and write occurrences differ). `goTo` asks for a
+//! definition, declaration, type definition, implementation or the
+//! references; Ctrl+click asks for the definition. The answers go to
+//! `nav_hook` (the workbench jumps or offers a list).
+//!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
 //! attached when `setTrusted(true)` comes.
@@ -38,6 +49,13 @@ const StyleRef = zg_editor.model.decorations.store.StyleRef;
 const Manager = zg_codeintel.Manager;
 const SemTokDriver = zg_codeintel.features.SemTokDriver;
 const diagnostics = zg_codeintel.diagnostics;
+const HoverService = zg_codeintel.features.HoverService;
+const HighlightService = zg_codeintel.features.HighlightService;
+pub const NavService = zg_codeintel.features.NavService;
+const HoverPopup = @import("hover_popup.zig").HoverPopup;
+const PointerEvent = zg_editor.view.editor_view.PointerEvent;
+const Vec2 = zg_gui.core.Vec2;
+const Rect = zg_gui.core.Rect;
 const LspTools = zg_codeintel.agent.tools.ToolExporter(zg_ai.tools.adapters.foreign);
 
 const log = std.log.scoped(.codeintel);
@@ -63,11 +81,43 @@ pub const CodeIntel = struct {
     timer: Window.TimerId = .none,
     /// The editor last reported visible.
     shown: ?DocHandle = null,
+    hover: HoverService = undefined,
+    highlight: HighlightService = undefined,
+    nav: NavService = undefined,
+    popup: HoverPopup,
+    /// Where the pointer rests: a hover is asked at `due_ms`.
+    rest: ?struct { h: DocHandle, view: *EditorView, offset: u64, origin: Vec2, due_ms: u64 } = null,
+    /// The editor and text origin the hover asked or shown is placed by.
+    hover_at: ?struct { view: *EditorView, origin: Vec2 } = null,
+    hover_seen: u64 = 0,
+    /// The pointer left: hide the mouse's hover then, unless it is over
+    /// the popup.
+    hide_due_ms: ?u64 = null,
+    /// The decoration store holding the document highlights.
+    hl_deco: ?*DecorationStore = null,
+    hl_owner: zg_editor.model.decorations.store.OwnerId = undefined,
+    hl_seen: u64 = 0,
+    /// A navigation request waits for its answers.
+    nav_waiting: bool = false,
+    nav_hook: ?NavHook = null,
+
+    /// Rest time before a hover is asked.
+    pub const hover_delay_ms = 500;
+    /// How long a hover stays after the pointer leaves the editor.
+    pub const hide_grace_ms = 300;
+
+    /// Told when a navigation request (`goTo`, Ctrl+click) has all its
+    /// answers.
+    pub const NavHook = struct {
+        ctx: *anyopaque,
+        done: *const fn (ctx: *anyopaque, r: NavService.Results) void,
+    };
 
     const File = struct {
         h: DocHandle,
         doc: *Document,
         syntax: *DocumentSyntax,
+        view: *EditorView,
         /// The editor's decorations (diagnostics are drawn there).
         deco: ?*DecorationStore = null,
         /// Attached to the manager (once trusted).
@@ -93,6 +143,7 @@ pub const CodeIntel = struct {
             .reg = try .init(gpa, .{}),
             .names = .init(gpa),
             .diags = try .init(gpa, rt.io, docs.style),
+            .popup = .init(gpa),
         };
         errdefer ci.diags.deinit();
         errdefer ci.reg.deinit();
@@ -108,6 +159,9 @@ pub const CodeIntel = struct {
         try ci.decor.init(gpa, &ci.diags, .{ .severity = .{ style.err, style.warning, style.info, style.hint }, .faded = style.faded });
         errdefer ci.decor.deinit();
         try ci.semtok.init(&ci.mgr, &ci.names, .{ .ctx = ci, .get = syntaxOf }, .{ .waker = ci.waker() });
+        ci.hover = .init(&ci.mgr, &ci.diags, ci.waker());
+        ci.highlight = .init(&ci.mgr, ci.waker(), .{});
+        ci.nav.init(&ci.mgr, ci.waker());
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -116,8 +170,16 @@ pub const CodeIntel = struct {
     /// before the documents and their syntax go away.
     pub fn destroy(ci: *CodeIntel) void {
         if (ci.win) |w| if (ci.timer != .none) w.cancelTimer(ci.timer);
-        for (ci.files.items) |f| if (f.listener) |l| f.doc.unsubscribe(l);
+        for (ci.files.items) |f| {
+            if (f.listener) |l| f.doc.unsubscribe(l);
+            ci.unhook(f.view);
+        }
+        ci.clearHighlights();
+        ci.popup.deinit();
         ci.mgr.deinit();
+        ci.hover.deinit();
+        ci.highlight.deinit();
+        ci.nav.deinit();
         ci.diag.deinit();
         ci.decor.deinit();
         ci.semtok.deinit();
@@ -183,6 +245,10 @@ pub const CodeIntel = struct {
         pub const info: StyleRef = @enumFromInt(0x0702_0003);
         pub const hint: StyleRef = @enumFromInt(0x0702_0004);
         pub const faded: StyleRef = @enumFromInt(0x0702_0005);
+        /// Document highlights: other occurrences, reads, writes.
+        pub const occurrence: StyleRef = @enumFromInt(0x0702_0006);
+        pub const read: StyleRef = @enumFromInt(0x0702_0007);
+        pub const write: StyleRef = @enumFromInt(0x0702_0008);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -197,6 +263,8 @@ pub const CodeIntel = struct {
             style.info => th.color(.info),
             style.hint => th.color(.fg_muted),
             style.faded => th.color(.bg_base).fade(0.45),
+            style.occurrence, style.read => th.color(.selection_bg).fade(0.5),
+            style.write => th.color(.accent).fade(0.3),
             else => null,
         };
     }
@@ -210,7 +278,8 @@ pub const CodeIntel = struct {
         view.hl_names = &ci.names;
         if (deco != null) view.styles = .{ .ctx = ci, .color = styleColor };
         for (ci.files.items) |f| if (std.meta.eql(f.h, h)) return;
-        ci.files.append(ci.gpa, .{ .h = h, .doc = ci.docs.get(h) orelse return, .syntax = sx, .deco = deco }) catch return;
+        ci.files.append(ci.gpa, .{ .h = h, .doc = ci.docs.get(h) orelse return, .syntax = sx, .view = view, .deco = deco }) catch return;
+        if (view.pointer_hook == null) view.pointer_hook = .{ .ctx = ci, .f = onPointer };
         if (ci.trusted) ci.attach(&ci.files.items[ci.files.items.len - 1]);
     }
 
@@ -235,6 +304,12 @@ pub const CodeIntel = struct {
                 ci.mgr.closeDoc(h);
             }
             if (f.listener) |l| f.doc.unsubscribe(l);
+            ci.unhook(f.view);
+            if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
+            if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
+            if (ci.rest) |r| if (r.view == f.view) {
+                ci.rest = null;
+            };
             _ = ci.files.swapRemove(i);
             if (ci.shown) |s| if (std.meta.eql(s, h)) {
                 ci.shown = null;
@@ -258,7 +333,180 @@ pub const CodeIntel = struct {
             const vis = view.visibleLines();
             ci.semtok.onViewport(h, .{ .first = vis[0], .end = vis[1] + 1 });
         }
+        const sel = view.primarySel();
+        ci.highlight.onCursor(if (ci.fileOf(current)) |f| if (f.view == view and sel.anchor == sel.head) f.h else null else null, sel.head);
+        // A shown hover goes with an edit, and a keyboard hover when the
+        // caret leaves its word.
+        if (ci.hover.current()) |r| {
+            const doc = ci.docs.get(r.h);
+            const caret_away = r.source == .keyboard and (sel.head < r.range.start or sel.head > r.range.end);
+            if (doc == null or doc.?.version != r.version or caret_away) ci.hideHover();
+        }
         ci.tick();
+    }
+
+    fn fileOf(ci: *CodeIntel, h: ?DocHandle) ?*File {
+        const d = h orelse return null;
+        for (ci.files.items) |*f| if (std.meta.eql(f.h, d)) return f;
+        return null;
+    }
+
+    fn fileOfView(ci: *CodeIntel, v: *EditorView) ?*File {
+        for (ci.files.items) |*f| if (f.view == v) return f;
+        return null;
+    }
+
+    fn unhook(ci: *CodeIntel, v: *EditorView) void {
+        if (v.pointer_hook) |hk| if (hk.ctx == @as(*anyopaque, ci)) {
+            v.pointer_hook = null;
+        };
+    }
+
+    fn nowMs(ci: *CodeIntel) u64 {
+        return ci.app.now_ms;
+    }
+
+    /// The editor's pointer hook: hovers on rest, definitions on
+    /// Ctrl+click, Escape hides a hover.
+    fn onPointer(ctx: *anyopaque, v: *EditorView, e: PointerEvent) bool {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const f = ci.fileOfView(v) orelse return false;
+        if (!ci.trusted or !f.attached) return false;
+        switch (e.kind) {
+            .move => ci.pointerAt(f, e),
+            .leave => {
+                ci.rest = null;
+                if (ci.hover.current() != null and ci.hover.current().?.source == .mouse) ci.hide_due_ms = ci.nowMs() + hide_grace_ms;
+                ci.tick();
+            },
+            .click => {
+                const off = e.offset orelse return false;
+                if (!ci.nav.available(.definition, f.h)) return false;
+                ci.hideHover();
+                _ = ci.goTo(.definition, f.h, off, false) catch return false;
+                return true;
+            },
+            .key => {
+                const k = e.key orelse return false;
+                if (isModifier(k.key)) return false;
+                const showing = ci.popup.isOpen() or ci.hover.pending != null or ci.rest != null;
+                if (!showing) return false;
+                ci.hideHover();
+                return k.key == .escape;
+            },
+        }
+        return false;
+    }
+
+    fn isModifier(k: @FieldType(zg_gui.input.event.KeyPress, "key")) bool {
+        return switch (k) {
+            .shift_left, .shift_right, .control_left, .control_right, .alt_left, .alt_right, .meta_left, .meta_right => true,
+            else => false,
+        };
+    }
+
+    /// The pointer moved over `f`'s text.
+    fn pointerAt(ci: *CodeIntel, f: *File, e: PointerEvent) void {
+        ci.hide_due_ms = null;
+        const off = e.offset orelse {
+            ci.rest = null;
+            if (ci.hover.current()) |r| if (r.source == .mouse) ci.hideHover();
+            return;
+        };
+        // Still on the word shown (or being asked about): keep it.
+        if (ci.hover.current()) |r| if (std.meta.eql(r.h, f.h) and off >= r.range.start and off < @max(r.range.end, r.range.start + 1)) return;
+        const word = HoverService.wordAt(f.doc, off);
+        if (ci.rest) |r| if (std.meta.eql(r.h, f.h)) {
+            const rw = HoverService.wordAt(f.doc, r.offset);
+            if (rw.start == word.start and rw.end == word.end) return;
+        };
+        if (ci.hover.current() != null or ci.hover.pending != null) ci.hideHover();
+        ci.rest = .{ .h = f.h, .view = f.view, .offset = off, .origin = e.origin, .due_ms = ci.nowMs() + hover_delay_ms };
+        ci.tick();
+    }
+
+    /// Asks for the hover at `offset` of `h` from the keyboard; `origin`
+    /// is `view`'s text origin in window coordinates.
+    pub fn showHoverAt(ci: *CodeIntel, view: *EditorView, h: DocHandle, offset: u64, origin: Vec2) !void {
+        const f = ci.fileOf(h) orelse return error.NoLanguageServer;
+        if (!ci.trusted or !f.attached) return error.NoLanguageServer;
+        ci.hideHover();
+        try ci.askHover(h, offset, .keyboard, view, origin);
+        ci.tick();
+    }
+
+    fn askHover(ci: *CodeIntel, h: DocHandle, offset: u64, source: HoverService.Source, view: *EditorView, origin: Vec2) !void {
+        ci.hover_at = .{ .view = view, .origin = origin };
+        try ci.hover.request(h, offset, ci.diag.keyOfDoc(h), source);
+    }
+
+    /// Hides the hover and forgets any asked.
+    pub fn hideHover(ci: *CodeIntel) void {
+        ci.hover.cancel();
+        ci.hover_seen = ci.hover.generation;
+        ci.popup.hide();
+        ci.rest = null;
+        ci.hide_due_ms = null;
+        ci.hover_at = null;
+    }
+
+    /// Shows the current hover (or hides the popup when there is none).
+    fn showHover(ci: *CodeIntel) void {
+        ci.hover_seen = ci.hover.generation;
+        const r = ci.hover.current() orelse return ci.popup.hide();
+        const at = ci.hover_at orelse return;
+        const v = at.view;
+        const p0 = v.posOf(r.range.start);
+        const p1 = v.posOf(r.range.end);
+        const w = if (p1.y == p0.y and p1.x > p0.x) p1.x - p0.x else 8;
+        const rect: Rect = .{ .x = at.origin.x + p0.x, .y = at.origin.y + p0.y, .w = w, .h = v.lineHeight() };
+        ci.popup.win = ci.win;
+        ci.popup.show(r.markdown, rect) catch |e| log.warn("hover: {t}", .{e});
+    }
+
+    /// Asks for `kind` at byte `offset` of `h` (references include the
+    /// declaration when `include_decl`); `nav_hook` hears the answers.
+    /// Returns the servers asked (0: none provides it).
+    pub fn goTo(ci: *CodeIntel, kind: NavService.Kind, h: DocHandle, offset: u64, include_decl: bool) !u8 {
+        const f = ci.fileOf(h) orelse return 0;
+        if (!ci.trusted or !f.attached) return 0;
+        const n = try ci.nav.go(kind, h, offset, include_decl);
+        ci.nav_waiting = n > 0;
+        ci.tick();
+        return n;
+    }
+
+    /// Puts the highlights for the caret's document into its editor's
+    /// decorations.
+    fn applyHighlights(ci: *CodeIntel) void {
+        ci.hl_seen = ci.highlight.generation;
+        const f = ci.fileOf(ci.highlight.marks_doc) orelse return ci.clearHighlights();
+        const d = f.deco orelse return ci.clearHighlights();
+        if (ci.hl_deco != null and ci.hl_deco != d) ci.clearHighlights();
+        if (ci.hl_deco == null) {
+            ci.hl_owner = d.ownerByName("lsp.highlight") orelse d.registerOwner("lsp.highlight", -10) catch return;
+            ci.hl_deco = d;
+        }
+        const marks = ci.highlight.marksFor(f.h);
+        var list: std.ArrayList(zg_editor.model.decorations.store.Decoration) = .empty;
+        defer list.deinit(ci.gpa);
+        list.ensureTotalCapacity(ci.gpa, marks.len * 2) catch return;
+        for (marks) |m| {
+            const st = switch (m.kind) {
+                .text => style.occurrence,
+                .read => style.read,
+                .write => style.write,
+            };
+            list.appendAssumeCapacity(.{ .range = m.range, .owner = ci.hl_owner, .kind = .{ .highlight = st } });
+            list.appendAssumeCapacity(.{ .range = m.range, .owner = ci.hl_owner, .kind = .{ .overview = .{ .lane = 1, .style = st } } });
+        }
+        d.setOwnerDecorations(ci.hl_owner, ci.highlight.marks_version, list.items) catch {};
+    }
+
+    fn clearHighlights(ci: *CodeIntel) void {
+        const d = ci.hl_deco orelse return;
+        d.clearOwner(ci.hl_owner);
+        ci.hl_deco = null;
     }
 
     fn tick(ci: *CodeIntel) void {
@@ -266,17 +514,42 @@ pub const CodeIntel = struct {
         var changed = ci.semtok.tick();
         _ = ci.diag.tick();
         changed = (ci.decor.flush() catch false) or changed;
+        const now_ms = ci.nowMs();
+        if (ci.rest) |r| if (now_ms >= r.due_ms) {
+            ci.rest = null;
+            ci.askHover(r.h, r.offset, .mouse, r.view, r.origin) catch {};
+        };
+        if (ci.hide_due_ms) |d| if (now_ms >= d) {
+            const over = if (ci.win) |w| ci.popup.contains(w.hot) else false;
+            if (over) ci.hide_due_ms = now_ms + hide_grace_ms else ci.hideHover();
+        };
+        if (ci.hover.tick() or ci.hover.generation != ci.hover_seen) ci.showHover();
+        if (ci.highlight.tick() or ci.highlight.generation != ci.hl_seen) {
+            ci.applyHighlights();
+            changed = true;
+        }
+        if (ci.nav.tick() and ci.nav_waiting) if (ci.nav.results()) |r| if (r.complete) {
+            ci.nav_waiting = false;
+            if (ci.nav_hook) |hk| hk.done(hk.ctx, r);
+        };
         const w = ci.win orelse return;
         if (changed) w.markAllDirty();
         if (ci.timer != .none) {
             w.cancelTimer(ci.timer);
             ci.timer = .none;
         }
-        const a = ci.semtok.nextDue();
-        const b = ci.diag.nextDue();
-        const due = if (a != null and b != null) @min(a.?, b.?) else a orelse b orelse return;
+        // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
-        const ms: u64 = @intCast(@max(1, @divFloor(due - now, std.time.ns_per_ms) + 1));
+        var wait: ?u64 = null;
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue() }) |due| if (due) |d| {
+            const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
+            wait = if (wait) |x| @min(x, ms) else ms;
+        };
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms }) |due| if (due) |d| {
+            const ms = @max(1, d -| now_ms);
+            wait = if (wait) |x| @min(x, ms) else ms;
+        };
+        const ms = wait orelse return;
         ci.timer = w.setTimer(w.app.now_ms + ms, .{ .ctx = ci, .f = onTimer }) catch .none;
     }
 
@@ -345,6 +618,12 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     defer ci.destroy();
     ci.open(h, &sx, view, &deco);
     try testing.expect(view.hl_names == ci.highlightNames());
+    // Hovers and Ctrl+click go through the view's pointer hook; nothing
+    // is asked before the folder is trusted.
+    const hk = view.pointer_hook.?;
+    try testing.expect(!hk.f(hk.ctx, view, .{ .kind = .click, .offset = 6 }));
+    _ = hk.f(hk.ctx, view, .{ .kind = .move, .offset = 6 });
+    try testing.expect(ci.rest == null);
     // Diagnostic styles take the theme's colours; others the view's.
     const sc = view.styles.?;
     try testing.expectEqual(app.theme.color(.danger), sc.color(sc.ctx, CodeIntel.style.err).?);
@@ -373,5 +652,14 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     try testing.expectEqual(@as(usize, 3), (try tools.list(tools.ctx, arena.allocator())).len);
     const r = try tools.call(tools.ctx, rt.io, arena.allocator(), "lsp_diagnostics", "{\"path\": \"main.zig\"}");
     try testing.expect(std.mem.indexOf(u8, r.json, "No diagnostics for main.zig") != null);
+    // Trusted, but no server: the pointer resting still waits for a
+    // hover (diagnostics alone can make one); no definition provider.
+    _ = hk.f(hk.ctx, view, .{ .kind = .move, .offset = 6 });
+    try testing.expect(ci.rest != null);
+    try testing.expect(!hk.f(hk.ctx, view, .{ .kind = .click, .offset = 6 }));
+    try testing.expectEqual(@as(u8, 0), try ci.goTo(.definition, h, 6, false));
+    _ = hk.f(hk.ctx, view, .{ .kind = .leave });
+    try testing.expect(ci.rest == null);
     ci.close(h);
+    try testing.expect(view.pointer_hook == null);
 }
