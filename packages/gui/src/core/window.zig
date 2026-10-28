@@ -237,6 +237,8 @@ pub const Window = struct {
     /// Window state changes the UI asked for (caption buttons); the Host
     /// sends them to the platform.
     window_ops: std.ArrayList(zg_platform.window.WindowOp) = .empty,
+    /// URIs to open in their default handlers (owned); the Host sends them.
+    open_uris: std.ArrayList([]u8) = .empty,
     /// The external drag over this window; the Host sends
     /// `drop.pending` as `set_drop_effect`.
     drop: drop_mod.DropState = .{},
@@ -334,6 +336,14 @@ pub const Window = struct {
             return .{ .l = @as(f32, @floatFromInt(m[0])) / scale, .t = @as(f32, @floatFromInt(m[1])) / scale, .r = @as(f32, @floatFromInt(m[2])) / scale, .b = @as(f32, @floatFromInt(m[3])) / scale };
         }
     };
+
+    /// Asks the platform to open `uri` in its default handler (sent by
+    /// the Host). The caller decides which URIs are safe to open.
+    pub fn openUri(w: *Window, uri: []const u8) void {
+        const copy = w.gpa.dupe(u8, uri) catch return;
+        w.open_uris.append(w.gpa, copy) catch return w.gpa.free(copy);
+        w.needs_frame = true;
+    }
 
     /// Asks the platform for a window state change (sent by the Host).
     pub fn requestWindowOp(w: *Window, op: zg_platform.window.WindowOp) void {
@@ -456,6 +466,8 @@ pub const Window = struct {
         w.ime.text.deinit(gpa);
         w.chrome.interactive.deinit(gpa);
         w.window_ops.deinit(gpa);
+        for (w.open_uris.items) |u| gpa.free(u);
+        w.open_uris.deinit(gpa);
         if (w.drag_out) |b| gpa.free(b);
         for (w.after_frame_due.items) |t| t.f(t.ctx, w);
         for (w.after_frame.items) |t| t.f(t.ctx, w);
