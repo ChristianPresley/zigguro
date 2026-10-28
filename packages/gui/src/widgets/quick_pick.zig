@@ -103,6 +103,15 @@ pub const QuickPickHandle = struct {
     pub fn close(h: QuickPickHandle, win: *Window) void {
         if (h.isOpen(win)) win.closeOverlay(h.id);
     }
+
+    /// Reads a static provider's `items` again (its results changed),
+    /// keeping the text.
+    pub fn refresh(h: QuickPickHandle, win: *Window) void {
+        if (!h.isOpen(win)) return;
+        const qp = h.qp.?;
+        qp.fresh = true;
+        qp.markDirty();
+    }
 };
 
 /// Opens a QuickPick in `win`.
@@ -215,6 +224,9 @@ pub const QuickPick = struct {
     streaming: bool = false,
     /// The caret was put after the initial text.
     caret_placed: bool = false,
+    /// The active item last reported to `VTable.active`.
+    last_active: ?u64 = null,
+    accepted: bool = false,
     job: ?*Job = null,
     active: usize = 0,
     /// The user moved the active row (it then follows its item).
@@ -249,6 +261,7 @@ pub const QuickPick = struct {
     fn onClose(ctx: *anyopaque, _: overlay.OverlayId) void {
         const qp: *QuickPick = @ptrCast(@alignCast(ctx));
         qp.closed = true;
+        if (!qp.accepted and qp.last_active != null) if (qp.current()) |p| if (p.vtable.active) |f| f(p.ptr, null);
         qp.detachJob();
         if (qp.dim_timer != .none) qp.win.cancelTimer(qp.dim_timer);
         qp.dim_timer = .none;
@@ -324,6 +337,7 @@ pub const QuickPick = struct {
         qp.detachJob();
         const p = qp.props.providers[pi];
         if (p.vtable.items) |items_fn| {
+            if (p.vtable.query_changed) |f| f(p.ptr, q);
             qp.scoreStatic(items_fn(p.ptr), q);
             return;
         }
@@ -532,6 +546,7 @@ pub const QuickPick = struct {
         const free_text: ?[]const u8 = if (sel.len == 0 and qp.props.allow_free_text and q.len > 0) q else null;
         if (sel.len == 0 and free_text == null) return;
         if (qp.props.mru) |m| for (sel) |it| m.touch(it.id);
+        qp.accepted = true;
         p.vtable.accept(p.ptr, sel, free_text, alt);
         qp.win.closeOverlay(qp.id);
     }
@@ -576,6 +591,7 @@ pub const QuickPick = struct {
 
     pub fn build(qp: *QuickPick, ui: *Ui) void {
         qp.sync();
+        qp.reportActive();
         const th = ui.theme();
         _ = ui.begin(Keys, .{ .qp = qp });
         defer ui.end(Keys);
@@ -612,6 +628,17 @@ pub const QuickPick = struct {
             .test_id = "quick_pick.list",
         }, qp, row);
         qp.list = vis.node;
+    }
+
+    /// Tells the provider when the active row moved to another item.
+    fn reportActive(qp: *QuickPick) void {
+        const p = qp.current() orelse return;
+        const f = p.vtable.active orelse return;
+        if (qp.active >= qp.results.items.len or qp.stale) return;
+        const it = qp.results.items[qp.active];
+        if (qp.last_active == it.id) return;
+        qp.last_active = it.id;
+        f(p.ptr, it);
     }
 
     fn row(qp: *QuickPick, ui: *Ui, i: usize) void {

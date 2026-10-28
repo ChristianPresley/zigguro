@@ -1035,6 +1035,7 @@ pub const Workbench = struct {
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
+            ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1109,6 +1110,13 @@ pub const Workbench = struct {
         .{ .id = "terminal.focusNext", .title = "Focus Next Terminal", .category = "Terminal", .run = focusNextTerminal },
         .{ .id = "terminal.focusPrevious", .title = "Focus Previous Terminal", .category = "Terminal", .run = focusPreviousTerminal },
         .{ .id = "terminal.find", .title = "Find in Terminal", .category = "Terminal", .run = findInTerminal },
+        .{ .id = "terminal.scrollToPrevCommand", .title = "Scroll to Previous Command", .category = "Terminal", .run = scrollToPrevCommand },
+        .{ .id = "terminal.scrollToNextCommand", .title = "Scroll to Next Command", .category = "Terminal", .run = scrollToNextCommand },
+        .{ .id = "terminal.selectPrevOutput", .title = "Select Previous Command Output", .category = "Terminal", .run = selectPrevOutput },
+        .{ .id = "terminal.selectNextOutput", .title = "Select Next Command Output", .category = "Terminal", .run = selectNextOutput },
+        .{ .id = "terminal.copyLastCommand", .title = "Copy Last Command", .category = "Terminal", .run = copyLastCommand },
+        .{ .id = "terminal.copyLastOutput", .title = "Copy Last Command Output", .category = "Terminal", .run = copyLastOutput },
+        .{ .id = "terminal.rerunLastCommand", .title = "Run Last Command Again", .category = "Terminal", .run = rerunLastCommand },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
         .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
@@ -1154,6 +1162,8 @@ pub const Workbench = struct {
         .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Editor", .run = renameSymbol },
         .{ .id = "editor.quickFix", .title = "Quick Fix...", .category = "Editor", .run = quickFix },
         .{ .id = "editor.formatDocument", .title = "Format Document", .category = "Editor", .run = formatDocument },
+        .{ .id = "quickOpen.symbolsInFile", .title = "Go to Symbol in Editor...", .category = "Go", .run = symbolsInFile },
+        .{ .id = "quickOpen.symbols", .title = "Go to Symbol in Workspace...", .category = "Go", .run = symbolsInWorkspace },
         .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
@@ -1991,6 +2001,36 @@ pub const Workbench = struct {
         const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
         const sel = wb.view.primarySel().range();
         ci.quickFix(wb.view, h, .{ .start = sel.start, .end = sel.end }, origin);
+    }
+
+    /// `quickOpen.symbolsInFile` (Ctrl+Shift+O).
+    fn symbolsInFile(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "This file has no symbols", .{});
+        try ci.symbolsInFile(wb.view, h);
+    }
+
+    /// `quickOpen.symbols` (Ctrl+T).
+    fn symbolsInWorkspace(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        try ci.symbolsInWorkspace();
+    }
+
+    fn symbolHere(ctx: *anyopaque, view: *EditorView, sel: zg_editor.model.edit.selection.Selection) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.rememberHere();
+        view.setSelection(sel);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn symbolTo(ctx: *anyopaque, t: NavService.Target) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.jumpTo(t);
+    }
+
+    fn symbolNotice(ctx: *anyopaque, msg: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.notify(.info, "{s}", .{msg});
     }
 
     /// `editor.formatDocument`.
@@ -3127,6 +3167,7 @@ pub const Workbench = struct {
             args[n] = a.string;
             n += 1;
         };
+        t.shell_integration = st.boolean("terminal.integrated.shellIntegration.enabled");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
     }
 
@@ -3241,6 +3282,61 @@ pub const Workbench = struct {
         try wb.reveal(wb.terminal_ref.?, .bottom);
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusFindField });
+    }
+
+    // -- command blocks (shell integration) --------------------------------
+
+    fn blockNav(wb: *Workbench, comptime select: bool, dir: zg_terminal_view.TerminalView.Direction) !void {
+        const t = wb.activeTerminal() orelse return;
+        const moved = if (select) t.view.selectOutput(dir) else t.view.scrollToCommand(dir);
+        if (!moved and t.view.blocks != null and t.view.blocks.?.items().len == 0)
+            wb.notify(.info, "No commands yet: the shell does not report them (shell integration supports bash, zsh, fish and PowerShell).", .{});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn scrollToPrevCommand(wb: *Workbench) !void {
+        try wb.blockNav(false, .previous);
+    }
+
+    fn scrollToNextCommand(wb: *Workbench) !void {
+        try wb.blockNav(false, .next);
+    }
+
+    fn selectPrevOutput(wb: *Workbench) !void {
+        try wb.blockNav(true, .previous);
+    }
+
+    fn selectNextOutput(wb: *Workbench) !void {
+        try wb.blockNav(true, .next);
+    }
+
+    fn copyToClipboard(wb: *Workbench, text: []const u8) void {
+        const w = wb.win orelse return;
+        w.app.clipboard.set(wb.gpa, text);
+    }
+
+    fn copyLastCommand(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        const last = t.view.lastCommand() orelse return wb.notify(.info, "No command to copy yet.", .{});
+        wb.copyToClipboard(t.view.blocks.?.commandText(last.id));
+    }
+
+    fn copyLastOutput(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        const last = t.view.lastCommand() orelse return wb.notify(.info, "No command output to copy yet.", .{});
+        const text = try t.view.outputText(wb.gpa, last.id) orelse return wb.notify(.info, "The last command printed nothing.", .{});
+        defer wb.gpa.free(text);
+        wb.copyToClipboard(text);
+    }
+
+    fn rerunLastCommand(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        switch (t.view.rerunLast()) {
+            .sent => {},
+            .no_command => wb.notify(.info, "No command to run again yet.", .{}),
+            .untrusted => wb.notify(.warning, "The last command line was not reported by the shell itself, so it is not run again automatically.", .{}),
+            .busy => wb.notify(.info, "The shell is busy or something is typed at the prompt.", .{}),
+        }
     }
 
     fn focusFindField(ctx: *anyopaque, w: *Window) void {
@@ -4394,6 +4490,67 @@ test "workbench: go to definition jumps, Back and Forward return; several target
     try std.testing.expectEqualStrings("https://ziglang.org/documentation/", t.win.app.clipboard.get());
     Workbench.onHoverLink(&wb, .{ .url = "command:workbench.action.quit" }, false);
     _ = t.settle();
+}
+
+test "workbench: Go to Symbol in File lists the outline, previews, restores on Escape and jumps on Enter" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "class C:\n    def f(self):\n        pass\n\n\ndef g():\n    pass\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.py" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    wb.view.setSelection(.caret(0));
+    // No language server: the syntax layer's outline stands in.
+    try Workbench.symbolsInFile(&wb);
+    _ = t.settle();
+    const pk = &wb.codeintel.?.pickers;
+    try std.testing.expect(pk.doc_pick.isOpen(t.win));
+    try std.testing.expect(pk.items.items.len >= 3);
+    try std.testing.expectEqualStrings("C", pk.items.items[0].label);
+    try std.testing.expectEqualStrings("  f", pk.items.items[1].label);
+    // The first row previews: C's name is selected.
+    try std.testing.expectEqual(@as(u64, 6), wb.view.primarySel().start());
+    t.press(.arrow_down, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 17), wb.view.primarySel().start());
+    t.press(.escape, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 0), wb.view.primarySel().head);
+    try std.testing.expect(wb.view.primarySel().isCaret());
+
+    // Enter jumps; Go Back returns.
+    try Workbench.symbolsInFile(&wb);
+    _ = t.settle();
+    t.typeText("g");
+    _ = t.settle();
+    t.press(.enter, .{});
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 45), wb.view.primarySel().head);
+    try Workbench.navigateBack(&wb);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 0), wb.view.primarySel().head);
+
+    // The workspace picker needs a server.
+    try Workbench.symbolsInWorkspace(&wb);
+    try std.testing.expect(!pk.ws_pick.isOpen(t.win));
 }
 
 test "workbench: opening the terminal focuses it; the Agent button shows and hides the pane" {
