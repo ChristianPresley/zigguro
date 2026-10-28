@@ -58,6 +58,8 @@ const CodeIntel = @import("codeintel.zig").CodeIntel;
 const settings_mod = @import("settings/service.zig");
 const Settings = settings_mod.Settings;
 const SettingsView = @import("settings/view.zig").SettingsView;
+const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
+const fs_tree = @import("explorer/fs_tree.zig");
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -122,6 +124,8 @@ pub const Workbench = struct {
     reg: *registry.CommandRegistry,
     diags: zg_config.diag.Diags,
     keymap_docs: std.ArrayList(zg_config.zon_load.Doc) = .empty,
+    /// The app's own bindings (keybindings.zon), under the preset.
+    app_keys: ?zg_config.zon_load.Doc = null,
     keymap: ?*zg_config.keymap.Keymap = null,
     resolver: *zg_config.resolver.Resolver,
     adapter: zg_config.ui.KeymapAdapter = undefined,
@@ -208,6 +212,16 @@ pub const Workbench = struct {
     autosave_timer: Window.TimerId = .none,
     /// Saves the workbench started without asking (no toast for them).
     quiet_saves: std.ArrayList(*FileSync) = .empty,
+    /// The file browser (created on first show) and its dock panel.
+    explorer: ?*ExplorerPanel = null,
+    explorer_ref: ?PanelRef = null,
+    /// `pending_open` moves focus to the editor (false: a click in the
+    /// explorer keeps it there).
+    pending_focus: bool = true,
+    /// `pending_open` came from the explorer (`openFromExplorer`).
+    pending_explorer: bool = false,
+    /// The editor the explorer last revealed (`explorer.autoReveal`).
+    revealed_panel: ?PanelRef = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -246,6 +260,10 @@ pub const Workbench = struct {
         autosave_seen: u64 = 0,
         /// The version a quiet save failed at (no retry until it changes).
         autosave_failed: u64 = std.math.maxInt(u64),
+        /// Opened with one click in the explorer, at this document
+        /// version: the next such click replaces the tab while the file
+        /// stays unedited (a preview, as in VS Code).
+        preview: ?u64 = null,
     };
 
     /// Dock panel kinds.
@@ -255,8 +273,9 @@ pub const Workbench = struct {
     const kind_review: zg_gui.dock.model.PanelKindId = 4;
     const kind_review_view: zg_gui.dock.model.PanelKindId = 5;
     const kind_settings: zg_gui.dock.model.PanelKindId = 6;
+    const kind_explorer: zg_gui.dock.model.PanelKindId = 7;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -465,6 +484,40 @@ pub const Workbench = struct {
         };
         const f = try wb.addFile(try wb.load(abs));
         wb.setCurrent(f.*);
+        // The empty buffer a folder opens with gives way to the first file.
+        if (wb.files.items.len == 2) {
+            const u = &wb.files.items[0];
+            if (u.path == null and !u.doc.isDirty() and u.doc.len() == 0) wb.closeFileAt(0);
+        }
+    }
+
+    /// Opens `abs` for the explorer: one click (`focus` false) opens a
+    /// preview that the next click replaces; Enter or a double click
+    /// keeps the tab.
+    fn openFromExplorer(wb: *Workbench, abs: []const u8, focus: bool) !void {
+        const was_open = for (wb.files.items) |f| {
+            if (f.path) |p| if (wb.samePath(p, abs)) break true;
+        } else false;
+        try wb.openFile(abs);
+        const cp = wb.cur_panel orelse return;
+        const cur = wb.fileOf(cp) orelse return;
+        if (focus) {
+            cur.preview = null;
+            return;
+        }
+        if (was_open) return;
+        cur.preview = cur.doc.version;
+        const keep = cur.panel;
+        var i: usize = 0;
+        while (i < wb.files.items.len) {
+            const f = &wb.files.items[i];
+            if (f.panel != keep and f.preview != null and f.preview.? == f.doc.version and !f.doc.isDirty()) {
+                wb.closeFileAt(i);
+                continue;
+            }
+            i += 1;
+        }
+        if (wb.fileOf(keep)) |k| wb.setCurrent(k.*);
     }
 
     fn fileOf(wb: *Workbench, p: PanelRef) ?*OpenFile {
@@ -690,6 +743,7 @@ pub const Workbench = struct {
                 kind_agent => wb.agent_ref = p,
                 kind_review => wb.review_ref = p,
                 kind_settings => wb.settings_ref = p,
+                kind_explorer => wb.explorer_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -823,6 +877,7 @@ pub const Workbench = struct {
         wb.mode_queue.deinit(wb.gpa);
         for (wb.keymap_docs.items) |*d| d.deinit();
         wb.keymap_docs.deinit(wb.gpa);
+        if (wb.app_keys) |*d| d.deinit();
         wb.reg.deinit();
         // After the registry: its palette handlers point into it.
         if (wb.agent_cmds) |c| c.deinit();
@@ -846,6 +901,10 @@ pub const Workbench = struct {
         if (wb.layout_dir) |d| d.close(wb.io);
         if (wb.undo_dir) |d| d.close(wb.io);
         if (wb.settings_view) |v| v.destroy();
+        if (wb.explorer) |e| {
+            e.deinit();
+            wb.gpa.destroy(e);
+        }
         if (wb.settings) |st| st.destroy();
         if (wb.keys_doc) |*d| d.deinit();
         if (wb.keys_path) |p| wb.gpa.free(p);
@@ -896,6 +955,9 @@ pub const Workbench = struct {
         if (wb.inLayout(wb.terminal_ref)) try wb.startTerminal(win);
         if (wb.inLayout(wb.agent_ref)) try wb.startAgent(win);
         if (wb.inLayout(wb.review_ref)) try wb.startReview(win);
+        // The explorer shows until the layout has it (hiding it keeps it
+        // there, hidden).
+        if (wb.explorer_ref == null and wb.startupExplorer()) try wb.showExplorerPanel(false);
         // Settings that need the window: the theme, auto save, live reload.
         wb.applySettings();
         wb.armSettingsPoll(win);
@@ -910,6 +972,7 @@ pub const Workbench = struct {
     }
 
     fn loadKeymap(wb: *Workbench) !void {
+        wb.app_keys = try zg_config.zon_load.loadZon(wb.gpa, @embedFile("keybindings.zon"), &wb.diags);
         for (zg_config.presets.presetLayers(.vscode)) |src| {
             try wb.keymap_docs.append(wb.gpa, try zg_config.zon_load.loadZon(wb.gpa, src, &wb.diags));
         }
@@ -921,6 +984,7 @@ pub const Workbench = struct {
     fn rebuildKeymap(wb: *Workbench) !void {
         var inputs: std.ArrayList(zg_config.keymap.LayerInput) = .empty;
         defer inputs.deinit(wb.gpa);
+        if (wb.app_keys) |*d| try inputs.append(wb.gpa, .{ .layer = .builtin_default, .doc = d });
         for (wb.keymap_docs.items) |*d| try inputs.append(wb.gpa, .{ .layer = .preset, .doc = d });
         if (wb.key_mode == .emacs) {
             if (wb.emacs_layer == null) wb.emacs_layer = try zg_config.zon_load.loadZon(wb.gpa, zg_editor.modes.emacs.keymap_source, &wb.diags);
@@ -971,6 +1035,24 @@ pub const Workbench = struct {
         .{ .id = "workbench.openSettingsFile", .title = "Open User Settings (JSON)", .category = "Preferences", .run = openUserSettingsFile },
         .{ .id = "workbench.openWorkspaceSettingsFile", .title = "Open Workspace Settings (JSON)", .category = "Preferences", .run = openWorkspaceSettingsFile },
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
+        .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
+        .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
+        .{ .id = "explorer.open", .title = "Open", .category = "Explorer", .run = explorerOpen },
+        .{ .id = "explorer.newFile", .title = "New File...", .category = "Explorer", .run = explorerNewFile },
+        .{ .id = "explorer.newFolder", .title = "New Folder...", .category = "Explorer", .run = explorerNewFolder },
+        .{ .id = "explorer.rename", .title = "Rename...", .category = "Explorer", .run = explorerRename },
+        .{ .id = "explorer.delete", .title = "Delete", .category = "Explorer", .run = explorerDelete },
+        .{ .id = "explorer.copy", .title = "Copy", .category = "Explorer", .run = explorerCopy },
+        .{ .id = "explorer.cut", .title = "Cut", .category = "Explorer", .run = explorerCut },
+        .{ .id = "explorer.paste", .title = "Paste", .category = "Explorer", .run = explorerPaste },
+        .{ .id = "explorer.copyPath", .title = "Copy Path", .category = "Explorer", .run = explorerCopyPath },
+        .{ .id = "explorer.copyRelativePath", .title = "Copy Relative Path", .category = "Explorer", .run = explorerCopyRelativePath },
+        .{ .id = "explorer.refresh", .title = "Refresh Explorer", .category = "Explorer", .run = explorerRefresh },
+        .{ .id = "explorer.collapseAll", .title = "Collapse Folders in Explorer", .category = "Explorer", .run = explorerCollapseAll },
+        .{ .id = "explorer.revealActiveFile", .title = "Reveal Active File in Explorer", .category = "Explorer", .run = explorerRevealActive },
+        .{ .id = "workspace.addFolder", .title = "Add Folder to Workspace...", .category = "Workspaces", .run = workspaceAddFolder },
+        .{ .id = "workspace.removeFolder", .title = "Remove Folder from Workspace", .category = "Workspaces", .run = workspaceRemoveFolder },
+        .{ .id = "workspace.openFolder", .title = "Open Folder in New Window...", .category = "File", .run = workspaceOpenFolder },
     };
 
     fn registerCommands(wb: *Workbench) !void {
@@ -1598,6 +1680,7 @@ pub const Workbench = struct {
         if (want != wb.key_mode) wb.setKeyMode(want);
         wb.setCompletionsEnabled(st.boolean("editor.inlineCompletions.enabled"));
         wb.armAutosave();
+        wb.applyExplorerSettings();
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1605,6 +1688,8 @@ pub const Workbench = struct {
     fn reloadSettings(wb: *Workbench) void {
         if (wb.settings) |st| _ = st.poll();
         wb.pollKeybindings();
+        // New, renamed and deleted files show up in the explorer.
+        if (wb.explorer) |e| if (e.refresh()) if (wb.win) |w| w.markAllDirty();
     }
 
     fn armSettingsPoll(wb: *Workbench, w: *Window) void {
@@ -1712,6 +1797,249 @@ pub const Workbench = struct {
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = dup;
         if (wb.win) |w| w.markAllDirty();
+    }
+
+    // -- the explorer --------------------------------------------------------
+
+    /// Whether `workbench.startupView` shows the explorer.
+    fn startupExplorer(wb: *Workbench) bool {
+        const st = wb.settings orelse return true;
+        return std.mem.eql(u8, st.string("workbench.startupView"), "explorer");
+    }
+
+    /// The side area the explorer docks into (`workbench.sideBar.location`).
+    fn explorerHome(wb: *Workbench) Area {
+        const st = wb.settings orelse return .left;
+        return if (std.mem.eql(u8, st.string("workbench.sideBar.location"), "right")) .right else .left;
+    }
+
+    fn ensureExplorer(wb: *Workbench) !void {
+        if (wb.explorer != null) return;
+        const e = try wb.gpa.create(ExplorerPanel);
+        errdefer wb.gpa.destroy(e);
+        try e.init(wb.gpa, wb.io, wb.cwd, .{ .ctx = wb, .open = onExplorerOpen, .moved = onExplorerMoved, .open_folder = onOpenFolder });
+        e.win = wb.win;
+        wb.explorer = e;
+        wb.applyExplorerSettings();
+        // Reveal the current file at the next build.
+        wb.revealed_panel = null;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Shows the explorer in its side area (`focus`: and focuses its tree).
+    fn showExplorerPanel(wb: *Workbench, focus: bool) !void {
+        try wb.ensureExplorer();
+        if (wb.explorer_ref == null) wb.explorer_ref = try wb.dock.addPanel(kind_explorer, null);
+        try wb.reveal(wb.explorer_ref.?, wb.explorerHome());
+        if (wb.win) |w| {
+            w.markAllDirty();
+            if (focus) w.afterNextFrame(.{ .ctx = wb, .f = focusExplorer });
+        }
+    }
+
+    fn focusExplorer(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const e = wb.explorer orelse return;
+        if (!e.tv.node.isNone() and w.store.valid(e.tv.node)) w.setFocus(e.tv.node, true);
+    }
+
+    fn showExplorer(wb: *Workbench) !void {
+        try wb.showExplorerPanel(true);
+    }
+
+    /// Hides the explorer's side area, or shows the explorer.
+    fn toggleSidebar(wb: *Workbench) !void {
+        if (wb.shown(wb.explorer_ref) and wb.areaOf(wb.explorer_ref) != .center) {
+            wb.conceal(wb.explorer_ref.?);
+            if (wb.win) |w| if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
+            return;
+        }
+        try wb.showExplorerPanel(false);
+    }
+
+    /// Applies the files.* and explorer.* settings, and moves the
+    /// explorer to the side `workbench.sideBar.location` names.
+    fn applyExplorerSettings(wb: *Workbench) void {
+        const e = wb.explorer orelse return;
+        const st = wb.settings orelse return;
+        var globs: [64][]const u8 = undefined;
+        var n: usize = 0;
+        if (st.get("files.exclude") == .object) for (st.get("files.exclude").object) |f| {
+            if (n == globs.len) break;
+            if (f.value == .bool and f.value.bool) {
+                globs[n] = f.key;
+                n += 1;
+            }
+        };
+        const sort = std.meta.stringToEnum(fs_tree.SortOrder, st.string("explorer.sortOrder")) orelse .foldersFirst;
+        e.setOptions(.{ .exclude = globs[0..n], .respect_gitignore = st.boolean("explorer.respectGitIgnore"), .sort = sort });
+        e.confirm_delete = st.boolean("explorer.confirmDelete");
+        if (wb.explorer_ref) |r| if (wb.areaOf(r)) |a| {
+            const home = wb.explorerHome();
+            if ((a == .left or a == .right) and a != home) {
+                wb.dock.move(r, .{ .area = home }) catch {};
+                wb.dock.areaVisible(home, true);
+            }
+        };
+    }
+
+    /// Selects the current editor's file in the explorer when it changes
+    /// (`explorer.autoReveal`).
+    fn autoReveal(wb: *Workbench) void {
+        if (wb.cur_panel == wb.revealed_panel) return;
+        wb.revealed_panel = wb.cur_panel;
+        const e = wb.explorer orelse return;
+        if (wb.settings) |st| if (!st.boolean("explorer.autoReveal")) return;
+        const p = wb.path orelse return;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return;
+        defer wb.gpa.free(abs);
+        e.reveal(abs);
+    }
+
+    /// The explorer opens a file: at the next build (it runs from event
+    /// handling).
+    fn onExplorerOpen(ctx: *anyopaque, abs: []const u8, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const copy = wb.gpa.dupe(u8, abs) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = copy;
+        wb.pending_focus = focus;
+        wb.pending_explorer = true;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// A file or folder was renamed, moved or deleted in the explorer:
+    /// open editors of it follow (unsaved ones stay and say so).
+    fn onExplorerMoved(ctx: *anyopaque, old: []const u8, new: ?[]const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var i: usize = 0;
+        while (i < wb.files.items.len) {
+            const f = &wb.files.items[i];
+            const path = f.path orelse {
+                i += 1;
+                continue;
+            };
+            const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path }) catch {
+                i += 1;
+                continue;
+            };
+            defer wb.gpa.free(abs);
+            if (!fs_tree.startsWithPath(abs, old)) {
+                i += 1;
+                continue;
+            }
+            if (f.doc.isDirty()) {
+                wb.notify(.warning, "{s} has unsaved changes: saving writes it back at its old path", .{std.fs.path.basename(abs)});
+                i += 1;
+                continue;
+            }
+            const panel = f.panel;
+            const was_current = wb.cur_panel == panel;
+            const moved_to = if (new) |n| std.mem.concat(wb.gpa, u8, &.{ n, abs[old.len..] }) catch null else null;
+            defer if (moved_to) |m| wb.gpa.free(m);
+            // Open the new path first: the last editor never closes.
+            // (Opening may close the empty buffer: find the file again.)
+            if (moved_to) |m| wb.openFile(m) catch {};
+            i = for (wb.files.items, 0..) |x, k| {
+                if (x.panel == panel) break k;
+            } else continue;
+            if (wb.files.items.len > 1) {
+                wb.closeFileAt(i);
+                if (!was_current) if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |cf| wb.setCurrent(cf.*);
+                continue;
+            }
+            i += 1;
+        }
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// Closes file `i`'s tab and frees it (another file stays open).
+    fn closeFileAt(wb: *Workbench, i: usize) void {
+        const f = wb.files.orderedRemove(i);
+        wb.dock.close(f.panel) catch {};
+        for (wb.dock.closed.items) |c| if (c.panel.state) |st| wb.gpa.free(st);
+        wb.dock.closed.clearRetainingCapacity();
+        const was_current = wb.cur_panel == f.panel;
+        wb.closeFile(f);
+        if (was_current) {
+            const next = &wb.files.items[@min(i, wb.files.items.len - 1)];
+            wb.showEditor(next) catch {};
+            wb.setCurrent(next.*);
+        }
+    }
+
+    /// The explorer, shown, for an explorer command.
+    fn explorerFor(wb: *Workbench) ?*ExplorerPanel {
+        if (!wb.shown(wb.explorer_ref)) wb.showExplorerPanel(false) catch return null;
+        return wb.explorer;
+    }
+
+    fn explorerOpen(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.openActive();
+    }
+    fn explorerNewFile(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.startPrompt(.new_file);
+    }
+    fn explorerNewFolder(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.startPrompt(.new_folder);
+    }
+    fn explorerRename(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.startPrompt(.rename);
+    }
+    fn explorerDelete(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.deleteSelection();
+    }
+    fn explorerCopy(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.copySelection(false);
+    }
+    fn explorerCut(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.copySelection(true);
+    }
+    fn explorerPaste(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.paste();
+    }
+    fn explorerCopyPath(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.copyPath(false);
+    }
+    fn explorerCopyRelativePath(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.copyPath(true);
+    }
+    fn explorerRefresh(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| {
+            _ = e.refresh();
+            e.tree.revision +%= 1;
+        }
+    }
+    fn explorerCollapseAll(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.collapseAll();
+    }
+    fn explorerRevealActive(wb: *Workbench) !void {
+        const e = wb.explorerFor() orelse return;
+        const p = wb.path orelse return;
+        const abs = try std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p });
+        defer wb.gpa.free(abs);
+        e.reveal(abs);
+        if (wb.win) |w| w.afterNextFrame(.{ .ctx = wb, .f = focusExplorer });
+    }
+    fn workspaceAddFolder(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.startPrompt(.add_folder);
+    }
+    fn workspaceRemoveFolder(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.removeFolder();
+    }
+
+    /// Asks for a folder (in the explorer's prompt), then opens it in a
+    /// new zigguro window.
+    fn workspaceOpenFolder(wb: *Workbench) !void {
+        if (wb.explorerFor()) |e| e.startPrompt(.open_folder);
+    }
+
+    fn onOpenFolder(ctx: *anyopaque, abs: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const exe = std.process.executablePathAlloc(wb.io, wb.gpa) catch |e| return wb.notify(.error_, "Could not start zigguro: {t}", .{e});
+        defer wb.gpa.free(exe);
+        _ = std.process.spawn(wb.io, .{ .argv = &.{ exe, abs }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |e|
+            wb.notify(.error_, "Could not start zigguro: {t}", .{e});
     }
 
     // -- auto save -----------------------------------------------------------
@@ -2070,11 +2398,16 @@ pub const Workbench = struct {
         if (wb.pending_open) |p| {
             wb.pending_open = null;
             defer wb.gpa.free(p);
-            if (wb.openFile(p)) {
-                ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
+            const focus = wb.pending_focus;
+            const from_explorer = wb.pending_explorer;
+            wb.pending_focus = true;
+            wb.pending_explorer = false;
+            if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
+                if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
         wb.followFocus();
+        wb.autoReveal();
         wb.dv.beginFrame(ui);
         // At the window origin: the chrome (title bar and frame when the
         // platform asks us to draw them), then the dock's drop preview.
@@ -2192,6 +2525,7 @@ pub const Workbench = struct {
             kind_review => .{ .title = "Review", .badge = if (wb.review_panel) |r| r.badge(&wb.review_badge) else "" },
             kind_review_view => .{ .title = if (wb.review_view) |v| v.title else "Review" },
             kind_settings => .{ .title = "Settings" },
+            kind_explorer => .{ .title = "Explorer" },
             else => .{ .title = "?" },
         };
     }
@@ -2222,6 +2556,10 @@ pub const Workbench = struct {
                 wb.ensureSettingsView() catch {};
                 if (wb.settings_view) |v| v.build(ui);
             },
+            kind_explorer => {
+                wb.ensureExplorer() catch {};
+                if (wb.explorer) |e| e.build(ui);
+            },
             else => {},
         }
     }
@@ -2250,7 +2588,7 @@ pub const Workbench = struct {
             wb.settings_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -2277,6 +2615,7 @@ pub const Workbench = struct {
             .{ .id = "agent", .label = "Agent", .tooltip = "Toggle Agent Pane (Ctrl+L)", .action = "agent.togglePane", .toggled = wb.shown(wb.agent_ref), .priority = 20 },
             .{ .id = "review", .label = "Review", .tooltip = "Toggle Review Queue", .action = "review.queue.toggle", .toggled = wb.shown(wb.review_ref), .priority = 15 },
             .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
+            .{ .id = "explorer", .label = "Explorer", .tooltip = "Show Explorer (Ctrl+Shift+E)", .action = "workbench.toggleSidebar", .toggled = wb.shown(wb.explorer_ref), .priority = 30 },
             .{ .id = "settings", .label = "Settings", .tooltip = "Open Settings (Ctrl+,)", .action = "workbench.openSettings", .priority = 2, .toggled = if (wb.settings_ref) |r| wb.dock.groupOf(r) != null else false },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });
