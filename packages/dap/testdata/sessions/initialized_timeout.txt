@@ -1,0 +1,6 @@
+# The adapter answers launch but never sends initialized.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+~ 10000ms
