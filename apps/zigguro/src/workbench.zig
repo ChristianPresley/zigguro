@@ -1091,6 +1091,7 @@ pub const Workbench = struct {
             ci.link_hook = .{ .ctx = wb, .open = onDocLink };
             ci.crash_hook = .{ .ctx = wb, .f = onServerCrash };
             ci.notice_hook = .{ .ctx = wb, .f = onServerNotice };
+            ci.engine.review = .{ .ctx = wb, .submit = onLspReview };
             wb.server_menu.host = .{ .ctx = wb, .run = onServerAction };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -2865,6 +2866,32 @@ pub const Workbench = struct {
         for (changes, files) |c, *f| f.* = .{ .path = c.path, .base = c.base, .new = c.new };
         const id = try h.review.proposeChange(label, .{ .notes = .{ .tx = 0 } }, files, h.review.mode == .auto_apply);
         return if (id) |x| @intFromEnum(x) else 0;
+    }
+
+    /// Language-server edits that need review (an agent's rename or code
+    /// action, an edit the server asks to confirm, `force_review`): one
+    /// changeset pending in the review queue. Any thread.
+    fn onLspReview(ctx: *anyopaque, p: *const zg_codeintel.edits.plan.EditPlan, _: zg_codeintel.edits.Engine.Origin) anyerror!u64 {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const h = wb.agent orelse return error.ReviewUnavailable;
+        const files = try wb.gpa.alloc(ReviewGlue.ProposedFile, p.files.len);
+        defer wb.gpa.free(files);
+        for (p.files, files) |f, *out| {
+            // The queue takes text changes and new files, by workspace path.
+            const after = f.after orelse return error.DeletesNotReviewable;
+            const rel = relativeTo(wb.cwd, f.path) orelse return error.OutsideWorkspace;
+            out.* = .{ .path = rel, .base = f.before, .new = after };
+        }
+        const id = try h.review.proposeChange(p.label, .{ .lsp = .{ .server = "lsp" } }, files, false) orelse return error.NothingToReview;
+        return @intFromEnum(id);
+    }
+
+    /// `path` relative to folder `root`, or null when outside it.
+    fn relativeTo(root: []const u8, path: []const u8) ?[]const u8 {
+        const r = std.mem.trimEnd(u8, root, "/\\");
+        if (path.len <= r.len + 1 or !std.mem.startsWith(u8, path, r)) return null;
+        if (path[r.len] != '/' and path[r.len] != '\\') return null;
+        return path[r.len + 1 ..];
     }
 
     /// Selects bytes `r` of the current editor (clamped) and shows them.
