@@ -283,6 +283,11 @@ pub const EditorView = struct {
     key_hook: ?KeyHook = null,
     /// Told of pointer moves, Ctrl+clicks and key presses (hover).
     pointer_hook: ?PointerHook = null,
+    /// Offered pointer moves, leaves and key presses before
+    /// `pointer_hook` (the debugger's hover, E07): a move it returns true
+    /// for reaches `pointer_hook` as a leave, so the language hover gives
+    /// way; a key it returns true for goes no further.
+    priority_hook: ?PointerHook = null,
     /// Told of clicks on the gutter's mark lanes (breakpoints, E07).
     gutter_hook: ?GutterHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.

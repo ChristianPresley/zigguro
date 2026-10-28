@@ -87,6 +87,7 @@ const Tasks = @import("tasks.zig").Tasks;
 const debug_service = @import("debug/service.zig");
 const debug_var_tree = @import("debug/var_tree.zig");
 const debug_bp_view = @import("debug/bp_view.zig");
+const debug_hover = @import("debug/hover.zig");
 const zg_dap = @import("zg_dap");
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
@@ -595,6 +596,7 @@ pub const Workbench = struct {
             nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
             nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
             nf.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
+            nf.view.priority_hook = .{ .ctx = wb, .f = onDebugPointer };
             wb.attachCompletions(nf);
         }
         if (wb.debug) |d| wb.debugAttach(d, nf);
@@ -1134,6 +1136,7 @@ pub const Workbench = struct {
             f.view.on_change = .{ .ctx = wb, .f = onViewChange };
             f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
             f.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
+            f.view.priority_hook = .{ .ctx = wb, .f = onDebugPointer };
         }
         wb.completions_svc = completions.Service.create(wb.rt, wb.env, win.app) catch |e| blk: {
             log.err("completions: {t}", .{e});
@@ -2275,12 +2278,14 @@ pub const Workbench = struct {
 
     /// `editor.showHover`: the hover at the caret.
     fn showHover(wb: *Workbench) !void {
-        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
-        const h = wb.currentHandle() orelse return;
         const w = wb.win orelse return;
         if (wb.editor_node.isNone()) return;
         const r = w.layoutRect(wb.editor_node);
         const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
+        // While paused, the debugger's value first.
+        if (wb.debug) |d| if (d.showHoverAt(wb.view, wb.doc, origin)) return;
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return;
         ci.showHoverAt(wb.view, h, wb.view.primarySel().head, origin) catch
             wb.notify(.info, "No language server for this file", .{});
     }
@@ -3214,6 +3219,17 @@ pub const Workbench = struct {
         d.toggleBreakpointAt(abs, @intCast(line + 1));
         if (wb.win) |w| w.markAllDirty();
         return true;
+    }
+
+    /// The editors' first pointer hook: while paused, the debug hover
+    /// takes the pointer ahead of the language hover.
+    fn onDebugPointer(ctx: *anyopaque, v: *EditorView, e: zg_editor.view.editor_view.PointerEvent) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const d = wb.debug orelse return false;
+        const f = for (wb.files.items) |*f| {
+            if (f.view == v) break f;
+        } else return false;
+        return d.hoverPointer(v, f.doc, e);
     }
 
     /// Whether `f`'s gutter shows the code action lightbulb on `line`.
@@ -6948,6 +6964,32 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     dp.vars.submitEdit();
     try Find.until(t, "b, 40, int");
     try Find.until(t, "a + b, 41, int");
+    // The pointer resting on `b` in `a + b`: its value, in a popover.
+    {
+        const w = t.win;
+        const r = w.layoutRect(wb.editor_node);
+        const b_off = 24 + 16;
+        const at = wb.view.posOf(b_off);
+        const pos: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x + at.x + 2, .y = r.y - wb.view.scroll.y + at.y + wb.view.lineHeight() / 2 };
+        w.dispatch(.{ .pointer_move = .{ .pos = pos } });
+        try std.testing.expect(d.hover.rest != null);
+        try std.testing.expectEqualStrings("b", d.hover.rest.?.expr);
+        t.advance(debug_hover.delay_ms);
+        var tries: u32 = 0;
+        while (!d.hover.isOpen() and tries < 500) : (tries += 1) {
+            _ = t.settle();
+            std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+        }
+        _ = t.settle();
+        try std.testing.expect(d.hover.isOpen());
+        try std.testing.expectEqualStrings("40", d.hover.value);
+        try std.testing.expect(t.find(.{ .test_id = "debug-hover" }) != null);
+        try std.testing.expectEqualStrings("b, 40, int", debug_var_tree.VarTree.labelOf(&d.hover.tree, d.hover.tree.tv.flat.rows.items[0].node));
+        // Escape closes it.
+        t.press(.escape, .{});
+        _ = t.settle();
+        try std.testing.expect(!d.hover.isOpen());
+    }
     // The keys follow the stop.
     try std.testing.expectEqualStrings("debug.continue", testCommandFor(&wb, K{ .key = .f5 }).?);
     try std.testing.expectEqualStrings("debug.stepOver", testCommandFor(&wb, K{ .key = .f10 }).?);

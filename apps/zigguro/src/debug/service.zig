@@ -19,6 +19,8 @@
 //! - Breakpoints show in the gutter of every open editor and follow its
 //!   edits (zg_codeintel's `BreakpointGutter`, flushed by `onFrame`); the
 //!   saved ones are read on a worker.
+//! - While paused, an expression under the pointer shows its value
+//!   (`hover.zig`, ahead of the language hover).
 //! - State: `.zigguro/debug/breakpoints.zon`, `watches.zon` and
 //!   `repl_history.zon` under the workspace (written on change).
 //!
@@ -36,6 +38,7 @@ const call_stack = @import("call_stack.zig");
 const toolbar = @import("toolbar.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
+const hover_mod = @import("hover.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -57,6 +60,8 @@ const Window = zg_gui.Window;
 const BreakpointGutter = zg_codeintel.debug.BreakpointGutter;
 const Document = zg_editor.model.document.Document;
 const DecorationStore = zg_editor.model.decorations.store.DecorationStore;
+const EditorView = zg_editor.view.EditorView;
+const PointerEvent = zg_editor.view.editor_view.PointerEvent;
 const log = std.log.scoped(.debug_ui);
 
 /// Where the debug state lives, under the workspace.
@@ -141,6 +146,9 @@ pub const Debug = struct {
     /// The models the views show without a session: the watch list
     /// (saved to `watches.zon`; each session starts with a copy).
     no_session: Inspector = undefined,
+    /// The editors' debug hover, and the `generation` it was read at.
+    hover: hover_mod.DebugHover = undefined,
+    hover_seen: u64 = 0,
     mgr: DebugManager = undefined,
     vars: variables.VarContext = undefined,
     file_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -228,6 +236,8 @@ pub const Debug = struct {
         d.bps.opts.host = d.gutter.host();
         try d.gutter.bind(&d.bps);
         try d.no_session.init(gpa, rt.io, null, .none, .{});
+        try d.hover.init(gpa, d.varHooks());
+        d.hover.target_of = hoverTargetOf;
         if (root_dir) |rd| d.no_session.watches.persist_to = .{ .dir = rd, .path = state_dir ++ "/" ++ Watches.sub_path };
         d.reg_resolver = .{ .reg = &d.reg, .io = rt.io, .env = env };
         d.vars = .{
@@ -269,6 +279,7 @@ pub const Debug = struct {
         d.inbox.shutDown();
         for (d.entries.items) |e| e.s.stop();
         while (d.entries.items.len > 0) d.dropEntry(d.entries.items[d.entries.items.len - 1], false);
+        d.hover.deinit();
         d.idle.waitUncancelable(d.io);
         // Freeing sessions waits for their adapters: on a worker.
         var done: Io.Event = .unset;
@@ -374,6 +385,109 @@ pub const Debug = struct {
         for (d.entries.items) |e| for (d.no_session.watches.results()) |w| e.insp.watches.add(w.expr);
     }
 
+    // ------------------------------------------------------------ hover
+
+    /// The session the hover evaluates in: the active one, paused.
+    fn hoverTarget(d: *Debug) ?hover_mod.Target {
+        const e = d.active() orelse return null;
+        if (!e.insp.stopped()) return null;
+        return .{ .insp = &e.insp, .id = e.id };
+    }
+
+    fn hoverTargetOf(h: *hover_mod.DebugHover) ?hover_mod.Target {
+        const d: *Debug = @alignCast(@fieldParentPtr("hover", h));
+        return d.hoverTarget();
+    }
+
+    /// An expression of `doc` in `v`: the selection the offset is in, or
+    /// the expression around it.
+    const HoverSpot = struct { range: hover_mod.Range, anchor: zg_gui.core.Rect };
+
+    fn hoverSpot(v: *EditorView, doc: *const Document, off: u64, origin: zg_gui.core.Vec2) ?HoverSpot {
+        const sel = v.primarySel();
+        const lo = @min(sel.anchor, sel.head);
+        const hi = @max(sel.anchor, sel.head);
+        const range: hover_mod.Range = if (hi > lo and off >= lo and off < hi and hi - lo <= 256 and v.lineOf(lo) == v.lineOf(hi -| 1))
+            .{ .start = lo, .end = hi }
+        else
+            hover_mod.expressionAt(doc, off) orelse return null;
+        const p0 = v.posOf(range.start);
+        const p1 = v.posOf(range.end);
+        const w = if (p1.y == p0.y and p1.x > p0.x) p1.x - p0.x else 8;
+        return .{ .range = range, .anchor = .{ .x = origin.x + p0.x, .y = origin.y + p0.y, .w = w, .h = v.lineHeight() } };
+    }
+
+    /// `range` of `doc` as text (in `buf`).
+    fn spotText(doc: *const Document, range: hover_mod.Range, buf: []u8) []const u8 {
+        var n: usize = 0;
+        var it = doc.tree.slice(.{ .start = range.start, .end = @min(range.end, range.start + buf.len) });
+        while (it.next()) |c| {
+            @memcpy(buf[n..][0..c.len], c);
+            n += c.len;
+        }
+        return std.mem.trim(u8, buf[0..n], " \t\r\n");
+    }
+
+    /// The editors' first pointer hook (`EditorView.priority_hook`):
+    /// true when the debug hover takes the pointer (or the key).
+    pub fn hoverPointer(d: *Debug, v: *EditorView, doc: *const Document, e: PointerEvent) bool {
+        const h = &d.hover;
+        h.win = d.win;
+        const now = d.app.now_ms;
+        switch (e.kind) {
+            .move => {
+                if (d.hoverTarget() == null) {
+                    if (h.busy()) h.close();
+                    return false;
+                }
+                const off = e.offset orelse {
+                    h.away(now);
+                    return false;
+                };
+                const spot = hoverSpot(v, doc, off, e.origin) orelse {
+                    h.away(now);
+                    return false;
+                };
+                var buf: [256]u8 = undefined;
+                const expr = spotText(doc, spot.range, &buf);
+                if (expr.len == 0) {
+                    h.away(now);
+                    return false;
+                }
+                h.restOn(v, spot.range, expr, spot.anchor, now);
+                return true;
+            },
+            .leave => h.away(now),
+            .key => {
+                if (!h.busy()) return false;
+                const k = e.key orelse return false;
+                switch (k.key) {
+                    .shift_left, .shift_right, .control_left, .control_right, .alt_left, .alt_right, .meta_left, .meta_right => return false,
+                    else => {},
+                }
+                h.close();
+                return k.key == .escape;
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// The debug hover at the caret of `v` (`editor.showHover` while
+    /// paused); false when there is no paused session or no expression.
+    pub fn showHoverAt(d: *Debug, v: *EditorView, doc: *const Document, origin: zg_gui.core.Vec2) bool {
+        const t = d.hoverTarget() orelse return false;
+        d.hover.win = d.win;
+        const sel = v.primarySel();
+        const off = if (sel.head > sel.anchor) sel.head - 1 else sel.head;
+        const spot = hoverSpot(v, doc, off, origin) orelse return false;
+        var buf: [256]u8 = undefined;
+        const expr = spotText(doc, spot.range, &buf);
+        if (expr.len == 0) return false;
+        d.hover.showNow(t, v, spot.range, expr, spot.anchor);
+        return true;
+    }
+
     // ---------------------------------------------------------- watches
 
     /// The models the Variables and Watch views show: the active
@@ -471,6 +585,10 @@ pub const Debug = struct {
         if (d.exec_seen != d.generation) {
             d.exec_seen = d.generation;
             d.updateExec();
+        }
+        if (d.hover.shown != null and (d.hover_seen != d.generation or d.hover.tree.insp == null)) {
+            d.hover_seen = d.generation;
+            d.hover.refresh(d.hoverTarget());
         }
         d.gutter.flush();
     }
@@ -690,6 +808,8 @@ pub const Debug = struct {
         };
         d.dropped.put(d.gpa, e.id, {}) catch {};
         if (d.active_id == e.id) d.active_id = null;
+        if (d.hover.shown) |sh| if (sh.session == e.id) d.hover.close();
+        if (d.hover.tree.insp == &e.insp) d.hover.close();
         e.insp.ch.setWaker(null);
         e.insp.deinit();
         const s = e.s;

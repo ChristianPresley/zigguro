@@ -191,6 +191,44 @@ test "view: pointer hook hears moves, leaves, Ctrl+clicks, keys and typing" {
     try f.expectText("xabcd\nef");
 }
 
+test "view: a move the priority hook takes reaches the pointer hook as a leave" {
+    var f: Fx = undefined;
+    try f.init("abcd\nef");
+    defer f.deinit();
+    const Hook = struct {
+        take: bool = false,
+        moves: u32 = 0,
+        leaves: u32 = 0,
+        keys: u32 = 0,
+        fn on(ctx: *anyopaque, _: *EditorView, e: view_mod.PointerEvent) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            switch (e.kind) {
+                .move => h.moves += 1,
+                .leave => h.leaves += 1,
+                .key => h.keys += 1,
+                else => {},
+            }
+            return h.take and e.kind != .leave;
+        }
+    };
+    var first: Hook = .{};
+    var second: Hook = .{};
+    f.view.priority_hook = .{ .ctx = &first, .f = Hook.on };
+    f.view.pointer_hook = .{ .ctx = &second, .f = Hook.on };
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.pointAt(0, 2) } });
+    try testing.expectEqual(@as(u32, 1), first.moves);
+    try testing.expectEqual(@as(u32, 1), second.moves);
+    first.take = true;
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.pointAt(0, 3) } });
+    try testing.expectEqual(@as(u32, 2), first.moves);
+    try testing.expectEqual(@as(u32, 1), second.moves);
+    try testing.expectEqual(@as(u32, 1), second.leaves);
+    // A key it takes goes no further.
+    f.press(.{ .key = .escape });
+    try testing.expectEqual(@as(u32, 1), first.keys);
+    try testing.expectEqual(@as(u32, 0), second.keys);
+}
+
 test "view: undo groups typing and redo restores it" {
     var f: Fx = undefined;
     try f.init("");
