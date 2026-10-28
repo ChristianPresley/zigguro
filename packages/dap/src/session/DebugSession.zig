@@ -806,6 +806,31 @@ fn call(s: *DebugSession, command: []const u8, args: ?[]const u8, timeout: ?Io.D
     };
 }
 
+/// What `request` got back.
+pub const Answer = union(enum) {
+    /// The response body as JSON text (null: none).
+    ok: ?[]const u8,
+    /// The adapter's error text.
+    failed: []const u8,
+    timeout,
+    /// The adapter is gone.
+    closed,
+};
+
+/// Sends `command` (`args`: JSON text or null) and waits up to `timeout`,
+/// the answer's text in `a`. For workers that may block (agent tools);
+/// never from the UI thread, a listener or a connection callback.
+pub fn request(s: *DebugSession, a: Allocator, command: []const u8, args: ?[]const u8, timeout: Io.Duration) Allocator.Error!Answer {
+    const r = s.call(command, args, timeout);
+    defer r.deinit();
+    return switch (r) {
+        .ok => |o| .{ .ok = if (o.response.body) |b| try a.dupe(u8, b.bytes) else null },
+        .failed => |o| .{ .failed = try a.dupe(u8, o.errorText()) },
+        .timeout => .timeout,
+        .closed => .closed,
+    };
+}
+
 /// Sends `command` without waiting; `cb` (or nothing) gets the result.
 fn send(s: *DebugSession, command: []const u8, args: ?[]const u8, cb: ?DapConnection.RawRespCb) bool {
     const c = s.connection() orelse return false;
