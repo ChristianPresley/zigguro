@@ -9,6 +9,12 @@
     .{ .key = "mod+shift+g", .command = "workbench.showScm" },
     // workbench.view.debug
     .{ .key = "mod+shift+d", .command = "workbench.showDebug" },
+    // workbench.debug.action.toggleRepl
+    .{ .key = "mod+shift+y", .command = "workbench.showDebugConsole" },
+    // The Debug Console's input: history and completions.
+    .{ .key = "up", .command = "debug.consoleHistoryPrevious", .when = "debugConsoleInputFocus" },
+    .{ .key = "down", .command = "debug.consoleHistoryNext", .when = "debugConsoleInputFocus" },
+    .{ .key = "ctrl+space", .command = "debug.consoleComplete", .when = "debugConsoleInputFocus" },
     // The debugger (VS Code's workbench.action.debug.start / continue /
     // run / stop / restart / pause / stepOver / stepInto / stepOut and
     // editor.debug.action.toggleBreakpoint). Later entries win.
