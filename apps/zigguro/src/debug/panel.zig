@@ -1,7 +1,7 @@
 //! The Run and Debug panel (E07.F07.S01.T01, .T03): the debug toolbar,
-//! the configuration row, then the Variables, Watch, Call Stack and
-//! Breakpoints views, over the debug service. The console joins it
-//! later.
+//! the configuration row, then the Variables, Watch, Call Stack,
+//! Loaded Scripts (while debugging) and Breakpoints views, over the debug
+//! service. The console is a panel of its own.
 //!
 //! The trees are rebuilt only when the service's `generation` changed,
 //! so a stop paints in the frame after the models applied it. UI thread
@@ -15,6 +15,7 @@ const toolbar = @import("toolbar.zig");
 const call_stack = @import("call_stack.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
+const sources_view = @import("sources_view.zig");
 
 const Allocator = std.mem.Allocator;
 const Ui = zg_gui.Ui;
@@ -23,6 +24,7 @@ const Debug = service.Debug;
 const CallStack = call_stack.CallStack;
 const VarTree = var_tree.VarTree;
 const BpView = bp_view.BpView;
+const SourcesView = sources_view.SourcesView;
 
 pub const DebugPanel = struct {
     gpa: Allocator,
@@ -31,6 +33,7 @@ pub const DebugPanel = struct {
     vars: VarTree = undefined,
     watch: VarTree = undefined,
     bpv: BpView = undefined,
+    srcs: SourcesView = undefined,
     /// The service generation the tree was built from.
     seen: u64 = 0,
     snap_arena: std.heap.ArenaAllocator,
@@ -45,11 +48,14 @@ pub const DebugPanel = struct {
         try p.watch.init(gpa, .watch, d.varHooks());
         errdefer p.watch.deinit();
         try p.bpv.init(gpa, d.bpHooks());
+        errdefer p.bpv.deinit();
+        try p.srcs.init(gpa, d.sourcesHooks());
         p.seen = 0;
         _ = p.refresh();
     }
 
     pub fn deinit(p: *DebugPanel) void {
+        p.srcs.deinit();
         p.bpv.deinit();
         p.watch.deinit();
         p.vars.deinit();
@@ -67,6 +73,7 @@ pub const DebugPanel = struct {
         p.vars.update(p.d.viewInspector()) catch {};
         p.watch.update(p.d.viewInspector()) catch {};
         if (p.d.bpSnapshot(p.snap_arena.allocator())) |bs| p.bpv.update(bs) catch {} else |_| {}
+        if (p.d.sourcesSnapshot(p.snap_arena.allocator())) |ss| p.srcs.update(ss) catch {} else |_| {}
         if (p.d.reveal_req) |id| {
             if (p.d.entryById(id) == null) {
                 p.d.reveal_req = null;
@@ -82,7 +89,7 @@ pub const DebugPanel = struct {
         p.stack.focus(w);
     }
 
-    pub const View = enum { variables, watch, call_stack, breakpoints };
+    pub const View = enum { variables, watch, call_stack, loaded_scripts, breakpoints };
 
     /// Edits breakpoint `id`'s `field` in the Breakpoints view (just made:
     /// the rows are read again first).
@@ -103,6 +110,7 @@ pub const DebugPanel = struct {
             .variables => p.vars.focus(w),
             .watch => p.watch.focus(w),
             .call_stack => p.stack.focus(w),
+            .loaded_scripts => p.srcs.focus(w),
             .breakpoints => p.bpv.focus(w),
         }
     }
@@ -135,6 +143,12 @@ pub const DebugPanel = struct {
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "callStackFocus" });
         if (debugging) p.stack.build(ui);
         ui.close();
+        if (debugging) {
+            heading(ui, "LOADED SCRIPTS");
+            ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "loadedScriptsFocus" });
+            if (p.srcs.isEmpty()) hint(ui, "No loaded scripts yet.") else p.srcs.build(ui);
+            ui.close();
+        }
         p.breakpointsHeading(ui);
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "breakpointsFocus" });
         p.bpv.build(ui);
