@@ -95,6 +95,9 @@ pub const TreeProps = struct {
     on_selection: ?SelectionHook = null,
     /// `expandRow`, `collapseRow` and `*` (each sibling opened).
     on_toggle: ?ToggleHook = null,
+    /// Space on the active row (a checkbox row toggles), instead of
+    /// selecting it.
+    on_space: ?NodeHook = null,
 };
 
 /// Type-ahead resets after this pause.
@@ -331,6 +334,10 @@ pub const TreeView = struct {
             },
             .space => {
                 if (tv.typed_len > 0) return false; // part of a type-ahead
+                if (tv.props.on_space) |h| if (!k.mods.ctrl and !k.mods.shift) {
+                    h.f(h.ctx, tv.flat.rows.items[cur].node);
+                    return true;
+                };
                 tv.moveTo(cur, if (k.mods.ctrl or tv.props.multi) .toggle else .replace);
             },
             .key_a => {
