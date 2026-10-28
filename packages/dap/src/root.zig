@@ -21,6 +21,11 @@ pub const adapters = struct {
 pub const config = struct {
     pub const LaunchConfig = @import("config/LaunchConfig.zig");
     pub const zig_autoconfig = @import("config/zig_autoconfig.zig");
+    pub const ConfigSet = @import("config/ConfigSet.zig");
+    pub const launch_zon = @import("config/launch_zon.zig");
+    pub const launch_json = @import("config/launch_json.zig");
+    pub const type_map = @import("config/type_map.zig");
+    pub const zon_dynamic = @import("config/zon_dynamic.zig");
 };
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
@@ -63,4 +68,5 @@ test {
     _ = @import("tasks/task_runner_test.zig");
     _ = @import("headless/headless_test.zig");
     _ = @import("adapters/adapters_test.zig");
+    _ = @import("config/config_test.zig");
 }
