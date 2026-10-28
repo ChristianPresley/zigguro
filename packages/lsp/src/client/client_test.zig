@@ -184,6 +184,12 @@ test "client: error mapping and timeout" {
     try testing.expect(modified == .content_modified);
     const canceled = try h.client.requestBlocking(M, hoverParams(0, 0), .{});
     try testing.expect(canceled == .canceled);
+    // ServerCancelled: asked again, unless the server says not to.
+    const retrigger = try h.client.requestBlocking(M, hoverParams(0, 0), .{});
+    try testing.expect(retrigger == .content_modified);
+    const declined = try h.client.requestBlocking(M, hoverParams(0, 0), .{});
+    defer declined.deinit();
+    try testing.expectEqual(@as(i32, -32802), declined.lsp_error.code);
     const failed = try h.client.requestBlocking(M, hoverParams(0, 0), .{});
     defer failed.deinit();
     try testing.expectEqual(@as(i32, -32603), failed.lsp_error.code);

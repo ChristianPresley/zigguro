@@ -14,7 +14,9 @@
 //! Pulls ask each open document's pull server again after edits (through
 //! the shared poller), with the previous result id, and on
 //! `workspace/diagnostic/refresh`. `relatedDocuments` reports are applied
-//! to their documents. A server that stops loses its diagnostics.
+//! to their documents. Servers that offer workspace pulls are also asked
+//! for the whole workspace (`WorkspacePull`), which reports closed files
+//! too. A server that stops loses its diagnostics.
 
 const Driver = @This();
 const std = @import("std");
@@ -29,6 +31,7 @@ const position = @import("../features/position.zig");
 const Store = @import("Store.zig");
 const convert = @import("convert.zig");
 const SettleDetector = @import("settle.zig");
+const WorkspacePull = @import("workspace_pull.zig");
 
 const Client = zg_lsp.client.Client;
 const protocol = zg_lsp.protocol;
@@ -45,6 +48,8 @@ pub const history = 4;
 pub const Options = struct {
     pull: Poll.Options = .{},
     settle: SettleDetector.Options = .{},
+    /// Its waker defaults to `pull`'s.
+    workspace: WorkspacePull.Options = .{},
 };
 
 const Incoming = struct {
@@ -78,6 +83,7 @@ mgr: *Manager,
 store: *Store,
 settle: SettleDetector,
 poll: Poll,
+ws: WorkspacePull,
 waker: zg_core.runtime.Waker,
 inbox_mutex: Io.Mutex = .init,
 inbox: std.ArrayList(Incoming) = .empty,
@@ -102,6 +108,11 @@ pub fn init(d: *Driver, mgr: *Manager, store: *Store, opts: Options) Allocator.E
         .store = store,
         .settle = .init(mgr.gpa, mgr.rt.io, store, opts.settle),
         .poll = .init(mgr, .{ .ctx = d, .apply = applyPull, .clear = clearPull, .prepare = preparePull }, opts.pull),
+        .ws = .init(mgr, ws: {
+            var o = opts.workspace;
+            if (o.waker.ctx == null) o.waker = opts.pull.waker;
+            break :ws o;
+        }),
         .waker = opts.pull.waker,
     };
     mgr.setDiagnosticsHooks(.{ .ctx = d, .publish = onPublish, .sent = onSent });
@@ -111,6 +122,7 @@ pub fn init(d: *Driver, mgr: *Manager, store: *Store, opts: Options) Allocator.E
 /// Call after `Manager.deinit` (no pushes or answers arrive after it).
 pub fn deinit(d: *Driver) void {
     d.poll.deinit();
+    d.ws.deinit();
     for (d.takeInbox()) |x| freeIncoming(d.gpa, x);
     d.taken.deinit(d.gpa);
     d.inbox.deinit(d.gpa);
@@ -150,6 +162,7 @@ pub fn tick(d: *Driver) bool {
     d.taken.clearRetainingCapacity();
     d.syncDocs();
     _ = d.poll.tick();
+    d.ws.tick(d.nowNs(), .{ .ctx = d, .full = onWorkspaceFull });
     d.dropStopped();
     const before = d.store.current.generation;
     d.store.commit();
@@ -158,7 +171,16 @@ pub fn tick(d: *Driver) bool {
 }
 
 pub fn nextDue(d: *const Driver) ?i96 {
-    return d.poll.nextDue();
+    const a = d.poll.nextDue();
+    const b = d.ws.nextDue();
+    if (a == null) return b;
+    if (b == null) return a;
+    return @min(a.?, b.?);
+}
+
+/// The workspace pulls (tests).
+pub fn workspacePull(d: *Driver) *WorkspacePull {
+    return &d.ws;
 }
 
 // ------------------------------------------------------------------ push
@@ -243,7 +265,16 @@ fn onSent(ctx: *anyopaque, s: *Manager.Server, h: DocHandle, version: i32) void 
 
 fn onRefresh(ctx: *anyopaque, _: *Manager.Server, f: Manager.RefreshFeature) void {
     const d: *Driver = @ptrCast(@alignCast(ctx));
-    if (f == .diagnostic) d.poll.refresh();
+    if (f != .diagnostic) return;
+    d.poll.refresh();
+    d.ws.refresh();
+}
+
+fn onWorkspaceFull(ctx: *anyopaque, s: *Manager.Server, uri: []const u8, items: []const protocol.Diagnostic) void {
+    const d: *Driver = @ptrCast(@alignCast(ctx));
+    const c = s.client orelse return;
+    d.reporters.put(d.gpa, s.id, {}) catch {};
+    d.applyRelated(s, uri, position.encodingOf(c.encoding()), items) catch |e| log.debug("workspace diagnostics: {t}", .{e});
 }
 
 fn serverOf(d: *Driver, c: *Client) ?*Manager.Server {
@@ -328,7 +359,10 @@ fn openDocOfKey(d: *Driver, key: []const u8) ?DocHandle {
 /// their tracks and keys.
 fn syncDocs(d: *Driver) void {
     var it = d.mgr.open.keyIterator();
-    while (it.next()) |h| if (!d.poll.isTracked(h.*)) d.poll.track(h.*) catch {};
+    while (it.next()) |h| if (!d.poll.isTracked(h.*)) {
+        d.poll.track(h.*) catch {};
+        d.mapOpened(h.*);
+    };
     var i: usize = d.poll.states.count();
     while (i > 0) {
         i -= 1;
@@ -345,6 +379,35 @@ fn syncDocs(d: *Driver) void {
         d.tracks.values()[i].deinit(d.gpa);
         d.tracks.swapRemoveAt(i);
     }
+}
+
+/// A document just opened: sets reported while it was closed (workspace
+/// pulls, related documents) have LSP positions only; give them byte
+/// ranges at its text, which is what the server saw on disk.
+fn mapOpened(d: *Driver, h: DocHandle) void {
+    const key = d.keyOfDoc(h) orelse return;
+    const b = d.store.current.bucket(key) orelse return;
+    const doc = d.mgr.docs.get(h) orelse return;
+    var mapped: std.ArrayList(*Store.Set) = .empty;
+    defer mapped.deinit(d.gpa);
+    for (b.sets) |old| {
+        if (old.version != null or old.owner != .server) continue;
+        const servers = d.mgr.serverList();
+        const id = old.owner.server;
+        if (id >= servers.len) continue;
+        const c = servers[id].client orelse continue;
+        const set = convert.copySet(d.gpa, old) catch return;
+        convert.mapBytes(d.gpa, set, &doc.tree, position.encodingOf(c.encoding()), doc.version) catch {
+            set.destroy();
+            continue;
+        };
+        mapped.append(d.gpa, set) catch {
+            set.destroy();
+            continue;
+        };
+    }
+    // After the walk: replacing changes the bucket.
+    for (mapped.items) |set| d.store.replace(key, set.owner, set) catch {};
 }
 
 /// Clears the sets of servers that stopped or crashed.
