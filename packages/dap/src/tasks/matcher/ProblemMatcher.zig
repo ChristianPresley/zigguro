@@ -93,8 +93,8 @@ pub const Trailer = struct {
 };
 
 pub const MatcherDef = struct {
-    /// `zig` for `$zig`.
-    name: []const u8,
+    /// `zig` for `$zig`; empty for one written in a task file.
+    name: []const u8 = "",
     owner: []const u8,
     source: ?[]const u8 = null,
     file_location: FileLocation = .{ .auto_detect = null },
