@@ -3473,6 +3473,7 @@ pub const Workbench = struct {
             n += 1;
         };
         t.shell_integration = st.boolean("terminal.integrated.shellIntegration.enabled");
+        t.term.opts.graphics.allow_file_media = st.boolean("terminal.graphics.allowFileMedia");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
     }
 

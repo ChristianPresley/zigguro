@@ -49,6 +49,7 @@ const route = @import("input_route.zig");
 const sel_mod = @import("selection.zig");
 const search_mod = @import("search.zig");
 const links_mod = @import("links.zig");
+const images_mod = @import("images.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
@@ -166,6 +167,8 @@ pub const TerminalView = struct {
     find_pattern: std.ArrayList(u8) = .empty,
     /// Command blocks from the shell's marks (`enableBlocks`).
     blocks: ?*Blocks = null,
+    /// Inline images' textures (`enableImages`).
+    images: ?*images_mod.Images = null,
     /// The command `scrollToCommand` / `selectOutput` last went to: the
     /// next step starts there (the screen may not have scrolled). Typing
     /// forgets it.
@@ -184,6 +187,10 @@ pub const TerminalView = struct {
 
     /// Frees the paste buffers and search results.
     pub fn deinit(v: *TerminalView) void {
+        if (v.images) |im| {
+            im.deinit();
+            v.gpa.destroy(im);
+        }
         if (v.blocks) |b| {
             b.deinit();
             v.gpa.destroy(b);
@@ -200,6 +207,25 @@ pub const TerminalView = struct {
     }
 
     /// Turns the terminal's shell-integration marks into command blocks.
+    /// Shows inline images (kitty graphics) through the app's texture
+    /// table (`app_gpa` is the table's allocator) and decodes PNGs with
+    /// the GUI's decoder.
+    pub fn enableImages(v: *TerminalView, app_gpa: Allocator, textures: *zg_gui.image.ImageTextures) !void {
+        if (v.images != null) return;
+        const im = try v.gpa.create(images_mod.Images);
+        im.* = .init(app_gpa, textures);
+        v.images = im;
+        v.term.opts.graphics.decode = .{ .f = decodePng };
+    }
+
+    fn decodePng(_: ?*anyopaque, gpa: Allocator, bytes: []const u8, max_pixels: u64) anyerror!zg_terminal.graphics.kitty.Decoded {
+        if (zg_gui.image.sniff(bytes) != .png) return error.Unsupported;
+        var img = try zg_gui.image.decode(gpa, bytes, .{ .max_pixels = max_pixels, .max_frames = 1 });
+        if (img.frames.len == 0) return .{ .w = img.w, .h = img.h, .rgba = img.rgba };
+        defer img.deinit(gpa);
+        return .{ .w = img.w, .h = img.h, .rgba = try gpa.dupe(u8, img.rgba) };
+    }
+
     pub fn enableBlocks(v: *TerminalView, opts: zg_terminal.shell.blocks.Options) !*Blocks {
         if (v.blocks) |b| return b;
         const b = try v.gpa.create(Blocks);

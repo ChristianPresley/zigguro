@@ -14,6 +14,8 @@ pub const screen = @import("screen.zig");
 pub const term = @import("term.zig");
 /// Shell-integration marks.
 pub const shell = @import("shell.zig");
+/// Inline images: the image store and kitty graphics.
+pub const graphics = @import("graphics.zig");
 /// Terminal sessions kept across restarts.
 pub const session = @import("session.zig");
 /// Key, mouse, paste and focus encoding.

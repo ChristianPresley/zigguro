@@ -5,6 +5,7 @@
 //! an idle app costs 0 wakeups.
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const zg_core = @import("zg_core");
 const shadow_stack = @import("shadow_stack.zig");
 const Site = zg_core.trace.Site;
@@ -122,6 +123,7 @@ pub const StallWatchdog = struct {
             if (w.ui_state.load(.acquire) == .waiting) {
                 report_seq = 0;
                 try io.futexWait(u32, &w.gen.raw, g);
+                wake_count.noteWake("perf.watchdog", .signal);
                 _ = w.wakeups.fetchAdd(1, .monotonic);
                 continue;
             }
@@ -148,6 +150,7 @@ pub const StallWatchdog = struct {
             }
             const deadline: std.Io.Clock.Timestamp = .{ .raw = .fromNanoseconds(@intCast(next_report_ns)), .clock = .awake };
             try io.futexWaitTimeout(u32, &w.gen.raw, g, .{ .deadline = deadline });
+            wake_count.noteWake("perf.watchdog", .timer);
             _ = w.wakeups.fetchAdd(1, .monotonic);
         }
     }

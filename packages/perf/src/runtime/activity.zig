@@ -4,6 +4,7 @@
 //! wake only when someone waits and the level leaves `frame_busy`.
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const zg_core = @import("zg_core");
 
 /// The UI activity signal.
@@ -96,6 +97,7 @@ pub const ActivitySignal = struct {
             }
             const timeout: std.Io.Timeout = if (wake_at) |d| .{ .deadline = .{ .raw = .fromNanoseconds(@intCast(d)), .clock = .awake } } else .none;
             try io.futexWaitTimeout(u32, &s.epoch.raw, e, timeout);
+            wake_count.noteWake("perf.activity_wait", .signal);
         }
     }
 

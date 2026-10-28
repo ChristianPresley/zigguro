@@ -27,6 +27,7 @@ const view_mod = @import("terminal_view.zig");
 const pal = @import("palette.zig");
 const route = @import("input_route.zig");
 const sel_mod = @import("selection.zig");
+const images_mod = @import("images.zig");
 
 const TerminalView = view_mod.TerminalView;
 const Ui = zg_gui.Ui;
@@ -127,6 +128,9 @@ pub const Term = struct {
         const cols = t.cols();
 
         pc.pushClip(r, 0);
+        const img_geom: images_mod.Images.Geometry = .{ .left = left, .top = pad, .cw = cw, .ch = ch, .height = r.h };
+        // Images below the text (z < 0).
+        if (v.images) |im| im.draw(pc, t, img_geom, true);
         const sel_color = pc.color(.selection_bg);
         const match_color = pc.color(.warning);
         const top_row = sel_mod.absRow(&screen.pages, screen.pages.viewportRow(0));
@@ -240,6 +244,9 @@ pub const Term = struct {
                 if (st.flags.overline) pc.rect(.{ .x = cx, .y = top, .w = w, .h = th }, res.fg, .{});
             }
         }
+
+        // Images over the text.
+        if (v.images) |im| im.draw(pc, t, img_geom, false);
 
         // The cursor, while following output.
         if (t.modes.get(.cursor_visible) and !v.scrolledBack()) {
