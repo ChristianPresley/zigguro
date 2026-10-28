@@ -122,6 +122,11 @@ pub const CodeIntel = struct {
     diag: diagnostics.Driver = undefined,
     decor: diagnostics.Decorator = undefined,
     lsp_tools: LspTools = undefined,
+    /// Files the agent asks about that no editor has open, opened for
+    /// the language servers (closed after 30 s unused).
+    agent_docs: zg_codeintel.agent.BackgroundDocs = undefined,
+    /// Languages of those files.
+    agent_langs: ?zg_syntax.Registry = null,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
     /// What wakes post (it outlives `destroy` while a wake is queued).
@@ -353,7 +358,16 @@ pub const CodeIntel = struct {
         ci.smart.structure = .{ .ctx = ci, .f = selectionStructureOf };
         ci.links.init(gpa, &ci.mgr, ci.waker(), .{ .ctx = ci, .open = onLinkOpen }, style.link);
         ci.fs_watch = .init(gpa, rt.io, &ci.mgr, ci.cwd);
-        ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
+        ci.agent_langs = zg_syntax.defaultRegistry(gpa) catch null;
+        ci.agent_docs = .init(&ci.mgr, .{ .ctx = ci, .read = readAgentFile, .language = agentLanguage }, zg_codeintel.agent.BackgroundDocs.awakeClock(&rt.io), .{});
+        ci.lsp_tools = .{ .src = .{
+            .mgr = &ci.mgr,
+            .store = &ci.diags,
+            .roots = (&ci.cwd)[0..1],
+            .ui = .{ .ctx = ci, .run = runOnUi },
+            .engine = &ci.engine,
+            .bg = &ci.agent_docs,
+        } };
         return ci;
     }
 
@@ -373,6 +387,9 @@ pub const CodeIntel = struct {
         ci.smart.release();
         ci.links.release();
         ci.fs_watch.deinit();
+        ci.lsp_tools.src.deinit();
+        ci.agent_docs.deinit();
+        if (ci.agent_langs) |*l| l.deinit(ci.gpa);
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -434,6 +451,22 @@ pub const CodeIntel = struct {
     /// `Services.lsp`). Valid until `destroy`; destroy the agent first.
     pub fn agentTools(ci: *CodeIntel) zg_ai.tools.adapters.foreign.Exporter {
         return ci.lsp_tools.exporter();
+    }
+
+    /// Background documents: the file from disk.
+    fn readAgentFile(ctx: *anyopaque, gpa: Allocator, path: []const u8) anyerror![]u8 {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        return ci.fs.ops().read(gpa, path);
+    }
+
+    /// Background documents: the file's LSP language id.
+    fn agentLanguage(ctx: *anyopaque, path: []const u8, head: []const u8) ?[]const u8 {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const langs = &(ci.agent_langs orelse return null);
+        const id = langs.detect(path, head) orelse return null;
+        const lang = langs.get(id) orelse return null;
+        if (lang.id == .plain) return null;
+        return zg_codeintel.language.lspId(lang);
     }
 
     /// Agent task: runs `f(arg)` on the UI thread and waits for it.
@@ -529,6 +562,8 @@ pub const CodeIntel = struct {
             log.warn("language services: {t}", .{e});
             return;
         };
+        // An agent may have opened it first: the editor owns it now.
+        ci.agent_docs.adopt(f.h);
         f.listener = f.doc.subscribe(.{ .ctx = ci, .onChange = onDocChange }) catch null;
         ci.semtok.track(f.h) catch {};
         ci.links.track(f.h, f.deco);
@@ -543,7 +578,8 @@ pub const CodeIntel = struct {
                 if (f.deco) |d| ci.decor.detach(d);
                 ci.semtok.untrack(h);
                 ci.links.untrack(h);
-                ci.mgr.closeDoc(h);
+                // An agent still using it keeps it open a while.
+                if (!ci.agent_docs.editorClosed(h)) ci.mgr.closeDoc(h);
             }
             if (f.listener) |l| f.doc.unsubscribe(l);
             ci.unhook(f.view);
@@ -1279,6 +1315,7 @@ pub const CodeIntel = struct {
 
     fn tick(ci: *CodeIntel) void {
         ci.mgr.tick();
+        _ = ci.agent_docs.sweep();
         ci.fs_watch.poll();
         var changed = ci.semtok.tick();
         _ = ci.diag.tick();
@@ -1346,7 +1383,7 @@ pub const CodeIntel = struct {
         var wait: ?u64 = null;
         // A crashed server's restart, and its countdown each second.
         const restart_due: ?i96 = if (ci.mgr.nextRestartDue()) |d| @min(d, now + std.time.ns_per_s) else null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue(), ci.mgr.nextWatchDue(), restart_due }) |due| if (due) |d| {
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue(), ci.mgr.nextWatchDue(), ci.agent_docs.nextDue(), restart_due }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
