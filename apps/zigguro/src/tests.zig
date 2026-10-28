@@ -43,4 +43,5 @@ test {
     _ = @import("hover_popup.zig");
     _ = @import("completion_popup.zig");
     _ = @import("signature_popup.zig");
+    _ = @import("workspace_fs.zig");
 }
