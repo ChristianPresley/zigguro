@@ -60,6 +60,10 @@ pub const TerminalPanel = struct {
     /// Load zigguro's shell integration scripts into the shell
     /// (`terminal.integrated.shellIntegration.enabled`).
     shell_integration: bool = true,
+    /// This machine's name: a shell's OSC 7 folder naming it is local.
+    host: [256]u8 = undefined,
+    /// The folder the shell starts in (null: zigguro's own).
+    start_cwd: ?[]const u8 = null,
     /// This session's shell-integration nonce.
     nonce: [32]u8 = undefined,
     /// Called after output arrives (the workbench repaints).
@@ -75,6 +79,7 @@ pub const TerminalPanel = struct {
         p.poster.* = .{ .gpa = gpa, .panel = p };
         errdefer gpa.destroy(p.poster);
         p.term = try .init(gpa, .{ .cols = 80, .rows = 24, .deflate_scrollback = true, .background_compaction = true });
+        p.term.opts.hostname = p.hostName();
         p.view = .init(gpa, &p.term, .{});
         p.view.sink = .{ .ctx = p, .write = write };
         p.view.on_resize = .{ .ctx = p, .f = onResize };
@@ -107,7 +112,18 @@ pub const TerminalPanel = struct {
         p.gpa.destroy(p);
     }
 
-    fn setNote(p: *TerminalPanel, comptime fmt: []const u8, args: anytype) void {
+    fn hostName(p: *TerminalPanel) []const u8 {
+        var buf: [256]u8 = undefined;
+        const name: []const u8 = if (builtin.os.tag == .windows)
+            p.env.get("COMPUTERNAME") orelse ""
+        else
+            std.posix.gethostname(buf[0..std.posix.HOST_NAME_MAX]) catch "";
+        const n = @min(name.len, p.host.len);
+        @memcpy(p.host[0..n], name[0..n]);
+        return p.host[0..n];
+    }
+
+    pub fn setNote(p: *TerminalPanel, comptime fmt: []const u8, args: anytype) void {
         const s = std.fmt.bufPrint(&p.note, fmt, args) catch p.note[0..0];
         p.note_len = s.len;
     }
@@ -143,6 +159,7 @@ pub const TerminalPanel = struct {
         p.pty = Pty.spawn(p.gpa, p.io, .{
             .argv = if (plan) |x| x.argv else argv,
             .env = p.env,
+            .cwd = p.start_cwd,
             .size = .{ .cols = p.term.cols(), .rows = p.term.rows() },
             .policy = &policy,
         }) catch |e| {
