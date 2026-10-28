@@ -514,6 +514,34 @@ test "problems: grouping and order; filter text and severity; next/prev wraps ac
     try testing.expectEqual([4]u32{ 3, 1, 0, 1 }, Problems.totals(&st));
 }
 
+test "problems: hidden sources" {
+    var rt: @import("zg_core").Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var st = try Store.init(testing.allocator, rt.io, .posix);
+    defer st.deinit();
+    const a: Store.Owner = .{ .server = 0 };
+    var d1 = lspDiag(0, 0, 1, .Error, "from zls");
+    d1.source = "zls";
+    var d2 = lspDiag(1, 0, 1, .Error, "from the build");
+    d2.source = "zig";
+    try st.replace("/w/a.zig", a, try setOf(a, &.{ d1, d2 }));
+    st.commit();
+    var p = Problems.init(testing.allocator);
+    defer p.deinit();
+    var hidden = [_][]const u8{"zls"};
+    _ = try p.update(&st, .{ .hidden_sources = &hidden });
+    try testing.expectEqual(@as(usize, 1), p.count());
+    try testing.expectEqualStrings("from the build", p.item(.{ .file = 0, .item = 0 }).diag.message);
+    // The model keeps its own copy: a changed caller array is a new filter.
+    hidden[0] = "zig";
+    try testing.expect(try p.update(&st, .{ .hidden_sources = &hidden }));
+    try testing.expectEqualStrings("from zls", p.item(.{ .file = 0, .item = 0 }).diag.message);
+    try testing.expect(!try p.update(&st, .{ .hidden_sources = &.{"zig"} }));
+    _ = try p.update(&st, .{});
+    try testing.expectEqual(@as(usize, 2), p.count());
+}
+
 test "problems: duplicate diagnostics get distinct ids" {
     var rt: @import("zg_core").Runtime = undefined;
     rt.initTesting();
