@@ -255,6 +255,9 @@ pub const standard_keys = [_]struct { name: []const u8, owner: []const u8, doc: 
     .{ .name = "suggestWidgetVisible", .owner = "E05", .doc = "The completion list is visible" },
     .{ .name = "ghostVisible", .owner = "E10", .doc = "Inline AI ghost text is visible" },
     .{ .name = "inSnippetMode", .owner = "E05", .doc = "A snippet session is active" },
+    .{ .name = "parameterHintsVisible", .owner = "E07", .doc = "Signature help is showing" },
+    .{ .name = "parameterHintsMultipleSignatures", .owner = "E07", .doc = "Signature help shows more than one signature" },
+    .{ .name = "suggestWidgetMultipleSuggestions", .owner = "E07", .doc = "The completion list has more than one item" },
     .{ .name = "scm.hasChanges", .owner = "E09", .doc = "The repository has uncommitted changes" },
     .{ .name = "workspaceTrusted", .owner = "E16", .doc = "The workspace is trusted" },
 };
