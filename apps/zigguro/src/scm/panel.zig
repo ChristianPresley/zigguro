@@ -23,7 +23,8 @@
 //! - Stashes: Stash (with untracked files), Apply, Pop, Drop, the patch.
 //! - Tags: New, Delete, Push, Push All, delete on the remote, Checkout.
 //! - Remotes: Add, Rename, Set URL, Fetch, Prune, Remove.
-//! - Submodules: Add, Update (init, recursive), Sync.
+//! - Submodules: Add, Update (init, recursive), Sync, Run in Each
+//!   (`submodule foreach`).
 //! - Output: every command run and what it printed.
 //! Outside a repository it offers Initialize Repository and Clone.
 //!
@@ -812,6 +813,8 @@ pub const ScmPanel = struct {
             if (zg_gui.w.button(ui, .{ .label = "Good" }).clicked) p.run("Bisect good", &.{&.{ "bisect", "good" }});
             ui.id(2);
             if (zg_gui.w.button(ui, .{ .label = "Bad" }).clicked) p.run("Bisect bad", &.{&.{ "bisect", "bad" }});
+            ui.id(4);
+            if (zg_gui.w.button(ui, .{ .label = "Run Command\u{2026}" }).clicked) p.ask("Command to test each commit (exit 0 good, 125 skip, 1-127 bad)", "", &.{ "bisect", "run", "{}" }, .none);
             ui.id(3);
             if (zg_gui.w.button(ui, .{ .label = "End Bisect" }).clicked) p.run("Bisect reset", &.{&.{ "bisect", "reset" }});
             return;
@@ -1373,6 +1376,8 @@ pub const ScmPanel = struct {
         if (zg_gui.w.button(ui, .{ .label = "Update All", .variant = .ghost }).clicked) p.run("Submodule update", &.{&.{ "submodule", "update", "--init", "--recursive" }});
         ui.id(3);
         if (zg_gui.w.button(ui, .{ .label = "Sync URLs", .variant = .ghost }).clicked) p.run("Submodule sync", &.{&.{ "submodule", "sync", "--recursive" }});
+        ui.id(5);
+        if (zg_gui.w.button(ui, .{ .label = "Run in Each\u{2026}", .variant = .ghost }).clicked) p.ask("Command to run in each submodule ($name, $sm_path, $sha1, $toplevel)", "", &.{ "submodule", "foreach", "--recursive", "{}" }, .none);
         for (s.submodules) |m| if (std.mem.eql(u8, m.path, p.sel.items)) {
             ui.id(4);
             if (zg_gui.w.button(ui, .{ .label = "Update", .variant = .ghost }).clicked) p.run("Submodule update", &.{&.{ "submodule", "update", "--init", "--recursive", "--", m.path }});
