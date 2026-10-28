@@ -104,6 +104,14 @@ fn register(b: *bench.Bench) !void {
             bench.doNotOptimizeAway(x);
         }
     }.f);
+    // noteWake after a wait returns: a few plain stores into this thread's
+    // record (budget <= 10 ns with tracing off, E14.F05.S02.T01).
+    try b.run("perf.note_wake", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            for (0..s.iterations()) |_| zg_perf.idle.noteWake("bench.wait", .timer);
+            bench.doNotOptimizeAway(zg_perf.idle.wake_count.totalWakes());
+        }
+    }.f);
     try b.run("perf.activity_level", {}, struct {
         fn f(_: void, s: *bench.State) void {
             var sig: zg_perf.ActivitySignal = .{};
