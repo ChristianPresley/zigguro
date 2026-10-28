@@ -31,6 +31,7 @@ const plan_mod = @import("../edits/plan.zig");
 const position = @import("../features/position.zig");
 const code_action = @import("../features/code_action.zig");
 const BackgroundDocs = @import("background_docs.zig");
+const SettleDetector = @import("../diagnostics/settle.zig");
 pub const locate = @import("locate.zig");
 
 const Allocator = std.mem.Allocator;
@@ -65,6 +66,8 @@ timeout: Io.Duration = .fromSeconds(15),
 engine: ?*Engine = null,
 /// Opens files the editor does not have (null: only open files).
 bg: ?*BackgroundDocs = null,
+/// Waits for diagnostics after an edit (`lsp_wait_for_diagnostics`).
+settle: ?*SettleDetector = null,
 /// Code actions listed to agents (`codeActions`), by id.
 actions: std.ArrayList(Action) = .empty,
 actions_mutex: Io.Mutex = .init,
@@ -116,6 +119,8 @@ pub const Call = struct {
     deadline_ns: i96 = 0,
     /// Paths in answers are normalized in it (the store's).
     style: registry.PathStyle = .native,
+    /// The position encoding of the server that answered last.
+    enc: PositionEncoding = .utf16,
 
     pub fn init(io: Io, arena: Allocator) Call {
         return .{ .io = io, .arena = arena };
@@ -132,8 +137,9 @@ pub const Location = struct {
     /// Absolute path, or the URI when not a file.
     path: []const u8,
     is_file: bool,
-    /// 0-based, in the server's units.
+    /// 0-based, in the server's units (`enc`).
     range: protocol.Range,
+    enc: PositionEncoding = .utf16,
 };
 
 /// A workspace or document symbol.
@@ -434,6 +440,37 @@ fn callNode(call: *Call, it: protocol.CallHierarchyItem, depth: u8, n: u32) Allo
 
 fn sameItem(n: CallNode, it: protocol.CallHierarchyItem) bool {
     return std.mem.eql(u8, n.name, it.name) and n.location.range.start.line == it.selectionRange.start.line and n.location.range.start.character == it.selectionRange.start.character;
+}
+
+/// The text of `path` for excerpts: the open document's, else the
+/// file's on disk (null when it cannot be read).
+pub fn fileText(ci: *CodeIntel, call: *Call, path: []const u8) Allocator.Error!?[]const u8 {
+    var job: struct {
+        ci: *CodeIntel,
+        arena: Allocator,
+        path: []const u8,
+        out: Allocator.Error!?[]const u8 = null,
+        fn run(j: *@This()) void {
+            j.out = j.get();
+        }
+        fn get(j: *@This()) Allocator.Error!?[]const u8 {
+            const docs = j.ci.mgr.docs;
+            const h = try docs.findFile(j.path) orelse return null;
+            const doc = docs.get(h) orelse return null;
+            var t: std.ArrayList(u8) = .empty;
+            try t.ensureTotalCapacity(j.arena, @intCast(doc.len()));
+            var it = doc.tree.chunks(0);
+            while (it.next()) |c| t.appendSliceAssumeCapacity(c);
+            return t.items;
+        }
+    } = .{ .ci = ci, .arena = call.arena, .path = path };
+    if (ci.ui.run(ci.ui.ctx, Wrap(@TypeOf(job)).run, &job)) {
+        if (try job.out) |t| return t;
+    }
+    return Io.Dir.cwd().readFileAlloc(call.io, path, call.arena, .limited(16 << 20)) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
 }
 
 // ------------------------------------------------------------- edits
@@ -1048,6 +1085,7 @@ fn exchange(ci: *CodeIntel, call: *Call, comptime M: protocol.Method, at: At, pa
     }
     // Requests carry a deadline, so the answer always comes.
     p.done.waitUncancelable(call.io);
+    call.enc = at.client.encoding();
     const r = p.result;
     gpa.destroy(p);
     return r;
@@ -1084,11 +1122,11 @@ fn collect(call: *Call, out: *std.ArrayList(Location), v: anytype) Allocator.Err
 fn toLocation(call: *Call, uri: []const u8, range: protocol.Range) Allocator.Error!Location {
     const d = zg_lsp.uri.docUriFromLsp(call.arena, uri) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .path = try call.arena.dupe(u8, uri), .is_file = false, .range = range },
+        else => return .{ .path = try call.arena.dupe(u8, uri), .is_file = false, .range = range, .enc = call.enc },
     };
     return switch (d) {
-        .file => |p| .{ .path = try registry.normalizePath(call.arena, p, call.style), .is_file = true, .range = range },
-        .untitled, .virtual => .{ .path = try call.arena.dupe(u8, uri), .is_file = false, .range = range },
+        .file => |p| .{ .path = try registry.normalizePath(call.arena, p, call.style), .is_file = true, .range = range, .enc = call.enc },
+        .untitled, .virtual => .{ .path = try call.arena.dupe(u8, uri), .is_file = false, .range = range, .enc = call.enc },
     };
 }
 
