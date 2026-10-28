@@ -25,6 +25,7 @@ fn register(b: *bench.Bench) !void {
     try registerDiagram(b);
     try registerLibrary(b);
     try registerWorkflow(b);
+    try registerWorkflowView(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -899,4 +900,99 @@ fn registerWorkflow(b: *bench.Bench) !void {
             }
         }
     }.f);
+}
+
+/// `workflow/view_200`: a frame of the workflow progress view while 200
+/// agents run, one of them reporting new cost each frame: the progress
+/// snapshot, the view model update and the build in a headless window
+/// (budget 1 ms).
+fn registerWorkflowView(b: *bench.Bench) !void {
+    const zg_gui = @import("zg_gui");
+    const ui = @import("zg_agents_ui");
+    const wf = zg_agents.workflow;
+    const gpa = std.heap.smp_allocator;
+    const io = b.io;
+    const Silent = struct {
+        children: std.ArrayList(runs.RunId) = .empty,
+        mutex: std.Io.Mutex = .init,
+        io: std.Io,
+        eng: ?*wf.WorkflowEngine = null,
+        fn start(ctx: *anyopaque, req: *const wf.WorkerRequest) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.mutex.lockUncancelable(s.io);
+            defer s.mutex.unlock(s.io);
+            try s.children.append(std.heap.smp_allocator, req.child);
+        }
+        fn stop(ctx: *anyopaque, child: runs.RunId) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.eng.?.workerEvent(child, .stopped);
+        }
+    };
+    var silent: Silent = .{ .io = io };
+    defer silent.children.deinit(gpa);
+    const reg = try runs.RunRegistry.init(gpa, io, null, .{});
+    defer reg.deinit();
+    const eng = try wf.WorkflowEngine.init(gpa, io, reg, .{ .workers = .{ .ctx = &silent, .start = Silent.start, .stop = Silent.stop } });
+    defer eng.deinit();
+    silent.eng = eng;
+
+    var diags: wf.Diagnostics = .init(gpa);
+    defer diags.deinit();
+    var p = try wf.parse.parseOnly(gpa,
+        \\.{ .version = 1, .name = "bench", .limits = .{ .max_parallel = 200, .max_cost_micros = 100000000 },
+        \\  .args = .{ .{ .name = "items", .type = .json } },
+        \\  .steps = .{
+        \\    .{ .id = "each", .phase = "Audit", .map = .{ .over = "$args.items", .agent = .{ .label = "Audit", .prompt = "check {{$item}} for problems", .stall_ms = 3600000 } } },
+        \\    .{ .id = "sum", .phase = "Report", .reduce = .{ .prompt = "sum" } },
+        \\  },
+        \\}
+    , &diags);
+    defer p.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var items: std.json.Array = .init(arena.allocator());
+    for (0..200) |i| try items.append(.{ .integer = @intCast(i) });
+    var args: std.json.ObjectMap = .empty;
+    try args.put(arena.allocator(), "items", .{ .array = items });
+    const id = try eng.start(&p.def, .{ .object = args }, .{});
+    while (true) {
+        silent.mutex.lockUncancelable(io);
+        const n = silent.children.items.len;
+        silent.mutex.unlock(io);
+        if (n == 200) break;
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+
+    const Host = struct {
+        v: ?*ui.WorkflowView = null,
+        pub fn build(h: *@This(), u: *zg_gui.Ui) void {
+            if (h.v) |v| ui.workflow_view.workflowView(u, v);
+        }
+    };
+    var host: Host = .{};
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .root = .of(&host), .size = .{ .w = 1200, .h = 900 } });
+    defer t.deinit();
+    const v = try ui.WorkflowView.init(gpa, .{ .eng = eng, .run = id });
+    defer {
+        v.detach();
+        host.v = null;
+        v.deinit();
+    }
+    host.v = v;
+    _ = t.settle();
+    const Ctx = struct { t: *zg_gui.testing.TestApp, eng: *wf.WorkflowEngine, kids: []const runs.RunId, n: u64 = 0 };
+    var ctx: Ctx = .{ .t = t, .eng = eng, .kids = silent.children.items };
+    try b.run("workflow/view_200", &ctx, struct {
+        fn f(c: *Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                c.n += 1;
+                c.eng.workerEvent(c.kids[c.n % c.kids.len], .{ .cost = .{ .micros = c.n, .input_tokens = c.n } });
+                c.t.win.markAllDirty();
+                bench.doNotOptimizeAway(c.t.frame());
+            }
+        }
+    }.f);
+    eng.stop(id);
+    _ = try eng.wait(id);
 }
