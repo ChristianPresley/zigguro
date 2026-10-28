@@ -177,6 +177,14 @@ test "protocol: or-union discriminator table" {
     try testing.expect(try json.parse(W, a, "{\"kind\":\"rename\",\"oldUri\":\"file:///a\",\"newUri\":\"file:///b\"}") == .rename_file);
     try testing.expect(try json.parse(W, a, "{\"textDocument\":{\"uri\":\"file:///a\",\"version\":null},\"edits\":[]}") == .text_document_edit);
     try testing.expectError(error.UnexpectedToken, json.parse(W, a, "{\"kind\":\"move\",\"uri\":\"file:///n\"}"));
+
+    // SymbolInformation[] | WorkspaceSymbol[]: both have name, kind and
+    // location; a location without a range is only a WorkspaceSymbol's.
+    const S = protocol.RequestInfo(.@"workspace/symbol").Result;
+    const bare = "[{\"name\":\"f\",\"kind\":6,\"location\":{\"uri\":\"file:///a\"}}]";
+    try testing.expect((try json.parse(S, a, bare)).? == .workspace_symbol_array);
+    const full = "[{\"name\":\"f\",\"kind\":6,\"location\":" ++ loc ++ "}]";
+    try testing.expect((try json.parse(S, a, full)).? == .symbol_information_array);
 }
 
 test "protocol: optional fields omitted, required nullable written" {

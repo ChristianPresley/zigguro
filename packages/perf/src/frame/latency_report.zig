@@ -46,8 +46,8 @@ pub const Pcts = struct {
     }
 };
 
-/// How keystrokes reached the app.
-pub const Injection = enum { os, ring };
+/// How keystrokes reached the app (`external`: the photodiode rig typed).
+pub const Injection = enum { os, ring, external };
 
 /// The results of one run.
 pub const Report = struct {

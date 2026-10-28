@@ -90,6 +90,12 @@ const ViewKey = struct { ptr: usize, vt: usize };
 
 const PendingHook = struct { hook: overlay.CloseHook, id: overlay.OverlayId };
 
+/// See `Window.key_tap`.
+pub const KeyTap = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, w: *Window) void,
+};
+
 /// A node's visual; `gen` tells a reused slot apart.
 const VisualEntry = struct { gen: u8, v: Visual };
 
@@ -178,6 +184,9 @@ pub const Window = struct {
     stats: FrameStats = .{},
     /// The clock `frame` times its phases with (null: no timings).
     timing_io: ?std.Io = null,
+    /// Called before a key press, repeat or committed text is dispatched,
+    /// so the frame that applies it can show it (the latency probe).
+    key_tap: ?KeyTap = null,
 
     views: std.ArrayList(ViewEntry) = .empty,
     view_map: std.AutoHashMapUnmanaged(ViewKey, u16) = .empty,
@@ -2032,6 +2041,7 @@ pub const Window = struct {
             .pointer_enter_leave => |p| if (!p.entered) w.dispatch(.pointer_leave),
             .scroll => |s| w.dispatch(.{ .scroll = .{ .pos = w.pointer, .dx = s.dx, .dy = s.dy, .precise = s.unit == .pixels } }),
             .key => |k| {
+                if (k.ev.action != .release) if (w.key_tap) |t| t.f(t.ctx, w);
                 w.dispatch(.{ .key = .{ .key = k.ev.key, .mods = k.ev.mods, .action = k.ev.action, .codepoint = k.ev.codepoint } });
                 // The key's text follows it (`eat_text` drops it when the
                 // key handler consumed the key).
@@ -2040,7 +2050,10 @@ pub const Window = struct {
                     if (typed.len > 0) w.dispatch(.{ .text = typed });
                 }
             },
-            .text_input => |t| w.dispatch(.{ .text = payload.payload(t.text) }),
+            .text_input => |t| {
+                if (w.key_tap) |kt| kt.f(kt.ctx, w);
+                w.dispatch(.{ .text = payload.payload(t.text) });
+            },
             .ime_preedit => |t| w.dispatch(.{ .ime_preedit = .{ .text = payload.payload(t.text), .cursor_begin = t.cursor_begin, .cursor_end = t.cursor_end } }),
             .ime_delete_surrounding => |d| w.dispatch(.{ .ime_delete_surrounding = .{ .before = d.before_bytes, .after = d.after_bytes } }),
             .window_focus => |f| {

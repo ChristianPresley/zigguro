@@ -90,7 +90,7 @@ pub const Term = struct {
         const pad = 2 * v.opts.padding;
         const cols: f32 = @floatFromInt(v.term.cols());
         const rows: f32 = @floatFromInt(v.term.rows());
-        return .{ .w = max_w orelse cols * v.cell_w + pad, .h = rows * v.cell_h + pad };
+        return .{ .w = max_w orelse cols * v.cell_w + pad + v.gutter, .h = rows * v.cell_h + pad };
     }
 
     fn defaults(pc: *PaintCx, t: *const zg_terminal.Terminal) pal.Defaults {
@@ -116,6 +116,7 @@ pub const Term = struct {
         pc.rect(r, clear, .{});
 
         const pad = v.opts.padding;
+        const left = v.gridLeft();
         const cw = v.cell_w;
         const ch = v.cell_h;
         const m = pc.text_sys.metrics(v.textStyle(false, false));
@@ -146,9 +147,15 @@ pub const Term = struct {
                     const c = pal.resolve(&t.palette, d, page.styleOf(cells[e]), cells[e], ropts);
                     if (c.bg_default != c0.bg_default or @as(u32, @bitCast(c.bg)) != @as(u32, @bitCast(c0.bg))) break;
                 }
-                if (!c0.bg_default) pc.rect(.{ .x = pad + @as(f32, @floatFromInt(x)) * cw, .y = top, .w = @as(f32, @floatFromInt(e - x)) * cw, .h = ch }, c0.bg, .{});
+                if (!c0.bg_default) pc.rect(.{ .x = left + @as(f32, @floatFromInt(x)) * cw, .y = top, .w = @as(f32, @floatFromInt(e - x)) * cw, .h = ch }, c0.bg, .{});
                 x = e;
             }
+
+            // The command's status in the gutter, on its prompt row.
+            if (v.blocks) |b| if (!t.alt_active) if (b.indexAt(top_row + y)) |bi| {
+                const blk = &b.items()[bi];
+                if (blk.prompt == top_row + y) blockMark(pc, v, blk, top, ch);
+            };
 
             // Search matches, the current one stronger and outlined.
             if (v.visibleMatches()) |found| {
@@ -158,7 +165,7 @@ pub const Term = struct {
                     if (mt.lo.row > top_row + y) break;
                     const one: sel_mod.Selection = .{ .kind = .stream, .anchor_lo = mt.lo, .anchor_hi = mt.hi, .lo = mt.lo, .hi = mt.hi };
                     const span = one.rowSpan(top_row + y, cols) orelse continue;
-                    const mr: Rect = .{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch };
+                    const mr: Rect = .{ .x = left + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch };
                     if (found.current == i) {
                         pc.rect(mr, match_color.fade(0.6), .{});
                         hollow(pc, mr, match_color);
@@ -169,12 +176,12 @@ pub const Term = struct {
             // The hovered link, underlined.
             if (v.hover_link) |*hl| if ((sel_mod.Selection{ .kind = .stream, .anchor_lo = hl.lo, .anchor_hi = hl.hi, .lo = hl.lo, .hi = hl.hi }).rowSpan(top_row + y, cols)) |span| {
                 const ul_y = top + base + @max(1, @round(m.descent / 2));
-                pc.rect(.{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = ul_y, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = @max(1, @round(ch / 16)) }, pc.color(.fg_link), .{});
+                pc.rect(.{ .x = left + @as(f32, @floatFromInt(span[0])) * cw, .y = ul_y, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = @max(1, @round(ch / 16)) }, pc.color(.fg_link), .{});
             };
 
             // The selection, over the backgrounds.
             if (v.selection) |*sel| if (sel.rowSpan(top_row + y, cols)) |span| {
-                pc.rect(.{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch }, sel_color, .{});
+                pc.rect(.{ .x = left + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch }, sel_color, .{});
             };
 
             // Glyphs, in runs of one colour and face; wide cells alone.
@@ -202,7 +209,7 @@ pub const Term = struct {
                 }
                 if (e == x) e = x + 1;
                 if (!st.flags.invisible and state.run.items.len > 0) {
-                    pc.textLine(state.run.items, v.textStyle(st.flags.bold, st.flags.italic), res.fg, .{ .x = pad + @as(f32, @floatFromInt(x)) * cw, .y = top + base });
+                    pc.textLine(state.run.items, v.textStyle(st.flags.bold, st.flags.italic), res.fg, .{ .x = left + @as(f32, @floatFromInt(x)) * cw, .y = top + base });
                 }
                 x = e;
             }
@@ -213,7 +220,7 @@ pub const Term = struct {
                 const st = page.styleOf(c);
                 if (st.underline == .none and !st.flags.strike and !st.flags.overline) continue;
                 const res = pal.resolve(&t.palette, d, st, c, ropts);
-                const cx = pad + @as(f32, @floatFromInt(xi)) * cw;
+                const cx = left + @as(f32, @floatFromInt(xi)) * cw;
                 const w = if (c.wide == .wide) 2 * cw else cw;
                 const th = @max(1, @round(ch / 16));
                 const ul_y = top + base + @max(1, @round(m.descent / 2));
@@ -241,7 +248,7 @@ pub const Term = struct {
             const cells = pin.cells();
             const c: Cell = if (cur.x < cells.len) cells[cur.x] else .blank;
             const wide = c.wide == .wide;
-            const cr: Rect = .{ .x = pad + @as(f32, @floatFromInt(cur.x)) * cw, .y = pad + @as(f32, @floatFromInt(cur.y)) * ch, .w = if (wide) 2 * cw else cw, .h = ch };
+            const cr: Rect = .{ .x = left + @as(f32, @floatFromInt(cur.x)) * cw, .y = pad + @as(f32, @floatFromInt(cur.y)) * ch, .w = if (wide) 2 * cw else cw, .h = ch };
             const ccol = if (t.palette.cursor) |cc| pal.fromRgb(cc) else d.fg;
             const focused = pc.state.focused or v.focused;
             const shape: enum { block, underline, bar } = switch (t.cursor_shape) {
@@ -289,6 +296,27 @@ pub const Term = struct {
         };
     }
 
+    /// A dot in the gutter: green for success, red for failure, an outline
+    /// while running or when the exit code is unknown.
+    fn blockMark(pc: *PaintCx, v: *const TerminalView, blk: *const zg_terminal.shell.Block, top: f32, ch: f32) void {
+        const d: f32 = @min(6, @max(4, ch / 3));
+        const r: Rect = .{ .x = v.opts.padding / 2 + (v.gutter - d) / 2, .y = top + (ch - d) / 2, .w = d, .h = d };
+        switch (blk.state) {
+            .running => ring(pc, r, pc.color(.accent)),
+            .finished => if (blk.exit) |e|
+                pc.rect(r, pc.color(if (e == 0) .success else .danger), .all(d / 2))
+            else
+                ring(pc, r, pc.color(.fg_muted)),
+            .prompt, .typing, .abandoned => {},
+        }
+    }
+
+    fn ring(pc: *PaintCx, r: Rect, c: Color) void {
+        pc.rect(r, c, .all(r.w / 2));
+        const in: f32 = @max(1, @round(r.w / 4));
+        pc.rect(.{ .x = r.x + in, .y = r.y + in, .w = r.w - 2 * in, .h = r.h - 2 * in }, pc.color(.bg_base), .all((r.w - 2 * in) / 2));
+    }
+
     fn hollow(pc: *PaintCx, r: Rect, c: Color) void {
         pc.rect(.{ .x = r.x, .y = r.y, .w = r.w, .h = 1 }, c, .{});
         pc.rect(.{ .x = r.x, .y = r.y + r.h - 1, .w = r.w, .h = 1 }, c, .{});
@@ -320,7 +348,7 @@ pub const Term = struct {
     /// offset in the text area.
     pub fn cellAt(ec: *EventCx, v: *TerminalView, p: Vec2) struct { cell: [2]u16, px: [2]u32 } {
         const l = ec.local(p);
-        const x = @max(0, l.x - v.opts.padding);
+        const x = @max(0, l.x - v.gridLeft());
         const y = @max(0, l.y - v.opts.padding);
         const cx: u16 = @intFromFloat(@min(@floor(x / v.cell_w), @as(f32, @floatFromInt(v.term.cols() - 1))));
         const cy: u16 = @intFromFloat(@min(@floor(y / v.cell_h), @as(f32, @floatFromInt(v.term.rows() - 1))));
