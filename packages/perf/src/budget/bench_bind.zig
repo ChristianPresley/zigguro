@@ -25,6 +25,7 @@ pub const BenchResult = struct {
     iters: u64,
     ns_per_op: f64,
     p50_ns: f64,
+    p95_ns: ?f64 = null,
     p99_ns: f64,
     bytes_per_op: ?f64 = null,
     allocs_per_op: f64,
@@ -43,6 +44,7 @@ pub fn extract(r: *const BenchResult, field: schema.BenchField) ?f64 {
     return switch (field) {
         .ns_per_op => r.ns_per_op,
         .p50_ns => r.p50_ns,
+        .p95_ns => r.p95_ns,
         .p99_ns => r.p99_ns,
         .bytes_per_op => r.bytes_per_op,
         .allocs_per_op => r.allocs_per_op,

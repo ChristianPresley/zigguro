@@ -94,7 +94,33 @@ The app's list is `apps/zigguro/src/startup/services.zig`. Today `main` still ru
 2. Measure its cost with `--startup-report` and name the `startup.phase.<owner>` budget it fits in.
 3. Add the entry to the allowlist in the same PR as the registration. E14 reviews changes to the file (CODEOWNERS).
 
+## The startup benchmark
+
+`zig build bench-startup -Doptimize=ReleaseFast -- --runs 20 --cold-runs 5 --workspace DIR` launches the real app again and again and writes `zig-out/bench-results/startup.json` (E00 bench JSON, package `startup`). The harness is `apps/zigguro/src/bench/startup.zig` (`zigguro-bench-startup`).
+
+- Each launch gets `--startup-report-json=<tmp>/run-N.json --exit-after-startup --bench-inject-key-after-first-frame`. The child writes its marks as absolute `.awake` times, the clock the harness reads just before it spawns the child. So `startup.os_to_main` (spawn to `main_entered`) is exact, and `startup.first_interactive_frame` runs from spawn to the first interactive frame.
+- Warm runs: 2 discarded warm-ups (`--warmup-runs`), then `--runs` measured runs.
+- Cold runs (`--cold-runs`, results with `_cold`): as root on Linux, `sync` and `echo 3 > /proc/sys/vm/drop_caches` before each run (`cold_kind: drop_caches`). Otherwise, and on Windows, each run launches a fresh copy of the binary and of the workspace, files that are not in the page cache yet (`pseudo_cold`). Shared system libraries stay warm either way.
+- Children get their own empty state folder (`ZIGGURO_STATE_DIR`), so the user's last folder and layout are left alone. Without `--workspace` they open the welcome window.
+- `--platform headless` sets `ZG_PLATFORM` for the children. Headless results only compare with other headless results.
+- On the headless platform the child injects one key after the first frame. A launch that handles it later than two frames after the first presented frame counts in `input_late` and fails the run. Native windows do not inject a key yet.
+- Results:
+  - `startup.first_interactive_frame` and `startup.os_to_main`;
+  - `startup.phase.<owner>`, the time each owner's marks took, as in the report;
+  - each with `p50_ns`, `p95_ns`, `p99_ns`, `max_ns` and every run in `samples_ns`.
+- The `startup.first_interactive_frame` and `startup.phase.<owner>` budgets bind to the `p95_ns` of these results. The metadata says the platform, the cold kind, the refresh interval and the Linux CPU governor; the harness warns when the governor is not `performance`.
+- `zig build test-bench-startup` (part of `zig build test`) runs 2 warm launches and 1 cold launch on the headless platform.
+
+### True cold runs
+
+Page-cache tricks leave shared libraries and the GPU driver warm. For a real cold number:
+
+1. Reboot, log in and wait until the machine is idle (about 2 minutes).
+2. Run `zigguro-bench-startup --exe zig-out/bin/zigguro --runs 1 --warmup-runs 0 --cold-runs 0 --workspace DIR --out cold.json` (build it first with `zig build bench-startup -Doptimize=ReleaseFast`).
+3. Repeat from step 1 for each sample you need.
+
 ## Not done yet
 
 - `gpu_ready` and the E08 `session_restored` marks belong to their owners.
-- The loader estimate for Linux (spawn to `main_entered`, measured by `bench-startup`) comes with the startup scenario (E14.F06).
+- `--session` is accepted but not used until the E08 session model restores sessions.
+- The reference-laptop baseline (`perf/baselines/ref_laptop_2024/startup.json`) comes with the baseline procedure (E14.F06.S02).

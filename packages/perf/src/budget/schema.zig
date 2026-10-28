@@ -69,6 +69,8 @@ pub const Machine = struct {
 pub const BenchField = enum {
     ns_per_op,
     p50_ns,
+    /// Optional in schema 1 (startup and latency results write it).
+    p95_ns,
     p99_ns,
     bytes_per_op,
     allocs_per_op,
