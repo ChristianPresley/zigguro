@@ -430,6 +430,11 @@ test "terminal: command blocks: Ctrl+Up/Down navigation, output selection and co
     const sel = f.view.selection.?;
     try testing.expectEqual(@as(u64, 4), sel.lo.row);
     try testing.expectEqual(@as(u64, 23), sel.hi.row);
+    // Again: the command before, even where the screen did not move.
+    try testing.expect(f.view.selectOutput(.previous));
+    try testing.expectEqual(@as(u64, 1), f.view.selection.?.lo.row);
+    try testing.expectEqual(@as(u64, 2), f.view.selection.?.hi.row);
+    try testing.expect(!f.view.selectOutput(.previous));
     const out1 = (try f.view.outputText(gpa, b.items()[0].id)).?;
     defer gpa.free(out1);
     try testing.expectEqualStrings("1a\n1b", out1);
