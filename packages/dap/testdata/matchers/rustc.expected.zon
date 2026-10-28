@@ -1,0 +1,9 @@
+.{.{ .problem = .{
+    .file = "/home/dev/proj/src/main.rs",
+    .line = 2,
+    .column = 18,
+    .severity = .err,
+    .code = "E0308",
+    .message = "mismatched types",
+    .related = .{},
+} }}
