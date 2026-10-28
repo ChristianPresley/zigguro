@@ -67,7 +67,7 @@ const CheckOutcome = union(enum) { ok: CheckResult, failed: []const u8 };
 fn runCheck(x: *Exec, id: []const u8, c: *const def.Check, scope: Value, rpos: []const u8) Abort!CheckOutcome {
     const a = x.allocator();
     if (c.command) |argv| {
-        const r = try step_command.runArgv(x, id, argv, null, scope);
+        const r = try step_command.runArgv(x, id, argv, c.shell, null, scope);
         return switch (r) {
             .ok => |res| .{ .ok = .{ .pass = res.exit_code == 0, .output = .{ .string = res.output } } },
             .failed => |m| .{ .failed = m },

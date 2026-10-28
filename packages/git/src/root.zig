@@ -98,6 +98,8 @@ pub const sign = struct {
     pub const embed = @import("sign/embed.zig");
     pub const signing = @import("sign/signing.zig");
 };
+/// `git init` and `git clone`.
+pub const init_repo = @import("init.zig");
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -167,6 +169,7 @@ test {
     _ = @import("ssh/ssh_test.zig");
     std.testing.refAllDecls(ssh);
     _ = @import("sign/sign_test.zig");
+    _ = @import("init_test.zig");
     std.testing.refAllDecls(sign);
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");

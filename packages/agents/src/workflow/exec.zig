@@ -95,6 +95,8 @@ pub const WorkerPort = struct {
 
 pub const CommandRequest = struct {
     argv: []const []const u8,
+    /// `argv[0]` is a command line for the user's shell.
+    shell: bool = false,
     cwd: ?[]const u8,
     /// The workflow's permission profile.
     profile: []const u8,

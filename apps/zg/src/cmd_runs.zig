@@ -16,11 +16,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
-const zg_ai = @import("zg_ai");
-const zg_net = @import("zg_net");
 const zg_agents = @import("zg_agents");
-const review_hooks = @import("review_hooks.zig");
 const cmd_automation = @import("cmd_automation.zig");
+const AgentRuntime = @import("agent_runtime.zig").AgentRuntime;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -146,52 +144,11 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
 
     // The agent runtime: providers from the environment, command and file
     // tools (file edits held for review, as `zg agent --review defer`).
-    var models = zg_ai.ModelRegistry.init(gpa, io, zg_ai.models.registry.builtin_catalog);
-    defer models.deinit();
-    const client = try zg_net.http.Client.init(rt, .{ .environ_map = &env });
-    defer client.deinit();
-    var net: zg_ai.transport.ZgNet = .{ .client = client };
-    var limiter: zg_ai.ratelimit.RateLimiter = .init(gpa, .real);
-    defer limiter.deinit();
-    const hub = try zg_ai.ProviderHub.init(gpa, .{
-        .secrets = no_secrets,
-        .environ = &env,
-        .transport = net.transport(),
-        .limiter = &limiter,
-        .registry = &models,
-        .notifier = .{ .ctx = err, .warn = warn, .redact = redact },
-    });
-    defer hub.deinit();
-    try hub.onSettingsChanged(io, &.{});
-    const cwd = try Io.Dir.cwd().realPathFileAlloc(io, workspace, gpa);
-    defer gpa.free(cwd);
-    var tool_registry: zg_ai.tools.ToolRegistry = .init(gpa, io);
-    defer tool_registry.deinit();
-    var processes: zg_ai.tools.builtin.process_host.ProcessHost = .init(gpa, io);
-    processes.environ = &env;
-    defer processes.deinit();
-    var run_tools: zg_ai.tools.builtin.run.RunTools = .init(gpa, io, processes.host(), .{ .visible = false });
-    defer run_tools.deinit();
-    try tool_registry.addSource(run_tools.source());
-    var read_tracker: zg_ai.tools.read_tracker.ReadTracker = .init(gpa, io);
-    defer read_tracker.deinit();
-    var review: review_hooks.Review = try .init(gpa, io, cwd, .@"defer", "default");
-    defer review.deinit();
-    var file_tools: zg_ai.tools.builtin.files.FileTools = .{ .files = review.glue.files(), .tracker = &read_tracker };
-    try tool_registry.addSource(file_tools.source());
-    var agent_tools: zg_ai.tools.AgentTools = .init(gpa, io, &tool_registry, .{});
-    defer agent_tools.deinit();
-    const mgr = try zg_ai.loop.AgentManager.init(gpa, io, .{
-        .registry = &models,
-        .providers = .fromHub(hub),
-        .tools = agent_tools.tools(),
-        .checkpoints = review.glue.checkpoints(),
-        .turn_end = file_tools.turnEnd(),
-    });
-    defer mgr.deinit();
-    var e10: runs.E10Agents = .init(gpa, io, mgr, .{ .default_model = env.get("ZG_MODEL") orelse "sonnet" });
+    const agents = try AgentRuntime.create(rt, &env, workspace, err, "zg agents host");
+    defer agents.destroy();
+    const cwd = agents.cwd;
 
-    const host = try runs.RunHost.init(gpa, io, reg, e10.agentPort(), null, .builtin, .{ .workspace_root = cwd });
+    const host = try runs.RunHost.init(gpa, io, reg, agents.agentPort(), null, .builtin, .{ .workspace_root = cwd });
     defer host.deinit();
     // Automations: the host fires them while it holds the scheduler lease
     // (the GUI may hold it instead). Files are re-read every 10 s.
@@ -239,13 +196,6 @@ pub fn runHost(rt: *zg_core.Runtime, min: std.process.Init.Minimal, argv: []cons
     return 0;
 }
 
-fn warn(ctx: *anyopaque, msg: []const u8) void {
-    const err: *Io.Writer = @ptrCast(@alignCast(ctx));
-    err.print("zg agents host: {s}\n", .{msg}) catch {};
-}
-
-fn redact(_: *anyopaque, _: []const u8) void {}
-
 fn warnAutomation(ctx: *anyopaque, name: []const u8, message: []const u8) void {
     const router: *notify.NotificationRouter = @ptrCast(@alignCast(ctx));
     var key_buf: [80]u8 = undefined;
@@ -256,16 +206,6 @@ fn warnAutomation(ctx: *anyopaque, name: []const u8, message: []const u8) void {
 fn reportProblem(ctx: ?*anyopaque, file: []const u8, line: u32, column: u32, message: []const u8) void {
     const err: *Io.Writer = @ptrCast(@alignCast(ctx.?));
     err.print("zg agents host: .zigguro/automations/{s}:{d}:{d}: {s}\n", .{ file, line, column, message }) catch {};
-}
-
-const no_secrets: zg_ai.keyref.SecretStore = .{ .ctx = @constCast(@as(*const anyopaque, &{})), .vtable = &.{ .get = getNone, .put = putNone } };
-
-fn getNone(_: *anyopaque, _: Io, _: []const u8) zg_ai.keyref.SecretError!?[]const u8 {
-    return null;
-}
-
-fn putNone(_: *anyopaque, _: Io, _: []const u8, _: []const u8) zg_ai.keyref.SecretError!void {
-    return error.Unavailable;
 }
 
 fn usage(err: *Io.Writer, text: []const u8) !u8 {

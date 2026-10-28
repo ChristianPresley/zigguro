@@ -31,6 +31,12 @@ fn register(b: *bench.Bench) !void {
     defer probs.deinit();
     try b.run("codeintel.problems.filter_100k: rebuild the Problems model, 100k diagnostics in 1000 files, text filter", &probs, problemsFilter100k);
     try b.run("codeintel.snippet.expand_2k: parse and expand a 2 KB snippet (stops, choices, variables, a transform)", {}, snippetExpand2k);
+    var cfx: CompletionFixture = undefined;
+    cfx.init(std.heap.smp_allocator);
+    defer cfx.deinit();
+    try b.run("codeintel.completion.refilter_20k: score and sort 20k items for a keystroke (full list)", &cfx, completionRefilter20k);
+    try b.run("codeintel.completion.arrive_20k: a 20k-item list arrives: sortText order, score and sort", &cfx, completionArrive20k);
+    try b.run("codeintel.completion.decode_5mb: parse a 5 MB completion list and apply its defaults (worker)", &cfx, completionDecode5mb);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -277,5 +283,101 @@ fn snippetExpand2k(_: void, s: *State) void {
         defer sn.deinit();
         sn.expand(gpa, .{ .get = Vars.get }, .{ .line_indent = "    ", .indent_unit = "    " }, &e) catch unreachable;
         bench.doNotOptimizeAway(e.stops.items.len);
+    }
+}
+
+const crank = zg_codeintel.features.completion_rank;
+
+fn identifiers(gpa: std.mem.Allocator, n: usize) [][]u8 {
+    const words = gpa.alloc([]u8, n) catch unreachable;
+    var prng: std.Random.DefaultPrng = .init(42);
+    const r = prng.random();
+    const parts = [_][]const u8{ "get", "set", "Buffer", "parse", "_args", "Node", "tree", "Index", "count", "lsp", "Request", "id" };
+    for (words) |*w| {
+        var buf: [96]u8 = undefined;
+        var len: usize = 0;
+        for (0..2 + r.uintLessThan(usize, 4)) |_| {
+            const p = parts[r.uintLessThan(usize, parts.len)];
+            @memcpy(buf[len..][0..p.len], p);
+            len += p.len;
+        }
+        w.* = gpa.dupe(u8, buf[0..len]) catch unreachable;
+    }
+    return words;
+}
+
+/// 20k items and a 5 MB `CompletionList` (about 25k items with edits,
+/// details and documentation), built once.
+const CompletionFixture = struct {
+    gpa: std.mem.Allocator,
+    words: [][]u8,
+    items: []crank.Item,
+    json: []u8,
+    /// Its item order is computed on the first refilter (when a list
+    /// arrives), not per keystroke.
+    ranker: crank.Ranker,
+
+    fn init(f: *CompletionFixture, gpa: std.mem.Allocator) void {
+        f.gpa = gpa;
+        f.ranker = crank.Ranker.init(gpa) catch unreachable;
+        f.words = identifiers(gpa, 20_000);
+        f.items = gpa.alloc(crank.Item, f.words.len) catch unreachable;
+        for (f.items, f.words) |*it, w| it.* = .{ .label = w, .sort_text = w, .sort_key = crank.sortKey(w), .filter_text = w, .edit = .{ .insert_text = w } };
+        var w: std.Io.Writer.Allocating = .init(gpa);
+        w.writer.writeAll("{\"isIncomplete\":false,\"itemDefaults\":{\"editRange\":{\"start\":{\"line\":10,\"character\":4},\"end\":{\"line\":10,\"character\":6}},\"commitCharacters\":[\".\",\"(\"]},\"items\":[") catch unreachable;
+        var i: usize = 0;
+        while (w.written().len < 5 * 1024 * 1024) : (i += 1) {
+            if (i > 0) w.writer.writeByte(',') catch unreachable;
+            const word = f.words[i % 1000];
+            w.writer.print("{{\"label\":\"{s}{d}\",\"kind\":{d},\"detail\":\"fn {s}(self: *Self, index: usize) !void\",\"documentation\":{{\"kind\":\"markdown\",\"value\":\"Returns the `{s}` of the node at `index`.\"}},\"sortText\":\"{d:0>6}\",\"filterText\":\"{s}\",\"insertTextFormat\":2,\"textEdit\":{{\"range\":{{\"start\":{{\"line\":10,\"character\":4}},\"end\":{{\"line\":10,\"character\":6}}}},\"newText\":\"{s}(${{1:index}})\"}},\"data\":{{\"id\":{d}}}}}", .{ word, i, i % 25 + 1, word, word, i, word, word, i }) catch unreachable;
+        }
+        w.writer.writeAll("]}") catch unreachable;
+        f.json = w.toOwnedSlice() catch unreachable;
+    }
+
+    fn deinit(f: *CompletionFixture) void {
+        f.ranker.deinit();
+        for (f.words) |w| f.gpa.free(w);
+        f.gpa.free(f.words);
+        f.gpa.free(f.items);
+        f.gpa.free(f.json);
+    }
+};
+
+/// One keystroke on a 20k-item list, scoring every item (after a
+/// deletion; extending scores only the survivors). Budget: < 2 ms.
+fn completionRefilter20k(f: *CompletionFixture, s: *State) void {
+    const r = &f.ranker;
+    // No pattern extends the one before: every item is scored.
+    const patterns = [_][]const u8{ "ge", "pa", "co", "parN" };
+    for (0..s.iterations()) |i| {
+        r.refilter(f.items, patterns[i & 3], null) catch unreachable;
+        bench.doNotOptimizeAway(r.ranked.items.len);
+    }
+}
+
+/// A new 20k-item list: its sortText order computed, then filtered.
+fn completionArrive20k(f: *CompletionFixture, s: *State) void {
+    const r = &f.ranker;
+    for (0..s.iterations()) |_| {
+        r.reset();
+        r.refilter(f.items, "ge", null) catch unreachable;
+        bench.doNotOptimizeAway(r.ranked.items.len);
+    }
+}
+
+/// The 5 MB list parsed as the client's reader does and decoded with its
+/// defaults. Budget: < 15 ms.
+fn completionDecode5mb(f: *CompletionFixture, s: *State) void {
+    const gpa = s.allocator();
+    var items: std.ArrayList(crank.Item) = .empty;
+    defer items.deinit(gpa);
+    for (0..s.iterations()) |_| {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const v = std.json.parseFromSliceLeaky(zg_codeintel.features.CompletionService.Result, arena.allocator(), f.json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch unreachable;
+        items.clearRetainingCapacity();
+        _ = crank.decode(gpa, v, 0, &.{}, &items) catch unreachable;
+        bench.doNotOptimizeAway(items.items.len);
     }
 }

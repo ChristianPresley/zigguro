@@ -6,7 +6,8 @@
 //! the AI workflows (E09), `zg agents host` and `zg runs` the agent
 //! runs (E13.F01), `zg automation` the scheduled automations (E13.F02),
 //! `zg tasks gh` the GitHub Issues sync of the task board (E13.F03),
-//! `zg library` the prompt library (E13.F08.S02);
+//! `zg library` the prompt library (E13.F08.S02), `zg workflow` the
+//! multi-agent workflows (E13.F08.S01);
 //! `--version` is answered by
 //! zg_release before the runtime starts. Other subcommands arrive with
 //! their epics.
@@ -23,6 +24,7 @@ const review_cmd = @import("review_cmd.zig");
 const cmd_scm = @import("cmd_scm.zig");
 const cmd_scm_ai = @import("cmd_scm_ai.zig");
 const cmd_runs = @import("cmd_runs.zig");
+const cmd_workflow = @import("cmd_workflow.zig");
 const cmd_automation = @import("cmd_automation.zig");
 const cmd_library = @import("cmd_library.zig");
 const cmd_tasks = @import("cmd_tasks.zig");
@@ -60,6 +62,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "scm")) return cmd_scm.run(&rt, argv[2..]);
     if (argv.len >= 3 and std.mem.eql(u8, argv[1], "agents") and std.mem.eql(u8, argv[2], "host")) return cmd_runs.runHost(&rt, min, argv[3..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "runs")) return cmd_runs.runRuns(&rt, argv[2..]);
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "workflow")) return cmd_workflow.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "automation")) return cmd_automation.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "tasks")) return cmd_tasks.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "library")) return cmd_library.run(&rt, min, argv[2..]);
@@ -81,6 +84,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         \\       zg automation list|show|run|history|validate   automations (zg automation --help)
         \\       zg tasks gh pull|push|publish|status   sync tasks with GitHub Issues (zg tasks gh --help)
         \\       zg library list|show|render   the prompt library (zg library --help)
+        \\       zg workflow list|show|run|status|resume|stop|save   multi-agent workflows (zg workflow --help)
         \\
     , .{zg_release.current.version_string});
     try w.flush();
