@@ -57,11 +57,13 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const FileOpHooks = @import("codeintel.zig").FileOpHooks;
 const NavService = @import("codeintel.zig").NavService;
 const settings_mod = @import("settings/service.zig");
 const Settings = settings_mod.Settings;
 const SettingsView = @import("settings/view.zig").SettingsView;
 const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
+const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
 const NotesService = @import("notes/service.zig").NotesService;
@@ -2212,6 +2214,12 @@ pub const Workbench = struct {
         wb.gotoOffset(lr.start + zg_core.utf8.columnToByte(v.text(lr), character, enc));
     }
 
+    /// Puts the caret at 0-based `line`, byte column `col` of the current
+    /// editor (`bench-latency`).
+    pub fn gotoLine(wb: *Workbench, line: u32, col: u32) void {
+        wb.gotoPos(line, col, .utf8);
+    }
+
     fn gotoOffset(wb: *Workbench, off: u64) void {
         const v = wb.view;
         v.setSelection(.caret(@min(off, wb.doc.len())));
@@ -2781,7 +2789,7 @@ pub const Workbench = struct {
         if (wb.explorer != null) return;
         const e = try wb.gpa.create(ExplorerPanel);
         errdefer wb.gpa.destroy(e);
-        try e.init(wb.gpa, wb.io, wb.cwd, .{ .ctx = wb, .open = onExplorerOpen, .moved = onExplorerMoved, .open_folder = onOpenFolder });
+        try e.init(wb.gpa, wb.io, wb.cwd, .{ .ctx = wb, .open = onExplorerOpen, .moved = onExplorerMoved, .open_folder = onOpenFolder, .file_op = onExplorerFileOp });
         e.win = wb.win;
         wb.explorer = e;
         wb.applyExplorerSettings();
@@ -2870,6 +2878,39 @@ pub const Workbench = struct {
         wb.pending_focus = focus;
         wb.pending_explorer = true;
         if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// The explorer is about to create, rename or delete files, or has:
+    /// language servers hear of it (LSP `workspace/will*Files` first,
+    /// whose import updates are applied, then `did*Files`).
+    fn onExplorerFileOp(ctx: *anyopaque, phase: ExplorerFileOp.Phase, kind: ExplorerFileOp.Kind, items: []const ExplorerFileOp.Item) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const ci = wb.codeintel orelse return;
+        if (!ci.trusted) return;
+        const hooks = &ci.file_hooks;
+        var arena: std.heap.ArenaAllocator = .init(wb.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        switch (kind) {
+            .rename => {
+                const pairs = a.alloc(FileOpHooks.Pair, items.len) catch return;
+                for (items, pairs) |it, *pr| pr.* = .{ .old = it.path, .new = it.new orelse it.path, .folder = it.folder };
+                switch (phase) {
+                    .will => hooks.willRename(pairs, ci.save_actions.clock()),
+                    .did => hooks.didRename(pairs),
+                }
+            },
+            .create, .delete => {
+                const entries = a.alloc(FileOpHooks.Entry, items.len) catch return;
+                for (items, entries) |it, *e| e.* = .{ .path = it.path, .folder = it.folder };
+                const clk = ci.save_actions.clock();
+                switch (phase) {
+                    .will => if (kind == .create) hooks.willCreate(entries, clk) else hooks.willDelete(entries, clk),
+                    .did => if (kind == .create) hooks.didCreate(entries) else hooks.didDelete(entries),
+                }
+            },
+        }
+        if (phase == .will) if (wb.win) |w| w.markAllDirty();
     }
 
     /// A file or folder was renamed, moved or deleted in the explorer:

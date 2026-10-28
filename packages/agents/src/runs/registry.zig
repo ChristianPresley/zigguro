@@ -759,7 +759,7 @@ pub fn load(r: *RunRegistry, lo: LoadOptions) !LoadReport {
     for (skeletons.items) |row| {
         const b = try r.newBox(.{
             .id = row.id,
-            .spec = .{ .kind = row.kind, .title = row.title, .prompt = "" },
+            .spec = .{ .kind = row.kind, .title = row.title, .prompt = "", .project = row.project },
             .status = row.status,
             .created_ms = row.created_ms,
             .started_ms = row.started_ms,

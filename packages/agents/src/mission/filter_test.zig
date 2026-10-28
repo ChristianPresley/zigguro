@@ -18,6 +18,7 @@ const subject: Subject = .{
     .cost_micro = 750_000,
     .tags = &.{ "ops", "nightly" },
     .origin = "triage-bot",
+    .project = "ops-book",
 };
 
 test "filter_grammar_table" {
@@ -86,6 +87,13 @@ test "filter_grammar_table" {
         .{ .q = "#deploy", .match = false },
         .{ .q = "a:triage", .match = true },
         .{ .q = "a:release", .match = false },
+        // Project (exact slug, any of several; p:none is no project).
+        .{ .q = "p:ops-book", .match = true },
+        .{ .q = "p:OPS-BOOK", .match = true },
+        .{ .q = "p:ops", .match = false },
+        .{ .q = "p:q4 p:ops-book", .match = true },
+        .{ .q = "p:none", .match = false },
+        .{ .q = "p:none p:ops-book", .match = true },
         // Unknown prefixes and values are words.
         .{ .q = "x:foo", .match = false, .check = C.unknownPrefix },
         .{ .q = "s:bogus", .match = false },
@@ -102,4 +110,16 @@ test "filter_grammar_table" {
         try testing.expectEqual(c.match, f.matches(subject));
         if (c.check) |chk| try chk(f);
     }
+}
+
+test "filter_grammar_p_prefix: p:none matches runs outside projects" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var outside = subject;
+    outside.project = null;
+    const none = try filter.parseFilter("p:none", arena.allocator());
+    try testing.expect(!none.isEmpty());
+    try testing.expect(none.matches(outside));
+    const book = try filter.parseFilter("p:ops-book", arena.allocator());
+    try testing.expect(!book.matches(outside));
 }

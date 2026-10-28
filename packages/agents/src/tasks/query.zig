@@ -8,6 +8,7 @@
 //!   due:<2026-11-01         due:today   due:overdue   (also <=, >, >=, =)
 //!   blocked:true            claimed:false
 //!   text:"foo bar"          id:T-0042
+//!   project:book (or p:book)   project:none
 //!   sort:priority|due|id|created|title   (`-` before the key reverses)
 //!   words or "a phrase"     the title contains it
 //!
@@ -44,6 +45,8 @@ pub const Term = struct {
         claimed: bool,
         text: []const u8,
         id: task_mod.TaskId,
+        /// A project slug; null is `project:none`.
+        project: ?[]const u8,
     };
 
     pub const When = union(enum) { date: Date, today, overdue };
@@ -124,6 +127,8 @@ pub fn parseQuery(arena: Allocator, q: []const u8) Error!Query {
             .{ .text = try unquote(arena, val) }
         else if (eqlI(key, "id"))
             .{ .id = ids.parse(val) orelse return error.InvalidQuery }
+        else if (eqlI(key, "project") or eqlI(key, "p"))
+            .{ .project = if (eqlI(val, "none")) null else try unquote(arena, val) }
         else
             return error.InvalidQuery;
         try terms.append(arena, .{ .negate = negate, .kind = kind });
@@ -170,6 +175,7 @@ fn termMatches(term: *const Term, t: *const Task, v: ?*const TasksView, today: ?
         .claimed => |b| (t.claimed_by != null) == b,
         .text => |s| std.ascii.indexOfIgnoreCase(t.title, s) != null,
         .id => |id| t.id == id,
+        .project => |want| if (want) |w| (if (t.project) |p| eqlI(p, w) else false) else t.project == null,
     };
 }
 
