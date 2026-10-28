@@ -32,6 +32,24 @@ test "registry: same path opens same doc" {
     try testing.expectEqual(@as(usize, 0), reg.count());
 }
 
+test "registry: openFileOwned keeps the buffer, frees it when already open" {
+    const gpa = testing.allocator;
+    var reg: DocumentRegistry = .init(gpa, .posix);
+    defer reg.deinit();
+    const text = try gpa.dupe(u8, "hello\nworld\n");
+    const a = try reg.openFileOwned("/big.log", text);
+    defer reg.release(a);
+    try testing.expectEqual(@as(u64, 12), reg.get(a).?.len());
+    // Opened again: the second buffer is freed (the allocator checks it).
+    const b = try reg.openFileOwned("/big.log", try gpa.dupe(u8, "ignored"));
+    defer reg.release(b);
+    try testing.expectEqual(a, b);
+    // Not absolute: the buffer stays the caller's.
+    const c = try gpa.dupe(u8, "x");
+    defer gpa.free(c);
+    try testing.expectError(error.NotAbsolute, reg.openFileOwned("rel.log", c));
+}
+
 test "registry: windows case-insensitive" {
     var reg: DocumentRegistry = .init(testing.allocator, .windows);
     defer reg.deinit();
