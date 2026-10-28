@@ -1,0 +1,27 @@
+# A REPL result with a variablesReference expands and goes stale on resume.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "main", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> evaluate {"expression": "s", "frameId": 1, "context": "repl"}
+< {"body": {"result": "{...}", "variablesReference": 50, "namedVariables": 1, "type": "S"}}
+> variables {"variablesReference": 50}
+< {"body": {"variables": [{"name": "a", "value": "5", "variablesReference": 0}]}}
+> continue {"threadId": 1}
+< {}
+> evaluate {"expression": "g", "context": "repl"}
+< {"body": {"result": "7", "variablesReference": 0}}
+> disconnect
+< {}
