@@ -86,6 +86,7 @@ const fs_tree = @import("explorer/fs_tree.zig");
 const Tasks = @import("tasks.zig").Tasks;
 const debug_service = @import("debug/service.zig");
 const debug_var_tree = @import("debug/var_tree.zig");
+const debug_bp_view = @import("debug/bp_view.zig");
 const zg_dap = @import("zg_dap");
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
@@ -1324,6 +1325,13 @@ pub const Workbench = struct {
         .{ .id = "debug.removeWatchExpression", .title = "Remove Watch Expression", .category = "Debug", .run = removeWatchExpression },
         .{ .id = "debug.removeAllWatchExpressions", .title = "Remove All Watch Expressions", .category = "Debug", .run = dbg(Debug.removeAllWatchesCmd) },
         .{ .id = "debug.toggleHexValues", .title = "Toggle Hexadecimal Values", .category = "Debug", .run = dbg(Debug.toggleHexCmd) },
+        .{ .id = "debug.focusBreakpoints", .title = "Focus on Breakpoints View", .category = "Debug", .run = focusBreakpoints },
+        .{ .id = "debug.addFunctionBreakpoint", .title = "Add Function Breakpoint", .category = "Debug", .run = addFunctionBreakpoint },
+        .{ .id = "debug.addConditionalBreakpoint", .title = "Add Conditional Breakpoint...", .category = "Debug", .run = addConditionalBreakpoint },
+        .{ .id = "debug.addLogpoint", .title = "Add Logpoint...", .category = "Debug", .run = addLogpoint },
+        .{ .id = "debug.editBreakpoint", .title = "Edit Breakpoint Condition", .category = "Debug", .run = editBreakpoint },
+        .{ .id = "debug.removeBreakpoint", .title = "Remove Breakpoint", .category = "Debug", .run = removeBreakpoint },
+        .{ .id = "debug.toggleAllBreakpoints", .title = "Toggle All Breakpoints", .category = "Debug", .run = dbg(Debug.toggleAllBreakpointsCmd) },
         .{ .id = "debug.restartFrame", .title = "Restart Frame", .category = "Debug", .run = dbg(Debug.restartFrameCmd) },
         .{ .id = "debug.takeControl", .title = "Take Control from Agent", .category = "Debug", .run = dbg(Debug.takeControlCmd) },
         .{ .id = "debug.handBackToAgent", .title = "Hand Back to Agent", .category = "Debug", .run = dbg(Debug.handBackCmd) },
@@ -3389,6 +3397,47 @@ pub const Workbench = struct {
     fn editWatchExpression(wb: *Workbench) !void {
         const dp = wb.debug_panel orelse return;
         _ = dp.watch.editActive();
+    }
+
+    fn focusBreakpoints(wb: *Workbench) !void {
+        wb.debug_focus = .breakpoints;
+        try wb.showDebugPanel(true);
+    }
+
+    fn addFunctionBreakpoint(wb: *Workbench) !void {
+        wb.debug_focus = .breakpoints;
+        try wb.showDebugPanel(false);
+        if (wb.debug_panel) |dp| dp.bpv.startAddFunction();
+    }
+
+    fn addConditionalBreakpoint(wb: *Workbench) !void {
+        try wb.editBreakpointAtCursor(.condition);
+    }
+
+    fn addLogpoint(wb: *Workbench) !void {
+        try wb.editBreakpointAtCursor(.log_message);
+    }
+
+    /// The caret line's breakpoint (made when there is none), its
+    /// condition or log message in edit in the Breakpoints view.
+    fn editBreakpointAtCursor(wb: *Workbench, field: debug_bp_view.Field) !void {
+        const d = try wb.ensureDebug();
+        const id = d.breakpointAtCursor() orelse return;
+        wb.debug_focus = .breakpoints;
+        try wb.showDebugPanel(false);
+        if (wb.debug_panel) |dp| _ = dp.editBreakpoint(id, field);
+    }
+
+    fn editBreakpoint(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        if (!dp.bpv.editActive()) wb.notify(.info, "Nothing to edit here", .{});
+    }
+
+    fn removeBreakpoint(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        const d = wb.debug orelse return;
+        const id = dp.bpv.activeBreakpoint() orelse return;
+        Debug.bpRemove(d, id);
     }
 
     fn removeWatchExpression(wb: *Workbench) !void {
@@ -6682,6 +6731,27 @@ test "workbench: Run and Debug lists configurations with reasons, F9 sets breakp
     try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x25CF));
     // No lightbulb: lane 1 leaves the click to the editor.
     try std.testing.expect(!Workbench.onGutterClick(&wb, f.view, 0, 1));
+
+    // Add Conditional Breakpoint on the caret's line (the one the click
+    // set): the Breakpoints view edits its condition in place.
+    f.view.setSelection(.caret(f.view.lineRange(1).start));
+    try Workbench.addConditionalBreakpoint(&wb);
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "Breakpoint condition" }) != null);
+    try dp.bpv.edit_buf.setText("a > 1");
+    dp.bpv.submitEdit();
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "a.zig line 2, when a > 1" }) != null);
+    try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x229C));
+    // Space in the view disables it; Delete removes it.
+    const row = dp.bpv.tv.flat.rowOf(dp.bpv.rowId(dp.bpv.activeBreakpoint().?)).?;
+    _ = try dp.bpv.tv.onKey(.{ .key = .space });
+    _ = t.settle();
+    try std.testing.expect(t.find(.{ .name = "a.zig line 2, when a > 1, disabled" }) != null);
+    dp.bpv.tv.moveTo(row, .replace);
+    try Workbench.removeBreakpoint(&wb);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 0), (try d.bps.list(arena.allocator())).len);
 }
 
 /// The 0-based lines where `f`'s gutter shows icon `icon`.

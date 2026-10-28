@@ -47,6 +47,7 @@ test {
     _ = @import("debug/configs.zig");
     _ = @import("debug/call_stack.zig");
     _ = @import("debug/var_tree.zig");
+    _ = @import("debug/bp_view.zig");
     _ = @import("notes/service.zig");
     _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");

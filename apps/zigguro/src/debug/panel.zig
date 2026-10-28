@@ -1,7 +1,7 @@
 //! The Run and Debug panel (E07.F07.S01.T01, .T03): the debug toolbar,
-//! the configuration row, then the Variables, Watch and Call Stack
-//! views, over the debug service. The Breakpoints and console views join
-//! it later.
+//! the configuration row, then the Variables, Watch, Call Stack and
+//! Breakpoints views, over the debug service. The console joins it
+//! later.
 //!
 //! The trees are rebuilt only when the service's `generation` changed,
 //! so a stop paints in the frame after the models applied it. UI thread
@@ -9,10 +9,12 @@
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
+const zg_dap = @import("zg_dap");
 const service = @import("service.zig");
 const toolbar = @import("toolbar.zig");
 const call_stack = @import("call_stack.zig");
 const var_tree = @import("var_tree.zig");
+const bp_view = @import("bp_view.zig");
 
 const Allocator = std.mem.Allocator;
 const Ui = zg_gui.Ui;
@@ -20,6 +22,7 @@ const Window = zg_gui.Window;
 const Debug = service.Debug;
 const CallStack = call_stack.CallStack;
 const VarTree = var_tree.VarTree;
+const BpView = bp_view.BpView;
 
 pub const DebugPanel = struct {
     gpa: Allocator,
@@ -27,6 +30,7 @@ pub const DebugPanel = struct {
     stack: CallStack = undefined,
     vars: VarTree = undefined,
     watch: VarTree = undefined,
+    bpv: BpView = undefined,
     /// The service generation the tree was built from.
     seen: u64 = 0,
     snap_arena: std.heap.ArenaAllocator,
@@ -39,11 +43,14 @@ pub const DebugPanel = struct {
         try p.vars.init(gpa, .variables, d.varHooks());
         errdefer p.vars.deinit();
         try p.watch.init(gpa, .watch, d.varHooks());
-        p.vars.update(d.viewInspector()) catch {};
-        p.watch.update(d.viewInspector()) catch {};
+        errdefer p.watch.deinit();
+        try p.bpv.init(gpa, d.bpHooks());
+        p.seen = 0;
+        _ = p.refresh();
     }
 
     pub fn deinit(p: *DebugPanel) void {
+        p.bpv.deinit();
         p.watch.deinit();
         p.vars.deinit();
         p.stack.deinit();
@@ -59,6 +66,7 @@ pub const DebugPanel = struct {
         p.stack.update(snap, p.d.selectedFrame()) catch {};
         p.vars.update(p.d.viewInspector()) catch {};
         p.watch.update(p.d.viewInspector()) catch {};
+        if (p.d.bpSnapshot(p.snap_arena.allocator())) |bs| p.bpv.update(bs) catch {} else |_| {}
         if (p.d.reveal_req) |id| {
             if (p.d.entryById(id) == null) {
                 p.d.reveal_req = null;
@@ -74,7 +82,20 @@ pub const DebugPanel = struct {
         p.stack.focus(w);
     }
 
-    pub const View = enum { variables, watch, call_stack };
+    pub const View = enum { variables, watch, call_stack, breakpoints };
+
+    /// Edits breakpoint `id`'s `field` in the Breakpoints view (just made:
+    /// the rows are read again first).
+    pub fn editBreakpoint(p: *DebugPanel, id: zg_dap.breakpoints.BreakpointManager.BpId, field: bp_view.Field) bool {
+        p.seen = 0;
+        _ = p.refresh();
+        const row = p.bpv.rowId(id);
+        if (p.bpv.tv.flat.rowOf(row)) |r| {
+            p.bpv.tv.moveTo(r, .replace);
+            p.bpv.tv.reveal(r);
+        }
+        return p.bpv.startEditField(row, field);
+    }
 
     /// Focuses one of the views.
     pub fn focusView(p: *DebugPanel, w: *Window, v: View) void {
@@ -82,6 +103,7 @@ pub const DebugPanel = struct {
             .variables => p.vars.focus(w),
             .watch => p.watch.focus(w),
             .call_stack => p.stack.focus(w),
+            .breakpoints => p.bpv.focus(w),
         }
     }
 
@@ -113,6 +135,21 @@ pub const DebugPanel = struct {
         ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "callStackFocus" });
         if (debugging) p.stack.build(ui);
         ui.close();
+        p.breakpointsHeading(ui);
+        ui.open(.{ .style = .{ .dir = .column, .grow = 1, .basis = .{ .px = 0 } }, .key_context = "breakpointsFocus" });
+        p.bpv.build(ui);
+        ui.close();
+    }
+
+    fn breakpointsHeading(p: *DebugPanel, ui: *Ui) void {
+        ui.open(.{ .style = .{ .dir = .row, .gap = 4, .align_items = .center, .padding = .xy(10, 0), .shrink = 0 }, .role = .toolbar, .label = "Breakpoints actions" });
+        defer ui.close();
+        ui.text("BREAKPOINTS", .{ .color = .fg_muted, .wrap = false });
+        ui.open(.{ .style = .{ .grow = 1 } });
+        ui.close();
+        if (zg_gui.w.button(ui, .{ .label = "Add Function", .variant = .ghost }).clicked) p.bpv.startAddFunction();
+        if (zg_gui.w.button(ui, .{ .label = "Toggle All", .variant = .ghost }).clicked) p.d.toggleAllBreakpointsCmd();
+        if (zg_gui.w.button(ui, .{ .label = "Remove All", .variant = .ghost }).clicked) p.d.removeAllBreakpointsCmd();
     }
 
     fn heading(ui: *Ui, text: []const u8) void {
