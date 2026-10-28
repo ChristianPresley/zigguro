@@ -18,6 +18,8 @@ pub const selection = @import("selection.zig");
 pub const search = @import("search.zig");
 /// Links in the output (E06.F05.S03.T02).
 pub const links = @import("links.zig");
+/// Inline images' textures and drawing (E06.F08).
+pub const images = @import("images.zig");
 /// The find bar over a terminal.
 pub const find_bar = @import("find_bar.zig");
 /// Terminal tabs and split groups of the panel (E06.F07).
