@@ -14,6 +14,7 @@ const Csi = Parser.Csi;
 const Esc = Parser.Esc;
 const StringTerm = Parser.StringTerm;
 const Screen = @import("../screen/Screen.zig");
+const PageList = @import("../screen/PageList.zig");
 const modes_mod = @import("modes.zig");
 const Modes = modes_mod.Modes;
 const ModeId = modes_mod.ModeId;
@@ -44,9 +45,13 @@ pub const Options = struct {
     /// pages (about a byte per character) and decoded when scrolled to.
     hot_scrollback_rows: u32 = 10_000,
     /// Also deflate compacted lines: about half the memory again, but
-    /// compaction then runs at half the speed on the feeding thread, so it
-    /// stays off until compaction moves off that thread.
+    /// compaction then runs at half the speed, so it is off unless
+    /// `background_compaction` moves the encoding off the feeding thread.
     deflate_scrollback: bool = false,
+    /// Compaction is left to the owner: when `compactionDue`, it calls
+    /// `beginCompaction`, runs the job anywhere and passes it back to
+    /// `finishCompaction` on the feeding thread (see `compactor.zig`).
+    background_compaction: bool = false,
     /// `terminal.risClearsScrollback`: RIS also erases scrollback.
     ris_clears_scrollback: bool = false,
     /// `terminal.clearPushesToScrollback`: ED 2 on the primary screen moves
@@ -131,7 +136,7 @@ stats: Stats = .{},
 
 /// Creates a blank terminal.
 pub fn init(gpa: Allocator, o: Options) !Terminal {
-    var primary: Screen = try .init(gpa, o.cols, o.rows, .{ .max_bytes = o.max_scrollback_bytes, .hot_rows = o.hot_scrollback_rows, .deflate = o.deflate_scrollback });
+    var primary: Screen = try .init(gpa, o.cols, o.rows, .{ .max_bytes = o.max_scrollback_bytes, .hot_rows = o.hot_scrollback_rows, .deflate = o.deflate_scrollback, .background_compact = o.background_compaction });
     errdefer primary.deinit();
     var alternate: Screen = try .init(gpa, o.cols, o.rows, .{ .scrollback = false, .max_bytes = 0 });
     errdefer alternate.deinit();
@@ -203,6 +208,26 @@ pub fn feed(t: *Terminal, bytes: []const u8) void {
 /// Drops the queued replies (after the owner wrote them to the host).
 pub fn clearReplies(t: *Terminal) void {
     t.replies.clearRetainingCapacity();
+}
+
+/// Whether background compaction of the primary screen is due.
+pub fn compactionDue(t: *const Terminal) bool {
+    return t.primary.pages.compact_due;
+}
+
+/// Starts a background compaction (see `PageList.beginCompact`).
+pub fn beginCompaction(t: *Terminal) !?*PageList.CompactJob {
+    return t.primary.pages.beginCompact();
+}
+
+/// Ends a background compaction (see `PageList.finishCompact`).
+pub fn finishCompaction(t: *Terminal, job: *PageList.CompactJob) !void {
+    return t.primary.pages.finishCompact(job);
+}
+
+/// Frees a background compaction without using it (shutdown).
+pub fn cancelCompaction(t: *Terminal, job: *PageList.CompactJob) void {
+    t.primary.pages.cancelCompact(job);
 }
 
 /// Resizes both screens and the tab stops.
