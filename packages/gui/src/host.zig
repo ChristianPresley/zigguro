@@ -481,6 +481,11 @@ pub const Host = struct {
                 h.platform.submit(.{ .start_drag = .{ .win = hw.id, .items = &items, .allowed = .{ .move = true } } }) catch hw.win.dragFinished(.{});
             }
             hw.win.window_ops.clearRetainingCapacity();
+            for (hw.win.open_uris.items) |u| {
+                h.platform.submit(.{ .open_uri = u }) catch {};
+                hw.win.gpa.free(u);
+            }
+            hw.win.open_uris.clearRetainingCapacity();
             try h.updateHitMap(hw);
         }
         for (h.windows.items) |hw| if (hw.win.ime.serial != hw.ime_sent) {
