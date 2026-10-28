@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cargo",
+            "command": "build",
+            "problemMatcher": ["$rustc"],
+            "group": "build",
+            "label": "rust: cargo build"
+        },
+        {
+            "label": "cargo test",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["test", "--", "--nocapture"],
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": ["$rustc"],
+            "options": { "env": { "RUST_BACKTRACE": "1" } }
+        },
+        {
+            "label": "cargo watch",
+            "type": "shell",
+            "command": "cargo watch -x check",
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "rustc",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": [
+                    { "regexp": "^(warning|error)(?:\\[(E\\d+)\\])?: (.*)$", "severity": 1, "code": 2, "message": 3 },
+                    { "regexp": "^\\s+--> (.*):(\\d+):(\\d+)$", "file": 1, "line": 2, "column": 3 }
+                ],
+                "background": {
+                    "activeBegins": true,
+                    "beginsPattern": "^\\[Running ",
+                    "endsPattern": "^\\[Finished running"
+                }
+            }
+        }
+    ]
+}
