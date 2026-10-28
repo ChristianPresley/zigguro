@@ -22,6 +22,8 @@
     .{ .key = "mod+c", .command = "debug.copyValue", .when = "variablesFocus || watchExpressionsFocus" },
     .{ .key = "f2", .command = "debug.editWatchExpression", .when = "watchExpressionsFocus" },
     .{ .key = "delete", .macos = "cmd+backspace", .command = "debug.removeWatchExpression", .when = "watchExpressionsFocus" },
+    .{ .key = "f2", .command = "debug.editBreakpoint", .when = "breakpointsFocus" },
+    .{ .key = "delete", .macos = "cmd+backspace", .command = "debug.removeBreakpoint", .when = "breakpointsFocus" },
     .{ .key = "f9", .command = "debug.toggleBreakpoint", .when = "editorTextFocus" },
     .{ .key = "f10", .command = "debug.stepOver", .when = "inDebugMode && debugState == 'stopped'" },
     .{ .key = "f11", .command = "debug.stepInto", .when = "inDebugMode && debugState != 'inactive'" },
