@@ -1,0 +1,7 @@
+.{
+    .version = 1,
+    .name = "loop-path",
+    .steps = .{
+        .{ .id = "improve", .loop_until = .{ .agent = .{ .prompt = "Improve the essay.", .schema = "{\"type\":\"object\"}" }, .check = .{ .path = "$.improve.good_enough" }, .max_rounds = 3 } },
+    },
+}

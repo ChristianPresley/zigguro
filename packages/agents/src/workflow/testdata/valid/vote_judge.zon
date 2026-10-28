@@ -1,0 +1,7 @@
+.{
+    .version = 1,
+    .name = "vote-judge",
+    .steps = .{
+        .{ .id = "draft", .vote = .{ .n = 2, .decide = .judge, .agent = .{ .prompt = "Write a tagline." }, .judge = .{ .prompt = "Pick the best of {{$candidates}}." } } },
+    },
+}

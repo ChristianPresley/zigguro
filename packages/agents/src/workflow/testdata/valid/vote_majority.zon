@@ -1,0 +1,7 @@
+.{
+    .version = 1,
+    .name = "vote-majority",
+    .steps = .{
+        .{ .id = "classify", .vote = .{ .n = 3, .agent = .{ .prompt = "Is this a bug? Answer yes or no.", .schema = "{\"type\":\"object\",\"required\":[\"answer\"],\"properties\":{\"answer\":{\"type\":\"string\"}}}" } } },
+    },
+}

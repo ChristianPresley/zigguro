@@ -1,0 +1,2 @@
+// expect: step "Plan": id must match [a-z][a-z0-9_]{0,31}
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "Plan", .agent = .{ .prompt = "A" } }} }

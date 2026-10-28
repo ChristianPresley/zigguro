@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "when",
+    .args = .{.{ .name = "deep", .type = .bool, .required = false, .default = "false" }},
+    .steps = .{
+        .{ .id = "quick", .agent = .{ .prompt = "Answer quickly." } },
+        .{ .id = "more", .when = "$args.deep", .agent = .{ .prompt = "Go deeper than {{$.quick}}." } },
+    },
+}

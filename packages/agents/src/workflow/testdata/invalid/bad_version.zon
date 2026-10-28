@@ -1,0 +1,2 @@
+// expect: unsupported version 2 (expected 1)
+.{ .version = 2, .name = "x", .steps = .{.{ .id = "a", .agent = .{ .prompt = "A" } }} }

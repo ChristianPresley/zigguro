@@ -1550,6 +1550,14 @@ pub const Workbench = struct {
         }, region);
     }
 
+    /// Writes the review queue's decisions to the workspace's review store.
+    fn flushReview(wb: *Workbench) void {
+        const host = wb.agent orelse return;
+        host.review.mutex.lockUncancelable(wb.io);
+        defer host.review.mutex.unlock(wb.io);
+        host.review.flushLocked();
+    }
+
     /// The inline edit bar handed its selection and instruction over.
     fn inlineToAgent(ctx: *anyopaque, selection: []const u8, instruction: []const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
@@ -2555,6 +2563,8 @@ pub const Workbench = struct {
         if (wb.inline_edit) |h| if (h.done) {
             h.destroy();
             wb.inline_edit = null;
+            // An accepted or rejected inline edit goes to the review store.
+            wb.flushReview();
         };
         // Back in the window: files may have changed on disk.
         const focused = ui.win.chrome.focused;
@@ -3241,4 +3251,43 @@ test "workbench: F8 goes through problems across files; the Problems panel and s
     _ = t.settle();
     try std.testing.expect(wb.shown(wb.problems_ref));
     try std.testing.expect(t.find(.{ .name = "error: unused b, b.zig line 1" }) != null);
+}
+
+test "workbench: opening the terminal focuses it; the Agent button shows and hides the pane" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    try wb.toggleTerminal();
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expect(!wb.terminal_node.isNone());
+    try std.testing.expect(t.win.focus.eql(wb.terminal_node));
+
+    try t.click(.{ .role = .button, .name = "Agent" });
+    _ = t.settle();
+    try std.testing.expect(wb.shown(wb.agent_ref));
+    try t.click(.{ .role = .button, .name = "Agent" });
+    _ = t.settle();
+    try std.testing.expect(!wb.shown(wb.agent_ref));
 }

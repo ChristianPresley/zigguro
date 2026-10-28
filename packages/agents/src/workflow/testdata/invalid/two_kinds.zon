@@ -1,0 +1,2 @@
+// expect: step "a": set exactly one of agent, map, parallel, reduce, vote, loop_until, gate, builtin, command
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "a", .agent = .{ .prompt = "A" }, .gate = .{ .title = "T" } }} }
