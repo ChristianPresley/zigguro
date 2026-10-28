@@ -116,3 +116,30 @@ Four fixed kernels run for 0.5 s each (always ReleaseFast):
 The scale is the geometric mean of ns/op over the reference numbers in `perf/baselines/ref_laptop_2024/calibration.json`, so above 1 means slower than the reference laptop. perfgate takes it with `--calibration` and uses it only for advisory (`budget_warn`) checks of absolute budgets on other machines. Blocking absolute checks run on the reference machine.
 
 The checked-in reference is **provisional**: it was recorded on a cloud VM (Xeon @ 2.1 GHz). Re-record it on the reference laptop by copying the output of `zig build perf-calibrate` there. On that VM two runs differed by about 4 %.
+
+## App scenarios
+
+```
+zig build bench-scenarios -Doptimize=ReleaseFast   # zig-out/bench-results/scenarios.json
+zig build test-bench-scenarios                     # each once in quick mode (part of zig build test)
+zigguro --bench-scenario=view_switch [--bench-quick] [--bench-repeats=N] [--bench-out=FILE] [--bench-corpus-root=DIR]
+```
+
+The runner (`apps/zigguro/src/bench/runner.zig`) runs one scenario per process on the headless platform with the software renderer. Frames are driven on the platform's virtual clock, so a measurement is CPU time from the action to the end of the frame that shows it. Presentation needs a real window: `zig build bench-latency`. Corpora come from `corpusgen`, cached under `ZG_CORPUS_DIR` or `<tmp>/zg-corpus`.
+
+| Scenario | What it does | Results → budget |
+|---|---|---|
+| `view_switch` | Toggles the side bar, terminal, agent pane, review queue and theme on and off, 10 commands per cycle, 10 cycles | `command_to_frame` → `ui.view_switch` |
+| `editing_100k` (alias `typing_100k`) | 500 keys into the middle of `lines_100k`, one frame per key; reads each key frame's UI CPU from the frame timeline | `frame_cpu` → `ui.frame_cpu_keystroke` |
+| `open_1gb` | Opens `bigfile_1g` in a fresh workbench, 5 times | `first_screen` → `file.open_1gb_first_screen` |
+| `fuzzy_find_1m` | Ranks the 1 M `chromium` paths for 20 fixed queries with the quick-pick matcher, keeping the best 50 | `ranked` → `workspace.fuzzy_find_1m` |
+| `idle` (alias `idle_memory`) | Opens the `linux` workspace, 5 files and the terminal, settles 5 s, then idles 30 s on the real clock | `wakeups_per_s` → `idle.wakeups`, `cpu_pct` → `idle.cpu`, `private_bytes` → `mem.idle_private`, `rss_bytes` |
+
+Quick mode uses small corpora (5 % of `lines_100k`, 64 MiB instead of 1 GiB, 10 k paths, a 1 % `linux`) and fewer repeats.
+
+Not yet covered:
+- `agents_10_streaming`: it needs the E10 replay provider wired into the app.
+- `fuzzy_find_1m` excludes painting, because the app has no file quick-open yet.
+- `input.key_to_photon` comes from `bench-latency`.
+
+Samples are integers. Rates and percentages (`per_second` and `percent` budgets) are therefore recorded in thousandths: 250 means 0.25 wakeups/s. perfgate divides them back when it checks the budget. Scenario budgets bind to suite `scenarios`, result `<scenario>.<metric>`, using the field of the budget's statistic (`max` from the samples).
