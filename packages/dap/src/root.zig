@@ -83,6 +83,11 @@ pub const tasks = struct {
     pub const ansi = @import("tasks/matcher/ansi_strip.zig");
 };
 
+/// The debugger as agent tools (E07.F05.S02.T01).
+pub const agent = struct {
+    pub const debug_tools = @import("agent/debug_tools.zig");
+};
+
 /// The tasks without a GUI (E07.F05.S01.T04): `zg task` and the check
 /// task of `zg lsp diagnostics`.
 pub const headless = struct {
@@ -112,4 +117,5 @@ test {
     _ = @import("inspect/watches_test.zig");
     _ = @import("inspect/exception.zig");
     _ = @import("inspect/sgr.zig");
+    _ = @import("agent/debug_tools_test.zig");
 }
