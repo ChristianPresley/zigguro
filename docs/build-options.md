@@ -27,6 +27,9 @@ Every package's `build.zig` calls `zg_build.flags(b)` exactly once and passes `f
 | (computed) | string | package dir | per package | `package_root` | E00 | Absolute path of the package directory, used by golden tests. Not a `-D` option. |
 | `-Dbench-quick` | bool | false | no (root only) | (none) | E00 | Quick benchmark mode. |
 | `-Dbench-filter` | string | none | no (root only) | (none) | E00 | Only run benchmarks whose name contains this. |
+| `-Dbench-repeats` | int | 1 | no (root only) | (none) | E14 | `zig build bench` / `bench-scenarios`: runs per bench binary or scenario, merged by perfgate into `bench-results/all.json` / `scenarios.json`. |
+| `-Dmachine` | string | ci_linux_x64 | no (root only) | (none) | E14 | `zig build perf-baseline`: the machine class whose `perf/baselines/` folder is rewritten. |
+| `-Dprofile` | bool | false | yes | (none) | E14 | Profiling preset: ReleaseFast, `tracing=zones`, symbols kept (docs/perf/profiling.md). |
 | `-Dtest-filter` | string | none | no (root only) | (none) | E00 | Only run tests whose name contains this. |
 | `-Dzig-version` | string | 0.16.0 | no (root only) | (none) | E00 | Toolchain version for `zig build zig-pin` (E00.F02). |
 | `-Dsegment-heap` | bool | false | no (root only) | (none) | E17 | Windows: add `heapType SegmentHeap` to the app manifest. |
