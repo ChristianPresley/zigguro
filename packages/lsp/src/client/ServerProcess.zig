@@ -106,6 +106,9 @@ stdin_file: ?Io.File = null,
 stdout_file: ?Io.File = null,
 stderr_file: ?Io.File = null,
 transport_impl: *Transport,
+/// The TCP port of a `tcp_connect` or `tcp_listen_child` transport (0 for
+/// stdio): a debug adapter's child sessions connect to it again.
+port: u16 = 0,
 stderr_mutex: Io.Mutex = .init,
 stderr_ring: zg_core.containers.RingBuffer(u8),
 exit_mutex: Io.Mutex = .init,
@@ -168,6 +171,7 @@ pub fn startDiag(rt: *zg_core.Runtime, spec: LaunchSpec, policy: ?*const SpawnPo
         .io = io,
         .name = &.{},
         .transport_impl = undefined,
+        .port = port,
         .stderr_ring = .{ .buf = &.{} },
         .watcher = .init(io),
         .drain = .init(io),
