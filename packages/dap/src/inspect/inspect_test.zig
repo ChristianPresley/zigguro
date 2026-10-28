@@ -285,7 +285,7 @@ const SetLog = struct {
         return .{ .ctx = l, .func = on };
     }
 
-    fn on(ctx: ?*anyopaque, ok: bool, _: ?[]const u8) void {
+    fn on(ctx: ?*anyopaque, _: u64, ok: bool, _: ?[]const u8) void {
         const l: *SetLog = @ptrCast(@alignCast(ctx.?));
         l.calls += 1;
         l.last_ok = ok;
