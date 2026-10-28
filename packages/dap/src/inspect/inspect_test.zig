@@ -314,6 +314,9 @@ test "vars: setVariable vs setExpression path; scope refetch" {
     defer f.deinit();
     const m = f.vars();
     const locals = try f.root("Locals");
+    // A variable's container is its scope's reference; a scope has none.
+    try testing.expectEqual(m.nodes.get(locals).?.var_ref, m.containerRef(try f.child(locals, "x")).?);
+    try testing.expectEqual(@as(?i64, null), m.containerRef(locals));
     var log: SetLog = .{};
     m.setValue(try f.child(locals, "x"), "5", log.cb());
     try f.insp.settle(.fromSeconds(10));
