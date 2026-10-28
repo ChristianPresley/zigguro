@@ -1,0 +1,12 @@
+# The second connection of tcp_parent.txt's adapter: a child session that
+# ends by itself.
+> initialize {"adapterID": "fake"}
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"__pendingTargetId": "w1"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event terminated
+> disconnect {"restart": false}
+< {}
