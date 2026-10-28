@@ -31,7 +31,9 @@
 //! interactive (`startup/report.zig`).
 //!
 //! `--bench-scenario=latency` runs the typing-latency benchmark
-//! (`bench/latency.zig`, `zig build bench-latency`) and exits.
+//! (`bench/latency.zig`, `zig build bench-latency`) and exits;
+//! `--bench-scenario=<name>` runs a macro scenario (`bench/runner.zig`,
+//! `zig build bench-scenarios`).
 //!
 //! Text is drawn with system fonts through `zg_gui.FontText` (see
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
@@ -56,6 +58,7 @@ const install_kind = @import("startup/install_kind.zig");
 const StartupReport = @import("startup/report.zig").StartupReport;
 const zg_perf = @import("zg_perf");
 const bench_latency = @import("bench/latency.zig");
+const bench_runner = @import("bench/runner.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -313,7 +316,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     return 0;
 }
 
-/// Runs `--bench-scenario=latency` when asked: returns the exit code.
+/// Runs `--bench-scenario=<name>` when asked (`latency` has its own
+/// harness): returns the exit code.
 fn benchScenario(
     min: std.process.Init.Minimal,
     rt: *zg_core.Runtime,
@@ -330,6 +334,15 @@ fn benchScenario(
     var args: std.ArrayList([]const u8) = .empty;
     var it = try min.args.iterateAllocator(arena.allocator());
     while (it.next()) |a| try args.append(arena.allocator(), try arena.allocator().dupe(u8, a));
+    if (bench_runner.Options.parse(args.items)) |opts| {
+        // Absolute: the idle scenario changes the working folder.
+        const cwd = try std.process.currentPathAlloc(rt.io, arena.allocator());
+        const corpus_root = try std.fs.path.resolve(arena.allocator(), &.{ cwd, opts.corpus_root orelse try bench_runner.defaultCorpusRoot(arena.allocator(), env) });
+        var d: bench_runner.Driver = .{ .gpa = rt.gpa, .io = rt.io, .rt = rt, .env = env, .app = app, .text_sys = text_sys, .fonts = font_text, .timeline = tracing.timeline, .quick = opts.quick, .corpus_root = corpus_root };
+        const code = try bench_runner.run(&d, opts, w);
+        try w.flush();
+        return code;
+    }
     if (!bench_latency.requested(args.items)) return null;
     const opts = bench_latency.Options.parse(args.items);
     const tl = tracing.timeline orelse return error.NoFrameTimeline;
