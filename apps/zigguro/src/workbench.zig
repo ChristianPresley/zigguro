@@ -2988,6 +2988,7 @@ pub const Workbench = struct {
             args[n] = a.string;
             n += 1;
         };
+        t.shell_integration = st.boolean("terminal.integrated.shellIntegration.enabled");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
     }
 
