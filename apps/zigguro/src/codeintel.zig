@@ -74,6 +74,8 @@ const SignaturePopup = @import("signature_popup.zig").SignaturePopup;
 const PointerEvent = zg_editor.view.editor_view.PointerEvent;
 const Vec2 = zg_gui.core.Vec2;
 const Rect = zg_gui.core.Rect;
+const WorkspaceEditEngine = zg_codeintel.edits.Engine;
+const DiskFs = @import("workspace_fs.zig").DiskFs;
 const LspTools = zg_codeintel.agent.tools.ToolExporter(zg_ai.tools.adapters.foreign);
 
 const log = std.log.scoped(.codeintel);
@@ -137,6 +139,10 @@ pub const CodeIntel = struct {
     /// Told when the completion list opens or closes over an editor (the
     /// workbench hides the AI ghost text meanwhile).
     popup_hook: ?PopupHook = null,
+    /// Applies workspace edits (server `workspace/applyEdit` now; rename,
+    /// code actions and formatting through it).
+    fs: DiskFs = undefined,
+    engine: WorkspaceEditEngine = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -210,6 +216,10 @@ pub const CodeIntel = struct {
         ci.nav.init(&ci.mgr, ci.waker());
         ci.completion = .init(&ci.mgr, ci.waker(), .{});
         ci.signature = .init(&ci.mgr, ci.waker());
+        ci.fs = .{ .io = rt.io, .trash_root = try std.fs.path.join(gpa, &.{ cwd, ".zigguro", "trash" }) };
+        ci.engine = .init(gpa, docs, ci.fs.ops(), .{});
+        ci.engine.editors = .{ .ctx = ci, .f = editorOf };
+        ci.mgr.apply_edit_hook = .{ .ctx = ci, .f = onApplyEdit };
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -228,6 +238,8 @@ pub const CodeIntel = struct {
         ci.spopup.release();
         ci.snippets.deinit();
         ci.mgr.deinit();
+        ci.engine.deinit();
+        ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
         ci.signature.deinit();
         ci.hover.deinit();
@@ -412,6 +424,20 @@ pub const CodeIntel = struct {
         const d = h orelse return null;
         for (ci.files.items) |*f| if (std.meta.eql(f.h, d)) return f;
         return null;
+    }
+
+    fn editorOf(ctx: *anyopaque, h: DocHandle) ?*EditorView {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        return if (ci.fileOf(h)) |f| f.view else null;
+    }
+
+    /// A server's `workspace/applyEdit`: applied through the engine, as
+    /// the user's (agent-run commands are not tracked yet).
+    fn onApplyEdit(ctx: *anyopaque, s: *Manager.Server, params: *const zg_codeintel.protocol.ApplyWorkspaceEditParams, reply: Manager.ApplyEditCb) void {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const r = ci.engine.serverEdit(s, params, null);
+        if (!r.applied) log.info("workspace edit from {s} not applied: {s}", .{ s.def.id, r.failure_reason orelse "" });
+        reply.call(r);
     }
 
     fn fileOfView(ci: *CodeIntel, v: *EditorView) ?*File {
