@@ -1090,6 +1090,7 @@ pub const Workbench = struct {
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             ci.link_hook = .{ .ctx = wb, .open = onDocLink };
             ci.crash_hook = .{ .ctx = wb, .f = onServerCrash };
+            ci.notice_hook = .{ .ctx = wb, .f = onServerNotice };
             wb.server_menu.host = .{ .ctx = wb, .run = onServerAction };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1231,6 +1232,7 @@ pub const Workbench = struct {
         .{ .id = "lsp.cancelProgress", .title = "Cancel Language Server Task", .category = "Language Server", .run = lspCancel },
         .{ .id = "lsp.showLogs", .title = "Show Language Server Logs", .category = "Language Server", .run = lspLogs },
         .{ .id = "lsp.showServerDetails", .title = "Show Language Server Details", .category = "Language Server", .run = lspDetails },
+        .{ .id = "lsp.zls.addCheckStep", .title = "Add a check Step to build.zig (ZLS Build-on-Save)", .category = "Zig", .run = lspAddCheckStep },
         .{ .id = "editor.shrinkSelection", .title = "Shrink Selection", .category = "Selection", .run = shrinkSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
@@ -1920,11 +1922,46 @@ pub const Workbench = struct {
             const mode: InlineInfo.Mode = if (std.mem.eql(u8, m, "off")) .off else if (std.mem.eql(u8, m, "onUnlessPressed")) .on_unless_pressed else if (std.mem.eql(u8, m, "offUnlessPressed")) .off_unless_pressed else .on;
             ci.inline_info.configure(mode, st.boolean("editor.codeLens"));
             ci.linked.setEnabled(st.boolean("editor.linkedEditing"));
+            applyZigSettings(ci, st);
         }
         wb.armAutosave();
         wb.applyExplorerSettings();
         wb.applyScmSettings();
         if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `zig.path` and `zig.zls.*` to ZLS.
+    fn applyZigSettings(ci: *CodeIntel, st: anytype) void {
+        var arena: std.heap.ArenaAllocator = .init(ci.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var opts: std.ArrayList(zg_codeintel.registry.zls.Option) = .empty;
+        const zls_v = st.get("zig.zls");
+        if (zls_v == .object) for (zls_v.object) |f| {
+            opts.append(a, .{ .name = f.key, .value = configJson(a, f.value) catch return }) catch return;
+        };
+        const p = st.string("zig.path");
+        ci.setZigSettings(.{ .zig_path = if (p.len > 0) p else null, .zls = opts.items });
+    }
+
+    fn configJson(a: std.mem.Allocator, v: zg_config.Value) !std.json.Value {
+        return switch (v) {
+            .null => .null,
+            .bool => |b| .{ .bool = b },
+            .int => |i| .{ .integer = i },
+            .float => |f| .{ .float = f },
+            .string, .enum_lit => |x| .{ .string = x },
+            .array => |xs| blk: {
+                var out = try std.json.Array.initCapacity(a, xs.len);
+                for (xs) |x| out.appendAssumeCapacity(try configJson(a, x));
+                break :blk .{ .array = out };
+            },
+            .object => |fs| blk: {
+                var out: std.json.ObjectMap = .empty;
+                for (fs) |f| try out.put(a, f.key, try configJson(a, f.value));
+                break :blk .{ .object = out };
+            },
+        };
     }
 
     /// Re-reads changed settings and keybindings files.
@@ -2474,7 +2511,8 @@ pub const Workbench = struct {
     fn lspShowMenu(wb: *Workbench) !void {
         const s = wb.lspServer() orelse return;
         const w = wb.win orelse return;
-        try wb.server_menu.open(w, s, &wb.codeintel.?.status);
+        const ci = wb.codeintel.?;
+        try wb.server_menu.open(w, s, &ci.status, ci.zls.needsCheckStep(s));
     }
 
     fn lspRestart(wb: *Workbench) !void {
@@ -2507,6 +2545,12 @@ pub const Workbench = struct {
         wb.serverAction(.show_details, s);
     }
 
+    fn lspAddCheckStep(wb: *Workbench) !void {
+        const s = wb.lspServer() orelse return;
+        if (!zg_codeintel.features.ZlsSupport.isZls(s)) return wb.notify(.info, "The check step is for Zig projects (ZLS)", .{});
+        wb.serverAction(.add_check_step, s);
+    }
+
     fn onServerAction(ctx: *anyopaque, action: server_menu.Action, id: u32) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         const ci = wb.codeintel orelse return;
@@ -2535,6 +2579,14 @@ pub const Workbench = struct {
                 const uri = std.fmt.bufPrint(&ub, "zigguro-lsp:{s}/{d}/{s}", .{ what, s.id, s.def.id }) catch return;
                 const name = std.fmt.bufPrint(&nb, "{s} {s}", .{ s.def.id, what }) catch return;
                 wb.openReport(uri, name, w.written()) catch |e| wb.notify(.error_, "{s}: {t}", .{ name, e });
+            },
+            .add_check_step => {
+                const out = ci.addCheckStep(s) catch |e| return wb.notify(.error_, "Adding a check step to build.zig failed: {t}", .{e});
+                switch (out) {
+                    .queued => wb.notify(.info, "The check step for build.zig is waiting in Review", .{}),
+                    .applied => wb.notify(.info, "Added a check step to build.zig", .{}),
+                    .failed => |f| wb.notify(.error_, "Adding a check step to build.zig failed: {s}", .{f.reason}),
+                }
             },
         }
         if (wb.win) |w| w.markAllDirty();
@@ -2567,6 +2619,11 @@ pub const Workbench = struct {
     }
 
     /// A language server crashed: a notice with its last stderr line.
+    fn onServerNotice(ctx: *anyopaque, msg: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.notify(.warning, "{s}", .{msg});
+    }
+
     fn onServerCrash(ctx: *anyopaque, s: *CodeIntel.Server) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         const acts = &[_]zg_gui.w.notification_center.ToastAction{

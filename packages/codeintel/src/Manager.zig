@@ -84,6 +84,15 @@ pub const Options = struct {
 
 pub const RestartPolicy = zg_lsp.client.restart.RestartPolicy;
 pub const WatchBridge = zg_lsp.client.watch_bridge.WatchBridge;
+
+/// The value of a server's settings section (`def.settings_section`),
+/// `.null` when it has none, allocated from `arena`. For initialization
+/// options (when the definition gives none) and `workspace/configuration`.
+/// Workers.
+pub const ConfigProvider = struct {
+    ctx: *anyopaque,
+    get: *const fn (ctx: *anyopaque, s: *Server, arena: Allocator) std.json.Value,
+};
 pub const FsEvent = zg_lsp.client.watch_bridge.FsEvent;
 
 pub const Status = enum {
@@ -179,6 +188,9 @@ refresh_listeners: std.ArrayList(RefreshListener) = .empty,
 diagnostics: ?DiagnosticsHooks = null,
 /// Null: server edits are refused.
 apply_edit_hook: ?ApplyEditHook = null,
+/// Servers' settings sections; null: servers see no settings. Set before
+/// the first `openDoc`.
+config_provider: ?ConfigProvider = null,
 /// Work-done progress and partial-result tokens of every server.
 progress: zg_lsp.client.progress.ProgressTracker,
 /// Routes file changes to the servers that registered watchers (null:
@@ -702,8 +714,10 @@ fn start(s: *Server) !void {
     }
     const init_opts: ?std.json.Value = if (def.initialization_options) |text|
         try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{})
-    else
-        null;
+    else if (m.config_provider) |p| opts: {
+        const v = p.get(p.ctx, s, a);
+        break :opts if (v == .null) null else v;
+    } else null;
     s.client = try Client.create(m.rt, s.proc.?, .{
         .client_version = m.opts.client_version,
         .root_uri = root_uri,
@@ -718,8 +732,9 @@ fn start(s: *Server) !void {
             .refresh = .{ .ctx = m, .func = onServerRefresh },
             .host = host: {
                 var h = zg_lsp.client.host.null_host;
-                h.ctx = m;
+                h.ctx = s;
                 h.applyEdit = onApplyEdit;
+                h.getConfiguration = onGetConfiguration;
                 break :host h;
             },
         },
@@ -744,10 +759,42 @@ fn onClientState(ctx: ?*anyopaque, _: *Client, st: zg_lsp.client.Client.ClientSt
 
 /// From the endpoint: hands the edit to the UI thread.
 fn onApplyEdit(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, params: []const u8, reply: ApplyEditCb) void {
-    const m: *Manager = @ptrCast(@alignCast(ctx.?));
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const m = s.mgr;
     if (m.closing.load(.acquire)) return reply.call(.{ .applied = false, .failure_reason = "shutting down" });
     const json = m.gpa.dupe(u8, params) catch return reply.call(.{ .applied = false, .failure_reason = "out of memory" });
     m.push(.{ .apply_edit = .{ .server = server, .json = json, .reply = reply } });
+}
+
+/// From the endpoint (`workspace/configuration`): `section` of the
+/// server's settings, dotted paths walked into its section's value.
+fn onGetConfiguration(ctx: ?*anyopaque, section: ?[]const u8, _: ?[]const u8, arena: Allocator) std.json.Value {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const p = s.mgr.config_provider orelse return .null;
+    const root = s.def.settings_section orelse return .null;
+    const want = section orelse {
+        var obj: std.json.ObjectMap = .empty;
+        obj.put(arena, root, p.get(p.ctx, s, arena)) catch return .null;
+        return .{ .object = obj };
+    };
+    if (!std.mem.startsWith(u8, want, root)) return .null;
+    if (want.len > root.len and want[root.len] != '.') return .null;
+    var v = p.get(p.ctx, s, arena);
+    if (want.len == root.len) return v;
+    var it = std.mem.splitScalar(u8, want[root.len + 1 ..], '.');
+    while (it.next()) |key| {
+        if (v != .object) return .null;
+        v = v.object.get(key) orelse return .null;
+    }
+    return v;
+}
+
+/// Settings changed: servers that registered for
+/// `didChangeConfiguration` pull them again.
+pub fn settingsChanged(m: *Manager) void {
+    for (m.servers.items) |s| if (s.status == .running) if (s.client) |c| {
+        _ = c.settingsChanged() catch |e| log.info("{s}: didChangeConfiguration: {t}", .{ s.def.id, e });
+    };
 }
 
 fn onApplyEditMsg(m: *Manager, server: u32, json: []const u8, reply: ApplyEditCb) void {

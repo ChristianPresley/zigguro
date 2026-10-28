@@ -1,0 +1,11 @@
+{
+ "zig_exe": "/opt/zig-0.13/zig",
+ "lib_dir": "/opt/zig-0.13/lib",
+ "std_dir": "/opt/zig-0.13/lib/std",
+ "global_cache_dir": "/home/u/.cache/zig",
+ "version": "0.13.0",
+ "target": "x86_64-linux.6.8...6.8-gnu.2.39",
+ "env": {
+  "ZIG_GLOBAL_CACHE_DIR": null
+ }
+}

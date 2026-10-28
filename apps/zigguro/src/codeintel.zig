@@ -91,6 +91,8 @@ pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 pub const SmartSelect = @import("smart_select.zig").SmartSelect;
 pub const DocLinks = @import("doc_links.zig").DocLinks;
 const LspWatch = @import("lsp_watch.zig").LspWatch;
+const ZlsSupport = zg_codeintel.features.ZlsSupport;
+const zls_mod = zg_codeintel.registry.zls;
 const LinkDriver = @import("doc_links.zig").LinkDriver;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
@@ -213,6 +215,10 @@ pub const CodeIntel = struct {
     crash_hook: ?CrashHook = null,
     /// The server that crashed last (the crash notice's commands).
     last_crashed: ?u32 = null,
+    /// ZLS: the `zls` settings section, the Zig toolchain, build-on-save.
+    zls: ZlsSupport = undefined,
+    /// Told warnings for the user (a ZLS that does not match Zig).
+    notice_hook: ?NoticeHook = null,
 
     pub const Server = Manager.Server;
     pub const ServerStatus = zg_codeintel.features.ServerStatus;
@@ -246,6 +252,11 @@ pub const CodeIntel = struct {
     pub const CrashHook = struct {
         ctx: *anyopaque,
         f: *const fn (ctx: *anyopaque, s: *Manager.Server) void,
+    };
+
+    pub const NoticeHook = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, msg: []const u8) void,
     };
 
     pub const PopupHook = struct {
@@ -295,6 +306,8 @@ pub const CodeIntel = struct {
         ci.cpopup.on_pick = .{ .ctx = ci, .f = onPick };
         errdefer ci.diags.deinit();
         errdefer ci.reg.deinit();
+        ci.zls = .init(gpa, rt.io, env);
+        errdefer ci.zls.deinit();
         ci.mgr.init(rt, &ci.reg, docs, .{
             .workspace_folders = (&ci.cwd)[0..1],
             .env = env,
@@ -302,8 +315,10 @@ pub const CodeIntel = struct {
             .client_version = "0.0.0",
         });
         errdefer ci.mgr.deinit();
+        ci.mgr.config_provider = ci.zls.provider();
         try ci.status.init(&ci.mgr, ci.waker());
         errdefer ci.status.deinit();
+        ci.status.extra_details = .{ .ctx = &ci.zls, .f = zlsDetails };
         try ci.diag.init(&ci.mgr, &ci.diags, .{ .pull = .{ .waker = ci.waker() } });
         errdefer ci.diag.deinit();
         try ci.decor.init(gpa, &ci.diags, .{ .severity = .{ style.err, style.warning, style.info, style.hint }, .faded = style.faded });
@@ -363,6 +378,7 @@ pub const CodeIntel = struct {
         ci.spopup.release();
         ci.snippets.deinit();
         ci.mgr.deinit();
+        ci.zls.deinit();
         ci.refactor.deinit();
         ci.format.deinit();
         ci.save_actions.deinit();
@@ -1354,7 +1370,56 @@ pub const CodeIntel = struct {
             any = true;
             if (ci.crash_hook) |hk| hk.f(hk.ctx, s);
         }
+        var mb: [320]u8 = undefined;
+        for (ci.mgr.serverList()) |s| if (ci.zls.takePairingWarning(s, &mb)) |msg| {
+            if (ci.notice_hook) |hk| hk.f(hk.ctx, msg);
+        };
         return any;
+    }
+
+    fn zlsDetails(ctx: *anyopaque, s: *const Manager.Server, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const z: *ZlsSupport = @ptrCast(@alignCast(ctx));
+        return z.writeDetails(s, w);
+    }
+
+    /// New Zig settings (`zig.path`, `zig.zls.*`): ZLS pulls them again
+    /// when they changed.
+    pub fn setZigSettings(ci: *CodeIntel, settings: zls_mod.Settings) void {
+        const changed = ci.zls.setSettings(settings) catch return;
+        if (changed) ci.mgr.settingsChanged();
+    }
+
+    /// Proposes, for review, a `check` step in `s`'s `build.zig` so ZLS
+    /// turns build-on-save on.
+    pub fn addCheckStep(ci: *CodeIntel, s: *Manager.Server) !WorkspaceEditEngine.Outcome {
+        if (s.root.len == 0) return error.NoBuildRoot;
+        var arena: std.heap.ArenaAllocator = .init(ci.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const io = ci.semtok.io;
+        const path = try std.fs.path.join(a, &.{ s.root, "build.zig" });
+        const text = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(8 << 20));
+        const src = try a.dupeZ(u8, text);
+        const at = (try zls_mod.checkStepInsertion(a, src)) orelse return error.NoBuildFunction;
+        const main_src = for ([_][]const u8{ "src/main.zig", "src/root.zig" }) |c| {
+            const full = try std.fs.path.join(a, &.{ s.root, c });
+            if (std.Io.Dir.cwd().access(io, full, .{})) |_| break c else |_| {}
+        } else "src/main.zig";
+        const snippet = try zls_mod.checkStepSnippet(a, main_src);
+        const line: u32 = @intCast(std.mem.count(u8, src[0..at], "\n"));
+        const uri = try zg_codeintel.protocol_uri.uriFromPath(a, path);
+        var changes: std.json.ArrayHashMap([]const zg_codeintel.protocol.TextEdit) = .{};
+        try changes.map.put(a, uri, try a.dupe(zg_codeintel.protocol.TextEdit, &.{.{
+            .range = .{ .start = .{ .line = line, .character = 0 }, .end = .{ .line = line, .character = 0 } },
+            .newText = snippet,
+        }}));
+        const edit: zg_codeintel.protocol.WorkspaceEdit = .{ .changes = changes };
+        var fail: WorkspaceEditEngine.Failure = .{ .index = 0, .err = error.Unknown };
+        var p = try ci.engine.plan(&edit, .{ .enc = .utf8 }, "Add a check step for build-on-save", &fail);
+        defer p.deinit();
+        const out = try ci.engine.apply(&p, .user, .force_review);
+        ci.zls.forgetRoot(s.root);
+        return out;
     }
 
     /// The server the server commands act on for `h` (the first of its
