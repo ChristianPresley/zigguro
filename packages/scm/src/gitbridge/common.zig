@@ -88,6 +88,15 @@ pub fn moveHead(repo: *Repository, a: Allocator, old: Oid, new: Oid, msg: []cons
     try tx.commit();
 }
 
+/// Logs an update that leaves the branch where it is ("reset: moving to
+/// HEAD") to HEAD's reflog only, as git does.
+pub fn logHead(repo: *Repository, old: Oid, new: Oid, msg: []const u8, who: Ident) !void {
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try git.refs.reflog.formatLine(&w, old, new, who, msg);
+    try git.refs.reflog.append(repo.io, repo.git_dir, "HEAD", w.buffered());
+}
+
 /// The parsed commit `id`, in `a`.
 pub fn readCommit(repo: *Repository, a: Allocator, id: Oid) !git.commit.Commit {
     const obj = try repo.odb.read(a, id);

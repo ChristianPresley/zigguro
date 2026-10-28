@@ -3,10 +3,13 @@
 //! with its replay key and every result, so a stopped, crashed or edited
 //! workflow resumes cheaply (`replay.zig`).
 //!
-//! Lines: `{"v":1,"seq":N,"t":"start","key":"<hex>","child":"<RunId>"}`
+//! Lines: `{"v":1,"seq":N,"t":"start","pos":"…","key":"<hex>","child":"<RunId>"}`
 //! and `{"v":1,"seq":N,"t":"result","status":"ok|failed|stopped",
-//! "result":{…}|"error":"…"}`. `seq` is the start order. Results are
-//! fsynced, starts are not; a cut-off last line is dropped on open.
+//! "result":{…}|"error":"…"}`. `seq` numbers starts as they happened;
+//! `pos` is the agent's place in the plan (`audit#3`, `vote.1`,
+//! `fix@2`), which is deterministic even when agents run concurrently and
+//! is what resume matches on. Results are fsynced, starts are not; a
+//! cut-off last line is dropped on open.
 
 const std = @import("std");
 const run = @import("../runs/run.zig");
@@ -70,6 +73,8 @@ pub const Outcome = union(Status) {
 
 pub const Entry = struct {
     seq: u32,
+    /// The plan position (owned by the store).
+    pos: []const u8,
     key: ReplayKey,
     child: RunId,
     /// Null while the agent has no result (running, or cut off).
@@ -83,6 +88,8 @@ arena: std.heap.ArenaAllocator,
 mutex: Io.Mutex = .init,
 /// By seq; a gap is an absent entry.
 entries: std.ArrayList(?Entry) = .empty,
+/// Plan position to seq (the latest start at that position).
+by_pos: std.StringHashMapUnmanaged(u32) = .empty,
 file: ?Io.File = null,
 end: u64 = 0,
 /// Lines dropped on open (a cut-off tail).
@@ -142,6 +149,7 @@ fn init(gpa: Allocator, io: Io) !*JournalStore {
 pub fn deinit(j: *JournalStore) void {
     if (j.file) |f| f.close(j.io);
     j.entries.deinit(j.gpa);
+    j.by_pos.deinit(j.gpa);
     j.arena.deinit();
     j.gpa.destroy(j);
 }
@@ -172,6 +180,7 @@ const Line = struct {
     v: u8 = 1,
     seq: u32,
     t: []const u8,
+    pos: ?[]const u8 = null,
     key: ?[]const u8 = null,
     child: ?[]const u8 = null,
     status: ?[]const u8 = null,
@@ -187,7 +196,7 @@ fn applyLine(j: *JournalStore, a: Allocator, line: []const u8) !void {
         if (kt.len != 64) return error.BadLine;
         _ = std.fmt.hexToBytes(&key, kt) catch return error.BadLine;
         const child = RunId.parse(l.child orelse return error.BadLine) catch return error.BadLine;
-        try j.put(.{ .seq = l.seq, .key = key, .child = child });
+        try j.put(.{ .seq = l.seq, .pos = l.pos orelse return error.BadLine, .key = key, .child = child });
     } else if (std.mem.eql(u8, l.t, "result")) {
         const st = std.meta.stringToEnum(Status, l.status orelse return error.BadLine) orelse return error.BadLine;
         const e = j.slot(l.seq) orelse return error.BadLine;
@@ -208,17 +217,22 @@ fn slot(j: *JournalStore, seq: u32) ?*Entry {
 fn put(j: *JournalStore, e: Entry) !void {
     if (e.seq >= j.entries.items.len) try j.entries.appendNTimes(j.gpa, null, e.seq + 1 - j.entries.items.len);
     j.entries.items[e.seq] = e;
+    try j.by_pos.put(j.gpa, e.pos, e.seq);
 }
 
-/// Records that agent `seq` started as `child` with `key`.
-pub fn recordStart(j: *JournalStore, seq: u32, key: ReplayKey, child: RunId) !void {
+/// Records that agent `seq` started at plan position `pos` as `child`
+/// with `key`.
+pub fn recordStart(j: *JournalStore, seq: u32, pos: []const u8, key: ReplayKey, child: RunId) !void {
     j.mutex.lockUncancelable(j.io);
     defer j.mutex.unlock(j.io);
-    try j.put(.{ .seq = seq, .key = key, .child = child });
-    var buf: [256]u8 = undefined;
+    try j.put(.{ .seq = seq, .pos = try j.arena.allocator().dupe(u8, pos), .key = key, .child = child });
+    var w: std.Io.Writer.Allocating = .init(j.gpa);
+    defer w.deinit();
     const hex = std.fmt.bytesToHex(key, .lower);
-    const line = try std.fmt.bufPrint(&buf, "{{\"v\":1,\"seq\":{d},\"t\":\"start\",\"key\":\"{s}\",\"child\":\"{s}\"}}\n", .{ seq, &hex, &child.text() });
-    try j.append(line, false);
+    try w.writer.print("{{\"v\":1,\"seq\":{d},\"t\":\"start\",\"pos\":", .{seq});
+    try std.json.Stringify.value(pos, .{}, &w.writer);
+    try w.writer.print(",\"key\":\"{s}\",\"child\":\"{s}\"}}\n", .{ &hex, &child.text() });
+    try j.append(w.written(), false);
 }
 
 /// Records agent `seq`'s outcome (fsynced).
@@ -274,6 +288,14 @@ pub fn get(j: *JournalStore, seq: u32) ?Entry {
     j.mutex.lockUncancelable(j.io);
     defer j.mutex.unlock(j.io);
     if (seq >= j.entries.items.len) return null;
+    return j.entries.items[seq];
+}
+
+/// The latest entry started at plan position `pos`.
+pub fn atPos(j: *JournalStore, pos: []const u8) ?Entry {
+    j.mutex.lockUncancelable(j.io);
+    defer j.mutex.unlock(j.io);
+    const seq = j.by_pos.get(pos) orelse return null;
     return j.entries.items[seq];
 }
 

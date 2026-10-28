@@ -172,6 +172,7 @@ const V = struct {
                 // The body and the check also see the loop's own last result.
                 var lc = ctx;
                 lc.visible = try std.mem.concat(v.a, []const u8, &.{ ctx.visible, &.{s.id} });
+                lc.bindings = &.{"check"};
                 try v.agent(s.id, "", lp.agent, lc, lp.max_rounds);
                 const c = lp.check;
                 const n = @as(u8, @intFromBool(c.command != null)) + @intFromBool(c.path != null) + @intFromBool(c.judge != null);

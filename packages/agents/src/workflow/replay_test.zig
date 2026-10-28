@@ -19,7 +19,8 @@ const Rec = struct { name: []const u8, outcome: ?JournalStore.Outcome = .{ .ok =
 fn previous(recs: []const Rec) !*JournalStore {
     const j = try JournalStore.memory(gpa, io);
     for (recs, 0..) |r, i| {
-        try j.recordStart(@intCast(i), key(r.name), run.RunId.zero);
+        var pb: [8]u8 = undefined;
+        try j.recordStart(@intCast(i), try std.fmt.bufPrint(&pb, "{d}", .{i}), key(r.name), run.RunId.zero);
         if (r.outcome) |o| try j.recordResult(@intCast(i), o);
     }
     return j;
@@ -29,7 +30,10 @@ fn previous(recs: []const Rec) !*JournalStore {
 fn reuse(prev: *JournalStore, names: []const []const u8) ![]bool {
     var r: Replayer = .init(prev);
     const out = try gpa.alloc(bool, names.len);
-    for (names, 0..) |n, i| out[i] = r.lookup(@intCast(i), key(n)) != null;
+    for (names, 0..) |n, i| {
+        var pb: [8]u8 = undefined;
+        out[i] = r.lookup(try std.fmt.bufPrint(&pb, "{d}", .{i}), key(n)) != null;
+    }
     return out;
 }
 
@@ -72,15 +76,15 @@ test "library_body_change_changes_key" {
     try testing.expect(!std.mem.eql(u8, &k1, &k2));
     const prev = try JournalStore.memory(gpa, io);
     defer prev.deinit();
-    try prev.recordStart(0, k1, run.RunId.zero);
+    try prev.recordStart(0, "plan", k1, run.RunId.zero);
     try prev.recordResult(0, .{ .ok = .null });
     var r: Replayer = .init(prev);
-    try testing.expect(r.lookup(0, k2) == null);
+    try testing.expect(r.lookup("plan", k2) == null);
 }
 
 test "fresh_run_reuses_nothing" {
     var r: Replayer = .init(null);
-    try testing.expect(r.lookup(0, key("a")) == null);
+    try testing.expect(r.lookup("a", key("a")) == null);
 }
 
 test "resume_200_cached_fast" {
@@ -89,7 +93,8 @@ test "resume_200_cached_fast" {
     var keys: [200]JournalStore.ReplayKey = undefined;
     for (&keys, 0..) |*k, i| {
         k.* = JournalStore.replayKey("map", @intCast(i), "same prompt", &.{"read_file"}, "m", null, null);
-        try prev.recordStart(@intCast(i), k.*, run.RunId.zero);
+        var pb: [16]u8 = undefined;
+        try prev.recordStart(@intCast(i), try std.fmt.bufPrint(&pb, "map#{d}", .{i}), k.*, run.RunId.zero);
         try prev.recordResult(@intCast(i), .{ .ok = .{ .integer = @intCast(i) } });
     }
     const t0 = std.Io.Clock.awake.now(io);
@@ -97,7 +102,8 @@ test "resume_200_cached_fast" {
     for (keys, 0..) |k, i| {
         const kk = JournalStore.replayKey("map", @intCast(i), "same prompt", &.{"read_file"}, "m", null, null);
         try testing.expect(std.mem.eql(u8, &k, &kk));
-        try testing.expectEqual(@as(i64, @intCast(i)), r.lookup(@intCast(i), kk).?.integer);
+        var pb: [16]u8 = undefined;
+        try testing.expectEqual(@as(i64, @intCast(i)), r.lookup(try std.fmt.bufPrint(&pb, "map#{d}", .{i}), kk).?.integer);
     }
     const ns = t0.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
     try testing.expectEqual(@as(u32, 200), r.reused);
