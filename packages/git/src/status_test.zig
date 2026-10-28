@@ -181,3 +181,43 @@ test "status: refresh writes stat data so the next run needs no hashing" {
     defer gpa.free(out);
     try testing.expectEqualStrings("A  a\n a | 1 +\n 1 file changed, 1 insertion(+)\n", out);
 }
+
+test "stage and commit: git accepts the result (fsck, log, status)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const stage = @import("stage.zig");
+    const commit_cmd = @import("commit_cmd.zig");
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("PATH", "/usr/local/bin:/usr/bin:/bin");
+    try env.put("HOME", root);
+    try env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try env.put("GIT_CEILING_DIRECTORIES", root);
+    try env.put("GIT_AUTHOR_NAME", "A");
+    try env.put("GIT_AUTHOR_EMAIL", "a@example.com");
+    try env.put("GIT_COMMITTER_NAME", "C");
+    try env.put("GIT_COMMITTER_EMAIL", "c@example.com");
+    if (!gitAvailable(gpa, io, &env)) return error.SkipZigTest;
+    gpa.free(try sh(gpa, io, root, &env, "mkdir r && cd r && git init -q -b main && mkdir -p d/e && printf 1 > d/e/f && printf 2 > g && ln -s g l && printf x > x && chmod +x x && git add -A && git commit -qm base"));
+    const dir = try std.fs.path.join(gpa, &.{ root, "r" });
+    defer gpa.free(dir);
+    const repo = (try Repository.discover(gpa, io, dir, .{ .env = &env })).?;
+    defer repo.close();
+    try tmp.dir.writeFile(io, .{ .sub_path = "r/g", .data = "22" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "r/d/new", .data = "n" });
+    try tmp.dir.deleteFile(io, "r/d/e/f");
+    _ = try stage.add(repo, &.{}, .{});
+    var c1 = try commit_cmd.commit(repo, .{ .message = "native one\n\nbody", .env = &env });
+    defer c1.deinit(gpa);
+    try tmp.dir.writeFile(io, .{ .sub_path = "r/g", .data = "333" });
+    var c2 = try commit_cmd.commit(repo, .{ .message = "native two", .all = true, .env = &env });
+    defer c2.deinit(gpa);
+    const out = try sh(gpa, io, dir, &env, "git fsck --strict --no-progress 2>&1 && git log --format='%s|%an' && git status --porcelain && git ls-files -s | wc -l && git reflog --format=%gs | head -2");
+    defer gpa.free(out);
+    try testing.expectEqualStrings("native two|A\nnative one|A\nbase|A\n4\ncommit: native two\ncommit: native one\n", out);
+}
