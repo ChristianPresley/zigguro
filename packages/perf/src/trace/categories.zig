@@ -38,6 +38,12 @@ pub const Category = enum(u6) {
     }
 };
 
+/// The category of a site name: the prefix before the first `.`
+/// (`gui.layout` is `gui`); unknown prefixes are `other`.
+pub fn categoryOf(site_name: []const u8) Category {
+    return Category.ofName(site_name);
+}
+
 /// A set of categories.
 pub const Set = std.EnumSet(Category);
 
