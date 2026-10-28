@@ -1,0 +1,3 @@
+5 references in 3 files:
+lib/other.zig:41:3
+… 4 more references in 2 files
