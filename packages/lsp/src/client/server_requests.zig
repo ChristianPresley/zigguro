@@ -10,7 +10,8 @@
 //!   `workspace/workspaceFolders` answers the current folders.
 //! - `window/showMessage` (errors at most once per 5 s per server; the rest
 //!   go to the log), `logMessage`, `showMessageRequest` (null on dismiss or
-//!   after 60 s) and `showDocument` go to the `ClientHost`.
+//!   after 60 s), `showDocument` and `workspace/applyEdit` go to the
+//!   `ClientHost`.
 //! - `window/workDoneProgress/create` and `$/progress` go to the
 //!   `ProgressTracker`.
 //! - The `workspace/*/refresh` requests emit a `RefreshEvent` and are
@@ -100,6 +101,7 @@ pub fn register(c: *Client) !void {
         .{ "window/workDoneProgress/create", onProgressCreate },
         .{ "window/showMessageRequest", onShowMessageRequest },
         .{ "window/showDocument", onShowDocument },
+        .{ "workspace/applyEdit", onApplyEdit },
     };
     inline for (reqs) |r| try ep.onRequest(r[0], .{ .ctx = c, .func = r[1] });
     inline for (refresh_methods) |r| try ep.onRequest(r[0], .{ .ctx = c, .func = Refresh(r[1]).handle });
@@ -372,6 +374,24 @@ fn onShowDocument(ctx: ?*anyopaque, _: *Endpoint, req: message.Request, arena: A
     h.showDocument(h.ctx, params.uri, params.external orelse false, params.takeFocus orelse true, params.selection, .{ .ctx = w, .func = W.answer });
     const ok = w.wait(s.opts.reply_timeout) orelse false;
     return .{ .result = Endpoint.raw(arena, protocol.ShowDocumentResult{ .success = ok }) catch return internal() };
+}
+
+fn onApplyEdit(ctx: ?*anyopaque, _: *Endpoint, req: message.Request, arena: Allocator) Endpoint.HandlerResult {
+    const c = client(ctx);
+    const s = &c.services;
+    const p = req.params orelse return invalidParams();
+    const h = s.opts.host;
+    const apply = h.applyEdit orelse return .{ .result = Endpoint.raw(arena, protocol.ApplyWorkspaceEditResult{ .applied = false, .failureReason = "workspace edits are not supported" }) catch return internal() };
+    const W = Waiter(host_mod.ApplyEditResult);
+    const w = W.create(c.gpa, c.io) catch return internal();
+    defer w.unref();
+    apply(h.ctx, s.opts.server, p.bytes, .{ .ctx = w, .func = W.answer });
+    const r = w.wait(s.opts.reply_timeout) orelse host_mod.ApplyEditResult{ .applied = false, .failure_reason = "timed out" };
+    return .{ .result = Endpoint.raw(arena, protocol.ApplyWorkspaceEditResult{
+        .applied = r.applied,
+        .failureReason = r.failure_reason,
+        .failedChange = r.failed_change,
+    }) catch return internal() };
 }
 
 // ------------------------------------------------------------- progress
