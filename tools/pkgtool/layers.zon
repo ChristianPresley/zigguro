@@ -35,6 +35,7 @@
         .zg_crash = 2,
         .zg_install = 2,
         .zg_codeintel = 5,
+        .zg_perf_ui = 5, // E14.F03.S01.T02: the performance HUD over zg_gui (zg_gui imports zg_perf, so the HUD cannot live in zg_perf)
         // pkgtool:insert
     },
     .allow_same_layer = .{
