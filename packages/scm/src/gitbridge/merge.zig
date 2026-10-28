@@ -21,6 +21,10 @@ pub const Options = struct {
     blocked: common.Blocked = .{},
     /// Passphrase prompt and agent for `commit.gpgSign`.
     signing: common.Signing = .{},
+    /// The reflog prefix (default "merge <name>"; "pull" for pulls).
+    reflog_action: ?[]const u8 = null,
+    /// The label for their side in conflict markers (default: `name`).
+    label: ?[]const u8 = null,
 };
 
 /// Merges `name` (a branch, tag or any revision) into HEAD. Local
@@ -48,7 +52,7 @@ pub fn merge(repo: *Repository, name: []const u8, opts: Options) !common.Result 
             if (e == error.WouldOverwrite) try opts.blocked.report(blocked.items);
             return e;
         };
-        try common.moveHead(repo, a, head, theirs, try std.fmt.allocPrint(a, "merge {s}: Fast-forward", .{name}), who);
+        try common.moveHead(repo, a, head, theirs, try std.fmt.allocPrint(a, "{s}: Fast-forward", .{try action(a, name, opts)}), who);
         res.kind = .fast_forward;
         res.oid = theirs;
         return res;
@@ -59,7 +63,7 @@ pub fn merge(repo: *Repository, name: []const u8, opts: Options) !common.Result 
     if (bases.len == 0) return error.UnrelatedHistories;
     const base_tree = try virtualBase(repo, a, bases);
     const head_tree = try repo.treeOf(head);
-    const r = try merge_trees.mergeTrees(repo, a, base_tree, head_tree, try repo.treeOf(theirs), .{ .theirs = name });
+    const r = try merge_trees.mergeTrees(repo, a, base_tree, head_tree, try repo.treeOf(theirs), .{ .theirs = opts.label orelse name });
     const ours = try git.status.flattenTree(repo, a, head_tree);
     const blocked = try merge_trees.blockers(repo, a, ours, r, true);
     if (blocked.len > 0) {
@@ -84,10 +88,14 @@ pub fn merge(repo: *Repository, name: []const u8, opts: Options) !common.Result 
     const tree_id = try git.write_tree.writeTree(repo, &ix);
     const author = try common.ident(repo, a, .author, opts.tz_offset_min);
     const id = try common.writeCommit(repo, a, tree_id, &.{ head, theirs }, author, who, msg, opts.signing);
-    try common.moveHead(repo, a, head, id, try std.fmt.allocPrint(a, "merge {s}: Merge made by the 'ort' strategy.", .{name}), who);
+    try common.moveHead(repo, a, head, id, try std.fmt.allocPrint(a, "{s}: Merge made by the 'ort' strategy.", .{try action(a, name, opts)}), who);
     res.kind = .committed;
     res.oid = id;
     return res;
+}
+
+fn action(a: Allocator, name: []const u8, opts: Options) ![]const u8 {
+    return opts.reflog_action orelse try std.fmt.allocPrint(a, "merge {s}", .{name});
 }
 
 /// The base tree for several merge bases: merged pairwise, as git's
@@ -138,5 +146,5 @@ pub fn abort(repo: *Repository) !void {
     defer arena.deinit();
     const a = arena.allocator();
     const head = (try repo.head()).?;
-    try common.moveHead(repo, a, head, head, "reset: moving to HEAD", try common.ident(repo, a, .committer, 0));
+    try common.logHead(repo, head, head, "reset: moving to HEAD", try common.ident(repo, a, .committer, 0));
 }
