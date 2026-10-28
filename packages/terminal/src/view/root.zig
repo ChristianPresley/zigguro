@@ -12,12 +12,15 @@ pub const widget = @import("widget.zig");
 pub const palette = @import("palette.zig");
 /// zg_gui events as encoder inputs.
 pub const input_route = @import("input_route.zig");
+/// Terminal tabs and split groups of the panel (E06.F07).
+pub const panel_model = @import("panel_model.zig");
 
 pub const TerminalView = terminal_view.TerminalView;
 pub const Options = terminal_view.Options;
 pub const Sink = terminal_view.Sink;
 pub const Term = widget.Term;
 pub const terminal = widget.terminal;
+pub const PanelModel = panel_model.PanelModel;
 
 test {
     std.testing.refAllDecls(@This());
