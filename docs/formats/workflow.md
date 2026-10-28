@@ -110,14 +110,15 @@ Branches cannot read each other.
 ### `loop_until`
 
 Evaluator-optimizer: repeat `agent` until `check` passes. The agent and the
-check can read the loop's own last result (`$.<id>`).
+check can read the loop's own last result (`$.<id>`); the agent also sees
+the last failed check as `$check` (`{"pass": false, "output": …}`).
 
 | Field                   | Default  | Meaning                                                  |
 |-------------------------|----------|----------------------------------------------------------|
 | `agent`                 | required | the agent each round runs                                |
 | `check`                 | required | exactly one of `command` (exit 0 passes), `path` (truthy passes), `judge` (an agent whose result has `"pass": true`) |
 | `max_rounds`            | 8        | 1 to 50                                                  |
-| `stop_when_no_progress` | 2        | stop after this many rounds in a row with the same failure; status "no progress" |
+| `stop_when_no_progress` | 2        | stop after this many rounds in a row with the same failure; status "no progress" (the check output is compared with whitespace collapsed and numbers ignored) |
 
 ### `gate`
 
@@ -136,6 +137,37 @@ scope). Shipped: `files.glob`, `scm.changed_files`, `lanes.collect`,
 `argv`, `cwd` (null: the workspace) and `expect_exit` (0; null accepts
 any). Runs through the E06 terminal service with approval; needs the
 workflow's `profile` to allow commands.
+
+## Running
+
+`zg workflow run NAME` (or the `workflow_run` agent tool) starts a
+workflow run: a parent run in Mission Control (kind `workflow`), with
+every agent a child run under it (kind `workflow_worker`) whose cost is
+added to the parent's.
+
+- Steps run in order. Map items, vote copies and parallel branches run at
+  once, at most `limits.max_parallel` agents at a time in the workflow (and
+  within the host's own limits).
+- An agent with a `schema` gets the schema and is asked to answer with only
+  a matching JSON value (a code fence or prose around it is tolerated). An
+  answer that does not validate is sent back with the errors; after
+  `max_retries` retries the agent fails.
+- No activity from an agent for `stall_ms` stops it and starts it again,
+  also up to `max_retries` times. A failed agent is `null` in a map (the
+  map still succeeds within `max_fail_ratio`) and fails any other step.
+- Budgets (`limits.max_cost_micros`, `max_tokens`, `max_wall_ms`) cover
+  the whole workflow. Each agent may spend what is left; once a budget is
+  used up the running agents are stopped and the run fails with
+  "budget: …", keeping the results so far.
+- The 1,000-agent and 4,096-item limits are checked again while running.
+- Writers (`isolation = .lane`) each get their own lane; a final
+  `lanes.collect` builtin lists them for review. Nothing lands on its own.
+- Pausing lets running agents finish and starts no new ones until the run
+  continues.
+
+Agents can use four tools: `workflow_list`, `workflow_run{name, args}`,
+`workflow_status{run}` and `workflow_create{name, zon}` (validated, then
+proposed for review).
 
 ## Paths
 
@@ -169,15 +201,22 @@ untrusted sources (web pages, trigger payloads) are wrapped in
 ## Resume and replay
 
 Every agent start is journaled in `.zigguro/runs/<workflow run>/workflow.jsonl`
-with a replay key: BLAKE3 over the step path, the map item index, the
-final prompt text, the tools, the model, the schema and the prompt
-library entry's text hash. Results are journaled when they arrive.
+with its plan position and a replay key. The position names the agent's
+place in the plan: `audit#3` (map item 3), `both/security` (a parallel
+branch), `pick.1` (vote copy 1), `pick:judge`, `fix@2` (loop round 2) and
+`fix@2:judge`. The key is BLAKE3 over the position, the map item index,
+the final prompt text, the tools, the model, the schema and the prompt
+library entry's text hash. Results are journaled when they arrive. The
+run folder also keeps `workflow.zon` and `args.json` for resuming.
 
 Resuming a stopped, crashed or edited workflow (`zg workflow resume RUN`)
 walks the agents in the order they started:
 
 1. While every earlier agent was reused, an agent whose key matches a
-   completed result in the journal returns that result without starting.
+   completed result at the same position in the journal returns that
+   result without starting. While replaying, map items and vote copies
+   are looked up in order before any starts, and parallel branches run
+   one after another until the first agent that must run.
 2. The first agent that differs re-runs, and so does every agent started
    after it. An agent differs when its prompt, tools, model, schema or
    library text changed, when a different agent now starts in its place,
@@ -193,6 +232,6 @@ the last step's prompt re-runs only that step; editing one map item's
 input re-runs that item and everything started after it. Builtins and
 commands always run again; answered gates are journaled like agents.
 
-Journal lines: `{"v":1,"seq":N,"t":"start","key":"<hex>","child":"<run id>"}`
+Journal lines: `{"v":1,"seq":N,"t":"start","pos":"audit#3","key":"<hex>","child":"<run id>"}`
 and `{"v":1,"seq":N,"t":"result","status":"ok|failed|stopped","result":…|"error":"…"}`.
 A line cut off by a crash is dropped when the journal is opened.
