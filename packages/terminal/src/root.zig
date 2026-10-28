@@ -18,6 +18,8 @@ pub const shell = @import("shell.zig");
 pub const graphics = @import("graphics.zig");
 /// Terminal sessions kept across restarts.
 pub const session = @import("session.zig");
+/// Commands agents run in interactive shells.
+pub const agent = @import("agent.zig");
 /// Key, mouse, paste and focus encoding.
 pub const input = @import("input.zig");
 /// Conformance runner, screen dumps and invariants for tests.
