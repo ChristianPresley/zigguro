@@ -92,6 +92,9 @@ jobs:
       - name: zig build test-ci-scripts
         if: runner.os == 'Linux' && matrix.optimize == 'Debug'
         run: zig build test-ci-scripts --summary line
+      - name: zig build test-startup-allowlist
+        if: runner.os == 'Linux' && matrix.optimize == 'Debug'
+        run: zig build test-startup-allowlist --summary line
       - name: zig build test-core -Dtracing=zones
         if: matrix.os == 'ubuntu-24.04' && matrix.optimize == 'Debug'
         run: zig build test-core -Dtracing=zones --summary line

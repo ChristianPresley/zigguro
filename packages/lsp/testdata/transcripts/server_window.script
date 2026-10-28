@@ -26,6 +26,8 @@
 > response {"id": 8, "result": null}
 < {"id": 9, "method": "workspace/foldingRange/refresh"}
 > response {"id": 9, "result": null}
+< {"id": 12, "method": "workspace/textDocumentContent/refresh", "params": {"uri": "jdt://contents/A.class"}}
+> response {"id": 12, "result": null}
 < {"id": 11, "method": "workspace/applyEdit", "params": {"label": "L", "edit": {"changes": {}}}}
 > response {"id": 11, "result": {"applied": false, "failureReason": "nope", "failedChange": 2}}
 < {"id": 10, "method": "bogus/request"}

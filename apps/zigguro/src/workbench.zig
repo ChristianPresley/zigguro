@@ -32,12 +32,14 @@ const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
 const zg_syntax = @import("zg_syntax");
+const zg_terminal = @import("zg_terminal");
 const zg_terminal_view = @import("zg_terminal_view");
 const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const zg_codeintel = @import("zg_codeintel");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
+const term_persist = zg_terminal.session.persist;
 const TerminalId = zg_terminal_view.panel_model.TerminalId;
 const AgentHost = @import("agent/host.zig").AgentHost;
 const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
@@ -67,6 +69,8 @@ const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
 const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
+const HierarchyPanel = @import("hierarchy_panel.zig").HierarchyPanel;
+const HierarchyService = @import("codeintel.zig").HierarchyService;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
 const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
@@ -157,6 +161,10 @@ pub const Workbench = struct {
     terminals: std.AutoArrayHashMapUnmanaged(TerminalId, *TerminalPanel) = .empty,
     term_tabs: zg_terminal_view.PanelModel = undefined,
     next_terminal: TerminalId = 1,
+    /// The terminals saved when the folder was last closed were looked
+    /// for (restored by the first `startTerminal`); until then closing
+    /// keeps the saved file as it is.
+    terminals_loaded: bool = false,
     /// A tab strip button clicked during the build; runs after the frame.
     term_click: ?TermClick = null,
     /// The active terminal's node.
@@ -240,11 +248,18 @@ pub const Workbench = struct {
     pending_focus: bool = true,
     /// `pending_open` came from the explorer (`openFromExplorer`).
     pending_explorer: bool = false,
+    /// `pending_open` is a language server's URI for a virtual document.
+    pending_virtual: bool = false,
     /// The editor the explorer last revealed (`explorer.autoReveal`).
     revealed_panel: ?PanelRef = null,
     /// The Problems panel (created on first show) and its dock panel.
     problems: ?*ProblemsPanel = null,
     problems_ref: ?PanelRef = null,
+    /// Call and type hierarchies.
+    hierarchy: ?*HierarchyPanel = null,
+    hierarchy_ref: ?PanelRef = null,
+    /// What the last Show ... Hierarchy asked, for Refresh.
+    hierarchy_ask: ?struct { h: zg_editor.model.api.registry.DocHandle, offset: u64 } = null,
     /// Where `pending_open` puts the caret.
     pending_goto: ?Goto = null,
     /// The message of the problem next/previous problem went to, shown
@@ -326,6 +341,11 @@ pub const Workbench = struct {
         /// version: the next such click replaces the tab while the file
         /// stays unedited (a preview, as in VS Code).
         preview: ?u64 = null,
+        /// A virtual document (read-only, from a language server), with
+        /// the workbench's own reference.
+        virtual: ?zg_editor.model.api.registry.DocHandle = null,
+        /// Where the caret goes once the virtual document's text arrives.
+        virtual_goto: ?Goto = null,
     };
 
     /// Dock panel kinds.
@@ -340,8 +360,9 @@ pub const Workbench = struct {
     const kind_notes: zg_gui.dock.model.PanelKindId = 9;
     const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
     const kind_scm: zg_gui.dock.model.PanelKindId = 11;
+    const kind_hierarchy: zg_gui.dock.model.PanelKindId = 12;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -488,6 +509,10 @@ pub const Workbench = struct {
             wb.gpa.destroy(sx);
         }
         if (f.path) |p| wb.gpa.free(p);
+        if (f.virtual) |vh| {
+            if (wb.codeintel) |ci| ci.virtual.release(vh);
+            wb.docs.release(vh);
+        }
     }
 
     /// Makes `f` the edited file and points the breadcrumbs at it.
@@ -674,6 +699,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, a) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -817,6 +843,7 @@ pub const Workbench = struct {
                 kind_notes => wb.notes_ref = p,
                 kind_notes_search => wb.notes_search_ref = p,
                 kind_scm => wb.scm_ref = p,
+                kind_hierarchy => wb.hierarchy_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -881,6 +908,7 @@ pub const Workbench = struct {
     pub fn detach(wb: *Workbench) void {
         const w = wb.win orelse return;
         wb.saveLayoutNow();
+        wb.saveTerminals();
         if (wb.persister) |*p| p.deinit();
         wb.persister = null;
         // Floating panels come home before their windows close.
@@ -950,6 +978,11 @@ pub const Workbench = struct {
             wb.gpa.destroy(pp);
         }
         wb.problems = null;
+        if (wb.hierarchy) |hp| {
+            hp.deinit();
+            wb.gpa.destroy(hp);
+        }
+        wb.hierarchy = null;
         wb.problem_note.deinit(wb.gpa);
         if (wb.notes) |n| n.destroy();
         wb.notes = null;
@@ -1150,6 +1183,10 @@ pub const Workbench = struct {
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
         .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
         .{ .id = "workbench.showProblems", .title = "Show Problems", .category = "View", .run = showProblems },
+        .{ .id = "editor.showCallHierarchy", .title = "Show Call Hierarchy", .category = "Go", .run = showCallHierarchy },
+        .{ .id = "editor.showOutgoingCalls", .title = "Show Outgoing Calls", .category = "Go", .run = showOutgoingCalls },
+        .{ .id = "editor.showTypeHierarchy", .title = "Show Type Hierarchy", .category = "Go", .run = showTypeHierarchy },
+        .{ .id = "editor.showSubtypes", .title = "Show Subtypes", .category = "Go", .run = showSubtypes },
         .{ .id = "editor.nextProblem", .title = "Go to Next Problem (Error, Warning, Info)", .category = "Go", .run = nextProblem },
         .{ .id = "editor.previousProblem", .title = "Go to Previous Problem (Error, Warning, Info)", .category = "Go", .run = previousProblem },
         .{ .id = "editor.nextProblemInFile", .title = "Go to Next Problem in File", .category = "Go", .run = nextProblemInFile },
@@ -1975,6 +2012,7 @@ pub const Workbench = struct {
         const dup = wb.gpa.dupe(u8, p) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = dup;
+        wb.pending_virtual = false;
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -2182,9 +2220,72 @@ pub const Workbench = struct {
     /// Opens `t` (in a tab, loading it the first time) with the caret at
     /// its selection start, remembering where the caret was for Go Back.
     fn jumpTo(wb: *Workbench, t: NavService.Target) void {
-        const path = t.path orelse return wb.notify(.info, "Can't open {s}", .{t.uri});
+        const path = t.path orelse {
+            // A location outside the file system: its server's text.
+            if (wb.codeintel == null) return wb.notify(.info, "Can't open {s}", .{t.uri});
+            wb.rememberHere();
+            wb.openAt(t.uri, .{ .pos = .{ .line = t.selection.start.line, .character = t.selection.start.character, .enc = t.enc } });
+            wb.pending_virtual = true;
+            return;
+        };
         wb.rememberHere();
         wb.openAt(path, .{ .pos = .{ .line = t.selection.start.line, .character = t.selection.start.character, .enc = t.enc } });
+    }
+
+    /// Opens the virtual document `uri` (a language server's location
+    /// outside the file system) read-only in a tab, or shows its tab.
+    fn openVirtual(wb: *Workbench, uri: []const u8) !void {
+        const ci = wb.codeintel orelse return error.NoLanguageServices;
+        for (wb.files.items) |*f| if (f.virtual) |vh| if (std.mem.eql(u8, wb.docs.uri(vh) orelse "", uri)) {
+            try wb.showEditor(f);
+            wb.setCurrent(f.*);
+            return;
+        };
+        const h = try ci.virtual.open(uri);
+        errdefer ci.virtual.release(h);
+        // The workbench's reference keeps the document until the tab
+        // closes, even after language services stop.
+        try wb.docs.retain(h);
+        errdefer wb.docs.release(h);
+        const gpa = wb.gpa;
+        var f: OpenFile = .{ .path = null, .doc = wb.docs.get(h).?, .view = undefined, .syntax = null, .virtual = h };
+        const name = wb.docs.name(h) orelse "";
+        var opts = wb.editorOptions(null);
+        opts.read_only = true;
+        f.view = try EditorView.init(gpa, f.doc, opts);
+        errdefer f.view.deinit();
+        wb.setMode(&f, wb.key_mode);
+        if (wb.langs.detect(name, "")) |id| if (wb.langs.get(id)) |lang| {
+            const sx = try gpa.create(DocumentSyntax);
+            errdefer gpa.destroy(sx);
+            sx.* = try DocumentSyntax.init(gpa, lang, &wb.langs, &f.doc.tree, f.doc.version);
+            f.syntax = sx;
+            f.view.syntax = sx;
+            f.view.opts = wb.editorOptions(lang.name);
+            f.view.opts.read_only = true;
+        };
+        const nf = try wb.addFile(f);
+        wb.setCurrent(nf.*);
+    }
+
+    /// Puts the caret where a virtual document was opened at, once its
+    /// text is there (current editor only).
+    fn virtualGoto(wb: *Workbench) void {
+        const cp = wb.cur_panel orelse return;
+        const f = wb.fileOf(cp) orelse return;
+        const g = f.virtual_goto orelse return;
+        const ci = wb.codeintel orelse {
+            f.virtual_goto = null;
+            return;
+        };
+        const e = ci.virtual.entryOf(f.virtual.?) orelse return;
+        if (e.state == .loading) return;
+        f.virtual_goto = null;
+        switch (g) {
+            .pos => |p| wb.gotoPos(p.line, p.character, p.enc),
+            .offset => |o| wb.gotoOffset(o),
+            .problem => |it| wb.gotoProblem(it),
+        }
     }
 
     /// Opens `abs` at the next build with the caret at `g`.
@@ -2192,6 +2293,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = g;
@@ -2469,6 +2571,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = null;
@@ -2560,6 +2663,66 @@ pub const Workbench = struct {
         if (wb.problems) |pp| pp.focus(w);
     }
 
+    // -- call and type hierarchy ---------------------------------------------------
+
+    fn ensureHierarchy(wb: *Workbench) !void {
+        if (wb.hierarchy != null) return;
+        const ci = wb.codeintel orelse return;
+        const hp = try wb.gpa.create(HierarchyPanel);
+        errdefer wb.gpa.destroy(hp);
+        try hp.init(wb.gpa, &ci.hierarchy, .{ .ctx = wb, .open = onHierarchyOpen, .again = onHierarchyAgain });
+        wb.hierarchy = hp;
+    }
+
+    /// Asks the hierarchy at the caret and shows the Hierarchy panel in
+    /// the bottom area.
+    fn showHierarchy(wb: *Workbench, dir: HierarchyService.Direction) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server for this file", .{});
+        const offset = wb.view.primarySel().head;
+        const n = try ci.showHierarchy(h, offset, dir);
+        const types = dir == .supertypes or dir == .subtypes;
+        if (n == 0) return wb.notify(.info, "No language server provides {s} hierarchies for this file", .{if (types) "type" else "call"});
+        wb.hierarchy_ask = .{ .h = h, .offset = offset };
+        try wb.ensureHierarchy();
+        if (wb.hierarchy_ref == null) wb.hierarchy_ref = try wb.dock.addPanel(kind_hierarchy, null);
+        try wb.reveal(wb.hierarchy_ref.?, .bottom);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `editor.showCallHierarchy` (Shift+Alt+H): who calls the symbol.
+    fn showCallHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.incoming);
+    }
+
+    fn showOutgoingCalls(wb: *Workbench) !void {
+        try wb.showHierarchy(.outgoing);
+    }
+
+    fn showTypeHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.supertypes);
+    }
+
+    fn showSubtypes(wb: *Workbench) !void {
+        try wb.showHierarchy(.subtypes);
+    }
+
+    fn onHierarchyOpen(ctx: *anyopaque, t: NavService.Target, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.jumpTo(t);
+        // A click shows the place; the tree keeps the keyboard.
+        if (!focus) wb.pending_focus = false;
+    }
+
+    /// Refresh: the same position again, in the panel's direction.
+    fn onHierarchyAgain(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const a = wb.hierarchy_ask orelse return;
+        const ci = wb.codeintel orelse return;
+        const n = ci.showHierarchy(a.h, a.offset, ci.hierarchy.dir) catch 0;
+        if (n == 0) wb.notify(.info, "The file is no longer open in a language server", .{});
+    }
+
     /// The panel shows a problem: open its file at the next build, with
     /// the caret at its start.
     fn onProblemOpen(ctx: *anyopaque, key: []const u8, it: problems_panel.Problems.Item, focus: bool) void {
@@ -2567,6 +2730,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, key) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = focus;
         wb.pending_explorer = false;
         wb.pending_goto = .{ .problem = it };
@@ -2735,6 +2899,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = true;
         wb.pending_explorer = false;
         wb.pending_goto = null;
@@ -2901,6 +3066,7 @@ pub const Workbench = struct {
         const copy = wb.gpa.dupe(u8, abs) catch return;
         if (wb.pending_open) |old| wb.gpa.free(old);
         wb.pending_open = copy;
+        wb.pending_virtual = false;
         wb.pending_focus = focus;
         wb.pending_explorer = true;
         if (wb.win) |w| w.markAllDirty();
@@ -3158,26 +3324,106 @@ pub const Workbench = struct {
         return wb.terminals.get(wb.term_tabs.activeId() orelse return null);
     }
 
-    /// Creates the first terminal and starts its shell, once.
+    /// Creates the first terminal and starts its shell, once: the
+    /// terminals saved when the folder was last closed, else a new one.
     fn startTerminal(wb: *Workbench, w: *Window) !void {
+        if (!wb.terminals_loaded) {
+            wb.terminals_loaded = true;
+            if (wb.terminals.count() == 0) wb.restoreTerminals(w);
+        }
         if (wb.terminals.count() == 0) try wb.newTerminal(w, false);
+    }
+
+    fn persistentSessions(wb: *const Workbench) bool {
+        const st = wb.settings orelse return true;
+        return st.boolean("terminal.integrated.persistentSessions.enabled");
+    }
+
+    /// Reopens the terminals `saveTerminals` kept: their tabs and splits,
+    /// what they showed (above a "Restored session" line) and a fresh
+    /// shell in the folder each was in. Agent terminals come back as
+    /// history only.
+    fn restoreTerminals(wb: *Workbench, w: *Window) void {
+        const dir = wb.layout_dir orelse return;
+        if (!wb.persistentSessions()) return term_persist.remove(wb.io, dir);
+        var snap = (term_persist.read(wb.gpa, wb.io, dir) catch null) orelse return;
+        defer snap.deinit();
+        var sep_buf: [128]u8 = undefined;
+        const sep = term_persist.separator(&sep_buf, snap.saved_s);
+        var group: ?u32 = null;
+        for (snap.terminals) |*r| {
+            const split = group != null and group.? == r.group;
+            group = r.group;
+            wb.openTerminal(w, split, .{ .record = r, .separator = sep }) catch |e| {
+                log.warn("terminal {d} not restored: {t}", .{ r.id, e });
+            };
+        }
+        if (wb.term_tabs.groups.items.len > 0) wb.term_tabs.active = 0;
+    }
+
+    /// Saves every terminal (`terminals.zgts` beside the layout) for
+    /// `restoreTerminals`; with none open, or the setting off, deletes it.
+    fn saveTerminals(wb: *Workbench) void {
+        const dir = wb.layout_dir orelse return;
+        if (!wb.terminals_loaded) return;
+        if (!wb.persistentSessions() or wb.terminals.count() == 0) return term_persist.remove(wb.io, dir);
+        var arena_state: std.heap.ArenaAllocator = .init(wb.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var recs: std.ArrayList(term_persist.TerminalRecord) = .empty;
+        for (wb.term_tabs.groups.items, 0..) |g, gi| for (g.terminals.items) |id| {
+            const t = wb.terminals.get(id) orelse continue;
+            var content: std.ArrayList(u8) = .empty;
+            term_persist.capture(arena, &t.term, if (t.view.blocks) |b| b else null, .{}, &content) catch continue;
+            recs.append(arena, .{
+                .id = id,
+                .group = @intCast(gi),
+                .cols = t.term.cols(),
+                .rows = t.term.rows(),
+                .owner = if (wb.term_tabs.sectionOf(id) == .agents) .agent else .user,
+                .cwd = t.view.cwd.items,
+                .title = t.term.title.items,
+                .name = wb.term_tabs.nameOf(id) orelse "",
+                .content = content.items,
+            }) catch return;
+        };
+        const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(wb.io).nanoseconds, std.time.ns_per_s));
+        term_persist.write(wb.gpa, wb.io, dir, &.{ .saved_s = now, .terminals = recs.items }) catch |e| log.warn("terminals not saved: {t}", .{e});
     }
 
     /// Creates a terminal and starts its shell: a new tab, or (`split`)
     /// beside the active terminal in its group.
     fn newTerminal(wb: *Workbench, w: *Window, split: bool) !void {
+        return wb.openTerminal(w, split, null);
+    }
+
+    const Restore = struct { record: *const term_persist.TerminalRecord, separator: []const u8 };
+
+    /// `newTerminal`, showing `restore`'s saved content first and
+    /// starting the shell in its folder.
+    fn openTerminal(wb: *Workbench, w: *Window, split: bool, restore: ?Restore) !void {
         const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
         errdefer t.destroy();
         const id = wb.next_terminal;
         try wb.terminals.put(wb.gpa, id, t);
         errdefer _ = wb.terminals.swapRemove(id);
+        const agent = if (restore) |r| r.record.owner == .agent else false;
         if (split and wb.term_tabs.activeId() != null)
             try wb.term_tabs.split(wb.term_tabs.activeId().?, id)
         else
-            try wb.term_tabs.add(id, .user);
+            try wb.term_tabs.add(id, if (agent) .agents else .user);
         wb.next_terminal += 1;
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
         t.view.on_open_link = .{ .ctx = wb, .f = onTerminalLink };
+        if (restore) |r| {
+            if (r.record.name.len > 0) wb.term_tabs.rename(id, r.record.name) catch {};
+            t.view.feed(r.record.content);
+            t.view.feed(r.separator);
+            // History only: an agent's shell is not started again.
+            if (agent) return t.setNote("saved agent terminal", .{});
+            if (r.record.cwd.len > 0 and std.fs.path.isAbsolute(r.record.cwd) and exists(wb.io, r.record.cwd)) t.start_cwd = r.record.cwd;
+        }
+        defer t.start_cwd = null;
         const st = wb.settings orelse return t.start();
         var args: [32][]const u8 = undefined;
         var n: usize = 0;
@@ -3666,8 +3912,15 @@ pub const Workbench = struct {
             wb.pending_goto = null;
             const range = wb.pending_range;
             wb.pending_range = null;
-            if (if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
-                if (goto) |g| switch (g) {
+            const virtual = wb.pending_virtual;
+            wb.pending_virtual = false;
+            if (if (virtual) wb.openVirtual(p) else if (from_explorer) wb.openFromExplorer(p, focus) else wb.openFile(p)) {
+                if (virtual) if (goto) |g| if (wb.cur_panel) |cp| if (wb.fileOf(cp)) |f| {
+                    // The text may still be on its way.
+                    f.virtual_goto = g;
+                    wb.virtualGoto();
+                };
+                if (!virtual) if (goto) |g| switch (g) {
                     .problem => |it| wb.gotoProblem(it),
                     .pos => |p_| wb.gotoPos(p_.line, p_.character, p_.enc),
                     .offset => |o| wb.gotoOffset(o),
@@ -3676,6 +3929,7 @@ pub const Workbench = struct {
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
         }
+        wb.virtualGoto();
         wb.followFocus();
         wb.autoReveal();
         wb.dv.beginFrame(ui);
@@ -3785,9 +4039,9 @@ pub const Workbench = struct {
     fn panelTab(ctx: *anyopaque, p: PanelRef) zg_gui.dock.view.TabInfo {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.fileOf(p)) |f| return .{
-            .title = if (f.path) |path| std.fs.path.basename(path) else "Untitled",
+            .title = if (f.path) |path| std.fs.path.basename(path) else if (f.virtual) |vh| wb.docs.name(vh) orelse "Untitled" else "Untitled",
             .dirty = f.doc.isDirty(),
-            .tooltip = f.path,
+            .tooltip = f.path orelse if (f.virtual) |vh| wb.docs.uri(vh) else null,
         };
         return switch (wb.kindOf(p) orelse 0) {
             kind_terminal => .{ .title = "Terminal", .badge = if (wb.activeTerminal()) |t| t.noteText() else "" },
@@ -3800,6 +4054,7 @@ pub const Workbench = struct {
             kind_notes => .{ .title = "Notes" },
             kind_notes_search => .{ .title = "Search Notes" },
             kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
+            kind_hierarchy => .{ .title = "Hierarchy" },
             else => .{ .title = "?" },
         };
     }
@@ -3847,6 +4102,14 @@ pub const Workbench = struct {
                 wb.ensureScm() catch |e| log.warn("git tab: {t}", .{e});
                 if (wb.scm) |g| g.build(ui);
             },
+            kind_hierarchy => {
+                wb.ensureHierarchy() catch {};
+                if (wb.hierarchy) |hp| hp.build(ui) else {
+                    ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                    ui.text("Language services are not running.", .{ .color = .fg_muted });
+                    ui.close();
+                }
+            },
             else => {},
         }
     }
@@ -3883,7 +4146,7 @@ pub const Workbench = struct {
             wb.scm_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -4673,6 +4936,62 @@ test "workbench: terminals open as tabs and splits, cycle, and close" {
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), wb.terminals.count());
     try std.testing.expect(!wb.shown(wb.terminal_ref));
+}
+
+test "workbench: terminals come back after a restart with their output, splits and names" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(std.testing.io, &buf)];
+    const state = try std.fs.path.join(gpa, &.{ root, "state" });
+    defer gpa.free(state);
+
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, null);
+        defer wb.deinit();
+        _ = wb.loadLayout(state);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        try wb.toggleTerminal();
+        try wb.splitTerminal();
+        try wb.newTerminalCmd();
+        _ = t.settle();
+        wb.terminals.get(1).?.view.feed("\x1b[1mhello-from-one\x1b[0m\r\n");
+        wb.terminals.get(2).?.view.feed("hello-from-two\r\n");
+        try wb.term_tabs.rename(3, "build");
+    }
+    {
+        var wb: Workbench = undefined;
+        try wb.init(&rt, &env, null);
+        defer wb.deinit();
+        _ = wb.loadLayout(state);
+        const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+        defer t.deinit();
+        try wb.attach(t.win);
+        defer wb.detach();
+        try wb.focusTerminalCmd();
+        _ = t.settle();
+        try std.testing.expectEqual(@as(usize, 3), wb.terminals.count());
+        try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items.len);
+        try std.testing.expectEqual(@as(usize, 2), wb.term_tabs.groups.items[0].terminals.items.len);
+        try std.testing.expectEqualStrings("build", wb.term_tabs.nameOf(wb.term_tabs.groups.items[1].terminals.items[0]).?);
+        const want = [_][]const u8{ "hello-from-one", "hello-from-two" };
+        for (want, wb.term_tabs.groups.items[0].terminals.items) |text, id| {
+            const d = try wb.terminals.get(id).?.term.dump(gpa);
+            defer gpa.free(d);
+            try std.testing.expect(std.mem.indexOf(u8, d, text) != null);
+            try std.testing.expect(std.mem.indexOf(u8, d, "Restored session, saved") != null);
+        }
+    }
 }
 
 test "workbench: Find in Terminal opens the bar on the selection and Escape returns focus" {

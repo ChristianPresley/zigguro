@@ -578,12 +578,15 @@ pub const Host = struct {
             hw.win.handlePlatformEvent(ev, h.platform);
             hw.dispatch_ns += zg_core.time.nowNs(h.io) -| t0;
         } else hw.win.handlePlatformEvent(ev, h.platform);
+        if (ev == .key or ev == .pointer_button) zg_perf.startup.mark(.first_input_handled);
         switch (ev) {
             .window_configure => |c| hw.resize(.{ .w = c.size.w, .h = c.size.h }, c.scale.factor),
             .window_occluded => |o| hw.occluded = o.occluded,
             .present_feedback => |f| if (h.timeline) |tl| {
-                if (hw.feedback.feedback(f.presented_ns, f.flags, zg_core.time.nowNs(h.io))) |m|
+                if (hw.feedback.feedback(f.presented_ns, f.flags, zg_core.time.nowNs(h.io))) |m| {
                     tl.onPresentedEx(m.present_id, m.presented_ns, m.flags, m.discarded);
+                    if (!m.discarded) zg_perf.startup.global().markAtNs(.first_frame_presented, m.presented_ns);
+                }
             },
             .frame => {
                 hw.frame_requested = false;
@@ -624,6 +627,7 @@ pub const Host = struct {
                     const t_submit = if (h.timeline != null) zg_core.time.nowNs(h.io) else 0;
                     try hw.submit();
                     hw.frames += 1;
+                    zg_perf.startup.mark(.first_frame_submitted);
                     zg_perf.os.frame(hw.frames);
                     if (h.timeline) |tl| h.recordFrame(tl, hw, st, t_submit);
                 }
@@ -635,6 +639,18 @@ pub const Host = struct {
             },
             else => {},
         }
+    }
+
+    /// Marks startup `interactive` the first time the UI thread waits
+    /// after the first frame was presented (or submitted, when no window
+    /// gets presentation feedback).
+    fn markInteractive(h: *Host) void {
+        const st = zg_perf.startup.global();
+        if (st.isSet(.interactive)) return;
+        const ready = st.isSet(.first_frame_presented) or (st.isSet(.first_frame_submitted) and for (h.windows.items) |hw| {
+            if (hw.feedback.expectFeedback()) break false;
+        } else true);
+        if (ready) st.mark(.interactive);
     }
 
     /// Remembers the oldest input event not yet in a frame.
@@ -730,6 +746,7 @@ pub const Host = struct {
                 deadline = if (deadline) |x| @min(x, d) else d;
             };
             if (h.watchdog) |w| w.enterWait();
+            h.markInteractive();
             h.platform.waitEvents(if (deadline) |d| d *| std.time.ns_per_ms else null);
         }
     }

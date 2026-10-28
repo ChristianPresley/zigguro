@@ -177,3 +177,21 @@ test "normalizePath: table" {
         try testing.expectEqualStrings(c.out, got);
     }
 }
+
+test "registry: virtual documents are read-only and keyed by URI" {
+    var reg: DocumentRegistry = .init(testing.allocator, .posix);
+    defer reg.deinit();
+    const uri = "rust-analyzer://expand/lib.rs";
+    const a = try reg.openVirtual(uri, "lib.rs", "fn main() {}");
+    const b = try reg.openVirtual(uri, "ignored", "ignored");
+    try testing.expectEqual(a, b);
+    try testing.expect(reg.kind(a).? == .virtual);
+    try testing.expect(reg.isReadOnly(a));
+    try testing.expectEqualStrings(uri, reg.uri(a).?);
+    try testing.expectEqualStrings("lib.rs", reg.name(a).?);
+    try testing.expectEqual(a, reg.findVirtual(uri).?);
+    try testing.expect(reg.findVirtual("jdt://other") == null);
+    reg.release(a);
+    reg.release(b);
+    try testing.expect(reg.findVirtual(uri) == null);
+}

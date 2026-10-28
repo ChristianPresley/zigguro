@@ -420,6 +420,7 @@ const refresh_methods = .{
     .{ "workspace/diagnostic/refresh", host_mod.RefreshFeature.diagnostic },
     .{ "workspace/codeLens/refresh", host_mod.RefreshFeature.code_lens },
     .{ "workspace/foldingRange/refresh", host_mod.RefreshFeature.folding_range },
+    .{ "workspace/textDocumentContent/refresh", host_mod.RefreshFeature.text_document_content },
 };
 
 fn Refresh(comptime feature: host_mod.RefreshFeature) type {
