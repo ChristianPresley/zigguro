@@ -1,6 +1,7 @@
 //! Picks the transport for a remote URL (E09.F08): `https://` and
 //! `http://` go over smart HTTP; `ssh://` and scp-like `user@host:path`
-//! over SSH; local paths and `file://` are not served yet.
+//! over the native SSH client; local paths and `file://` are not served
+//! yet.
 
 const std = @import("std");
 const zg_net = @import("zg_net");
@@ -9,6 +10,7 @@ const http = @import("http.zig");
 const credential = @import("credential.zig");
 const fetch_mod = @import("fetch.zig");
 const Repository = @import("../repository.zig").Repository;
+const ssh_session = @import("../ssh/session.zig");
 
 pub const Kind = enum { http, ssh, local };
 
@@ -26,11 +28,13 @@ pub fn kindOf(url: []const u8) Kind {
     return .local;
 }
 
-/// The connector apps use: one HTTP client and an optional credential
-/// provider shared by every connection.
+/// The connector apps use: one HTTP client, an optional credential
+/// provider and SSH options shared by every connection.
 pub const Default = struct {
     client: *zg_net.http.Client,
     provider: ?credential.Provider = null,
+    /// SSH options; `env` defaults to the repository's environment.
+    ssh: ssh_session.Options = .{},
 
     pub fn connector(d: *Default) fetch_mod.Connector {
         return .{ .ctx = d, .connect = connect };
@@ -44,7 +48,11 @@ pub const Default = struct {
                 .credentials = .{ .repo = repo, .provider = d.provider },
                 .tmp_dir = repo.git_dir,
             })).connection(),
-            .ssh => error.SshTransportUnavailable,
+            .ssh => blk: {
+                var o = d.ssh;
+                if (o.env == null) o.env = repo.env;
+                break :blk (try ssh_session.connect(repo.gpa, repo.io, url, service, o)).connection();
+            },
             .local => error.LocalTransportUnavailable,
         };
     }
