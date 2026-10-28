@@ -90,6 +90,8 @@ pub const Tracing = struct {
     mem: ?*zg_perf.mem.Sampler = null,
     /// Held while the HUD is visible.
     mem_obs: ?zg_perf.mem.Observation = null,
+    /// Runs reclaimers on ceiling breaches and OS memory pressure.
+    pressure: ?*zg_perf.mem.PressureMonitor = null,
     /// The `--mem-report` task (cancelled at exit).
     mem_group: std.Io.Group = .init,
 
@@ -117,6 +119,11 @@ pub const Tracing = struct {
         tl.* = try .init(t.gpa, 1024);
         errdefer tl.deinit();
         t.mem = zg_perf.mem.Sampler.start(t.gpa, t.io, .{}) catch null;
+        zg_perf.mem.pressure.loadBudgetCeilings();
+        t.pressure = zg_perf.mem.PressureMonitor.start(t.gpa, t.io, .{}) catch null;
+        if (t.mem) |s| if (t.pressure) |pm| {
+            s.on_sample = pm.samplerHook();
+        };
         const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory } });
         t.hud = hud;
         t.timeline = tl;
@@ -239,6 +246,7 @@ pub const Tracing = struct {
         if (t.probe) |p| p.destroy();
         t.mem_group.cancel(t.io);
         if (t.mem) |s| s.stop();
+        if (t.pressure) |pm| pm.stop();
         if (t.recorder) |fr| fr.deinit();
         if (t.timeline) |tl| {
             tl.deinit();
@@ -375,8 +383,8 @@ pub const Tracing = struct {
         t.stop();
     }
 
-    /// Registers the `perf.trace.*` commands, `perf.hud.toggle` and
-    /// `perf.latencyProbe.toggle`.
+    /// Registers the `perf.trace.*` commands, `perf.hud.toggle`,
+    /// `perf.latencyProbe.toggle` and the `perf.memory.*` commands.
     pub fn registerCommands(t: *Tracing, reg: *zg_config.commands.CommandRegistry) !void {
         inline for (commands) |c| {
             _ = try reg.register(.{
@@ -391,8 +399,47 @@ pub const Tracing = struct {
                 }.f },
             });
         }
+        // `perf.memory.simulatePressure` takes "moderate" or "critical"
+        // (the default).
+        _ = try reg.register(.{
+            .id = "perf.memory.simulatePressure",
+            .title = "Simulate Memory Pressure",
+            .category = "Performance",
+            .source = .{ .builtin = "zigguro" },
+            .handler = .{ .ctx = t, .run = struct {
+                fn f(ctx: ?*anyopaque, inv: *zg_config.commands.Invocation) anyerror!void {
+                    const tr: *Tracing = @ptrCast(@alignCast(ctx.?));
+                    try tr.simulatePressure(pressureArg(inv.args));
+                }
+            }.f },
+        });
+    }
+
+    /// Runs the reclaimers as if the OS reported `level`.
+    pub fn simulatePressure(t: *Tracing, level: zg_perf.mem.Pressure) !void {
+        const pm = t.pressure orelse return error.NoPressureMonitor;
+        pm.simulate(level);
     }
 };
+
+/// The level a `perf.memory.simulatePressure` argument names.
+fn pressureArg(args: ?*const zg_config.Value) zg_perf.mem.Pressure {
+    const v = args orelse return .critical;
+    const name = switch (v.*) {
+        .string => |x| x,
+        .enum_lit => |x| x,
+        else => return .critical,
+    };
+    return std.meta.stringToEnum(zg_perf.mem.Pressure, name) orelse .critical;
+}
+
+test "tracing: pressure argument" {
+    try std.testing.expectEqual(zg_perf.mem.Pressure.critical, pressureArg(null));
+    const m: zg_config.Value = .{ .string = "moderate" };
+    try std.testing.expectEqual(zg_perf.mem.Pressure.moderate, pressureArg(&m));
+    const bad: zg_config.Value = .{ .int = 3 };
+    try std.testing.expectEqual(zg_perf.mem.Pressure.critical, pressureArg(&bad));
+}
 
 test "tracing: parse request" {
     try std.testing.expect(parseRequest(&.{ "zigguro", "x.zig" }, null) == null);

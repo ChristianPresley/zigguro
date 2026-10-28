@@ -67,6 +67,13 @@ pub fn emitCounters(s: *const Snapshot) void {
     }
 }
 
+/// Called on the sampling thread after each sample (the pressure
+/// monitor's ceiling check).
+pub const OnSample = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, snap: *const Snapshot) void,
+};
+
 const snapshot_words = (@sizeOf(Snapshot) + 7) / 8;
 
 /// Samples memory on a lazily created worker. Create with `start`, end
@@ -93,6 +100,8 @@ pub const Sampler = struct {
     version: std.atomic.Value(u64) = .init(0),
     words: [snapshot_words]std.atomic.Value(u64) = @splat(.init(0)),
     samples: u64 = 0,
+    /// Set before the first observation; called after each sample.
+    on_sample: ?OnSample = null,
     scratch: [32 * 1024]u8 = undefined,
 
     /// Sampler options.
@@ -152,6 +161,7 @@ pub const Sampler = struct {
         snap.sample = s.samples;
         s.publish(&snap);
         if (s.opts.counters) emitCounters(&snap);
+        if (s.on_sample) |h| h.f(h.ctx, &snap);
     }
 
     /// The newest snapshot (all zero before the first sample).
