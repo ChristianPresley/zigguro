@@ -19,7 +19,7 @@ const Harness = test_harness.Harness;
 const NodeId = VariablesModel.NodeId;
 
 /// Forwards the session's changes to the inspector and counts them.
-const Fwd = struct {
+pub const Fwd = struct {
     insp: *Inspector,
     counts: [@typeInfo(DebugSession.Change).@"enum".fields.len]std.atomic.Value(u32) = @splat(.init(0)),
 
@@ -30,7 +30,7 @@ const Fwd = struct {
     }
 
     /// Waits until `change` was forwarded `n` times, then for the model.
-    fn settleAfter(f: *Fwd, change: DebugSession.Change, n: u32) !void {
+    pub fn settleAfter(f: *Fwd, change: DebugSession.Change, n: u32) !void {
         const deadline = Io.Timestamp.now(testing.io, .awake).addDuration(.fromSeconds(10));
         while (f.counts[@intFromEnum(change)].load(.acquire) < n) {
             if (Io.Timestamp.now(testing.io, .awake).nanoseconds > deadline.nanoseconds) return error.Timeout;
@@ -41,7 +41,7 @@ const Fwd = struct {
     }
 };
 
-const Fixture = struct {
+pub const Fixture = struct {
     h: Harness,
     s: *DebugSession,
     insp: Inspector,
@@ -51,7 +51,12 @@ const Fixture = struct {
     opened_text: std.ArrayList(u8) = .empty,
 
     /// Starts `script`, attaches the model and pauses thread 1.
-    fn init(f: *Fixture, script: []const u8, opts: Inspector.Options) !void {
+    pub fn init(f: *Fixture, script: []const u8, opts: Inspector.Options) !void {
+        return f.initWith(script, opts, null);
+    }
+
+    /// `init`, running `setup` on the model before the pause.
+    pub fn initWith(f: *Fixture, script: []const u8, opts: Inspector.Options, setup: ?*const fn (*Inspector) void) !void {
         f.* = .{ .h = undefined, .s = undefined, .insp = undefined, .fwd = undefined };
         try f.h.init(&.{script}, .{});
         errdefer f.h.deinit();
@@ -62,19 +67,20 @@ const Fixture = struct {
         try f.insp.initSession(gpa, testing.io, f.s, o);
         f.fwd = .{ .insp = &f.insp };
         try f.h.m.subscribe(.{ .ctx = &f.fwd, .func = Fwd.on });
+        if (setup) |g| g(&f.insp);
         f.s.pause(1);
         try f.fwd.settleAfter(.stack, 1);
     }
 
     /// Stops the session and checks the script ran to its end.
-    fn finish(f: *Fixture) !void {
+    pub fn finish(f: *Fixture) !void {
         try f.insp.settle(.fromSeconds(10));
         f.s.stop();
         try f.h.waitFor(f.s, Harness.ended);
         try f.h.expectScriptPassed(f.s);
     }
 
-    fn deinit(f: *Fixture) void {
+    pub fn deinit(f: *Fixture) void {
         f.h.deinit();
         f.insp.deinit();
         f.opened_uri.deinit(gpa);
@@ -92,22 +98,22 @@ const Fixture = struct {
         f.opened_text.appendSlice(gpa, text) catch {};
     }
 
-    fn vars(f: *Fixture) *VariablesModel {
+    pub fn vars(f: *Fixture) *VariablesModel {
         return &f.insp.vars;
     }
 
     /// The child of `parent` named `name` (its children must be ready).
-    fn child(f: *Fixture, parent: NodeId, name: []const u8) !NodeId {
+    pub fn child(f: *Fixture, parent: NodeId, name: []const u8) !NodeId {
         return childOf(f.vars(), parent, name);
     }
 
-    fn root(f: *Fixture, name: []const u8) !NodeId {
+    pub fn root(f: *Fixture, name: []const u8) !NodeId {
         for (f.vars().roots()) |r| if (std.mem.eql(u8, f.vars().node(r).?.name, name)) return r;
         return error.NoScope;
     }
 };
 
-fn childOf(m: *VariablesModel, parent: NodeId, name: []const u8) !NodeId {
+pub fn childOf(m: *VariablesModel, parent: NodeId, name: []const u8) !NodeId {
     const list = switch (m.children(parent, null)) {
         .ready => |l| l,
         else => return error.NotReady,
