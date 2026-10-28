@@ -38,10 +38,12 @@ const zg_security = @import("zg_security");
 const zg_security_ui = @import("zg_security_ui");
 const zg_review = @import("zg_review");
 const zg_codeintel = @import("zg_codeintel");
+const zg_ai = @import("zg_ai");
 const TerminalPanel = @import("terminal_panel.zig").TerminalPanel;
 const term_persist = zg_terminal.session.persist;
 const TerminalId = zg_terminal_view.panel_model.TerminalId;
 const AgentHost = @import("agent/host.zig").AgentHost;
+const AgentTerminals = @import("agent/terminals.zig").AgentTerminals;
 const PendingEdits = @import("agent/pending_edits.zig").PendingEdits;
 const AgentPanel = @import("agent/panel.zig").AgentPanel;
 const AgentCommands = @import("agent/commands.zig").AgentCommands;
@@ -183,6 +185,8 @@ pub const Workbench = struct {
     mcp_input: McpInputDialogs = undefined,
     /// Created on first show, with the panel.
     agent: ?*AgentHost = null,
+    /// The terminals the agent's commands run in (`terminal.agent.visibleTerminals`).
+    agent_terms: ?*AgentTerminals = null,
     agent_panel: ?*AgentPanel = null,
     /// Agent edits waiting in their editors (inline review; with the
     /// agent).
@@ -940,8 +944,16 @@ pub const Workbench = struct {
         if (wb.scm) |p| p.destroy();
         wb.scm = null;
         if (wb.agent_cmds) |c| c.target = null;
+        // A command tool waiting on the UI thread would wait forever now.
+        if (wb.agent_terms) |at| at.closing.store(true, .release);
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
+        // After the agent, while its terminals are still open.
+        if (wb.agent_terms) |at| {
+            at.deinit();
+            wb.gpa.destroy(at);
+        }
+        wb.agent_terms = null;
         // After the agent (its file tools place changes here), before the
         // editors the changes draw in.
         if (wb.pending_edits) |pe| {
@@ -3580,12 +3592,18 @@ pub const Workbench = struct {
     /// `newTerminal`, showing `restore`'s saved content first and
     /// starting the shell in its folder.
     fn openTerminal(wb: *Workbench, w: *Window, split: bool, restore: ?Restore) !void {
+        return wb.openTerminalAs(w, split, restore, .{ .agent = if (restore) |r| r.record.owner == .agent else false });
+    }
+
+    /// `openTerminal` for the user or (`agent`) an agent, whose shell
+    /// starts in `cwd` and always has shell integration.
+    fn openTerminalAs(wb: *Workbench, w: *Window, split: bool, restore: ?Restore, how: struct { agent: bool, cwd: ?[]const u8 = null }) !void {
         const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
         errdefer t.destroy();
         const id = wb.next_terminal;
         try wb.terminals.put(wb.gpa, id, t);
         errdefer _ = wb.terminals.swapRemove(id);
-        const agent = if (restore) |r| r.record.owner == .agent else false;
+        const agent = how.agent;
         if (split and wb.term_tabs.activeId() != null)
             try wb.term_tabs.split(wb.term_tabs.activeId().?, id)
         else
@@ -3601,6 +3619,9 @@ pub const Workbench = struct {
             if (agent) return t.setNote("saved agent terminal", .{});
             if (r.record.cwd.len > 0 and std.fs.path.isAbsolute(r.record.cwd) and exists(wb.io, r.record.cwd)) t.start_cwd = r.record.cwd;
         }
+        if (how.cwd) |c| if (std.fs.path.isAbsolute(c) and exists(wb.io, c)) {
+            t.start_cwd = c;
+        };
         defer t.start_cwd = null;
         const st = wb.settings orelse return t.start();
         var args: [32][]const u8 = undefined;
@@ -3610,10 +3631,57 @@ pub const Workbench = struct {
             args[n] = a.string;
             n += 1;
         };
-        t.shell_integration = st.boolean("terminal.integrated.shellIntegration.enabled");
+        // An agent's commands are bound to the shell's command blocks.
+        t.shell_integration = agent or st.boolean("terminal.integrated.shellIntegration.enabled");
         t.term.opts.graphics.allow_file_media = st.boolean("terminal.graphics.allowFileMedia");
         t.term.opts.graphics.sixel = st.boolean("terminal.graphics.sixel");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
+    }
+
+    /// Agent thread: runs `f(arg)` on the UI thread and waits for it.
+    fn runOnUi(ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return false;
+        const Job = struct {
+            f: *const fn (arg: *anyopaque) void,
+            arg: *anyopaque,
+            io: std.Io,
+            done: std.Io.Event = .unset,
+            fn run(c: *anyopaque, _: *zg_gui.App) void {
+                const j: *@This() = @ptrCast(@alignCast(c));
+                j.f(j.arg);
+                j.done.set(j.io);
+            }
+        };
+        var job: Job = .{ .f = f, .arg = arg, .io = wb.io };
+        w.app.post(.{ .ctx = &job, .f = Job.run }) catch return false;
+        job.done.waitUncancelable(job.io);
+        return true;
+    }
+
+    /// An agent's terminal: a new tab in the Agents section, its shell
+    /// started in `cwd`. Focus stays where it is.
+    fn openAgentTerminal(ctx: *anyopaque, cwd: ?[]const u8) ?*TerminalPanel {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return null;
+        wb.terminals_loaded = true;
+        const id = wb.next_terminal;
+        wb.openTerminalAs(w, false, null, .{ .agent = true, .cwd = cwd }) catch |e| {
+            log.warn("agent terminal: {t}", .{e});
+            return null;
+        };
+        w.markAllDirty();
+        return wb.terminals.get(id);
+    }
+
+    fn closeAgentTerminal(ctx: *anyopaque, panel: *TerminalPanel) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var it = wb.terminals.iterator();
+        const id = while (it.next()) |kv| {
+            if (kv.value_ptr.* == panel) break kv.key_ptr.*;
+        } else return;
+        wb.closeTerminal(id);
+        wb.afterTerminalClosed() catch {};
     }
 
     fn focusTerminalCmd(wb: *Workbench) !void {
@@ -3871,6 +3939,12 @@ pub const Workbench = struct {
             p.commands = c;
         }
         host.plans.on_change = .{ .ctx = wb, .f = onTerminalOutput };
+        if (wb.settings == null or wb.settings.?.boolean("terminal.agent.visibleTerminals")) {
+            const at = try wb.gpa.create(AgentTerminals);
+            at.* = .init(wb.gpa, wb.io, .{ .ctx = wb, .run = runOnUi, .open = openAgentTerminal, .close = closeAgentTerminal }, host.processes.host());
+            host.useTerminals(at.host());
+            wb.agent_terms = at;
+        }
         host.mcp.broker = wb.mcp_input.broker();
         if (wb.trust == .trusted) host.connectMcp(wb.rt, wb.env);
         wb.agent = host;
@@ -5342,4 +5416,102 @@ test "workbench: the notes sidebar follows the editor; note search opens a hit" 
     n.fileChanged(c);
     try n.sidebar_model.sync();
     try std.testing.expectEqual(@as(usize, 1), n.sidebar_model.backlinks.len);
+}
+
+test "workbench: an agent's commands run in a visible bash terminal" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    std.Io.Dir.accessAbsolute(std.testing.io, "/bin/bash", .{}) catch return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = buf[0..try tmp.dir.realPath(std.testing.io, &buf)];
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("SHELL", "/bin/bash");
+    try env.put("HOME", home);
+    try env.put("PATH", "/usr/bin:/bin");
+    try env.put("LANG", "C.UTF-8");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    // Panels read their shells on workers.
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // The test thread is the UI thread: "posting" drains what the
+    // terminals queued, then runs the call.
+    const Host = zg_ai.tools.builtin.terminal_host;
+    const TestUi = struct {
+        fn run(ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool {
+            const w: *Workbench = @ptrCast(@alignCast(ctx));
+            // The escalation timer's worker posts like an agent thread.
+            if (!w.rt.isUiThread()) return Workbench.runOnUi(ctx, f, arg);
+            _ = w.win.?.app.drainMessages();
+            f(arg);
+            return true;
+        }
+        fn noop(_: *anyopaque) void {}
+    };
+    var ph: zg_ai.tools.builtin.process_host.ProcessHost = .init(gpa, rt.io);
+    defer ph.deinit();
+    var at: AgentTerminals = .init(gpa, rt.io, .{ .ctx = &wb, .run = TestUi.run, .open = Workbench.openAgentTerminal, .close = Workbench.closeAgentTerminal }, ph.host());
+    defer at.deinit();
+    at.grace_ms = 1000;
+    const h = at.host();
+    const io = rt.io;
+
+    const sid = try h.create(io, .{ .session = 1 }, true);
+    try std.testing.expect(at.sessions.items[sid].term != null);
+    try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+    try std.testing.expectEqual(.agents, wb.term_tabs.sectionOf(wb.term_tabs.groups.items[0].terminals.items[0]));
+
+    const Done = struct {
+        fn wait(hh: Host.TerminalHost, ui: *Workbench, job: u32) !Host.Status {
+            var tries: u32 = 0;
+            while (tries < 500) : (tries += 1) {
+                const st = try hh.wait(std.testing.io, job, 20, null);
+                if (st != .running) return st;
+                _ = TestUi.run(ui, TestUi.noop, undefined);
+            }
+            return .running;
+        }
+    };
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Output and the exit code come from the command's block.
+    const j1 = try h.start(io, sid, "echo hello-agent; (exit 3)", null);
+    try std.testing.expectEqual(Host.Status{ .exited = 3 }, try Done.wait(h, &wb, j1));
+    const out1 = try h.lines(a, j1, 0);
+    try std.testing.expectEqual(@as(usize, 1), out1.len);
+    try std.testing.expectEqualStrings("hello-agent", out1[0]);
+
+    // `cwd` changes folder for the command, and the shell stays there.
+    const j2 = try h.start(io, sid, "pwd", "/usr");
+    try std.testing.expectEqual(Host.Status{ .exited = 0 }, try Done.wait(h, &wb, j2));
+    try std.testing.expectEqualStrings("/usr", (try h.lines(a, j2, 0))[0]);
+    const j3 = try h.start(io, sid, "export ZG_X=kept; pwd", null);
+    _ = try Done.wait(h, &wb, j3);
+    const j4 = try h.start(io, sid, "echo $ZG_X", null);
+    _ = try Done.wait(h, &wb, j4);
+    try std.testing.expectEqualStrings("/usr", (try h.lines(a, j3, 0))[0]);
+    try std.testing.expectEqualStrings("kept", (try h.lines(a, j4, 0))[0]);
+
+    // Interrupting types Ctrl+C; the command ends killed.
+    const j5 = try h.start(io, sid, "sleep 30", null);
+    _ = TestUi.run(&wb, TestUi.noop, undefined);
+    h.interrupt(io, j5);
+    try std.testing.expectEqual(Host.Status.killed, try Done.wait(h, &wb, j5));
+    try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
 }

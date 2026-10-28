@@ -64,6 +64,9 @@ pub const Block = struct {
     output: ?u64 = null,
     /// The row after the output (D), once finished.
     end: ?u64 = null,
+    /// The cursor column on the end row when the command finished: output
+    /// without a final newline ends mid-row.
+    end_col: u16 = 0,
     exit: ?i32 = null,
     /// `Terminal.now_ms` at C and D.
     started_ms: ?u64 = null,
@@ -343,7 +346,7 @@ pub const Blocks = struct {
                         last.end = row;
                         b.queue(.{ .abandoned = last.id });
                     },
-                    .running => b.finish(last, row, null),
+                    .running => b.finish(last, row, col, null),
                     .finished, .abandoned => {},
                 };
                 try b.startBlock(row);
@@ -386,7 +389,7 @@ pub const Blocks = struct {
             .command_finished => |code| {
                 const last = b.lastMut() orelse return;
                 if (last.state != .running) return;
-                b.finish(last, row, code);
+                b.finish(last, row, col, code);
                 setRowMark(at_pin, .output_end, false);
             },
             .cwd => |path| {
@@ -403,9 +406,10 @@ pub const Blocks = struct {
         b.next_id +%= 1;
     }
 
-    fn finish(b: *Blocks, blk: *Block, row: u64, code: ?i32) void {
+    fn finish(b: *Blocks, blk: *Block, row: u64, col: u16, code: ?i32) void {
         b.commitRows(blk, row);
         blk.end = row;
+        blk.end_col = col;
         blk.exit = code;
         blk.finished_ms = b.term.now_ms;
         blk.state = .finished;
