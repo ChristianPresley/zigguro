@@ -258,6 +258,8 @@ pub const Workbench = struct {
     pending_explorer: bool = false,
     /// `pending_open` is a language server's URI for a virtual document.
     pending_virtual: bool = false,
+    /// After `pending_open`: offer the code actions at the caret.
+    pending_quick_fix: bool = false,
     /// The editor the explorer last revealed (`explorer.autoReveal`).
     revealed_panel: ?PanelRef = null,
     /// The Problems panel (created on first show) and its dock panel.
@@ -1270,6 +1272,10 @@ pub const Workbench = struct {
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
         .{ .id = "problems.copyMessage", .title = "Copy Problem Message", .category = "Problems", .run = problemsCopyMessage },
+        .{ .id = "problems.quickFix", .title = "Quick Fix for Problem...", .category = "Problems", .run = problemsQuickFix },
+        .{ .id = "problems.askAgentToFix", .title = "Ask Agent to Fix Problem", .category = "Problems", .run = problemsAskAgent },
+        .{ .id = "problems.hideSource", .title = "Hide Problems from This Source", .category = "Problems", .run = problemsHideSource },
+        .{ .id = "problems.showAllSources", .title = "Show Problems from All Sources", .category = "Problems", .run = problemsShowAllSources },
         .{ .id = "notes.showSidebar", .title = "Show Notes Sidebar", .category = "Notes", .run = showNotesSidebar },
         .{ .id = "notes.search", .title = "Search Notes", .category = "Notes", .run = notesSearch },
         .{ .id = "notes.searchSelection", .title = "Search Notes for Selection", .category = "Notes", .run = notesSearchSelection },
@@ -3134,6 +3140,56 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    /// Problems: Quick Fix...: goes to the problem, then offers the code
+    /// actions there.
+    fn problemsQuickFix(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        const l = pp.activeItem() orelse return;
+        wb.pending_quick_fix = true;
+        pp.show(l, true);
+    }
+
+    fn quickFixOpened(ctx: *anyopaque, _: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.quickFix() catch |e| log.warn("quick fix: {t}", .{e});
+    }
+
+    /// Problems: Ask Agent to Fix: sends the agent the diagnostic and the
+    /// code around it (the editor's text when the file is open there, else
+    /// the file on disk).
+    fn problemsAskAgent(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        const a = pp.active() orelse return;
+        const gpa = wb.gpa;
+        var text: ?[]u8 = null;
+        defer if (text) |t| gpa.free(t);
+        if (wb.path) |path| if (wb.codeintel) |ci| {
+            const abs = try std.fs.path.resolve(gpa, &.{ wb.cwd, path });
+            defer gpa.free(abs);
+            const key = try ci.diags.keyOfPath(gpa, abs);
+            defer gpa.free(key);
+            if (std.mem.eql(u8, key, a.key)) text = try gpa.dupe(u8, wb.view.text(.{ .start = 0, .end = wb.doc.tree.len() }));
+        };
+        if (text == null) text = std.Io.Dir.cwd().readFileAlloc(wb.io, a.key, gpa, .limited(16 << 20)) catch null;
+        const prompt = try problems_panel.fixPrompt(gpa, pp.displayPath(a.key), a.item, text);
+        defer gpa.free(prompt);
+        if (!wb.shown(wb.agent_ref) or wb.areaOf(wb.agent_ref) == .center) try wb.toggleAgent();
+        const p = wb.agent_panel orelse return wb.notify(.info, "The agent is not available", .{});
+        try p.submit(prompt);
+    }
+
+    fn problemsHideSource(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        if (!pp.hideActiveSource()) return wb.notify(.info, "This problem has no source to hide", .{});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn problemsShowAllSources(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        pp.showAllSources();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     // -- the git tab ---------------------------------------------------------
 
     /// How often the shown Git tab reads the repository again
@@ -4434,7 +4490,9 @@ pub const Workbench = struct {
                 };
                 if (range) |r| wb.selectBytes(r);
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
+                if (wb.pending_quick_fix) ui.win.afterNextFrame(.{ .ctx = wb, .f = quickFixOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
+            wb.pending_quick_fix = false;
         }
         wb.virtualGoto();
         wb.followFocus();
