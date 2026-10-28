@@ -89,6 +89,8 @@ pub const Harness = struct {
         timeouts: DebugManager.Timeouts = .{ .stop_grace = .fromMilliseconds(500) },
         tasks: ?DebugManager.TaskHost = null,
         terminal: ?DebugManager.TerminalLauncher = null,
+        /// Instead of the stand-in.
+        breakpoints: ?DebugManager.BreakpointSink = null,
         trusted: bool = true,
         /// `{configuration name, script}`: picked by name before the
         /// spawn order.
@@ -104,7 +106,7 @@ pub const Harness = struct {
         h.m = .init(&h.rt, .{
             .resolver = .{ .ctx = h, .resolve = resolve },
             .tasks = o.tasks,
-            .breakpoints = h.bps.sink(),
+            .breakpoints = o.breakpoints orelse h.bps.sink(),
             .terminal = o.terminal,
             .trusted = o.trusted,
             .timeouts = o.timeouts,
