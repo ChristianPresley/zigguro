@@ -55,12 +55,12 @@ pub const ConfigPaths = struct {
         return out.items;
     }
 
-    /// `<config>/settings.zon`.
+    /// `<config>/settings.json` (JSONC: comments and trailing commas allowed).
     pub fn userSettings(p: *const ConfigPaths) []const u8 {
         return p.user_settings;
     }
 
-    /// `<config>/keybindings.zon`.
+    /// `<config>/keybindings.json` (JSONC).
     pub fn userKeybindings(p: *const ConfigPaths) []const u8 {
         return p.user_keybindings;
     }
@@ -144,8 +144,8 @@ pub fn resolve(arena: Allocator, env: *const Environ.Map, opts: ResolveOptions) 
         if (absOrNull(env, o[0], win)) |v| @field(p, o[1]) = try arena.dupe(u8, v);
     }
 
-    p.user_settings = try j.join(&.{ p.config, "settings.zon" });
-    p.user_keybindings = try j.join(&.{ p.config, "keybindings.zon" });
+    p.user_settings = try j.join(&.{ p.config, "settings.json" });
+    p.user_keybindings = try j.join(&.{ p.config, "keybindings.json" });
     p.extensions_dir = try j.join(&.{ p.data, "extensions" });
     return p;
 }
@@ -232,8 +232,8 @@ test "paths: linux defaults" {
     try std.testing.expectEqualStrings("/home/u/.local/state/zigguro", p.state);
     try std.testing.expectEqualStrings("/home/u/.cache/zigguro", p.cache);
     try std.testing.expectEqualStrings("/etc/zigguro", p.managed.?);
-    try std.testing.expectEqualStrings("/home/u/.config/zigguro/settings.zon", p.userSettings());
-    try std.testing.expectEqualStrings("/home/u/.config/zigguro/keybindings.zon", p.userKeybindings());
+    try std.testing.expectEqualStrings("/home/u/.config/zigguro/settings.json", p.userSettings());
+    try std.testing.expectEqualStrings("/home/u/.config/zigguro/keybindings.json", p.userKeybindings());
     try std.testing.expectEqualStrings("/home/u/.local/share/zigguro/extensions", p.extensionsDir());
     try std.testing.expect(!p.portable);
 }
@@ -270,7 +270,7 @@ test "paths: windows APPDATA/LOCALAPPDATA" {
     try std.testing.expectEqualStrings("D:\\Local\\zigguro\\state", p.state);
     try std.testing.expectEqualStrings("D:\\Local\\zigguro\\cache", p.cache);
     try std.testing.expectEqualStrings("C:\\ProgramData\\zigguro", p.managed.?);
-    try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Roaming\\zigguro\\settings.zon", p.userSettings());
+    try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Roaming\\zigguro\\settings.json", p.userSettings());
 }
 
 test "paths: windows fallback USERPROFILE" {
@@ -289,7 +289,7 @@ test "paths: env overrides win" {
     }, .{ .os = .linux });
     defer a.deinit();
     try std.testing.expectEqualStrings("/override/cfg", p.config);
-    try std.testing.expectEqualStrings("/override/cfg/settings.zon", p.userSettings());
+    try std.testing.expectEqualStrings("/override/cfg/settings.json", p.userSettings());
     try std.testing.expectEqualStrings("/home/u/.cache/zigguro", p.cache);
 }
 

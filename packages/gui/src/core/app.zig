@@ -86,6 +86,8 @@ pub const App = struct {
     theme: *const theme_mod.Theme = &theme_mod.zigguro_dark,
     /// Follow the desktop's light/dark/high-contrast setting.
     follow_system: bool = true,
+    /// The desktop's last reported appearance (for `followSystem`).
+    appearance: ?zg_platform.event.Appearance = null,
     /// Animations are instant (but short fades); from the desktop's
     /// appearance, and settable by the app (an E15 setting).
     reduced_motion: bool = false,
@@ -382,9 +384,19 @@ pub const App = struct {
         for (app.windows.items) |w| w.themeChanged(relayout);
     }
 
+    /// Follows the desktop's appearance again (after `setTheme` with
+    /// `follow_system` cleared): the theme for the last appearance the
+    /// desktop reported, the dark theme when none was.
+    pub fn followSystem(app: *App) void {
+        app.follow_system = true;
+        if (app.appearance) |a| return app.onAppearance(a);
+        if (app.theme != &theme_mod.zigguro_dark) app.setTheme(&theme_mod.zigguro_dark);
+    }
+
     /// Applies a desktop appearance change: the theme when `follow_system`
     /// is set, reduced motion when `reduced_motion_follows_system` is.
     pub fn onAppearance(app: *App, a: zg_platform.event.Appearance) void {
+        app.appearance = a;
         if (app.reduced_motion_follows_system) app.reduced_motion = a.reduced_motion;
         if (!app.follow_system) return;
         const want: theme_mod.Theme.Kind = switch (a.contrast) {

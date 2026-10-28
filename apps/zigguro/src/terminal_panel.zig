@@ -84,14 +84,25 @@ pub const TerminalPanel = struct {
     /// Spawns `$SHELL` (or /bin/sh) on a PTY and starts reading it; on
     /// Windows, `%COMSPEC%` (or cmd.exe) on a ConPTY.
     pub fn start(p: *TerminalPanel) void {
+        p.startShell(null, &.{});
+    }
+
+    /// `start` with `shell` (the `terminal.integrated.shell` setting;
+    /// null or "" for the default) and its arguments.
+    pub fn startShell(p: *TerminalPanel, shell_opt: ?[]const u8, args: []const []const u8) void {
         if (p.pty != null) return;
-        const shell = if (builtin.os.tag == .windows)
+        const default_shell = if (builtin.os.tag == .windows)
             p.env.get("COMSPEC") orelse "cmd.exe"
         else
             p.env.get("SHELL") orelse "/bin/sh";
-        const argv = [_][]const u8{shell};
+        const shell = if (shell_opt) |x| (if (x.len > 0) x else default_shell) else default_shell;
+        var argv_buf: [33][]const u8 = undefined;
+        argv_buf[0] = shell;
+        const n = @min(args.len, argv_buf.len - 1);
+        @memcpy(argv_buf[1..][0..n], args[0..n]);
+        const argv = argv_buf[0 .. n + 1];
         p.pty = Pty.spawn(p.gpa, p.io, .{
-            .argv = &argv,
+            .argv = argv,
             .env = p.env,
             .size = .{ .cols = p.term.cols(), .rows = p.term.rows() },
         }) catch |e| {

@@ -16,8 +16,8 @@ Well-known files:
 
 | File | Path |
 |---|---|
-| User settings | `<config>/settings.zon` |
-| User keybindings | `<config>/keybindings.zon` |
+| User settings | `<config>/settings.json` |
+| User keybindings | `<config>/keybindings.json` |
 | Installed extensions | `<data>/extensions/` |
 | Locked (policy) settings | `<managed>/settings.zon` |
 

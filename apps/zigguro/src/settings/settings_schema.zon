@@ -1,0 +1,33 @@
+// Settings the zigguro app reads (E15.F01). Users set them in
+// `<config>/settings.json` and `<root>/.zigguro/settings.json`, or in the
+// settings editor (Ctrl+,). Every key here takes effect without a restart.
+.{ .package = "zigguro", .settings = .{
+    .{ .key = "workbench.colorTheme", .type = .enum_, .enum_values = .{ "system", "zigguro-dark", "zigguro-light" }, .enum_descriptions = .{ "Follow the desktop's light or dark appearance.", "The dark theme.", "The light theme." }, .default = "system", .title = "Color Theme", .description = "The color theme of every window.", .tags = .{"appearance"}, .order = 1 },
+    .{ .key = "workbench.sideBar.location", .type = .enum_, .enum_values = .{ "left", "right" }, .default = "left", .title = "Side Bar Location", .description = "Which side the Explorer and Source Control open on.", .tags = .{"appearance"}, .order = 2 },
+    .{ .key = "workbench.startupView", .type = .enum_, .enum_values = .{ "explorer", "none" }, .enum_descriptions = .{ "Show the Explorer when a folder opens.", "Open with no side bar." }, .default = "explorer", .title = "Startup View", .description = "What the side bar shows when zigguro opens a folder (a restored layout wins).", .tags = .{"appearance"}, .order = 3 },
+
+    .{ .key = "editor.fontSize", .type = .int, .default = 13, .minimum = 6, .maximum = 72, .title = "Font Size", .description = "The editor's font size in points.", .tags = .{"editor"}, .order = 1 },
+    .{ .key = "editor.tabSize", .type = .int, .default = 4, .minimum = 1, .maximum = 16, .scope = .language_overridable, .title = "Tab Size", .description = "The number of spaces a tab is equal to.", .tags = .{"editor"}, .order = 2 },
+    .{ .key = "editor.insertSpaces", .type = .bool, .default = true, .scope = .language_overridable, .title = "Insert Spaces", .description = "Insert spaces when pressing Tab.", .tags = .{"editor"}, .order = 3 },
+    .{ .key = "editor.lineNumbers", .type = .enum_, .enum_values = .{ "on", "off" }, .default = "on", .title = "Line Numbers", .description = "Show line numbers in the gutter.", .tags = .{"editor"}, .order = 4 },
+    .{ .key = "editor.smartTyping", .type = .bool, .default = true, .scope = .language_overridable, .title = "Smart Typing", .description = "Close brackets and quotes and indent new lines by the language's rules.", .tags = .{"editor"}, .order = 5 },
+    .{ .key = "editor.inlineCompletions.enabled", .type = .bool, .default = true, .title = "Inline Completions", .description = "Show AI ghost-text completions while typing (Tab accepts).", .tags = .{ "editor", "ai" }, .order = 6 },
+
+    .{ .key = "files.autoSave", .type = .enum_, .enum_values = .{ "off", "afterDelay", "onFocusChange" }, .enum_descriptions = .{ "Save only when asked (Ctrl+S).", "Save a changed file after Auto Save Delay.", "Save changed files when the window loses focus." }, .default = "off", .title = "Auto Save", .description = "When changed files are saved without asking.", .tags = .{"files"}, .order = 1 },
+    .{ .key = "files.autoSaveDelay", .type = .int, .default = 1000, .minimum = 100, .maximum = 600000, .title = "Auto Save Delay", .description = "Milliseconds after the last change before a file is saved, with Auto Save set to afterDelay.", .tags = .{"files"}, .order = 2 },
+    .{ .key = "files.exclude", .type = .object, .additional_properties = .bool, .merge = .merge_object, .default = .{ .@"**/.git" = true, .@"**/.zig-cache" = true, .@"**/.DS_Store" = true, .@"**/Thumbs.db" = true }, .title = "Exclude", .description = "Glob patterns of files and folders the Explorer hides. Set a pattern to false to show it again.", .tags = .{"files"}, .order = 3 },
+
+    .{ .key = "explorer.confirmDelete", .type = .bool, .default = true, .title = "Confirm Delete", .description = "Ask before deleting a file or folder in the Explorer.", .tags = .{"explorer"}, .order = 1 },
+    .{ .key = "explorer.sortOrder", .type = .enum_, .enum_values = .{ "foldersFirst", "mixed", "filesFirst" }, .default = "foldersFirst", .title = "Sort Order", .description = "How the Explorer orders files and folders (names sort naturally: file2 before file10).", .tags = .{"explorer"}, .order = 2 },
+    .{ .key = "explorer.respectGitIgnore", .type = .bool, .default = false, .title = "Hide Git-Ignored Files", .description = "Hide files and folders that .gitignore ignores.", .tags = .{"explorer"}, .order = 3 },
+    .{ .key = "explorer.autoReveal", .type = .bool, .default = true, .title = "Auto Reveal", .description = "Select the active editor's file in the Explorer.", .tags = .{"explorer"}, .order = 4 },
+
+    .{ .key = "terminal.integrated.shell", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Shell", .description = "The terminal's shell program. Empty: $SHELL on Linux and macOS, %COMSPEC% on Windows.", .tags = .{"terminal"}, .order = 1 },
+    .{ .key = "terminal.integrated.shellArgs", .type = .array, .items = .string, .default = .{}, .scope = .machine_overridable, .restricted = true, .title = "Shell Arguments", .description = "Arguments passed to the shell.", .tags = .{"terminal"}, .order = 2 },
+
+    .{ .key = "git.path", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Git Path", .description = "The git executable the Source Control tab runs. Empty: git from PATH.", .tags = .{"git"}, .order = 1 },
+    .{ .key = "git.autoRefresh", .type = .bool, .default = true, .title = "Auto Refresh", .description = "Refresh Source Control when files change or the window gains focus.", .tags = .{"git"}, .order = 2 },
+    .{ .key = "git.confirmSync", .type = .bool, .default = true, .title = "Confirm Sync", .description = "Ask before pull, push or sync with a remote.", .tags = .{"git"}, .order = 3 },
+    .{ .key = "git.autofetch", .type = .bool, .default = false, .title = "Auto Fetch", .description = "Fetch from the default remote every few minutes.", .tags = .{"git"}, .order = 4 },
+    .{ .key = "git.logLimit", .type = .int, .default = 500, .minimum = 10, .maximum = 100000, .title = "History Limit", .description = "How many commits the History view loads.", .tags = .{"git"}, .order = 5 },
+} }
