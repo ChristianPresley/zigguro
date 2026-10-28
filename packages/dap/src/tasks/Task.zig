@@ -74,3 +74,63 @@ pub fn hasTag(t: *const @This(), tag: []const u8) bool {
     for (t.tags) |x| if (std.mem.eql(u8, x, tag)) return true;
     return false;
 }
+
+/// A deep copy in `a`, so a run outlives a task list reload.
+pub fn clone(t: *const @This(), a: std.mem.Allocator) std.mem.Allocator.Error!@This() {
+    var c = t.*;
+    c.label = try a.dupe(u8, t.label);
+    c.command = try a.dupe(u8, t.command);
+    c.args = try dupeList(a, t.args);
+    if (t.cwd) |s| c.cwd = try a.dupe(u8, s);
+    const env = try a.alloc([2][]const u8, t.env.len);
+    for (t.env, env) |kv, *o| o.* = .{ try a.dupe(u8, kv[0]), try a.dupe(u8, kv[1]) };
+    c.env = env;
+    if (t.shell) |sh| c.shell = .{ .executable = try a.dupe(u8, sh.executable), .args = try dupeList(a, sh.args) };
+    c.depends_on = try dupeList(a, t.depends_on);
+    c.tags = try dupeList(a, t.tags);
+    if (t.detail) |s| c.detail = try a.dupe(u8, s);
+    if (t.disabled_reason) |s| c.disabled_reason = try a.dupe(u8, s);
+    const ms = try a.alloc(MatcherRef, t.problem_matchers.len);
+    for (t.problem_matchers, ms) |m, *o| o.* = switch (m) {
+        .named => |s| .{ .named = try a.dupe(u8, s) },
+        .inline_def => |d| .{ .inline_def = try cloneMatcher(a, d) },
+    };
+    c.problem_matchers = ms;
+    return c;
+}
+
+fn dupeList(a: std.mem.Allocator, list: []const []const u8) std.mem.Allocator.Error![]const []const u8 {
+    const out = try a.alloc([]const u8, list.len);
+    for (list, out) |s, *o| o.* = try a.dupe(u8, s);
+    return out;
+}
+
+pub fn cloneMatcher(a: std.mem.Allocator, d: pm.MatcherDef) std.mem.Allocator.Error!pm.MatcherDef {
+    var c = d;
+    c.name = try a.dupe(u8, d.name);
+    c.owner = try a.dupe(u8, d.owner);
+    if (d.source) |s| c.source = try a.dupe(u8, s);
+    c.file_location = switch (d.file_location) {
+        .absolute => .absolute,
+        .relative => |b| .{ .relative = if (b) |s| try a.dupe(u8, s) else null },
+        .auto_detect => |b| .{ .auto_detect = if (b) |s| try a.dupe(u8, s) else null },
+    };
+    const pats = try a.alloc(pm.Pattern, d.patterns.len);
+    for (d.patterns, pats) |p, *o| {
+        o.* = p;
+        o.regexp = try a.dupe(u8, p.regexp);
+        o.requires = try dupeList(a, p.requires);
+        if (p.shape) |sh| o.shape = .{ .words = try dupeList(a, sh.words) };
+    }
+    c.patterns = pats;
+    if (d.background) |bg| c.background = .{
+        .active_on_start = bg.active_on_start,
+        .begins = try a.dupe(u8, bg.begins),
+        .ends = try a.dupe(u8, bg.ends),
+        .implicit_begin_after_end = bg.implicit_begin_after_end,
+        .begin_on_clear = bg.begin_on_clear,
+    };
+    if (d.related_note) |r| c.related_note = .{ .word = try a.dupe(u8, r.word) };
+    if (d.trailer) |tr| c.trailer = .{ .regexp = try a.dupe(u8, tr.regexp), .message = tr.message };
+    return c;
+}

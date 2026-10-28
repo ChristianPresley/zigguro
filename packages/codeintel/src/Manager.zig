@@ -16,6 +16,7 @@
 
 const Manager = @This();
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const zg_core = @import("zg_core");
@@ -55,6 +56,7 @@ pub const DiagnosticsHooks = struct {
 
 const log = std.log.scoped(.codeintel);
 
+pub const ClientHost = zg_lsp.client.host.ClientHost;
 pub const ApplyEditCb = zg_lsp.client.host.ApplyEditCb;
 
 /// Handles `workspace/applyEdit` on the UI thread (the workspace edit
@@ -200,6 +202,10 @@ apply_edit_hook: ?ApplyEditHook = null,
 /// Servers' settings sections; null: servers see no settings. Set before
 /// the first `openDoc`.
 config_provider: ?ConfigProvider = null,
+/// Where servers' messages, questions and show-document requests go
+/// (`window/*`); null: none are shown, questions get no answer and
+/// documents are not shown. Set before the first `openDoc`.
+ui_host: ?ClientHost = null,
 /// Work-done progress and partial-result tokens of every server.
 progress: zg_lsp.client.progress.ProgressTracker,
 /// Routes file changes to the servers that registered watchers (null:
@@ -705,7 +711,10 @@ fn resolveTask(job: *ResolveJob) Io.Cancelable!void {
 /// Spawns the server, wires a client and waits for `initialize`.
 fn startTask(s: *Server) Io.Cancelable!void {
     const m = s.mgr;
-    while (s.reaping.load(.acquire) > 0) try m.rt.io.sleep(.fromMilliseconds(5), .awake);
+    while (s.reaping.load(.acquire) > 0) {
+        try m.rt.io.sleep(.fromMilliseconds(5), .awake);
+        zg_perf.idle.noteWake("codeintel.server.reap_wait", .timer);
+    }
     start(s) catch |e| {
         if (s.client) |c| {
             c.shutdown();
@@ -765,6 +774,12 @@ fn start(s: *Server) !void {
                 h.ctx = s;
                 h.applyEdit = onApplyEdit;
                 h.getConfiguration = onGetConfiguration;
+                if (m.ui_host != null) {
+                    h.showMessage = onShowMessage;
+                    h.showMessageRequest = onShowMessageRequest;
+                    h.showDocument = onShowDocument;
+                    h.logMessage = onLogMessage;
+                }
                 break :host h;
             },
         },
@@ -798,6 +813,31 @@ fn onApplyEdit(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, params: []
 
 /// From the endpoint (`workspace/configuration`): `section` of the
 /// server's settings, dotted paths walked into its section's value.
+// The `window/*` requests, passed to `ui_host` (workers).
+fn onShowMessage(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, kind: zg_lsp.protocol.MessageType, text: []const u8) void {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const u = s.mgr.ui_host.?;
+    u.showMessage(u.ctx, server, kind, text);
+}
+
+fn onShowMessageRequest(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, kind: zg_lsp.protocol.MessageType, text: []const u8, actions: []const []const u8, reply: zg_lsp.client.host.ReplyCb) void {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const u = s.mgr.ui_host.?;
+    u.showMessageRequest(u.ctx, server, kind, text, actions, reply);
+}
+
+fn onShowDocument(ctx: ?*anyopaque, uri: []const u8, external: bool, take_focus: bool, selection: ?zg_lsp.protocol.Range, reply: zg_lsp.client.host.BoolCb) void {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const u = s.mgr.ui_host.?;
+    u.showDocument(u.ctx, uri, external, take_focus, selection, reply);
+}
+
+fn onLogMessage(ctx: ?*anyopaque, server: zg_lsp.client.host.ServerId, kind: zg_lsp.protocol.MessageType, text: []const u8) void {
+    const s: *Server = @ptrCast(@alignCast(ctx.?));
+    const u = s.mgr.ui_host.?;
+    u.logMessage(u.ctx, server, kind, text);
+}
+
 fn onGetConfiguration(ctx: ?*anyopaque, section: ?[]const u8, _: ?[]const u8, arena: Allocator) std.json.Value {
     const s: *Server = @ptrCast(@alignCast(ctx.?));
     const p = s.mgr.config_provider orelse return .null;

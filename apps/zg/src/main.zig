@@ -7,7 +7,8 @@
 //! runs (E13.F01), `zg automation` the scheduled automations (E13.F02),
 //! `zg tasks gh` the GitHub Issues sync of the task board (E13.F03),
 //! `zg library` the prompt library (E13.F08.S02), `zg workflow` the
-//! multi-agent workflows (E13.F08.S01);
+//! multi-agent workflows (E13.F08.S01), `zg lsp` the language servers
+//! and `zg task` the workspace's tasks (E07.F05.S01.T04);
 //! `--version` is answered by
 //! zg_release before the runtime starts. Other subcommands arrive with
 //! their epics.
@@ -28,6 +29,7 @@ const cmd_workflow = @import("cmd_workflow.zig");
 const cmd_automation = @import("cmd_automation.zig");
 const cmd_library = @import("cmd_library.zig");
 const cmd_tasks = @import("cmd_tasks.zig");
+const cmd_lsp = @import("cmd_lsp.zig");
 
 pub const std_options: std.Options = .{
     .logFn = zg_core.log.logFn,
@@ -66,6 +68,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "automation")) return cmd_automation.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "tasks")) return cmd_tasks.run(&rt, min, argv[2..]);
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "library")) return cmd_library.run(&rt, min, argv[2..]);
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "lsp")) return cmd_lsp.runLsp(&rt, min, argv[2..]);
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "task")) return cmd_lsp.runTask(&rt, min, argv[2..]);
 
     var buf: [256]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), rt.io, &buf);
@@ -85,6 +89,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         \\       zg tasks gh pull|push|publish|status   sync tasks with GitHub Issues (zg tasks gh --help)
         \\       zg library list|show|render   the prompt library (zg library --help)
         \\       zg workflow list|show|run|status|resume|stop|save   multi-agent workflows (zg workflow --help)
+        \\       zg lsp diagnostics|definition|references|symbols|...   language servers (zg lsp --help)
+        \\       zg task list|run          the workspace's build and test tasks (zg task --help)
         \\
     , .{zg_release.current.version_string});
     try w.flush();

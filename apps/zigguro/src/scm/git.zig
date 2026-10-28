@@ -10,9 +10,10 @@
 //! client, keys, agent and known_hosts) or the file system. Commits are
 //! signed when `commit.gpgSign` asks for it (SSH keys). `rebase -i`
 //! writes a plan to edit instead of opening an editor, and
-//! `rebase -i --start` carries it out. Not built in yet: `bisect run`,
-//! `submodule foreach` and the plan's exec/label/merge lines; they
-//! report so.
+//! `rebase -i --start` carries it out. `bisect run` and
+//! `submodule foreach` run the user's command (through the shell when
+//! it is one word). Not built in yet: the plan's exec/label/merge lines;
+//! they report so.
 
 const std = @import("std");
 const zg_core = @import("zg_core");
@@ -1854,6 +1855,8 @@ fn cmdBisect(g: *const Git, repo: *Repository, a: Allocator, rest: []const []con
         return 0;
     } else if (std.mem.eql(u8, sub, "skip")) {
         next = try bisect.mark(repo, g.gpa, .skip, args, g.tz_offset_min, out);
+    } else if (std.mem.eql(u8, sub, "run")) {
+        return bisectRun(g, repo, a, args, out, err);
     } else {
         if (!bisect.inProgress(repo)) return error.NotBisecting;
         const t = try bisect.terms(repo, a);
@@ -1879,8 +1882,132 @@ fn cmdBisect(g: *const Git, repo: *Repository, a: Allocator, rest: []const []con
     }
 }
 
+/// `bisect run <cmd>...`: runs the command at each commit to test and
+/// marks it by the exit code, as git does: 0 good, 125 skip, 1 to 127
+/// bad, anything else stops the run.
+fn bisectRun(g: *const Git, repo: *Repository, a: Allocator, cmd: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const bisect = zg_git.bisect;
+    if (cmd.len == 0) {
+        try err.writeAll("bisect run failed: no command provided.\n");
+        return 1;
+    }
+    if (!bisect.inProgress(repo)) return error.NotBisecting;
+    var shown: Io.Writer.Allocating = .init(a);
+    for (cmd) |w| try shown.writer.print(" '{s}'", .{try std.mem.replaceOwned(u8, a, w, "'", "'\\''")});
+    var hb: [64]u8 = undefined;
+    while (true) {
+        try out.print("running{s}\n", .{shown.written()});
+        const code = try runUser(g, a, g.root, cmd, &.{}, out, err);
+        if (code == null or code.? >= 128) {
+            try err.print("bisect run failed: exit code {d} from{s} is < 0 or >= 128\n", .{ code orelse 255, shown.written() });
+            return 1;
+        }
+        const m: bisect.Mark = if (code.? == 0) .good else if (code.? == 125) .skip else .bad;
+        const head = (try repo.head()) orelse return error.UnbornHead;
+        switch (try bisect.mark(repo, g.gpa, m, &.{head.hex(&hb)}, g.tz_offset_min, out)) {
+            .testing => continue,
+            .found => |id| {
+                _ = try cmdShow(g, repo, a, &.{ "--stat", id.hex(&hb) }, out, err);
+                try out.writeAll("bisect found first bad commit\n");
+                return 0;
+            },
+            .only_skipped => {
+                try out.writeAll("bisect run cannot continue any more\n");
+                return 2;
+            },
+            .waiting => {
+                try err.writeAll("bisect run failed: mark a good and a bad commit first\n");
+                return 1;
+            },
+        }
+    }
+}
+
+/// Runs a user's command in `cwd` with the repository's environment and
+/// `extra` added, its output going to `out` and `err`. One word runs
+/// through the shell, as git runs it; several run directly. Null when it
+/// did not exit normally.
+fn runUser(g: *const Git, a: Allocator, cwd: []const u8, cmd: []const []const u8, extra: []const [2][]const u8, out: *Io.Writer, err: *Io.Writer) !?u8 {
+    var env = try g.env.clone(a);
+    for (extra) |kv| try env.put(kv[0], kv[1]);
+    const shell: []const []const u8 = if (@import("builtin").os.tag == .windows) &.{ "cmd.exe", "/c" } else &.{ "sh", "-c" };
+    const argv = if (cmd.len == 1) try std.mem.concat(a, []const u8, &.{ shell, cmd }) else cmd;
+    const r = std.process.run(a, g.io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .environ_map = &env,
+        .stdout_limit = .limited(16 << 20),
+        .stderr_limit = .limited(16 << 20),
+    }) catch |e| {
+        try err.print("error: cannot run {s}: {s}\n", .{ argv[0], @errorName(e) });
+        return 127;
+    };
+    try out.writeAll(r.stdout);
+    try err.writeAll(r.stderr);
+    return switch (r.term) {
+        .exited => |c| c,
+        else => null,
+    };
+}
+
+/// `submodule foreach [--recursive] [--quiet] <cmd>`: runs the command in
+/// each checked-out submodule with git's variables ($name, $sm_path,
+/// $displaypath, $sha1, $toplevel); stops at the first failure.
+fn submoduleForeach(g: *const Git, repo: *Repository, a: Allocator, words: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
+    var recursive = false;
+    var quiet = false;
+    var i: usize = 0;
+    while (i < words.len and std.mem.startsWith(u8, words[i], "-")) : (i += 1) {
+        if (std.mem.eql(u8, words[i], "--recursive")) recursive = true else if (std.mem.eql(u8, words[i], "--quiet") or std.mem.eql(u8, words[i], "-q")) quiet = true else if (std.mem.eql(u8, words[i], "--")) {
+            i += 1;
+            break;
+        } else break;
+    }
+    if (i >= words.len) {
+        try err.writeAll("usage: git submodule foreach [--quiet] [--recursive] [--] <command>\n");
+        return 1;
+    }
+    return foreachIn(g, repo, a, g.root, "", words[i..], recursive, quiet, out, err);
+}
+
+fn foreachIn(g: *const Git, repo: *Repository, a: Allocator, top: []const u8, prefix: []const u8, cmd: []const []const u8, recursive: bool, quiet: bool, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const modules = try zg_git.submodule.list(repo, a);
+    var ix = try repo.readIndex();
+    defer ix.deinit();
+    for (ix.entries.items) |e| {
+        if (e.mode != zg_git.tree.mode_gitlink or e.flags.stage != 0) continue;
+        const dir = try std.fs.path.join(a, &.{ top, e.path });
+        const dotgit = try std.fs.path.join(a, &.{ dir, ".git" });
+        _ = Io.Dir.cwd().statFile(g.io, dotgit, .{}) catch continue;
+        var name: []const u8 = e.path;
+        for (modules) |m| if (std.mem.eql(u8, m.path, e.path)) {
+            name = m.name;
+        };
+        const display = try std.mem.concat(a, u8, &.{ prefix, e.path });
+        if (!quiet) try out.print("Entering '{s}'\n", .{display});
+        var hb: [64]u8 = undefined;
+        const code = try runUser(g, a, dir, cmd, &.{
+            .{ "name", name },           .{ "sm_path", e.path }, .{ "displaypath", display },
+            .{ "sha1", e.oid.hex(&hb) }, .{ "toplevel", top },
+        }, out, err);
+        if (code == null or code.? != 0) {
+            try err.print("fatal: run_command returned non-zero status for {s}\n.\n", .{display});
+            return 1;
+        }
+        if (recursive) {
+            const sub = (try Repository.discover(g.gpa, g.io, dir, .{ .env = &g.env })) orelse continue;
+            defer sub.close();
+            const rc = try foreachIn(g, sub, a, dir, try std.mem.concat(a, u8, &.{ display, "/" }), cmd, true, quiet, out, err);
+            if (rc != 0) return rc;
+        }
+    }
+    return 0;
+}
+
 fn cmdSubmodule(g: *const Git, repo: *Repository, a: Allocator, rest: []const []const u8, out: *Io.Writer, err: *Io.Writer) !u8 {
     const sm = zg_git.submodule;
+    // The command's own words must not be read as options.
+    if (rest.len > 0 and std.mem.eql(u8, rest[0], "foreach")) return submoduleForeach(g, repo, a, rest[1..], out, err);
     const sub = if (rest.len > 0 and !std.mem.startsWith(u8, rest[0], "-")) rest[0] else "status";
     const args = try Args.parse(a, if (rest.len > 0 and !std.mem.startsWith(u8, rest[0], "-")) rest[1..] else rest, &.{ "-b", "--branch", "--name" });
     const paths = try args.paths(a);
@@ -2173,6 +2300,18 @@ test "git: submodules are added, updated, synced and removed natively" {
     defer st.deinit(gpa);
     try testing.expect(std.mem.startsWith(u8, st.out, " ") and std.mem.indexOf(u8, st.out, " deps/lib (heads/") != null);
 
+    // foreach runs in each submodule with git's variables.
+    if (@import("builtin").os.tag != .windows) {
+        const fe = try p.run(gpa, &.{ "submodule", "foreach", "echo \"$name|$sm_path|$displaypath\"; ls a.txt" });
+        defer fe.deinit(gpa);
+        try testing.expect(fe.ok());
+        try testing.expectEqualStrings("Entering 'deps/lib'\ndeps/lib|deps/lib|deps/lib\na.txt\n", fe.out);
+        const bad = try p.run(gpa, &.{ "submodule", "foreach", "false" });
+        defer bad.deinit(gpa);
+        try testing.expect(!bad.ok());
+        try testing.expect(std.mem.indexOf(u8, bad.err, "non-zero status for deps/lib") != null);
+    }
+
     try expectRun(&p, &.{ "submodule", "sync" });
     try expectRun(&p, &.{ "submodule", "deinit", "deps/lib" });
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "app/deps/lib/a.txt", .{}));
@@ -2181,9 +2320,43 @@ test "git: submodules are added, updated, synced and removed natively" {
     try testing.expect(up.ok());
     try testing.expect(std.mem.indexOf(u8, up.out, "Submodule path 'deps/lib': checked out '") != null);
     _ = try tmp.dir.statFile(io, "app/deps/lib/a.txt", .{});
-    const fe = try p.run(gpa, &.{ "submodule", "foreach", "ls" });
-    defer fe.deinit(gpa);
-    try testing.expect(!fe.ok());
+}
+
+test "git: bisect run finds the first bad commit by exit code" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("PATH", "/usr/local/bin:/usr/bin:/bin");
+    var g = try testRepo(&tmp, &env);
+    defer g.deinit();
+    // c1..c8; "bad" arrives in c5, and c3 cannot be tested (exit 125).
+    for (1..9) |i| {
+        var buf: [16]u8 = undefined;
+        try tmp.dir.writeFile(io, .{ .sub_path = "f.txt", .data = if (i >= 5) "bad\n" else "good\n" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "n.txt", .data = try std.fmt.bufPrint(&buf, "{d}\n", .{i}) });
+        try expectRun(&g, &.{ "add", "-A" });
+        try expectRun(&g, &.{ "commit", "-q", "-m", try std.fmt.bufPrint(&buf, "c{d}", .{i}) });
+    }
+    try expectRun(&g, &.{ "bisect", "start", "HEAD", "HEAD~7" });
+    const r = try g.run(gpa, &.{ "bisect", "run", "[ \"$(cat n.txt)\" = 3 ] && exit 125; grep -q good f.txt" });
+    defer r.deinit(gpa);
+    try testing.expect(r.ok());
+    try testing.expect(std.mem.indexOf(u8, r.out, "running '[ ") != null);
+    try testing.expect(std.mem.indexOf(u8, r.out, "is the first bad commit") != null);
+    try testing.expect(std.mem.indexOf(u8, r.out, "    c5\n") != null);
+    try testing.expect(std.mem.endsWith(u8, r.out, "bisect found first bad commit\n"));
+    try expectRun(&g, &.{ "bisect", "reset" });
+
+    // An exit code of 128 or more stops the run.
+    try expectRun(&g, &.{ "bisect", "start", "HEAD", "HEAD~7" });
+    const stop = try g.run(gpa, &.{ "bisect", "run", "exit 200" });
+    defer stop.deinit(gpa);
+    try testing.expect(!stop.ok());
+    try testing.expect(std.mem.indexOf(u8, stop.err, "is < 0 or >= 128") != null);
 }
 
 test "git: an interactive rebase plan squashes, rewords and stops to edit" {

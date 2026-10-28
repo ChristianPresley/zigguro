@@ -83,6 +83,7 @@ const WorkspaceTools = @import("agent/workspace_tools.zig").WorkspaceTools;
 const scm_panel = @import("scm/panel.zig");
 const ScmPanel = scm_panel.ScmPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
+const Tasks = @import("tasks.zig").Tasks;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -261,6 +262,8 @@ pub const Workbench = struct {
     pending_explorer: bool = false,
     /// `pending_open` is a language server's URI for a virtual document.
     pending_virtual: bool = false,
+    /// After `pending_open`: offer the code actions at the caret.
+    pending_quick_fix: bool = false,
     /// The editor the explorer last revealed (`explorer.autoReveal`).
     revealed_panel: ?PanelRef = null,
     /// The Problems panel (created on first show) and its dock panel.
@@ -302,6 +305,8 @@ pub const Workbench = struct {
     scm_badge: [12]u8 = undefined,
     /// When `git.autofetch` last fetched.
     scm_fetch_ms: u64 = 0,
+    /// The workspace's tasks (from `attach`).
+    tasks: ?*Tasks = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -987,6 +992,9 @@ pub const Workbench = struct {
             wb.gpa.destroy(pe);
         }
         wb.pending_edits = null;
+        // After the agent (its task tools), while the task terminals are
+        // open.
+        wb.stopTasks();
         for (wb.terminals.values()) |t| t.destroy();
         wb.terminals.deinit(wb.gpa);
         wb.term_tabs.deinit();
@@ -1008,6 +1016,11 @@ pub const Workbench = struct {
         if (w.app.on_message) |h| if (h.ctx == @as(*anyopaque, wb)) {
             w.app.on_message = null;
         };
+        // The language services' timer goes with the window.
+        if (wb.codeintel) |ci| {
+            if (ci.timer != .none) w.cancelTimer(ci.timer);
+            ci.timer = .none;
+        }
         wb.win = null;
     }
 
@@ -1123,6 +1136,7 @@ pub const Workbench = struct {
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
             ci.setTrusted(wb.trust == .trusted);
         } else |e| log.err("language services: {t}", .{e});
+        wb.startTasks(win);
         if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
@@ -1230,6 +1244,12 @@ pub const Workbench = struct {
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
         .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
         .{ .id = "workbench.showProblems", .title = "Show Problems", .category = "View", .run = showProblems },
+        .{ .id = "tasks.run", .title = "Run Task", .category = "Tasks", .run = runTask },
+        .{ .id = "tasks.runBuild", .title = "Run Build Task", .category = "Tasks", .run = runBuildTask },
+        .{ .id = "tasks.runTest", .title = "Run Test Task", .category = "Tasks", .run = runTestTask },
+        .{ .id = "tasks.terminate", .title = "Terminate Task", .category = "Tasks", .run = terminateTask },
+        .{ .id = "tasks.restart", .title = "Restart Running Task", .category = "Tasks", .run = restartTask },
+        .{ .id = "tasks.configure", .title = "Configure Task", .category = "Tasks", .run = configureTask },
         .{ .id = "editor.showCallHierarchy", .title = "Show Call Hierarchy", .category = "Go", .run = showCallHierarchy },
         .{ .id = "editor.showOutgoingCalls", .title = "Show Outgoing Calls", .category = "Go", .run = showOutgoingCalls },
         .{ .id = "editor.showTypeHierarchy", .title = "Show Type Hierarchy", .category = "Go", .run = showTypeHierarchy },
@@ -1265,6 +1285,10 @@ pub const Workbench = struct {
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
         .{ .id = "problems.copyMessage", .title = "Copy Problem Message", .category = "Problems", .run = problemsCopyMessage },
+        .{ .id = "problems.quickFix", .title = "Quick Fix for Problem...", .category = "Problems", .run = problemsQuickFix },
+        .{ .id = "problems.askAgentToFix", .title = "Ask Agent to Fix Problem", .category = "Problems", .run = problemsAskAgent },
+        .{ .id = "problems.hideSource", .title = "Hide Problems from This Source", .category = "Problems", .run = problemsHideSource },
+        .{ .id = "problems.showAllSources", .title = "Show Problems from All Sources", .category = "Problems", .run = problemsShowAllSources },
         .{ .id = "notes.showSidebar", .title = "Show Notes Sidebar", .category = "Notes", .run = showNotesSidebar },
         .{ .id = "notes.search", .title = "Search Notes", .category = "Notes", .run = notesSearch },
         .{ .id = "notes.searchSelection", .title = "Search Notes for Selection", .category = "Notes", .run = notesSearchSelection },
@@ -1420,6 +1444,7 @@ pub const Workbench = struct {
         switch (o) {
             .saved => |s| {
                 if (wb.codeintel) |ci| ci.saved(fs.doc);
+                if (wb.tasks) |t| t.fileChanged(fs.path);
                 if (!quiet) wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
                 // A settings or keybindings file applies at once.
                 wb.reloadSettings();
@@ -3128,6 +3153,56 @@ pub const Workbench = struct {
         if (wb.win) |w| w.markAllDirty();
     }
 
+    /// Problems: Quick Fix...: goes to the problem, then offers the code
+    /// actions there.
+    fn problemsQuickFix(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        const l = pp.activeItem() orelse return;
+        wb.pending_quick_fix = true;
+        pp.show(l, true);
+    }
+
+    fn quickFixOpened(ctx: *anyopaque, _: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.quickFix() catch |e| log.warn("quick fix: {t}", .{e});
+    }
+
+    /// Problems: Ask Agent to Fix: sends the agent the diagnostic and the
+    /// code around it (the editor's text when the file is open there, else
+    /// the file on disk).
+    fn problemsAskAgent(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        const a = pp.active() orelse return;
+        const gpa = wb.gpa;
+        var text: ?[]u8 = null;
+        defer if (text) |t| gpa.free(t);
+        if (wb.path) |path| if (wb.codeintel) |ci| {
+            const abs = try std.fs.path.resolve(gpa, &.{ wb.cwd, path });
+            defer gpa.free(abs);
+            const key = try ci.diags.keyOfPath(gpa, abs);
+            defer gpa.free(key);
+            if (std.mem.eql(u8, key, a.key)) text = try gpa.dupe(u8, wb.view.text(.{ .start = 0, .end = wb.doc.tree.len() }));
+        };
+        if (text == null) text = std.Io.Dir.cwd().readFileAlloc(wb.io, a.key, gpa, .limited(16 << 20)) catch null;
+        const prompt = try problems_panel.fixPrompt(gpa, pp.displayPath(a.key), a.item, text);
+        defer gpa.free(prompt);
+        if (!wb.shown(wb.agent_ref) or wb.areaOf(wb.agent_ref) == .center) try wb.toggleAgent();
+        const p = wb.agent_panel orelse return wb.notify(.info, "The agent is not available", .{});
+        try p.submit(prompt);
+    }
+
+    fn problemsHideSource(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        if (!pp.hideActiveSource()) return wb.notify(.info, "This problem has no source to hide", .{});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn problemsShowAllSources(wb: *Workbench) !void {
+        const pp = wb.problems orelse return;
+        pp.showAllSources();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     // -- the git tab ---------------------------------------------------------
 
     /// How often the shown Git tab reads the repository again
@@ -3704,6 +3779,7 @@ pub const Workbench = struct {
         var recs: std.ArrayList(term_persist.TerminalRecord) = .empty;
         for (wb.term_tabs.groups.items, 0..) |g, gi| for (g.terminals.items) |id| {
             const t = wb.terminals.get(id) orelse continue;
+            if (t.transient) continue;
             var content: std.ArrayList(u8) = .empty;
             term_persist.capture(arena, &t.term, if (t.view.blocks) |b| b else null, .{}, &content) catch continue;
             recs.append(arena, .{
@@ -3777,6 +3853,135 @@ pub const Workbench = struct {
         t.term.opts.graphics.allow_file_media = st.boolean("terminal.graphics.allowFileMedia");
         t.term.opts.graphics.sixel = st.boolean("terminal.graphics.sixel");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
+    }
+
+    /// The task service: its list loads now; problems go to the language
+    /// services' store, the `check` step answers the settle detector.
+    fn startTasks(wb: *Workbench, win: *Window) void {
+        const zig_path: ?[]const u8 = if (wb.settings) |st| (if (st.string("zig.path").len > 0) st.string("zig.path") else null) else null;
+        const t = Tasks.create(wb.rt, win.app, wb.env, wb.cwd, .{
+            .ctx = wb,
+            .open_terminal = openTaskTerminal,
+            .close_terminal = closeTaskTerminal,
+            .notify = taskNotice,
+            .open_file = openTaskFile,
+            .show_problems = showTaskProblems,
+            .changed = onTasksChanged,
+        }, .{ .zig_exe = zig_path, .trusted = wb.trust == .trusted }) catch |e| return log.err("tasks: {t}", .{e});
+        t.win = win;
+        if (wb.codeintel) |ci| {
+            t.diags = &ci.diag;
+            ci.diag.settleDetector().build = t.buildCheck();
+        }
+        wb.tasks = t;
+    }
+
+    fn stopTasks(wb: *Workbench) void {
+        const t = wb.tasks orelse return;
+        if (wb.codeintel) |ci| ci.diag.settleDetector().build = null;
+        // Closing its terminals does not bring the panel back now.
+        wb.tasks = null;
+        t.destroy();
+    }
+
+    fn runTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).runTaskCmd();
+    }
+
+    fn runBuildTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).runBuildCmd();
+    }
+
+    fn runTestTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).runTestCmd();
+    }
+
+    fn terminateTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).terminateCmd();
+    }
+
+    fn restartTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).restartCmd();
+    }
+
+    fn configureTask(wb: *Workbench) !void {
+        (wb.tasks orelse return).configureCmd();
+    }
+
+    /// A task's terminal: a new tab in the user section named after the
+    /// task, its process started by the task service.
+    fn openTaskTerminal(ctx: *anyopaque, title: []const u8, show: bool, focus: bool) ?*TerminalPanel {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return null;
+        // The saved terminals come back first (as `startTerminal` would).
+        if (!wb.terminals_loaded) {
+            wb.terminals_loaded = true;
+            if (wb.terminals.count() == 0) wb.restoreTerminals(w);
+        }
+        const t = TerminalPanel.create(mem_tags.of(wb.gpa, .terminal), wb.io, w.app, wb.env) catch |e| {
+            log.warn("task terminal: {t}", .{e});
+            return null;
+        };
+        const id = wb.next_terminal;
+        wb.terminals.put(wb.gpa, id, t) catch {
+            t.destroy();
+            return null;
+        };
+        wb.term_tabs.add(id, .user) catch {
+            _ = wb.terminals.swapRemove(id);
+            t.destroy();
+            return null;
+        };
+        wb.next_terminal += 1;
+        var name_buf: [96]u8 = undefined;
+        wb.term_tabs.rename(id, std.fmt.bufPrint(&name_buf, "Task - {s}", .{title}) catch title) catch {};
+        t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
+        t.view.on_open_link = .{ .ctx = wb, .f = onTerminalLink };
+        if (wb.settings) |st| {
+            t.term.opts.graphics.allow_file_media = st.boolean("terminal.graphics.allowFileMedia");
+            t.term.opts.graphics.sixel = st.boolean("terminal.graphics.sixel");
+        }
+        if (show or focus) {
+            if (wb.terminal_ref == null) wb.terminal_ref = wb.dock.addPanel(kind_terminal, null) catch null;
+            if (wb.terminal_ref) |r| wb.reveal(r, .bottom) catch {};
+        }
+        if (focus) {
+            wb.focus_terminal = true;
+            w.afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
+        }
+        w.markAllDirty();
+        return t;
+    }
+
+    fn closeTaskTerminal(ctx: *anyopaque, panel: *TerminalPanel) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var it = wb.terminals.iterator();
+        const id = while (it.next()) |kv| {
+            if (kv.value_ptr.* == panel) break kv.key_ptr.*;
+        } else return;
+        wb.closeTerminal(id);
+        if (wb.tasks != null) if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn taskNotice(ctx: *anyopaque, severity: zg_gui.w.notification_center.Severity, text: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return;
+        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = text, .source = "Tasks" });
+    }
+
+    fn openTaskFile(ctx: *anyopaque, path: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.openAt(path, .{ .offset = 0 });
+    }
+
+    fn showTaskProblems(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showProblems() catch |e| log.warn("problems: {t}", .{e});
+    }
+
+    fn onTasksChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win) |w| w.markAllDirty();
     }
 
     /// Agent thread: runs `f(arg)` on the UI thread and waits for it.
@@ -4041,6 +4246,8 @@ pub const Workbench = struct {
             host.file_tools.diagnostics = ci.agentDiagnostics();
             host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
         }
+        // task_run and task_list.
+        if (wb.tasks) |t| host.addTaskTools(t.exporter()) catch |e| log.warn("task tools: {t}", .{e});
         // list_dir, glob, find_files and grep over the folder.
         if (wb.ws_tools == null) wb.ws_tools = WorkspaceTools.create(mem_tags.of(wb.gpa, .workspace), wb.io, wb.cwd) catch |e| blk: {
             log.warn("workspace tools: {t}", .{e});
@@ -4255,6 +4462,8 @@ pub const Workbench = struct {
         if (wb.trust == .trusted) if (wb.agent) |a| a.connectMcp(wb.rt, wb.env);
         // So may its language servers.
         if (wb.codeintel) |ci| ci.setTrusted(wb.trust == .trusted);
+        // And its tasks run.
+        if (wb.tasks) |t| t.setTrusted(wb.trust == .trusted);
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -4293,6 +4502,7 @@ pub const Workbench = struct {
             wb.checkFiles();
             wb.reloadSettings();
             wb.scmAutoRefresh();
+            if (wb.tasks) |t| t.recheck();
         }
         if (!focused and wb.was_focused) wb.autosaveOnBlur();
         wb.was_focused = focused;
@@ -4323,7 +4533,9 @@ pub const Workbench = struct {
                 };
                 if (range) |r| wb.selectBytes(r);
                 if (focus) ui.win.afterNextFrame(.{ .ctx = wb, .f = focusOpened });
+                if (wb.pending_quick_fix) ui.win.afterNextFrame(.{ .ctx = wb, .f = quickFixOpened });
             } else |e| wb.notify(.error_, "Could not open {s}: {t}", .{ std.fs.path.basename(p), e });
+            wb.pending_quick_fix = false;
         }
         wb.virtualGoto();
         wb.followFocus();
@@ -5699,4 +5911,105 @@ test "workbench: an agent's commands run in a visible bash terminal" {
     h.interrupt(io, j5);
     try std.testing.expectEqual(Host.Status.killed, try Done.wait(h, &wb, j5));
     try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+}
+
+test "workbench: Ctrl+Shift+B runs the build task in a terminal; its problems show in the editor and are replaced by the next run" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const zg_dap = @import("zg_dap");
+    const Store = zg_codeintel.diagnostics.Store;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\nconst b = x;\n" });
+    try tmp.dir.createDirPath(io, ".zigguro");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/tasks.zon", .data =
+        \\.{ .tasks = .{
+        \\    .{ .label = "build", .type = .shell, .command = "echo ${workspaceFolder}/a.zig:2:11: error: use of undeclared identifier; exit 1", .group = .{ .kind = .build, .is_default = true }, .problem_matcher = "$zig" },
+        \\    .{ .label = "lint", .command = "true" },
+        \\} }
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("SHELL", "/bin/sh");
+    try env.put("HOME", root);
+    try env.put("PATH", "/usr/bin:/bin");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    // The task terminals read their output on workers.
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    const tasks = wb.tasks.?;
+    tasks.waitLoaded();
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), tasks.current().all().len);
+
+    // The task list for agents.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var out: std.Io.Writer.Allocating = .init(arena.allocator());
+    _ = try zg_dap.tasks.agent_tool.runTool(&tasks.runner, arena.allocator(), "task_list", "{}", &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "build [build, default]") != null);
+
+    const Pump = struct {
+        fn untilDone(tt: *zg_gui.testing.TestApp, ts: *Tasks) !void {
+            var tries: u32 = 0;
+            while (tries < 500) : (tries += 1) {
+                _ = tt.settle();
+                const r = ts.started.items[ts.started.items.len - 1];
+                const s = ts.runner.status(r);
+                if (s.state != .running and s.state != .pending) {
+                    _ = tt.settle();
+                    return;
+                }
+                std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+            }
+            return error.Timeout;
+        }
+    };
+    for (0..2) |round| {
+        try Workbench.runBuildTask(&wb);
+        try Pump.untilDone(t, tasks);
+        const r = tasks.started.items[round];
+        try std.testing.expectEqual(@as(?u8, 1), tasks.runner.status(r).exit_code);
+        // The problem is under the open editor's text: line 2, column 11.
+        const st = &wb.codeintel.?.diags;
+        const key = try st.keyOfPath(gpa, a);
+        defer gpa.free(key);
+        const b = st.current.bucket(key).?;
+        try std.testing.expectEqual(@as(usize, 1), b.sets.len);
+        try std.testing.expectEqual(Store.Owner{ .task = r.id }, b.sets[0].owner);
+        try std.testing.expectEqual(Store.ByteRange{ .start = 23, .end = 24 }, b.sets[0].diags[0].bytes.?);
+        try std.testing.expect(t.find(.{ .name = "\u{2297} 1  \u{26a0} 0" }) != null);
+    }
+    // A finished task's tab was reused (the default panel is shared).
+    try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+    try std.testing.expectEqualStrings("Task - build", wb.term_tabs.nameOf(wb.term_tabs.groups.items[0].terminals.items[0]).?);
+    try std.testing.expect(wb.terminals.values()[0].transient);
+
+    // Run Task lists both; Configure opens the existing file.
+    try Workbench.runTask(&wb);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), tasks.pick_items.len);
+    try std.testing.expectEqualStrings("build", tasks.pick_items[0].label);
+    tasks.pick.close(t.win);
+    try Workbench.configureTask(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("tasks.zon", std.fs.path.basename(wb.path.?));
 }

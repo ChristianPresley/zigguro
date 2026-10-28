@@ -1,0 +1,10 @@
+# `zg lsp` against one server: a file opened in the background, its
+# diagnostics (an error and an information), then a definition. The
+# shutdown at the end is served after the script.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "definitionProvider": true}}}
+> initialized
+> textDocument/didOpen {"textDocument": {"uri": "file://${workspace}/lib.zig", "languageId": "zig", "version": 1}}
+< {"method": "textDocument/publishDiagnostics", "params": {"uri": "file://${workspace}/lib.zig", "version": 1, "diagnostics": [{"range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 7}}, "severity": 1, "message": "expected ';'", "source": "fake"}, {"range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 4}}, "severity": 3, "message": "a test", "source": "fake"}]}}
+> textDocument/definition {"position": {"line": 5, "character": 16}}
+< {"id": $1, "result": {"uri": "file://${workspace}/lib.zig", "range": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}}}

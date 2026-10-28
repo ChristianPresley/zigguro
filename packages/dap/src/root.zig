@@ -20,10 +20,23 @@ pub const conn = struct {
 pub const tasks = struct {
     pub const Task = @import("tasks/Task.zig");
     pub const TaskList = @import("tasks/TaskList.zig");
+    pub const TaskRunner = @import("tasks/TaskRunner.zig");
+    pub const graph = @import("tasks/graph.zig");
+    pub const shell_quote = @import("tasks/shell_quote.zig");
+    pub const headless_exec = @import("tasks/headless_exec.zig");
+    pub const agent_tool = @import("tasks/agent_tool.zig");
+    pub const commands = @import("tasks/commands.zig");
     pub const zig_build = @import("tasks/sources/zig_build.zig");
     pub const jsonc = @import("tasks/sources/jsonc.zig");
     pub const matcher = @import("tasks/matcher/ProblemMatcher.zig");
     pub const ansi = @import("tasks/matcher/ansi_strip.zig");
+};
+
+/// The tasks without a GUI (E07.F05.S01.T04): `zg task` and the check
+/// task of `zg lsp diagnostics`.
+pub const headless = struct {
+    pub const HeadlessTasks = @import("headless/HeadlessTasks.zig");
+    pub const cli = @import("headless/cli.zig");
 };
 
 test {
@@ -34,4 +47,7 @@ test {
     _ = @import("conn/conn_test.zig");
     _ = @import("tasks/matcher/matcher_test.zig");
     _ = @import("tasks/task_sources_test.zig");
+    _ = @import("tasks/shell_quote_test.zig");
+    _ = @import("tasks/task_runner_test.zig");
+    _ = @import("headless/headless_test.zig");
 }

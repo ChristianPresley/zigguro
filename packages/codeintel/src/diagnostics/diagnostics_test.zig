@@ -352,6 +352,23 @@ test "diag: push with stale version maps ranges / drops edited; settle detector"
         , try d.settle.renderResult(arena.allocator(), r, &.{path}, h.ws));
     }
 
+    // A task's problems for the open document get byte ranges at its
+    // text (characters counted as bytes), beside the server's set.
+    {
+        const key = d.keyOfDoc(doc).?;
+        const t = try Store.Set.create(testing.allocator, .{ .task = 7 });
+        t.diags = try t.allocator().dupe(Store.Diagnostic, &.{.{ .start = .{ .line = 1, .character = 6 }, .end = .{ .line = 1, .character = 7 }, .message = "from the build" }});
+        t.finish();
+        try d.replaceExternal(key, .{ .task = 7 }, t, .utf8);
+        _ = d.tick();
+        const got = st.current.bucket(key).?.setOf(.{ .task = 7 }).?;
+        try testing.expectEqual(Store.ByteRange{ .start = 19, .end = 20 }, got.diags[0].bytes.?);
+        try testing.expectEqual(@as(usize, 2), st.current.bucket(key).?.sets.len);
+        try d.replaceExternal(key, .{ .task = 7 }, null, .utf8);
+        _ = d.tick();
+        try testing.expect(st.current.bucket(key).?.setOf(.{ .task = 7 }) == null);
+    }
+
     // The server answers the edit with a push about the old text: the
     // ranges stay at that version, for decorations to map forward.
     try edit(&h, doc, 0, 0, "// c\n");
@@ -495,6 +512,34 @@ test "problems: grouping and order; filter text and severity; next/prev wraps ac
     try testing.expectEqual(@as(usize, 3), p.files.items.len);
     try testing.expectEqual(Problems.Node{ .item = .{ .file = 1, .item = 2 } }, p.node(id_bad).?);
     try testing.expectEqual([4]u32{ 3, 1, 0, 1 }, Problems.totals(&st));
+}
+
+test "problems: hidden sources" {
+    var rt: @import("zg_core").Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var st = try Store.init(testing.allocator, rt.io, .posix);
+    defer st.deinit();
+    const a: Store.Owner = .{ .server = 0 };
+    var d1 = lspDiag(0, 0, 1, .Error, "from zls");
+    d1.source = "zls";
+    var d2 = lspDiag(1, 0, 1, .Error, "from the build");
+    d2.source = "zig";
+    try st.replace("/w/a.zig", a, try setOf(a, &.{ d1, d2 }));
+    st.commit();
+    var p = Problems.init(testing.allocator);
+    defer p.deinit();
+    var hidden = [_][]const u8{"zls"};
+    _ = try p.update(&st, .{ .hidden_sources = &hidden });
+    try testing.expectEqual(@as(usize, 1), p.count());
+    try testing.expectEqualStrings("from the build", p.item(.{ .file = 0, .item = 0 }).diag.message);
+    // The model keeps its own copy: a changed caller array is a new filter.
+    hidden[0] = "zig";
+    try testing.expect(try p.update(&st, .{ .hidden_sources = &hidden }));
+    try testing.expectEqualStrings("from zls", p.item(.{ .file = 0, .item = 0 }).diag.message);
+    try testing.expect(!try p.update(&st, .{ .hidden_sources = &.{"zig"} }));
+    _ = try p.update(&st, .{});
+    try testing.expectEqual(@as(usize, 2), p.count());
 }
 
 test "problems: duplicate diagnostics get distinct ids" {

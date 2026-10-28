@@ -10,6 +10,9 @@ pub fn build(b: *std.Build) void {
     const editor = b.dependency("zg_editor", f.args()).module("zg_editor");
     const syntax = b.dependency("zg_syntax", f.args()).module("zg_syntax");
     const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
+    const perf = b.dependency("zg_perf", f.args()).module("zg_perf");
+    const dap_dep = b.dependency("zg_dap", f.args());
+    const dap = dap_dep.module("zg_dap");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_codeintel",
         .imports = &.{
@@ -19,16 +22,22 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_editor", .module = editor },
             .{ .name = "zg_syntax", .module = syntax },
             .{ .name = "zg_regex", .module = regex },
+            .{ .name = "zg_perf", .module = perf },
+            .{ .name = "zg_dap", .module = dap },
         },
         .bench = "bench/main.zig",
-        // zg_lsp's scripted server plays the language servers in tests.
-        .test_exes = &.{.{
-            .name = "fake_lsp_server",
-            .root_file = lsp_dep.path("testdata/fake_server.zig"),
-            .imports = &.{
-                .{ .name = "zg_lsp", .module = lsp },
-                .{ .name = "zg_jsonrpc", .module = jsonrpc },
+        // zg_lsp's scripted server plays the language servers in tests,
+        // zg_dap's scripted process the check task.
+        .test_exes = &.{
+            .{
+                .name = "fake_lsp_server",
+                .root_file = lsp_dep.path("testdata/fake_server.zig"),
+                .imports = &.{
+                    .{ .name = "zg_lsp", .module = lsp },
+                    .{ .name = "zg_jsonrpc", .module = jsonrpc },
+                },
             },
-        }},
+            .{ .name = "fake_task", .root_file = dap_dep.path("testdata/fake_task.zig") },
+        },
     });
 }
