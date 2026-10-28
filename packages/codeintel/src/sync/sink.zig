@@ -85,7 +85,7 @@ pub const Sink = struct {
 
     fn didOpen(ctx: *anyopaque, uri: []const u8, lang: []const u8, version: i32, text: ChunkIterator) void {
         const s = fromCtx(ctx);
-        s.emit("textDocument/didOpen", struct {
+        s.emit("textDocument/didOpen", textHint(text), struct {
             fn write(w: *Writer, a: anytype) Writer.Error!void {
                 try w.writeAll("{\"textDocument\":{\"uri\":");
                 try std.json.Stringify.encodeJsonString(a.uri, escape, w);
@@ -101,7 +101,7 @@ pub const Sink = struct {
 
     fn didChange(ctx: *anyopaque, uri: []const u8, version: i32, changes: []const LspChange, full: ?ChunkIterator) void {
         const s = fromCtx(ctx);
-        s.emit("textDocument/didChange", struct {
+        s.emit("textDocument/didChange", if (full) |it| textHint(it) else 0, struct {
             fn write(w: *Writer, a: anytype) Writer.Error!void {
                 try w.writeAll("{\"textDocument\":{\"uri\":");
                 try std.json.Stringify.encodeJsonString(a.uri, escape, w);
@@ -124,7 +124,7 @@ pub const Sink = struct {
 
     fn didSave(ctx: *anyopaque, uri: []const u8, text: ?ChunkIterator) void {
         const s = fromCtx(ctx);
-        s.emit("textDocument/didSave", struct {
+        s.emit("textDocument/didSave", if (text) |it| textHint(it) else 0, struct {
             fn write(w: *Writer, a: anytype) Writer.Error!void {
                 try w.writeAll("{\"textDocument\":{\"uri\":");
                 try std.json.Stringify.encodeJsonString(a.uri, escape, w);
@@ -140,7 +140,7 @@ pub const Sink = struct {
 
     fn didClose(ctx: *anyopaque, uri: []const u8) void {
         const s = fromCtx(ctx);
-        s.emit("textDocument/didClose", struct {
+        s.emit("textDocument/didClose", 0, struct {
             fn write(w: *Writer, a: anytype) Writer.Error!void {
                 try w.writeAll("{\"textDocument\":{\"uri\":");
                 try std.json.Stringify.encodeJsonString(a.uri, escape, w);
@@ -153,8 +153,11 @@ pub const Sink = struct {
     /// Builds the params with `write` and sends them. A failure is logged
     /// and counted: `LspSink` has no error channel, and a server that is
     /// not running is re-synced when it restarts.
-    fn emit(s: *Sink, method: []const u8, comptime write: anytype, args: anytype) void {
+    /// `hint`: the bytes of text the body carries, so a large document's
+    /// body is sized once rather than grown by doubling.
+    fn emit(s: *Sink, method: []const u8, hint: u64, comptime write: anytype, args: anytype) void {
         s.body.clearRetainingCapacity();
+        if (hint > 0) s.body.ensureTotalCapacityPrecise(@intCast(hint + hint / 32 + 512)) catch {};
         write(&s.body.writer, args) catch {
             s.dropped += 1;
             log.warn("{s}: out of memory building the message", .{method});
@@ -183,6 +186,10 @@ pub const Sink = struct {
         if (s.observer) |o| o.sent(o.ctx, uri, version);
     }
 };
+
+fn textHint(it: ChunkIterator) u64 {
+    return it.end - it.pos;
+}
 
 /// The text as one JSON string, escaped chunk by chunk.
 fn writeText(w: *Writer, it_in: ChunkIterator) Writer.Error!void {
