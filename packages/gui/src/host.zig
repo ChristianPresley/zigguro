@@ -431,6 +431,8 @@ pub const Host = struct {
     /// platform asked to draw and requests frames for dirty windows.
     /// Returns the number of events handled.
     pub fn pump(h: *Host) !usize {
+        const zone = zg_core.trace.zone(@src(), "gui.pump");
+        defer zone.end();
         h.app.now_ms = @intCast(@max(0, @divFloor(std.Io.Clock.awake.now(h.io).nanoseconds, std.time.ns_per_ms)));
         if (h.app.rt) |rt| if (!h.rt_bound) {
             // The Host must not move after its first pump.
@@ -589,6 +591,8 @@ pub const Host = struct {
                     }
                 }
                 if (st.presented) {
+                    const submit_zone = zg_core.trace.zone(@src(), "render.submit");
+                    defer submit_zone.end();
                     try hw.submit();
                     hw.frames += 1;
                 }
@@ -626,6 +630,7 @@ pub const Host = struct {
     /// Runs until every window is closed, sleeping between events.
     pub fn run(h: *Host) !void {
         const signal = &zg_perf.runtime.activity.global;
+        zg_core.trace.setThreadName("ui");
         while (h.windows.items.len > 0) {
             if (h.watchdog) |w| w.heartbeat();
             // Background schedulers yield while the frame is built
@@ -633,7 +638,11 @@ pub const Host = struct {
             const start = zg_core.time.nowNs(h.io);
             signal.publish(.frame_busy, start);
             const handled = try h.pump();
-            if (handled > 0) h.last_input_ns = start;
+            if (handled > 0) {
+                h.last_input_ns = start;
+                // Keeps the trace drain running while frames are made.
+                zg_perf.trace.drain.noteActivity(start);
+            }
             signal.publish(.interactive, h.last_input_ns);
             if (h.windows.items.len == 0) break;
             // Sleep until the next event or the earliest window timer.
