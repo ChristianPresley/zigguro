@@ -748,6 +748,10 @@ pub const Host = struct {
             if (h.watchdog) |w| w.enterWait();
             h.markInteractive();
             h.platform.waitEvents(if (deadline) |d| d *| std.time.ns_per_ms else null);
+            // Wakes past the earliest timer are timer wakes (E14.F05.S02.T01).
+            const woke_ms: u64 = @intCast(@max(0, @divFloor(std.Io.Clock.awake.now(h.io).nanoseconds, std.time.ns_per_ms)));
+            const timer = if (deadline) |d| woke_ms >= d else false;
+            zg_perf.idle.noteWake("gui.host.wait", if (timer) .timer else .input);
         }
     }
 };
