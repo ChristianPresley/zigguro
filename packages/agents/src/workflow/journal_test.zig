@@ -20,14 +20,14 @@ test "journal_roundtrip_and_tail_repair" {
     {
         const j = try JournalStore.create(gpa, io, tmp.dir);
         defer j.deinit();
-        try j.recordStart(0, k1, child(1));
+        try j.recordStart(0, "plan", k1, child(1));
         var obj: std.json.ObjectMap = .empty;
         defer obj.deinit(gpa);
         try obj.put(gpa, "subquestions", .{ .integer = 3 });
         try j.recordResult(0, .{ .ok = .{ .object = obj } });
-        try j.recordStart(1, k2, child(2));
+        try j.recordStart(1, "research#0", k2, child(2));
         try j.recordResult(1, .{ .failed = "boom" });
-        try j.recordStart(2, k1, child(3));
+        try j.recordStart(2, "plan@1", k1, child(3));
     }
     // A writer died mid-line.
     {
@@ -46,6 +46,8 @@ test "journal_roundtrip_and_tail_repair" {
     try testing.expectEqual(@as(i64, 3), e0.outcome.?.ok.object.get("subquestions").?.integer);
     try testing.expectEqualStrings("boom", j.get(1).?.outcome.?.failed);
     try testing.expect(j.get(2).?.outcome == null);
+    try testing.expectEqualStrings("research#0", j.get(1).?.pos);
+    try testing.expectEqual(@as(u32, 1), j.atPos("research#0").?.seq);
     // The file was cut back to whole lines and appends continue cleanly.
     try j.recordResult(2, .stopped);
     const again = try JournalStore.load(gpa, io, tmp.dir);
@@ -78,7 +80,7 @@ test "journal_append_fast" {
     defer j.deinit();
     const k = JournalStore.replayKey("s", 0, "p", &.{}, null, null, null);
     const t0 = std.Io.Clock.awake.now(io);
-    for (0..1000) |i| try j.recordStart(@intCast(i), k, child(1));
+    for (0..1000) |i| try j.recordStart(@intCast(i), "map#1", k, child(1));
     const ns = t0.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
     // Budget 20 us per append; Debug gets slack.
     try testing.expect(@divTrunc(ns, 1000) < 200 * std.time.ns_per_us);
