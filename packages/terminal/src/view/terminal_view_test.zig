@@ -323,3 +323,57 @@ test "terminal: drag, double and triple click select; copy keys copy" {
     try testing.expect(f.view.selection == null);
     try f.expectOut("");
 }
+
+test "terminal: hovering a link underlines it, Ctrl+click opens it" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    const Opened = struct {
+        var buf: [128]u8 = undefined;
+        var len: usize = 0;
+        var line: ?u32 = null;
+        fn open(_: *anyopaque, _: *TerminalView, t: @import("links.zig").Target) void {
+            const s = switch (t) {
+                .uri => |u| u,
+                .file => |x| blk: {
+                    line = x.line;
+                    break :blk x.path;
+                },
+            };
+            @memcpy(buf[0..s.len], s);
+            len = s.len;
+        }
+    };
+    f.view.on_open_link = .{ .ctx = &f, .f = Opened.open };
+    f.feed("\x1b]7;file://localhost/home/me/proj\x07see https://x.io/q and src/a.zig:7");
+    try testing.expectEqualStrings("/home/me/proj", f.view.cwd.items);
+
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.cellPoint(8, 0) } });
+    _ = f.t.settle();
+    try testing.expect(f.view.hover_link != null);
+    var buf: [16]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, f.t.paintSnapshot(), try hexOf(f.t.app.theme.color(.fg_link), &buf)) != null);
+
+    // A plain click does not open.
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(8, 0) } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(8, 0) } });
+    _ = f.t.settle();
+    try testing.expectEqual(@as(usize, 0), Opened.len);
+
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(8, 0), .mods = .{ .ctrl = true } } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(8, 0), .mods = .{ .ctrl = true } } });
+    _ = f.t.settle();
+    try testing.expectEqualStrings("https://x.io/q", Opened.buf[0..Opened.len]);
+    try testing.expect(f.view.selection == null);
+
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(25, 0), .mods = .{ .ctrl = true } } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(25, 0), .mods = .{ .ctrl = true } } });
+    _ = f.t.settle();
+    try testing.expectEqualStrings("src/a.zig", Opened.buf[0..Opened.len]);
+    try testing.expectEqual(@as(?u32, 7), Opened.line);
+
+    // Leaving the terminal drops the hover.
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.cellPoint(1, 1) } });
+    _ = f.t.settle();
+    try testing.expect(f.view.hover_link == null);
+}

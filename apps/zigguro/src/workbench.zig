@@ -2979,6 +2979,7 @@ pub const Workbench = struct {
             try wb.term_tabs.add(id, .user);
         wb.next_terminal += 1;
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
+        t.view.on_open_link = .{ .ctx = wb, .f = onTerminalLink };
         const st = wb.settings orelse return t.start();
         var args: [32][]const u8 = undefined;
         var n: usize = 0;
@@ -3039,6 +3040,52 @@ pub const Workbench = struct {
         if (wb.terminal_ref) |r| if (wb.areaOf(r) != .center) wb.conceal(r);
         if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
         w.markAllDirty();
+    }
+
+    /// A Ctrl+clicked terminal link. Web links open in the browser; a
+    /// local `file:` URI or a file reference that exists opens in the
+    /// editor at its line and column (relative paths against the shell's
+    /// folder, then the workspace); other links are copied.
+    fn onTerminalLink(ctx: *anyopaque, v: *zg_terminal_view.TerminalView, target: zg_terminal_view.links.Target) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        switch (target) {
+            .uri => |u| {
+                if (std.ascii.startsWithIgnoreCase(u, "http://") or std.ascii.startsWithIgnoreCase(u, "https://")) {
+                    if (wb.win) |w| w.openUri(u);
+                    return;
+                }
+                if (std.ascii.startsWithIgnoreCase(u, "file://")) {
+                    const rest = u["file://".len..];
+                    const local = std.mem.startsWith(u8, rest, "/") or std.ascii.startsWithIgnoreCase(rest, "localhost/");
+                    if (!local) return wb.notify(.warning, "Not opening {s}: it is on another machine", .{u});
+                    const path = if (rest[0] == '/') rest else rest["localhost".len..];
+                    return wb.openTerminalFile(v, .{ .path = path });
+                }
+                if (wb.win) |w| w.app.clipboard.set(wb.gpa, u);
+                wb.notify(.info, "Copied {s} (only web and file links open)", .{u});
+            },
+            .file => |f| wb.openTerminalFile(v, f),
+        }
+    }
+
+    fn openTerminalFile(wb: *Workbench, v: *zg_terminal_view.TerminalView, f: zg_terminal_view.links.Target.File) void {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bases = [_][]const u8{ v.cwd.items, wb.cwd };
+        const path: ?[]const u8 = if (std.fs.path.isAbsolute(f.path))
+            (if (exists(wb.io, f.path)) f.path else null)
+        else for (bases) |b| {
+            if (b.len == 0) continue;
+            const p = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ b, std.fs.path.sep, f.path }) catch continue;
+            if (exists(wb.io, p)) break p;
+        } else null;
+        const abs = path orelse return wb.notify(.warning, "{s} was not found", .{f.path});
+        wb.rememberHere();
+        wb.openAt(abs, .{ .pos = .{ .line = (f.line orelse 1) -| 1, .character = (f.col orelse 1) -| 1, .enc = .utf8 } });
+    }
+
+    fn exists(io: std.Io, path: []const u8) bool {
+        std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+        return true;
     }
 
     /// Opens the active terminal's find bar (seeded with the selected
@@ -4348,6 +4395,47 @@ test "workbench: Find in Terminal opens the bar on the selection and Escape retu
     _ = t.settle();
     try std.testing.expect(!term.find.open);
     try std.testing.expect(t.win.focus.eql(wb.terminal_node));
+}
+
+test "workbench: Ctrl+click on a file reference in the terminal opens it at the line" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.zig", .data = "const a = 1;\nconst b = 2;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    try wb.toggleTerminal();
+    _ = t.settle();
+    const term = wb.activeTerminal().?;
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(gpa);
+    try line.print(gpa, "\x1b]7;file://localhost{s}\x07b.zig:2:7: error: x\r\nmissing.zig:1\r\n", .{root});
+    term.view.feed(line.items);
+    try std.testing.expect(term.view.openLinkAt(term.view.pointAt(.{ 1, 0 })));
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expect(std.mem.endsWith(u8, wb.path.?, "b.zig"));
+    try std.testing.expectEqual(@as(u32, 1), wb.view.lineOf(wb.view.primarySel().head));
+    // A file that does not exist only warns.
+    try std.testing.expect(term.view.openLinkAt(term.view.pointAt(.{ 1, 1 })));
+    _ = t.settle();
+    try std.testing.expect(std.mem.endsWith(u8, wb.path.?, "b.zig"));
 }
 
 test "workbench: the notes sidebar follows the editor; note search opens a hit" {
