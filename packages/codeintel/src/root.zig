@@ -92,6 +92,7 @@ pub const agent = struct {
     pub const locate = @import("agent/locate.zig");
     pub const BackgroundDocs = @import("agent/background_docs.zig");
     pub const tools = @import("agent/tools.zig");
+    pub const render = @import("agent/render.zig");
 };
 
 /// LSP language ids for zg_syntax languages.
@@ -120,6 +121,7 @@ test {
     _ = @import("agent/tools_test.zig");
     _ = @import("agent/locate_test.zig");
     _ = @import("agent/codeintel_test.zig");
+    _ = @import("agent/agent_tools_test.zig");
     _ = @import("edits/wsedit_test.zig");
     _ = @import("features/refactor_test.zig");
     _ = @import("features/format_test.zig");
