@@ -177,11 +177,11 @@ test "jpeg: truncated, unsupported and oversized files" {
 }
 
 test "jpeg: output is deterministic" {
-    // Golden hashes of the decodes: the IDCT runs in strict float mode,
-    // so every target must produce these exact bytes.
+    // Golden hashes of the decodes: the IDCT and colour conversion are
+    // integer only, so every target must produce these exact bytes.
     const cases = [_]struct { name: []const u8, hash: u64 }{
-        .{ .name = "baseline420.jpg", .hash = 0x6983ceca340fe744 },
-        .{ .name = "progressive444.jpg", .hash = 0x9ad16eeb9f10b5da },
+        .{ .name = "baseline420.jpg", .hash = 0xd1dfde33c2372537 },
+        .{ .name = "progressive444.jpg", .hash = 0xd8f3843c7f5fb18c },
     };
     for (cases) |c| {
         const file = try load(c.name);
