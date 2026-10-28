@@ -6,6 +6,8 @@ pub const record = @import("frame/record.zig");
 pub const histogram = @import("frame/histogram.zig");
 /// `FrameTimeline`.
 pub const timeline = @import("frame/timeline.zig");
+/// The latency clock contract (E14.F03.S02.T01).
+pub const clock_contract = @import("frame/clock_contract.zig");
 /// `ai.chunk_to_photon` and `ai.tool_dispatch_overhead`.
 pub const stream_latency = @import("frame/stream_latency.zig");
 
