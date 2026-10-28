@@ -367,6 +367,7 @@ pub const CodeIntel = struct {
             .ui = .{ .ctx = ci, .run = runOnUi },
             .engine = &ci.engine,
             .bg = &ci.agent_docs,
+            .settle = ci.diag.settleDetector(),
         } };
         return ci;
     }
@@ -1593,10 +1594,10 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     defer arena.deinit();
     const ad = ci.agentDiagnostics();
     try testing.expect((try ad.after_edit(ad.ctx, rt.io, arena.allocator(), path)) == null);
-    // The language tools: three read-only tools; the store answers
+    // The language tools: fourteen tools, two routed to review; the store answers
     // diagnostics without the UI thread.
     const tools = ci.agentTools();
-    try testing.expectEqual(@as(usize, 3), (try tools.list(tools.ctx, arena.allocator())).len);
+    try testing.expectEqual(@as(usize, 14), (try tools.list(tools.ctx, arena.allocator())).len);
     const r = try tools.call(tools.ctx, rt.io, arena.allocator(), "lsp_diagnostics", "{\"path\": \"main.zig\"}");
     try testing.expect(std.mem.indexOf(u8, r.json, "No diagnostics for main.zig") != null);
     // Trusted, but no server: the pointer resting still waits for a
