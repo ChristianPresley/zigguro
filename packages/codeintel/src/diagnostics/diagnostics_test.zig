@@ -352,6 +352,23 @@ test "diag: push with stale version maps ranges / drops edited; settle detector"
         , try d.settle.renderResult(arena.allocator(), r, &.{path}, h.ws));
     }
 
+    // A task's problems for the open document get byte ranges at its
+    // text (characters counted as bytes), beside the server's set.
+    {
+        const key = d.keyOfDoc(doc).?;
+        const t = try Store.Set.create(testing.allocator, .{ .task = 7 });
+        t.diags = try t.allocator().dupe(Store.Diagnostic, &.{.{ .start = .{ .line = 1, .character = 6 }, .end = .{ .line = 1, .character = 7 }, .message = "from the build" }});
+        t.finish();
+        try d.replaceExternal(key, .{ .task = 7 }, t, .utf8);
+        _ = d.tick();
+        const got = st.current.bucket(key).?.setOf(.{ .task = 7 }).?;
+        try testing.expectEqual(Store.ByteRange{ .start = 19, .end = 20 }, got.diags[0].bytes.?);
+        try testing.expectEqual(@as(usize, 2), st.current.bucket(key).?.sets.len);
+        try d.replaceExternal(key, .{ .task = 7 }, null, .utf8);
+        _ = d.tick();
+        try testing.expect(st.current.bucket(key).?.setOf(.{ .task = 7 }) == null);
+    }
+
     // The server answers the edit with a push about the old text: the
     // ranges stay at that version, for decorations to map forward.
     try edit(&h, doc, 0, 0, "// c\n");
