@@ -528,7 +528,23 @@ pub const CodeIntel = struct {
         pub const linked: StyleRef = @enumFromInt(0x0702_000c);
         /// Document link underlines.
         pub const link: StyleRef = @enumFromInt(0x0702_000d);
+        /// Breakpoints in the gutter: enabled, disabled, not verified by
+        /// the running debugger, and with a problem.
+        pub const breakpoint: StyleRef = @enumFromInt(0x0702_000e);
+        pub const breakpoint_disabled: StyleRef = @enumFromInt(0x0702_000f);
+        pub const breakpoint_unverified: StyleRef = @enumFromInt(0x0702_0010);
+        pub const breakpoint_warning: StyleRef = @enumFromInt(0x0702_0011);
+        /// The execution pointer: the stopped line, a selected frame's
+        /// line further up the stack, and the arrow.
+        pub const exec_line: StyleRef = @enumFromInt(0x0702_0012);
+        pub const exec_frame_line: StyleRef = @enumFromInt(0x0702_0013);
+        pub const exec_arrow: StyleRef = @enumFromInt(0x0702_0014);
     };
+
+    /// `styleColor` as an `EditorView.styles`.
+    pub fn styleResolver(ci: *CodeIntel) zg_editor.view.editor_view.StyleResolver {
+        return .{ .ctx = ci, .color = styleColor };
+    }
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
     /// current theme (other owners' styles fall back to the view's
@@ -549,6 +565,12 @@ pub const CodeIntel = struct {
             style.inlay => th.color(.fg_muted),
             style.linked => th.color(.accent).fade(0.18),
             style.link => th.color(.fg_link),
+            style.breakpoint => th.color(.danger),
+            style.breakpoint_disabled, style.breakpoint_unverified => th.color(.fg_muted),
+            style.breakpoint_warning => th.color(.warning),
+            style.exec_line => th.color(.warning).fade(0.22),
+            style.exec_frame_line => th.color(.success).fade(0.18),
+            style.exec_arrow => th.color(.warning),
             else => null,
         };
     }
