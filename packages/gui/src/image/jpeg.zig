@@ -512,18 +512,29 @@ fn allocPlanes(d: *Decoder) DecodeError!void {
 
 /// True when the output is large enough to decode on several threads.
 fn threaded(d: *const Decoder) bool {
-    return !builtin.single_threaded and @as(u64, d.w) * d.h * d.n * d.n / 64 >= parallel_min_px;
+    if (builtin.single_threaded) return false;
+    if (builtin.is_test and test_knobs.threads) return true;
+    return @as(u64, d.w) * d.h * d.n * d.n / 64 >= parallel_min_px;
 }
 
 /// MCU rows per chunk of a streamed scan.
-const chunk_mcu_rows = 8;
+const default_chunk_mcu_rows = 8;
+fn chunkRows() u32 {
+    return if (builtin.is_test) test_knobs.chunk_mcu_rows else default_chunk_mcu_rows;
+}
+
+/// Lets tests run the threaded paths on small fixtures.
+pub const test_knobs = struct {
+    pub var threads = false;
+    pub var chunk_mcu_rows: u32 = default_chunk_mcu_rows;
+};
 
 /// Inverse DCT of MCU rows `my0..my1`, held in ring slot `slot`.
 fn idctChunk(d: *const Decoder, slot: usize, my0: u32, my1: u32) void {
     const n = d.n;
     for (d.comps[0..d.ncomp]) |*c| {
         const q = &d.qt[c.tq];
-        const ring = c.coefs[slot * chunk_mcu_rows * c.v * c.bw * 64 ..];
+        const ring = c.coefs[slot * chunkRows() * c.v * c.bw * 64 ..];
         const by0 = my0 * c.v;
         for (by0..my1 * c.v) |by| for (0..c.bw) |bx| {
             const coef = ring[((by - by0) * c.bw + bx) * 64 ..][0..64];
@@ -575,7 +586,7 @@ fn streamScan(d: *Decoder, b: *Bits, sc: []const *Component, sp: ScanParams) Dec
     for (d.comps[0..d.ncomp]) |*c| {
         d.gpa.free(c.coefs);
         c.coefs = &.{};
-        c.coefs = try d.gpa.alloc(i16, 2 * chunk_mcu_rows * @as(usize, c.v) * c.bw * 64);
+        c.coefs = try d.gpa.alloc(i16, 2 * @as(usize, chunkRows()) * c.v * c.bw * 64);
     }
     try allocPlanes(d);
     d.out = try d.gpa.alloc(u8, try image.pixelBytes(d.outW(), d.outH(), d.limits));
@@ -597,7 +608,7 @@ fn streamScan(d: *Decoder, b: *Bits, sc: []const *Component, sp: ScanParams) Dec
     var my0: u32 = 0;
     var k: u32 = 0;
     while (my0 < d.mcuy) : (k += 1) {
-        const my1 = @min(my0 + chunk_mcu_rows, d.mcuy);
+        const my1 = @min(my0 + chunkRows(), d.mcuy);
         const slot = k % 2;
         // The slot is free once chunk k - 2 is done.
         while (k >= 2 and d.chunks_done.load(.acquire) < k - 1) std.Thread.yield() catch {};
@@ -614,7 +625,7 @@ fn streamScan(d: *Decoder, b: *Bits, sc: []const *Component, sp: ScanParams) Dec
                     todo -= 1;
                 }
                 for (sc) |c| {
-                    const ring = c.coefs[slot * chunk_mcu_rows * c.v * c.bw * 64 ..];
+                    const ring = c.coefs[slot * chunkRows() * c.v * c.bw * 64 ..];
                     for (0..c.v) |v| for (0..c.h) |hh| {
                         const bx = mx * c.h + @as(u32, @intCast(hh));
                         const by = (my - my0) * c.v + @as(u32, @intCast(v));
@@ -1054,10 +1065,12 @@ fn finish(d: *Decoder) DecodeError!Image {
         var block_rows: usize = 0;
         for (d.comps[0..d.ncomp]) |*c| block_rows += c.bh;
         d.out = try d.gpa.alloc(u8, out_len);
+        // At least 64 rows a band (any number in tests that force threads).
+        const band_rows: u32 = if (builtin.is_test and test_knobs.threads) 1 else 64;
         const bands: usize = if (!threaded(d))
             1
         else
-            @max(1, @min(max_threads, std.Thread.getCpuCount() catch 1, oh / 64));
+            @max(1, @min(max_threads, std.Thread.getCpuCount() catch 1, oh / band_rows));
         const rows = try d.gpa.alloc(u8, bands * @as(usize, ow) * d.ncomp);
         defer d.gpa.free(rows);
         const cx: OutCtx = .{ .d = d, .rows = rows };
