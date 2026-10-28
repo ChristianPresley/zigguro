@@ -176,3 +176,42 @@ test "manager: a crash detaches the server without sending" {
     h.mgr.saved(d);
     h.mgr.closeDoc(d);
 }
+
+fn fakeDisabled(h: *Harness) bool {
+    const s = h.server("fake") orelse return false;
+    return s.status == .disabled;
+}
+
+fn fakeCrashedTwice(h: *Harness) bool {
+    const s = h.server("fake") orelse return false;
+    return s.status == .crashed and s.crashes >= 4;
+}
+
+test "manager: crashed servers restart with backoff until disabled; restart, stop and enable by hand" {
+    var h: Harness = undefined;
+    try h.init("manager_crash.script", &.{});
+    defer h.deinit();
+    h.mgr.opts.restart = .{ .max_crashes = 3, .base = .fromMilliseconds(10), .window = .fromSeconds(60) };
+    const d = try h.open("main.zig", "x");
+    defer h.docs.release(d);
+    // Every start opens the document again, and the script exits there.
+    try h.waitFor(fakeDisabled);
+    const s = h.server("fake").?;
+    try testing.expectEqual(@as(u32, 3), s.crashes);
+    try testing.expect(s.restart_due_ns == null and h.mgr.nextRestartDue() == null);
+    // Enabling forgets the crashes: it starts, crashes and waits again.
+    h.mgr.enable(s);
+    try testing.expectEqual(Manager.Status.starting, s.status);
+    try h.waitFor(fakeCrashedTwice);
+    try testing.expect(s.restart_due_ns != null);
+    // Stopped: no restart comes.
+    h.mgr.stop(s);
+    try testing.expectEqual(Manager.Status.stopped, s.status);
+    try testing.expect(h.mgr.nextRestartDue() == null);
+    for (0..10) |_| {
+        h.mgr.tick();
+        try h.rt.io.sleep(.fromMilliseconds(5), .awake);
+    }
+    try testing.expectEqual(Manager.Status.stopped, s.status);
+    h.mgr.closeDoc(d);
+}

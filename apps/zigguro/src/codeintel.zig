@@ -201,6 +201,18 @@ pub const CodeIntel = struct {
     /// Document links: underlined, Ctrl+click follows (`link_hook`).
     links: DocLinks = undefined,
     link_hook: ?LinkHook = null,
+    /// Server states and progress (the status bar, the server commands).
+    status: ServerStatus = undefined,
+    status_seen: u64 = 0,
+    /// Crash counts seen per server id, to tell the user once per crash.
+    crashes_seen: std.ArrayList(u32) = .empty,
+    /// Told when a server crashes or is disabled.
+    crash_hook: ?CrashHook = null,
+    /// The server that crashed last (the crash notice's commands).
+    last_crashed: ?u32 = null,
+
+    pub const Server = Manager.Server;
+    pub const ServerStatus = zg_codeintel.features.ServerStatus;
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -226,6 +238,11 @@ pub const CodeIntel = struct {
     pub const LinkHook = struct {
         ctx: *anyopaque,
         open: *const fn (ctx: *anyopaque, kind: LinkDriver.TargetKind, target: []const u8) void,
+    };
+
+    pub const CrashHook = struct {
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, s: *Manager.Server) void,
     };
 
     pub const PopupHook = struct {
@@ -282,6 +299,8 @@ pub const CodeIntel = struct {
             .client_version = "0.0.0",
         });
         errdefer ci.mgr.deinit();
+        try ci.status.init(&ci.mgr, ci.waker());
+        errdefer ci.status.deinit();
         try ci.diag.init(&ci.mgr, &ci.diags, .{ .pull = .{ .waker = ci.waker() } });
         errdefer ci.diag.deinit();
         try ci.decor.init(gpa, &ci.diags, .{ .severity = .{ style.err, style.warning, style.info, style.hint }, .faded = style.faded });
@@ -361,6 +380,8 @@ pub const CodeIntel = struct {
         ci.diag.deinit();
         ci.decor.deinit();
         ci.semtok.deinit();
+        ci.status.deinit();
+        ci.crashes_seen.deinit(ci.gpa);
         ci.diags.deinit();
         ci.files.deinit(ci.gpa);
         ci.names.deinit();
@@ -1277,6 +1298,11 @@ pub const CodeIntel = struct {
             changed = true;
         }
         if (ci.links.tick()) changed = true;
+        if (ci.status.gen() != ci.status_seen) {
+            ci.status_seen = ci.status.gen();
+            changed = true;
+        }
+        if (ci.noticeCrashes()) changed = true;
         ci.pickers.win = ci.win;
         ci.pickers.tick(now_ms);
         if (ci.format.tick()) {
@@ -1296,7 +1322,9 @@ pub const CodeIntel = struct {
         // The next due time, in ms from now.
         const now = std.Io.Clock.Timestamp.now(ci.semtok.io, .awake).raw.nanoseconds;
         var wait: ?u64 = null;
-        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue() }) |due| if (due) |d| {
+        // A crashed server's restart, and its countdown each second.
+        const restart_due: ?i96 = if (ci.mgr.nextRestartDue()) |d| @min(d, now + std.time.ns_per_s) else null;
+        for ([_]?i96{ ci.semtok.nextDue(), ci.diag.nextDue(), ci.highlight.nextDue(), ci.completion.nextDue(), ci.inline_info.lensDue(), ci.links.nextDue(), restart_due }) |due| if (due) |d| {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
@@ -1306,6 +1334,33 @@ pub const CodeIntel = struct {
         };
         const ms = wait orelse return;
         ci.timer = w.setTimer(w.app.now_ms + ms, .{ .ctx = ci, .f = onTimer }) catch .none;
+    }
+
+    /// Servers that crashed since the last look: the hook hears each
+    /// once; true when one did.
+    fn noticeCrashes(ci: *CodeIntel) bool {
+        var any = false;
+        for (ci.mgr.serverList()) |s| {
+            while (ci.crashes_seen.items.len <= s.id) ci.crashes_seen.append(ci.gpa, 0) catch return any;
+            if (s.crashes == ci.crashes_seen.items[s.id]) continue;
+            ci.crashes_seen.items[s.id] = s.crashes;
+            ci.last_crashed = s.id;
+            any = true;
+            if (ci.crash_hook) |hk| hk.f(hk.ctx, s);
+        }
+        return any;
+    }
+
+    /// The server the server commands act on for `h` (the first of its
+    /// servers), or the one that crashed last.
+    pub fn commandServer(ci: *CodeIntel, h: ?DocHandle) ?*Manager.Server {
+        if (h) |d| {
+            var out: [1]*Manager.Server = undefined;
+            if (ci.status.serversOf(d, &out) > 0) return out[0];
+        }
+        const id = ci.last_crashed orelse return null;
+        const list = ci.mgr.serverList();
+        return if (id < list.len) list[id] else null;
     }
 
     fn onTimer(ctx: *anyopaque, _: *Window) void {

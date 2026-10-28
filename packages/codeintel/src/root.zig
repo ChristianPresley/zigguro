@@ -64,6 +64,7 @@ pub const features = struct {
     pub const HierarchyService = @import("features/hierarchy.zig");
     pub const raw_json = @import("features/raw_json.zig");
     pub const VirtualDocs = @import("features/virtual_docs.zig");
+    pub const ServerStatus = @import("features/server_status.zig");
 };
 
 /// Diagnostics: the snapshot store, the push/pull driver, editor
@@ -100,6 +101,7 @@ test {
     _ = @import("sync/sink_test.zig");
     _ = @import("registry/registry_test.zig");
     _ = @import("Manager_test.zig");
+    _ = @import("features/server_status_test.zig");
     _ = @import("features/semtok_test.zig");
     _ = @import("features/features_test.zig");
     _ = @import("features/nav_hover_test.zig");
