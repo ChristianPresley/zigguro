@@ -4,7 +4,7 @@
 //!
 //! ```zig
 //! const X = zg_codeintel.agent.tools.ToolExporter(zg_ai.tools.adapters.foreign);
-//! var x: X = .{ .src = .{ .mgr = &mgr, .store = &store, .roots = roots, .ui = ui } };
+//! var x: X = .{ .src = .{ .mgr = &mgr, .store = &store, .roots = roots, .ui = ui, .bg = &bg } };
 //! services.lsp = x.exporter();
 //! ```
 //!
@@ -15,48 +15,25 @@
 //!   symbol;
 //! - `lsp_definition`: where a symbol is defined.
 //!
-//! Symbols are addressed by a 1-based line and either a 1-based column in
-//! characters or the symbol's name, looked up on that line and up to
-//! three lines either side (agents are often a line off). Only files open
-//! in the editor have language servers. Calls run on the agent's worker:
-//! the parts that touch documents and the manager run on the UI thread
-//! through `UiPort`, and server requests carry a deadline so their answer
-//! always comes. Results are MCP `CallToolResult` JSON with one text
-//! block; bad input comes back as `isError` so the model can correct
-//! itself.
+//! Symbols are addressed by a path and a 1-based line with either a
+//! 1-based column in characters or the symbol's name, looked up on that
+//! line and up to three lines either side (agents are often a line off),
+//! or by a qualified name (`std.mem.Allocator`) the workspace symbol
+//! search finds. The calls go through `CodeIntel` (CodeIntel.zig), which
+//! opens files the editor does not have in the background. Results are
+//! MCP `CallToolResult` JSON with one text block; bad input comes back
+//! as `isError` so the model can correct itself.
 
 const std = @import("std");
-const zg_core = @import("zg_core");
-const zg_lsp = @import("zg_lsp");
-const zg_editor = @import("zg_editor");
-const Manager = @import("../Manager.zig");
 const Store = @import("../diagnostics/Store.zig");
-const position = @import("../features/position.zig");
+const CodeIntel = @import("CodeIntel.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const Client = zg_lsp.client.Client;
-const protocol = zg_lsp.protocol;
-const registry = zg_editor.model.api.registry;
 
-/// Runs work on the UI thread.
-pub const UiPort = struct {
-    ctx: *anyopaque,
-    /// Runs `f(arg)` on the UI thread and returns once it has run; false
-    /// when it could not be queued (nothing ran).
-    run: *const fn (ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool,
-};
-
-pub const Source = struct {
-    mgr: *Manager,
-    store: *Store,
-    /// Workspace roots (absolute); relative paths resolve against the
-    /// first, and paths outside every root are refused.
-    roots: []const []const u8,
-    ui: UiPort,
-    /// Deadline of each server request.
-    timeout: Io.Duration = .fromSeconds(15),
-};
+pub const UiPort = CodeIntel.UiPort;
+/// The tools' view of the language services. Must not move once used.
+pub const Source = CodeIntel;
 
 const max_limit = 500;
 
@@ -64,7 +41,7 @@ const diagnostics_schema =
     \\{"type":"object","properties":{"path":{"type":"string","description":"File to report on, absolute or relative to the workspace root. Omit for every file with diagnostics."},"min_severity":{"type":"string","enum":["error","warning","information","hint"],"description":"Default: warning."},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Most diagnostics listed (default 50)."}},"additionalProperties":false}
 ;
 const symbol_schema =
-    \\{"type":"object","properties":{"path":{"type":"string","description":"File, absolute or relative to the workspace root; it must be open in the editor."},"line":{"type":"integer","minimum":1,"description":"1-based line."},"name":{"type":"string","description":"The symbol's name; looked up on the line and up to 3 lines either side."},"occurrence":{"type":"integer","minimum":1,"description":"Which match of name on the line (default 1)."},"column":{"type":"integer","minimum":1,"description":"1-based column in characters, when name is not given."}},"required":["path","line"],"additionalProperties":false}
+    \\{"type":"object","properties":{"path":{"type":"string","description":"File, absolute or relative to the workspace root."},"line":{"type":"integer","minimum":1,"description":"1-based line (with path)."},"name":{"type":"string","description":"The symbol's name; looked up on the line and up to 3 lines either side."},"occurrence":{"type":"integer","minimum":1,"description":"Which match of name on the line (default 1)."},"column":{"type":"integer","minimum":1,"description":"1-based column in characters, when name is not given."},"qualified":{"type":"string","description":"Instead of path and line: the symbol's qualified name, such as std.mem.Allocator, found by a workspace symbol search."}},"additionalProperties":false}
 ;
 
 /// `Foreign` is `zg_ai.tools.adapters.foreign` (or a test double with the
@@ -111,10 +88,11 @@ const Input = struct {
     name: ?[]const u8 = null,
     occurrence: ?u32 = null,
     column: ?u32 = null,
+    qualified: ?[]const u8 = null,
 };
 
 /// False when the input was bad (the text says why).
-pub fn run(src: *const Source, io: Io, arena: Allocator, tool: []const u8, input_json: []const u8, w: *Io.Writer) !bool {
+pub fn run(src: *Source, io: Io, arena: Allocator, tool: []const u8, input_json: []const u8, w: *Io.Writer) !bool {
     const in = parseInput(arena, input_json) catch {
         try w.writeAll("The arguments are not valid for this tool (check names and types against its schema).");
         return false;
@@ -133,9 +111,10 @@ fn parseInput(arena: Allocator, json: []const u8) !Input {
         name: ?[]const u8 = null,
         occurrence: ?u32 = null,
         column: ?u32 = null,
+        qualified: ?[]const u8 = null,
     };
     const r = try std.json.parseFromSliceLeaky(Raw, arena, if (json.len == 0) "{}" else json, .{});
-    var in: Input = .{ .path = r.path, .limit = r.limit, .line = r.line, .name = r.name, .occurrence = r.occurrence, .column = r.column };
+    var in: Input = .{ .path = r.path, .limit = r.limit, .line = r.line, .name = r.name, .occurrence = r.occurrence, .column = r.column, .qualified = r.qualified };
     if (r.min_severity) |s| {
         in.min_severity = for ([_]Store.Severity{ .err, .warning, .information, .hint }) |v| {
             if (std.mem.eql(u8, s, v.label()) or (v == .err and std.mem.eql(u8, s, "error")) or (v == .information and std.mem.eql(u8, s, "information"))) break v;
@@ -147,17 +126,14 @@ fn parseInput(arena: Allocator, json: []const u8) !Input {
 /// `path` made absolute and checked against the roots; null (with the
 /// reason written) when refused.
 fn resolve(src: *const Source, arena: Allocator, path: []const u8, w: *Io.Writer) !?[]const u8 {
-    const style = src.store.style;
-    const sep: []const u8 = if (style == .windows) "\\" else "/";
-    const abs = if (registry.isAbsolute(path, style) or src.roots.len == 0) path else try std.mem.concat(arena, u8, &.{ src.roots[0], sep, path });
-    const norm = try registry.normalizePath(arena, abs, style);
-    const key = try registry.pathKey(arena, norm, style);
-    for (src.roots) |root| {
-        const rk = try registry.pathKey(arena, try registry.normalizePath(arena, root, style), style);
-        if (std.mem.startsWith(u8, key, rk) and (key.len == rk.len or key[rk.len] == '/' or key[rk.len] == '\\' or rk[rk.len - 1] == '/' or rk[rk.len - 1] == '\\')) return norm;
-    }
-    try w.print("{s} is outside the workspace.", .{path});
-    return null;
+    var call: CodeIntel.Call = .init(undefined, arena);
+    return src.resolvePath(&call, path) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => {
+            try w.print("{s}.", .{call.why});
+            return null;
+        },
+    };
 }
 
 // ------------------------------------------------------------ diagnostics
@@ -232,208 +208,75 @@ fn plural(n: usize) []const u8 {
 
 const Which = enum { hover, definition };
 
-fn Pending(comptime M: protocol.Method) type {
-    return struct {
-        io: Io,
-        done: Io.Event = .unset,
-        result: Client.Result(M) = undefined,
-
-        fn onResult(ctx: ?*anyopaque, r: Client.Result(M)) void {
-            const p: *@This() = @ptrCast(@alignCast(ctx.?));
-            p.result = r;
-            p.done.set(p.io);
-        }
-    };
-}
-
-/// The UI-thread half of a symbol request: find the document, the server
-/// and the position, then send the request.
-fn Ask(comptime M: protocol.Method) type {
-    return struct {
-        src: *const Source,
-        arena: Allocator,
-        abs: []const u8,
-        in: Input,
-        feature: Manager.Feature,
-        pending: *Pending(M),
-        /// Why nothing was sent (null: sent).
-        refused: ?[]const u8 = null,
-        adjusted_line: ?u32 = null,
-
-        fn onUi(arg: *anyopaque) void {
-            const a: *@This() = @ptrCast(@alignCast(arg));
-            a.refused = a.send() catch |e| blk: {
-                const why: []const u8 = std.fmt.allocPrint(a.arena, "the request failed: {t}", .{e}) catch "out of memory";
-                break :blk why;
-            };
-        }
-
-        fn send(a: *@This()) !?[]const u8 {
-            const mgr = a.src.mgr;
-            const h = try mgr.docs.findFile(a.abs) orelse return "the file is not open in the editor, so no language server has it";
-            if (mgr.docMatch(h) == null) return "no language server handles this file (unknown language, or the folder is not trusted)";
-            var clients: [1]*Client = undefined;
-            if (mgr.clientsFor(h, a.feature, &clients) == 0) return try std.fmt.allocPrint(a.arena, "no running language server provides {t} for this file", .{a.feature});
-            const c = clients[0];
-            const doc = mgr.docs.get(h).?;
-            const line0 = a.in.line.? - 1;
-            if (line0 >= doc.tree.lineCount()) return try std.fmt.allocPrint(a.arena, "line {d} is past the end of the file ({d} lines)", .{ a.in.line.?, doc.tree.lineCount() });
-            var m: position.Mapper = .{ .gpa = mgr.gpa, .tree = &doc.tree, .enc = position.encodingOf(c.encoding()) };
-            defer m.deinit();
-            const at = (try locate(&m, line0, a.in)) orelse return try std.fmt.allocPrint(a.arena, "\"{s}\" is not on line {d} or within 3 lines of it", .{ a.in.name.?, a.in.line.? });
-            if (at.line != line0) a.adjusted_line = @intCast(at.line + 1);
-            const pos = try m.positionOf(at.offset);
-            const uri = mgr.docs.uri(h).?;
-            _ = try c.request(M, .{ .textDocument = .{ .uri = uri }, .position = pos }, .{ .doc = mgr.docMatch(h), .timeout = a.src.timeout }, .{ .ctx = a.pending, .func = Pending(M).onResult });
-            return null;
-        }
-    };
-}
-
-/// The byte offset the input points at: the named symbol on the line (or
-/// near it), or the column (default: the first non-blank character).
-fn locate(m: *position.Mapper, line0: u64, in: Input) !?struct { line: u64, offset: u64 } {
-    const lines = m.tree.lineCount();
-    if (in.name) |name| {
-        if (name.len == 0) return null;
-        // The line itself, then 1, 2 and 3 lines away (before, then after).
-        const order = [_]i64{ 0, -1, 1, -2, 2, -3, 3 };
-        for (order) |d| {
-            const l = @as(i64, @intCast(line0)) + d;
-            if (l < 0 or l >= lines) continue;
-            const start = m.cursor.seek(m.tree, @intCast(l));
-            const text = try m.cursor.text(m.tree, m.gpa, &m.scratch);
-            m.text_line = std.math.maxInt(u64);
-            if (findWord(text, name, if (d == 0) in.occurrence orelse 1 else 1)) |i| return .{ .line = @intCast(l), .offset = start + i };
-        }
-        return null;
-    }
-    const start = m.cursor.seek(m.tree, line0);
-    const text = try m.cursor.text(m.tree, m.gpa, &m.scratch);
-    m.text_line = std.math.maxInt(u64);
-    const i = if (in.column) |col|
-        zg_core.utf8.columnToByte(text, col - 1, .utf32)
-    else
-        std.mem.indexOfNone(u8, text, " \t") orelse 0;
-    return .{ .line = line0, .offset = start + i };
-}
-
-/// The byte index of the `n`-th whole-word match of `word` in `text`.
-fn findWord(text: []const u8, word: []const u8, n: u32) ?usize {
-    var seen: u32 = 0;
-    var from: usize = 0;
-    while (std.mem.indexOfPos(u8, text, from, word)) |i| {
-        from = i + 1;
-        const before_ok = i == 0 or !isWordByte(text[i - 1]);
-        const after_ok = i + word.len == text.len or !isWordByte(text[i + word.len]);
-        if (!before_ok or !after_ok) continue;
-        seen += 1;
-        if (seen == n) return i;
-    }
-    return null;
-}
-
-fn isWordByte(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
-}
-
-fn symbolTool(src: *const Source, io: Io, arena: Allocator, which: Which, in: Input, w: *Io.Writer) !bool {
+/// The symbol the input names.
+fn refOf(in: Input, w: *Io.Writer) !?CodeIntel.SymbolRef {
+    if (in.qualified) |q| return .{ .qualified = q };
     const path = in.path orelse {
-        try w.writeAll("`path` is required.");
-        return false;
+        try w.writeAll("`path` (with `line`) or `qualified` is required.");
+        return null;
     };
-    if (in.line == null) {
-        try w.writeAll("`line` is required.");
-        return false;
-    }
-    const abs = try resolve(src, arena, path, w) orelse return false;
-    return switch (which) {
-        .hover => ask(.@"textDocument/hover", .hover, src, io, arena, abs, path, in, w),
-        .definition => ask(.@"textDocument/definition", .definition, src, io, arena, abs, path, in, w),
+    const line = in.line orelse {
+        try w.writeAll("`line` is required with `path`.");
+        return null;
     };
+    if (in.name) |n| return .{ .name_on_line = .{ .path = path, .line = line, .name = n, .occurrence = in.occurrence orelse 1 } };
+    return .{ .position = .{ .path = path, .line = line, .column = in.column } };
 }
 
-fn ask(comptime M: protocol.Method, feature: Manager.Feature, src: *const Source, io: Io, arena: Allocator, abs: []const u8, path: []const u8, in: Input, w: *Io.Writer) !bool {
-    const gpa = src.mgr.gpa;
-    const p = try gpa.create(Pending(M));
-    p.* = .{ .io = io };
-    var a: Ask(M) = .{ .src = src, .arena = arena, .abs = abs, .in = in, .feature = feature, .pending = p };
-    if (!src.ui.run(src.ui.ctx, Ask(M).onUi, &a)) a.refused = "the editor is not taking requests";
-    if (a.refused) |why| {
-        gpa.destroy(p);
-        try w.print("No answer for {s}:{d}: {s}.", .{ path, in.line.?, why });
-        return true;
-    }
-    // Requests carry a deadline, so the answer always comes.
-    p.done.waitUncancelable(io);
-    defer {
-        p.result.deinit();
-        gpa.destroy(p);
-    }
-    if (a.adjusted_line) |l| try w.print("(found on line {d}, not {d})\n", .{ l, in.line.? });
-    const value = switch (p.result) {
-        .ok => |o| o.value,
-        .timeout => {
-            try w.writeAll("The language server did not answer in time.");
-            return true;
+fn symbolTool(src: *Source, io: Io, arena: Allocator, which: Which, in: Input, w: *Io.Writer) !bool {
+    const ref = try refOf(in, w) orelse return false;
+    var call: CodeIntel.Call = .init(io, arena);
+    const where = if (in.qualified) |q| q else try std.fmt.allocPrint(arena, "{s}:{d}", .{ in.path.?, in.line.? });
+    switch (which) {
+        .hover => {
+            const text = src.hover(&call, ref) catch |e| return failed(&call, e, where, w);
+            try adjusted(&call, in, w);
+            try w.writeAll(text orelse "No hover information here.");
         },
-        else => |r| {
-            try w.print("The language server gave no answer ({t}).", .{r});
-            return true;
+        .definition => {
+            const ls = src.definition(&call, ref, .definition) catch |e| return failed(&call, e, where, w);
+            try adjusted(&call, in, w);
+            if (ls.len == 0) try w.writeAll("No definition found.");
+            for (ls, 0..) |l, i| {
+                if (i > 0) try w.writeByte('\n');
+                try writeLocation(src, w, l);
+            }
         },
-    };
-    switch (M) {
-        .@"textDocument/hover" => try writeHover(w, value),
-        .@"textDocument/definition" => try writeDefinition(src, arena, w, value),
-        else => comptime unreachable,
     }
     return true;
 }
 
-fn writeHover(w: *Io.Writer, value: ?protocol.Hover) !void {
-    const h = value orelse return w.writeAll("No hover information here.");
-    switch (h.contents) {
-        .markup_content => |m| try w.writeAll(m.value),
-        .marked_string => |s| try writeMarked(w, s),
-        .marked_string_array => |arr| for (arr, 0..) |s, i| {
-            if (i > 0) try w.writeAll("\n\n");
-            try writeMarked(w, s);
+fn adjusted(call: *const CodeIntel.Call, in: Input, w: *Io.Writer) !void {
+    if (call.adjusted_line) |l| try w.print("(found on line {d}, not {d})\n", .{ l, in.line.? });
+}
+
+/// The failure as the model reads it; false when its input was wrong.
+fn failed(call: *const CodeIntel.Call, e: CodeIntel.Error, where: []const u8, w: *Io.Writer) !bool {
+    if (e == error.OutOfMemory) return e;
+    switch (e) {
+        error.OutsideWorkspace => {
+            try w.print("{s}.", .{call.why});
+            return false;
+        },
+        error.Ambiguous => {
+            try w.print("{s}:", .{call.why});
+            for (call.candidates) |c| {
+                try w.print("\n- {s}{s}{s} ({t})", .{ c.container orelse "", if (c.container != null) "." else "", c.name, c.kind });
+                if (c.location) |l| try w.print(" {s}:{d}", .{ l.path, l.range.start.line + 1 });
+            }
+            return true;
+        },
+        else => {
+            try w.print("No answer for {s}: {s}.", .{ where, call.why });
+            return true;
         },
     }
 }
 
-fn writeMarked(w: *Io.Writer, s: protocol.MarkedString) !void {
-    switch (s) {
-        .string => |t| try w.writeAll(t),
-        .marked_string_with_language => |m| try w.print("```{s}\n{s}\n```", .{ m.language, m.value }),
-    }
-}
-
-fn writeDefinition(src: *const Source, arena: Allocator, w: *Io.Writer, value: ?protocol.TextDocumentDefinitionResult) !void {
-    const r = value orelse return w.writeAll("No definition found.");
-    var n: usize = 0;
-    switch (r) {
-        .definition => |d| switch (d) {
-            .location => |l| try writeLocation(src, arena, w, l.uri, l.range, &n),
-            .location_array => |ls| for (ls) |l| try writeLocation(src, arena, w, l.uri, l.range, &n),
-        },
-        .definition_link_array => |ls| for (ls) |l| try writeLocation(src, arena, w, l.targetUri, l.targetSelectionRange, &n),
-    }
-    if (n == 0) try w.writeAll("No definition found.");
-}
-
-fn writeLocation(src: *const Source, arena: Allocator, w: *Io.Writer, uri: []const u8, range: protocol.Range, n: *usize) !void {
-    if (n.* > 0) try w.writeByte('\n');
-    n.* += 1;
-    const shown = blk: {
-        const d = zg_lsp.uri.docUriFromLsp(arena, uri) catch break :blk uri;
-        break :blk switch (d) {
-            .file => |p| relativePath(src, registry.normalizePath(arena, p, src.store.style) catch p),
-            .untitled, .virtual => |s| s,
-        };
-    };
+fn writeLocation(src: *const Source, w: *Io.Writer, l: CodeIntel.Location) !void {
+    const shown = if (l.is_file) relativePath(src, l.path) else l.path;
     // Columns are the server's units; close enough for an agent to read.
-    try w.print("{s}:{d}:{d}", .{ shown, range.start.line + 1, range.start.character + 1 });
+    try w.print("{s}:{d}:{d}", .{ shown, l.range.start.line + 1, l.range.start.character + 1 });
 }
 
 fn relativePath(src: *const Source, p: []const u8) []const u8 {

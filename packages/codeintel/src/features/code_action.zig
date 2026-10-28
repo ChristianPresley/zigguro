@@ -156,7 +156,7 @@ pub fn request(s: *CodeActionService, h: DocHandle, range: ByteRange, trigger: T
         for (ks, o) |*k, name| k.* = .fromString(name);
         break :blk ks;
     } else null;
-    const diags = try s.contextDiagnostics(a, h, range);
+    const diags = try contextDiagnostics(s.mgr, s.diags, a, h, range);
     const n = try s.req.askRange(h, range, .{ .context = protocol.CodeActionContext{
         .diagnostics = diags,
         .only = kinds,
@@ -165,11 +165,12 @@ pub fn request(s: *CodeActionService, h: DocHandle, range: ByteRange, trigger: T
     if (n > 0) s.asked = .{ .h = h, .range = range, .trigger = trigger };
 }
 
-/// The diagnostics overlapping `range`, as the servers sent them.
-fn contextDiagnostics(s: *CodeActionService, a: Allocator, h: DocHandle, range: ByteRange) ![]const protocol.Diagnostic {
-    const st = s.diags orelse return &.{};
-    const doc = s.mgr.docs.get(h) orelse return &.{};
-    const uri = s.mgr.docs.uri(h) orelse return &.{};
+/// The diagnostics of `h` overlapping `range`, as the servers sent them
+/// (for a code action request's context).
+pub fn contextDiagnostics(mgr: *Manager, diags: ?*Store, a: Allocator, h: DocHandle, range: ByteRange) ![]const protocol.Diagnostic {
+    const st = diags orelse return &.{};
+    const doc = mgr.docs.get(h) orelse return &.{};
+    const uri = mgr.docs.uri(h) orelse return &.{};
     const key = try st.keyOf(a, uri);
     const snap = st.acquire();
     defer snap.release();
@@ -300,7 +301,8 @@ fn serverOf(s: *CodeActionService, c: *Client) ?*Manager.Server {
     return null;
 }
 
-fn canResolve(c: *Client) bool {
+/// Whether `c` resolves code actions (`codeAction/resolve`).
+pub fn canResolve(c: *Client) bool {
     const caps = c.caps() orelse return false;
     const p = caps.raw.codeActionProvider orelse return false;
     return switch (p) {

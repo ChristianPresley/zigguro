@@ -160,7 +160,11 @@ pub const Server = struct {
     }
 };
 
-const OpenDoc = struct { lang: []u8 };
+const OpenDoc = struct {
+    lang: []u8,
+    /// Server definitions whose start-up worker has not reported yet.
+    pending: u32 = 0,
+};
 
 /// Worker -> UI messages.
 const Msg = union(enum) {
@@ -284,7 +288,7 @@ pub fn openDoc(m: *Manager, h: DocHandle, language_id: []const u8) !void {
 
     const lang = try m.gpa.dupe(u8, language_id);
     errdefer m.gpa.free(lang);
-    try m.open.put(m.gpa, h, .{ .lang = lang });
+    try m.open.put(m.gpa, h, .{ .lang = lang, .pending = @intCast(defs.items.len) });
     errdefer _ = m.open.remove(h);
     if (defs.items.len == 0) return;
 
@@ -385,6 +389,15 @@ pub fn serversFor(m: *Manager, h: DocHandle, f: Feature, out: []*Server) usize {
     return routing.select(*Server, f, buf[0..n], out);
 }
 
+/// Whether a server for `h` may still come up: a definition is being
+/// resolved, or a server that has `h` is starting.
+pub fn starting(m: *const Manager, h: DocHandle) bool {
+    const od = m.open.get(h) orelse return false;
+    if (od.pending > 0) return true;
+    for (m.servers.items) |s| if (s.status == .starting and s.hasDoc(h)) return true;
+    return false;
+}
+
 /// `h` as document selectors see it (null when not open here).
 pub fn docMatch(m: *const Manager, h: DocHandle) ?DocMatch {
     const od = m.open.get(h) orelse return null;
@@ -408,7 +421,8 @@ pub fn serverFor(m: *Manager, h: DocHandle, def_id: []const u8) ?*Server {
 
 fn onAttach(m: *Manager, a: @FieldType(Msg, "attach")) void {
     defer m.freeAttach(a);
-    if (!m.open.contains(a.h)) return;
+    const od = m.open.getPtr(a.h) orelse return;
+    od.pending -|= 1;
     const s = for (m.servers.items) |s| {
         if (s.def == a.def and std.mem.eql(u8, s.root, a.root)) break s;
     } else m.newServer(a) catch |err| {

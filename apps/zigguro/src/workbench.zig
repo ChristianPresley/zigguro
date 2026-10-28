@@ -1924,6 +1924,7 @@ pub const Workbench = struct {
             ci.linked.setEnabled(st.boolean("editor.linkedEditing"));
             applyZigSettings(ci, st);
             ci.mgr.opts.max_file_bytes = @intCast(@max(0, st.int("lsp.maxFileSize")));
+            ci.lsp_tools.src.timeout = .fromMilliseconds(@max(100, st.int("lsp.agent.timeoutMs")));
         }
         wb.armAutosave();
         wb.applyExplorerSettings();

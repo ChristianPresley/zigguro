@@ -88,6 +88,9 @@ pub const edits = struct {
 
 /// Language-server tools for agents (zg_ai's foreign-tool contract).
 pub const agent = struct {
+    pub const CodeIntel = @import("agent/CodeIntel.zig");
+    pub const locate = @import("agent/locate.zig");
+    pub const BackgroundDocs = @import("agent/background_docs.zig");
     pub const tools = @import("agent/tools.zig");
 };
 
@@ -115,6 +118,8 @@ test {
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
     _ = @import("agent/tools_test.zig");
+    _ = @import("agent/locate_test.zig");
+    _ = @import("agent/codeintel_test.zig");
     _ = @import("edits/wsedit_test.zig");
     _ = @import("features/refactor_test.zig");
     _ = @import("features/format_test.zig");
