@@ -54,7 +54,24 @@ pub const LoadReport = struct {
 pub const Sink = struct {
     ctx: *anyopaque,
     on: *const fn (ctx: *anyopaque, kind: journal.Kind, record: []const u8) anyerror!void,
+    /// Optional: lets a load decode records ahead, several at once.
+    decoded: ?Decoded = null,
+
+    /// A load reads a segment's frames first, calls `decode` for each
+    /// record on worker threads (concurrently), then feeds the records in
+    /// journal order: `on` with the decoded value, or the sink's `on` when
+    /// `decode` returned null. A decode error skips the record, as an
+    /// error from `on` does.
+    pub const Decoded = struct {
+        /// Thread-safe; null leaves the record to the sink's `on`.
+        decode: *const fn (ctx: *anyopaque, kind: journal.Kind, record: []const u8) anyerror!?*anyopaque,
+        /// Takes ownership of `value`, also when it fails.
+        on: *const fn (ctx: *anyopaque, kind: journal.Kind, value: *anyopaque) anyerror!void,
+    };
 };
+
+/// Records of a segment a load decodes on several threads, from this many.
+const parallel_decode_min = 64;
 
 pub const ChangesetStore = struct {
     gpa: Allocator,
@@ -388,7 +405,7 @@ pub const ChangesetStore = struct {
             const bytes = try s.dir.readFileAlloc(s.io, &name, s.gpa, .unlimited);
             defer s.gpa.free(bytes);
             var r: journal.Reader = .{ .bytes = bytes };
-            const stop = try s.replay(&r, sink, &rep.records, false);
+            const stop = if (sink.decoded) |dec| try s.replayDecoded(&r, sink, dec, &rep.records) else try s.replay(&r, sink, &rep.records, false);
             if (stop == .end) {
                 try s.read_pos.put(s.gpa, n, r.pos);
                 continue;
@@ -465,6 +482,75 @@ pub const ChangesetStore = struct {
         }
     }
 
+    const Pending = struct {
+        kind: journal.Kind,
+        record: []const u8,
+        value: ?*anyopaque = null,
+        err: ?anyerror = null,
+    };
+
+    /// `replay` for a load whose sink decodes ahead: the frames first,
+    /// then the decodes on several threads, then the records in order.
+    fn replayDecoded(s: *ChangesetStore, r: *journal.Reader, sink: Sink, dec: Sink.Decoded, count: *u32) !journal.Next {
+        var items: std.ArrayList(Pending) = .empty;
+        defer items.deinit(s.gpa);
+        const stop = while (true) {
+            const nx = r.next();
+            const fr = switch (nx) {
+                .frame => |f| f,
+                else => break nx,
+            };
+            const env = envelope(fr.payload) orelse {
+                log.warn("review store: skipping an unreadable record", .{});
+                continue;
+            };
+            const gop = try s.seen.getOrPut(s.gpa, env.p);
+            if (gop.found_existing and env.s <= gop.value_ptr.*) continue;
+            gop.value_ptr.* = env.s;
+            if (env.p == s.opts.process_tag) s.seq = @max(s.seq, env.s);
+            try items.append(s.gpa, .{ .kind = fr.kind, .record = env.r });
+        };
+        decodeAll(s.io, sink.ctx, dec, items.items);
+        for (items.items) |it| {
+            if (it.err) |e| {
+                log.warn("review store: record skipped: {t}", .{e});
+                continue;
+            }
+            const res = if (it.value) |v| dec.on(sink.ctx, it.kind, v) else sink.on(sink.ctx, it.kind, it.record);
+            res catch |e| {
+                log.warn("review store: record skipped: {t}", .{e});
+                continue;
+            };
+            count.* += 1;
+        }
+        return stop;
+    }
+
+    const max_decoders = 8;
+
+    /// Runs `dec.decode` over `items`, in contiguous slices on up to
+    /// `max_decoders` threads.
+    fn decodeAll(io: Io, ctx: *anyopaque, dec: Sink.Decoded, items: []Pending) void {
+        const Slice = struct {
+            fn run(c: *anyopaque, d: Sink.Decoded, part: []Pending) void {
+                for (part) |*it| it.value = d.decode(c, it.kind, it.record) catch |e| blk: {
+                    it.err = e;
+                    break :blk null;
+                };
+            }
+        };
+        const cpus = std.Thread.getCpuCount() catch 1;
+        const n: usize = @max(1, @min(@min(cpus, max_decoders), items.len / parallel_decode_min));
+        if (n == 1) return Slice.run(ctx, dec, items);
+        var group: Io.Group = .init;
+        for (1..n) |k| {
+            const part = items[items.len * k / n .. items.len * (k + 1) / n];
+            group.concurrent(io, Slice.run, .{ ctx, dec, part }) catch group.async(io, Slice.run, .{ ctx, dec, part });
+        }
+        Slice.run(ctx, dec, items[0 .. items.len / n]);
+        group.await(io) catch {};
+    }
+
     // ------------------------------------------------- queue binding
 
     /// A sink that restores into `q` (load and tail), apply records into
@@ -487,8 +573,27 @@ pub const QueueSink = struct {
     /// after the load: old decisions are not news).
     decided: bool = false,
 
+    /// Changeset snapshots, the bulk of a load, decode on several
+    /// threads (`Sink.Decoded`); the queue sees them in journal order.
     pub fn sink(qs: *QueueSink) Sink {
-        return .{ .ctx = qs, .on = on };
+        return .{ .ctx = qs, .on = on, .decoded = .{ .decode = decode, .on = onDecoded } };
+    }
+
+    fn decode(ctx: *anyopaque, kind: journal.Kind, json: []const u8) anyerror!?*anyopaque {
+        const qs: *QueueSink = @ptrCast(@alignCast(ctx));
+        if (kind != .changeset) return null;
+        return try records.readChangeset(qs.q.gpa, json, qs.store.blobs());
+    }
+
+    fn onDecoded(ctx: *anyopaque, kind: journal.Kind, value: *anyopaque) anyerror!void {
+        const qs: *QueueSink = @ptrCast(@alignCast(ctx));
+        std.debug.assert(kind == .changeset);
+        const cs: *model.Changeset = @ptrCast(@alignCast(value));
+        qs.q.restore(cs) catch |e| {
+            cs.deinit(qs.q.gpa);
+            qs.q.gpa.destroy(cs);
+            return e;
+        };
     }
 
     fn on(ctx: *anyopaque, kind: journal.Kind, json: []const u8) anyerror!void {
