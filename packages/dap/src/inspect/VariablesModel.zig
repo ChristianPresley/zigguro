@@ -610,6 +610,17 @@ pub const EvalRoot = struct {
 // ---------------------------------------------------------------------
 // Setting values.
 
+/// The `variablesReference` of the container holding variable `n` (its
+/// parent's), as `dataBreakpointInfo` takes it; null for a scope, an
+/// evaluation's root or a node of an earlier stop.
+pub fn containerRef(m: *VariablesModel, n: NodeId) ?i64 {
+    const nd = m.nodes.get(n) orelse return null;
+    const gen = m.inspector().liveGen() orelse return null;
+    if (nd.gen != gen or nd.v.kind != .variable) return null;
+    const parent = m.nodes.get(nd.parent orelse return null) orelse return null;
+    return if (parent.var_ref > 0) parent.var_ref else null;
+}
+
 /// Sets `n`'s value: `setExpression` with its `evaluateName` when the
 /// adapter supports it, else `setVariable` on its parent's reference.
 /// The scope is fetched again afterwards (other variables may alias).
