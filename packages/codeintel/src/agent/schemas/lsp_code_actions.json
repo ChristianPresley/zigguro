@@ -1,0 +1,1 @@
+{"type":"object","properties":{"path":{"type":"string","description":"File, absolute or relative to the workspace root."},"start_line":{"type":"integer","minimum":1,"description":"First 1-based line."},"end_line":{"type":"integer","minimum":1,"description":"Last 1-based line (default start_line)."}},"additionalProperties":false,"required":["path","start_line"]}
