@@ -31,6 +31,7 @@ const FakeHost = struct {
             .showDocument = showDocument,
             .logMessage = logMessage,
             .getConfiguration = getConfiguration,
+            .applyEdit = applyEdit,
         };
     }
 
@@ -67,6 +68,11 @@ const FakeHost = struct {
     fn showDocument(ctx: ?*anyopaque, uri: []const u8, external: bool, take_focus: bool, _: ?protocol.Range, reply: host_mod.BoolCb) void {
         of(ctx).note("open {s} {} {}", .{ uri, external, take_focus });
         reply.call(true);
+    }
+
+    fn applyEdit(ctx: ?*anyopaque, server: host_mod.ServerId, params: []const u8, reply: host_mod.ApplyEditCb) void {
+        of(ctx).note("edit {d} {}", .{ server, std.mem.indexOf(u8, params, "\"L\"") != null });
+        reply.call(.{ .applied = false, .failure_reason = "nope", .failed_change = 2 });
     }
 
     fn getConfiguration(_: ?*anyopaque, section: ?[]const u8, scope_uri: ?[]const u8, arena: Allocator) std.json.Value {
@@ -203,6 +209,7 @@ test "server_requests: window, deferred replies and timeout, refresh, unknown, t
         \\ask pick 2
         \\ask ignored 1
         \\open file:///w/a.zig false false
+        \\edit 2 true
         \\
     , fh.log.items);
     try testing.expectEqual(std.EnumSet(host_mod.RefreshFeature).initFull(), fh.refreshed);

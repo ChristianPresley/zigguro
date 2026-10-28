@@ -1,4 +1,4 @@
-# Window messages, deferred host answers, refresh requests, telemetry and
+# Window messages, deferred host answers, a workspace edit, refresh requests, telemetry and
 # an unknown request.
 > initialize
 < {"id": $1, "result": {"capabilities": {}}}
@@ -26,6 +26,8 @@
 > response {"id": 8, "result": null}
 < {"id": 9, "method": "workspace/foldingRange/refresh"}
 > response {"id": 9, "result": null}
+< {"id": 11, "method": "workspace/applyEdit", "params": {"label": "L", "edit": {"changes": {}}}}
+> response {"id": 11, "result": {"applied": false, "failureReason": "nope", "failedChange": 2}}
 < {"id": 10, "method": "bogus/request"}
 > response {"id": 10, "error": {"code": -32601}}
 < {"method": "test/ready"}

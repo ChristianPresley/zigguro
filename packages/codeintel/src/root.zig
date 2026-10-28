@@ -8,6 +8,8 @@ const std = @import("std");
 
 /// `file:` URIs and paths (zg_lsp's), for callers that open targets.
 pub const uri = @import("zg_lsp").uri;
+/// The LSP protocol types.
+pub const protocol = @import("zg_lsp").protocol;
 
 /// Snippets: the VS Code grammar, variables, transforms and expansion.
 pub const snippet = struct {
@@ -58,6 +60,12 @@ pub const diagnostics = struct {
     pub const Problems = @import("diagnostics/problems.zig");
 };
 
+/// Workspace edits: planning and the transactional applier.
+pub const edits = struct {
+    pub const plan = @import("edits/plan.zig");
+    pub const Engine = @import("edits/Engine.zig");
+};
+
 /// Language-server tools for agents (zg_ai's foreign-tool contract).
 pub const agent = struct {
     pub const tools = @import("agent/tools.zig");
@@ -84,4 +92,5 @@ test {
     _ = @import("features/position_test.zig");
     _ = @import("diagnostics/diagnostics_test.zig");
     _ = @import("agent/tools_test.zig");
+    _ = @import("edits/wsedit_test.zig");
 }
