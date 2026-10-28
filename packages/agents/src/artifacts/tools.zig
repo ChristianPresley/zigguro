@@ -57,6 +57,8 @@ pub const Source = struct {
     store: *ArtifactStore,
     run: ?runs.RunId = null,
     session: ?[]const u8 = null,
+    /// The run's project; new artifacts get it.
+    project: ?[]const u8 = null,
 };
 
 /// Must not move after `exporter`.
@@ -145,7 +147,7 @@ fn runTool(src: *Source, a: Allocator, tool: []const u8, input: []const u8, msg:
         if (std.mem.trim(u8, in.title, " \t\r\n").len == 0) return bad(msg, "`title` is empty");
         const content = try body(a, in.content, in.spec, in.source, msg);
         var why: []const u8 = "";
-        const id = src.store.createChecked(a, .{ .kind = in.kind, .title = in.title, .content = content, .run = src.run, .source_lang = in.language, .session = src.session }, &why) catch |e| switch (e) {
+        const id = src.store.createChecked(a, .{ .kind = in.kind, .title = in.title, .content = content, .run = src.run, .source_lang = in.language, .session = src.session, .project = src.project }, &why) catch |e| switch (e) {
             error.Invalid => return invalidMsg(a, why, msg),
             else => return e,
         };
