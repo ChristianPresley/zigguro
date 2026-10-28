@@ -1109,6 +1109,13 @@ pub const Workbench = struct {
         .{ .id = "terminal.focusNext", .title = "Focus Next Terminal", .category = "Terminal", .run = focusNextTerminal },
         .{ .id = "terminal.focusPrevious", .title = "Focus Previous Terminal", .category = "Terminal", .run = focusPreviousTerminal },
         .{ .id = "terminal.find", .title = "Find in Terminal", .category = "Terminal", .run = findInTerminal },
+        .{ .id = "terminal.scrollToPrevCommand", .title = "Scroll to Previous Command", .category = "Terminal", .run = scrollToPrevCommand },
+        .{ .id = "terminal.scrollToNextCommand", .title = "Scroll to Next Command", .category = "Terminal", .run = scrollToNextCommand },
+        .{ .id = "terminal.selectPrevOutput", .title = "Select Previous Command Output", .category = "Terminal", .run = selectPrevOutput },
+        .{ .id = "terminal.selectNextOutput", .title = "Select Next Command Output", .category = "Terminal", .run = selectNextOutput },
+        .{ .id = "terminal.copyLastCommand", .title = "Copy Last Command", .category = "Terminal", .run = copyLastCommand },
+        .{ .id = "terminal.copyLastOutput", .title = "Copy Last Command Output", .category = "Terminal", .run = copyLastOutput },
+        .{ .id = "terminal.rerunLastCommand", .title = "Run Last Command Again", .category = "Terminal", .run = rerunLastCommand },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
         .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
@@ -3127,6 +3134,7 @@ pub const Workbench = struct {
             args[n] = a.string;
             n += 1;
         };
+        t.shell_integration = st.boolean("terminal.integrated.shellIntegration.enabled");
         t.startShell(st.string("terminal.integrated.shell"), args[0..n]);
     }
 
@@ -3241,6 +3249,61 @@ pub const Workbench = struct {
         try wb.reveal(wb.terminal_ref.?, .bottom);
         w.markAllDirty();
         w.afterNextFrame(.{ .ctx = wb, .f = focusFindField });
+    }
+
+    // -- command blocks (shell integration) --------------------------------
+
+    fn blockNav(wb: *Workbench, comptime select: bool, dir: zg_terminal_view.TerminalView.Direction) !void {
+        const t = wb.activeTerminal() orelse return;
+        const moved = if (select) t.view.selectOutput(dir) else t.view.scrollToCommand(dir);
+        if (!moved and t.view.blocks != null and t.view.blocks.?.items().len == 0)
+            wb.notify(.info, "No commands yet: the shell does not report them (shell integration supports bash, zsh, fish and PowerShell).", .{});
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn scrollToPrevCommand(wb: *Workbench) !void {
+        try wb.blockNav(false, .previous);
+    }
+
+    fn scrollToNextCommand(wb: *Workbench) !void {
+        try wb.blockNav(false, .next);
+    }
+
+    fn selectPrevOutput(wb: *Workbench) !void {
+        try wb.blockNav(true, .previous);
+    }
+
+    fn selectNextOutput(wb: *Workbench) !void {
+        try wb.blockNav(true, .next);
+    }
+
+    fn copyToClipboard(wb: *Workbench, text: []const u8) void {
+        const w = wb.win orelse return;
+        w.app.clipboard.set(wb.gpa, text);
+    }
+
+    fn copyLastCommand(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        const last = t.view.lastCommand() orelse return wb.notify(.info, "No command to copy yet.", .{});
+        wb.copyToClipboard(t.view.blocks.?.commandText(last.id));
+    }
+
+    fn copyLastOutput(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        const last = t.view.lastCommand() orelse return wb.notify(.info, "No command output to copy yet.", .{});
+        const text = try t.view.outputText(wb.gpa, last.id) orelse return wb.notify(.info, "The last command printed nothing.", .{});
+        defer wb.gpa.free(text);
+        wb.copyToClipboard(text);
+    }
+
+    fn rerunLastCommand(wb: *Workbench) !void {
+        const t = wb.activeTerminal() orelse return;
+        switch (t.view.rerunLast()) {
+            .sent => {},
+            .no_command => wb.notify(.info, "No command to run again yet.", .{}),
+            .untrusted => wb.notify(.warning, "The last command line was not reported by the shell itself, so it is not run again automatically.", .{}),
+            .busy => wb.notify(.info, "The shell is busy or something is typed at the prompt.", .{}),
+        }
     }
 
     fn focusFindField(ctx: *anyopaque, w: *Window) void {

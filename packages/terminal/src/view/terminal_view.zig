@@ -30,6 +30,13 @@
 //! - Links (`links.zig`): hovering one underlines it; Ctrl+click hands its
 //!   target to `on_open_link` (a plain click never opens). The shell's
 //!   working folder (OSC 7) is kept for resolving relative paths.
+//! - Blocks (`zg_terminal.shell.Blocks`, after `enableBlocks`): the shell's
+//!   marks become command blocks, updated after each `feed` and put back
+//!   on their rows after a resize. A gutter left of the grid shows each
+//!   command's status; `scrollToCommand` / `selectOutput` move between
+//!   commands (Ctrl+Up/Down and Ctrl+Shift+Up/Down bubble to the IDE for
+//!   them while the shell reports commands), `outputText` copies one
+//!   command's output and `rerunLast` runs the last command again.
 //!
 //! Single-threaded for now: the owner feeds output on the UI thread. The
 //! locked session and atomically mirrored mode bits of E06.F01 replace
@@ -45,6 +52,7 @@ const links_mod = @import("links.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
+const Blocks = zg_terminal.shell.Blocks;
 const input = zg_terminal.input;
 const KeyPress = zg_gui.input.event.KeyPress;
 const TextSystem = zg_gui.paint.TextSystem;
@@ -156,6 +164,15 @@ pub const TerminalView = struct {
     /// The last query (its pattern copied), searched again after a resize.
     find_query: search_mod.Query = .{ .pattern = "" },
     find_pattern: std.ArrayList(u8) = .empty,
+    /// Command blocks from the shell's marks (`enableBlocks`).
+    blocks: ?*Blocks = null,
+    /// The command `scrollToCommand` / `selectOutput` last went to: the
+    /// next step starts there (the screen may not have scrolled). Typing
+    /// forgets it.
+    nav_block: ?zg_terminal.shell.BlockId = null,
+    /// Width of the gutter left of the grid where block marks go (set by
+    /// `enableBlocks`).
+    gutter: f32 = 0,
 
     /// Where a selection drag started.
     pub const Press = struct { at: sel_mod.Point, cell: [2]u16, rect: bool };
@@ -167,6 +184,10 @@ pub const TerminalView = struct {
 
     /// Frees the paste buffers and search results.
     pub fn deinit(v: *TerminalView) void {
+        if (v.blocks) |b| {
+            b.deinit();
+            v.gpa.destroy(b);
+        }
         v.search.deinit();
         v.find_pattern.deinit(v.gpa);
         if (v.links) |d| {
@@ -176,6 +197,22 @@ pub const TerminalView = struct {
         v.cwd.deinit(v.gpa);
         v.pending_paste.deinit(v.gpa);
         v.paste_buf.deinit(v.gpa);
+    }
+
+    /// Turns the terminal's shell-integration marks into command blocks.
+    pub fn enableBlocks(v: *TerminalView, opts: zg_terminal.shell.blocks.Options) !*Blocks {
+        if (v.blocks) |b| return b;
+        const b = try v.gpa.create(Blocks);
+        b.* = .init(v.gpa, v.term, opts);
+        b.attach();
+        v.blocks = b;
+        v.gutter = 10;
+        return b;
+    }
+
+    /// Where the grid starts: the padding plus the block gutter.
+    pub fn gridLeft(v: *const TerminalView) f32 {
+        return v.opts.padding + v.gutter;
     }
 
     fn defaultBubble(_: ?*anyopaque, kp: KeyPress) bool {
@@ -199,7 +236,7 @@ pub const TerminalView = struct {
     /// The grid that fits `w` x `h` pixels (at least 1x1).
     pub fn gridFor(v: *const TerminalView, w: f32, h: f32) [2]u16 {
         const pad = 2 * v.opts.padding;
-        const cols = @floor(@max(0, w - pad) / v.cell_w);
+        const cols = @floor(@max(0, w - pad - v.gutter) / v.cell_w);
         const rows = @floor(@max(0, h - pad) / v.cell_h);
         return .{ @intFromFloat(std.math.clamp(cols, 1, 4096)), @intFromFloat(std.math.clamp(rows, 1, 4096)) };
     }
@@ -215,6 +252,7 @@ pub const TerminalView = struct {
         v.clearSelection();
         v.search.clear();
         v.term.resize(g[0], g[1]) catch return false;
+        if (v.blocks) |b| b.resync();
         if (v.find_active) v.runFind() catch {};
         v.generation +%= 1;
         if (v.on_resize) |h_| h_.f(h_.ctx, g[0], g[1], @intFromFloat(@as(f32, @floatFromInt(g[0])) * v.cell_w), @intFromFloat(@as(f32, @floatFromInt(g[1])) * v.cell_h));
@@ -232,6 +270,10 @@ pub const TerminalView = struct {
         v.term.feed(bytes);
         v.flushReplies();
         v.takeEffects();
+        if (v.blocks) |b| {
+            b.afterFeed();
+            b.flush();
+        }
         v.checkSelection();
         // The text under the pointer may have changed.
         v.hover_link = null;
@@ -263,6 +305,7 @@ pub const TerminalView = struct {
     /// Sends typed input: the viewport returns to the bottom first.
     pub fn sendInput(v: *TerminalView, bytes: []const u8) void {
         if (bytes.len == 0) return;
+        v.nav_block = null;
         if (v.scrolledBack()) {
             v.scrollToBottom();
             v.changed();
@@ -476,6 +519,143 @@ pub const TerminalView = struct {
         v.scrollBy(@as(i64, @intCast(top)) - want);
     }
 
+    // -- command blocks ------------------------------------------------------
+
+    pub const Direction = enum { previous, next };
+
+    /// The row command navigation starts from: the row under the top
+    /// context row while scrolled back (the top row itself when a prompt
+    /// is there, which has no row above it), else the cursor's.
+    fn navRow(v: *TerminalView) u64 {
+        const pl = &v.term.primary.pages;
+        if (v.nav_block) |id| if (v.blocks.?.get(id)) |blk| return blk.prompt;
+        if (v.scrolledBack()) {
+            const top = sel_mod.absRow(pl, pl.viewportRow(0));
+            if (v.blocks) |b| if (b.indexAt(top)) |i| if (b.items()[i].prompt == top) return top;
+            return top + 1;
+        }
+        const cur = v.term.primary.cursor;
+        return sel_mod.absRow(pl, pl.activeRow(cur.y));
+    }
+
+    /// The block before or after the navigation row, if any.
+    fn neighbour(v: *TerminalView, dir: Direction, with_output: bool) ?*const zg_terminal.shell.Block {
+        const b = v.blocks orelse return null;
+        if (v.term.alt_active) return null;
+        var row = v.navRow();
+        while (true) {
+            const blk = switch (dir) {
+                .previous => b.prevBefore(row),
+                .next => b.nextAfter(row),
+            } orelse return null;
+            if (!with_output or b.outputRange(blk.id) != null) return blk;
+            row = blk.prompt;
+        }
+    }
+
+    /// Scrolls so absolute `row` is the top row (or as near as the
+    /// scrollback allows).
+    pub fn scrollRowToTop(v: *TerminalView, row: u64) void {
+        const pl = &v.term.screen().pages;
+        const top = sel_mod.absRow(pl, pl.viewportRow(0));
+        v.scrollBy(@as(i64, @intCast(top)) - @as(i64, @intCast(row)));
+    }
+
+    /// Ctrl+Up / Ctrl+Down: shows the previous or next command's prompt at
+    /// the top, with one row of context. Past the newest command it
+    /// follows output again. Returns whether there was a command to go to.
+    pub fn scrollToCommand(v: *TerminalView, dir: Direction) bool {
+        const blk = v.neighbour(dir, false) orelse {
+            if (dir == .next and (v.scrolledBack() or v.nav_block != null)) {
+                v.nav_block = null;
+                v.scrollToBottom();
+                return true;
+            }
+            return false;
+        };
+        v.nav_block = blk.id;
+        v.scrollRowToTop(blk.prompt -| 1);
+        return true;
+    }
+
+    /// Ctrl+Shift+Up / Ctrl+Shift+Down: selects the previous or next
+    /// command's output (whole lines) and scrolls to its prompt.
+    pub fn selectOutput(v: *TerminalView, dir: Direction) bool {
+        const blk = v.neighbour(dir, true) orelse return false;
+        v.nav_block = blk.id;
+        const range = v.blocks.?.outputRange(blk.id).?;
+        if (range[1] <= range[0]) {
+            v.clearSelection();
+        } else {
+            const lo: sel_mod.Point = .{ .row = range[0], .col = 0 };
+            const hi: sel_mod.Point = .{ .row = range[1] - 1, .col = v.term.cols() -| 1 };
+            v.selection = .{ .kind = .line, .anchor_lo = lo, .anchor_hi = hi, .lo = lo, .hi = hi };
+        }
+        v.scrollRowToTop(blk.prompt -| 1);
+        v.generation +%= 1;
+        return true;
+    }
+
+    /// The newest block that ran a command (finished or still running).
+    pub fn lastCommand(v: *const TerminalView) ?*const zg_terminal.shell.Block {
+        const b = v.blocks orelse return null;
+        var i = b.items().len;
+        while (i > 0) {
+            i -= 1;
+            const blk = &b.items()[i];
+            if ((blk.state == .finished or blk.state == .running) and blk.has_command) return blk;
+        }
+        return null;
+    }
+
+    /// The output text of block `id` (caller frees): lines joined as
+    /// copied, trailing blank lines dropped; null when it has none.
+    pub fn outputText(v: *TerminalView, gpa: Allocator, id: zg_terminal.shell.BlockId) !?[]u8 {
+        const b = v.blocks orelse return null;
+        const range = b.outputRange(id) orelse return null;
+        if (range[1] <= range[0]) return null;
+        const lo: sel_mod.Point = .{ .row = range[0], .col = 0 };
+        const hi: sel_mod.Point = .{ .row = range[1] - 1, .col = v.term.cols() -| 1 };
+        const s: sel_mod.Selection = .{ .kind = .line, .anchor_lo = lo, .anchor_hi = hi, .lo = lo, .hi = hi };
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try sel_mod.copyText(&v.term.primary.pages, &s, &out, gpa);
+        while (out.items.len > 0 and out.items[out.items.len - 1] == '\n') out.items.len -= 1;
+        return try out.toOwnedSlice(gpa);
+    }
+
+    pub const RerunResult = enum { sent, no_command, untrusted, busy };
+
+    /// Types the last command again and runs it: only a command line the
+    /// shell itself reported (trusted), and only while the shell waits at
+    /// an empty prompt.
+    pub fn rerunLast(v: *TerminalView) RerunResult {
+        const last = v.lastCommand() orelse return .no_command;
+        if (!last.trusted) return .untrusted;
+        const cur = v.blocks.?.current() orelse return .busy;
+        if (cur.state != .typing or v.term.alt_active) return .busy;
+        const in = cur.input orelse return .busy;
+        const pl = &v.term.primary.pages;
+        const c = v.term.primary.cursor;
+        if (sel_mod.absRow(pl, pl.activeRow(c.y)) != in.row or c.x != in.col) return .busy;
+        // Copy first: sending can feed output that moves the strings.
+        var buf: [4096]u8 = undefined;
+        const line = v.blocks.?.commandText(last.id);
+        const cmd = buf[0..@min(line.len, buf.len)];
+        @memcpy(cmd, line[0..cmd.len]);
+        if (std.mem.indexOfScalar(u8, cmd, '\n') != null) {
+            // Several lines go as one bracketed paste where the shell
+            // supports it, so none runs early.
+            if (v.term.modes.get(.bracketed_paste)) {
+                v.sendInput("\x1b[200~");
+                v.sendInput(cmd);
+                v.sendInput("\x1b[201~");
+            } else return .untrusted;
+        } else v.sendInput(cmd);
+        v.sendInput("\r");
+        return .sent;
+    }
+
     // -- keys and text -------------------------------------------------------
 
     /// Routes a key event (see the module doc). Returns false when the key
@@ -502,6 +682,11 @@ pub const TerminalView = struct {
             },
             else => {},
         };
+        // Ctrl(+Shift)+Up/Down go to the IDE's command navigation while
+        // the shell reports commands (not in full-screen programs).
+        if (m.ctrl and !m.alt and !m.super and (kp.key == .arrow_up or kp.key == .arrow_down) and !v.term.alt_active) {
+            if (v.blocks) |b| if (b.items().len > 0) return false;
+        }
         if (v.bubble.f(v.bubble.ctx, kp)) return false;
         return v.encodeAndSend(&st, kp);
     }

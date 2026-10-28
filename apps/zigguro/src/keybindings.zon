@@ -36,6 +36,12 @@
     .{ .key = "mod+shift+5", .macos = "mod+\\", .command = "terminal.split", .when = "terminalFocus" },
     .{ .key = "ctrl+pagedown", .macos = "mod+shift+]", .command = "terminal.focusNext", .when = "terminalFocus" },
     .{ .key = "ctrl+pageup", .macos = "mod+shift+[", .command = "terminal.focusPrevious", .when = "terminalFocus" },
+    // workbench.action.terminal.scrollToPreviousCommand / ...NextCommand /
+    // selectToPreviousCommand / selectToNextCommand
+    .{ .key = "mod+up", .command = "terminal.scrollToPrevCommand", .when = "terminalFocus" },
+    .{ .key = "mod+down", .command = "terminal.scrollToNextCommand", .when = "terminalFocus" },
+    .{ .key = "mod+shift+up", .command = "terminal.selectPrevOutput", .when = "terminalFocus" },
+    .{ .key = "mod+shift+down", .command = "terminal.selectNextOutput", .when = "terminalFocus" },
     // workbench.action.terminal.focusFind
     .{ .key = "mod+f", .command = "terminal.find", .when = "terminalFocus" },
     // The performance HUD (E14.F03.S01.T02 default).
