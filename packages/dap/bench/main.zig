@@ -15,6 +15,52 @@ fn register(b: *bench.Bench) !void {
     try b.run("dap.protocol: decode a 200-frame stackTrace body", {}, decodeStack);
     try b.run("dap.events_10k: decode 10k event envelopes", {}, decodeEvents);
     try b.run("tasks.matcher.200mb: $zig over build output (MB/s)", {}, matchOutput);
+    try b.run("tasks.load: 50 zig build steps, 20 tasks.zon and 20 tasks.json tasks", {}, loadTasks);
+}
+
+/// The task list from texts already read (the `zig build -l` process is
+/// not part of the budget).
+fn loadTasks(_: void, s: *State) void {
+    const gpa = s.allocator();
+    var steps: std.ArrayList(u8) = .empty;
+    defer steps.deinit(gpa);
+    var zon: std.ArrayList(u8) = .empty;
+    defer zon.deinit(gpa);
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    steps.appendSlice(gpa, "  install (default)            Copy build artifacts to prefix path\n") catch unreachable;
+    for (1..50) |i| steps.print(gpa, "  step-{d:0>2}                      Run step number {d} of the build\n", .{ i, i }) catch unreachable;
+    zon.appendSlice(gpa, ".{ .version = 1, .tasks = .{\n") catch unreachable;
+    json.appendSlice(gpa, "{ \"version\": \"2.0.0\", // tasks\n \"options\": { \"env\": { \"MODE\": \"dev\" } },\n \"tasks\": [\n") catch unreachable;
+    for (0..20) |i| {
+        zon.print(gpa,
+            \\    .{{ .label = "zon {d}", .command = "zig", .args = .{{ "build", "step-{d:0>2}", "-Doptimize=ReleaseSafe" }}, .depends_on = .{{"zon 0"}}, .problem_matcher = "$zig", .presentation = .{{ .reveal = .silent }} }},
+            \\
+        , .{ i, i }) catch unreachable;
+        json.print(gpa,
+            \\  {{ "label": "json {d}", "type": "shell", "command": "make -j8 target{d}", "args": ["--keep-going"], "group": {{ "kind": "build" }},
+            \\    "options": {{ "cwd": "${{workspaceFolder}}/build" }}, "linux": {{ "args": ["-k"] }},
+            \\    "problemMatcher": ["$gcc", {{ "owner": "x", "pattern": {{ "regexp": "^(.*):(\\d+): (.*)$", "file": 1, "line": 2, "message": 3 }} }}] }},
+            \\
+        , .{ i, i }) catch unreachable;
+    }
+    zon.appendSlice(gpa, "} }\n") catch unreachable;
+    json.appendSlice(gpa, "] }\n") catch unreachable;
+    const zon_z = gpa.dupeZ(u8, zon.items) catch unreachable;
+    defer gpa.free(zon_z);
+    s.setBytes(steps.items.len + zon.items.len + json.items.len);
+    for (0..s.iterations()) |_| {
+        var l = zg_dap.tasks.TaskList.fromSources(gpa, .{
+            .tasks_zon = zon_z,
+            .tasks_json = json.items,
+            .zig_steps = steps.items,
+            .os = .linux,
+            .trusted = true,
+        }) catch unreachable;
+        defer l.deinit();
+        std.debug.assert(l.all().len == 91 and l.warnings.len == 0);
+        bench.doNotOptimizeAway(l.all().len);
+    }
 }
 
 /// Build output: mostly lines that match nothing (progress, excerpts,
