@@ -94,8 +94,10 @@ pub const ResultSink = struct {
     /// Adds results (copied). Ignored once the query is cancelled.
     pub fn push(s: *ResultSink, items: []const QpItem) void {
         if (s.cancel.load(.acquire) or items.len == 0) return;
+        // Copy outside the lock: the UI's `take` never waits on the strings.
+        const part = Part.copy(s.gpa, items) catch return;
         s.lock();
-        s.pending.append(s.gpa, items) catch {};
+        s.pending.parts.append(s.gpa, part) catch part.deinit(s.gpa);
         s.unlock();
         s.notify.f(s.notify.ctx);
     }
@@ -123,40 +125,62 @@ pub const ResultSink = struct {
     }
 };
 
-/// Results moved from a worker to the UI thread, with their strings.
-pub const Batch = struct {
-    arena: ?*std.heap.ArenaAllocator = null,
-    items: std.ArrayList(QpItem) = .empty,
-    finished: bool = false,
+/// One push: its items and their strings, all in one arena.
+pub const Part = struct {
+    arena: *std.heap.ArenaAllocator,
+    items: []QpItem,
 
-    /// Copies `items` and their strings in.
-    pub fn append(b: *Batch, gpa: std.mem.Allocator, items: []const QpItem) !void {
-        if (b.arena == null) {
-            const a = try gpa.create(std.heap.ArenaAllocator);
-            a.* = .init(gpa);
-            b.arena = a;
+    /// Copies `items` and their strings.
+    pub fn copy(gpa: std.mem.Allocator, items: []const QpItem) !Part {
+        const arena = try gpa.create(std.heap.ArenaAllocator);
+        arena.* = .init(gpa);
+        errdefer {
+            arena.deinit();
+            gpa.destroy(arena);
         }
-        const a = b.arena.?.allocator();
-        try b.items.ensureUnusedCapacity(gpa, items.len);
-        for (items) |it| {
-            var c = it;
+        const a = arena.allocator();
+        const out = try a.alloc(QpItem, items.len);
+        for (out, items) |*c, it| {
+            c.* = it;
             c.label = try a.dupe(u8, it.label);
             c.description = try a.dupe(u8, it.description);
             c.detail = try a.dupe(u8, it.detail);
             c.keybinding = if (it.keybinding) |k| try a.dupe(u8, k) else null;
             c.group = if (it.group) |g| try a.dupe(u8, g) else null;
             c.highlights = try a.dupe([2]u32, it.highlights);
-            b.items.appendAssumeCapacity(c);
         }
+        return .{ .arena = arena, .items = out };
+    }
+
+    pub fn deinit(p: Part, gpa: std.mem.Allocator) void {
+        p.arena.deinit();
+        gpa.destroy(p.arena);
+    }
+};
+
+/// Results moved from a worker to the UI thread: the pushes since the
+/// last `take`, kept apart so joining one never copies the others.
+pub const Batch = struct {
+    parts: std.ArrayList(Part) = .empty,
+    finished: bool = false,
+
+    /// Copies `items` and their strings in.
+    pub fn append(b: *Batch, gpa: std.mem.Allocator, items: []const QpItem) !void {
+        try b.parts.ensureUnusedCapacity(gpa, 1);
+        b.parts.appendAssumeCapacity(try Part.copy(gpa, items));
+    }
+
+    /// How many items.
+    pub fn len(b: *const Batch) usize {
+        var n: usize = 0;
+        for (b.parts.items) |p| n += p.items.len;
+        return n;
     }
 
     /// Frees the items and their strings.
     pub fn deinit(b: *Batch, gpa: std.mem.Allocator) void {
-        b.items.deinit(gpa);
-        if (b.arena) |a| {
-            a.deinit();
-            gpa.destroy(a);
-        }
+        for (b.parts.items) |p| p.deinit(gpa);
+        b.parts.deinit(gpa);
         b.* = .{};
     }
 };
@@ -178,14 +202,14 @@ test "sink copies, batches and stops after cancel" {
     label[0] = 'x';
     var b = s.take();
     defer b.deinit(gpa);
-    try std.testing.expectEqualStrings("ab", b.items.items[0].label);
+    try std.testing.expectEqualStrings("ab", b.parts.items[0].items[0].label);
     try std.testing.expect(!b.finished);
     cancel.store(true, .release);
     s.push(&.{.{ .id = 2, .label = "c" }});
     s.done();
     var b2 = s.take();
     defer b2.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 0), b2.items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), b2.len());
     try std.testing.expect(b2.finished);
     try std.testing.expectEqual(@as(u32, 2), wakes);
 }
