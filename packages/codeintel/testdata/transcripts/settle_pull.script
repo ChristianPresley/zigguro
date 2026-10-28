@@ -1,0 +1,11 @@
+# Settle detection with a pull server: waiting asks for the edited text
+# at once instead of after the debounce.
+> initialize
+< {"id": $1, "result": {"capabilities": {"textDocumentSync": 2, "diagnosticProvider": {"interFileDependencies": false, "workspaceDiagnostics": false}}}}
+> initialized
+> textDocument/didOpen
+> textDocument/diagnostic
+< {"id": $1, "result": {"kind": "full", "resultId": "r1", "items": []}}
+> textDocument/didChange
+> textDocument/diagnostic {"previousResultId": "r1"}
+< {"id": $1, "result": {"kind": "full", "resultId": "r2", "items": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}, "severity": 1, "message": "after the edit", "source": "fake"}]}}
