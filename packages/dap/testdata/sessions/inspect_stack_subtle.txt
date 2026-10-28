@@ -1,0 +1,21 @@
+# Subtle, label and source-less frames are skipped when selecting after a stop.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "f1", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}, "presentationHint": "subtle"}, {"id": 2, "name": "nosrc", "line": 0, "column": 0}, {"id": 3, "name": "f3", "line": 3, "column": 1, "source": {"path": "/w/f3.zig"}, "presentationHint": "label"}, {"id": 4, "name": "user_code", "line": 4, "column": 1, "source": {"path": "/w/f4.zig"}}], "totalFrames": 4}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> scopes {"frameId": 4}
+< {"body": {"scopes": []}}
+> disconnect
+< {}

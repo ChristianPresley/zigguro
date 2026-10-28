@@ -1,0 +1,29 @@
+# setExpression with an evaluateName, setVariable without; the scope is fetched again.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsSetVariable": true, "supportsSetExpression": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "main", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}
+> variables {"variablesReference": 10}
+< {"body": {"variables": [{"name": "x", "value": "1", "variablesReference": 0, "evaluateName": "x"}, {"name": "y", "value": "2", "variablesReference": 0}]}}
+> setExpression {"expression": "x", "value": "5", "frameId": 1}
+< {"body": {"value": "5"}}
+> variables {"variablesReference": 10}
+< {"body": {"variables": [{"name": "x", "value": "5", "variablesReference": 0, "evaluateName": "x"}, {"name": "y", "value": "2", "variablesReference": 0}]}}
+> setVariable {"variablesReference": 10, "name": "y", "value": "7"}
+< {"body": {"value": "7"}}
+> variables {"variablesReference": 10}
+< {"body": {"variables": [{"name": "x", "value": "5", "variablesReference": 0, "evaluateName": "x"}, {"name": "y", "value": "7", "variablesReference": 0}]}}
+> disconnect
+< {}

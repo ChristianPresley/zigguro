@@ -1,0 +1,24 @@
+# A frame source without a path is fetched with the source request.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "asm_fn", "line": 3, "column": 1, "source": {"name": "asm_fn", "sourceReference": 77}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> source {"sourceReference": 77, "source": {"sourceReference": 77}}
+< {"body": {"content": "mov rax, 1\n", "mimeType": "text/x-asm"}}
+# Selected again: the scopes again, the source from the cache.
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> disconnect
+< {}

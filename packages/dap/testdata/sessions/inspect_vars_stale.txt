@@ -1,0 +1,23 @@
+# While running, old references are not used.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "main", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}], "totalFrames": 1}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}
+> variables {"variablesReference": 10}
+< {"body": {"variables": [{"name": "s", "value": "{...}", "variablesReference": 11, "namedVariables": 2}]}}
+> continue {"threadId": 1}
+< {}
+> disconnect
+< {}

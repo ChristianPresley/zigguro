@@ -1,0 +1,23 @@
+# Stack pages of 20 with totalFrames; the second page comes with the scopes.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> pause {"threadId": 1}
+< {}
+< event stopped {"reason": "pause", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1, "name": "f1", "line": 1, "column": 1, "source": {"path": "/w/f1.zig"}}, {"id": 2, "name": "f2", "line": 2, "column": 1, "source": {"path": "/w/f2.zig"}}, {"id": 3, "name": "f3", "line": 3, "column": 1, "source": {"path": "/w/f3.zig"}}, {"id": 4, "name": "f4", "line": 4, "column": 1, "source": {"path": "/w/f4.zig"}}, {"id": 5, "name": "f5", "line": 5, "column": 1, "source": {"path": "/w/f5.zig"}}, {"id": 6, "name": "f6", "line": 6, "column": 1, "source": {"path": "/w/f6.zig"}}, {"id": 7, "name": "f7", "line": 7, "column": 1, "source": {"path": "/w/f7.zig"}}, {"id": 8, "name": "f8", "line": 8, "column": 1, "source": {"path": "/w/f8.zig"}}, {"id": 9, "name": "f9", "line": 9, "column": 1, "source": {"path": "/w/f9.zig"}}, {"id": 10, "name": "f10", "line": 10, "column": 1, "source": {"path": "/w/f10.zig"}}, {"id": 11, "name": "f11", "line": 11, "column": 1, "source": {"path": "/w/f11.zig"}}, {"id": 12, "name": "f12", "line": 12, "column": 1, "source": {"path": "/w/f12.zig"}}, {"id": 13, "name": "f13", "line": 13, "column": 1, "source": {"path": "/w/f13.zig"}}, {"id": 14, "name": "f14", "line": 14, "column": 1, "source": {"path": "/w/f14.zig"}}, {"id": 15, "name": "f15", "line": 15, "column": 1, "source": {"path": "/w/f15.zig"}}, {"id": 16, "name": "f16", "line": 16, "column": 1, "source": {"path": "/w/f16.zig"}}, {"id": 17, "name": "f17", "line": 17, "column": 1, "source": {"path": "/w/f17.zig"}}, {"id": 18, "name": "f18", "line": 18, "column": 1, "source": {"path": "/w/f18.zig"}}, {"id": 19, "name": "f19", "line": 19, "column": 1, "source": {"path": "/w/f19.zig"}}, {"id": 20, "name": "f20", "line": 20, "column": 1, "source": {"path": "/w/f20.zig"}}], "totalFrames": 45}}
+> scopes {"frameId": 1}
+< {"body": {"scopes": []}}
+> stackTrace {"threadId": 1, "startFrame": 20, "levels": 20}
+< {"body": {"stackFrames": [{"id": 21, "name": "f21", "line": 21, "column": 1, "source": {"path": "/w/f21.zig"}}, {"id": 22, "name": "f22", "line": 22, "column": 1, "source": {"path": "/w/f22.zig"}}, {"id": 23, "name": "f23", "line": 23, "column": 1, "source": {"path": "/w/f23.zig"}}, {"id": 24, "name": "f24", "line": 24, "column": 1, "source": {"path": "/w/f24.zig"}}, {"id": 25, "name": "f25", "line": 25, "column": 1, "source": {"path": "/w/f25.zig"}}, {"id": 26, "name": "f26", "line": 26, "column": 1, "source": {"path": "/w/f26.zig"}}, {"id": 27, "name": "f27", "line": 27, "column": 1, "source": {"path": "/w/f27.zig"}}, {"id": 28, "name": "f28", "line": 28, "column": 1, "source": {"path": "/w/f28.zig"}}, {"id": 29, "name": "f29", "line": 29, "column": 1, "source": {"path": "/w/f29.zig"}}, {"id": 30, "name": "f30", "line": 30, "column": 1, "source": {"path": "/w/f30.zig"}}, {"id": 31, "name": "f31", "line": 31, "column": 1, "source": {"path": "/w/f31.zig"}}, {"id": 32, "name": "f32", "line": 32, "column": 1, "source": {"path": "/w/f32.zig"}}, {"id": 33, "name": "f33", "line": 33, "column": 1, "source": {"path": "/w/f33.zig"}}, {"id": 34, "name": "f34", "line": 34, "column": 1, "source": {"path": "/w/f34.zig"}}, {"id": 35, "name": "f35", "line": 35, "column": 1, "source": {"path": "/w/f35.zig"}}, {"id": 36, "name": "f36", "line": 36, "column": 1, "source": {"path": "/w/f36.zig"}}, {"id": 37, "name": "f37", "line": 37, "column": 1, "source": {"path": "/w/f37.zig"}}, {"id": 38, "name": "f38", "line": 38, "column": 1, "source": {"path": "/w/f38.zig"}}, {"id": 39, "name": "f39", "line": 39, "column": 1, "source": {"path": "/w/f39.zig"}}, {"id": 40, "name": "f40", "line": 40, "column": 1, "source": {"path": "/w/f40.zig"}}], "totalFrames": 45}}
+> stackTrace {"threadId": 1, "startFrame": 40, "levels": 20}
+< {"body": {"stackFrames": [{"id": 41, "name": "f41", "line": 41, "column": 1, "source": {"path": "/w/f41.zig"}}, {"id": 42, "name": "f42", "line": 42, "column": 1, "source": {"path": "/w/f42.zig"}}, {"id": 43, "name": "f43", "line": 43, "column": 1, "source": {"path": "/w/f43.zig"}}, {"id": 44, "name": "f44", "line": 44, "column": 1, "source": {"path": "/w/f44.zig"}}, {"id": 45, "name": "f45", "line": 45, "column": 1, "source": {"path": "/w/f45.zig"}}], "totalFrames": 45}}
+> disconnect
+< {}

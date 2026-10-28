@@ -23,6 +23,39 @@ fn register(b: *bench.Bench) !void {
     try b.run("dap.adapters.discover: resolve every built-in adapter on a typical PATH (warm)", &afx, discoverAdapters);
     try b.run("dap.config.load_200: 100 launch.zon and 100 launch.json configurations", {}, loadConfigs);
     try b.run("dap.breakpoints.load_10k: breakpoints.zon with 10k breakpoints", {}, loadBreakpoints);
+    try b.run("dap.inspect.stop: apply a stop with 20 frames and 200 variables", {}, inspectStop);
+}
+
+/// The UI-thread work of a stop: the prefetched stack page and scopes,
+/// then 200 locals, on a model that saw the previous stop (values are
+/// compared). Budget: < 1 ms.
+fn inspectStop(_: void, s: *State) void {
+    const gpa = s.allocator();
+    var stack: std.ArrayList(u8) = .empty;
+    defer stack.deinit(gpa);
+    stack.appendSlice(gpa, "{\"stackFrames\":[") catch unreachable;
+    for (0..20) |i| stack.print(gpa, "{s}{{\"id\":{d},\"name\":\"frame_function_{d}\",\"line\":{d},\"column\":5,\"source\":{{\"name\":\"file{d}.zig\",\"path\":\"/work/src/file{d}.zig\"}},\"instructionPointerReference\":\"0x10{d:0>4}\"}}", .{ if (i == 0) "" else ",", i + 1, i, i * 7 + 1, i, i, i }) catch unreachable;
+    stack.appendSlice(gpa, "],\"totalFrames\":20}") catch unreachable;
+    const scopes = "{\"scopes\":[{\"name\":\"Locals\",\"variablesReference\":10},{\"name\":\"Registers\",\"variablesReference\":11,\"expensive\":true}]}";
+    var vars: [2]std.ArrayList(u8) = .{ .empty, .empty };
+    defer for (&vars) |*v| v.deinit(gpa);
+    for (&vars, 0..) |*v, k| {
+        v.appendSlice(gpa, "{\"variables\":[") catch unreachable;
+        for (0..200) |i| v.print(gpa, "{s}{{\"name\":\"local_{d}\",\"value\":\"{d}\",\"type\":\"u32\",\"evaluateName\":\"local_{d}\",\"variablesReference\":{d}}}", .{ if (i == 0) "" else ",", i, i * (k + 1), i, if (i % 10 == 0) 100 + i else 0 }) catch unreachable;
+        v.appendSlice(gpa, "]}") catch unreachable;
+    }
+    s.setBytes(stack.items.len + vars[0].items.len);
+    var insp: zg_dap.inspect.Inspector = undefined;
+    insp.init(gpa, s.io, null, .none, .{}) catch unreachable;
+    defer insp.deinit();
+    var gen: u64 = 2;
+    for (0..s.iterations()) |it| {
+        insp.applyStop(.{ .gen = gen, .thread = 1, .stack = stack.items, .scopes = scopes }) catch unreachable;
+        const locals = insp.vars.roots()[0];
+        insp.deliver(.{ .kind = .variables, .a = @intFromEnum(locals) }, gen, true, vars[it % 2].items) catch unreachable;
+        bench.doNotOptimizeAway(insp.vars.nodeCount());
+        gen += 2;
+    }
 }
 
 /// 10k saved breakpoints into the model, from text already read. Budget:
