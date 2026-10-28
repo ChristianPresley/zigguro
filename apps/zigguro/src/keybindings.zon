@@ -1,5 +1,6 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
-// user's keybindings.json win). VS Code's explorer and problems keys.
+// user's keybindings.json win). VS Code's explorer and problems keys,
+// and note search.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
@@ -16,4 +17,6 @@
     .{ .key = "f8", .command = "editor.nextProblem" },
     .{ .key = "shift+f8", .command = "editor.previousProblem" },
     .{ .key = "mod+c", .command = "problems.copy", .when = "problemsFocus" },
+    // Note search (E08.F06.S03.T02 default).
+    .{ .key = "mod+shift+n", .command = "notes.search" },
 }
