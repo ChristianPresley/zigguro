@@ -371,7 +371,7 @@ pub const Workbench = struct {
             f.view.syntax = sx;
             f.view.opts = wb.editorOptions(lang.name);
         };
-        if (wb.codeintel) |ci| if (f.handle) |fh| ci.open(fh, f.syntax, f.view);
+        if (wb.codeintel) |ci| if (f.handle) |fh| ci.open(fh, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(&f) catch null else null);
         return f;
     }
 
@@ -403,6 +403,8 @@ pub const Workbench = struct {
         };
         if (wb.pending_edits) |pe| pe.dropView(f.view);
         if (f.completions) |c| c.detach();
+        // Before the decoration store goes (diagnostics draw there).
+        if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         if (f.deco) |d| {
             f.doc.unsubscribe(f.deco_listener);
             f.view.decorations = null;
@@ -410,7 +412,6 @@ pub const Workbench = struct {
             wb.gpa.destroy(d);
         }
         var fm = f;
-        if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
         wb.setMode(&fm, .standard);
         if (f.sync) |x| x.destroy();
         if (f.diff) |m| m.deinit();
@@ -942,7 +943,7 @@ pub const Workbench = struct {
         if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
             ci.win = win;
             wb.codeintel = ci;
-            for (wb.files.items) |f| if (f.handle) |h| ci.open(h, f.syntax, f.view);
+            for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
             ci.setTrusted(wb.trust == .trusted);
         } else |e| log.err("language services: {t}", .{e});
         if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
