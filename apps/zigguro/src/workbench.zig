@@ -1031,6 +1031,7 @@ pub const Workbench = struct {
             ci.win = win;
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
+            ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1147,6 +1148,8 @@ pub const Workbench = struct {
         .{ .id = "editor.goToTypeDefinition", .title = "Go to Type Definition", .category = "Go", .run = goToTypeDefinition },
         .{ .id = "editor.goToImplementation", .title = "Go to Implementations", .category = "Go", .run = goToImplementation },
         .{ .id = "editor.findReferences", .title = "Go to References", .category = "Go", .run = findReferences },
+        .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Editor", .run = renameSymbol },
+        .{ .id = "editor.quickFix", .title = "Quick Fix...", .category = "Editor", .run = quickFix },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
@@ -1963,6 +1966,30 @@ pub const Workbench = struct {
         const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
         ci.showHoverAt(wb.view, h, wb.view.primarySel().head, origin) catch
             wb.notify(.info, "No language server for this file", .{});
+    }
+
+    /// `editor.rename`: the symbol at the caret.
+    fn renameSymbol(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can rename here", .{});
+        ci.rename(h, wb.view.primarySel().head);
+    }
+
+    /// `editor.quickFix`: code actions at the caret or selection.
+    fn quickFix(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server offers code actions here", .{});
+        const w = wb.win orelse return;
+        if (wb.editor_node.isNone()) return;
+        const r = w.layoutRect(wb.editor_node);
+        const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
+        const sel = wb.view.primarySel().range();
+        ci.quickFix(wb.view, h, .{ .start = sel.start, .end = sel.end }, origin);
+    }
+
+    fn onRefactorNotice(ctx: *anyopaque, warning: bool, msg: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.notify(if (warning) .warning else .info, "{s}", .{msg});
     }
 
     fn navGo(wb: *Workbench, kind: NavService.Kind) !void {

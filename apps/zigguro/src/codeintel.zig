@@ -33,6 +33,11 @@
 //! servers' trigger characters (Ctrl+Shift+Space asks), follows edits,
 //! cycles with Up/Down and closes on Escape or when the caret leaves.
 //!
+//! Rename, code actions and commands (E07.F04.S02.T02, `refactor_ui.zig`):
+//! `rename` (F2) and `quickFix` (Ctrl+.) run through the workspace edit
+//! engine; a resting caret shows a lightbulb when quick fixes exist.
+//! Edits a server sends while an agent's command runs go to review.
+//!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
 //! starts until the folder is trusted: files opened before that are
 //! attached when `setTrusted(true)` comes.
@@ -76,6 +81,7 @@ const Vec2 = zg_gui.core.Vec2;
 const Rect = zg_gui.core.Rect;
 const WorkspaceEditEngine = zg_codeintel.edits.Engine;
 const DiskFs = @import("workspace_fs.zig").DiskFs;
+pub const Refactor = @import("refactor_ui.zig").Refactor;
 const LspTools = zg_codeintel.agent.tools.ToolExporter(zg_ai.tools.adapters.foreign);
 
 const log = std.log.scoped(.codeintel);
@@ -143,6 +149,8 @@ pub const CodeIntel = struct {
     /// code actions and formatting through it).
     fs: DiskFs = undefined,
     engine: WorkspaceEditEngine = undefined,
+    /// Rename, code actions and the lightbulb.
+    refactor: Refactor = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -220,6 +228,8 @@ pub const CodeIntel = struct {
         ci.engine = .init(gpa, docs, ci.fs.ops(), .{});
         ci.engine.editors = .{ .ctx = ci, .f = editorOf };
         ci.mgr.apply_edit_hook = .{ .ctx = ci, .f = onApplyEdit };
+        ci.refactor.init(&ci.mgr, &ci.engine, &ci.diags, ci.waker(), .{ style.bulb, style.bulb_preferred });
+        ci.refactor.decos = .{ .ctx = ci, .f = decoOf };
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -233,11 +243,13 @@ pub const CodeIntel = struct {
             ci.unhook(f.view);
         }
         ci.clearHighlights();
+        ci.refactor.close();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
         ci.snippets.deinit();
         ci.mgr.deinit();
+        ci.refactor.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -314,6 +326,9 @@ pub const CodeIntel = struct {
         pub const occurrence: StyleRef = @enumFromInt(0x0702_0006);
         pub const read: StyleRef = @enumFromInt(0x0702_0007);
         pub const write: StyleRef = @enumFromInt(0x0702_0008);
+        /// The code action lightbulb, and with a preferred fix.
+        pub const bulb: StyleRef = @enumFromInt(0x0702_0009);
+        pub const bulb_preferred: StyleRef = @enumFromInt(0x0702_000a);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -330,6 +345,8 @@ pub const CodeIntel = struct {
             style.faded => th.color(.bg_base).fade(0.45),
             style.occurrence, style.read => th.color(.selection_bg).fade(0.5),
             style.write => th.color(.accent).fade(0.3),
+            style.bulb => th.color(.fg_muted),
+            style.bulb_preferred => th.color(.warning),
             else => null,
         };
     }
@@ -371,6 +388,7 @@ pub const CodeIntel = struct {
             if (f.listener) |l| f.doc.unsubscribe(l);
             ci.unhook(f.view);
             if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
+            if (f.deco) |d| ci.refactor.forget(d);
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
             if (ci.comp_view == f.view) {
                 ci.closeCompletion();
@@ -410,6 +428,10 @@ pub const CodeIntel = struct {
         const sel = view.primarySel();
         ci.highlight.onCursor(if (ci.fileOf(current)) |f| if (f.view == view and sel.anchor == sel.head) f.h else null else null, sel.head);
         ci.followCaret(current, view);
+        if (ci.fileOf(current)) |f| if (f.view == view and f.attached) {
+            const r = sel.range();
+            ci.refactor.caret(f.h, .{ .start = r.start, .end = r.end }, f.doc.version, ci.nowMs());
+        };
         // A shown hover goes with an edit, and a keyboard hover when the
         // caret leaves its word.
         if (ci.hover.current()) |r| {
@@ -431,11 +453,16 @@ pub const CodeIntel = struct {
         return if (ci.fileOf(h)) |f| f.view else null;
     }
 
+    fn decoOf(ctx: *anyopaque, h: DocHandle) ?*DecorationStore {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        return if (ci.fileOf(h)) |f| f.deco else null;
+    }
+
     /// A server's `workspace/applyEdit`: applied through the engine, as
-    /// the user's (agent-run commands are not tracked yet).
+    /// the user's, or to review while an agent's command runs there.
     fn onApplyEdit(ctx: *anyopaque, s: *Manager.Server, params: *const zg_codeintel.protocol.ApplyWorkspaceEditParams, reply: Manager.ApplyEditCb) void {
         const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
-        const r = ci.engine.serverEdit(s, params, null);
+        const r = ci.engine.serverEdit(s, params, s.agent_command);
         if (!r.applied) log.info("workspace edit from {s} not applied: {s}", .{ s.def.id, r.failure_reason orelse "" });
         reply.call(r);
     }
@@ -765,6 +792,24 @@ pub const CodeIntel = struct {
         try ci.hover.request(h, offset, ci.diag.keyOfDoc(h), source);
     }
 
+    /// `editor.rename` at byte `offset` of `h`.
+    pub fn rename(ci: *CodeIntel, h: DocHandle, offset: u64) void {
+        ci.refactor.win = ci.win;
+        ci.refactor.startRename(h, offset);
+        ci.tick();
+    }
+
+    /// `editor.quickFix` over `range` of `h` in `view`, whose text origin
+    /// in the window is `origin`: the menu opens below the range's start.
+    pub fn quickFix(ci: *CodeIntel, view: *EditorView, h: DocHandle, range: zg_codeintel.features.position.ByteRange, origin: Vec2) void {
+        ci.hideHover();
+        ci.refactor.win = ci.win;
+        const p0 = view.posOf(range.start);
+        const rect: Rect = .{ .x = origin.x + p0.x, .y = origin.y + p0.y, .w = 1, .h = view.lineHeight() };
+        ci.refactor.quickFix(h, range, rect);
+        ci.tick();
+    }
+
     /// Hides the hover and forgets any asked.
     pub fn hideHover(ci: *CodeIntel) void {
         ci.hover.cancel();
@@ -855,6 +900,8 @@ pub const CodeIntel = struct {
         }
         if (ci.completion.tick() or ci.completion.generation != ci.comp_seen) ci.showCompletion();
         if (ci.signature.tick() or ci.signature.generation != ci.sig_seen) ci.showSignature();
+        ci.refactor.win = ci.win;
+        const refactor_due = ci.refactor.tick(now_ms);
         if (ci.nav.tick() and ci.nav_waiting) if (ci.nav.results()) |r| if (r.complete) {
             ci.nav_waiting = false;
             if (ci.nav_hook) |hk| hk.done(hk.ctx, r);
@@ -872,7 +919,7 @@ pub const CodeIntel = struct {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
-        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms }) |due| if (due) |d| {
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due }) |due| if (due) |d| {
             const ms = @max(1, d -| now_ms);
             wait = if (wait) |x| @min(x, ms) else ms;
         };
@@ -987,6 +1034,25 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     try testing.expectEqual(@as(u8, 0), try ci.goTo(.definition, h, 6, false));
     _ = hk.f(hk.ctx, view, .{ .kind = .leave });
     try testing.expect(ci.rest == null);
+    // No server renames or offers actions: a notice, no box or menu, and
+    // no lightbulb wait.
+    const Notices = struct {
+        last: [128]u8 = undefined,
+        len: usize = 0,
+        fn f(ctx: *anyopaque, _: bool, msg: []const u8) void {
+            const n: *@This() = @ptrCast(@alignCast(ctx));
+            n.len = @min(msg.len, n.last.len);
+            @memcpy(n.last[0..n.len], msg[0..n.len]);
+        }
+    };
+    var notices: Notices = .{};
+    ci.refactor.notice = .{ .ctx = &notices, .f = Notices.f };
+    ci.rename(h, 6);
+    try testing.expectEqualStrings("No language server can rename here", notices.last[0..notices.len]);
+    ci.quickFix(view, h, .{ .start = 6, .end = 6 }, .{});
+    try testing.expectEqualStrings("No language server offers code actions here", notices.last[0..notices.len]);
+    try testing.expect(ci.refactor.rest == null and ci.refactor.menu_at == null);
+    try testing.expectEqual(app.theme.color(.warning), sc.color(sc.ctx, CodeIntel.style.bulb_preferred).?);
     ci.close(h);
     try testing.expect(view.pointer_hook == null);
 }

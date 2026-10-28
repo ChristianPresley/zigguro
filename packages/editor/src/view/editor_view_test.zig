@@ -517,6 +517,38 @@ test "view: squiggles, gutter marks and the overview ruler paint; new decoration
     f.view.decorations = null;
 }
 
+test "view: a lightbulb in the second gutter lane paints beside the line's diagnostic dot" {
+    var f: Fx = undefined;
+    try f.init("const x = 1;\nvar y = 2;\n");
+    defer f.deinit();
+    var store = deco_store.DecorationStore.init(gpa, f.doc);
+    defer store.deinit();
+    const owner = try store.registerOwner("lsp.diagnostics", 10);
+    const bulb = try store.registerOwner("lsp.lightbulb", 20);
+    const Colours = struct {
+        fn of(_: ?*anyopaque, s: deco_store.StyleRef) ?zg_gui.core.Color {
+            return switch (@intFromEnum(s)) {
+                2 => .hex(0x01ff03),
+                3 => .hex(0x0104ff),
+                else => null,
+            };
+        }
+    };
+    f.view.decorations = &store;
+    defer f.view.decorations = null;
+    f.view.styles = .{ .color = Colours.of };
+    // Same line, different lanes: the higher z lightbulb hides no dot.
+    _ = try store.add(.{ .range = .{ .start = 13, .end = 16 }, .owner = owner, .kind = .{ .gutter = .{ .icon = 1, .style = @enumFromInt(2) } } });
+    _ = try store.add(.{ .range = .{ .start = 13, .end = 13 }, .owner = bulb, .kind = .{ .gutter = .{ .lane = 1, .icon = deco_store.icon_lightbulb, .style = @enumFromInt(3) } } });
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    const snap = f.t.paintSnapshot();
+    try testing.expect(std.mem.indexOf(u8, snap, "#01ff03ff") != null);
+    // The bulb and its base.
+    const first = std.mem.indexOf(u8, snap, "#0104ffff").?;
+    try testing.expect(std.mem.indexOfPos(u8, snap, first + 1, "#0104ffff") != null);
+}
+
 test "view: the IME follows the primary caret" {
     var f: Fx = undefined;
     try f.init("first\nsecond line");
