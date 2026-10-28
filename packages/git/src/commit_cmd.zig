@@ -6,9 +6,9 @@
 //! author), `--allow-empty`, finishing a merge (`MERGE_HEAD` parents),
 //! and identities and dates from `GIT_AUTHOR_*`/`GIT_COMMITTER_*` or
 //! `user.name`/`user.email`. The time zone comes from the caller (zg_git
-//! has no zone database). Not yet: hooks, and signing; a repository with
-//! `commit.gpgsign` fails with `error.SigningUnsupported` unless
-//! `Options.sign` is `.off`.
+//! has no zone database). With `commit.gpgSign` (or `Options.sign =
+//! .on`) commits are signed with SSH keys (`gpg.format = ssh`); other
+//! formats fail with `error.SigningUnsupported`. Not yet: hooks.
 
 const std = @import("std");
 const commit_mod = @import("commit.zig");
@@ -20,6 +20,7 @@ const Repository = @import("repository.zig").Repository;
 const Oid = oid_mod.Oid;
 const Ident = commit_mod.Ident;
 const Allocator = std.mem.Allocator;
+const signing = @import("sign/signing.zig");
 
 pub const Cleanup = enum {
     /// Trailing whitespace, and leading, trailing and repeated blank
@@ -41,7 +42,11 @@ pub const Options = struct {
     tz_offset_min: i32 = 0,
     /// Seconds since the epoch (null: the clock).
     now: ?i64 = null,
-    sign: enum { config, off } = .config,
+    /// `.config` follows `commit.gpgSign`; `.on` is `-S`, `.off` is
+    /// `--no-gpg-sign`.
+    sign: enum { config, on, off } = .config,
+    /// Passphrase prompt and agent for the signing key.
+    signing: signing.Options = .{},
     /// The environment (null: the repository's).
     env: ?*const std.process.Environ.Map = null,
 };
@@ -68,7 +73,14 @@ pub fn commit(repo: *Repository, opts: Options) !Result {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    if (opts.sign == .config and (repo.config.getBool("commit.gpgsign") orelse false)) return error.SigningUnsupported;
+    const want_sign = switch (opts.sign) {
+        .on => true,
+        .off => false,
+        .config => signing.wanted(repo),
+    };
+    // Load the key first: a missing key fails before anything is written.
+    const signer: ?*signing.KeySigner = if (want_sign) try signing.fromConfig(repo, opts.signing) else null;
+    defer if (signer) |k| k.deinit();
 
     const comment = repo.config.get("core.commentchar") orelse "#";
     const message = try cleanMessage(a, opts.message, opts.cleanup, if (comment.len > 0) comment[0] else '#');
@@ -107,7 +119,8 @@ pub fn commit(repo: *Repository, opts: Options) !Result {
     const c: commit_mod.Commit = .{ .tree = tree, .parents = parents.items, .author = author, .committer = committer, .message = message };
     var aw: std.Io.Writer.Allocating = .init(a);
     try commit_mod.serializeCommit(&c, &aw.writer);
-    const id = try repo.odb.writeLoose(.commit, aw.written());
+    const raw = if (signer) |k| try signing.signCommit(a, k.signer(), aw.written(), repo.format) else aw.written();
+    const id = try repo.odb.writeLoose(.commit, raw);
 
     const subject = std.mem.sliceTo(message, '\n');
     const kind = if (opts.amend) " (amend)" else if (merge_heads.len > 0) " (merge)" else if (head == null) " (initial)" else "";
@@ -335,7 +348,7 @@ test "commit: initial, second, amend, empty and detached" {
     try testing.expectEqualStrings("HEAD", r5.ref);
     try testing.expect((try t.repo.head()).?.eql(r5.oid));
 
-    // Signing is refused for now.
+    // OpenPGP (the default gpg.format) is refused.
     try d.writeFile(io, .{ .sub_path = ".git/config", .data = "[commit]\n\tgpgsign = true\n" });
     try t.repo.reloadConfig(.{ .env = &t.env });
     try testing.expectError(error.SigningUnsupported, commit(t.repo, .{ .message = "x", .allow_empty = true, .env = &t.env }));

@@ -54,7 +54,7 @@ pub fn push(repo: *Repository, opts: PushOptions) !Oid {
     const who = try common.ident(repo, a, .committer, opts.tz_offset_min);
 
     const i_tree = try git.write_tree.writeTree(repo, &ix);
-    const i_commit = try common.writeCommit(repo, a, i_tree, &.{head}, author, who, try std.fmt.allocPrint(a, "index on {s}\n", .{on}));
+    const i_commit = try common.writeCommit(repo, a, i_tree, &.{head}, author, who, try std.fmt.allocPrint(a, "index on {s}\n", .{on}), null);
 
     var wix = try repo.readIndex();
     defer wix.deinit();
@@ -68,14 +68,14 @@ pub fn push(repo: *Repository, opts: PushOptions) !Oid {
         defer uix.deinit();
         _ = try git.stage.addInto(repo, &uix, untracked.items, .{});
         const u_tree = try git.write_tree.writeTree(repo, &uix);
-        try parents.append(a, try common.writeCommit(repo, a, u_tree, &.{}, author, who, try std.fmt.allocPrint(a, "untracked files on {s}\n", .{on})));
+        try parents.append(a, try common.writeCommit(repo, a, u_tree, &.{}, author, who, try std.fmt.allocPrint(a, "untracked files on {s}\n", .{on}), null));
     }
     const title = if (opts.message) |m|
         try std.fmt.allocPrint(a, "On {s}: {s}", .{ branch, std.mem.trim(u8, m, " \n") })
     else
         try std.fmt.allocPrint(a, "WIP on {s}", .{on});
     // git writes this message without a final newline.
-    const w = try common.writeCommit(repo, a, w_tree, parents.items, author, who, title);
+    const w = try common.writeCommit(repo, a, w_tree, parents.items, author, who, title, null);
 
     // git always keeps a reflog for refs/stash: it is the stash list.
     try repo.git_dir.createDirPath(repo.io, "logs/refs");

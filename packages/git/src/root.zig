@@ -90,6 +90,13 @@ pub const ssh = struct {
     pub const client = @import("ssh/client.zig");
     pub const session = @import("ssh/session.zig");
 };
+/// SSH signatures for commits and tags (`gpg.format = ssh`).
+pub const sign = struct {
+    pub const sshsig = @import("sign/sshsig.zig");
+    pub const allowed_signers = @import("sign/allowed_signers.zig");
+    pub const embed = @import("sign/embed.zig");
+    pub const signing = @import("sign/signing.zig");
+};
 /// Repository discovery and reading files at HEAD.
 pub const worktree = @import("worktree.zig");
 /// Ref names, locks, packed-refs, reflogs, the ref store and transactions.
@@ -158,6 +165,8 @@ test {
     _ = @import("remote/connect.zig");
     _ = @import("ssh/ssh_test.zig");
     std.testing.refAllDecls(ssh);
+    _ = @import("sign/sign_test.zig");
+    std.testing.refAllDecls(sign);
     _ = @import("proto/pktline_test.zig");
     _ = @import("proto/fuzz_git_pktline.zig");
     std.testing.refAllDecls(refs);
