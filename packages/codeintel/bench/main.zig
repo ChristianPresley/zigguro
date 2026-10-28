@@ -44,6 +44,10 @@ fn register(b: *bench.Bench) !void {
     wsfx.init(std.heap.smp_allocator);
     defer wsfx.deinit();
     try b.run("lsp.wsedit.plan_10k: plan a workspace edit of 10k text edits on a 10k-line open file", &wsfx, wseditPlan10k);
+    var afx: AgentFixture = undefined;
+    afx.init(std.heap.smp_allocator);
+    defer afx.deinit();
+    try b.run("lsp.agent.overhead: an agent's lookup without the server: a name 2 lines off in a 10k-line file, plus a qualified name picked from 1000 workspace symbols", &afx, agentOverhead);
     try b.run("codeintel.position.convert_wide: position <-> byte on a 1000-char non-ASCII line (utf-16)", &wide, positionWide);
 }
 
@@ -500,5 +504,53 @@ fn didChangeLatency(_: void, s: *State) void {
         defer cs.deinit();
         doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
         sync.flush();
+    }
+}
+
+const AgentFixture = struct {
+    gpa: std.mem.Allocator,
+    text: std.ArrayList(u8),
+    doc: *zg_editor.model.document.Document,
+    arena: std.heap.ArenaAllocator,
+    cands: [1000]zg_codeintel.agent.locate.Candidate,
+
+    fn init(f: *AgentFixture, gpa: std.mem.Allocator) void {
+        f.gpa = gpa;
+        f.text = .empty;
+        for (0..10_000) |i| f.text.print(gpa, "    const value_{d} = compute(arg_{d}, other_{d});\n", .{ i, i, i }) catch unreachable;
+        f.doc = zg_editor.model.document.Document.initBytes(gpa, @enumFromInt(1), f.text.items) catch unreachable;
+        f.arena = .init(gpa);
+        const a = f.arena.allocator();
+        for (&f.cands, 0..) |*c, i| c.* = .{
+            .name = if (i % 10 == 0) "init" else std.fmt.allocPrint(a, "init_{d}", .{i}) catch unreachable,
+            .container = std.fmt.allocPrint(a, "mod_{d}.Type_{d}", .{ i / 7, i }) catch unreachable,
+            .uri = std.fmt.allocPrint(a, "file:///w/src/mod_{d}/type_{d}.zig", .{ i / 7, i }) catch unreachable,
+        };
+    }
+
+    fn deinit(f: *AgentFixture) void {
+        f.arena.deinit();
+        f.doc.deinit();
+        f.text.deinit(f.gpa);
+    }
+};
+
+/// What CodeIntel spends besides the server round trip (budget: 2 ms).
+fn agentOverhead(f: *AgentFixture, s: *State) void {
+    const gpa = s.allocator();
+    const locate = zg_codeintel.agent.locate;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (0..s.iterations()) |i| {
+        _ = arena.reset(.retain_capacity);
+        var m: zg_codeintel.features.position.Mapper = .{ .gpa = gpa, .tree = &f.doc.tree, .enc = .utf16 };
+        defer m.deinit();
+        const line: u32 = @intCast(1000 + i % 8000);
+        const name = std.fmt.allocPrint(a, "other_{d}", .{line + 1}) catch unreachable;
+        const found = locate.inDocument(&m, .{ .name_on_line = .{ .path = "/w/a.zig", .line = line, .name = name } }) catch unreachable;
+        bench.doNotOptimizeAway(found);
+        const p = locate.pick(a, &f.cands, "mod_42.Type_300.init") catch unreachable;
+        bench.doNotOptimizeAway(p);
     }
 }
