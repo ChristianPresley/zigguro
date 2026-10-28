@@ -145,7 +145,115 @@ fn units(r: Subpart, enc: Encoding) u32 {
 /// inside a code point clamps to the start of that code point; a column past
 /// the end returns `line.len`. Each byte of an ill-formed subsequence counts
 /// as one unit.
+///
+/// Well-formed text is counted 32 bytes at a time (`Block`); a block that
+/// is not well-formed sends the whole line to the scalar decoder.
 pub fn columnToByte(line: []const u8, col: u32, enc: Encoding) usize {
+    if (enc == .utf8 or line.len < 32 or isAscii(line)) return slowColumnToByte(line, col, enc);
+    var blk: Block = .{};
+    var c: u64 = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 32) {
+        const u = blk.next(line, i, enc) orelse return slowColumnToByte(line, col, enc);
+        if (c + u <= col) {
+            c += u;
+            continue;
+        }
+        // The column is in this block: decode from its first sequence.
+        var j = i;
+        while (j < line.len and j < i + 3 and (line[j] & 0xC0) == 0x80) j += 1;
+        while (j < line.len) {
+            const r = maximalSubpart(line[j..]);
+            const n = units(r, enc);
+            if (c + n > col) return j;
+            c += n;
+            j += r.len;
+        }
+        return line.len;
+    }
+    // A sequence cut off by the end of a full last block.
+    if (line.len % 32 == 0 and blk.next(line, line.len, enc) == null) return slowColumnToByte(line, col, enc);
+    return line.len;
+}
+
+/// Column (in `enc` units) of byte offset `byte` within `line`; an offset
+/// inside a code point clamps to that code point's start; past the end
+/// counts the whole line.
+pub fn byteToColumn(line: []const u8, byte: usize, enc: Encoding) u32 {
+    const end = @min(byte, line.len);
+    if (enc == .utf8 or end < 32 or isAscii(line[0..end])) return slowByteToColumn(line, byte, enc);
+    // Count up to the start of the sequence holding `end`, then decode the
+    // rest.
+    var e = end;
+    var k: usize = 0;
+    while (e < line.len and e > 0 and k < 3 and (line[e] & 0xC0) == 0x80) : (k += 1) e -= 1;
+    var blk: Block = .{};
+    var c: u64 = 0;
+    var i: usize = 0;
+    while (i < e) : (i += 32) c += blk.next(line[0..e], i, enc) orelse return slowByteToColumn(line, byte, enc);
+    if (e % 32 == 0 and blk.next(line[0..e], e, enc) == null) return slowByteToColumn(line, byte, enc);
+    i = e;
+    while (i < end) {
+        const r = maximalSubpart(line[i..]);
+        if (i + r.len > end) break;
+        c += units(r, enc);
+        i += r.len;
+    }
+    return @intCast(c);
+}
+
+/// Checks and counts well-formed UTF-8 32 bytes at a time: per byte, from
+/// the three bytes before it, whether it must be a continuation byte, plus
+/// the lead bytes' second-byte ranges (overlongs, surrogates, > U+10FFFF).
+/// A sequence crossing into the next block is checked with that block; the
+/// last block is padded with NULs, so a truncated sequence fails.
+const Block = struct {
+    prev: V = @splat(0),
+
+    /// The `enc` units (UTF-16 or UTF-32) of the code points starting in
+    /// `bytes[i..][0..32]`, or null when the bytes so far are not
+    /// well-formed.
+    fn next(b: *Block, bytes: []const u8, i: usize, enc: Encoding) ?u64 {
+        const n = @min(32, bytes.len - i);
+        const v: V = if (n == 32) bytes[i..][0..32].* else pad: {
+            var arr: [32]u8 = @splat(0);
+            @memcpy(arr[0..n], bytes[i..][0..n]);
+            break :pad arr;
+        };
+        const p1 = @shuffle(u8, v, b.prev, shiftMask(1));
+        const p2 = @shuffle(u8, v, b.prev, shiftMask(2));
+        const p3 = @shuffle(u8, v, b.prev, shiftMask(3));
+        b.prev = v;
+        const cont = (v & splat(0xC0)) == splat(0x80);
+        const need = (p1 >= splat(0xC0)) | (p2 >= splat(0xE0)) | (p3 >= splat(0xF0));
+        var bad = cont != need;
+        bad = bad | (v == splat(0xC0)) | (v == splat(0xC1)) | (v >= splat(0xF5));
+        bad = bad | ((p1 == splat(0xE0)) & (v < splat(0xA0))) | ((p1 == splat(0xED)) & (v > splat(0x9F)));
+        bad = bad | ((p1 == splat(0xF0)) & (v < splat(0x90))) | ((p1 == splat(0xF4)) & (v > splat(0x8F)));
+        if (@reduce(.Or, bad)) return null;
+        var count: u64 = 32 - @popCount(@as(u32, @bitCast(cont)));
+        if (enc == .utf16) count += @popCount(@as(u32, @bitCast(v >= splat(0xF0))));
+        // The NUL padding counted as code points.
+        return count - (32 - n);
+    }
+
+    fn splat(x: u8) V {
+        return @splat(x);
+    }
+
+    /// Selects `[prev[32 - d..], v[0 .. 32 - d]]` from `@shuffle(v, prev)`.
+    fn shiftMask(comptime d: usize) @Vector(32, i32) {
+        var m: [32]i32 = undefined;
+        for (&m, 0..) |*x, k| x.* = if (k < d) ~@as(i32, @intCast(32 - d + k)) else @intCast(k - d);
+        return m;
+    }
+};
+
+/// Byte offset of column `col` (in `enc` units) within `line`. A column
+/// inside a code point clamps to the start of that code point; a column past
+/// the end returns `line.len`. Each byte of an ill-formed subsequence counts
+/// as one unit.
+fn slowColumnToByte(line: []const u8, col: u32, enc: Encoding) usize {
     if (enc == .utf8 or isAscii(line)) {
         if (col >= line.len) return line.len;
         if (enc != .utf8) return col;
@@ -177,9 +285,9 @@ fn maximalSubpartStartsBefore(line: []const u8, b: usize) bool {
 /// Column (in `enc` units) of byte offset `byte` within `line`; an offset
 /// inside a code point clamps to that code point's start; past the end
 /// counts the whole line.
-pub fn byteToColumn(line: []const u8, byte: usize, enc: Encoding) u32 {
+fn slowByteToColumn(line: []const u8, byte: usize, enc: Encoding) u32 {
     const end = @min(byte, line.len);
-    if (enc == .utf8) return @intCast(columnToByte(line, @intCast(end), .utf8));
+    if (enc == .utf8) return @intCast(slowColumnToByte(line, @intCast(end), .utf8));
     if (isAscii(line[0..end])) return @intCast(end);
     var i: usize = 0;
     var c: u32 = 0;
@@ -301,4 +409,53 @@ test "fuzz: utf8 validate matches std" {
             try std.testing.expect(count <= input.len);
         }
     }.one, .{ .corpus = &.{ "", "abc", "\xF0\x9F\x98", "\xED\xA0\x80", "a\xC3\xA9b" } });
+}
+
+/// Random lines mixing ASCII, 2/3/4-byte sequences and ill-formed bytes.
+fn randomLine(r: std.Random, buf: []u8) []u8 {
+    const pieces = [_][]const u8{ "a", "z ", "\t", "\u{e9}", "\u{4e2d}", "\u{1F600}", "\u{10FFFF}", "\xC0", "\x80", "\xE2\x82", "\xF0\x9F", "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xFF" };
+    const clean = r.boolean();
+    var n: usize = 0;
+    while (n + 4 <= buf.len) {
+        if (r.uintLessThan(u8, 8) == 0 and n > 0) break;
+        const p = pieces[r.uintLessThan(usize, if (clean) 7 else pieces.len)];
+        @memcpy(buf[n..][0..p.len], p);
+        n += p.len;
+    }
+    return buf[0..n];
+}
+
+/// The vectorized conversions agree with the scalar decoder for every
+/// column and byte offset of `line`.
+fn checkAgainstScalar(line: []const u8) !void {
+    for ([_]Encoding{ .utf16, .utf32 }) |enc| {
+        const total = slowByteToColumn(line, line.len, enc);
+        var col: u32 = 0;
+        while (col <= total + 1) : (col += 1) try std.testing.expectEqual(slowColumnToByte(line, col, enc), columnToByte(line, col, enc));
+        for (0..line.len + 2) |b| try std.testing.expectEqual(slowByteToColumn(line, b, enc), byteToColumn(line, b, enc));
+    }
+}
+
+test "utf8: vectorized column conversion matches the scalar decoder" {
+    var prng = std.Random.DefaultPrng.init(0x554);
+    var buf: [400]u8 = undefined;
+    for (0..3000) |_| try checkAgainstScalar(randomLine(prng.random(), &buf));
+    // Block edges: a 4-byte sequence at every offset around 32 and 64.
+    var line: [96]u8 = @splat('a');
+    for (28..68) |at| {
+        @memset(&line, 'a');
+        @memcpy(line[at..][0..4], "\u{1F600}");
+        try checkAgainstScalar(&line);
+        line[at + 3] = 'a';
+        try checkAgainstScalar(&line);
+    }
+}
+
+test "fuzz: utf8 column conversion" {
+    try std.testing.fuzz({}, struct {
+        fn f(_: void, smith: *std.testing.Smith) anyerror!void {
+            var buf: [256]u8 = undefined;
+            try checkAgainstScalar(buf[0..smith.slice(&buf)]);
+        }
+    }.f, .{});
 }
