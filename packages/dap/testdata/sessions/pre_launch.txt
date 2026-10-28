@@ -1,0 +1,11 @@
+# After a failed preLaunchTask the user chose Debug Anyway.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event terminated
+> disconnect
+< {}

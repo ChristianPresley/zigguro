@@ -1,0 +1,6 @@
+# launch fails with a formatted message and a help link.
+> initialize
+< {"body": {}}
+> launch
+< {"success": false, "message": "noProgram", "body": {"error": {"id": 1, "format": "program not found: {path}", "variables": {"path": "/w/app"}, "url": "https://example.com/help"}}}
+< event initialized

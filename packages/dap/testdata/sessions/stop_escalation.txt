@@ -1,0 +1,13 @@
+# terminate gets no terminated event and disconnect no answer: the client
+# moves on after each grace period and finally kills the adapter.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+> terminate
+< {}
+> disconnect {"terminateDebuggee": true, "restart": false}
+~ 20000ms

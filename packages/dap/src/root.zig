@@ -27,6 +27,14 @@ pub const config = struct {
     pub const type_map = @import("config/type_map.zig");
     pub const zon_dynamic = @import("config/zon_dynamic.zig");
 };
+/// Debug sessions (E07.F06.S02): the manager, sessions, threads and the
+/// debug console.
+pub const session = struct {
+    pub const DebugManager = @import("session/DebugManager.zig");
+    pub const DebugSession = @import("session/DebugSession.zig");
+    pub const threads = @import("session/threads.zig");
+    pub const console_events = @import("session/console_events.zig");
+};
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
     pub const DapConnection = @import("conn/DapConnection.zig");
@@ -69,4 +77,5 @@ test {
     _ = @import("headless/headless_test.zig");
     _ = @import("adapters/adapters_test.zig");
     _ = @import("config/config_test.zig");
+    _ = @import("session/session_test.zig");
 }
