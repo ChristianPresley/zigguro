@@ -1104,6 +1104,7 @@ pub const Workbench = struct {
         .{ .id = "terminal.killAll", .title = "Kill All Terminals", .category = "Terminal", .run = killAllTerminals },
         .{ .id = "terminal.focusNext", .title = "Focus Next Terminal", .category = "Terminal", .run = focusNextTerminal },
         .{ .id = "terminal.focusPrevious", .title = "Focus Previous Terminal", .category = "Terminal", .run = focusPreviousTerminal },
+        .{ .id = "terminal.find", .title = "Find in Terminal", .category = "Terminal", .run = findInTerminal },
         .{ .id = "agent.togglePane", .title = "Toggle Agent Pane", .category = "Agent", .run = toggleAgent },
         .{ .id = "review.queue.toggle", .title = "Toggle Review Queue", .category = "Review", .run = toggleReview },
         .{ .id = "review.approvals.open", .title = "Show Approvals", .category = "Review", .run = showApprovals },
@@ -3023,6 +3024,12 @@ pub const Workbench = struct {
     fn closeTerminal(wb: *Workbench, id: TerminalId) void {
         wb.term_tabs.remove(id);
         const kv = wb.terminals.fetchSwapRemove(id) orelse return;
+        // The view's node gets a focus-lost event: move focus while the
+        // view is still alive.
+        if (wb.win) |w| if (!kv.value.view.node.isNone() and w.focus.eql(kv.value.view.node)) {
+            w.setFocus(wb.editor_node, false);
+            w.markAllDirty();
+        };
         kv.value.destroy();
     }
 
@@ -3032,6 +3039,30 @@ pub const Workbench = struct {
         if (wb.terminal_ref) |r| if (wb.areaOf(r) != .center) wb.conceal(r);
         if (!wb.editor_node.isNone()) w.setFocus(wb.editor_node, false);
         w.markAllDirty();
+    }
+
+    /// Opens the active terminal's find bar (seeded with the selected
+    /// text) and focuses it.
+    fn findInTerminal(wb: *Workbench) !void {
+        const w = wb.win orelse return;
+        try wb.startTerminal(w);
+        const t = wb.activeTerminal() orelse return;
+        const seed = t.view.selectionText(wb.gpa) catch null;
+        defer if (seed) |s| wb.gpa.free(s);
+        t.find.show(seed);
+        if (t.find.field.len() > 0) t.find.refresh(&t.view);
+        if (wb.terminal_ref == null) wb.terminal_ref = try wb.dock.addPanel(kind_terminal, null);
+        try wb.reveal(wb.terminal_ref.?, .bottom);
+        w.markAllDirty();
+        w.afterNextFrame(.{ .ctx = wb, .f = focusFindField });
+    }
+
+    fn focusFindField(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const t = wb.activeTerminal() orelse return;
+        if (!t.find.focus_pending or t.find.field_node.isNone()) return;
+        t.find.focus_pending = false;
+        w.setFocus(t.find.field_node, false);
     }
 
     fn focusNextTerminal(wb: *Workbench) !void {
@@ -3638,6 +3669,15 @@ pub const Workbench = struct {
 
         if (main) wb.terminal_node = .none;
         const g = wb.term_tabs.activeGroup() orelse return;
+        // The active terminal's find bar; closing it gives focus back.
+        if (wb.activeTerminal()) |t| {
+            if (t.find.open) zg_terminal_view.find_bar.findBar(ui, &t.find, &t.view);
+            if (t.find.closed and main) {
+                t.find.closed = false;
+                wb.focus_terminal = true;
+                ui.window().afterNextFrame(.{ .ctx = wb, .f = focusTerminal });
+            }
+        }
         ui.open(.{ .style = .{ .dir = .row, .grow = 1, .basis = .{ .px = 0 }, .gap = 1, .align_items = .stretch } });
         defer ui.close();
         for (g.terminals.items) |id| {
@@ -4271,6 +4311,43 @@ test "workbench: terminals open as tabs and splits, cycle, and close" {
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), wb.terminals.count());
     try std.testing.expect(!wb.shown(wb.terminal_ref));
+}
+
+test "workbench: Find in Terminal opens the bar on the selection and Escape returns focus" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    try wb.toggleTerminal();
+    _ = t.settle();
+    const term = wb.activeTerminal().?;
+    term.view.feed("build failed\r\nok\r\nfailed again\r\n");
+    term.view.beginSelection(term.view.pointAt(.{ 6, 0 }), .word);
+    try wb.findInTerminal();
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expect(term.find.open);
+    try std.testing.expectEqualStrings("failed", term.find.field.slice());
+    try std.testing.expectEqual(@as(usize, 2), term.view.search.matches.items.len);
+    try std.testing.expect(t.win.focus.eql(term.find.field_node));
+
+    t.press(.escape, .{});
+    _ = t.settle();
+    _ = t.settle();
+    try std.testing.expect(!term.find.open);
+    try std.testing.expect(t.win.focus.eql(wb.terminal_node));
 }
 
 test "workbench: the notes sidebar follows the editor; note search opens a hit" {

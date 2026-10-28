@@ -24,6 +24,9 @@
 //!   and Ctrl+C (while something is selected) copy, Escape clears, typing
 //!   clears. Output clears it on the alternate screen, a resize clears it,
 //!   and so does evicting its first row.
+//! - Search (`search.zig`): `find` highlights every match and scrolls to
+//!   the current one; `findStep` moves through them. The find bar
+//!   (`find_bar.zig`) drives it.
 //!
 //! Single-threaded for now: the owner feeds output on the UI thread. The
 //! locked session and atomically mirrored mode bits of E06.F01 replace
@@ -34,6 +37,7 @@ const zg_gui = @import("zg_gui");
 const zg_terminal = @import("zg_terminal");
 const route = @import("input_route.zig");
 const sel_mod = @import("selection.zig");
+const search_mod = @import("search.zig");
 
 const Allocator = std.mem.Allocator;
 const Terminal = zg_terminal.Terminal;
@@ -124,17 +128,27 @@ pub const TerminalView = struct {
     press: ?Press = null,
     /// A selection drag is in progress.
     selecting: bool = false,
+    /// The last search's matches (highlighted while `find_active`), and
+    /// whether they were found on the alternate screen.
+    search: search_mod.Search,
+    find_active: bool = false,
+    find_alt: bool = false,
+    /// The last query (its pattern copied), searched again after a resize.
+    find_query: search_mod.Query = .{ .pattern = "" },
+    find_pattern: std.ArrayList(u8) = .empty,
 
     /// Where a selection drag started.
     pub const Press = struct { at: sel_mod.Point, cell: [2]u16, rect: bool };
 
     /// A view of `term` (which must outlive it).
     pub fn init(gpa: Allocator, term: *Terminal, opts: Options) TerminalView {
-        return .{ .gpa = gpa, .term = term, .opts = opts };
+        return .{ .gpa = gpa, .term = term, .opts = opts, .search = .init(gpa) };
     }
 
-    /// Frees the paste buffers.
+    /// Frees the paste buffers and search results.
     pub fn deinit(v: *TerminalView) void {
+        v.search.deinit();
+        v.find_pattern.deinit(v.gpa);
         v.pending_paste.deinit(v.gpa);
         v.paste_buf.deinit(v.gpa);
     }
@@ -171,9 +185,12 @@ pub const TerminalView = struct {
         const g = v.gridFor(w, h);
         v.term.cell_px = .{ .w = @intFromFloat(v.cell_w), .h = @intFromFloat(v.cell_h) };
         if (g[0] == v.term.cols() and g[1] == v.term.rows()) return false;
-        // Reflow moves rows: the selection's points no longer hold.
+        // Reflow moves rows: the selection's points no longer hold, and
+        // the matches are searched again.
         v.clearSelection();
+        v.search.clear();
         v.term.resize(g[0], g[1]) catch return false;
+        if (v.find_active) v.runFind() catch {};
         v.generation +%= 1;
         if (v.on_resize) |h_| h_.f(h_.ctx, g[0], g[1], @intFromFloat(@as(f32, @floatFromInt(g[0])) * v.cell_w), @intFromFloat(@as(f32, @floatFromInt(g[1])) * v.cell_h));
         return true;
@@ -190,6 +207,7 @@ pub const TerminalView = struct {
         v.term.feed(bytes);
         v.flushReplies();
         v.checkSelection();
+        if (v.search.matches.items.len > 0) v.search.prune(v.term.screen().pages.evicted);
         v.changed();
     }
 
@@ -323,6 +341,57 @@ pub const TerminalView = struct {
         if (m.ctrl and !m.shift and kp.key == .insert) return .copy;
         if (!m.ctrl and !m.shift and kp.key == .escape) return .clear;
         return .none;
+    }
+
+    // -- search --------------------------------------------------------------
+
+    /// Searches for `q`, highlights the matches and shows the current one.
+    pub fn find(v: *TerminalView, q: search_mod.Query) !void {
+        v.find_pattern.clearRetainingCapacity();
+        try v.find_pattern.appendSlice(v.gpa, q.pattern);
+        v.find_query = q;
+        v.find_query.pattern = v.find_pattern.items;
+        try v.runFind();
+        v.find_active = true;
+        if (v.search.currentMatch()) |m| v.reveal(m.lo.row);
+    }
+
+    fn runFind(v: *TerminalView) !void {
+        const pl = &v.term.screen().pages;
+        const bottom = sel_mod.absRow(pl, pl.viewportRow(v.term.rows() - 1));
+        try v.search.run(pl, v.find_query, bottom);
+        v.find_alt = v.term.alt_active;
+        v.generation +%= 1;
+    }
+
+    /// Moves to the next match in `dir` and shows it.
+    pub fn findStep(v: *TerminalView, dir: search_mod.Direction) void {
+        const m = v.search.step(dir) orelse return;
+        v.generation +%= 1;
+        v.reveal(m.lo.row);
+    }
+
+    /// Stops highlighting matches.
+    pub fn endFind(v: *TerminalView) void {
+        v.search.clear();
+        v.find_active = false;
+        v.generation +%= 1;
+    }
+
+    /// The matches to paint (none while the other screen shows).
+    pub fn visibleMatches(v: *const TerminalView) ?*const search_mod.Search {
+        if (!v.find_active or v.find_alt != v.term.alt_active) return null;
+        return &v.search;
+    }
+
+    /// Scrolls so absolute row `row` shows, centred when it was off screen.
+    pub fn reveal(v: *TerminalView, row: u64) void {
+        const pl = &v.term.screen().pages;
+        const top = sel_mod.absRow(pl, pl.viewportRow(0));
+        const rows = v.term.rows();
+        if (row >= top and row < top + rows) return;
+        const want: i64 = @as(i64, @intCast(row)) - rows / 2;
+        v.scrollBy(@as(i64, @intCast(top)) - want);
     }
 
     // -- keys and text -------------------------------------------------------

@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_terminal", .module = mod },
             .{ .name = "zg_gui", .module = b.dependency("zg_gui", f.args()).module("zg_gui") },
             .{ .name = "zg_platform", .module = b.dependency("zg_platform", f.args()).module("zg_platform") },
+            .{ .name = "zg_regex", .module = b.dependency("zg_regex", f.args()).module("zg_regex") },
         },
     });
     view.addImport("zg_options", zg_build.optionsModule(b, f));
