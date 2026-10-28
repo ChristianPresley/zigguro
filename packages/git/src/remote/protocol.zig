@@ -1,7 +1,8 @@
 //! The git wire protocol, client side (E09.F08): the server's
 //! advertisement, protocol v2 `ls-refs` and `fetch` (with want/have
-//! negotiation and a sidebanded pack), and v0 `receive-pack` for push
-//! (commands, pack, `report-status`).
+//! negotiation and a sidebanded pack), v0 `upload-pack` over stateful
+//! connections (for SSH servers that do not pass GIT_PROTOCOL), and v0
+//! `receive-pack` for push (commands, pack, `report-status`).
 
 const std = @import("std");
 const pktline = @import("../proto/pktline.zig");
@@ -143,9 +144,9 @@ pub const FetchOptions = struct {
 /// Protocol v2 `fetch`: negotiates with the local history and stores
 /// the pack the server sends. Null when there is nothing to fetch.
 pub fn fetchPack(repo: *Repository, a: Allocator, conn: Connection, adv: *const Advertisement, wants: []const Oid, opts: FetchOptions) !?indexer_mod.IndexedPack {
-    if (adv.version != 2) return error.ProtocolV0FetchUnsupported;
-    if (!adv.caps.has("fetch")) return error.FetchUnsupported;
     if (wants.len == 0) return null;
+    if (adv.version != 2) return fetchPackV0(repo, a, conn, adv, wants, opts);
+    if (!adv.caps.has("fetch")) return error.FetchUnsupported;
     var neg = try Negotiator.init(repo, a);
     var round: usize = 0;
     var batch: usize = 16;
@@ -193,6 +194,71 @@ pub fn fetchPack(repo: *Repository, a: Allocator, conn: Connection, adv: *const 
         if (ready) done = true;
         if (batch < 128) batch *= 2;
     }
+}
+
+/// v0 `upload-pack` over a stateful connection, with
+/// `multi_ack_detailed`: wants, then rounds of haves each answered up to
+/// a NAK, then `done` and the pack.
+fn fetchPackV0(repo: *Repository, a: Allocator, conn: Connection, adv: *const Advertisement, wants: []const Oid, opts: FetchOptions) !?indexer_mod.IndexedPack {
+    if (!adv.caps.has("multi_ack_detailed") or !adv.caps.has("side-band-64k")) return error.ProtocolV0FetchUnsupported;
+    var neg = try Negotiator.init(repo, a);
+    const pw: PktWriter = .init(conn.writer());
+    var hb: [64]u8 = undefined;
+    var caps: std.ArrayList(u8) = .empty;
+    try caps.appendSlice(a, "multi_ack_detailed side-band-64k");
+    for ([_][]const u8{ "thin-pack", "ofs-delta" }) |c| if (adv.caps.has(c)) {
+        try caps.append(a, ' ');
+        try caps.appendSlice(a, c);
+    };
+    if (opts.include_tag and adv.caps.has("include-tag")) try caps.appendSlice(a, " include-tag");
+    if (opts.on_progress == null and adv.caps.has("no-progress")) try caps.appendSlice(a, " no-progress");
+    if (adv.caps.has("agent")) try caps.appendSlice(a, " agent=" ++ agent);
+    if (adv.caps.value("object-format") != null) {
+        try caps.appendSlice(a, " object-format=");
+        try caps.appendSlice(a, adv.format.name());
+    }
+    for (wants, 0..) |w, i| {
+        if (i == 0) try pw.line("want {s} {s}", .{ w.hex(&hb), caps.items }) else try pw.line("want {s}", .{w.hex(&hb)});
+    }
+    try pw.flush();
+    var pr: PktReader = .init(conn.reader());
+    var sent: usize = 0;
+    var batch: usize = 16;
+    var ready = false;
+    while (!ready and sent < opts.max_haves) {
+        var in_round: usize = 0;
+        while (in_round < batch) : (in_round += 1) {
+            const h = try neg.next() orelse break;
+            try pw.line("have {s}", .{h.hex(&hb)});
+            sent += 1;
+        }
+        if (in_round == 0) break;
+        try pw.flush();
+        try conn.endRequest();
+        // ACK <id> common / ACK <id> ready ... NAK
+        while (true) {
+            const l = (try pr.nextLine()) orelse return error.UnexpectedFlush;
+            if (std.mem.eql(u8, l, "NAK")) break;
+            if (!std.mem.startsWith(u8, l, "ACK ")) return if (std.mem.startsWith(u8, l, "ERR ")) error.RemoteError else error.BadAck;
+            var words = std.mem.tokenizeScalar(u8, l[4..], ' ');
+            try neg.ack(Oid.parseHex(adv.format, words.next() orelse return error.BadAck) catch return error.BadAck);
+            if (words.next()) |status| if (std.mem.eql(u8, status, "ready")) {
+                ready = true;
+            };
+        }
+        if (batch < 128) batch *= 2;
+    }
+    try pw.line("done", .{});
+    try conn.endRequest();
+    // The final "ACK <id>" or "NAK"; then the pack.
+    while (true) {
+        const l = (try pr.nextLine()) orelse return error.UnexpectedFlush;
+        if (std.mem.eql(u8, l, "NAK")) break;
+        if (std.mem.startsWith(u8, l, "ERR ")) return error.RemoteError;
+        if (!std.mem.startsWith(u8, l, "ACK ")) return error.BadAck;
+        if (std.mem.indexOfScalar(u8, l[4..], ' ') == null) break;
+    }
+    return try receivePack(repo, &pr, opts);
 }
 
 fn readAcks(pr: *PktReader, neg: *Negotiator, fmt: ObjectFormat, ready: *bool) !pktline.Pkt {
