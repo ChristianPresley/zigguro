@@ -184,7 +184,10 @@ pub const Cache = struct {
     ws: WorkspaceView,
     os: std.Target.Os.Tag,
     zig: ?ZigToolchain,
-    list: ?TaskList = null,
+    list: ?*TaskList = null,
+    /// Lists replaced by a reload, kept until `deinit`: a runner or an
+    /// agent tool on another thread may still be reading one.
+    retired: std.ArrayList(*TaskList) = .empty,
     dirty: bool = true,
     steps: ?[]u8 = null,
     steps_key: [2]i96 = .{ 0, 0 },
@@ -208,22 +211,38 @@ pub const Cache = struct {
     }
 
     pub fn deinit(c: *Cache) void {
-        if (c.list) |*l| l.deinit();
+        if (c.list) |l| c.free(l);
+        for (c.retired.items) |l| c.free(l);
+        c.retired.deinit(c.gpa);
         if (c.steps) |s| c.gpa.free(s);
         c.* = undefined;
     }
 
-    /// The current list, reloaded first when a watched file changed.
+    /// The current list, reloaded first when a watched file changed. A
+    /// reload returns a new pointer; the old list stays valid until
+    /// `deinit`.
     pub fn get(c: *Cache, io: Io) !*const TaskList {
         if (c.dirty or c.list == null) {
             const steps = c.currentSteps(io);
-            var fresh = try loadWithSteps(c.gpa, io, c.ws, c.os, if (c.zig) |z| z.exe_path else "zig", steps);
-            if (c.list) |*old| old.deinit();
+            try c.retired.ensureUnusedCapacity(c.gpa, 1);
+            const fresh = try c.gpa.create(TaskList);
+            errdefer c.gpa.destroy(fresh);
+            fresh.* = try loadWithSteps(c.gpa, io, c.ws, c.os, if (c.zig) |z| z.exe_path else "zig", steps);
+            if (c.list) |old| c.retired.appendAssumeCapacity(old);
             c.list = fresh;
-            fresh = undefined;
             c.dirty = false;
         }
-        return &c.list.?;
+        return c.list.?;
+    }
+
+    /// Whether the next `get` reloads.
+    pub fn stale(c: *const Cache) bool {
+        return c.dirty or c.list == null;
+    }
+
+    fn free(c: *Cache, l: *TaskList) void {
+        l.deinit();
+        c.gpa.destroy(l);
     }
 
     /// Trust changed: everything reloads.

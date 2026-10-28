@@ -17,8 +17,8 @@ pub const commands = [_]Command{
     .{ .id = "tasks.configure", .title = "Tasks: Configure Task" },
 };
 
-/// `.zigguro/tasks.zon` for a workspace that has none (offered as a
-/// reviewable edit, never written directly).
+/// `.zigguro/tasks.zon` for a workspace that has none: Configure Task
+/// writes it (it starts no process) and opens it.
 pub const configure_template =
     \\// Workspace tasks: Tasks: Run Task lists them with the zig build steps.
     \\// Fields: label, type (.process or .shell), command, args, cwd, env,

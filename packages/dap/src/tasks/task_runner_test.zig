@@ -45,7 +45,7 @@ const Problems = struct {
         return .{ .ctx = p, .set = set, .reveal = reveal };
     }
 
-    fn set(ctx: *anyopaque, owner: []const u8, problems: []const pm.Problem) void {
+    fn set(ctx: *anyopaque, owner: []const u8, _: []const u8, problems: []const pm.Problem) void {
         const p: *Problems = @ptrCast(@alignCast(ctx));
         p.mutex.lockUncancelable(testing.io);
         defer p.mutex.unlock(testing.io);

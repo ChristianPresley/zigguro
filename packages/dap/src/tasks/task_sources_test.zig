@@ -360,7 +360,12 @@ test "tasks: reload on file change" {
     try tmp.dir.createDirPath(io, ".zigguro");
     try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/tasks.zon", .data = ".{ .tasks = .{ .{ .label = \"fmt\", .command = \"zig\", .args = .{\"fmt\"} } } }" });
     try testing.expect(cache.fileChanged(".zigguro/tasks.zon"));
+    try testing.expect(cache.stale());
+    const before = l;
     l = try cache.get(io);
+    // The old list is still readable (a runner may hold it).
+    try testing.expect(before != l);
+    try testing.expectEqual(@as(usize, 3), before.all().len);
     try testing.expectEqualStrings("fmt", l.all()[0].label);
     try testing.expectEqual(@as(usize, 4), l.all().len);
     try testing.expectEqual(@as(usize, 1), fake.calls);
