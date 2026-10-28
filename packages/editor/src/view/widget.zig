@@ -37,6 +37,7 @@ const gutter = @import("gutter.zig");
 const modes = @import("../modes.zig");
 
 const EditorView = view_mod.EditorView;
+const PointerEvent = view_mod.PointerEvent;
 const Ui = zg_gui.Ui;
 const PaintCx = zg_gui.paint.PaintCx;
 const EventCx = zg_gui.input.EventCx;
@@ -754,7 +755,9 @@ pub const Editor = struct {
                 const on_lane = state.drag == .none and v.gutter_hook != null and laneAt(v, ec.local(p.pos).x) != null;
                 ec.setCursor(if (on_lane) .default else .text);
                 if (state.drag == .none) {
-                    if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .move, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods });
+                    const e: PointerEvent = .{ .kind = .move, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods };
+                    const taken = if (v.priority_hook) |h| h.f(h.ctx, v, e) else false;
+                    if (v.pointer_hook) |h| _ = h.f(h.ctx, v, if (taken) .{ .kind = .leave } else e);
                     return false;
                 }
                 if (state.drag == .box) {
@@ -779,6 +782,7 @@ pub const Editor = struct {
                 return true;
             },
             .pointer_leave => {
+                if (v.priority_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .leave });
                 if (v.pointer_hook) |h| _ = h.f(h.ctx, v, .{ .kind = .leave });
                 return false;
             },
@@ -832,7 +836,9 @@ pub const Editor = struct {
             },
             .key => |k| {
                 if (k.action == .release) return false;
-                if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .key, .key = k, .mods = k.mods, .offset = v.primarySel().head, .origin = windowOrigin(ec, v) })) return true;
+                const ke: PointerEvent = .{ .kind = .key, .key = k, .mods = k.mods, .offset = v.primarySel().head, .origin = windowOrigin(ec, v) };
+                if (v.priority_hook) |h| if (h.f(h.ctx, v, ke)) return true;
+                if (v.pointer_hook) |h| if (h.f(h.ctx, v, ke)) return true;
                 if (v.key_hook) |h| if (h.f(h.ctx, v, k)) {
                     ec.respond(.{ .changed = true });
                     ec.repaint();
