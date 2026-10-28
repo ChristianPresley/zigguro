@@ -85,6 +85,13 @@ pub const Tracing = struct {
     /// The photodiode square (`perf.latencyProbe.toggle`), created on
     /// first use.
     probe: ?*zg_perf_ui.Probe = null,
+    /// The memory sampler (E14.F04.S01.T02); its worker runs only while
+    /// the HUD is visible or a report is asked for.
+    mem: ?*zg_perf.mem.Sampler = null,
+    /// Held while the HUD is visible.
+    mem_obs: ?zg_perf.mem.Observation = null,
+    /// The `--mem-report` task (cancelled at exit).
+    mem_group: std.Io.Group = .init,
 
     /// Starts the drain; `env` gives the trace folder.
     pub fn init(t: *Tracing, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) void {
@@ -109,7 +116,8 @@ pub const Tracing = struct {
         errdefer t.gpa.destroy(tl);
         tl.* = try .init(t.gpa, 1024);
         errdefer tl.deinit();
-        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{});
+        t.mem = zg_perf.mem.Sampler.start(t.gpa, t.io, .{}) catch null;
+        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory } });
         t.hud = hud;
         t.timeline = tl;
         const dir = t.dir orelse return;
@@ -125,6 +133,7 @@ pub const Tracing = struct {
     /// Hides the HUD; call before its window closes.
     pub fn detachWindow(t: *Tracing) void {
         if (t.hud) |h| if (t.hud_win) |w| h.setVisible(w, false);
+        t.syncMemObservation();
         if (t.probe) |p| if (t.hud_win) |w| p.setVisible(w, false);
         t.hud_win = null;
     }
@@ -133,6 +142,83 @@ pub const Tracing = struct {
     pub fn toggleHud(t: *Tracing) !void {
         const h = t.hud orelse return error.NoHud;
         h.toggle(t.hud_win orelse return error.NoWindow);
+        t.syncMemObservation();
+    }
+
+    /// Keeps the sampler sampling exactly while the HUD is visible.
+    fn syncMemObservation(t: *Tracing) void {
+        const s = t.mem orelse return;
+        const visible = if (t.hud) |h| h.isVisible() else false;
+        if (visible and t.mem_obs == null) {
+            t.mem_obs = s.observe();
+        } else if (!visible) if (t.mem_obs) |o| {
+            o.release();
+            t.mem_obs = null;
+        };
+    }
+
+    fn hudMemory(ctx: ?*anyopaque) ?zg_perf_ui.hud_model.Memory {
+        const t: *Tracing = @ptrCast(@alignCast(ctx.?));
+        const snap = (t.mem orelse return null).latest();
+        const p = snap.process orelse return null;
+        return .{ .private_bytes = p.private_bytes, .gpu_bytes = if (snap.gpu) |g| g.device_local_used else 0 };
+    }
+
+    /// Samples memory now and writes the report table to `w` (blocking:
+    /// `--mem-report` and `perf.memory.report`).
+    pub fn writeMemReport(t: *Tracing, w: *std.Io.Writer) !void {
+        const s = t.mem orelse return error.NoSampler;
+        s.sampleSync();
+        try zg_perf.mem.writeReport(s.latest(), w);
+    }
+
+    /// `perf.memory.report`: the report on stdout and in a toast.
+    fn memReport(t: *Tracing) !void {
+        var buf: [4096]u8 = undefined;
+        var fw: std.Io.Writer = .fixed(&buf);
+        try t.writeMemReport(&fw);
+        printStdout(t.io, fw.buffered());
+        if (t.app) |app| {
+            var md: [4200]u8 = undefined;
+            const body = std.fmt.bufPrint(&md, "```\n{s}```", .{fw.buffered()}) catch fw.buffered();
+            _ = zg_gui.w.toast(app, .{ .title = "Memory report", .body_md = body, .source = "Performance" });
+        }
+    }
+
+    /// `--mem-report`: prints the report after the first idle period (2 s
+    /// without input) or at once with `now`, then exits with `exit`.
+    pub fn armMemReport(t: *Tracing, now: bool, exit: bool) void {
+        t.mem_group.concurrent(t.io, memReportTask, .{ t, now, exit }) catch {
+            log.warn("--mem-report needs a concurrent Io", .{});
+        };
+    }
+
+    fn memReportTask(t: *Tracing, now: bool, exit: bool) std.Io.Cancelable!void {
+        const signal = &zg_perf.runtime.activity.global;
+        if (!now) {
+            try t.io.sleep(.fromNanoseconds(zg_perf.runtime.activity.ActivitySignal.idle_after_ns), .awake);
+            while (signal.level() != .idle) {
+                signal.waitUntilNot(t.io, signal.level(), null) catch |e| switch (e) {
+                    error.Timeout => {},
+                    error.Canceled => return error.Canceled,
+                };
+            }
+        }
+        var buf: [4096]u8 = undefined;
+        var fw: std.Io.Writer = .fixed(&buf);
+        t.writeMemReport(&fw) catch |e| {
+            log.warn("memory report failed: {t}", .{e});
+            return;
+        };
+        printStdout(t.io, fw.buffered());
+        if (exit) std.process.exit(0);
+    }
+
+    fn printStdout(io: std.Io, text: []const u8) void {
+        var out_buf: [256]u8 = undefined;
+        var out = std.Io.File.stdout().writer(io, &out_buf);
+        out.interface.writeAll(text) catch {};
+        out.interface.flush() catch {};
     }
 
     /// Shows or hides the latency probe square in the main window.
@@ -151,6 +237,8 @@ pub const Tracing = struct {
         t.detachWindow();
         if (t.hud) |h| h.destroy();
         if (t.probe) |p| p.destroy();
+        t.mem_group.cancel(t.io);
+        if (t.mem) |s| s.stop();
         if (t.recorder) |fr| fr.deinit();
         if (t.timeline) |tl| {
             tl.deinit();
@@ -276,6 +364,7 @@ pub const Tracing = struct {
         .{ .id = "perf.trace.openFolder", .title = "Show Performance Trace Folder", .run = openFolder },
         .{ .id = zg_perf_ui.commands.commands[0].id, .title = zg_perf_ui.commands.commands[0].title, .run = toggleHud },
         .{ .id = zg_perf_ui.commands.commands[1].id, .title = zg_perf_ui.commands.commands[1].title, .run = toggleProbe },
+        .{ .id = "perf.memory.report", .title = "Show Memory Report", .run = memReport },
     };
 
     fn cmdStart(t: *Tracing) !void {
