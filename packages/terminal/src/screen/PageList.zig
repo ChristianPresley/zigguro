@@ -13,6 +13,17 @@
 //! too while cold, but keep their logical position (`TrackedPin.cold`) and
 //! come back when their page is decoded, at whatever width it has then.
 //!
+//! With `Options.background_compact`, `grow` only flags compaction as due;
+//! the owner calls `beginCompact` (a cheap copy of the pages), runs the
+//! returned job's encoder on any thread, and hands it back to
+//! `finishCompact`, which swaps the rows out only if the hot list's layout
+//! did not change meanwhile (resize, reflow, ED 3, eviction).
+//!
+//! Decoded cold pages keep their encoding in a small decode cache (the
+//! last `thaw_cache` pages): when the viewport leaves them and they are
+//! compacted again unchanged, the cached encoding is reused instead of
+//! encoding the rows again. A resize, reflow or ED 3 empties the cache.
+//!
 //! Row indices (`rowIndex`, `screenRow`, `totalRows`, `scrollbackRows`)
 //! count cold rows first, so they stay stable across compaction and
 //! decoding; `screenRow` is null for a row that is cold. `resize` copies
@@ -82,6 +93,51 @@ pub const Options = struct {
     hot_rows: u32 = 0,
     /// Deflate cold pages (kept only when it saves 20%).
     deflate: bool = true,
+    /// `grow` sets `compact_due` instead of encoding; the owner runs
+    /// `beginCompact`/`CompactJob.run`/`finishCompact`, the encoding off
+    /// its thread or lock.
+    background_compact: bool = false,
+};
+
+/// Decoded cold pages whose encoding is kept for reuse.
+pub const thaw_cache = 8;
+
+/// A decoded cold page in the decode cache: its encoding and the hot
+/// nodes it became.
+const Thawed = struct {
+    page: cold.ColdPage,
+    first: *Node,
+    count: usize,
+    rows: u64,
+};
+
+/// The head rows the next compaction takes: `count` nodes holding `n`
+/// rows of whole lines, already encoded when `cached` (a decode cache
+/// index).
+const Range = struct {
+    count: usize,
+    n: u64,
+    cached: ?usize = null,
+};
+
+/// A background compaction: private copies of the head pages, encoded by
+/// `run` on any thread, then handed to `finishCompact`.
+pub const CompactJob = struct {
+    gpa: Allocator,
+    /// `layout_gen` when the copies were taken.
+    gen: u64,
+    first: *Node,
+    range: Range,
+    /// The copied pages, linked like the originals.
+    copies: *Node,
+    deflate: bool,
+    /// The encoding, once `run` succeeded.
+    result: ?cold.ColdPage = null,
+
+    /// Encodes the copies. Touches nothing but the job.
+    pub fn run(job: *CompactJob) void {
+        job.result = cold.encode(job.gpa, .{ .node = job.copies, .y = 0 }, job.range.n, .{ .deflate = job.deflate }) catch null;
+    }
 };
 
 /// A cold page and the rows it takes at the list's width.
@@ -117,6 +173,16 @@ cold_rows: u64 = 0,
 cold_bytes: usize = 0,
 /// The next `ColdNode.seq`.
 cold_seq: u64 = 0,
+/// Bumped whenever hot nodes are unlinked or replaced, so a background
+/// compaction can tell that its copies went stale.
+layout_gen: u64 = 0,
+/// Compaction is due (`Options.background_compact`).
+compact_due: bool = false,
+/// A `CompactJob` is out.
+job_out: bool = false,
+/// The decode cache, oldest first.
+thawed: std.ArrayList(Thawed) = .empty,
+thawed_bytes: usize = 0,
 
 /// Creates a list with an active area of `cols` x `rows` blank rows.
 pub fn init(gpa: Allocator, cols: u16, rows: u16, o: Options) !PageList {
@@ -143,6 +209,8 @@ pub fn deinit(pl: *PageList) void {
     pl.pins.deinit(pl.gpa);
     for (pl.cold_nodes.items) |*c| c.page.deinit(pl.gpa);
     pl.cold_nodes.deinit(pl.gpa);
+    for (pl.thawed.items) |*e| e.page.deinit(pl.gpa);
+    pl.thawed.deinit(pl.gpa);
     pl.pool.deinit();
     pl.* = undefined;
 }
@@ -174,9 +242,9 @@ pub fn appendRow(pl: *PageList) !Pin {
     return .{ .node = t, .y = y };
 }
 
-/// Bytes used by hot and cold pages.
+/// Bytes used by hot and cold pages and the decode cache.
 pub fn bytesUsed(pl: *const PageList) usize {
-    return pl.nodes * pl.page_bytes + pl.cold_bytes;
+    return pl.nodes * pl.page_bytes + pl.cold_bytes + pl.thawed_bytes;
 }
 
 /// Rows in the list (cold and hot scrollback plus active area).
@@ -255,9 +323,16 @@ pub fn grow(pl: *PageList) !Pin {
     const p = try pl.appendRow();
     pl.dirty_generation +%= 1;
     // Out of memory while encoding only keeps the rows hot a while longer.
-    if (pl.opts.hot_rows > 0) pl.compact() catch {};
+    if (pl.opts.hot_rows > 0) {
+        if (pl.opts.background_compact) {
+            pl.compactCached() catch {};
+            if (!pl.compact_due) pl.compact_due = pl.nextRange() != null;
+        } else pl.compact() catch {};
+    }
     while (pl.bytesUsed() > pl.opts.max_bytes) {
-        if (pl.cold_nodes.items.len > 0) {
+        if (pl.thawed.items.len > 0) {
+            pl.dropThawed(0);
+        } else if (pl.cold_nodes.items.len > 0) {
             pl.evictCold();
         } else if (pl.head != pl.tail and pl.total - pl.head.page.rowCount() >= pl.rows) {
             pl.evictHead();
@@ -290,6 +365,11 @@ fn unlinkHead(pl: *PageList) *Node {
     for (pl.pins.items) |t| {
         if (!t.garbage and t.pin.node == h) t.garbage = true;
     }
+    for (pl.thawed.items, 0..) |e, i| if (e.first == h) {
+        pl.dropThawed(i);
+        break;
+    };
+    pl.layout_gen +%= 1;
     pl.head = h.next.?;
     pl.head.prev = null;
     pl.total -= h.page.rowCount();
@@ -313,43 +393,166 @@ fn evictCold(pl: *PageList) void {
 /// the end of a logical line) into a cold page and frees them. Stops at
 /// the viewport, which keeps what it shows hot.
 pub fn compact(pl: *PageList) !void {
-    while (true) {
-        const hot_sb = pl.total - pl.rows;
-        if (hot_sb <= pl.opts.hot_rows) return;
+    while (pl.nextRange()) |r| {
+        const cp = if (r.cached) |i| pl.takeThawed(i) else try cold.encode(pl.gpa, pl.firstHot(), r.n, .{ .deflate = pl.opts.deflate });
+        try pl.retire(r, cp);
+    }
+}
+
+/// Compacts the head ranges the decode cache already holds encoded.
+fn compactCached(pl: *PageList) !void {
+    while (pl.nextRange()) |r| {
+        const i = r.cached orelse return;
+        try pl.retire(r, pl.takeThawed(i));
+    }
+}
+
+/// The head range due for compaction, or null when hot scrollback is
+/// within `hot_rows` or the range would reach the active area or the
+/// viewport.
+fn nextRange(pl: *const PageList) ?Range {
+    const hot_sb = pl.total - pl.rows;
+    if (hot_sb <= pl.opts.hot_rows) return null;
+    var r: Range = undefined;
+    if (pl.thawedAt(pl.head)) |i| {
+        const e = pl.thawed.items[i];
+        r = .{ .count = e.count, .n = e.rows, .cached = i };
+    } else {
         // The head pages through the first whose last row ends a line.
         var last = pl.head;
-        var n: u64 = last.page.rowCount();
-        var count: usize = 1;
+        r = .{ .count = 1, .n = last.page.rowCount() };
         while (last.page.row(last.page.rowCount() - 1).wrap) {
-            last = last.next orelse return;
-            n += last.page.rowCount();
-            count += 1;
+            last = last.next orelse return null;
+            r.n += last.page.rowCount();
+            r.count += 1;
         }
-        if (last == pl.tail or hot_sb < n + pl.opts.hot_rows) return;
-        if (pl.viewport) |v| if (!v.garbage) {
-            var it: ?*Node = pl.head;
-            for (0..count) |_| {
-                if (it.? == v.pin.node) return;
-                it = it.?.next;
-            }
-        };
-        var cp = try cold.encode(pl.gpa, pl.firstHot(), n, .{ .deflate = pl.opts.deflate });
-        errdefer cp.deinit(pl.gpa);
-        // Same width: the rows are exactly the ones encoded.
-        cp.cached_cols = pl.cols;
-        cp.cached_rows = @intCast(n);
-        try pl.cold_nodes.append(pl.gpa, .{ .page = cp, .rows = @intCast(n), .seq = pl.cold_seq });
-        pl.freezePins(n, pl.cold_seq);
-        pl.cold_seq += 1;
-        pl.cold_rows += n;
-        pl.cold_bytes += cp.bytesUsed();
-        for (0..count) |_| {
-            const h = pl.unlinkHead();
-            pl.pool.free(h.page.buf);
-            pl.gpa.destroy(h);
-        }
-        pl.dirty_generation +%= 1;
     }
+    if (hot_sb < r.n + pl.opts.hot_rows) return null;
+    const v: ?*Node = if (pl.viewport) |t| (if (t.garbage) null else t.pin.node) else null;
+    var it: ?*Node = pl.head;
+    for (0..r.count) |_| {
+        const node = it orelse return null;
+        if (node == pl.tail or node == v) return null;
+        it = node.next;
+    }
+    return r;
+}
+
+/// Moves the `r` head rows, encoded as `cp`, into a cold page. Frees `cp`
+/// on failure.
+fn retire(pl: *PageList, r: Range, cp: cold.ColdPage) !void {
+    var page = cp;
+    errdefer page.deinit(pl.gpa);
+    // Same width: the rows are exactly the ones encoded.
+    page.cached_cols = pl.cols;
+    page.cached_rows = @intCast(r.n);
+    try pl.cold_nodes.append(pl.gpa, .{ .page = page, .rows = @intCast(r.n), .seq = pl.cold_seq });
+    pl.freezePins(r.n, pl.cold_seq);
+    pl.cold_seq += 1;
+    pl.cold_rows += r.n;
+    pl.cold_bytes += page.bytesUsed();
+    for (0..r.count) |_| {
+        const h = pl.unlinkHead();
+        pl.pool.free(h.page.buf);
+        pl.gpa.destroy(h);
+    }
+    pl.dirty_generation +%= 1;
+}
+
+/// Starts a background compaction: compacts what the decode cache holds,
+/// then copies the next due range for `CompactJob.run`. Null when nothing
+/// is due or a job is already out. Clears `compact_due`.
+pub fn beginCompact(pl: *PageList) !?*CompactJob {
+    pl.compact_due = false;
+    if (pl.job_out) return null;
+    try pl.compactCached();
+    const r = pl.nextRange() orelse return null;
+    const job = try pl.gpa.create(CompactJob);
+    errdefer pl.gpa.destroy(job);
+    job.* = .{ .gpa = pl.gpa, .gen = pl.layout_gen, .first = pl.head, .range = r, .copies = undefined, .deflate = pl.opts.deflate };
+    var first: ?*Node = null;
+    errdefer if (first) |f| freeNodes(pl.gpa, &pl.pool, f);
+    var last: ?*Node = null;
+    var src: ?*Node = pl.head;
+    for (0..r.count) |_| {
+        const s = src.?;
+        const buf = try pl.pool.alloc(@intCast(s.page.buf.len));
+        const node = pl.gpa.create(Node) catch |e| {
+            pl.pool.free(buf);
+            return e;
+        };
+        node.* = .{ .prev = last, .page = .{ .buf = buf, .layout = s.page.layout } };
+        s.page.cloneInto(&node.page);
+        if (last) |l| l.next = node else first = node;
+        last = node;
+        src = s.next;
+    }
+    job.copies = first.?;
+    pl.job_out = true;
+    return job;
+}
+
+/// Ends a background compaction: swaps the encoded rows out if the hot
+/// list still holds them unchanged, else drops the result. Frees the job
+/// and sets `compact_due` if more is due.
+pub fn finishCompact(pl: *PageList, job: *CompactJob) !void {
+    const result = job.result;
+    job.result = null;
+    const r = job.range;
+    const fresh = job.gen == pl.layout_gen and job.first == pl.head;
+    pl.cancelCompact(job);
+    var cp = result orelse return;
+    const now = if (fresh) pl.nextRange() else null;
+    if (now == null or now.?.cached != null or now.?.count != r.count or now.?.n != r.n) {
+        cp.deinit(pl.gpa);
+        return;
+    }
+    try pl.retire(r, cp);
+    pl.compact_due = pl.nextRange() != null;
+}
+
+/// Frees a job without using its result (shutdown, or a stale job).
+pub fn cancelCompact(pl: *PageList, job: *CompactJob) void {
+    if (job.result) |*cp| cp.deinit(pl.gpa);
+    freeNodes(pl.gpa, &pl.pool, job.copies);
+    pl.gpa.destroy(job);
+    pl.job_out = false;
+}
+
+/// The decode cache entry whose nodes start at `n`.
+fn thawedAt(pl: *const PageList, n: *Node) ?usize {
+    for (pl.thawed.items, 0..) |e, i| if (e.first == n) return i;
+    return null;
+}
+
+/// Removes decode cache entry `i` and returns its encoding.
+fn takeThawed(pl: *PageList, i: usize) cold.ColdPage {
+    const e = pl.thawed.orderedRemove(i);
+    pl.thawed_bytes -= e.page.bytesUsed();
+    return e.page;
+}
+
+/// Drops decode cache entry `i`.
+fn dropThawed(pl: *PageList, i: usize) void {
+    var cp = pl.takeThawed(i);
+    cp.deinit(pl.gpa);
+}
+
+/// Empties the decode cache (the hot rows changed shape).
+fn clearThawed(pl: *PageList) void {
+    while (pl.thawed.items.len > 0) pl.dropThawed(pl.thawed.items.len - 1);
+}
+
+/// Keeps `e` in the decode cache, dropping the oldest entry when full;
+/// frees its page if it cannot be kept.
+fn cacheThawed(pl: *PageList, e: Thawed) void {
+    if (pl.thawed.items.len == thaw_cache) pl.dropThawed(0);
+    pl.thawed.append(pl.gpa, e) catch {
+        var cp = e.page;
+        cp.deinit(pl.gpa);
+        return;
+    };
+    pl.thawed_bytes += e.page.bytesUsed();
 }
 
 /// Gives pins in the first `n` hot rows (being compacted into cold page
@@ -426,13 +629,18 @@ pub fn thawNewest(pl: *PageList) !void {
     pl.cold_rows -= c.rows;
     pl.cold_bytes -= c.page.bytesUsed();
     var gone = pl.cold_nodes.pop().?;
-    gone.page.deinit(pl.gpa);
+    if (fresh.total > 0) {
+        pl.cacheThawed(.{ .page = gone.page, .first = fresh.head, .count = fresh.nodes, .rows = fresh.total });
+    } else gone.page.deinit(pl.gpa);
+    pl.layout_gen +%= 1;
     pl.dirty_generation +%= 1;
 }
 
 /// Recounts cold rows at the current width (after a resize; the lines
 /// themselves re-wrap when decoded).
 fn recountCold(pl: *PageList) void {
+    pl.clearThawed();
+    pl.layout_gen +%= 1;
     pl.cold_rows = 0;
     for (pl.cold_nodes.items) |*c| {
         c.rows = c.page.rowsAt(pl.gpa, pl.cols) catch c.rows;
@@ -525,6 +733,8 @@ pub fn viewportRow(pl: *const PageList, y: u16) Pin {
 pub fn eraseScrollback(pl: *PageList) !void {
     if (pl.scrollbackRows() == 0) return;
     while (pl.cold_nodes.items.len > 0) pl.evictCold();
+    pl.clearThawed();
+    pl.layout_gen +%= 1;
     // Move the active rows into fresh pages, then free the old list.
     var fresh: PageList = .{ .gpa = pl.gpa, .pool = pl.pool, .opts = pl.opts, .cols = pl.cols, .rows = pl.rows, .page_bytes = pl.page_bytes, .head = undefined, .tail = undefined };
     const first = try newNode(pl.gpa, &fresh.pool, pl.cols, pl.page_bytes);
@@ -714,6 +924,12 @@ pub fn verify(pl: *const PageList) !void {
         cold_bytes += c.page.bytesUsed();
     }
     if (cold_rows != pl.cold_rows or cold_bytes != pl.cold_bytes) return error.BadColdCounts;
+    var thawed_bytes: usize = 0;
+    for (pl.thawed.items) |e| {
+        thawed_bytes += e.page.bytesUsed();
+        if (!nodeIn(pl.head, e.first)) return error.StaleDecodeCache;
+    }
+    if (thawed_bytes != pl.thawed_bytes) return error.BadColdCounts;
     if (pl.total < pl.rows) return error.TooFewRows;
 }
 
