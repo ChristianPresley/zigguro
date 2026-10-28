@@ -2,7 +2,7 @@
 
 # Performance budgets
 
-159 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
+161 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
 
 ## Machines
 
@@ -239,6 +239,8 @@
 | `idle.wakeups` | per_second | mean | 0.5/s | 0/s | any | scenario `idle` / `wakeups_per_s` | block | CONVENTIONS |
 | `mem.idle_private` | bytes | max | 150 MB | 100 MB | ref_laptop_2024 | scenario `idle` / `private_bytes` | block | E14.F04 |
 | `mem.gpu_device_local` | bytes | max | 96 MiB | 64 MiB | ref_laptop_2024 | runtime `vk_memory_budget` | warn | E02 |
+| `mem.sample` | duration_ns | p99 | 200 µs | – | ref_laptop_2024 | bench `zg_perf` / `perf.mem_sample` (p99_ns) | warn | E14.F04.S01.T02 |
+| `mem.tracked_alloc` | duration_ns | mean | 40 ns | – | ref_laptop_2024 | bench `zg_perf` / `perf.tracked_alloc_overhead` (ns_per_op) | warn | E14.F04.S01.T01 |
 | `perf.trace_overhead` | percent | mean | 1 % | 0.5 % | ref_laptop_2024 | scenario `editing_100k` / `trace_overhead_pct` | block | E14.F02.S02.T01 |
 | `perf.hud_overhead` | duration_ns | p99 | 100 µs | 50 µs | ref_laptop_2024 | bench `zg_perf_ui` / `perf.hud_frame` (p99_ns) | block | E14.F03.S01.T02 |
 | `perf.flight_recorder_overhead` | percent | mean | 0.5 % | – | ref_laptop_2024 | scenario `editing_100k` / `drain_cpu_pct` | block | E14.F02.S02.T01 |

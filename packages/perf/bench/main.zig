@@ -47,6 +47,32 @@ fn register(b: *bench.Bench) !void {
             drainTrace();
         }
     }.f);
+    // Tracked allocation (E14.F04.S01.T01): the overhead is the
+    // difference between these two (budget < 5 ns).
+    try b.run("perf.smp_alloc_free", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            allocFree(std.heap.smp_allocator, s);
+        }
+    }.f);
+    try b.run("perf.tracked_alloc_overhead", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            var st: zg_perf.mem.TrackedAllocator = undefined;
+            allocFree(zg_perf.mem.trackedWith(&st, .perf, std.heap.smp_allocator), s);
+        }
+    }.f);
+    // One memory sample: /proc reads, tag sums, GPU query (budget
+    // < 200 us, E14.F04.S01.T02).
+    try b.run("perf.mem_sample", {}, struct {
+        fn f(_: void, s: *bench.State) void {
+            var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+            defer threaded.deinit();
+            var scratch: [32 * 1024]u8 = undefined;
+            for (0..s.iterations()) |_| {
+                const snap = zg_perf.mem.sampler.takeSnapshot(threaded.io(), &scratch);
+                bench.doNotOptimizeAway(snap.t_ns);
+            }
+        }
+    }.f);
     try b.run("perf.activity_level", {}, struct {
         fn f(_: void, s: *bench.State) void {
             var sig: zg_perf.ActivitySignal = .{};
@@ -119,4 +145,12 @@ fn drainTrace() void {
     var events: std.ArrayList(zg_core.trace.Event) = .empty;
     defer events.deinit(std.heap.page_allocator);
     zg_core.trace.collect(std.heap.page_allocator, &events) catch {};
+}
+
+fn allocFree(a: std.mem.Allocator, s: *bench.State) void {
+    for (0..s.iterations()) |i| {
+        const buf = a.alloc(u8, 32 + (i & 31)) catch return;
+        bench.doNotOptimizeAway(buf.ptr);
+        a.free(buf);
+    }
 }
