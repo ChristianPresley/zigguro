@@ -67,7 +67,14 @@ pub const TerminalPanel = struct {
     /// This session's shell-integration nonce.
     nonce: [32]u8 = undefined,
     /// Called after output arrives (the workbench repaints).
-    on_output: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void } = null,
+    on_output: ?Hook = null,
+    /// Called first thing in `destroy` (an agent's command learns that
+    /// its terminal is gone).
+    on_destroy: ?Hook = null,
+    /// The kind of shell started (how to quote a `cd` for it).
+    kind: inject.ShellKind = .other,
+
+    pub const Hook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void };
 
     /// A panel with an 80x24 terminal; `start` spawns the shell.
     pub fn create(gpa: std.mem.Allocator, io: std.Io, app: *zg_gui.App, env: *const std.process.Environ.Map) !*TerminalPanel {
@@ -101,6 +108,7 @@ pub const TerminalPanel = struct {
 
     /// Stops the reader, ends the shell and frees everything.
     pub fn destroy(p: *TerminalPanel) void {
+        if (p.on_destroy) |h| h.f(h.ctx);
         p.stop.store(true, .release);
         if (p.pty) |*pty| pty.kill(.hangup);
         // The reader polls `stop` every 50 ms.
@@ -161,6 +169,7 @@ pub const TerminalPanel = struct {
         const n = @min(args.len, argv_buf.len - 1);
         @memcpy(argv_buf[1..][0..n], args[0..n]);
         const argv = argv_buf[0 .. n + 1];
+        p.kind = inject.kindOf(shell);
         var plan = if (p.shell_integration) p.integrationPlan(argv) else null;
         defer if (plan) |*x| x.deinit();
         const policy: zg_platform.process.pty.SpawnPolicy = .{ .env_set = if (plan) |x| x.env else &.{} };
@@ -298,6 +307,12 @@ pub const TerminalPanel = struct {
         defer p.endJob();
         p.compactor.work();
         p.postDrain();
+    }
+
+    /// Ends the shell (`.kill_tree`: with everything it started); the
+    /// reader then sees the end.
+    pub fn kill(p: *TerminalPanel, how: zg_platform.process.pty.KillMode) void {
+        if (p.pty) |*pty| pty.kill(how);
     }
 
     fn write(ctx: *anyopaque, bytes: []const u8) void {
