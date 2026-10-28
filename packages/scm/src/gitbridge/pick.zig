@@ -17,6 +17,8 @@ pub const Options = struct {
     mainline: ?u32 = null,
     tz_offset_min: i32 = 0,
     blocked: common.Blocked = .{},
+    /// Passphrase prompt and agent for `commit.gpgSign`.
+    signing: common.Signing = .{},
 };
 
 const Mode = enum { pick, revert };
@@ -89,7 +91,7 @@ fn run(repo: *Repository, rev: []const u8, opts: Options, mode: Mode) !common.Re
     if (tree_id.eql(head_tree)) return error.EmptyCommit;
     const who = try common.ident(repo, a, .committer, opts.tz_offset_min);
     const author = if (mode == .pick) c.author else try common.ident(repo, a, .author, opts.tz_offset_min);
-    const new = try common.writeCommit(repo, a, tree_id, &.{head}, author, who, msg);
+    const new = try common.writeCommit(repo, a, tree_id, &.{head}, author, who, msg, opts.signing);
     const reflog = switch (mode) {
         .pick => try std.fmt.allocPrint(a, "cherry-pick: {s}", .{sub}),
         .revert => try std.fmt.allocPrint(a, "revert: {s}", .{common.subject(msg)}),
