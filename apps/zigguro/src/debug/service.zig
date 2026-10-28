@@ -99,6 +99,8 @@ pub const Options = struct {
     /// The gutter's breakpoint and execution pointer styles (null: the
     /// editor's defaults).
     gutter_styles: ?BreakpointGutter.Styles = null,
+    /// Where `runInTerminal` starts debuggees (null: it is refused).
+    terminal: ?DebugManager.TerminalLauncher = null,
 };
 
 const no_style: zg_editor.model.decorations.store.StyleRef = @enumFromInt(0);
@@ -275,6 +277,7 @@ pub const Debug = struct {
             .breakpoints = d.bps.sink(),
             .trusted = opts.trusted,
             .vars = &d.vars,
+            .terminal = opts.terminal,
         });
         try d.mgr.subscribe(.{ .ctx = inbox, .func = Inbox.onSession });
         try d.bps.subscribe(.{ .ctx = inbox, .func = Inbox.onBreakpoints });
