@@ -6,6 +6,8 @@
 //! `pub fn create(*B) !Platform` and a field `io: std.Io`. Input cases run
 //! only when `B` can synthesise input: `injectKey(*B, WindowId, Key,
 //! KeyAction) !void` and `requestClose(*B, WindowId) !void` are optional.
+//! A harness on a virtual clock declares `pub const virtual_clock = true`
+//! and skips the latency clock case.
 //! Each case gets a fresh platform, which the suite deinits.
 
 const std = @import("std");
@@ -14,6 +16,10 @@ const keys = @import("../api/keys.zig");
 const Event = @import("../api/event.zig").Event;
 const Platform = @import("../api/platform.zig").Platform;
 const WindowId = types.WindowId;
+
+/// How old an input time may be when `pollEvents` returns it
+/// (docs/perf/latency.md section 1).
+pub const max_input_age_ns: u64 = 50 * std.time.ns_per_ms;
 
 /// How long a case waits for an expected event.
 pub const timeout_ns: u64 = 2 * std.time.ns_per_s;
@@ -32,6 +38,7 @@ pub fn runConformance(comptime B: type, harness: *B) !void {
         .{ "IME enable and disable are accepted", imeToggle },
         .{ "monitors reports at least one", monitorsAtLeastOne },
         .{ "wake delivers exactly one Event.wake", wakeOnce },
+        .{ "latency clock: input times are on the monotonic clock", latencyClockCheck },
     };
     inline for (cases) |c| {
         const p = try B.create(harness);
@@ -180,4 +187,34 @@ fn wakeOnce(comptime B: type, h: *B, p: Platform) !void {
         if (e == .wake) wakes += 1;
     }
     try std.testing.expectEqual(1, wakes);
+}
+
+/// The latency clock contract (E14.F03.S02.T01): an input's `time_ns` is
+/// on `zg_core.time.nowNs` (`Io.Clock.awake`), not in the future and at
+/// most `max_input_age_ns` old when read. Presentation feedback is checked
+/// by the backends that send it (Wayland `wp_presentation`, Win32 CPU
+/// present).
+fn latencyClockCheck(comptime B: type, h: *B, p: Platform) !void {
+    if (!@hasDecl(B, "injectKey")) return;
+    if (@hasDecl(B, "virtual_clock") and B.virtual_clock) return;
+    const win = try testWindow(p);
+    defer p.destroyWindow(win);
+    try B.injectKey(h, win, .key_w, .press);
+    try B.injectKey(h, win, .key_w, .release);
+    const deadline = nowNs(h.io) + timeout_ns;
+    var evs: [64]Event = undefined;
+    while (true) {
+        const n = p.pollEvents(&evs);
+        const now = nowNs(h.io);
+        for (evs[0..n]) |e| if (e == .key and e.key.ev.key == .key_w) {
+            const t = e.key.ev.time_ns;
+            if (t > now or now - t >= max_input_age_ns) {
+                std.log.err("latency clock: key time {d} ns, read at {d} ns", .{ t, now });
+                return error.ClockDomain;
+            }
+            return;
+        };
+        if (now >= deadline) return error.Timeout;
+        p.waitEvents(deadline);
+    }
 }
