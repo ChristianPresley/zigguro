@@ -55,14 +55,15 @@ pub fn keyInput(kp: KeyPress, buf: *[4]u8) input.KeyInput {
 
 /// Keys the IDE keeps by default, like VS Code's `commandsToSkipShell`:
 /// Ctrl+Shift+letter or digit (palette, copy, paste, new terminal), Ctrl+`
-/// (toggle the panel), Ctrl+PageUp/PageDown (previous/next terminal) and
-/// F1 (commands). Everything else reaches the application.
+/// (toggle the panel), Ctrl+PageUp/PageDown (previous/next terminal),
+/// Ctrl+F (find) and F1 (commands). Everything else reaches the
+/// application.
 pub fn defaultBubble(kp: KeyPress) bool {
     const m = kp.mods;
     if (m.alt_gr) return false;
     if (kp.key == .f1 and !m.ctrl and !m.alt and !m.shift) return true;
     if (m.ctrl and !m.alt and kp.key == .backquote) return true;
-    if (m.ctrl and !m.alt and !m.shift and (kp.key == .page_up or kp.key == .page_down)) return true;
+    if (m.ctrl and !m.alt and !m.shift and (kp.key == .page_up or kp.key == .page_down or kp.key == .key_f)) return true;
     if (m.ctrl and m.shift and !m.alt) {
         const v = @intFromEnum(kp.key);
         return v >= @intFromEnum(PKey.key_a) and v <= @intFromEnum(PKey.digit_0);
@@ -117,6 +118,7 @@ test "route: the IDE keeps Ctrl+Shift letters, Ctrl+` and F1" {
     try testing.expect(defaultBubble(.{ .key = .backquote, .mods = .{ .ctrl = true } }));
     try testing.expect(defaultBubble(.{ .key = .f1 }));
     try testing.expect(defaultBubble(.{ .key = .page_down, .mods = .{ .ctrl = true } }));
+    try testing.expect(defaultBubble(.{ .key = .key_f, .mods = .{ .ctrl = true } }));
     try testing.expect(!defaultBubble(.{ .key = .page_up, .mods = .{ .shift = true } }));
     try testing.expect(!defaultBubble(.{ .key = .key_c, .mods = .{ .ctrl = true } }));
     try testing.expect(!defaultBubble(.{ .key = .arrow_up, .mods = .{ .ctrl = true, .shift = true } }));
