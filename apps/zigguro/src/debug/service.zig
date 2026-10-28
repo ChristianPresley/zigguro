@@ -35,6 +35,7 @@ const configs_mod = @import("configs.zig");
 const call_stack = @import("call_stack.zig");
 const toolbar = @import("toolbar.zig");
 const var_tree = @import("var_tree.zig");
+const bp_view = @import("bp_view.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -1099,6 +1100,85 @@ pub const Debug = struct {
 
     pub fn setAllBreakpointsCmd(d: *Debug, on: bool) void {
         d.bps.setEnabledAll(on);
+    }
+
+    /// Enables every breakpoint, or disables them all when they all are
+    /// (the Breakpoints view's toolbar).
+    pub fn toggleAllBreakpointsCmd(d: *Debug) void {
+        const views = d.bps.list(d.gpa) catch return;
+        defer d.gpa.free(views);
+        var all = true;
+        for (views) |v| all = all and v.bp.enabled;
+        d.bps.setEnabledAll(!all);
+    }
+
+    /// The breakpoint on the caret's line, made when there is none (for
+    /// Add Conditional Breakpoint and Add Logpoint).
+    pub fn breakpointAtCursor(d: *Debug) ?BreakpointManager.BpId {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const c = d.host.cursor(d.host.ctx, &buf) orelse {
+            d.say(.info, "Open a file to set a breakpoint", .{});
+            return null;
+        };
+        var arena: std.heap.ArenaAllocator = .init(d.gpa);
+        defer arena.deinit();
+        const here = d.bps.inSource(arena.allocator(), c.path) catch return null;
+        for (here) |v| if (v.bp.kind.source.line == c.line) return v.bp.id;
+        return d.bps.add(.{ .kind = .{ .source = .{ .path = c.path, .line = c.line } } }) catch null;
+    }
+
+    /// The Breakpoints view's rows (in `a`): the active session's
+    /// exception filters and every breakpoint.
+    pub fn bpSnapshot(d: *Debug, a: Allocator) Allocator.Error!bp_view.Snapshot {
+        const filters = if (d.active()) |e| try d.bps.exceptionFilters(a, e.s) else &.{};
+        return .{ .filters = filters, .bps = try d.bps.list(a) };
+    }
+
+    pub fn bpHooks(d: *Debug) bp_view.Hooks {
+        return .{
+            .ctx = d,
+            .set_enabled = bpSetEnabled,
+            .set_filter = bpSetFilter,
+            .remove = bpRemove,
+            .reveal = bpReveal,
+            .set_text = bpSetText,
+            .add_function = bpAddFunction,
+        };
+    }
+
+    fn bpSetEnabled(ctx: *anyopaque, id: BreakpointManager.BpId, on: bool) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.bps.update(id, .{ .enabled = on }) catch {};
+    }
+
+    fn bpSetFilter(ctx: *anyopaque, filter: []const u8, enabled: bool, condition: ?[]const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        const e = d.active() orelse return;
+        d.bps.setExceptionFilter(e.s.cfg.type, filter, enabled, condition) catch {};
+    }
+
+    pub fn bpRemove(ctx: *anyopaque, id: BreakpointManager.BpId) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.bps.remove(id);
+    }
+
+    fn bpReveal(ctx: *anyopaque, path: []const u8, line: u32) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.host.reveal(d.host.ctx, path, line, 1, false);
+    }
+
+    fn bpSetText(ctx: *anyopaque, id: BreakpointManager.BpId, field: bp_view.Field, text: ?[]const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        const patch: BreakpointManager.Patch = switch (field) {
+            .log_message => .{ .log_message = text },
+            else => .{ .condition = text },
+        };
+        d.bps.update(id, patch) catch |e| d.say(.error_, "Cannot change the breakpoint: {t}", .{e});
+    }
+
+    fn bpAddFunction(ctx: *anyopaque, name: []const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        _ = d.bps.add(.{ .kind = .{ .function = .{ .name = name } } }) catch |e| d.say(.error_, "Cannot add the breakpoint: {t}", .{e});
     }
 
     // ---------------------------------------------------------- pickers
