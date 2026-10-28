@@ -58,6 +58,19 @@ pub fn Oneshot(comptime M: protocol.Method, comptime Tag: type) type {
             };
         }
 
+        /// `send` with the params already serialized (`params_json`,
+        /// copied), so items go back to the server byte for byte.
+        pub fn sendRaw(r: *Self, c: *Client, params_json: []const u8, opts: Client.ReqOpts, tag: Tag) !void {
+            const a = try r.gpa.create(Answer);
+            errdefer r.gpa.destroy(a);
+            a.* = .{ .client = c, .tag = tag, .r = r };
+            _ = r.outstanding.fetchAdd(1, .acq_rel);
+            _ = c.requestRaw(M, params_json, opts, .{ .ctx = a, .func = onResult }) catch |e| {
+                _ = r.outstanding.fetchSub(1, .acq_rel);
+                return e;
+            };
+        }
+
         /// Whether a request is in flight or unread.
         pub fn busy(r: *const Self) bool {
             return r.outstanding.load(.acquire) > r.taken.items.len;

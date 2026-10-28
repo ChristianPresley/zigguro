@@ -524,8 +524,20 @@ fn Thunk(comptime M: protocol.Method) type {
 /// a worker. Cheap enough for the UI thread: serializes `params` and
 /// enqueues the frame.
 pub fn request(c: *Client, comptime M: protocol.Method, params: protocol.RequestInfo(M).Params, opts: ReqOpts, cb: ResultCb(M)) !ReqHandle {
-    const Th = Thunk(M);
     const body = try std.json.Stringify.valueAlloc(c.gpa, params, .{});
+    return c.requestOwned(M, body, opts, cb);
+}
+
+/// `request` with the params already serialized (`params_json`, copied):
+/// for items a server must get back byte for byte (call hierarchy
+/// items with their `data`).
+pub fn requestRaw(c: *Client, comptime M: protocol.Method, params_json: []const u8, opts: ReqOpts, cb: ResultCb(M)) !ReqHandle {
+    return c.requestOwned(M, try c.gpa.dupe(u8, params_json), opts, cb);
+}
+
+/// Takes `body` (allocated with `c.gpa`) in every case.
+fn requestOwned(c: *Client, comptime M: protocol.Method, body: []u8, opts: ReqOpts, cb: ResultCb(M)) !ReqHandle {
+    const Th = Thunk(M);
     errdefer c.gpa.free(body);
     const r = try c.gpa.create(Req);
     r.* = .{
