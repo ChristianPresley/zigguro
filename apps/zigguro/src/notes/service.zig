@@ -254,6 +254,77 @@ pub const NotesService = struct {
         s.app.spawn(reindexJob, .{ s, owned });
     }
 
+    /// The explorer moved absolute `old` to `new` (null: deleted), a file
+    /// or a folder. Links to and from the moved notes are rewritten (one
+    /// accepted changeset, #675) and the index follows; moved notes keep
+    /// their ids. UI thread.
+    pub fn moved(s: *NotesService, old: []const u8, new: ?[]const u8) void {
+        s.movedErr(old, new) catch |e| log.warn("updating links after moving {s}: {t}", .{ old, e });
+    }
+
+    fn movedErr(s: *NotesService, old: []const u8, new: ?[]const u8) !void {
+        var from_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var to_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const from = s.relOf(&from_buf, old) orelse return;
+        const to = if (new) |n| s.relOf(&to_buf, n) else null;
+        if (to == null) return s.forget(from);
+        const view = try s.ix.reader();
+        defer view.release();
+        var plan = try zg_notes.refactor.planMoves(s.gpa, view, &s.vault, &.{.{ .from = from, .to = to.? }});
+        defer plan.deinit();
+        for (plan.moved) |m| try s.renameId(m.from, m.to);
+        _ = try zg_notes.refactor.rename.submit(s.gpa, .{ .ctx = s, .submit = submitPort }, view, &plan, std.fs.path.basename(from), 0, true);
+        for (plan.moved) |m| {
+            if (s.vault.isNotePath(m.to)) try s.reindex(m.to) else try s.forget(m.to);
+        }
+        // A note the index did not have yet (or a file renamed to a note).
+        if (plan.moved.len == 0 and s.vault.isNotePath(to.?)) try s.reindex(to.?);
+        s.wake();
+    }
+
+    /// Note `from`'s id now names `to`.
+    fn renameId(s: *NotesService, from: []const u8, to: []const u8) !void {
+        s.ids_mutex.lockUncancelable(s.io);
+        defer s.ids_mutex.unlock(s.io);
+        const kv = s.ids.fetchRemove(from) orelse return;
+        s.gpa.free(kv.key);
+        const key = try s.gpa.dupe(u8, to);
+        errdefer s.gpa.free(key);
+        const g = try s.ids.getOrPut(s.gpa, key);
+        if (g.found_existing) s.gpa.free(g.key_ptr.*);
+        g.key_ptr.* = key;
+        g.value_ptr.* = kv.value;
+    }
+
+    /// Forgets the notes at `rel` or under it (deleted).
+    fn forget(s: *NotesService, rel: []const u8) !void {
+        var gone: std.ArrayList(FileId) = .empty;
+        defer gone.deinit(s.gpa);
+        {
+            s.ids_mutex.lockUncancelable(s.io);
+            defer s.ids_mutex.unlock(s.io);
+            var keys: std.ArrayList([]const u8) = .empty;
+            defer keys.deinit(s.gpa);
+            var it = s.ids.iterator();
+            while (it.next()) |e| {
+                const k = e.key_ptr.*;
+                if (std.mem.eql(u8, k, rel) or (std.mem.startsWith(u8, k, rel) and k.len > rel.len and k[rel.len] == '/')) {
+                    try keys.append(s.gpa, k);
+                    try gone.append(s.gpa, e.value_ptr.*);
+                }
+            }
+            for (keys.items) |k| {
+                _ = s.ids.remove(k);
+                s.gpa.free(k);
+            }
+        }
+        if (gone.items.len == 0) return;
+        for (gone.items) |id| try s.ix.removeFile(id);
+        try s.ix.commit();
+        _ = s.notes.fetchSub(@intCast(@min(gone.items.len, s.notes.load(.monotonic))), .monotonic);
+        s.wake();
+    }
+
     pub fn stateNow(s: *const NotesService) State {
         return s.state.load(.acquire);
     }
@@ -437,11 +508,33 @@ pub const NotesService = struct {
         s.hooks.search(s.hooks.ctx, query);
     }
 
-    /// Sidebar edits (a property, a linked mention, a new note): through
-    /// the host's review store, else written here when each file still
-    /// holds the text the edit was made from. Indexed at once.
+    /// Sidebar edits (a property, a linked mention, a new note).
     fn applyPort(ctx: *anyopaque, label: []const u8, changes: []const FileChange) anyerror!u64 {
         const s: *NotesService = @ptrCast(@alignCast(ctx));
+        return s.applyChanges(label, changes);
+    }
+
+    /// A rename's link updates: each note's text with its edits.
+    fn submitPort(ctx: *anyopaque, label: []const u8, tx: u64, files: []const zg_notes.refactor.rename.PlanFile, auto_apply: bool) anyerror!u64 {
+        _ = tx;
+        _ = auto_apply;
+        const s: *NotesService = @ptrCast(@alignCast(ctx));
+        var arena: std.heap.ArenaAllocator = .init(s.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const changes = try a.alloc(FileChange, files.len);
+        for (files, changes) |f, *c| {
+            const abs = try std.fs.path.join(a, &.{ s.root, f.path });
+            const bytes = try Io.Dir.cwd().readFileAlloc(s.io, abs, a, .limited(max_note_bytes));
+            c.* = .{ .path = f.path, .base = bytes, .new = try zg_notes.refactor.rename.applyEdits(a, bytes, f.edits) };
+        }
+        return s.applyChanges(label, changes);
+    }
+
+    /// Applies `changes` through the host's review store, else writes
+    /// them here when each file still holds the text the edit was made
+    /// from. Edited notes are indexed at once.
+    fn applyChanges(s: *NotesService, label: []const u8, changes: []const FileChange) !u64 {
         const id: u64 = blk: {
             if (s.hooks.apply) |f| if (try f(s.hooks.ctx, label, changes)) |id| break :blk id;
             try s.writeChanges(changes);
@@ -603,4 +696,45 @@ test "notes service: a saved note is indexed again; sidebar edits are written an
     try testing.expect(std.mem.indexOf(u8, now, "status: draft") != null);
     // An edit made from stale text is refused.
     try testing.expectError(error.FileChanged, s.writeChanges(&.{.{ .path = "a.md", .base = "# Alpha\n", .new = "x" }}));
+}
+
+test "notes service: renaming a note rewrites links to it; deleting forgets it" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.md", .data = "# Alpha\n\nSee [[b]] and [[b#Part|the part]].\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.md", .data = "# Bravo\n\n## Part\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try tmpRoot(&tmp, &buf);
+    const t = try zg_gui.testing.TestApp.init(gpa, .{});
+    defer t.deinit();
+    var rec: Rec = .{};
+    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    defer s.destroy();
+    const b_id = s.idOf("b.md").?;
+
+    // The explorer renamed b.md to zeta.md.
+    try tmp.dir.rename("b.md", tmp.dir, "zeta.md", io);
+    const old = try std.fs.path.join(gpa, &.{ root, "b.md" });
+    defer gpa.free(old);
+    const new = try std.fs.path.join(gpa, &.{ root, "zeta.md" });
+    defer gpa.free(new);
+    s.moved(old, new);
+    const a = try tmp.dir.readFileAlloc(io, "a.md", gpa, .limited(4096));
+    defer gpa.free(a);
+    try testing.expectEqualStrings("# Alpha\n\nSee [[zeta]] and [[zeta#Part|the part]].\n", a);
+    try testing.expect(s.idOf("b.md") == null);
+    try testing.expect(s.idOf("zeta.md").?.eql(b_id));
+    // The index has the new name: zeta's backlinks list a.
+    s.setActive(new);
+    try s.sidebar_model.sync();
+    try testing.expectEqualStrings("Bravo", s.sidebar_model.title);
+    try testing.expectEqual(@as(usize, 1), s.sidebar_model.backlinks.len);
+
+    // Deleted: gone from the index.
+    try tmp.dir.deleteFile(io, "zeta.md");
+    s.moved(new, null);
+    try testing.expect(s.idOf("zeta.md") == null);
+    try testing.expectEqual(@as(u32, 1), s.noteCount());
 }
