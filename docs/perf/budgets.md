@@ -202,12 +202,12 @@
 
 | id | metric | stat | limit | target | machine | source | gate | spec |
 |---|---|---|---|---|---|---|---|---|
-| `review.submit_3_files` | duration_ns | p99 | 200 µs | – | ref_laptop_2024 | runtime `pending` | track | E12.F01.S03.T02 |
+| `review.submit_3_files` | duration_ns | p99 | 200 µs | – | ref_laptop_2024 | bench `zg_review` / `review.submit.3_files` (p99_ns) | warn | E12.F01.S03.T02 |
 | `review.queue_open_500` | duration_ns | max | 16 ms | – | ref_laptop_2024 | runtime `pending` | track | E12.F02 |
 | `review.hunk_accept` | duration_ns | p99 | 4 ms | – | ref_laptop_2024 | runtime `pending` | track | E12.F02 |
 | `review.rebase_pending_keystroke` | duration_ns | p99 | 100 µs | – | ref_laptop_2024 | runtime `pending` | track | E12.F03 |
-| `review.checkpoint_create` | duration_ns | p99 | 1 ms | – | ref_laptop_2024 | runtime `pending` | track | E12.F06 |
-| `review.store_cold_load` | duration_ns | p99 | 50 ms | – | ref_laptop_2024 | runtime `pending` | track | E12.F01 |
+| `review.checkpoint_create` | duration_ns | p99 | 1 ms | – | ref_laptop_2024 | bench `zg_review` / `review.checkpoint_create` (p99_ns) | warn | E12.F06 |
+| `review.store_cold_load` | duration_ns | p99 | 50 ms | – | ref_laptop_2024 | bench `zg_review` / `review.store_cold_load` (p99_ns) | warn | E12.F01 |
 | `review.completion_client_overhead` | duration_ns | p99 | 3 ms | – | ref_laptop_2024 | runtime `pending` | track | E12.F08 |
 | `review.pending_metadata_1000` | bytes | max | 31250 KiB | – | ref_laptop_2024 | runtime `pending` | track | E12.F01 |
 
