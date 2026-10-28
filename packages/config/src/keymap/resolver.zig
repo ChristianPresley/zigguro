@@ -254,6 +254,31 @@ pub const Resolver = struct {
         return r.start(cands, &e, ev);
     }
 
+    /// The command a single key press runs under `stack`, without
+    /// changing any state: null while a chord is in progress, for
+    /// releases and modifiers, and when the key only starts chords. For a
+    /// widget that takes some keys before the focused node (a completion
+    /// list over an editor) while keeping them rebindable.
+    pub fn peek(r: *const Resolver, stack: []const KeyContext, ev: keys.KeyInput) ?CommandId {
+        if (r.depth > 0 or ev.action == .release) return null;
+        if (keys.modifierOf(ev.usage) != null) return null;
+        const km = r.km orelse return null;
+        km.relink();
+        var cbuf: [4]Stroke = undefined;
+        const cands = keyspec.candidates(ev, r.layout, r.opts.dispatch, &cbuf);
+        const e = r.env(stack);
+        var exact: ?u32 = null;
+        for (cands) |c| for (km.byFirst(c)) |bi| {
+            const b = &km.bindings[bi];
+            if (!b.live() or b.spec.isModTap() or b.spec.len != 1) continue;
+            if (b.when) |w| if (!w.eval(&e)) continue;
+            if (exact == null or bi > exact.?) exact = bi;
+        };
+        const x = exact orelse return null;
+        const b = &km.bindings[x];
+        return if (b.isDisable()) null else b.id;
+    }
+
     fn start(r: *Resolver, cands: []const Stroke, e: *const EvalEnv, ev: keys.KeyInput) Resolution {
         const km = r.km.?;
         var exact: ?u32 = null;
