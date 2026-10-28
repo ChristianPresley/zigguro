@@ -1,0 +1,7 @@
+Build started...
+1>------ Build started: Project: demo, Configuration: Debug x64 ------
+1>main.cpp
+1>C:\src\demo\main.cpp(12,5): error C2065: 'y': undeclared identifier [C:\src\demo\demo.vcxproj]
+1>C:\src\demo\main.cpp(7): warning C4101: 'x': unreferenced local variable
+C:\src\demo\util.cpp(3,1,3,9) : info C4000: informational message
+1>Done building project "demo.vcxproj" -- FAILED.
