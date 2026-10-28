@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "package": "zg_core",
+  "zig": "0.16.0",
+  "target": "x86_64-linux",
+  "optimize": "ReleaseFast",
+  "cpu": "znver4",
+  "quick": false,
+  "results": [
+    {
+      "name": "mailbox post+drain (1 producer)",
+      "iters": 2640120,
+      "ns_per_op": 71.6,
+      "p50_ns": 71.9,
+      "p99_ns": 79.7,
+      "bytes_per_op": null,
+      "allocs_per_op": 0,
+      "bytes_alloc_per_op": 0
+    },
+    {
+      "name": "utf8.validate 1 MiB ascii",
+      "iters": 2000,
+      "ns_per_op": 100000,
+      "p50_ns": 99000,
+      "p99_ns": 120000,
+      "bytes_per_op": 1048576,
+      "allocs_per_op": 0,
+      "bytes_alloc_per_op": 0
+    },
+    {
+      "name": "log filtered out",
+      "iters": 100000000,
+      "ns_per_op": 0.3,
+      "p50_ns": 0.3,
+      "p99_ns": 0.4,
+      "bytes_per_op": null,
+      "allocs_per_op": 0,
+      "bytes_alloc_per_op": 0,
+      "samples_ns": [0.3, 0.3, 0.31, 0.4]
+    }
+  ]
+}
