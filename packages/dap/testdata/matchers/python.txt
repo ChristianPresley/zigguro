@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/dev/proj/a.py", line 4, in <module>
+    f()
+    ~^^
+  File "/home/dev/proj/a.py", line 2, in f
+    return 1/0
+           ~^~
+ZeroDivisionError: division by zero
