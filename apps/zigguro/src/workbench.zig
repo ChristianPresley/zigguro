@@ -1335,6 +1335,7 @@ pub const Workbench = struct {
         .{ .id = "debug.copyCallStack", .title = "Copy Call Stack", .category = "Debug", .run = copyCallStack },
         .{ .id = "debug.focusVariables", .title = "Focus on Variables View", .category = "Debug", .run = focusVariables },
         .{ .id = "debug.focusWatch", .title = "Focus on Watch View", .category = "Debug", .run = focusWatch },
+        .{ .id = "debug.focusLoadedScripts", .title = "Focus on Loaded Scripts View", .category = "Debug", .run = focusLoadedScripts },
         .{ .id = "debug.setVariable", .title = "Set Value", .category = "Debug", .run = setVariable },
         .{ .id = "debug.copyValue", .title = "Copy Value", .category = "Debug", .run = copyDebugValue },
         .{ .id = "debug.copyAsExpression", .title = "Copy as Expression", .category = "Debug", .run = copyAsExpression },
@@ -3165,6 +3166,7 @@ pub const Workbench = struct {
             .cursor = debugCursor,
             .reveal = debugReveal,
             .show_panel = debugShowPanel,
+            .open_text = debugOpenText,
         }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null, .terminal = .{ .ctx = wb, .launch = launchDebuggee }, .gutter_styles = .{
             .enabled = CodeIntel.style.breakpoint,
             .disabled = CodeIntel.style.breakpoint_disabled,
@@ -3440,6 +3442,11 @@ pub const Workbench = struct {
         try wb.showDebugPanel(true);
     }
 
+    fn focusLoadedScripts(wb: *Workbench) !void {
+        wb.debug_focus = .loaded_scripts;
+        try wb.showDebugPanel(true);
+    }
+
     /// The Variables or Watch tree that has focus (`fallback` when
     /// neither has).
     fn debugTree(wb: *Workbench, fallback: DebugPanel.View) ?*debug_var_tree.VarTree {
@@ -3618,6 +3625,13 @@ pub const Workbench = struct {
     fn debugShowPanel(ctx: *anyopaque) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         wb.showDebugPanel(false) catch {};
+    }
+
+    /// A debug source without a path (`dap-source:`), read-only.
+    fn debugOpenText(ctx: *anyopaque, uri: []const u8, name: []const u8, text: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.openReport(uri, name, text) catch |e| wb.notify(.error_, "{s}: {t}", .{ name, e });
+        if (wb.win) |w| w.markAllDirty();
     }
 
     // -- call and type hierarchy ---------------------------------------------------
@@ -7277,6 +7291,24 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     // The call stack: add, then main.
     try std.testing.expect(t.find(.{ .name = "add, a.c line 2" }) != null);
     try std.testing.expect(t.find(.{ .name = "main, a.c line 6" }) != null);
+    // Loaded Scripts: GDB's `loadedSources` answer (asked at the first
+    // stop) lists a.c in the workspace folder; opening it shows it.
+    const Srcs = struct {
+        fn listed(dd: *Debug) bool {
+            const x = dd.active() orelse return false;
+            return x.s.loadedSourcesCount() > 0;
+        }
+    };
+    try Wait.until(t, d, Srcs.listed);
+    _ = t.settle();
+    {
+        const dp = wb.debug_panel.?;
+        const row = for (dp.srcs.tv.flat.rows.items) |r| {
+            if (std.mem.eql(u8, dp.srcs.labelOf(r.node), "a.c")) break r;
+        } else return error.TestExpectedEqual;
+        try std.testing.expect(row.depth == 1);
+        try std.testing.expectEqualStrings(".", dp.srcs.labelOf(dp.srcs.tv.flat.rows.items[0].node));
+    }
     // The Variables view: the locals, with their types.
     const Find = struct {
         fn until(tt: *zg_gui.testing.TestApp, name: []const u8) !void {

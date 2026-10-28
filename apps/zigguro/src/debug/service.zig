@@ -39,6 +39,7 @@ const call_stack = @import("call_stack.zig");
 const toolbar = @import("toolbar.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
+const sources_view = @import("sources_view.zig");
 const hover_mod = @import("hover.zig");
 const exception_view = @import("exception_view.zig");
 const console_mod = @import("console.zig");
@@ -85,6 +86,9 @@ pub const Host = struct {
     reveal: *const fn (ctx: *anyopaque, path: []const u8, line: u32, column: u32, focus: bool) void,
     /// Brings the Run and Debug panel up.
     show_panel: *const fn (ctx: *anyopaque) void,
+    /// Shows `text` read-only in a tab named `name`, the same tab for the
+    /// same `uri` (a source without a path; null: not shown).
+    open_text: ?*const fn (ctx: *anyopaque, uri: []const u8, name: []const u8, text: []const u8) void = null,
 };
 
 pub const Cursor = struct { path: []const u8, line: u32, column: u32 };
@@ -124,6 +128,8 @@ pub const Entry = struct {
     taken: bool = false,
     /// Console entries the Debug Console read (dropped ones counted).
     console_read: u64 = 0,
+    /// The `loadedSources` request went out (at the first stop).
+    sources_asked: bool = false,
 };
 
 /// What the open picker is for.
@@ -890,7 +896,7 @@ pub const Debug = struct {
         const e = try d.gpa.create(Entry);
         errdefer d.gpa.destroy(e);
         e.* = .{ .s = s, .id = s.id, .insp = undefined };
-        try e.insp.initSession(d.gpa, d.io, s, .{ .host = .{ .ctx = d, .reveal = revealFrame } });
+        try e.insp.initSession(d.gpa, d.io, s, .{ .host = .{ .ctx = d, .reveal = revealFrame, .open_source = openSource } });
         errdefer e.insp.deinit();
         e.insp.ch.setWaker(.{ .ctx = d.inbox, .func = Inbox.wake });
         // The workspace's watch list (the no-session one saves it).
@@ -953,6 +959,10 @@ pub const Debug = struct {
                 else => {},
             },
             .stopped => {
+                if (!e.sources_asked) {
+                    e.sources_asked = true;
+                    _ = s.refreshLoadedSources();
+                }
                 d.active_id = id;
                 d.reveal_req = id;
                 d.host.show_panel(d.host.ctx);
@@ -1402,6 +1412,79 @@ pub const Debug = struct {
         d.bps.update(b.id, .{ .enabled = !b.enabled }) catch {};
     }
 
+    /// The Loaded Scripts view's rows (in `a`): the active session's
+    /// loaded sources.
+    pub fn sourcesSnapshot(d: *Debug, a: Allocator) Allocator.Error!sources_view.Snapshot {
+        const e = d.active() orelse return .{ .root = d.root };
+        const Copy = struct {
+            a: Allocator,
+            id: u32,
+            out: []sources_view.Item = &.{},
+            failed: bool = false,
+            fn run(c: *@This(), list: []const DebugSession.LoadedSource) void {
+                c.out = c.a.alloc(sources_view.Item, list.len) catch {
+                    c.failed = true;
+                    return;
+                };
+                for (list, c.out) |src, *o| o.* = .{
+                    .session = c.id,
+                    .name = c.a.dupe(u8, src.name) catch return fail(c),
+                    .path = if (src.path) |p| c.a.dupe(u8, p) catch return fail(c) else null,
+                    .reference = src.reference,
+                    .origin = if (src.origin) |x| c.a.dupe(u8, x) catch return fail(c) else null,
+                };
+            }
+            fn fail(c: *@This()) void {
+                c.failed = true;
+                c.out = &.{};
+            }
+        };
+        var c: Copy = .{ .a = a, .id = e.id };
+        e.s.withLoadedSources(&c, Copy.run);
+        if (c.failed) return error.OutOfMemory;
+        return .{ .root = d.root, .items = c.out };
+    }
+
+    pub fn sourcesHooks(d: *Debug) sources_view.Hooks {
+        return .{ .ctx = d, .open = openLoaded };
+    }
+
+    fn openLoaded(ctx: *anyopaque, it: *const sources_view.Item) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        if (it.reference <= 0) {
+            if (it.path) |p| d.host.reveal(d.host.ctx, p, 1, 1, true);
+            return;
+        }
+        const e = d.entryById(it.session) orelse return;
+        e.insp.fetchSource(it.reference);
+    }
+
+    /// A source without a path arrived (a frame's, or a loaded one).
+    fn openSource(ctx: ?*anyopaque, uri: []const u8, text: []const u8, _: ?[]const u8) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx.?));
+        const f = d.host.open_text orelse return;
+        const parsed = zg_dap.inspect.sources.parseUri(uri) orelse return;
+        var nb: [256]u8 = undefined;
+        const Find = struct {
+            ref: i64,
+            buf: []u8,
+            name: ?[]const u8 = null,
+            fn run(x: *@This(), list: []const DebugSession.LoadedSource) void {
+                for (list) |src| if (src.reference == x.ref) {
+                    const n = @min(src.name.len, x.buf.len);
+                    @memcpy(x.buf[0..n], src.name[0..n]);
+                    x.name = x.buf[0..n];
+                    return;
+                };
+            }
+        };
+        var find: Find = .{ .ref = parsed.reference, .buf = &nb };
+        if (d.entryById(parsed.session)) |e| e.s.withLoadedSources(&find, Find.run);
+        var fb: [32]u8 = undefined;
+        const name = find.name orelse std.fmt.bufPrint(&fb, "Source {d}", .{parsed.reference}) catch "Source";
+        f(d.host.ctx, uri, name, text);
+    }
+
     /// The Breakpoints view's rows (in `a`): the active session's
     /// exception filters and every breakpoint.
     pub fn bpSnapshot(d: *Debug, a: Allocator) Allocator.Error!bp_view.Snapshot {
@@ -1689,7 +1772,7 @@ const Inbox = struct {
         const q: *Inbox = @ptrCast(@alignCast(ctx.?));
         switch (change) {
             // The other views come later (E07.F07.S01.T03).
-            .progress, .process, .modules, .loaded_sources, .memory, .exited => return,
+            .progress, .process, .modules, .memory, .exited => return,
             else => {},
         }
         q.push(.{ .session = .{ .s = s, .id = s.id, .change = change } });

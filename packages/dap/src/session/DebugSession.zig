@@ -162,6 +162,21 @@ pub const ModuleInfo = struct {
     path: ?[]const u8,
 };
 
+/// A source the debuggee loaded (`loadedSource` events, the
+/// `loadedSources` request).
+pub const LoadedSource = struct {
+    name: []const u8,
+    path: ?[]const u8,
+    /// > 0: the contents come from the `source` request.
+    reference: i64 = 0,
+    origin: ?[]const u8 = null,
+
+    fn same(x: LoadedSource, y: LoadedSource) bool {
+        if (x.path != null or y.path != null) return std.mem.eql(u8, x.path orelse "", y.path orelse "");
+        return x.reference == y.reference and std.mem.eql(u8, x.name, y.name);
+    }
+};
+
 pub const Progress = struct {
     id: []const u8,
     title: []const u8,
@@ -211,7 +226,7 @@ exit_code_: ?i64 = null,
 restart_data: ?[]const u8 = null,
 process_: ?ProcessInfo = null,
 modules_: std.ArrayList(ModuleInfo) = .empty,
-loaded_sources_: std.ArrayList([]const u8) = .empty,
+loaded_sources_: std.ArrayList(LoadedSource) = .empty,
 progress_: std.ArrayList(Progress) = .empty,
 top_frame_: ?FrameInfo = null,
 top_scopes_: []const ScopeInfo = &.{},
@@ -518,6 +533,72 @@ pub fn loadedSourcesCount(s: *DebugSession) usize {
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     return s.loaded_sources_.items.len;
+}
+
+/// Runs `f(ctx, sources)` under the session lock.
+pub fn withLoadedSources(s: *DebugSession, ctx: anytype, comptime f: fn (@TypeOf(ctx), []const LoadedSource) void) void {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    f(ctx, s.loaded_sources_.items);
+}
+
+/// Runs `f(ctx, modules)` under the session lock.
+pub fn withModules(s: *DebugSession, ctx: anytype, comptime f: fn (@TypeOf(ctx), []const ModuleInfo) void) void {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    f(ctx, s.modules_.items);
+}
+
+/// Asks the adapter for every loaded source when it takes the
+/// `loadedSources` request; the answer replaces the list and notifies
+/// `.loaded_sources`. False when it does not (the list then follows
+/// `loadedSource` events only).
+pub fn refreshLoadedSources(s: *DebugSession) bool {
+    if (!(s.caps().supportsLoadedSourcesRequest orelse false)) return false;
+    return s.send("loadedSources", null, .{ .ctx = s, .func = onLoadedSources });
+}
+
+fn onLoadedSources(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
+    const s: *DebugSession = @ptrCast(@alignCast(ctx.?));
+    defer r.deinit();
+    const o = switch (r) {
+        .ok => |o| o,
+        else => return,
+    };
+    const Body = struct { sources: []const SourceJson = &.{} };
+    var arena: std.heap.ArenaAllocator = .init(s.gpa);
+    defer arena.deinit();
+    const b = parseBody(Body, arena.allocator(), o.response.body) orelse return;
+    s.mutex.lockUncancelable(s.io);
+    s.loaded_sources_.clearRetainingCapacity();
+    for (b.sources) |src| s.upsertLoaded(src, false) catch break;
+    s.mutex.unlock(s.io);
+    s.notify(.loaded_sources);
+}
+
+const SourceJson = struct { path: ?[]const u8 = null, name: ?[]const u8 = null, sourceReference: ?i64 = null, origin: ?[]const u8 = null };
+
+/// Adds, changes or (`remove`) drops `src`; the lock held.
+fn upsertLoaded(s: *DebugSession, src: SourceJson, remove: bool) Allocator.Error!void {
+    const name = src.name orelse if (src.path) |p| std.fs.path.basename(p) else return;
+    const probe: LoadedSource = .{ .name = name, .path = src.path, .reference = src.sourceReference orelse 0 };
+    var idx: ?usize = null;
+    for (s.loaded_sources_.items, 0..) |p, i| if (p.same(probe)) {
+        idx = i;
+        break;
+    };
+    if (remove) {
+        if (idx) |i| _ = s.loaded_sources_.orderedRemove(i);
+        return;
+    }
+    const sa = s.arena.allocator();
+    const info: LoadedSource = .{
+        .name = try sa.dupe(u8, name),
+        .path = if (src.path) |p| try sa.dupe(u8, p) else null,
+        .reference = probe.reference,
+        .origin = if (src.origin) |x| try sa.dupe(u8, x) else null,
+    };
+    if (idx) |i| s.loaded_sources_.items[i] = info else try s.loaded_sources_.append(s.gpa, info);
 }
 
 /// Running progress reports (`progressStart` without `progressEnd`).
@@ -969,7 +1050,7 @@ const ev = struct {
     const ProgressUpdate = struct { progressId: []const u8 = "", message: ?[]const u8 = null, percentage: ?f64 = null };
     const ProgressEnd = struct { progressId: []const u8 = "" };
     const Module = struct { reason: []const u8 = "new", module: struct { id: Value = .null, name: []const u8 = "", path: ?[]const u8 = null } = .{} };
-    const LoadedSource = struct { reason: []const u8 = "new", source: struct { path: ?[]const u8 = null, name: ?[]const u8 = null } = .{} };
+    const LoadedSource = struct { reason: []const u8 = "new", source: SourceJson = .{} };
     const Process = struct { name: []const u8 = "", systemProcessId: ?i64 = null };
 };
 
@@ -1092,17 +1173,10 @@ fn handleEvent(s: *DebugSession, a: Allocator, event: []const u8, body: ?RawJson
         },
         .loadedSource => {
             const b = parseBody(ev.LoadedSource, a, body) orelse return;
-            const key = b.source.path orelse b.source.name orelse return;
             s.mutex.lockUncancelable(s.io);
-            var idx: ?usize = null;
-            for (s.loaded_sources_.items, 0..) |p, i| if (std.mem.eql(u8, p, key)) {
-                idx = i;
-                break;
-            };
-            if (std.mem.eql(u8, b.reason, "removed")) {
-                if (idx) |i| _ = s.loaded_sources_.orderedRemove(i);
-            } else if (idx == null) try s.loaded_sources_.append(s.gpa, try s.arena.allocator().dupe(u8, key));
+            const r = s.upsertLoaded(b.source, std.mem.eql(u8, b.reason, "removed"));
             s.mutex.unlock(s.io);
+            try r;
             s.notify(.loaded_sources);
         },
         .process => {

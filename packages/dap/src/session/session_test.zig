@@ -419,3 +419,41 @@ test "threads: stopped, continued and thread events" {
     try t.applyStopped(.{ .reason = "pause", .all_threads_stopped = true });
     try testing.expectEqual(@as(?i64, 2), t.current);
 }
+
+fn oneSourceChanged(h: *Harness, s: *DebugSession) bool {
+    return h.log.count(.loaded_sources) >= 4 and s.loadedSourcesCount() == 1;
+}
+
+fn threeSources(_: *Harness, s: *DebugSession) bool {
+    return s.loadedSourcesCount() == 3;
+}
+
+test "session: loaded sources from events and the request" {
+    var h: Harness = undefined;
+    try h.init(&.{"loaded_sources.txt"}, .{});
+    defer h.deinit();
+    const s = try h.start(.launch);
+    try h.waitFor(s, oneSourceChanged);
+    const Check = struct {
+        fn first(_: void, list: []const DebugSession.LoadedSource) void {
+            testing.expectEqualStrings("main.zig", list[0].name) catch unreachable;
+            testing.expectEqualStrings("rebuilt", list[0].origin.?) catch unreachable;
+        }
+        fn all(_: void, list: []const DebugSession.LoadedSource) void {
+            testing.expectEqualStrings("/w/src/main.zig", list[0].path.?) catch unreachable;
+            testing.expectEqual(@as(?[]const u8, null), list[0].origin) catch unreachable;
+            // Same name, other references: two rows.
+            testing.expectEqual(@as(i64, 7), list[1].reference) catch unreachable;
+            testing.expectEqualStrings("eval", list[1].origin.?) catch unreachable;
+            testing.expectEqual(@as(i64, 8), list[2].reference) catch unreachable;
+            testing.expectEqual(@as(?[]const u8, null), list[2].path) catch unreachable;
+        }
+    };
+    s.withLoadedSources({}, Check.first);
+    try testing.expect(s.refreshLoadedSources());
+    try h.waitFor(s, threeSources);
+    s.withLoadedSources({}, Check.all);
+    s.stop();
+    try h.waitFor(s, Harness.ended);
+    try h.expectScriptPassed(s);
+}

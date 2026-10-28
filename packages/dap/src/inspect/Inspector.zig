@@ -242,7 +242,12 @@ pub fn selectRow(i: *Inspector, thread: i64, row: *const FrameRow, scopes: ?[]co
     if (i.opts.host.reveal) |f| f(i.opts.host.ctx, row);
     const src = row.source orelse return;
     if (!sources.needsFetch(src.path, src.reference)) return;
-    const ref = src.reference.?;
+    i.fetchSource(src.reference.?);
+}
+
+/// Opens source `ref` through `Host.open_source`: from the cache, else
+/// once the `source` request answers (a loaded source without a path).
+pub fn fetchSource(i: *Inspector, ref: i64) void {
     if (i.source_cache.get(ref)) |c| return i.openSource(ref, c);
     var buf: [96]u8 = undefined;
     const args = std.fmt.bufPrint(&buf, "{{\"source\":{{\"sourceReference\":{d}}},\"sourceReference\":{d}}}", .{ ref, ref }) catch unreachable;
