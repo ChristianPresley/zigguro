@@ -128,6 +128,15 @@ pub const PointerHook = struct {
     f: *const fn (ctx: *anyopaque, v: *EditorView, e: PointerEvent) bool,
 };
 
+/// Told of a plain left click on a gutter mark lane, on document line
+/// `line` (0-based): lane 0 holds diagnostics and breakpoints, lane 1
+/// the lightbulb. Returning true consumes the click; otherwise it selects
+/// as a click on the line would.
+pub const GutterHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *EditorView, line: u64, lane: u8) bool,
+};
+
 /// What `PointerHook` hears. `origin` is the text origin in window
 /// coordinates (`posOf` plus `origin` places an offset in the window).
 pub const PointerEvent = struct {
@@ -274,6 +283,8 @@ pub const EditorView = struct {
     key_hook: ?KeyHook = null,
     /// Told of pointer moves, Ctrl+clicks and key presses (hover).
     pointer_hook: ?PointerHook = null,
+    /// Told of clicks on the gutter's mark lanes (breakpoints, E07).
+    gutter_hook: ?GutterHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
     /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and

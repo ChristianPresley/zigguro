@@ -880,3 +880,49 @@ test "view: shaped rows place carets at grapheme stops" {
     v.opts.shape_text = false;
     try testing.expectEqual(@as(f32, 10), v.xInLine(row, 1));
 }
+
+test "view: clicks on the gutter's mark lanes go to the gutter hook" {
+    var f: Fx = undefined;
+    try f.init("one\ntwo\nthree\n");
+    defer f.deinit();
+    const Hook = struct {
+        line: ?u64 = null,
+        lane: u8 = 9,
+        take: bool = true,
+        fn on(ctx: *anyopaque, _: *EditorView, line: u64, lane: u8) bool {
+            const h: *@This() = @ptrCast(@alignCast(ctx));
+            h.line = line;
+            h.lane = lane;
+            return h.take;
+        }
+    };
+    var hook: Hook = .{};
+    f.view.gutter_hook = .{ .ctx = &hook, .f = Hook.on };
+    const r = try f.t.rectOf(.{ .role = .textbox });
+    const lh = f.view.lineHeight();
+    const click = struct {
+        fn at(fx: *Fx, p: zg_gui.core.Vec2) void {
+            fx.t.win.dispatch(.{ .pointer_down = .{ .pos = p, .clicks = 1 } });
+            fx.t.win.dispatch(.{ .pointer_up = .{ .pos = p, .clicks = 1 } });
+            _ = fx.t.settle();
+        }
+    }.at;
+    // Lane 0 at the gutter's left edge, on line 2: taken, the caret stays.
+    click(&f, .{ .x = r.x + 3, .y = r.y + lh * 1.5 });
+    try testing.expectEqual(@as(?u64, 1), hook.line);
+    try testing.expectEqual(@as(u8, 0), hook.lane);
+    try testing.expectEqual(@as(u64, 0), f.head());
+    // Lane 1, right of it.
+    const d = @min(lh * 0.4, 8);
+    click(&f, .{ .x = r.x + 2 + d + 3 + d / 2, .y = r.y + lh * 2.5 });
+    try testing.expectEqual(@as(?u64, 2), hook.line);
+    try testing.expectEqual(@as(u8, 1), hook.lane);
+    // Not taken: the click selects as before.
+    hook.take = false;
+    click(&f, .{ .x = r.x + 3, .y = r.y + lh * 2.5 });
+    try testing.expectEqual(@as(u64, 8), f.head());
+    // The line numbers are no lane.
+    hook.line = null;
+    click(&f, .{ .x = r.x + f.view.gutter_w - 4, .y = r.y + lh * 0.5 });
+    try testing.expect(hook.line == null);
+}

@@ -37,8 +37,9 @@ const StyleRef = deco.StyleRef;
 pub const owner_anchor = "dap.breakpoints.anchor";
 
 pub const Styles = struct {
-    /// The breakpoint lane in the gutter.
-    lane: u8 = 1,
+    /// The breakpoint lane in the gutter (the editor's lane 0, with the
+    /// diagnostics; lane 1 is the lightbulb's).
+    lane: u8 = 0,
     /// Icon per `decorate.Glyph` (breakpoint, conditional, logpoint,
     /// hit_count, disabled).
     icons: [5]u32 = .{ 0x25CF, 0x229C, 0x25C6, 0x25CE, 0x25CB },
@@ -53,6 +54,9 @@ pub const Styles = struct {
     exec_arrow_icon: u32 = 0x27A4,
     exec_top: StyleRef,
     exec_selected: StyleRef,
+    /// The arrow's colour (null: `exec_top`'s), as the line highlight is
+    /// usually a faded one.
+    exec_arrow: ?StyleRef = null,
 };
 
 const Doc = struct {
@@ -159,6 +163,11 @@ pub fn attach(g: *BreakpointGutter, path: []const u8, doc: *const Document, stor
     defer g.unlock();
     try g.docs.append(g.gpa, .{ .path = p, .doc = doc, .store = store, .anchor_owner = anchor, .mark_owner = marks, .exec_owner = exec, .dirty = doc.isDirty() });
     g.model_dirty.store(true, .release);
+}
+
+/// Whether `path` is attached (UI thread).
+pub fn attached(g: *BreakpointGutter, path: []const u8) bool {
+    return g.findDoc(path) != null;
 }
 
 /// `path` closes. Call the manager's `docClosed` before (it reads the
@@ -298,7 +307,7 @@ fn drawExec(g: *BreakpointGutter, d: *Doc) Allocator.Error!void {
             .range = .{ .start = at, .end = at },
             .owner = d.exec_owner,
             .stick = .point_right,
-            .kind = .{ .gutter = .{ .lane = g.styles.lane, .icon = g.styles.exec_arrow_icon, .style = style } },
+            .kind = .{ .gutter = .{ .lane = g.styles.lane, .icon = g.styles.exec_arrow_icon, .style = g.styles.exec_arrow orelse style } },
         });
     }
     try d.store.setOwnerDecorations(d.exec_owner, d.store.version, g.scratch.items);
