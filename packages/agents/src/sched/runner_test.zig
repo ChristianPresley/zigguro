@@ -104,6 +104,12 @@ test "payload_goes_to_untrusted_block" {
     const s2 = try e.r.buildSpec(arena.allocator(), &digest, .{ .automation = "digest", .fire_id = 43, .due_unix_ms = t0, .reason = .scheduled }, null);
     try testing.expectEqual(runs.RunKind.scheduled, s2.kind);
     try testing.expect(s2.untrusted_payload == null);
+    try testing.expect(s2.project == null);
+    // Runs of a project automation belong to the project.
+    var in_project = digest;
+    in_project.project = "book";
+    const s3 = try e.r.buildSpec(arena.allocator(), &in_project, .{ .automation = "digest", .fire_id = 44, .due_unix_ms = t0, .reason = .scheduled }, null);
+    try testing.expectEqualStrings("book", s3.project.?);
 }
 
 test "template_vars_expand" {
