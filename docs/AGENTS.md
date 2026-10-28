@@ -55,7 +55,7 @@ See [definition-of-done.md](definition-of-done.md). In short: tests, a fuzz targ
 ## Hard rules
 
 1. Zig 0.16 std only. No `@cImport`, no `.url` dependencies, no vendored code.
-2. No blocking I/O on the UI thread.
+2. No blocking I/O on the UI thread (see [perf/threading.md](perf/threading.md)).
 3. Every `pub` declaration has a doc comment.
 4. Tests are required.
 5. Never edit files outside your package except via a separate PR labelled `cross-package` that the owning epic reviews.

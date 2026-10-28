@@ -39,6 +39,7 @@ pub const Zone = if (enabled) struct {
 
     /// Records the completed zone into this thread's ring.
     pub fn end(z: Zone) void {
+        if (zone_hook) |h| h.end();
         record(.{ .ts = z.start, .site_or_name = @intFromPtr(z.site), .kind = @intFromEnum(Kind.zone), .tid = 0, .value = @intCast(time.fastTicks() -% z.start) });
     }
 } else struct {
@@ -49,8 +50,23 @@ pub const Zone = if (enabled) struct {
 /// Opens a zone named `name` at `src` (pass `@src()`).
 pub inline fn zone(comptime src: std.builtin.SourceLocation, comptime name: []const u8) Zone {
     if (!enabled) return .{};
-    return .{ .start = time.fastTicks(), .site = siteFor(src, name) };
+    const site = siteFor(src, name);
+    if (zone_hook) |h| h.begin(site);
+    return .{ .start = time.fastTicks(), .site = site };
 }
+
+/// Per-thread callbacks run when a zone opens and closes. zg_perf installs
+/// one on the UI thread to keep a shadow stack of open zones for the stall
+/// watchdog (E14.F01.S02.T01); core never imports zg_perf.
+pub const ZoneHook = struct {
+    /// Called with the zone's site when it opens.
+    begin: *const fn (site: *const Site) void,
+    /// Called when the innermost open zone closes.
+    end: *const fn () void,
+};
+
+/// This thread's zone hook, or null (the default: one TLS load per zone).
+pub threadlocal var zone_hook: ?*const ZoneHook = null;
 
 /// Records a counter sample.
 pub inline fn counter(comptime name: []const u8, value: i64) void {
