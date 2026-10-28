@@ -262,6 +262,19 @@ pub fn build(b: *std.Build) void {
     check_fp_run.addArtifactArg(zigguro_exe);
     check_fp_run.expectExitCode(0);
     b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
+    // Benchmark corpora (E14.F06.S01.T01): `zig build corpus -- <profile>
+    // [options]` generates into <global zig cache>/zg-corpus (or
+    // ZG_CORPUS_DIR) and prints the folder.
+    _ = addTool(b, "corpusgen", "tools/corpusgen/main.zig", test_filters, f.optimize, tools_test_step);
+    {
+        // Generation speed matters here: always ReleaseFast.
+        const fast = b.addExecutable(.{ .name = "corpusgen", .root_module = toolModule(b, "tools/corpusgen/main.zig", .ReleaseFast, &.{}) });
+        const run = b.addRunArtifact(fast);
+        run.has_side_effects = true;
+        run.addArgs(&.{ "--cache-root", b.pathJoin(&.{ b.graph.global_cache_root.path orelse ".zig-cache", "zg-corpus" }) });
+        if (b.args) |args| run.addArgs(args);
+        b.step("corpus", "Generate a benchmark corpus: zig build corpus -- <profile> [--paths-only|--sparse] [--seed N]").dependOn(&run.step);
+    }
     // Blocking waits stay annotated with noteWake (E14.F05.S02.T01).
     const wake_sites = addTool(b, "wake-sites", "tools/wake-sites/main.zig", test_filters, f.optimize, tools_test_step);
     const wake_sites_run = b.addRunArtifact(wake_sites);
