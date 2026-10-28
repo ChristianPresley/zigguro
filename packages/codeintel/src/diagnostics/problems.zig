@@ -7,8 +7,9 @@
 //! documents) and, inside a file, every owner's diagnostics are merged by
 //! line, column and severity. The filter keeps diagnostics at or above a
 //! severity whose message, source or code contains a text (ASCII case
-//! folded), optionally of one file only. `update` rebuilds only when the
-//! snapshot's generation or the filter changed.
+//! folded), optionally of one file only, and not from a hidden source.
+//! `update` rebuilds only when the snapshot's generation or the filter
+//! changed.
 //!
 //! Every file and diagnostic has a node id that stays the same across
 //! updates while it is still there (a hash of the key, owner, position
@@ -36,10 +37,14 @@ pub const Filter = struct {
     text: []const u8 = "",
     /// Only this key's diagnostics (the current file).
     key: ?[]const u8 = null,
+    /// Diagnostics from these sources (exact) are hidden.
+    hidden_sources: []const []const u8 = &.{},
 
     fn eql(a: Filter, b: Filter) bool {
         if (a.min_severity != b.min_severity) return false;
         if (!std.mem.eql(u8, a.text, b.text)) return false;
+        if (a.hidden_sources.len != b.hidden_sources.len) return false;
+        for (a.hidden_sources, b.hidden_sources) |x, y| if (!std.mem.eql(u8, x, y)) return false;
         if ((a.key == null) != (b.key == null)) return false;
         return a.key == null or std.mem.eql(u8, a.key.?, b.key.?);
     }
@@ -81,6 +86,7 @@ filter: Filter = .{},
 /// Owned copies of the filter's strings.
 filter_text: std.ArrayList(u8) = .empty,
 filter_key: std.ArrayList(u8) = .empty,
+filter_hidden: std.ArrayList([]u8) = .empty,
 files: std.ArrayList(File) = .empty,
 items: std.ArrayList(Item) = .empty,
 nodes: std.AutoHashMapUnmanaged(u64, Node) = .empty,
@@ -95,6 +101,8 @@ pub fn deinit(p: *Problems) void {
     if (p.snap) |s| s.release();
     p.filter_text.deinit(p.gpa);
     p.filter_key.deinit(p.gpa);
+    for (p.filter_hidden.items) |h| p.gpa.free(h);
+    p.filter_hidden.deinit(p.gpa);
     p.files.deinit(p.gpa);
     p.items.deinit(p.gpa);
     p.nodes.deinit(p.gpa);
@@ -135,10 +143,16 @@ fn setFilter(p: *Problems, f: Filter) Allocator.Error!void {
         try p.filter_key.appendSlice(p.gpa, k);
         p.filter.key = p.filter_key.items;
     }
+    for (p.filter_hidden.items) |h| p.gpa.free(h);
+    p.filter_hidden.clearRetainingCapacity();
+    try p.filter_hidden.ensureTotalCapacity(p.gpa, f.hidden_sources.len);
+    for (f.hidden_sources) |h| p.filter_hidden.appendAssumeCapacity(try p.gpa.dupe(u8, h));
+    p.filter.hidden_sources = p.filter_hidden.items;
 }
 
 fn shown(f: Filter, d: *const Diagnostic) bool {
     if (@intFromEnum(d.severity) > @intFromEnum(f.min_severity)) return false;
+    for (f.hidden_sources) |h| if (std.mem.eql(u8, d.source, h)) return false;
     if (f.text.len == 0) return true;
     return std.ascii.indexOfIgnoreCase(d.message, f.text) != null or
         std.ascii.indexOfIgnoreCase(d.source, f.text) != null or
