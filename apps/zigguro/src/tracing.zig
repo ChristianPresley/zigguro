@@ -1,7 +1,8 @@
 //! Trace capture in the IDE (E14.F02.S01.T02): `--trace=<path>`,
 //! `--trace-format=perfetto|chrome`, `ZG_TRACE=startup|<path>|startup:<path>`,
 //! `ZG_OS_TRACE=ftrace|etw` and the `perf.trace.*` commands, on top of zg_perf's drain and
-//! `TraceSession`.
+//! `TraceSession`; the frame timeline the Host feeds and the performance
+//! HUD (`perf.hud.toggle`, E14.F03.S01.T02).
 //!
 //! Start and the stop request are cheap on the UI thread; the final drain,
 //! export and file write run on a worker, which posts a toast back.
@@ -15,6 +16,7 @@ const zg_core = @import("zg_core");
 const zg_perf = @import("zg_perf");
 const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
+const zg_perf_ui = @import("zg_perf_ui");
 
 const session = zg_perf.trace.session;
 const TraceSession = zg_perf.trace.TraceSession;
@@ -71,6 +73,14 @@ pub const Tracing = struct {
     last_summary: ?session.Summary = null,
     /// `ZG_OS_TRACE=ftrace|etw`: zones mirrored to the OS tracer.
     os: zg_perf.os.OsTrace = .{},
+    /// Frame records from the Host (pass to `Host.Options.timeline`).
+    timeline: ?*zg_perf.frame.FrameTimeline = null,
+    hud: ?*zg_perf_ui.Hud = null,
+    /// Dumps the last 10 s on slow frames and HUD bar clicks (builds with
+    /// zones only, e.g. `-Dprofile=true`).
+    recorder: ?*zg_perf.trace.FlightRecorder = null,
+    /// The window `perf.hud.toggle` shows the HUD in.
+    hud_win: ?*zg_gui.Window = null,
 
     /// Starts the drain; `env` gives the trace folder.
     pub fn init(t: *Tracing, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) void {
@@ -80,6 +90,7 @@ pub const Tracing = struct {
             break :blk @constCast(d orelse break :blk null);
         };
         t.drain.start();
+        t.initFrames() catch |e| log.warn("frame timeline unavailable: {t}", .{e});
         if (env.get("ZG_OS_TRACE")) |v| {
             if (zg_perf.os.OsTrace.Kind.parse(v)) |kind| {
                 t.os.init(kind, io);
@@ -89,8 +100,45 @@ pub const Tracing = struct {
         }
     }
 
+    fn initFrames(t: *Tracing) !void {
+        const tl = try t.gpa.create(zg_perf.frame.FrameTimeline);
+        errdefer t.gpa.destroy(tl);
+        tl.* = try .init(t.gpa, 1024);
+        errdefer tl.deinit();
+        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{});
+        t.hud = hud;
+        t.timeline = tl;
+        const dir = t.dir orelse return;
+        const fr = zg_perf.trace.FlightRecorder.init(t.gpa, t.io, &t.drain, .{ .dir = dir }) catch |e| {
+            log.warn("flight recorder unavailable: {t}", .{e});
+            return;
+        } orelse return;
+        t.recorder = fr;
+        tl.setSlowFrameHook(fr.slowFrameHook());
+        hud.recorder = .flight(fr);
+    }
+
+    /// Hides the HUD; call before its window closes.
+    pub fn detachWindow(t: *Tracing) void {
+        if (t.hud) |h| if (t.hud_win) |w| h.setVisible(w, false);
+        t.hud_win = null;
+    }
+
+    /// Shows or hides the HUD in the main window.
+    pub fn toggleHud(t: *Tracing) !void {
+        const h = t.hud orelse return error.NoHud;
+        h.toggle(t.hud_win orelse return error.NoWindow);
+    }
+
     /// Finishes a running trace (blocking: at exit), then stops the drain.
     pub fn deinit(t: *Tracing) void {
+        t.detachWindow();
+        if (t.hud) |h| h.destroy();
+        if (t.recorder) |fr| fr.deinit();
+        if (t.timeline) |tl| {
+            tl.deinit();
+            t.gpa.destroy(tl);
+        }
         t.group.await(t.io) catch {};
         t.app = null;
         if (t.takeActive()) |s| finish(t, s);
@@ -209,6 +257,7 @@ pub const Tracing = struct {
         .{ .id = "perf.trace.stop", .title = "Stop Performance Trace", .run = cmdStop },
         .{ .id = "perf.trace.toggle", .title = "Toggle Performance Trace", .run = toggle },
         .{ .id = "perf.trace.openFolder", .title = "Show Performance Trace Folder", .run = openFolder },
+        .{ .id = zg_perf_ui.commands.commands[0].id, .title = zg_perf_ui.commands.commands[0].title, .run = toggleHud },
     };
 
     fn cmdStart(t: *Tracing) !void {
@@ -219,7 +268,7 @@ pub const Tracing = struct {
         t.stop();
     }
 
-    /// Registers the `perf.trace.*` commands.
+    /// Registers the `perf.trace.*` commands and `perf.hud.toggle`.
     pub fn registerCommands(t: *Tracing, reg: *zg_config.commands.CommandRegistry) !void {
         inline for (commands) |c| {
             _ = try reg.register(.{

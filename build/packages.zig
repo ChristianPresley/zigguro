@@ -49,6 +49,7 @@ pub const all = [_]Package{
     .{ .name = "zg_codeintel", .dir = "packages/codeintel", .has_bench = true },
     .{ .name = "zg_agents", .dir = "packages/agents", .has_bench = true },
     .{ .name = "zg_perf", .dir = "packages/perf", .has_bench = true },
+    .{ .name = "zg_perf_ui", .dir = "packages/perf-ui", .has_bench = true },
     // pkgtool:insert
 };
 

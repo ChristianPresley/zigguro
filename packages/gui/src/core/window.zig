@@ -7,7 +7,8 @@
 //! dirty does no work at all (idle-zero).
 
 const std = @import("std");
-const trace = @import("zg_core").trace;
+const zg_core = @import("zg_core");
+const trace = zg_core.trace;
 const a11y_tree = @import("../a11y/tree.zig");
 const zg_platform = @import("zg_platform");
 const geom = @import("geom.zig");
@@ -61,6 +62,13 @@ pub const FrameStats = struct {
     animations: u32 = 0,
     damage_rects: u32 = 0,
     full_damage: bool = false,
+    /// Phase times on the `.awake` clock when the window has a
+    /// `timing_io` (the Host sets it), else 0 (E14.F03.S01.T02).
+    t_start_ns: u64 = 0,
+    build_ns: u32 = 0,
+    layout_ns: u32 = 0,
+    /// Paint and replay into the canvas.
+    paint_ns: u32 = 0,
 };
 
 /// A view mounted in this window.
@@ -168,6 +176,8 @@ pub const Window = struct {
     close_hooks: std.ArrayList(PendingHook) = .empty,
     needs_frame: bool = true,
     stats: FrameStats = .{},
+    /// The clock `frame` times its phases with (null: no timings).
+    timing_io: ?std.Io = null,
 
     views: std.ArrayList(ViewEntry) = .empty,
     view_map: std.AutoHashMapUnmanaged(ViewKey, u16) = .empty,
@@ -627,6 +637,8 @@ pub const Window = struct {
         const zone = trace.zone(@src(), "gui.frame");
         defer zone.end();
         trace.frameMark();
+        var lap = w.clockNs();
+        w.stats.t_start_ns = lap;
         w.needs_frame = false;
         w.frame_no += 1;
         w.app.frame_epoch +%= 1;
@@ -664,6 +676,7 @@ pub const Window = struct {
         w.stats.nodes_emitted = w.ui.emitted;
         w.app.flushEffects();
         build_zone.end();
+        w.stats.build_ns = w.lapNs(&lap);
 
         // LAYOUT.
         const rfl = w.store.flags(w.root);
@@ -679,6 +692,7 @@ pub const Window = struct {
         if (w.flips.items.len > 0) flip_mod.afterLayout(w);
 
         if (w.overlays.items.items.len > 0) w.placeOverlays();
+        w.stats.layout_ns = w.lapNs(&lap);
 
         // PAINT and PRESENT: a rebuild that changed nothing paints nothing.
         if (w.store.paint_pending or w.full_repaint) {
@@ -686,6 +700,7 @@ pub const Window = struct {
             defer paint_zone.end();
             w.paintPass();
             w.present();
+            w.stats.paint_ns = w.lapNs(&lap);
         }
         _ = w.frame_arena.reset(.retain_capacity);
         if (w.ui.oom or w.engine.oom) {
@@ -699,6 +714,17 @@ pub const Window = struct {
         // Animations in flight want the next frame too.
         if (w.anim.isActive()) w.needs_frame = true;
         return w.stats;
+    }
+
+    fn clockNs(w: *const Window) u64 {
+        return if (w.timing_io) |io| zg_core.time.nowNs(io) else 0;
+    }
+
+    /// Nanoseconds since `lap.*`, which moves to now.
+    fn lapNs(w: *const Window, lap: *u64) u32 {
+        const now = w.clockNs();
+        defer lap.* = now;
+        return @intCast(@min(now -| lap.*, std.math.maxInt(u32)));
     }
 
     fn anyDirtyView(w: *const Window) bool {
@@ -1416,6 +1442,7 @@ pub const Window = struct {
                 .rect => |r| overlay.place(r, size, vp, e.opts.placement),
                 .top => |f| overlay.atTop(size, vp, f),
                 .corner => |m| overlay.atCorner(size, vp, m),
+                .corner_at => |c| overlay.atCornerOf(size, vp, c.corner, c.margin),
                 .node => |n| blk: {
                     if (!w.store.valid(n) or w.store.flags(n).hidden) {
                         w.closeOverlay(e.id);
@@ -1466,7 +1493,7 @@ pub const Window = struct {
 
     /// Light dismiss for a press at `p`; true when the press is consumed.
     fn dismissOutside(w: *Window, p: Vec2) bool {
-        const top = w.overlays.top() orelse return false;
+        const top = w.overlays.topDismissable() orelse return false;
         const h = w.hitTest(p);
         const group = top.opts.group;
         for (w.overlays.items.items) |e| {

@@ -1,0 +1,20 @@
+.{
+    .name = .zg_perf_ui,
+    .version = "0.0.0",
+    .fingerprint = 0x9e2d185013523082,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zg_build = .{ .path = "../build" },
+        .zg_core = .{ .path = "../core" },
+        .zg_perf = .{ .path = "../perf" },
+        .zg_gui = .{ .path = "../gui" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "fuzz",
+        "testdata",
+    },
+}
