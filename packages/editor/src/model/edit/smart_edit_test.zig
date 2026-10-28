@@ -240,6 +240,19 @@ test "indent: guess tabs vs 2 vs 4" {
     }
 }
 
+test "indent: guess reads only the first guess_bytes" {
+    // Unindented lines past the cap, then indented ones the guess never sees.
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    while (text.items.len < indent.guess_bytes) try text.appendSlice(gpa, "2026-10-28 log line\n");
+    try text.appendSlice(gpa, "a\n\tb\n\t\tc\n");
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), text.items);
+    defer doc.deinit();
+    var snap = doc.snapshot();
+    defer snap.release();
+    try std.testing.expectEqual(@as(?indent.IndentUnit, null), indent.guess(&snap));
+}
+
 test "smart: every command is one change" {
     var h: Harness = undefined;
     try h.init(&langs.zig.zig_language, "fn f() {¦}\nfn g() {¦}");
