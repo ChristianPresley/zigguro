@@ -17,3 +17,6 @@
 
 # Apps (composition roots)
 /apps/                @ChristianPresley
+
+# E14: changes to the critical-path allowlist need a performance review
+/packages/perf/startup_allowlist.zon   @ChristianPresley

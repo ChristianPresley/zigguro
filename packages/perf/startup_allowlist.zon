@@ -1,0 +1,18 @@
+// The services allowed on the critical path: everything that runs before
+// the first frame (E14.F05.S01.T02). `zig build test-startup-allowlist`
+// fails when the app registers a critical service that is not listed, or
+// when a listed one no longer exists. Each entry names the budget its time
+// counts against. To add one, see docs/perf/startup.md ("Requesting a
+// critical slot"); E14 maintainers review changes to this file.
+.{
+    .services = .{
+        .{ .name = "runtime", .budget = "startup.phase.e00" },
+        .{ .name = "config", .budget = "startup.phase.e15" },
+        .{ .name = "fonts", .budget = "startup.phase.e03" },
+        .{ .name = "platform", .budget = "startup.phase.e01" },
+        .{ .name = "gpu", .budget = "startup.phase.e02" },
+        .{ .name = "window", .budget = "startup.phase.e01" },
+        .{ .name = "session", .budget = "startup.phase.e08" },
+        .{ .name = "workbench", .budget = "startup.phase.e04" },
+    },
+}

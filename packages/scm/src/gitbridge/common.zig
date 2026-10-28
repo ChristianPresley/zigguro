@@ -21,6 +21,8 @@ pub const Kind = enum {
     applied,
     /// Conflicts are left in the index and worktree.
     conflicted,
+    /// Paused on purpose (an interactive rebase's `edit` or `break`).
+    stopped,
 };
 
 /// What an operation did. Strings live in `arena`.
