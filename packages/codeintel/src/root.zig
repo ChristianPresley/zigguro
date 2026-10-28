@@ -103,6 +103,12 @@ pub const headless = struct {
     pub const cli = @import("headless/cli.zig");
 };
 
+/// Debugging in the editor (E07.F06): breakpoints kept on their lines
+/// and drawn in the gutter.
+pub const debug = struct {
+    pub const BreakpointGutter = @import("debug/BreakpointGutter.zig");
+};
+
 /// LSP language ids for zg_syntax languages.
 pub const language = @import("language.zig");
 
@@ -142,4 +148,5 @@ test {
     _ = @import("features/hierarchy_test.zig");
     _ = @import("features/raw_json.zig");
     _ = @import("features/virtual_docs_test.zig");
+    _ = @import("debug/breakpoint_gutter_test.zig");
 }
