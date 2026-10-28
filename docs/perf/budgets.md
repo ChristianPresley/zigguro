@@ -94,7 +94,7 @@
 | `gui.markdown_append` | duration_ns | p99 | 300 µs | – | ref_laptop_2024 | runtime `pending` | track | E04.F07 |
 | `gui.theme_switch` | duration_ns | max | 16 ms | – | ref_laptop_2024 | runtime `pending` | track | E04.F08 |
 | `gui.node_bytes` | bytes | max | 160 B | – | any | runtime `pending` | track | E04.F01 |
-| `gui.jpeg_decode_12mp` | duration_ns | mean | 80 ms | – | ref_laptop_2024 | runtime `pending` | track | E04.F09 |
+| `gui.jpeg_decode_12mp` | duration_ns | mean | 80 ms | – | ref_laptop_2024 | bench `zg_gui` / `gui.jpeg_decode_12mp` (ns_per_op) | warn | E04.F09 |
 
 ## E05
 
