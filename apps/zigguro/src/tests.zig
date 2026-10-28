@@ -63,4 +63,5 @@ test {
     _ = @import("bench/runner.zig");
     _ = @import("bench/scenarios/fuzzy_find_1m.zig");
     _ = @import("workspace_fs.zig");
+    _ = @import("tasks.zig");
 }
