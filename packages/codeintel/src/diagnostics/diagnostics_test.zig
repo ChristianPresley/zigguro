@@ -513,3 +513,75 @@ test "problems: duplicate diagnostics get distinct ids" {
     try testing.expect(its[0].id != its[1].id);
     try testing.expectEqual(@as(u32, 3), p.nodes.count());
 }
+
+const WorkspacePull = @import("workspace_pull.zig");
+
+const WsSink = struct {
+    got: std.ArrayList(u8) = .empty,
+
+    fn full(ctx: *anyopaque, _: *@import("../Manager.zig").Server, uri: []const u8, items: []const protocol.Diagnostic) void {
+        const s: *WsSink = @ptrCast(@alignCast(ctx));
+        s.got.print(testing.allocator, "{s} {d}", .{ uri, items.len }) catch unreachable;
+        for (items) |it| s.got.print(testing.allocator, " {s}", .{it.message.string}) catch unreachable;
+        s.got.append(testing.allocator, '\n') catch unreachable;
+    }
+};
+
+test "diag: workspace pull streams partial results, re-polls with result ids, retriggers on ServerCancelled" {
+    var h: Harness = undefined;
+    try h.init("diag_workspace.script", &.{});
+    var w: WorkspacePull = .init(&h.mgr, .{ .min_interval = .fromMilliseconds(10) });
+    const doc = try h.open("main.zig", "const a = 1;\n");
+    var sink: WsSink = .{};
+    defer {
+        sink.got.deinit(testing.allocator);
+        h.mgr.closeDoc(doc);
+        h.docs.release(doc);
+        h.mgr.deinit();
+        w.deinit();
+        h.docs.deinit();
+        h.reg.deinit();
+        testing.allocator.free(h.script);
+        h.tmp.cleanup();
+        _ = h.rt.deinit();
+    }
+    var done = false;
+    for (0..3000) |_| {
+        h.mgr.tick();
+        w.tick(Io.Clock.Timestamp.now(h.rt.io, .awake).raw.nanoseconds, .{ .ctx = &sink, .full = WsSink.full });
+        // The third poll answered: stop before a fourth.
+        if (w.states.count() == 1 and w.states.values()[0].sent == 3 and !w.states.values()[0].busy) {
+            done = true;
+            break;
+        }
+        try h.rt.io.sleep(.fromMilliseconds(2), .awake);
+    }
+    try testing.expect(done);
+    try testing.expectEqualStrings(
+        \\file:///w/closed.zig 1 closed file error
+        \\file:///w/closed.zig 0
+        \\
+    , sink.got.items);
+    // The empty full report has no result id: forgotten.
+    const ids = &w.states.values()[0].ids;
+    try testing.expectEqual(@as(usize, 1), ids.count());
+    try testing.expectEqualStrings("o1", ids.get("file:///w/other.zig").?);
+}
+
+test "diag: a set reported for a closed file gets byte ranges when it opens" {
+    const gpa = testing.allocator;
+    const s = try setOf(.{ .server = 0 }, &.{ lspDiag(1, 2, 5, .Error, "later line"), lspDiag(0, 0, 3, .Warning, "first") });
+    defer s.destroy();
+    try testing.expect(s.diags[0].bytes == null);
+    const doc = try Document.initBytes(gpa, @enumFromInt(0), "abcdef\nghijkl\n");
+    defer doc.deinit();
+    const c = try convert.copySet(gpa, s);
+    defer c.destroy();
+    try convert.mapBytes(gpa, c, &doc.tree, .utf16, doc.version);
+    try testing.expectEqualStrings("first", c.diags[0].message);
+    try testing.expectEqual(Store.ByteRange{ .start = 0, .end = 3 }, c.diags[0].bytes.?);
+    try testing.expectEqual(Store.ByteRange{ .start = 9, .end = 12 }, c.diags[1].bytes.?);
+    try testing.expectEqual(s.counts, c.counts);
+    // The copy owns its strings.
+    try testing.expect(c.diags[1].message.ptr != s.diags[1].message.ptr);
+}
