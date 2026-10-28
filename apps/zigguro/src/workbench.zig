@@ -2082,6 +2082,12 @@ pub const Workbench = struct {
         wb.gotoOffset(lr.start + zg_core.utf8.columnToByte(v.text(lr), character, enc));
     }
 
+    /// Puts the caret at 0-based `line`, byte column `col` of the current
+    /// editor (`bench-latency`).
+    pub fn gotoLine(wb: *Workbench, line: u32, col: u32) void {
+        wb.gotoPos(line, col, .utf8);
+    }
+
     fn gotoOffset(wb: *Workbench, off: u64) void {
         const v = wb.view;
         v.setSelection(.caret(@min(off, wb.doc.len())));
