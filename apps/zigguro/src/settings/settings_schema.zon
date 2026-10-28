@@ -36,6 +36,8 @@
     .{ .key = "terminal.graphics.sixel", .type = .bool, .default = true, .title = "Sixel Images", .description = "Show sixel images in the terminal and tell programs it can (DA1).", .tags = .{"terminal"}, .order = 6 },
     .{ .key = "terminal.agent.visibleTerminals", .type = .bool, .default = true, .title = "Agent Terminals", .description = "Run the agent's commands in terminals you can watch (the Agents section of the terminal panel), with a shell that keeps its folder and variables between commands. Off, or when the shell has no integration, they run as hidden child processes. Applies when the agent starts.", .tags = .{"terminal"}, .order = 7 },
 
+    .{ .key = "lsp.maxFileSize", .type = .int, .default = 16777216, .minimum = 0, .maximum = 1073741824, .title = "Max File Size", .description = "Files larger than this many bytes are not sent to language servers (no diagnostics, completion or navigation for them). Applies to files opened afterwards.", .tags = .{"lsp"}, .order = 1 },
+
     .{ .key = "zig.path", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Zig Path", .description = "The zig executable ZLS and zigguro use. Empty: zig on PATH.", .tags = .{"zig"}, .order = 1 },
     .{ .key = "zig.zls", .type = .object, .default = .{}, .restricted = true, .title = "ZLS Options", .description = "ZLS configuration options by their ZLS names, such as \"enable_build_on_save\": true or \"build_on_save_args\": [\"-fincremental\"]. Sent to ZLS as its zls settings section.", .tags = .{"zig"}, .order = 2 },
 
