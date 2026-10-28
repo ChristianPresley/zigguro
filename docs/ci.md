@@ -10,7 +10,9 @@ external binary it runs is the official Zig release named in
 | Workflow | Trigger | Jobs |
 |---|---|---|
 | `.github/workflows/ci.yml` | pull requests to `main`, pushes to `main`, manual | `lint`, `test` (4 runners × Debug/ReleaseSafe), `cross`, `bench-smoke`, `fuzz-smoke`, `eval`, `vulkan` |
-| `.github/workflows/nightly.yml` | 03:17 UTC daily, manual | `fuzz` (35 min per target on x86_64 and aarch64 Linux), `bench` (full, Linux and Windows), `toolchain-selftest` (cold cache, all 4 runners) |
+| `.github/workflows/nightly.yml` | 03:17 UTC daily, manual | `fuzz` (35 min per target on x86_64 and aarch64 Linux), `bench` (full ReleaseFast benches with 7 repeats and, on Linux, the app scenarios; trend against the previous nightly), `bench-ref-laptop` (only with the repository variable `ZG_REF_LAPTOP=true`), `toolchain-selftest` (cold cache, all 4 runners) |
+| `.github/workflows/perf-gate.yml` | pull requests to `main` that change more than docs, manual | `gate` (Linux and Windows): base and head benches interleaved, compared by perfgate |
+| `.github/workflows/perf-baseline.yml` | manual (input `machine`) | `baseline`: full benches, `perfgate baseline`, and a PR updating `perf/baselines/<machine>/` |
 
 `ci.yml` cancels the previous run of the same pull request when a new push
 arrives. Every push to `main` runs in its own concurrency group (keyed by
@@ -34,6 +36,21 @@ through the Vulkan backend compared with the software goldens at
 `Tolerance.gpu`). On failure the `*.actual.png` and `*.diff.png` images are
 uploaded as an artifact. Elsewhere the `gpu:` tests skip when no Vulkan
 driver is found.
+
+### Perf gate
+
+`perf-gate.yml` checks out the PR, adds a worktree at the merge base, and builds both with `zig build -Doptimize=ReleaseFast bench-build`. That step compiles the bench binaries and perfgate into `zig-out/bench-bin/`, plus the app and the startup harness. Nothing is measured while building.
+
+`.github/scripts/perf-ab.sh` then alternates base and head runs on the same VM:
+- 5 rounds of the bench binaries of every package with a block or warn budget;
+- 3 rounds of the headless scenarios `editing_100k`, `view_switch`, `fuzzy_find_1m` and `idle` in quick mode (Linux only);
+- 5 headless startup launches per round.
+
+`perfgate compare` writes the table to the job summary and `gate.json` to the artifact, and its exit code is the job's. The `perf-accepted` label clears a blocking row only when the PR also changes that suite's file under `perf/baselines/` (see [perf/baselines/README.md](../perf/baselines/README.md)). The runner is calibrated against the reference laptop (`perfgate calibrate`), so absolute budgets are advisory there.
+
+When the merge base predates `bench-build`, the job has nothing to compare and passes with a notice. The gate is not a required check yet. Make it one once its false-positive rate has been measured on real PRs.
+
+The nightly reference-laptop job runs on a self-hosted runner labelled `zg-ref-laptop`. To enable it, register that runner and set the repository variable `ZG_REF_LAPTOP` to `true`. It checks the absolute budgets on `ref_laptop_2024` and opens one `[perf] budget failure <id>` issue per failing budget, skipping budgets that already have an open issue.
 
 ## Required checks
 
