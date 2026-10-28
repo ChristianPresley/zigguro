@@ -47,6 +47,19 @@ pub const parse_markers = @import("merge/parse_markers.zig");
 pub const tree_merge = @import("merge/tree_merge.zig");
 /// Three-way and N-way file content merge.
 pub const content_merge = @import("merge/content_merge.zig");
+/// Git repositories through zg_git: merge, cherry-pick, revert and stash.
+pub const gitbridge = struct {
+    /// Results, commits and git's operation-state files.
+    pub const common = @import("gitbridge/common.zig");
+    /// Three-way merges of git trees, applied to the index and worktree.
+    pub const merge_trees = @import("gitbridge/merge_trees.zig");
+    /// `git merge`.
+    pub const merge = @import("gitbridge/merge.zig");
+    /// `git cherry-pick` and `git revert`.
+    pub const pick = @import("gitbridge/pick.zig");
+    /// `git stash`.
+    pub const stash = @import("gitbridge/stash.zig");
+};
 /// Operation objects and their metadata.
 pub const operation = @import("oplog/operation.zig");
 /// Views: heads, refs, working copies and lanes at one operation.
@@ -152,6 +165,7 @@ test {
     _ = @import("graph/revset_test.zig");
     _ = @import("merge/markers_test.zig");
     _ = @import("merge/content_merge_test.zig");
+    _ = @import("gitbridge/gitbridge_test.zig");
     _ = @import("oplog/oplog_test.zig");
     _ = @import("oplog/view_delta.zig");
     _ = @import("oplog/oplog_concurrency_test.zig");
