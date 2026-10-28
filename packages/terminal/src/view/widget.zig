@@ -127,6 +127,7 @@ pub const Term = struct {
 
         pc.pushClip(r, 0);
         const sel_color = pc.color(.selection_bg);
+        const match_color = pc.color(.warning);
         const top_row = sel_mod.absRow(&screen.pages, screen.pages.viewportRow(0));
         for (0..rows) |yi| {
             const y: u16 = @intCast(yi);
@@ -147,6 +148,22 @@ pub const Term = struct {
                 }
                 if (!c0.bg_default) pc.rect(.{ .x = pad + @as(f32, @floatFromInt(x)) * cw, .y = top, .w = @as(f32, @floatFromInt(e - x)) * cw, .h = ch }, c0.bg, .{});
                 x = e;
+            }
+
+            // Search matches, the current one stronger and outlined.
+            if (v.visibleMatches()) |found| {
+                var i = found.firstFrom(top_row + y);
+                while (i < found.matches.items.len) : (i += 1) {
+                    const mt = found.matches.items[i];
+                    if (mt.lo.row > top_row + y) break;
+                    const one: sel_mod.Selection = .{ .kind = .stream, .anchor_lo = mt.lo, .anchor_hi = mt.hi, .lo = mt.lo, .hi = mt.hi };
+                    const span = one.rowSpan(top_row + y, cols) orelse continue;
+                    const mr: Rect = .{ .x = pad + @as(f32, @floatFromInt(span[0])) * cw, .y = top, .w = @as(f32, @floatFromInt(span[1] - span[0])) * cw, .h = ch };
+                    if (found.current == i) {
+                        pc.rect(mr, match_color.fade(0.6), .{});
+                        hollow(pc, mr, match_color);
+                    } else pc.rect(mr, match_color.fade(0.3), .{});
+                }
             }
 
             // The selection, over the backgrounds.
