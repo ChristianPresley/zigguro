@@ -4,7 +4,10 @@
 //! then X11, on Linux; `ZG_PLATFORM` forces one).
 //!
 //! `zigguro FILE` opens FILE in the editor workbench instead (a missing
-//! file starts empty and is created on save); `--terminal` opens the
+//! file starts empty and is created on save); `zigguro FOLDER` opens the
+//! workbench on FOLDER with the Explorer. With no path an interactive run
+//! opens the last folder (or the working folder); `--welcome` shows the
+//! welcome window; `--terminal` opens the
 //! workbench with its terminal panel showing (Ctrl+` toggles it), and
 //! `--agent` with the agent pane open (Ctrl+L toggles it); `--review`
 //! opens it with the review queue showing.
@@ -101,12 +104,30 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (font_text) |ft| ft.destroy();
     const text_sys = if (font_text) |ft| ft.system() else mono.system();
     var welcome: Welcome = .{ .version = zg_release.current.version_string };
-    const file_arg = pathArg(min, rt.gpa);
-    defer if (file_arg) |p| rt.gpa.free(p);
+    const path_arg = pathArg(min, rt.gpa);
+    defer if (path_arg) |p| rt.gpa.free(p);
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
     const want_agent = hasFlag(min, rt.gpa, "--agent");
     const want_review = hasFlag(min, rt.gpa, "--review");
-    const use_wb = file_arg != null or want_terminal or want_agent or want_review;
+    const frames_arg = framesArg(min, rt.gpa);
+    var state_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const state_dir = zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf);
+    // `zigguro DIR` opens the folder; with no path, interactive runs open
+    // the last folder (or the working folder). `--welcome` shows the
+    // welcome window instead.
+    var file_arg: ?[]const u8 = path_arg;
+    var folder_mode = false;
+    if (path_arg) |p| if (isFolder(rt.io, p)) {
+        std.process.setCurrentPath(rt.io, p) catch |e| std.log.err("cannot open folder {s}: {t}", .{ p, e });
+        file_arg = null;
+        folder_mode = true;
+    };
+    if (path_arg == null and frames_arg == null and !hasFlag(min, rt.gpa, "--welcome")) {
+        if (state_dir) |sd| restoreLastFolder(rt.gpa, rt.io, sd);
+        folder_mode = true;
+    }
+    const use_wb = file_arg != null or folder_mode or want_terminal or want_agent or want_review;
+    if (use_wb and frames_arg == null) if (state_dir) |sd| saveLastFolder(rt.gpa, rt.io, sd);
     var wb: Workbench = undefined;
     if (use_wb) {
         try wb.init(&rt, &env, file_arg);
@@ -118,7 +139,6 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     defer if (use_wb) wb.deinit();
     const root: zg_gui.AnyView = if (use_wb) .of(&wb) else .of(&welcome);
 
-    const frames_arg = framesArg(min, rt.gpa);
     if (backend != .headless) native: {
         const platform = zg_platform.init(rt.gpa, rt.io, .{ .environ_map = &env }) catch |err| {
             try w.print("zigguro {s}: no {t} display ({t}); falling back to the headless platform\n", .{ zg_release.current.version_string, backend, err });
@@ -140,8 +160,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         // write it).
         var size: zg_gui.core.geom.Size = .{ .w = 1280, .h = 800 };
         if (use_wb and frames_arg == null) {
-            var state_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf)) |state| {
+            if (state_dir) |state| {
                 wb.enableUndoFiles(state);
                 if (wb.loadLayout(state)) |s| size = s;
             }
@@ -273,6 +292,36 @@ fn writePpm(gpa: std.mem.Allocator, io: std.Io, path: []const u8, f: anytype) !v
         try out.appendSlice(gpa, f.pixels[o..][0..3]);
     };
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.items });
+}
+
+/// Whether `p` is a folder.
+fn isFolder(io: std.Io, p: []const u8) bool {
+    const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch return false;
+    return st.kind == .directory;
+}
+
+/// Where the last opened folder is remembered.
+const last_folder_file = "last-folder";
+
+/// Makes the folder the last session opened the working folder (when it
+/// still exists).
+fn restoreLastFolder(gpa: std.mem.Allocator, io: std.Io, state: []const u8) void {
+    const f = std.fs.path.join(gpa, &.{ state, last_folder_file }) catch return;
+    defer gpa.free(f);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, f, gpa, .limited(std.fs.max_path_bytes)) catch return;
+    defer gpa.free(bytes);
+    const dir = std.mem.trim(u8, bytes, " \r\n");
+    if (dir.len > 0 and isFolder(io, dir)) std.process.setCurrentPath(io, dir) catch {};
+}
+
+/// Remembers the working folder for the next start without a path.
+fn saveLastFolder(gpa: std.mem.Allocator, io: std.Io, state: []const u8) void {
+    const cwd = std.process.currentPathAlloc(io, gpa) catch return;
+    defer gpa.free(cwd);
+    std.Io.Dir.cwd().createDirPath(io, state) catch return;
+    const f = std.fs.path.join(gpa, &.{ state, last_folder_file }) catch return;
+    defer gpa.free(f);
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = f, .data = cwd }) catch {};
 }
 
 /// The value of `--frames N`, if given.

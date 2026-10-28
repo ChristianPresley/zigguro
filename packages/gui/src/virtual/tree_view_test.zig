@@ -230,7 +230,8 @@ test "tree view: clicks select, chevrons toggle, double click opens" {
     const gpa = testing.allocator;
     var files: Files = .{};
     var opened: Opened = .{};
-    var tv = try TreeView.init(gpa, files.source(), .{ .expand_on_click = false, .on_open = .{ .ctx = &opened, .f = Opened.f } });
+    var clicked: Opened = .{};
+    var tv = try TreeView.init(gpa, files.source(), .{ .expand_on_click = false, .on_open = .{ .ctx = &opened, .f = Opened.f }, .on_click = .{ .ctx = &clicked, .f = Opened.f } });
     defer tv.deinit();
     var page: Page = .{ .tv = &tv };
     const t = try TestApp.init(gpa, .{ .root = view_mod.AnyView.of(&page) });
@@ -241,6 +242,7 @@ test "tree view: clicks select, chevrons toggle, double click opens" {
     try testing.expectEqualSlices(u64, &.{2}, tv.selection());
     try testing.expect(!tv.flat.isExpanded(2));
     try testing.expect(t.win.focus.eql(tv.node));
+    try testing.expectEqual(@as(?u64, 2), clicked.node);
     // The chevron sits at the row's left edge for a root.
     const r = try t.rectOf(.{ .role = .treeitem, .name = "src" });
     t.moveTo(.{ .x = r.x + 4, .y = r.y + r.h / 2 });

@@ -34,4 +34,6 @@ test {
     _ = @import("codeintel.zig");
     _ = @import("settings/service.zig");
     _ = @import("settings/view.zig");
+    _ = @import("explorer/fs_tree.zig");
+    _ = @import("explorer/panel.zig");
 }

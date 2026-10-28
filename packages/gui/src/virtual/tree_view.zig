@@ -82,6 +82,9 @@ pub const TreeProps = struct {
     style: style_mod.Style = .{ .grow = 1 },
     /// Enter or double click on a row.
     on_open: ?NodeHook = null,
+    /// A plain left click on a row, after it is selected (an explorer
+    /// opens a file on one click).
+    on_click: ?NodeHook = null,
     on_selection: ?SelectionHook = null,
 };
 
@@ -393,6 +396,7 @@ pub const TreeView = struct {
         const how: Sel = if (p.mods.shift) .extend else if (p.mods.ctrl) .toggle else .replace;
         tv.moveTo(i, how);
         if (how == .replace and tv.props.expand_on_click and r.flags.expandable) try tv.toggleRow(i);
+        if (how == .replace) if (tv.props.on_click) |h| h.f(h.ctx, r.node);
     }
 
     // -- building -------------------------------------------------------------
