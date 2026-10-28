@@ -54,13 +54,25 @@ pub const SubsequenceMatcher = struct {
 
     const vtable: Matcher.VTable = .{ .score = scoreFn };
 
+    /// Whether `m` is this matcher (callers that need no highlights can
+    /// call `scoreOnly` directly).
+    pub fn is(m: Matcher) bool {
+        return m.vtable == &vtable;
+    }
+
     fn scoreFn(_: ?*anyopaque, query: []const u8, candidate: []const u8, out_hl: *std.ArrayList([2]u32), gpa: std.mem.Allocator) ?i32 {
         return scoreOf(query, candidate, out_hl, gpa);
     }
 };
 
+const lower_table: [256]u8 = blk: {
+    var t: [256]u8 = undefined;
+    for (&t, 0..) |*x, c| x.* = std.ascii.toLower(c);
+    break :blk t;
+};
+
 fn lower(c: u8) u8 {
-    return std.ascii.toLower(c);
+    return lower_table[c];
 }
 
 fn isWordSep(c: u8) bool {
@@ -82,21 +94,24 @@ fn bonusAt(s: []const u8, i: usize) i32 {
 /// Scores `candidate` against `query` (see the file comment) and appends
 /// the matched ranges to `out_hl`. An empty query matches with score 0.
 pub fn scoreOf(query: []const u8, candidate: []const u8, out_hl: *std.ArrayList([2]u32), gpa: std.mem.Allocator) ?i32 {
+    return scoreImpl(true, query, candidate, out_hl, gpa);
+}
+
+/// `scoreOf` without the highlights (ranking large lists).
+pub fn scoreOnly(query: []const u8, candidate: []const u8) ?i32 {
+    return scoreImpl(false, query, candidate, undefined, undefined);
+}
+
+inline fn scoreImpl(comptime want_hl: bool, query: []const u8, candidate: []const u8, out_hl: *std.ArrayList([2]u32), gpa: std.mem.Allocator) ?i32 {
     if (query.len == 0) return 0;
     if (query.len > candidate.len) return null;
     // Forward: the first window end.
     var qi: usize = 0;
     var end: usize = 0;
-    for (candidate, 0..) |c, i| {
-        if (lower(c) == lower(query[qi])) {
-            qi += 1;
-            if (qi == query.len) {
-                end = i + 1;
-                break;
-            }
-        }
+    while (qi < query.len) : (qi += 1) {
+        end = findFold(candidate, end, query[qi]) orelse return null;
+        end += 1;
     }
-    if (qi < query.len) return null;
     // Backward: the tightest start for that end.
     var start: usize = end;
     qi = query.len;
@@ -133,17 +148,37 @@ pub fn scoreOf(query: []const u8, candidate: []const u8, out_hl: *std.ArrayList(
                 total += bonus_consecutive;
             } else {
                 total -= penalty_gap_start + penalty_gap_extension * @as(i32, @intCast(i - p - 2));
-                out_hl.append(gpa, .{ @intCast(run_start), @intCast(p + 1) }) catch {};
+                if (want_hl) out_hl.append(gpa, .{ @intCast(run_start), @intCast(p + 1) }) catch {};
                 run_start = i;
             }
         } else run_start = i;
         prev = i;
         i += 1;
     }
-    out_hl.append(gpa, .{ @intCast(run_start), @intCast(prev.? + 1) }) catch {};
+    if (want_hl) out_hl.append(gpa, .{ @intCast(run_start), @intCast(prev.? + 1) }) catch {};
     // Shorter candidates win ties.
     total -= @intCast(@min(candidate.len / 16, 15));
     return total;
+}
+
+const lanes = 16;
+const V = @Vector(lanes, u8);
+
+/// The first index at or after `from` where `s` holds `c` in either ASCII
+/// case, or null.
+fn findFold(s: []const u8, from: usize, c: u8) ?usize {
+    const lo = lower(c);
+    const up = std.ascii.toUpper(c);
+    var i = from;
+    while (i + lanes <= s.len) : (i += lanes) {
+        const v: V = s[i..][0..lanes].*;
+        const bits: u16 = @bitCast((v == @as(V, @splat(lo))) | (v == @as(V, @splat(up))));
+        if (bits != 0) return i + @ctz(bits);
+    }
+    while (i < s.len) : (i += 1) {
+        if (s[i] == lo or s[i] == up) return i;
+    }
+    return null;
 }
 
 /// True when `q` is a case-insensitive subsequence of `s`.
@@ -172,7 +207,9 @@ test "subsequence matcher highlights and bonuses" {
     };
     for (cases) |cs| {
         hl.clearRetainingCapacity();
-        try std.testing.expect(scoreOf(cs.q, cs.c, &hl, gpa) != null);
+        const sc = scoreOf(cs.q, cs.c, &hl, gpa);
+        try std.testing.expect(sc != null);
+        try std.testing.expectEqual(sc, scoreOnly(cs.q, cs.c));
         try std.testing.expectEqualSlices([2]u32, cs.hl, hl.items);
     }
     hl.clearRetainingCapacity();
