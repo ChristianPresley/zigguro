@@ -32,6 +32,15 @@ test "watch: concurrent evaluation with timeouts" {
     try testing.expectEqualStrings("no such name", r[1].result.?.value);
     // Answered after 900 ms: too late.
     try testing.expectEqual(Watches.State.timed_out, r[2].state);
+    // Moving a watch takes its result along.
+    f.insp.watches.move(0, 2);
+    try testing.expectEqualStrings("w2", r[0].expr);
+    try testing.expectEqualStrings("w1", r[2].expr);
+    try testing.expectEqualStrings("1", r[2].result.?.value);
+    try testing.expectEqualStrings("no such name", r[0].result.?.value);
+    f.insp.watches.move(2, 0);
+    f.insp.watches.move(5, 0);
+    try testing.expectEqualStrings("w1", r[0].expr);
     // Running: not stopped.
     f.insp.watches.markNotStopped();
     try testing.expectEqual(Watches.State.not_stopped, f.insp.watches.results()[0].state);

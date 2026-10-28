@@ -104,6 +104,17 @@ pub fn remove(w: *Watches, i: u32) void {
     w.changed();
 }
 
+/// Moves watch `i` to position `to` (its result goes with it).
+pub fn move(w: *Watches, i: u32, to: u32) void {
+    const n = w.list.items.len;
+    if (i >= n or to >= n or i == to) return;
+    const m = w.meta.orderedRemove(i);
+    const v = w.list.orderedRemove(i);
+    w.meta.insertAssumeCapacity(to, m);
+    w.list.insertAssumeCapacity(to, v);
+    w.changed();
+}
+
 /// Evaluates every watch in `frame`, in one batch.
 pub fn reevaluate(w: *Watches, frame: i64) void {
     for (0..w.list.items.len) |i| w.evaluateIn(i, frame);

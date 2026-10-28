@@ -19,7 +19,8 @@
 //!   take ids from a reserved range.
 //! - **Context menu** (right-click, Shift+F10): Set Value, Copy Value,
 //!   Copy as Expression, Add to Watch and, when the adapter has data
-//!   breakpoints, Break on Value Change; in Watch, add, edit and remove.
+//!   breakpoints, Break on Value Change; in Watch, add, edit, remove and
+//!   move (also Alt+Up, Alt+Down).
 //! - Accessible names read "name, value, type".
 //!
 //! `update` re-reads the models after they changed (not per frame). UI
@@ -72,6 +73,8 @@ pub const Hooks = struct {
     watch_add: *const fn (ctx: *anyopaque, expr: []const u8) void,
     watch_edit: *const fn (ctx: *anyopaque, index: u32, expr: []const u8) void,
     watch_remove: *const fn (ctx: *anyopaque, index: u32) void,
+    /// Watch `index` moved to `to`.
+    watch_move: *const fn (ctx: *anyopaque, index: u32, to: u32) void,
     /// A value was set: the watches may read it.
     value_set: *const fn (ctx: *anyopaque) void,
 };
@@ -487,6 +490,26 @@ pub const VarTree = struct {
         return @intCast(i);
     }
 
+    /// Whether the active watch can move `delta` rows.
+    pub fn canMoveWatch(vt: *const VarTree, delta: i32) bool {
+        const i = vt.activeWatch() orelse return false;
+        const to = @as(i64, i) + delta;
+        return to >= 0 and to < vt.watches().len;
+    }
+
+    /// Moves the active watch `delta` rows (Alt+Up, Alt+Down), keeping it
+    /// active.
+    pub fn moveActiveWatch(vt: *VarTree, delta: i32) void {
+        if (!vt.canMoveWatch(delta)) return;
+        const i = vt.activeWatch().?;
+        const to: u32 = @intCast(@as(i64, i) + delta);
+        vt.hooks.watch_move(vt.hooks.ctx, i, to);
+        vt.tv.reload() catch return;
+        const row = vt.tv.flat.rowOf(watch_base + to) orelse return;
+        vt.tv.moveTo(row, .replace);
+        vt.tv.reveal(row);
+    }
+
     /// The active row's value (Copy Value).
     pub fn activeValue(vt: *VarTree) ?[]const u8 {
         const id = vt.tv.active orelse return null;
@@ -527,7 +550,7 @@ pub const VarTree = struct {
     fn contextMenu(vt: *VarTree, ui: *Ui) void {
         if (vt.mode == .hover) return;
         const MenuItem = zg_gui.w.MenuItem;
-        var items: [10]MenuItem = undefined;
+        var items: [12]MenuItem = undefined;
         var k: usize = 0;
         const v = vt.activeVar();
         const has_expr = v != null and v.?.evaluate_name != null;
@@ -539,6 +562,10 @@ pub const VarTree = struct {
             items[k] = .{ .action = .{ .label = "Edit Expression", .action = "debug.editWatchExpression", .enabled = w } };
             k += 1;
             items[k] = .{ .action = .{ .label = "Remove Expression", .action = "debug.removeWatchExpression", .enabled = w } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Move Up", .action = "debug.moveWatchUp", .enabled = vt.canMoveWatch(-1) } };
+            k += 1;
+            items[k] = .{ .action = .{ .label = "Move Down", .action = "debug.moveWatchDown", .enabled = vt.canMoveWatch(1) } };
             k += 1;
             items[k] = .separator;
             k += 1;

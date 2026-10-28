@@ -1343,6 +1343,8 @@ pub const Workbench = struct {
         .{ .id = "debug.addWatchExpression", .title = "Add Watch Expression", .category = "Debug", .run = addWatchExpression },
         .{ .id = "debug.editWatchExpression", .title = "Edit Watch Expression", .category = "Debug", .run = editWatchExpression },
         .{ .id = "debug.removeWatchExpression", .title = "Remove Watch Expression", .category = "Debug", .run = removeWatchExpression },
+        .{ .id = "debug.moveWatchUp", .title = "Move Watch Expression Up", .category = "Debug", .run = moveWatchUp },
+        .{ .id = "debug.moveWatchDown", .title = "Move Watch Expression Down", .category = "Debug", .run = moveWatchDown },
         .{ .id = "debug.removeAllWatchExpressions", .title = "Remove All Watch Expressions", .category = "Debug", .run = dbg(Debug.removeAllWatchesCmd) },
         .{ .id = "debug.toggleHexValues", .title = "Toggle Hexadecimal Values", .category = "Debug", .run = dbg(Debug.toggleHexCmd) },
         .{ .id = "debug.closeExceptionWidget", .title = "Close Exception Widget", .category = "Debug", .run = dbg(Debug.closeExceptionCmd) },
@@ -3545,6 +3547,16 @@ pub const Workbench = struct {
         const d = wb.debug orelse return;
         const i = dp.watch.activeWatch() orelse return;
         Debug.watchRemove(d, i);
+    }
+
+    fn moveWatchUp(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        dp.watch.moveActiveWatch(-1);
+    }
+
+    fn moveWatchDown(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        dp.watch.moveActiveWatch(1);
     }
 
     fn copyCallStack(wb: *Workbench) !void {
@@ -7296,6 +7308,43 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     dp.vars.submitEdit();
     try Find.until(t, "b, 40, int");
     try Find.until(t, "a + b, 41, int");
+    // Alt+Down moves the active watch below the next one (saved), Alt+Up
+    // back; it stays active.
+    {
+        Debug.watchAdd(d, "a * 2");
+        try Find.until(t, "a * 2, 2, int");
+        const wv = &dp.watch;
+        const first = for (wv.tv.flat.rows.items, 0..) |r, i| {
+            if (std.mem.startsWith(u8, debug_var_tree.VarTree.labelOf(wv, r.node), "a + b, ")) break i;
+        } else return error.NoRow;
+        wv.tv.moveTo(first, .replace);
+        try std.testing.expect(!wv.canMoveWatch(-1));
+        try Workbench.moveWatchDown(&wb);
+        _ = t.settle();
+        const ws = d.no_session.watches.results();
+        try std.testing.expectEqualStrings("a * 2", ws[0].expr);
+        try std.testing.expectEqualStrings("a + b", ws[1].expr);
+        try std.testing.expectEqual(@as(?u32, 1), wv.activeWatch());
+        try std.testing.expectEqualStrings("a + b", d.active().?.insp.watches.results()[1].expr);
+        const moved = try tmp.dir.readFileAlloc(io, ".zigguro/debug/watches.zon", gpa, .limited(4096));
+        defer gpa.free(moved);
+        try std.testing.expect(std.mem.indexOf(u8, moved, "\"a * 2\"").? < std.mem.indexOf(u8, moved, "\"a + b\"").?);
+        try Find.until(t, "a + b, 41, int");
+        try Workbench.moveWatchUp(&wb);
+        _ = t.settle();
+        try std.testing.expectEqualStrings("a + b", d.no_session.watches.results()[0].expr);
+        try std.testing.expectEqual(@as(?u32, 0), wv.activeWatch());
+        Debug.watchRemove(d, 1);
+        _ = t.settle();
+        try std.testing.expectEqual(@as(usize, 1), d.no_session.watches.results().len);
+        // The keys, with the Watch view focused.
+        wv.focus(t.win);
+        _ = t.settle();
+        try std.testing.expectEqualStrings("debug.moveWatchDown", testCommandFor(&wb, K{ .key = .arrow_down, .mods = .{ .alt = true } }).?);
+        try std.testing.expectEqualStrings("debug.moveWatchUp", testCommandFor(&wb, K{ .key = .arrow_up, .mods = .{ .alt = true } }).?);
+        t.win.setFocus(wb.editor_node, false);
+        _ = t.settle();
+    }
     // The pointer resting on `b` in `a + b`: its value, in a popover.
     {
         const w = t.win;
