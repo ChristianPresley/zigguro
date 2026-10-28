@@ -1,6 +1,6 @@
 # Profiling zigguro
 
-How to find out where zigguro spends its time, from a one-off hitch to a hot function, on Linux and Windows. Budgets live in [budgets.md](budgets.md), the trace naming rules in [tracing-conventions.md](tracing-conventions.md), and the threading rules in [threading.md](threading.md).
+How to find out where zigguro spends its time, from a one-off hitch to a hot function, on Linux and Windows. Budgets live in [budgets.md](budgets.md), the trace naming rules in [tracing-conventions.md](tracing-conventions.md), the threading rules in [threading.md](threading.md), and how latency is measured in [latency.md](latency.md).
 
 ## Which tool when
 

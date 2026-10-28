@@ -6,7 +6,9 @@
 //! submit) and its GPU time. A frame whose CPU time is over the refresh
 //! period is over budget. The text rows show FPS over the last second of
 //! frames, CPU and GPU p99 over the bars, key-to-photon p50/p99 over the
-//! last 1 000 keys, and the optional wakeup and memory sources.
+//! last 1 000 keys, and the optional wakeup and memory sources. Frames
+//! that broke the latency clock contract are counted in the first row
+//! ("clock x N"): their numbers are left out.
 
 const std = @import("std");
 const zg_perf = @import("zg_perf");
@@ -124,7 +126,9 @@ pub const Model = struct {
             if (b.ns[@intFromEnum(Phase.gpu)] != 0) gpu.record(b.ns[@intFromEnum(Phase.gpu)]);
             if (b.over) over += 1;
         }
-        if (idle) m.setRow(0, "idle (last {d} fps)", .{fps}) else m.setRow(0, "{d} fps", .{fps});
+        var clock_buf: [24]u8 = undefined;
+        const clock = if (tl.clock_violations > 0) std.fmt.bufPrint(&clock_buf, ", clock x {d}", .{tl.clock_violations}) catch "" else "";
+        if (idle) m.setRow(0, "idle (last {d} fps){s}", .{ fps, clock }) else m.setRow(0, "{d} fps{s}", .{ fps, clock });
         m.setRow(1, "CPU p99 {d:.2} ms, {d} over", .{ ms(cpu.percentile(99)), over });
         if (gpu.total > 0) m.setRow(2, "GPU p99 {d:.2} ms", .{ms(gpu.percentile(99))}) else m.setRow(2, "GPU -", .{});
         const k = &tl.key_to_photon_recent;
@@ -211,6 +215,9 @@ test "hud model: bars, over budget and rows" {
     try std.testing.expectEqualStrings("wakeups -", m.row(4));
     m.update(&tl, .{}, true);
     try std.testing.expectEqualStrings("idle (last 120 fps)", m.row(0));
+    tl.clock_violations = 3;
+    m.update(&tl, .{}, false);
+    try std.testing.expectEqualStrings("120 fps, clock x 3", m.row(0));
 }
 
 test "hud model: sources and bar hit" {
