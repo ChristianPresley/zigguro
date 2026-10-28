@@ -12,6 +12,7 @@
         .zg_jsonrpc = .{ .path = "../jsonrpc" },
         .zg_syntax = .{ .path = "../syntax" },
         .zg_regex = .{ .path = "../regex" },
+        .zg_dap = .{ .path = "../dap" },
     },
     .paths = .{
         "build.zig",
