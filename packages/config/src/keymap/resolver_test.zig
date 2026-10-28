@@ -365,3 +365,32 @@ test "keymap: diagnostics point into the file" {
     try testing.expect(f.diags.contains("unknown keybinding field 'bogus'"));
     try testing.expectEqual(@as(usize, 1), f.km.?.bindings.len);
 }
+
+test "resolver: peek finds a key's command without state" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.layer(.builtin_default,
+        \\.{
+        \\    .{ .key = "ctrl+s", .command = "file.save" },
+        \\    .{ .key = "ctrl+w", .command = "term.close", .when = "terminalFocus" },
+        \\    .{ .key = "ctrl+k ctrl+s", .command = "kb.open" },
+        \\    .{ .key = "ctrl+x", .command = null },
+        \\}
+    );
+    try f.build(&.{.builtin_default});
+    try testing.expectEqual(f.id("file.save"), f.r.peek(&.{}, .{ .usage = key_s, .mods = ctrl }).?);
+    const term: []const context.KeyContext = &.{.{ .name = "terminalFocus" }};
+    try testing.expect(f.r.peek(&.{}, .{ .usage = key_w, .mods = ctrl }) == null);
+    try testing.expectEqual(f.id("term.close"), f.r.peek(term, .{ .usage = key_w, .mods = ctrl }).?);
+    // Chord starts, disables, releases and modifiers: nothing.
+    try testing.expect(f.r.peek(&.{}, .{ .usage = key_k, .mods = ctrl }) == null);
+    try testing.expect(f.r.peek(&.{}, .{ .usage = key_x, .mods = ctrl }) == null);
+    try testing.expect(f.r.peek(&.{}, .{ .usage = key_s, .mods = ctrl, .action = .release }) == null);
+    try testing.expect(f.r.peek(&.{}, .{ .usage = ctrl_l, .mods = ctrl }) == null);
+    // It left no chord behind; during one it answers null.
+    try testing.expect(!f.r.isPending());
+    try testing.expect(f.press(key_k, ctrl, 0) == .pending);
+    try testing.expect(f.r.peek(&.{}, .{ .usage = key_s, .mods = ctrl }) == null);
+    try expectAction(&f, f.press(key_s, ctrl, 10), "kb.open");
+}

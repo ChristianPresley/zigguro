@@ -1122,6 +1122,7 @@ pub const Workbench = struct {
             ci.win = win;
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
+            ci.key_hook = .{ .ctx = wb, .f = popupKey };
             ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
             ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
             ci.pickers.host = .{ .ctx = wb, .here = symbolHere, .to = symbolTo, .notice = symbolNotice };
@@ -1342,6 +1343,54 @@ pub const Workbench = struct {
                 }.f },
             });
         }
+        // The completion list, signature help and snippet commands.
+        inline for (comptime std.enums.values(CodeIntel.PopupCommand)) |c| {
+            _ = try wb.reg.register(.{
+                .id = c.id(),
+                .title = c.title(),
+                .category = "Editor",
+                .source = .{ .builtin = "zigguro" },
+                .repeat = true,
+                .handler = .{ .ctx = wb, .run = struct {
+                    fn f(ctx: ?*anyopaque, _: *registry.Invocation) anyerror!void {
+                        const self: *Workbench = @ptrCast(@alignCast(ctx.?));
+                        const ci = self.codeintel orelse return;
+                        _ = ci.popupCommand(self.view, c);
+                        if (self.win) |w| w.markAllDirty();
+                    }
+                }.f },
+            });
+        }
+    }
+
+    const popup_commands = std.StaticStringMap(CodeIntel.PopupCommand).initComptime(blk: {
+        const vals = std.enums.values(CodeIntel.PopupCommand);
+        var kvs: [vals.len]struct { []const u8, CodeIntel.PopupCommand } = undefined;
+        for (vals, 0..) |c, i| kvs[i] = .{ c.id(), c };
+        break :blk kvs;
+    });
+
+    /// The popup command `k` is bound to in `view`'s editor: the popup
+    /// context keys are set from its state, then the keymap is asked
+    /// (without running anything), so the popup keys stay rebindable
+    /// while the editor would otherwise take them first.
+    fn popupKey(ctx: *anyopaque, view: *EditorView, k: zg_gui.input.event.KeyPress) ?CodeIntel.PopupCommand {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const ci = wb.codeintel orelse return null;
+        return wb.popupCommandFor(ci.popupState(view), k);
+    }
+
+    fn popupCommandFor(wb: *Workbench, st: CodeIntel.PopupState, k: zg_gui.input.event.KeyPress) ?CodeIntel.PopupCommand {
+        inline for (.{
+            .{ "suggestWidgetVisible", st.suggest },
+            .{ "suggestWidgetMultipleSuggestions", st.suggest_many },
+            .{ "parameterHintsVisible", st.hints },
+            .{ "parameterHintsMultipleSignatures", st.hints_many },
+            .{ "inSnippetMode", st.snippet },
+        }) |kv| wb.keys.setByName(kv[0], .{ .bool = kv[1] }) catch {};
+        const w = wb.win orelse return null;
+        const id = wb.resolver.peek(wb.adapter.contexts(), zg_config.ui.KeymapAdapter.keyInput(k, w.app.now_ms * std.time.ns_per_ms)) orelse return null;
+        return popup_commands.get(wb.reg.get(id).id);
     }
 
     fn notify(wb: *Workbench, severity: zg_gui.w.notification_center.Severity, comptime fmt: []const u8, args: anytype) void {
@@ -6012,4 +6061,74 @@ test "workbench: Ctrl+Shift+B runs the build task in a terminal; its problems sh
     try Workbench.configureTask(&wb);
     _ = t.settle();
     try std.testing.expectEqualStrings("tasks.zon", std.fs.path.basename(wb.path.?));
+}
+
+test "workbench: completion, signature and snippet keys resolve through the keymap" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 800, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    const P = CodeIntel.PopupCommand;
+    const K = zg_gui.input.event.KeyPress;
+    const key = struct {
+        fn of(k: @FieldType(K, "key"), mods: @FieldType(K, "mods")) K {
+            return .{ .key = k, .mods = mods, .action = .press };
+        }
+    }.of;
+    const none: CodeIntel.PopupState = .{};
+    const list: CodeIntel.PopupState = .{ .suggest = true, .suggest_many = true };
+    const hints: CodeIntel.PopupState = .{ .hints = true, .hints_many = true };
+    const both: CodeIntel.PopupState = .{ .suggest = true, .hints = true, .hints_many = true, .snippet = true };
+    const snip: CodeIntel.PopupState = .{ .snippet = true };
+    const expect = std.testing.expectEqual;
+
+    // Nothing showing: only the triggers, and the editor keeps its keys.
+    try expect(@as(?P, .trigger_suggest), wb.popupCommandFor(none, key(.space, .{ .ctrl = true })));
+    try expect(@as(?P, .trigger_parameter_hints), wb.popupCommandFor(none, key(.space, .{ .ctrl = true, .shift = true })));
+    try expect(@as(?P, null), wb.popupCommandFor(none, key(.arrow_down, .{})));
+    try expect(@as(?P, null), wb.popupCommandFor(none, key(.tab, .{})));
+    try expect(@as(?P, null), wb.popupCommandFor(none, key(.escape, .{})));
+    // The list: its keys win over signature help and snippets.
+    try expect(@as(?P, .select_next), wb.popupCommandFor(both, key(.arrow_down, .{})));
+    try expect(@as(?P, .select_previous), wb.popupCommandFor(list, key(.arrow_up, .{})));
+    try expect(@as(?P, .select_next_page), wb.popupCommandFor(list, key(.page_down, .{})));
+    try expect(@as(?P, .select_last), wb.popupCommandFor(list, key(.end, .{})));
+    try expect(@as(?P, .accept), wb.popupCommandFor(both, key(.tab, .{})));
+    try expect(@as(?P, .accept), wb.popupCommandFor(list, key(.enter, .{})));
+    try expect(@as(?P, .accept_alternative), wb.popupCommandFor(list, key(.enter, .{ .shift = true })));
+    try expect(@as(?P, .hide), wb.popupCommandFor(both, key(.escape, .{})));
+    try expect(@as(?P, .toggle_details), wb.popupCommandFor(list, key(.space, .{ .ctrl = true })));
+    try expect(@as(?P, null), wb.popupCommandFor(list, key(.arrow_left, .{})));
+    // Signature help without the list.
+    try expect(@as(?P, .next_hint), wb.popupCommandFor(hints, key(.arrow_down, .{})));
+    try expect(@as(?P, .previous_hint), wb.popupCommandFor(hints, key(.arrow_up, .{ .alt = true })));
+    try expect(@as(?P, .close_hints), wb.popupCommandFor(hints, key(.escape, .{})));
+    try expect(@as(?P, null), wb.popupCommandFor(.{ .hints = true }, key(.arrow_down, .{})));
+    // Snippets.
+    try expect(@as(?P, .next_placeholder), wb.popupCommandFor(snip, key(.tab, .{})));
+    try expect(@as(?P, .previous_placeholder), wb.popupCommandFor(snip, key(.tab, .{ .shift = true })));
+    try expect(@as(?P, .leave_snippet), wb.popupCommandFor(snip, key(.escape, .{})));
+    try expect(@as(?P, .close_hints), wb.popupCommandFor(.{ .hints = true, .snippet = true }, key(.escape, .{})));
+    // Every command is in the palette.
+    inline for (comptime std.enums.values(P)) |c| try std.testing.expect(wb.reg.lookup(c.id()) != null);
 }

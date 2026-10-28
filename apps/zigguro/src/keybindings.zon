@@ -53,6 +53,32 @@
     .{ .key = "mod+shift+down", .command = "terminal.selectNextOutput", .when = "terminalFocus" },
     // workbench.action.terminal.focusFind
     .{ .key = "mod+f", .command = "terminal.find", .when = "terminalFocus" },
+    // The completion list, signature help and snippets (VS Code's
+    // editor.action.triggerSuggest, selectNextSuggestion, ...,
+    // showNextParameterHint, jumpToNextSnippetPlaceholder, leaveSnippet).
+    // Later entries win, so the more specific contexts come last.
+    .{ .key = "ctrl+space", .command = "editor.triggerSuggest", .when = "editorTextFocus" },
+    .{ .key = "ctrl+shift+space", .command = "editor.triggerParameterHints", .when = "editorTextFocus" },
+    .{ .key = "tab", .command = "editor.nextSnippetPlaceholder", .when = "editorTextFocus && inSnippetMode && !suggestWidgetVisible" },
+    .{ .key = "shift+tab", .command = "editor.previousSnippetPlaceholder", .when = "editorTextFocus && inSnippetMode && !suggestWidgetVisible" },
+    .{ .key = "escape", .command = "editor.leaveSnippet", .when = "editorTextFocus && inSnippetMode && !suggestWidgetVisible && !parameterHintsVisible" },
+    .{ .key = "escape", .command = "editor.closeParameterHints", .when = "editorTextFocus && parameterHintsVisible && !suggestWidgetVisible" },
+    .{ .key = "up", .command = "editor.previousParameterHint", .when = "editorTextFocus && parameterHintsMultipleSignatures && !suggestWidgetVisible" },
+    .{ .key = "down", .command = "editor.nextParameterHint", .when = "editorTextFocus && parameterHintsMultipleSignatures && !suggestWidgetVisible" },
+    .{ .key = "alt+up", .command = "editor.previousParameterHint", .when = "editorTextFocus && parameterHintsMultipleSignatures && !suggestWidgetVisible" },
+    .{ .key = "alt+down", .command = "editor.nextParameterHint", .when = "editorTextFocus && parameterHintsMultipleSignatures && !suggestWidgetVisible" },
+    .{ .key = "down", .command = "editor.selectNextSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "up", .command = "editor.selectPreviousSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "pagedown", .command = "editor.selectNextPageSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "pageup", .command = "editor.selectPreviousPageSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "home", .command = "editor.selectFirstSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "end", .command = "editor.selectLastSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "enter", .command = "editor.acceptSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "numpad_enter", .command = "editor.acceptSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "tab", .command = "editor.acceptSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "shift+enter", .command = "editor.acceptAlternativeSuggestion", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "escape", .command = "editor.hideSuggest", .when = "editorTextFocus && suggestWidgetVisible" },
+    .{ .key = "ctrl+space", .command = "editor.toggleSuggestionDetails", .when = "editorTextFocus && suggestWidgetVisible" },
     // The performance HUD (E14.F03.S01.T02 default).
     .{ .key = "ctrl+alt+shift+h", .command = "perf.hud.toggle" },
 }
