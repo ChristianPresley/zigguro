@@ -1,0 +1,10 @@
+# Stopping an attached session disconnects without ending the debuggee.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true}}
+> attach {"pid": 4242}
+< {}
+< event initialized
+> configurationDone
+< {}
+> disconnect {"terminateDebuggee": false, "restart": false}
+< {}
