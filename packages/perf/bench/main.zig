@@ -94,6 +94,22 @@ fn register(b: *bench.Bench) !void {
             for (0..s.iterations()) |_| bench.doNotOptimizeAway(zg_perf.budget.byId("agents.notification_route"));
         }
     }.f);
+    // One op exports 1 M zone events (2 M slice events) to Perfetto.
+    const corpus = try zg_perf.@"export".perfetto.syntheticZones(std.heap.page_allocator, 1_000_000);
+    defer std.heap.page_allocator.free(corpus);
+    try b.run("perf.perfetto_export_1m", corpus, struct {
+        fn f(evs: []const zg_core.trace.Event, s: *bench.State) void {
+            var buf: [64 * 1024]u8 = undefined;
+            for (0..s.iterations()) |_| {
+                var sink: std.Io.Writer.Discarding = .init(&buf);
+                var w = zg_perf.@"export".perfetto.Writer.init(std.heap.page_allocator, &sink.writer, .{});
+                defer w.deinit();
+                w.writeEvents(evs) catch unreachable;
+                w.finish() catch unreachable;
+                bench.doNotOptimizeAway(sink.fullCount());
+            }
+        }
+    }.f);
 }
 
 /// Keeps the trace rings from filling (dropped events are cheaper and
