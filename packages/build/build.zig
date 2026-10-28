@@ -67,6 +67,9 @@ pub const Flags = struct {
     update_mode: UpdateMode = .managed_or_notify,
     /// Distro packaging build (FHS layout, updates disabled).
     distro: bool = false,
+    /// Profiling preset (E14.F02.S03.T02): ReleaseFast, tracing=zones,
+    /// symbols kept; apps always keep frame pointers.
+    profile: bool = false,
 
     /// The single tuple every package passes to `b.dependency()`. It MUST be
     /// passed unchanged; field names equal the `-D` option names.
@@ -89,6 +92,7 @@ pub const Flags = struct {
             .@"source-date-epoch" = f.source_date_epoch,
             .@"update-mode" = f.update_mode,
             .distro = f.distro,
+            .profile = f.profile,
         };
     }
 };
@@ -113,6 +117,7 @@ pub const Args = struct {
     @"source-date-epoch": i64,
     @"update-mode": UpdateMode,
     distro: bool,
+    profile: bool,
 };
 
 /// Default `-Dversion`.
@@ -122,14 +127,17 @@ pub const default_version = "0.0.0-dev";
 /// Each `b.option` may be declared only once per builder, so call this exactly
 /// once per `build.zig`.
 pub fn flags(b: *std.Build) Flags {
-    const optimize = b.standardOptimizeOption(.{});
+    const profile = b.option(bool, "profile", "Profiling preset: ReleaseFast, tracing=zones, symbols kept (default: false)") orelse false;
+    const asked = b.standardOptimizeOption(.{});
+    const optimize: std.builtin.OptimizeMode = if (profile and asked == .Debug) .ReleaseFast else asked;
+    const tracing = b.option(Tracing, "tracing", "Trace zones: off (default), zones, full") orelse if (profile) Tracing.zones else Tracing.off;
     const distro = b.option(bool, "distro", "Distro packaging build; forces update-mode=disabled (default: false)") orelse false;
     // Always declared, so the forwarded tuple stays valid in every builder.
     const update_mode = b.option(UpdateMode, "update-mode", "Update mode: managed_or_notify (default), notify_only, disabled") orelse .managed_or_notify;
     return .{
         .target = b.standardTargetOptions(.{}),
         .optimize = optimize,
-        .tracing = b.option(Tracing, "tracing", "Trace zones: off (default), zones, full") orelse .off,
+        .tracing = tracing,
         .wayland = b.option(bool, "wayland", "Build the Wayland backend on Linux (default: true)") orelse true,
         .x11 = b.option(bool, "x11", "Build the X11 backend on Linux (default: true)") orelse true,
         .vk_validation = b.option(bool, "vk_validation", "Enable Vulkan validation layers (default: false)") orelse false,
@@ -144,6 +152,7 @@ pub fn flags(b: *std.Build) Flags {
         .source_date_epoch = b.option(i64, "source-date-epoch", "Reproducible-build timestamp (default: 0)") orelse 0,
         .update_mode = if (distro) .disabled else update_mode,
         .distro = distro,
+        .profile = profile,
     };
 }
 
