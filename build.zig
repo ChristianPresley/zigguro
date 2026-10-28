@@ -250,6 +250,12 @@ pub fn build(b: *std.Build) void {
     const prlint = addTool(b, "prlint", "tools/prlint/main.zig", test_filters, f.optimize, tools_test_step);
     const fuzz_list = addTool(b, "fuzz-list", "tools/fuzz-list/main.zig", test_filters, f.optimize, tools_test_step);
     const zig_verify = addTool(b, "zig-verify", "tools/zig-verify/main.zig", test_filters, f.optimize, tools_test_step);
+    // `zig build check-frame-pointers -Dprofile=true` (E14.F02.S03.T02).
+    const check_fp = addTool(b, "check-frame-pointers", "tools/check-frame-pointers/main.zig", test_filters, f.optimize, tools_test_step);
+    const check_fp_run = b.addRunArtifact(check_fp);
+    check_fp_run.addArtifactArg(zigguro_exe);
+    check_fp_run.expectExitCode(0);
+    b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
     _ = addTool(b, "wayland-scanner", "packages/build/wayland_scanner/main.zig", test_filters, f.optimize, tools_test_step);
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const tzdata_gen = addTool(b, "tzdata-gen", "tools/tzdata_gen/main.zig", test_filters, f.optimize, tools_test_step);
@@ -618,6 +624,15 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "zg_perf", .module = perf_host }},
         }) });
         dup.expect_errors = .{ .contains = "duplicate budget id: a.b" };
+        // Every trace_processor recipe is referenced from profiling.md.
+        const docs_check = addTool(b, "perf-docs-check", "tools/perf/docs_check.zig", test_filters, f.optimize, tools_test_step);
+        const docs_run = b.addRunArtifact(docs_check);
+        docs_run.setCwd(b.path("."));
+        docs_run.has_side_effects = true;
+        docs_run.expectExitCode(0);
+        const docs_step = b.step("perf-docs-check", "Fail if a tools/perf/sql recipe is missing from docs/perf/profiling.md");
+        docs_step.dependOn(&docs_run.step);
+        test_step.dependOn(docs_step);
         const ce = b.step("test-perf-compile-errors", "Check that an invalid budget registry fails to compile");
         ce.dependOn(&dup.step);
         test_step.dependOn(ce);
