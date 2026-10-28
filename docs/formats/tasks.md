@@ -43,6 +43,7 @@ and renaming a file never changes its task.
 | `rank` | the order within a column (written by the board) | none |
 | `claimed_by` | the run working on the task (written when an agent claims it) | none |
 | `github` | `owner/repo#123` when synced with GitHub Issues | none |
+| `project` | the slug of the project the task belongs to ([projects](projects.md)); new tasks get the active project | none |
 
 Statuses accept any case and `-` or a space for `_`, so Obsidian's
 `In Progress` works. Every other property (`tags`, `aliases`, your own) is
@@ -96,6 +97,7 @@ every term. A leading `-` negates a term. Keys and values ignore case.
 | `claimed:true` | claimed by a run (`yes`/`no` work too) |
 | `text:"some words"` | the title contains the text |
 | `id:T-0042` | that task |
+| `project:book` or `p:book` | tasks tagged with that project; `project:none` for untagged |
 | `words` or `"a phrase"` | the title contains it |
 | `sort:priority` | order by `id` (default), `priority`, `due`, `created` or `title`; `sort:-due` reverses. Ties keep id order; undated tasks sort last by due |
 

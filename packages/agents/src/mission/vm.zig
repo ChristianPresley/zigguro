@@ -317,6 +317,7 @@ pub const MissionVM = struct {
             .cost_micro = rec.cost.micros,
             .tags = tags,
             .origin = origin,
+            .project = if (rec.spec.project) |x| try a.dupe(u8, x) else null,
         };
         e.revision = rec.revision;
         if (fresh) {

@@ -15,10 +15,10 @@ fn date(y: i32, m: u4, d: u5) Date {
 }
 
 const board = [_]Task{
-    .{ .id = 1, .path = "T-0001.md", .title = "Write the docs", .status = .ready, .priority = 1, .assignee = "alice", .labels = &.{ "docs", "agent" }, .due = date(2026, 11, 1), .created = "2026-10-05" },
+    .{ .id = 1, .path = "T-0001.md", .title = "Write the docs", .status = .ready, .priority = 1, .assignee = "alice", .labels = &.{ "docs", "agent" }, .due = date(2026, 11, 1), .created = "2026-10-05", .project = "book" },
     .{ .id = 2, .path = "T-0002.md", .title = "Fix the parser", .status = .in_progress, .priority = 0, .assignee = "agent:coder", .labels = &.{"bug"}, .due = date(2026, 10, 20), .created = "2026-10-01", .claimed_by = "run-1" },
-    .{ .id = 3, .path = "T-0003.md", .title = "Review layout", .status = .review, .priority = 2, .assignee = "bob", .labels = &.{"ui"} },
-    .{ .id = 4, .path = "T-0004.md", .title = "Ship release", .status = .done, .priority = 1, .labels = &.{"release"}, .due = date(2026, 10, 1) },
+    .{ .id = 3, .path = "T-0003.md", .title = "Review layout", .status = .review, .priority = 2, .assignee = "bob", .labels = &.{"ui"}, .project = "q4" },
+    .{ .id = 4, .path = "T-0004.md", .title = "Ship release", .status = .done, .priority = 1, .labels = &.{"release"}, .due = date(2026, 10, 1), .project = "book" },
     .{ .id = 5, .path = "T-0005.md", .title = "Plan sprint", .status = .backlog, .priority = 3, .due = date(2026, 10, 23) },
     .{ .id = 6, .path = "T-0006.md", .title = "Blocked thing", .status = .ready, .priority = 2, .assignee = "alice", .labels = &.{"docs"}, .depends_on = &.{3} },
     .{ .id = 7, .path = "T-0007.md", .title = "Cancelled idea", .status = .cancelled, .priority = 3, .due = date(2026, 9, 1) },
@@ -63,6 +63,12 @@ const cases = [_]Case{
     .{ "-parser", &.{ 1, 3, 4, 5, 6, 7, 8 } },
     .{ "id:T-0003", &.{3} },
     .{ "id:3", &.{3} },
+    .{ "project:book", &.{ 1, 4 } },
+    .{ "p:BOOK", &.{ 1, 4 } },
+    .{ "p:q4", &.{3} },
+    .{ "project:none", &.{ 2, 5, 6, 7, 8 } },
+    .{ "-p:none", &.{ 1, 3, 4 } },
+    .{ "-p:book status:done", &.{} },
     .{ "status:ready label:docs", &.{ 1, 6 } },
     .{ "status:ready -blocked:true assignee:agent:*", &.{8} },
     .{ "status:ready sort:priority", &.{ 1, 6, 8 } },
