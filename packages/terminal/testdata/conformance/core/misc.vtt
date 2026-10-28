@@ -108,7 +108,7 @@
 @case DA1 reports a VT220-class terminal
 @size 10x2
 @send "\e[c"
-@expect-reply "\e[?62;22c"
+@expect-reply "\e[?62;4;22c"
 
 @case DSR 5 reports OK
 @size 10x2
