@@ -108,9 +108,10 @@ pub fn Result(comptime M: protocol.Method) type {
     return union(enum) {
         ok: Owned(protocol.RequestInfo(M).Result),
         lsp_error: LspError,
-        /// -32800 RequestCancelled, -32802 ServerCancelled, or `cancel`.
+        /// -32800 RequestCancelled, or `cancel`.
         canceled,
-        /// -32801 ContentModified.
+        /// -32801 ContentModified, or -32802 ServerCancelled asking to
+        /// be asked again: ask again for the current text.
         content_modified,
         /// The connection ended first.
         server_gone,
@@ -492,9 +493,17 @@ fn Thunk(comptime M: protocol.Method) type {
             };
             if (resp.response.err) |e| {
                 switch (e.code) {
-                    -32800, -32802 => {
+                    -32800 => {
                         resp.deinit();
                         return .canceled;
+                    },
+                    // ServerCancelled: asked again like ContentModified,
+                    // unless the server says not to (`retriggerRequest`
+                    // false, DiagnosticServerCancellationData).
+                    -32802 => {
+                        if (!retrigger(e.data)) return .{ .lsp_error = .{ .code = e.code, .message = e.message, .resp = resp } };
+                        resp.deinit();
+                        return .content_modified;
                     },
                     -32801 => {
                         resp.deinit();
@@ -512,6 +521,15 @@ fn Thunk(comptime M: protocol.Method) type {
                 break :blk raw.parseLeaky(T, resp.arena.allocator(), .{ .allocate = .alloc_always }) catch return invalid(resp);
             };
             return .{ .ok = .{ .value = value, .resp = resp } };
+        }
+
+        fn retrigger(data: ?message.RawJson) bool {
+            const d = data orelse return true;
+            var buf: [256]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&buf);
+            const D = struct { retriggerRequest: bool = true };
+            const v = std.json.parseFromSliceLeaky(D, fba.allocator(), d.bytes, .{ .ignore_unknown_fields = true }) catch return true;
+            return v.retriggerRequest;
         }
 
         fn invalid(resp: Endpoint.OwnedResponse) Result(M) {
