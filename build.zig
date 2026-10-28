@@ -262,6 +262,19 @@ pub fn build(b: *std.Build) void {
     check_fp_run.addArtifactArg(zigguro_exe);
     check_fp_run.expectExitCode(0);
     b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
+    // Benchmark corpora (E14.F06.S01.T01): `zig build corpus -- <profile>
+    // [options]` generates into <global zig cache>/zg-corpus (or
+    // ZG_CORPUS_DIR) and prints the folder.
+    _ = addTool(b, "corpusgen", "tools/corpusgen/main.zig", test_filters, f.optimize, tools_test_step);
+    {
+        // Generation speed matters here: always ReleaseFast.
+        const fast = b.addExecutable(.{ .name = "corpusgen", .root_module = toolModule(b, "tools/corpusgen/main.zig", .ReleaseFast, &.{}) });
+        const run = b.addRunArtifact(fast);
+        run.has_side_effects = true;
+        run.addArgs(&.{ "--cache-root", b.pathJoin(&.{ b.graph.global_cache_root.path orelse ".zig-cache", "zg-corpus" }) });
+        if (b.args) |args| run.addArgs(args);
+        b.step("corpus", "Generate a benchmark corpus: zig build corpus -- <profile> [--paths-only|--sparse] [--seed N]").dependOn(&run.step);
+    }
     // Blocking waits stay annotated with noteWake (E14.F05.S02.T01).
     const wake_sites = addTool(b, "wake-sites", "tools/wake-sites/main.zig", test_filters, f.optimize, tools_test_step);
     const wake_sites_run = b.addRunArtifact(wake_sites);
@@ -693,6 +706,28 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "zg_perf", .module = perf_host }},
         }) });
         dup.expect_errors = .{ .contains = "duplicate budget id: a.b" };
+        // perfgate (E14.F06.S02.T01): head-vs-base comparison and
+        // baselines. `zig build perf-baseline -Dmachine=<class> -- --from
+        // <merged.json>` rewrites perf/baselines/<class>/.
+        const perfgate = addToolImports(b, "perfgate", "tools/perfgate/main.zig", test_filters, f.optimize, tools_test_step, &.{
+            .{ .name = "zg_perf", .module = perf_host },
+        });
+        {
+            const run = b.addRunArtifact(perfgate);
+            run.setCwd(b.path("."));
+            if (b.args) |a| run.addArgs(a);
+            run.has_side_effects = true;
+            b.step("perfgate", "Run perfgate: zig build perfgate -- merge|compare|baseline|list-gated ...").dependOn(&run.step);
+        }
+        {
+            const machine = b.option([]const u8, "machine", "perf-baseline: the machine class (ci_linux_x64, ci_windows_x64, ref_laptop_2024)") orelse "ci_linux_x64";
+            const run = b.addRunArtifact(perfgate);
+            run.setCwd(b.path("."));
+            run.addArgs(&.{ "baseline", "--machine", machine, "--out", b.fmt("perf/baselines/{s}", .{machine}) });
+            if (b.args) |a| run.addArgs(a);
+            run.has_side_effects = true;
+            b.step("perf-baseline", "Write perf/baselines/<machine>/ from a merged bench set: zig build perf-baseline -Dmachine=M -- --from FILE").dependOn(&run.step);
+        }
         // Every trace_processor recipe is referenced from profiling.md.
         const docs_check = addTool(b, "perf-docs-check", "tools/perf/docs_check.zig", test_filters, f.optimize, tools_test_step);
         const docs_run = b.addRunArtifact(docs_check);
