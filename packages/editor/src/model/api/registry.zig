@@ -261,6 +261,19 @@ pub const DocumentRegistry = struct {
         r.gpa.free(old_uri);
     }
 
+    /// Appends the file documents at `path` or under it (a folder).
+    pub fn filesUnder(r: *const DocumentRegistry, gpa: Allocator, path: []const u8, out: *std.ArrayList(DocHandle)) Allocator.Error!void {
+        const norm = try normalizePath(gpa, path, r.style);
+        defer gpa.free(norm);
+        const key = try pathKey(gpa, norm, r.style);
+        defer gpa.free(key);
+        for (r.slots.items, 0..) |s, i| {
+            if (s.doc == null or s.kind != .file) continue;
+            const inside = std.mem.eql(u8, s.key, key) or (s.key.len > key.len and std.mem.startsWith(u8, s.key, key) and (s.key[key.len] == '/' or s.key[key.len] == '\\'));
+            if (inside) try out.append(gpa, r.handleOf(@intCast(i)));
+        }
+    }
+
     /// Number of open documents.
     pub fn count(r: *const DocumentRegistry) usize {
         return r.slots.items.len - r.free.items.len;
