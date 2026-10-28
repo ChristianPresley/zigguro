@@ -21,6 +21,42 @@ fn register(b: *bench.Bench) !void {
     afx.init(std.heap.smp_allocator, b.io);
     defer afx.deinit();
     try b.run("dap.adapters.discover: resolve every built-in adapter on a typical PATH (warm)", &afx, discoverAdapters);
+    try b.run("dap.config.load_200: 100 launch.zon and 100 launch.json configurations", {}, loadConfigs);
+}
+
+/// The launch configurations from texts already read. Budget: < 5 ms.
+fn loadConfigs(_: void, s: *State) void {
+    const gpa = s.allocator();
+    var zon: std.ArrayList(u8) = .empty;
+    defer zon.deinit(gpa);
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    zon.appendSlice(gpa, ".{ .version = 1, .configurations = .{\n") catch unreachable;
+    json.appendSlice(gpa, "{ \"version\": \"0.2.0\", // configurations\n \"configurations\": [\n") catch unreachable;
+    for (0..100) |i| {
+        zon.print(gpa,
+            \\    .{{ .name = "zon {d}", .type = "lldb-dap", .request = .launch, .pre_launch_task = "zig build",
+            \\        .args = .{{ .program = "${{workspaceFolder}}/zig-out/bin/app{d}", .args = .{{ "--port", "80{d:0>2}" }}, .env = .{{ .LOG = "debug" }}, .stopOnEntry = false }},
+            \\        .windows = .{{ .args = .{{ .program = "${{workspaceFolder}}/zig-out/bin/app{d}.exe" }} }} }},
+            \\
+        , .{ i, i, i, i }) catch unreachable;
+        json.print(gpa,
+            \\  {{ "name": "json {d}", "type": "lldb", "request": "launch", "program": "${{workspaceFolder}}/build/app{d}", "args": ["-v"],
+            \\    "cwd": "${{workspaceFolder}}", "env": {{ "MODE": "dev" }}, "linux": {{ "env": {{ "MODE": "linux" }} }}, "preLaunchTask": "make" }},
+            \\
+        , .{ i, i }) catch unreachable;
+    }
+    zon.appendSlice(gpa, "} }\n") catch unreachable;
+    json.appendSlice(gpa, "] }\n") catch unreachable;
+    const zon_z = gpa.dupeZ(u8, zon.items) catch unreachable;
+    defer gpa.free(zon_z);
+    s.setBytes(zon.items.len + json.items.len);
+    for (0..s.iterations()) |_| {
+        var set = zg_dap.config.ConfigSet.fromSources(gpa, .{ .launch_zon = zon_z, .launch_json = json.items, .os = .linux, .trusted = true }) catch unreachable;
+        defer set.deinit();
+        std.debug.assert(set.configs.len == 200 and set.errors.len == 0);
+        bench.doNotOptimizeAway(set.configs.len);
+    }
 }
 
 /// An upper bound of the UI-thread cost of starting a task: `run` (graph
