@@ -1,0 +1,21 @@
+# Output of every category; telemetry is dropped, groups nest.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event output {"output": "no category\n"}
+< event output {"category": "console", "output": "console\n"}
+< event output {"category": "stdout", "output": "out 1\n"}
+< event output {"category": "stderr", "output": "err 1\n", "source": {"path": "/w/src/main.zig"}, "line": 4}
+< event output {"category": "telemetry", "output": "{\"metric\": 1}"}
+< event output {"category": "important", "output": "important\n"}
+< event output {"category": "console", "output": "group\n", "group": "start"}
+< event output {"category": "stdout", "output": "inside\n", "variablesReference": 12}
+< event output {"category": "console", "output": "", "group": "end"}
+< event output {"category": "stdout", "output": "out 2\n"}
+< event terminated
+> disconnect
+< {}
