@@ -73,8 +73,22 @@ pub const TerminalPanel = struct {
     on_destroy: ?Hook = null,
     /// The kind of shell started (how to quote a `cd` for it).
     kind: inject.ShellKind = .other,
+    /// Called on the reader thread with each chunk of output, before the
+    /// terminal sees it (a task's problem matchers read it).
+    on_bytes: ?BytesHook = null,
+    /// Called once on the UI thread when the process ended, with its exit
+    /// code (null when killed by a signal). With it set, the reader waits
+    /// (up to 2 s) for the process after the output ends.
+    on_exit: ?ExitHook = null,
+    /// The process's status, set by the reader before `ended`.
+    exit_status: ?zg_platform.process.pty.ExitStatus = null,
+    exit_reported: bool = false,
+    /// Not saved with the terminals (a task's).
+    transient: bool = false,
 
     pub const Hook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void };
+    pub const BytesHook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, bytes: []const u8) void };
+    pub const ExitHook = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, code: ?u8) void };
 
     /// A panel with an 80x24 terminal; `start` spawns the shell.
     pub fn create(gpa: std.mem.Allocator, io: std.Io, app: *zg_gui.App, env: *const std.process.Environ.Map) !*TerminalPanel {
@@ -262,19 +276,52 @@ pub const TerminalPanel = struct {
         var buf: [64 << 10]u8 = undefined;
         const pty = &p.pty.?;
         while (!p.stop.load(.acquire)) {
-            if (!pty.waitReadable(50 * std.time.ns_per_ms)) continue;
+            if (!pty.waitReadable(50 * std.time.ns_per_ms)) {
+                // A task's process can end before its output does (a
+                // child keeps the terminal open; a ConPTY stays open).
+                if (p.on_exit != null and p.exit_status == null) if (pty.tryWait() catch null) |st| {
+                    p.exit_status = st;
+                    // The console's last output, then EOF.
+                    if (builtin.os.tag == .windows) {
+                        pty.kill(.hangup);
+                        continue;
+                    }
+                    p.ended.store(true, .release);
+                    p.postDrain();
+                    return;
+                };
+                continue;
+            }
             const n = pty.read(&buf) catch |e| switch (e) {
                 error.WouldBlock => continue,
                 else => 0,
             };
-            if (n == 0) p.ended.store(true, .release);
+            if (n == 0) {
+                if (p.on_exit != null) p.awaitExit(pty);
+                p.ended.store(true, .release);
+            }
             if (n > 0) {
+                if (p.on_bytes) |h| h.f(h.ctx, buf[0..n]);
                 p.mutex.lockUncancelable(p.io);
                 defer p.mutex.unlock(p.io);
                 p.pending.appendSlice(p.gpa, buf[0..n]) catch {};
             }
             p.postDrain();
             if (n == 0) return;
+        }
+    }
+
+    /// Reader thread, after the output ended: the exit status, polled
+    /// until the process is reaped (or 2 s, or `stop`).
+    fn awaitExit(p: *TerminalPanel, pty: *Pty) void {
+        if (p.exit_status != null) return;
+        var tries: u32 = 0;
+        while (tries < 200 and !p.stop.load(.acquire)) : (tries += 1) {
+            if (pty.tryWait() catch null) |st| {
+                p.exit_status = st;
+                return;
+            }
+            p.io.sleep(.fromMilliseconds(10), .awake) catch return;
         }
     }
 
@@ -292,8 +339,15 @@ pub const TerminalPanel = struct {
             p.startJob();
             p.app.spawn(compactWork, .{p});
         }
+        if (p.ended.load(.acquire) and !p.exit_reported) if (p.on_exit) |h| {
+            p.exit_reported = true;
+            h.f(h.ctx, if (p.exit_status) |st| switch (st) {
+                .exited => |c| c,
+                .signaled => null,
+            } else null);
+        };
         if (p.ended.load(.acquire) and p.note_len == 0) {
-            const status = if (p.pty) |*pty| (pty.tryWait() catch null) else null;
+            const status = p.exit_status orelse if (p.pty) |*pty| (pty.tryWait() catch null) else null;
             if (status) |s| switch (s) {
                 .exited => |c| p.setNote("shell exited ({d})", .{c}),
                 .signaled => |sig| p.setNote("shell killed (signal {d})", .{sig}),
