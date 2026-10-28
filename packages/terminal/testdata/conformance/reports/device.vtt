@@ -4,12 +4,12 @@
 @case DA1 reports a VT220-class terminal
 @size 10x2
 @send "\e[c"
-@expect-reply "\e[?62;22c"
+@expect-reply "\e[?62;4;22c"
 
 @case DA1 with 0
 @size 10x2
 @send "\e[0c"
-@expect-reply "\e[?62;22c"
+@expect-reply "\e[?62;4;22c"
 
 @case DA2 reports the secondary attributes
 @size 10x2
