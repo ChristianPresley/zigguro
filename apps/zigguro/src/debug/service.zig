@@ -40,6 +40,7 @@ const toolbar = @import("toolbar.zig");
 const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
 const sources_view = @import("sources_view.zig");
+const modules_view = @import("modules_view.zig");
 const hover_mod = @import("hover.zig");
 const exception_view = @import("exception_view.zig");
 const console_mod = @import("console.zig");
@@ -128,7 +129,8 @@ pub const Entry = struct {
     taken: bool = false,
     /// Console entries the Debug Console read (dropped ones counted).
     console_read: u64 = 0,
-    /// The `loadedSources` request went out (at the first stop).
+    /// The `loadedSources` and `modules` requests went out (at the first
+    /// stop).
     sources_asked: bool = false,
 };
 
@@ -962,6 +964,7 @@ pub const Debug = struct {
                 if (!e.sources_asked) {
                     e.sources_asked = true;
                     _ = s.refreshLoadedSources();
+                    _ = s.refreshModules();
                 }
                 d.active_id = id;
                 d.reveal_req = id;
@@ -1445,6 +1448,42 @@ pub const Debug = struct {
         return .{ .root = d.root, .items = c.out };
     }
 
+    /// The Modules view's rows (in `a`): the active session's modules.
+    pub fn modulesSnapshot(d: *Debug, a: Allocator) Allocator.Error![]const modules_view.Item {
+        const e = d.active() orelse return &.{};
+        const Copy = struct {
+            a: Allocator,
+            out: []modules_view.Item = &.{},
+            failed: bool = false,
+            fn run(c: *@This(), list: []const DebugSession.ModuleInfo) void {
+                c.copy(list) catch {
+                    c.failed = true;
+                    c.out = &.{};
+                };
+            }
+            fn copy(c: *@This(), list: []const DebugSession.ModuleInfo) Allocator.Error!void {
+                c.out = try c.a.alloc(modules_view.Item, list.len);
+                for (list, c.out) |m, *o| o.* = .{
+                    .id = try c.a.dupe(u8, m.id),
+                    .name = try c.a.dupe(u8, m.name),
+                    .path = try dupeOpt(c.a, m.path),
+                    .version = try dupeOpt(c.a, m.version),
+                    .symbol_status = try dupeOpt(c.a, m.symbol_status),
+                    .address_range = try dupeOpt(c.a, m.address_range),
+                    .is_optimized = m.is_optimized,
+                    .is_user_code = m.is_user_code,
+                };
+            }
+            fn dupeOpt(al: Allocator, x: ?[]const u8) Allocator.Error!?[]const u8 {
+                return if (x) |v| try al.dupe(u8, v) else null;
+            }
+        };
+        var c: Copy = .{ .a = a };
+        e.s.withModules(&c, Copy.run);
+        if (c.failed) return error.OutOfMemory;
+        return c.out;
+    }
+
     pub fn sourcesHooks(d: *Debug) sources_view.Hooks {
         return .{ .ctx = d, .open = openLoaded };
     }
@@ -1772,7 +1811,7 @@ const Inbox = struct {
         const q: *Inbox = @ptrCast(@alignCast(ctx.?));
         switch (change) {
             // The other views come later (E07.F07.S01.T03).
-            .progress, .process, .modules, .memory, .exited => return,
+            .progress, .process, .memory, .exited => return,
             else => {},
         }
         q.push(.{ .session = .{ .s = s, .id = s.id, .change = change } });
