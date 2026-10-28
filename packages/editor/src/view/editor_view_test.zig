@@ -427,6 +427,44 @@ test "view: syntax colours and decorations paint" {
     try testing.expectEqual(f.doc.version, ds.version);
 }
 
+test "view: squiggles, gutter marks and the overview ruler paint; new decorations repaint" {
+    var f: Fx = undefined;
+    try f.init("const x = 1;\nvar y = 2;\n");
+    defer f.deinit();
+    var store = deco_store.DecorationStore.init(gpa, f.doc);
+    defer store.deinit();
+    const owner = try store.registerOwner("lsp.diagnostics", 10);
+    const Colours = struct {
+        fn of(_: ?*anyopaque, s: deco_store.StyleRef) ?zg_gui.core.Color {
+            return switch (@intFromEnum(s)) {
+                1 => .hex(0xff0102),
+                2 => .hex(0x01ff03),
+                3 => .hex(0x0104ff),
+                else => null,
+            };
+        }
+    };
+    f.view.decorations = &store;
+    f.view.styles = .{ .color = Colours.of };
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    try testing.expect(std.mem.indexOf(u8, f.t.paintSnapshot(), "#ff0102ff") == null);
+    // Added after the last paint: the next frame repaints (the store's
+    // generation is in the paint hash).
+    _ = try store.add(.{ .range = .{ .start = 6, .end = 7 }, .owner = owner, .kind = .{ .underline = .{ .kind = .squiggle, .style = @enumFromInt(1) } } });
+    _ = try store.add(.{ .range = .{ .start = 13, .end = 16 }, .owner = owner, .kind = .{ .gutter = .{ .icon = 1, .style = @enumFromInt(2) } } });
+    _ = try store.add(.{ .range = .{ .start = 13, .end = 16 }, .owner = owner, .kind = .{ .overview = .{ .style = @enumFromInt(3) } } });
+    _ = try store.add(.{ .range = .{ .start = 17, .end = 18 }, .owner = owner, .kind = .{ .underline = .{ .kind = .dotted, .style = @enumFromInt(1) } } });
+    _ = try store.add(.{ .range = .{ .start = 0, .end = 5 }, .owner = owner, .kind = .{ .text_style = @enumFromInt(9) } });
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    const snap = f.t.paintSnapshot();
+    try testing.expect(std.mem.indexOf(u8, snap, "#ff0102ff") != null);
+    try testing.expect(std.mem.indexOf(u8, snap, "#01ff03ff") != null);
+    try testing.expect(std.mem.indexOf(u8, snap, "#0104ffff") != null);
+    f.view.decorations = null;
+}
+
 test "view: the IME follows the primary caret" {
     var f: Fx = undefined;
     try f.init("first\nsecond line");

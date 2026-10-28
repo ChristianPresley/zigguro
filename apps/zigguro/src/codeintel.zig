@@ -3,7 +3,10 @@
 //! ...) as matching files open; the semantic tokens driver, which
 //! colours the editors through their `DocumentSyntax` overlays; and the
 //! diagnostics driver, whose store the agent's edit tools read back
-//! through the settle detector (`agentDiagnostics`). The agent also gets
+//! through the settle detector (`agentDiagnostics`) and whose
+//! diagnostics the editors draw (squiggles by severity, gutter dots and
+//! overview ruler marks, through each editor's decoration store). The
+//! agent also gets
 //! language-server tools (`agentTools`: diagnostics, hover, definition).
 //!
 //! Servers run code from the workspace (zls runs `build.zig`), so nothing
@@ -30,6 +33,8 @@ const DocumentRegistry = zg_editor.model.api.registry.DocumentRegistry;
 const DocHandle = zg_editor.model.api.registry.DocHandle;
 const Document = zg_editor.model.document.Document;
 const DocumentSyntax = zg_editor.model.syntax.DocumentSyntax;
+const DecorationStore = zg_editor.model.decorations.store.DecorationStore;
+const StyleRef = zg_editor.model.decorations.store.StyleRef;
 const Manager = zg_codeintel.Manager;
 const SemTokDriver = zg_codeintel.features.SemTokDriver;
 const diagnostics = zg_codeintel.diagnostics;
@@ -49,6 +54,7 @@ pub const CodeIntel = struct {
     semtok: SemTokDriver = undefined,
     diags: diagnostics.Store,
     diag: diagnostics.Driver = undefined,
+    decor: diagnostics.Decorator = undefined,
     lsp_tools: LspTools = undefined,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
@@ -62,6 +68,8 @@ pub const CodeIntel = struct {
         h: DocHandle,
         doc: *Document,
         syntax: *DocumentSyntax,
+        /// The editor's decorations (diagnostics are drawn there).
+        deco: ?*DecorationStore = null,
         /// Attached to the manager (once trusted).
         attached: bool = false,
         /// Edits ask for a tick, so they reach the servers even when no
@@ -97,6 +105,8 @@ pub const CodeIntel = struct {
         errdefer ci.mgr.deinit();
         try ci.diag.init(&ci.mgr, &ci.diags, .{ .pull = .{ .waker = ci.waker() } });
         errdefer ci.diag.deinit();
+        try ci.decor.init(gpa, &ci.diags, .{ .severity = .{ style.err, style.warning, style.info, style.hint }, .faded = style.faded });
+        errdefer ci.decor.deinit();
         try ci.semtok.init(&ci.mgr, &ci.names, .{ .ctx = ci, .get = syntaxOf }, .{ .waker = ci.waker() });
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
@@ -109,6 +119,7 @@ pub const CodeIntel = struct {
         for (ci.files.items) |f| if (f.listener) |l| f.doc.unsubscribe(l);
         ci.mgr.deinit();
         ci.diag.deinit();
+        ci.decor.deinit();
         ci.semtok.deinit();
         ci.diags.deinit();
         ci.files.deinit(ci.gpa);
@@ -165,13 +176,41 @@ pub const CodeIntel = struct {
         for (ci.files.items) |*f| ci.attach(f);
     }
 
+    /// The decoration styles of diagnostics (`styleColor` resolves them).
+    pub const style = struct {
+        pub const err: StyleRef = @enumFromInt(0x0702_0001);
+        pub const warning: StyleRef = @enumFromInt(0x0702_0002);
+        pub const info: StyleRef = @enumFromInt(0x0702_0003);
+        pub const hint: StyleRef = @enumFromInt(0x0702_0004);
+        pub const faded: StyleRef = @enumFromInt(0x0702_0005);
+    };
+
+    /// `EditorView.styles` for the diagnostic styles, from the app's
+    /// current theme (other owners' styles fall back to the view's
+    /// defaults).
+    fn styleColor(ctx: ?*anyopaque, s: StyleRef) ?zg_gui.core.Color {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx.?));
+        const th = ci.app.theme;
+        return switch (s) {
+            style.err => th.color(.danger),
+            style.warning => th.color(.warning),
+            style.info => th.color(.info),
+            style.hint => th.color(.fg_muted),
+            style.faded => th.color(.bg_base).fade(0.45),
+            else => null,
+        };
+    }
+
     /// A file with highlighting opened in `view` (files without a known
-    /// language get no language services).
-    pub fn open(ci: *CodeIntel, h: DocHandle, syntax: ?*DocumentSyntax, view: *EditorView) void {
+    /// language get no language services). Diagnostics are drawn into
+    /// `deco`, the editor's decoration store, when given (it must
+    /// outlive `close(h)`).
+    pub fn open(ci: *CodeIntel, h: DocHandle, syntax: ?*DocumentSyntax, view: *EditorView, deco: ?*DecorationStore) void {
         const sx = syntax orelse return;
         view.hl_names = &ci.names;
+        if (deco != null) view.styles = .{ .ctx = ci, .color = styleColor };
         for (ci.files.items) |f| if (std.meta.eql(f.h, h)) return;
-        ci.files.append(ci.gpa, .{ .h = h, .doc = ci.docs.get(h) orelse return, .syntax = sx }) catch return;
+        ci.files.append(ci.gpa, .{ .h = h, .doc = ci.docs.get(h) orelse return, .syntax = sx, .deco = deco }) catch return;
         if (ci.trusted) ci.attach(&ci.files.items[ci.files.items.len - 1]);
     }
 
@@ -183,6 +222,7 @@ pub const CodeIntel = struct {
         };
         f.listener = f.doc.subscribe(.{ .ctx = ci, .onChange = onDocChange }) catch null;
         ci.semtok.track(f.h) catch {};
+        if (f.deco) |d| if (ci.diag.keyOfDoc(f.h)) |k| ci.decor.attach(k, d) catch {};
         f.attached = true;
     }
 
@@ -190,6 +230,7 @@ pub const CodeIntel = struct {
     pub fn close(ci: *CodeIntel, h: DocHandle) void {
         for (ci.files.items, 0..) |f, i| if (std.meta.eql(f.h, h)) {
             if (f.attached) {
+                if (f.deco) |d| ci.decor.detach(d);
                 ci.semtok.untrack(h);
                 ci.mgr.closeDoc(h);
             }
@@ -222,8 +263,9 @@ pub const CodeIntel = struct {
 
     fn tick(ci: *CodeIntel) void {
         ci.mgr.tick();
-        const changed = ci.semtok.tick();
+        var changed = ci.semtok.tick();
         _ = ci.diag.tick();
+        changed = (ci.decor.flush() catch false) or changed;
         const w = ci.win orelse return;
         if (changed) w.markAllDirty();
         if (ci.timer != .none) {
@@ -296,10 +338,17 @@ test "codeintel: servers wait for trust; missing servers are reported" {
     var env: std.process.Environ.Map = .init(gpa);
     defer env.deinit();
 
+    var deco: DecorationStore = .init(gpa, doc);
+    defer deco.deinit();
+
     const ci = try CodeIntel.create(&rt, &env, &app, &docs, std.fs.path.dirname(path).?);
     defer ci.destroy();
-    ci.open(h, &sx, view);
+    ci.open(h, &sx, view, &deco);
     try testing.expect(view.hl_names == ci.highlightNames());
+    // Diagnostic styles take the theme's colours; others the view's.
+    const sc = view.styles.?;
+    try testing.expectEqual(app.theme.color(.danger), sc.color(sc.ctx, CodeIntel.style.err).?);
+    try testing.expect(sc.color(sc.ctx, @enumFromInt(0)) == null);
     ci.frame(h, view);
     try testing.expectEqual(@as(usize, 0), ci.mgr.serverList().len);
 
