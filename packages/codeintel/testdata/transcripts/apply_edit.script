@@ -1,0 +1,13 @@
+# workspace/applyEdit: an edit at the version sent is applied; one at
+# another version is refused with the change that failed.
+> initialize
+< {"id": $1, "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": 2}}}
+> initialized
+> textDocument/didOpen
+< {"id": 1, "method": "workspace/applyEdit", "params": {"label": "Rename", "edit": {"documentChanges": [{"textDocument": {"uri": "file://${workspace}/main.zig", "version": 1}, "edits": [{"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 9}}, "newText": "bar"}]}]}}}
+> response {"id": 1, "result": {"applied": true}}
+< {"id": 2, "method": "workspace/applyEdit", "params": {"edit": {"documentChanges": [{"textDocument": {"uri": "file://${workspace}/main.zig", "version": 1}, "edits": []}]}}}
+> response {"id": 2, "result": {"applied": false, "failureReason": "document version mismatch", "failedChange": 0}}
+> shutdown
+< {"id": $1, "result": null}
+> exit

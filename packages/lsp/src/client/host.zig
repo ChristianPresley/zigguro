@@ -35,6 +35,23 @@ pub const BoolCb = struct {
     }
 };
 
+/// The client's answer to `workspace/applyEdit`. `failure_reason` must
+/// outlive the call (a static string).
+pub const ApplyEditResult = struct {
+    applied: bool,
+    failure_reason: ?[]const u8 = null,
+    failed_change: ?u32 = null,
+};
+
+pub const ApplyEditCb = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, r: ApplyEditResult) void,
+
+    pub fn call(cb: ApplyEditCb, r: ApplyEditResult) void {
+        cb.func(cb.ctx, r);
+    }
+};
+
 pub const ClientHost = struct {
     ctx: ?*anyopaque,
     /// A toast (`window/showMessage`).
@@ -50,6 +67,10 @@ pub const ClientHost = struct {
     /// `scope_uri`, resolved folder > workspace > user; `.null` when
     /// unknown. Allocate from `arena`.
     getConfiguration: *const fn (ctx: ?*anyopaque, section: ?[]const u8, scope_uri: ?[]const u8, arena: Allocator) std.json.Value,
+    /// `workspace/applyEdit`: `params` is the request's JSON (valid during
+    /// the call). Answer through `reply`, from any thread. Null: edits are
+    /// refused.
+    applyEdit: ?*const fn (ctx: ?*anyopaque, server: ServerId, params: []const u8, reply: ApplyEditCb) void = null,
 };
 
 /// A host that shows nothing, opens nothing and knows no settings.
