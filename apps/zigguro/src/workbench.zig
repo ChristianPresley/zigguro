@@ -28,6 +28,7 @@
 
 const std = @import("std");
 const zg_core = @import("zg_core");
+const mem_tags = @import("mem_tags.zig");
 const zg_gui = @import("zg_gui");
 const zg_config = @import("zg_config");
 const zg_editor = @import("zg_editor");
@@ -383,11 +384,11 @@ pub const Workbench = struct {
             .gpa = gpa,
             .io = io,
             .env = env,
-            .docs = .init(gpa, .native),
+            .docs = .init(mem_tags.of(gpa, .editor), .native),
             .doc = undefined,
             .view = undefined,
             .langs = try zg_syntax.defaultRegistry(gpa),
-            .keys = .init(gpa),
+            .keys = .init(mem_tags.of(gpa, .config)),
             .reg = undefined,
             .diags = .init(gpa),
             .resolver = undefined,
@@ -400,14 +401,14 @@ pub const Workbench = struct {
         const f = try wb.addFile(try wb.load(path));
         wb.setCurrent(f.*);
 
-        wb.reg = try registry.CommandRegistry.init(gpa, &wb.keys, .{ .io = io });
+        wb.reg = try registry.CommandRegistry.init(mem_tags.of(gpa, .config), &wb.keys, .{ .io = io });
         try registry.registerBuiltins(wb.reg);
         try wb.registerCommands();
         const ac = try AgentCommands.init(gpa, io, wb.cwd);
         wb.agent_cmds = ac;
         ac.on_palette = .{ .ctx = wb, .f = runAgentCommand };
         try ac.registerPalette(wb.reg);
-        wb.resolver = try zg_config.resolver.Resolver.init(gpa, &wb.keys, &zg_config.keys.us_layout, .{});
+        wb.resolver = try zg_config.resolver.Resolver.init(mem_tags.of(gpa, .config), &wb.keys, &zg_config.keys.us_layout, .{});
         try wb.loadKeymap();
     }
 
@@ -415,8 +416,13 @@ pub const Workbench = struct {
     /// untitled buffer).
     fn load(wb: *Workbench, path: ?[]const u8) !OpenFile {
         const gpa = wb.gpa;
+        // The text goes to the document: allocate it the way the
+        // registry frees it.
+        const text_gpa = wb.docs.gpa;
         var bytes: []u8 = &.{};
-        defer gpa.free(bytes);
+        // Handed to the document when it opens a loaded file.
+        var bytes_owned = true;
+        defer if (bytes_owned) text_gpa.free(bytes);
         var f: OpenFile = .{ .path = null, .doc = undefined, .view = undefined, .syntax = null };
         errdefer if (f.path) |p| gpa.free(p);
         var loaded: ?zg_editor.model.buffer.external.Loaded = null;
@@ -424,22 +430,29 @@ pub const Workbench = struct {
             f.path = try gpa.dupe(u8, p);
             // Decoded (encoding, BOM and line ends detected); a missing
             // file opens empty.
-            if (zg_editor.model.buffer.external.load(gpa, wb.io, std.Io.Dir.cwd(), p, null, .utf8)) |l| {
+            if (zg_editor.model.buffer.external.load(text_gpa, wb.io, std.Io.Dir.cwd(), p, null, .utf8)) |l| {
                 loaded = l;
                 bytes = l.text;
             } else |e| switch (e) {
-                error.FileNotFound => bytes = try gpa.alloc(u8, 0),
+                error.FileNotFound => bytes = try text_gpa.alloc(u8, 0),
                 else => return e,
             }
         }
         const h = if (f.path) |p| blk: {
             const abs = try std.fs.path.resolve(gpa, &.{ wb.cwd, p });
             defer gpa.free(abs);
+            // A new document keeps the loaded text instead of a copy (it
+            // stays valid below, owned by the document).
+            if (loaded != null and try wb.docs.findFile(abs) == null) {
+                const hh = try wb.docs.openFileOwned(abs, bytes);
+                bytes_owned = false;
+                break :blk hh;
+            }
             break :blk try wb.docs.openFile(abs, bytes);
         } else try wb.docs.openUntitled(bytes);
         f.doc = wb.docs.get(h).?;
         if (f.path != null) f.handle = h;
-        f.view = try EditorView.init(gpa, f.doc, wb.editorOptions(null));
+        f.view = try EditorView.init(mem_tags.of(gpa, .editor), f.doc, wb.editorOptions(null));
         errdefer f.view.deinit();
         wb.setMode(&f, wb.key_mode);
         errdefer wb.setMode(&f, .standard);
@@ -449,7 +462,7 @@ pub const Workbench = struct {
             f.sync = sync;
             if (loaded != null) {
                 wb.persistUndo(sync, p, bytes);
-                if (diff_model.DiffModel.init(gpa, wb.rt, f.doc.snapshot(), f.doc, .{})) |m| {
+                if (diff_model.DiffModel.init(mem_tags.of(gpa, .editor), wb.rt, f.doc.snapshot(), f.doc, .{})) |m| {
                     f.diff = m;
                     sync.diff = m;
                     f.view.scm = .of(m);
@@ -462,7 +475,7 @@ pub const Workbench = struct {
         if (wb.langs.detect(f.path, bytes[0..@min(bytes.len, 256)])) |id| if (wb.langs.get(id)) |lang| {
             const sx = try gpa.create(DocumentSyntax);
             errdefer gpa.destroy(sx);
-            sx.* = try DocumentSyntax.init(gpa, lang, &wb.langs, &f.doc.tree, f.doc.version);
+            sx.* = try DocumentSyntax.init(mem_tags.of(gpa, .syntax), lang, &wb.langs, &f.doc.tree, f.doc.version);
             f.syntax = sx;
             f.view.syntax = sx;
             f.view.opts = wb.editorOptions(lang.name);
@@ -675,7 +688,7 @@ pub const Workbench = struct {
     fn showReview(wb: *Workbench, cs: zg_review.model.ChangesetId) !void {
         const w = wb.win orelse return;
         const host = wb.agent orelse return;
-        const v = try ReviewView.create(wb.gpa, wb.io, w.app, host.review, .{ .changeset = cs });
+        const v = try ReviewView.create(mem_tags.of(wb.gpa, .review), wb.io, w.app, host.review, .{ .changeset = cs });
         v.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         if (wb.review_view) |old| old.destroy();
         wb.review_view = v;
@@ -1851,7 +1864,7 @@ pub const Workbench = struct {
     /// keybindings.json at `keys_path` (null: no config folder) and the
     /// working folder's `.zigguro/settings.json`. Call after `init`.
     pub fn useSettings(wb: *Workbench, user_path: ?[]const u8, keys_path: ?[]const u8) !void {
-        const st = try Settings.create(wb.gpa, wb.io, user_path, wb.cwd);
+        const st = try Settings.create(mem_tags.of(wb.gpa, .config), wb.io, user_path, wb.cwd);
         errdefer st.destroy();
         try st.addListener(.{ .ctx = wb, .f = onSettingsChanged });
         st.setTrusted(wb.trust == .trusted);
@@ -2637,7 +2650,7 @@ pub const Workbench = struct {
     fn ensureNotes(wb: *Workbench) !void {
         if (wb.notes != null) return;
         const w = wb.win orelse return error.NoWindow;
-        const n = try NotesService.create(wb.gpa, wb.io, w.app, wb.cwd, wb.env, .{
+        const n = try NotesService.create(mem_tags.of(wb.gpa, .notes), wb.io, w.app, wb.cwd, wb.env, .{
             .ctx = wb,
             .open = onNoteOpen,
             .search = onNoteSearch,
@@ -3598,7 +3611,7 @@ pub const Workbench = struct {
     /// `openTerminal` for the user or (`agent`) an agent, whose shell
     /// starts in `cwd` and always has shell integration.
     fn openTerminalAs(wb: *Workbench, w: *Window, split: bool, restore: ?Restore, how: struct { agent: bool, cwd: ?[]const u8 = null }) !void {
-        const t = try TerminalPanel.create(wb.gpa, wb.io, w.app, wb.env);
+        const t = try TerminalPanel.create(mem_tags.of(wb.gpa, .terminal), wb.io, w.app, wb.env);
         errdefer t.destroy();
         const id = wb.next_terminal;
         try wb.terminals.put(wb.gpa, id, t);
@@ -3901,7 +3914,7 @@ pub const Workbench = struct {
             host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
         }
         // list_dir, glob, find_files and grep over the folder.
-        if (wb.ws_tools == null) wb.ws_tools = WorkspaceTools.create(wb.gpa, wb.io, wb.cwd) catch |e| blk: {
+        if (wb.ws_tools == null) wb.ws_tools = WorkspaceTools.create(mem_tags.of(wb.gpa, .workspace), wb.io, wb.cwd) catch |e| blk: {
             log.warn("workspace tools: {t}", .{e});
             break :blk null;
         };
@@ -3915,7 +3928,7 @@ pub const Workbench = struct {
         pe.on_change = .{ .ctx = wb, .f = onPendingChange };
         wb.pending_edits = pe;
         host.files.bindPending(pe);
-        const p = try AgentPanel.create(wb.gpa, wb.io, w.app, host.agent);
+        const p = try AgentPanel.create(mem_tags.of(wb.gpa, .ai), wb.io, w.app, host.agent);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         if (wb.md_highlight == null) wb.md_highlight = zg_editor.view.MarkdownHighlighter.init(wb.gpa) catch null;
         if (wb.md_highlight) |*h| p.highlighter = h.highlighter();
@@ -3971,7 +3984,7 @@ pub const Workbench = struct {
         if (wb.review_panel != null) return;
         try wb.startAgent(w);
         const host = wb.agent orelse return;
-        const p = try QueuePanel.create(wb.gpa, wb.io, w.app, host.review);
+        const p = try QueuePanel.create(mem_tags.of(wb.gpa, .review), wb.io, w.app, host.review);
         p.on_change = .{ .ctx = wb, .f = onTerminalOutput };
         p.is_open = .{ .ctx = wb, .f = reviewFileOpen };
         p.open_review = .{ .ctx = wb, .f = openReview };
