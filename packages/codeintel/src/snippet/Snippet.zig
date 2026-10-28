@@ -44,6 +44,9 @@ pub const StopRange = struct {
     /// first's text (through `transform`, when it has one).
     mirror_of: ?u32 = null,
     transform: ?*const Transform = null,
+    /// Order in which the stop was closed while expanding: text order,
+    /// except that a placeholder comes after the stops nested in it.
+    seq: u32 = 0,
 };
 
 pub const Expansion = struct {
@@ -129,6 +132,7 @@ pub fn expand(s: *const Snippet, gpa: Allocator, vars: VariableResolver, indent:
     try x.findDefaults(s.nodes);
     try x.nodes(s.nodes);
     if (!s.has_final and !x.seen_final) try out.stops.append(gpa, .{ .index = 0, .start = x.len(), .end = x.len() });
+    for (out.stops.items, 0..) |*st, i| st.seq = @intCast(i);
     std.sort.pdq(StopRange, out.stops.items, {}, struct {
         fn key(r: StopRange) u64 {
             return if (r.index == 0) std.math.maxInt(u32) else r.index;
@@ -286,4 +290,5 @@ const Expander = struct {
 
 test {
     _ = @import("snippet_test.zig");
+    _ = @import("session_test.zig");
 }

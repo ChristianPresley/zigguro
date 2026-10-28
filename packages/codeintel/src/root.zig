@@ -14,6 +14,7 @@ pub const snippet = struct {
     pub const Snippet = @import("snippet/Snippet.zig");
     pub const variables = @import("snippet/variables.zig");
     pub const transform = @import("snippet/transform.zig");
+    pub const Session = @import("snippet/Session.zig");
 };
 
 /// Text synchronization: the `LspSink` that serializes `didOpen`,
