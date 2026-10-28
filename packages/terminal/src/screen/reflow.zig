@@ -197,6 +197,40 @@ const Writer = struct {
         w.x += 1;
     }
 
+    /// Copies narrow cells without graphemes or links, a row's worth at a
+    /// time, interning each run of one style once.
+    fn plainRun(w: *Writer, sp: *const Page, run: []const Cell, need_pos: bool, styled: bool) !void {
+        const cols = w.dst.cols;
+        var rest = run;
+        while (rest.len > 0) {
+            if (w.x == cols) try w.newRow(true);
+            const n = @min(rest.len, cols - w.x);
+            const d = w.cur();
+            const dc = d.cells()[w.x..][0..n];
+            const sc = rest[0..n];
+            if (need_pos) {
+                const row: u32 = @intCast(w.rows.items.len - 1);
+                try w.pos.ensureUnusedCapacity(w.gpa, n);
+                for (0..n) |i| w.pos.appendAssumeCapacity(.{ .row = row, .x = w.x + @as(u16, @intCast(i)) });
+            }
+            @memcpy(dc, sc);
+            var i: usize = 0;
+            while (styled and i < n) {
+                const id = sc[i].style;
+                var e = i + 1;
+                while (e < n and sc[e].style == id) e += 1;
+                if (id != 0) {
+                    const new_id = d.node.page.internStyle(sp.styleById(id).*, @intCast(e - i)) catch 0;
+                    for (dc[i..e]) |*c| c.style = new_id;
+                    if (new_id != 0) d.row().styled = true;
+                }
+                i = e;
+            }
+            w.x += @intCast(n);
+            rest = rest[n..];
+        }
+    }
+
     fn line(w: *Writer, pl: *const PageList, start: Pin, n_rows: u64, moves: *std.ArrayList(Move)) !void {
         const cols = w.dst.cols;
         w.rows.clearRetainingCapacity();
@@ -210,6 +244,17 @@ const Writer = struct {
             dr.mark = sr.mark;
             dr.synthetic = sr.synthetic;
         }
+        // Cell positions are only needed to move pins on this line.
+        const need_pos = blk: {
+            var r = start;
+            for (0..n_rows) |i| {
+                if (i > 0) r = PageList.next(r).?;
+                for (pl.pins.items) |t| {
+                    if (!t.garbage and t.pin.node == r.node and t.pin.y == r.y) break :blk true;
+                }
+            }
+            break :blk false;
+        };
         var src = start;
         var off: u32 = 0;
         for (0..n_rows) |i| {
@@ -218,6 +263,8 @@ const Writer = struct {
             const sp = &src.node.page;
             const cs = src.cells();
             const end = if (i + 1 == n_rows) contentEnd(cs) else cs.len;
+            const sr = src.row().*;
+            const simple = !sr.has_grapheme and !sr.has_hyperlink;
             if (i > 0 and src.row().mark != .none) {
                 // A mark on a later row lands where that row's text starts.
                 if (w.x == cols) try w.newRow(true);
@@ -226,6 +273,20 @@ const Writer = struct {
             var k: usize = 0;
             while (k < end) : (k += 1) {
                 const c = cs[k];
+                if (plainCell(c)) {
+                    // A run of narrow cells without graphemes or links
+                    // (rows without either only need the width checked).
+                    var j = k + 1;
+                    if (simple) {
+                        while (j < end and cs[j].wide == .narrow) j += 1;
+                    } else {
+                        while (j < end and plainCell(cs[j])) j += 1;
+                    }
+                    try w.plainRun(sp, cs[k..j], need_pos, sr.styled);
+                    off += @intCast(j - k);
+                    k = j - 1;
+                    continue;
+                }
                 switch (c.wide) {
                     .spacer_head => continue,
                     .spacer_tail => {
@@ -322,6 +383,11 @@ fn spanOf(cs: []const Cell) u32 {
     var n: u32 = @intCast(cs.len);
     if (n > 0 and cs[n - 1].wide == .spacer_head) n -= 1;
     return n;
+}
+
+/// A narrow cell without grapheme or link references.
+inline fn plainCell(c: Cell) bool {
+    return c.wide == .narrow and c.tag != .grapheme and !c.hyperlink;
 }
 
 fn markRow(r: *Row, c: Cell) void {

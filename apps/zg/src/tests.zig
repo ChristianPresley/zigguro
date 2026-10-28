@@ -12,4 +12,5 @@ test {
     _ = @import("cmd_runs.zig");
     _ = @import("cmd_automation.zig");
     _ = @import("cmd_tasks.zig");
+    _ = @import("cmd_library.zig");
 }
