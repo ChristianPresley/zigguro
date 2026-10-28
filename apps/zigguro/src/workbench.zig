@@ -67,6 +67,8 @@ const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
 const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
+const HierarchyPanel = @import("hierarchy_panel.zig").HierarchyPanel;
+const HierarchyService = @import("codeintel.zig").HierarchyService;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
 const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
@@ -245,6 +247,11 @@ pub const Workbench = struct {
     /// The Problems panel (created on first show) and its dock panel.
     problems: ?*ProblemsPanel = null,
     problems_ref: ?PanelRef = null,
+    /// Call and type hierarchies.
+    hierarchy: ?*HierarchyPanel = null,
+    hierarchy_ref: ?PanelRef = null,
+    /// What the last Show ... Hierarchy asked, for Refresh.
+    hierarchy_ask: ?struct { h: zg_editor.model.api.registry.DocHandle, offset: u64 } = null,
     /// Where `pending_open` puts the caret.
     pending_goto: ?Goto = null,
     /// The message of the problem next/previous problem went to, shown
@@ -340,8 +347,9 @@ pub const Workbench = struct {
     const kind_notes: zg_gui.dock.model.PanelKindId = 9;
     const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
     const kind_scm: zg_gui.dock.model.PanelKindId = 11;
+    const kind_hierarchy: zg_gui.dock.model.PanelKindId = 12;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -817,6 +825,7 @@ pub const Workbench = struct {
                 kind_notes => wb.notes_ref = p,
                 kind_notes_search => wb.notes_search_ref = p,
                 kind_scm => wb.scm_ref = p,
+                kind_hierarchy => wb.hierarchy_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -950,6 +959,11 @@ pub const Workbench = struct {
             wb.gpa.destroy(pp);
         }
         wb.problems = null;
+        if (wb.hierarchy) |hp| {
+            hp.deinit();
+            wb.gpa.destroy(hp);
+        }
+        wb.hierarchy = null;
         wb.problem_note.deinit(wb.gpa);
         if (wb.notes) |n| n.destroy();
         wb.notes = null;
@@ -1150,6 +1164,10 @@ pub const Workbench = struct {
         .{ .id = "workbench.openKeybindingsFile", .title = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .run = openKeybindingsFile },
         .{ .id = "workbench.showExplorer", .title = "Show Explorer", .category = "View", .run = showExplorer },
         .{ .id = "workbench.showProblems", .title = "Show Problems", .category = "View", .run = showProblems },
+        .{ .id = "editor.showCallHierarchy", .title = "Show Call Hierarchy", .category = "Go", .run = showCallHierarchy },
+        .{ .id = "editor.showOutgoingCalls", .title = "Show Outgoing Calls", .category = "Go", .run = showOutgoingCalls },
+        .{ .id = "editor.showTypeHierarchy", .title = "Show Type Hierarchy", .category = "Go", .run = showTypeHierarchy },
+        .{ .id = "editor.showSubtypes", .title = "Show Subtypes", .category = "Go", .run = showSubtypes },
         .{ .id = "editor.nextProblem", .title = "Go to Next Problem (Error, Warning, Info)", .category = "Go", .run = nextProblem },
         .{ .id = "editor.previousProblem", .title = "Go to Previous Problem (Error, Warning, Info)", .category = "Go", .run = previousProblem },
         .{ .id = "editor.nextProblemInFile", .title = "Go to Next Problem in File", .category = "Go", .run = nextProblemInFile },
@@ -2560,6 +2578,66 @@ pub const Workbench = struct {
         if (wb.problems) |pp| pp.focus(w);
     }
 
+    // -- call and type hierarchy ---------------------------------------------------
+
+    fn ensureHierarchy(wb: *Workbench) !void {
+        if (wb.hierarchy != null) return;
+        const ci = wb.codeintel orelse return;
+        const hp = try wb.gpa.create(HierarchyPanel);
+        errdefer wb.gpa.destroy(hp);
+        try hp.init(wb.gpa, &ci.hierarchy, .{ .ctx = wb, .open = onHierarchyOpen, .again = onHierarchyAgain });
+        wb.hierarchy = hp;
+    }
+
+    /// Asks the hierarchy at the caret and shows the Hierarchy panel in
+    /// the bottom area.
+    fn showHierarchy(wb: *Workbench, dir: HierarchyService.Direction) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server for this file", .{});
+        const offset = wb.view.primarySel().head;
+        const n = try ci.showHierarchy(h, offset, dir);
+        const types = dir == .supertypes or dir == .subtypes;
+        if (n == 0) return wb.notify(.info, "No language server provides {s} hierarchies for this file", .{if (types) "type" else "call"});
+        wb.hierarchy_ask = .{ .h = h, .offset = offset };
+        try wb.ensureHierarchy();
+        if (wb.hierarchy_ref == null) wb.hierarchy_ref = try wb.dock.addPanel(kind_hierarchy, null);
+        try wb.reveal(wb.hierarchy_ref.?, .bottom);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// `editor.showCallHierarchy` (Shift+Alt+H): who calls the symbol.
+    fn showCallHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.incoming);
+    }
+
+    fn showOutgoingCalls(wb: *Workbench) !void {
+        try wb.showHierarchy(.outgoing);
+    }
+
+    fn showTypeHierarchy(wb: *Workbench) !void {
+        try wb.showHierarchy(.supertypes);
+    }
+
+    fn showSubtypes(wb: *Workbench) !void {
+        try wb.showHierarchy(.subtypes);
+    }
+
+    fn onHierarchyOpen(ctx: *anyopaque, t: NavService.Target, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.jumpTo(t);
+        // A click shows the place; the tree keeps the keyboard.
+        if (!focus) wb.pending_focus = false;
+    }
+
+    /// Refresh: the same position again, in the panel's direction.
+    fn onHierarchyAgain(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const a = wb.hierarchy_ask orelse return;
+        const ci = wb.codeintel orelse return;
+        const n = ci.showHierarchy(a.h, a.offset, ci.hierarchy.dir) catch 0;
+        if (n == 0) wb.notify(.info, "The file is no longer open in a language server", .{});
+    }
+
     /// The panel shows a problem: open its file at the next build, with
     /// the caret at its start.
     fn onProblemOpen(ctx: *anyopaque, key: []const u8, it: problems_panel.Problems.Item, focus: bool) void {
@@ -3800,6 +3878,7 @@ pub const Workbench = struct {
             kind_notes => .{ .title = "Notes" },
             kind_notes_search => .{ .title = "Search Notes" },
             kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
+            kind_hierarchy => .{ .title = "Hierarchy" },
             else => .{ .title = "?" },
         };
     }
@@ -3847,6 +3926,14 @@ pub const Workbench = struct {
                 wb.ensureScm() catch |e| log.warn("git tab: {t}", .{e});
                 if (wb.scm) |g| g.build(ui);
             },
+            kind_hierarchy => {
+                wb.ensureHierarchy() catch {};
+                if (wb.hierarchy) |hp| hp.build(ui) else {
+                    ui.open(.{ .style = .{ .padding = .xy(12, 6) } });
+                    ui.text("Language services are not running.", .{ .color = .fg_muted });
+                    ui.close();
+                }
+            },
             else => {},
         }
     }
@@ -3883,7 +3970,7 @@ pub const Workbench = struct {
             wb.scm_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
