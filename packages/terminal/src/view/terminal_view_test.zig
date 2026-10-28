@@ -257,3 +257,69 @@ test "terminal: focus reports and replies reach the sink" {
     f.feed("\x1b[6n");
     try f.expectOut("\x1b[1;1R");
 }
+
+test "terminal: drag, double and triple click select; copy keys copy" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    f.feed("echo src/a.zig:3 ok\r\nsecond line");
+
+    // A drag from (5,0) to (9,0) selects "src/a".
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(5, 0) } });
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.cellPoint(9, 0) } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(9, 0) } });
+    _ = f.t.settle();
+    const s1 = (try f.view.selectionText(gpa)).?;
+    defer gpa.free(s1);
+    try testing.expectEqualStrings("src/a", s1);
+    if (f.t.app.has_primary) try testing.expectEqualStrings("src/a", f.t.app.primary.get());
+    // The selection paints.
+    var buf: [16]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, f.t.paintSnapshot(), try hexOf(f.t.app.theme.color(.selection_bg), &buf)) != null);
+
+    // Ctrl+Shift+C copies and nothing reaches the shell.
+    f.key(.{ .key = .key_c, .mods = .{ .ctrl = true, .shift = true } });
+    try testing.expectEqualStrings("src/a", f.t.app.clipboard.get());
+    try testing.expect(f.view.selection == null);
+    try f.expectOut("");
+
+    // Double click: the whole path; Ctrl+C copies instead of interrupting.
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(7, 0), .clicks = 2 } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(7, 0), .clicks = 2 } });
+    _ = f.t.settle();
+    f.key(.{ .key = .key_c, .mods = .{ .ctrl = true } });
+    try testing.expectEqualStrings("src/a.zig:3", f.t.app.clipboard.get());
+    try f.expectOut("");
+    f.key(.{ .key = .key_c, .mods = .{ .ctrl = true } });
+    try f.expectOut("\x03");
+
+    // Triple click selects the line; Shift+click extends; typing clears.
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(2, 1), .clicks = 3 } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(2, 1), .clicks = 3 } });
+    _ = f.t.settle();
+    const s2 = (try f.view.selectionText(gpa)).?;
+    defer gpa.free(s2);
+    try testing.expectEqualStrings("second line", s2);
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(17, 0), .mods = .{ .shift = true } } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(17, 0), .mods = .{ .shift = true } } });
+    _ = f.t.settle();
+    const s3 = (try f.view.selectionText(gpa)).?;
+    defer gpa.free(s3);
+    // Extending keeps the selection's unit: whole lines.
+    try testing.expectEqualStrings("echo src/a.zig:3 ok\nsecond line", s3);
+    f.key(.{ .key = .key_x, .codepoint = 'x' });
+    try testing.expect(f.view.selection == null);
+    try f.expectOut("x");
+
+    // Alt+drag selects a rectangle; Escape clears it.
+    f.t.win.dispatch(.{ .pointer_down = .{ .pos = try f.cellPoint(1, 0), .mods = .{ .alt = true } } });
+    f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.cellPoint(3, 1), .mods = .{ .alt = true } } });
+    f.t.win.dispatch(.{ .pointer_up = .{ .pos = try f.cellPoint(3, 1), .mods = .{ .alt = true } } });
+    _ = f.t.settle();
+    const s4 = (try f.view.selectionText(gpa)).?;
+    defer gpa.free(s4);
+    try testing.expectEqualStrings("cho\neco", s4);
+    f.key(.{ .key = .escape });
+    try testing.expect(f.view.selection == null);
+    try f.expectOut("");
+}
