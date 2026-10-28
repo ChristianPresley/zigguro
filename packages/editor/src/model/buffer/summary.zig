@@ -97,8 +97,10 @@ pub const Summary = struct {
         for (bytes[0..@min(bytes.len, 3)], 0..) |c, i| s.head[i] = c;
         s.starts_with_lf = bytes[0] == '\n';
         s.ends_with_cr = bytes[bytes.len - 1] == '\r';
-        scanLines(bytes, &s);
-        scanUtf16(bytes, &s);
+        // Pure ASCII (most source and logs) has one unit per byte.
+        if (scanLines(bytes, &s)) {
+            s.utf16 = bytes.len;
+        } else scanUtf16(bytes, &s);
         return s;
     }
 };
@@ -226,42 +228,56 @@ pub fn leadInfo(lead: u8) ?LeadInfo {
     };
 }
 
-fn scanLines(bytes: []const u8, s: *Summary) void {
-    // Positions of terminator ends drive the line lengths.
+/// Counts terminators and line lengths in one pass of 64-byte blocks;
+/// returns whether every byte is ASCII.
+fn scanLines(bytes: []const u8, s: *Summary) bool {
+    const L = 64;
+    const B = @Vector(L, u8);
     var line_start: usize = 0;
     var first: ?usize = null;
     var max_len: usize = 0;
     var count: u64 = 0;
-    const nl: V = @splat('\n');
-    const cr: V = @splat('\r');
+    // The LF of a CRLF, already counted at its CR.
+    var paired_lf: usize = std.math.maxInt(usize);
+    var hi: u64 = 0;
     var i: usize = 0;
-    while (i < bytes.len) {
-        if (i + 32 <= bytes.len) {
-            const v: V = bytes[i..][0..32].*;
-            const m: u32 = @as(u32, @bitCast(v == nl)) | @as(u32, @bitCast(v == cr));
-            if (m == 0) {
-                i += 32;
-                continue;
-            }
-            i += @ctz(m);
-        }
-        const c = bytes[i];
-        if (c == '\n' or c == '\r') {
-            const len = i - line_start;
+    while (i + L <= bytes.len) : (i += L) {
+        const v: B = bytes[i..][0..L].*;
+        hi |= @as(u64, @bitCast(v >= @as(B, @splat(0x80))));
+        var m: u64 = @as(u64, @bitCast(v == @as(B, @splat('\n')))) | @as(u64, @bitCast(v == @as(B, @splat('\r'))));
+        while (m != 0) : (m &= m - 1) {
+            const at = i + @ctz(m);
+            if (at == paired_lf) continue;
+            const len = at - line_start;
             if (first == null) first = len;
             max_len = @max(max_len, len);
             count += 1;
-            if (c == '\r' and i + 1 < bytes.len and bytes[i + 1] == '\n') i += 1;
-            line_start = i + 1;
+            if (bytes[at] == '\r' and at + 1 < bytes.len and bytes[at + 1] == '\n') {
+                paired_lf = at + 1;
+                line_start = at + 2;
+            } else line_start = at + 1;
         }
-        i += 1;
     }
-    const last = bytes.len - line_start;
+    while (i < bytes.len) : (i += 1) {
+        const c = bytes[i];
+        hi |= @intFromBool(c >= 0x80);
+        if ((c != '\n' and c != '\r') or i == paired_lf) continue;
+        const len = i - line_start;
+        if (first == null) first = len;
+        max_len = @max(max_len, len);
+        count += 1;
+        if (c == '\r' and i + 1 < bytes.len and bytes[i + 1] == '\n') {
+            paired_lf = i + 1;
+            line_start = i + 2;
+        } else line_start = i + 1;
+    }
+    const last = bytes.len - @min(line_start, bytes.len);
     max_len = @max(max_len, last);
     s.newlines = count;
     s.first_line_bytes = sat32(first orelse bytes.len);
     s.last_line_bytes = sat32(last);
     s.max_line_bytes = sat32(max_len);
+    return hi == 0;
 }
 
 fn sat32(x: usize) u32 {
@@ -432,4 +448,69 @@ test "summary: 4-byte sequence split across three pieces counts two units" {
     const s = Summary.of(e[0..1]).combine(Summary.of(e[1..3])).combine(Summary.of(e[3..]));
     try std.testing.expectEqual(@as(u64, 2), s.utf16Total());
     try std.testing.expectEqual(@as(u8, 0), s.tail_n);
+}
+
+fn scanLinesRef(bytes: []const u8, s: *Summary) void {
+    // Positions of terminator ends drive the line lengths.
+    var line_start: usize = 0;
+    var first: ?usize = null;
+    var max_len: usize = 0;
+    var count: u64 = 0;
+    const nl: V = @splat('\n');
+    const cr: V = @splat('\r');
+    var i: usize = 0;
+    while (i < bytes.len) {
+        if (i + 32 <= bytes.len) {
+            const v: V = bytes[i..][0..32].*;
+            const m: u32 = @as(u32, @bitCast(v == nl)) | @as(u32, @bitCast(v == cr));
+            if (m == 0) {
+                i += 32;
+                continue;
+            }
+            i += @ctz(m);
+        }
+        const c = bytes[i];
+        if (c == '\n' or c == '\r') {
+            const len = i - line_start;
+            if (first == null) first = len;
+            max_len = @max(max_len, len);
+            count += 1;
+            if (c == '\r' and i + 1 < bytes.len and bytes[i + 1] == '\n') i += 1;
+            line_start = i + 1;
+        }
+        i += 1;
+    }
+    const last = bytes.len - line_start;
+    max_len = @max(max_len, last);
+    s.newlines = count;
+    s.first_line_bytes = sat32(first orelse bytes.len);
+    s.last_line_bytes = sat32(last);
+    s.max_line_bytes = sat32(max_len);
+}
+
+test "summary: the block line scan matches the per-line scan" {
+    var prng: std.Random.DefaultPrng = .init(17);
+    const r = prng.random();
+    var buf: [700]u8 = undefined;
+    for (0..3000) |_| {
+        const n = r.uintLessThan(usize, buf.len + 1);
+        // Mostly long runs, so blocks without terminators occur.
+        for (buf[0..n]) |*c| c.* = switch (r.uintLessThan(u8, 40)) {
+            0 => '\n',
+            1 => '\r',
+            2 => 0xC3,
+            else => 'a',
+        };
+        const b = buf[0..n];
+        var want: Summary = .{ .bytes = n };
+        scanLinesRef(b, &want);
+        var got: Summary = .{ .bytes = n };
+        const ascii = scanLines(b, &got);
+        try std.testing.expectEqual(want.newlines, got.newlines);
+        try std.testing.expectEqual(want.first_line_bytes, got.first_line_bytes);
+        try std.testing.expectEqual(want.last_line_bytes, got.last_line_bytes);
+        try std.testing.expectEqual(want.max_line_bytes, got.max_line_bytes);
+        try std.testing.expectEqual(std.mem.indexOfScalar(u8, b, 0xC3) == null, ascii);
+        try std.testing.expectEqual(refUtf16(b), Summary.of(b).utf16Total());
+    }
 }

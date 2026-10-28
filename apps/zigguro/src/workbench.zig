@@ -246,6 +246,10 @@ pub const Workbench = struct {
     keys_doc: ?zg_config.zon_load.Doc = null,
     /// Saves dirty files with `files.autoSave` = afterDelay.
     autosave_timer: Window.TimerId = .none,
+    /// Background lexing of the active file (`syntaxIdleTick`).
+    syntax_timer: Window.TimerId = .none,
+    /// The active document's version when `syntax_timer` was armed.
+    syntax_armed_version: u64 = 0,
     /// Saves the workbench started without asking (no toast for them).
     quiet_saves: std.ArrayList(*FileSync) = .empty,
     /// The file browser (created on first show) and its dock panel.
@@ -427,10 +431,10 @@ pub const Workbench = struct {
         var bytes: []u8 = &.{};
         // Handed to the document when it opens a loaded file.
         var bytes_owned = true;
-        defer if (bytes_owned) text_gpa.free(bytes);
+        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
+        defer if (bytes_owned) if (loaded) |*l| l.deinit(text_gpa) else text_gpa.free(bytes);
         var f: OpenFile = .{ .path = null, .doc = undefined, .view = undefined, .syntax = null };
         errdefer if (f.path) |p| gpa.free(p);
-        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
         if (path) |p| {
             f.path = try gpa.dupe(u8, p);
             // Decoded (encoding, BOM and line ends detected); a missing
@@ -449,12 +453,19 @@ pub const Workbench = struct {
             // A new document keeps the loaded text instead of a copy (it
             // stays valid below, owned by the document).
             if (loaded != null and try wb.docs.findFile(abs) == null) {
-                const hh = try wb.docs.openFileOwned(abs, bytes);
+                // A mapped file (large-file mode) moves its map instead.
+                const hh = if (loaded.?.map) |m| try wb.docs.openFileMapped(abs, m) else try wb.docs.openFileOwned(abs, bytes);
                 bytes_owned = false;
                 break :blk hh;
             }
             break :blk try wb.docs.openFile(abs, bytes);
         } else try wb.docs.openUntitled(bytes);
+        // A mapped file's hash is computed off the open path from the
+        // document's original; one already open is hashed here.
+        if (loaded) |*l| if (l.hash_pending and bytes_owned) {
+            l.disk.content_hash = zg_editor.model.buffer.save.hashBytesParallel(wb.io, l.text);
+            l.hash_pending = false;
+        };
         f.doc = wb.docs.get(h).?;
         if (f.path != null) f.handle = h;
         f.view = try EditorView.init(mem_tags.of(gpa, .editor), f.doc, wb.editorOptions(null));
@@ -462,7 +473,7 @@ pub const Workbench = struct {
         wb.setMode(&f, wb.key_mode);
         errdefer wb.setMode(&f, .standard);
         if (f.path) |p| {
-            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
+            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk, .hash_pending = l.hash_pending } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
             f.sync = sync;
             if (loaded != null) {
@@ -956,6 +967,8 @@ pub const Workbench = struct {
         wb.settings_timer = .none;
         if (wb.autosave_timer != .none) w.cancelTimer(wb.autosave_timer);
         wb.autosave_timer = .none;
+        if (wb.syntax_timer != .none) w.cancelTimer(wb.syntax_timer);
+        wb.syntax_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
         // Waits for running git commands.
@@ -3605,6 +3618,35 @@ pub const Workbench = struct {
             wb.notify(.error_, "Could not start zigguro: {t}", .{e});
     }
 
+    // -- background highlighting ----------------------------------------------
+
+    /// Delay before background lexing resumes after a frame, and the time
+    /// each slice may take.
+    const syntax_idle_delay_ms = 30;
+    const syntax_idle_slice_ns = 4 * std.time.ns_per_ms;
+
+    /// Keeps lexing the active file in the background until every line is
+    /// exact, so brackets, folds and colors outside the viewport are known
+    /// before they are scrolled to. Stops (no wakeups) once done.
+    fn armSyntaxIdle(wb: *Workbench) void {
+        const w = wb.win orelse return;
+        if (wb.syntax_timer != .none) return;
+        const sx = wb.syntax orelse return;
+        if (sx.hl.done()) return;
+        wb.syntax_armed_version = wb.doc.version;
+        wb.syntax_timer = w.setTimer(w.app.now_ms + syntax_idle_delay_ms, .{ .ctx = wb, .f = syntaxIdleTick }) catch .none;
+    }
+
+    fn syntaxIdleTick(ctx: *anyopaque, _: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.syntax_timer = .none;
+        const sx = wb.syntax orelse return;
+        // Typing since: wait for a pause. Otherwise lex a slice.
+        if (wb.doc.version == wb.syntax_armed_version)
+            _ = sx.idle(&wb.doc.tree, .after(wb.io, syntax_idle_slice_ns)) catch {};
+        wb.armSyntaxIdle();
+    }
+
     // -- auto save -----------------------------------------------------------
 
     /// Runs the afterDelay timer while `files.autoSave` asks for it.
@@ -4464,6 +4506,7 @@ pub const Workbench = struct {
         }
         if (!focused and wb.was_focused) wb.autosaveOnBlur();
         wb.was_focused = focused;
+        wb.armSyntaxIdle();
         if (wb.pending_open) |p| {
             wb.pending_open = null;
             defer wb.gpa.free(p);
@@ -5069,6 +5112,49 @@ test "workbench: the gutter shows edits against the file" {
     _ = t.settle();
     Workbench.onAppMessage(&wb, &t.app, .{ .kind = diff_model.ui_msg_kind, .a = @intFromPtr(m) });
     try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+}
+
+test "workbench: the active file is highlighted in the background until done" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (0..20_000) |i| try text.print(gpa, "const a{d} = f({d}); // {{\n", .{ i, i });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = text.items });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 900, .h = 600 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+    const sx = wb.syntax.?;
+    try std.testing.expect(!sx.hl.done());
+    try std.testing.expect(wb.syntax_timer != .none);
+    // Typing holds background lexing back.
+    t.typeText("x");
+    const lexed = sx.hl.stats.lines_lexed;
+    t.advance(Workbench.syntax_idle_delay_ms);
+    try std.testing.expect(sx.hl.stats.lines_lexed - lexed < 100);
+    var ticks: u32 = 0;
+    while (!sx.hl.done() and ticks < 5000) : (ticks += 1) t.advance(Workbench.syntax_idle_delay_ms);
+    try std.testing.expect(sx.hl.done());
+    try std.testing.expect(sx.hl.isExact(19_999));
+    // Done: no more wakeups.
+    try std.testing.expectEqual(Window.TimerId.none, wb.syntax_timer);
 }
 
 test "workbench: the saved window size leaves out decoration margins" {

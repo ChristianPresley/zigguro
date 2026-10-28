@@ -10,8 +10,10 @@
 //! offer reload, keep or `merge3`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const pt = @import("piece_tree.zig");
+const buffers = @import("buffers.zig");
 const eol_mod = @import("eol.zig");
 const save_mod = @import("save.zig");
 const enc = @import("../encoding.zig");
@@ -35,8 +37,15 @@ const LineSource = diff.LineSource;
 
 /// A file read from disk and decoded.
 pub const Loaded = struct {
-    /// The decoded text (UTF-8, or WTF-8 for unpaired surrogates).
+    /// The decoded text (UTF-8, or WTF-8 for unpaired surrogates). Inside
+    /// `map` when there is one (read-only).
     text: []u8,
+    /// The file's memory map holding `text` (large-file mode); hand it to
+    /// the document (`DocumentRegistry.openFileMapped`).
+    map: ?buffers.Mapped = null,
+    /// `disk.content_hash` is not computed yet (a mapped file is hashed
+    /// off the open path): hash `text` before relying on it.
+    hash_pending: bool = false,
     encoding: Encoding,
     confidence: @FieldType(enc.Detection, "confidence"),
     eol: eol_mod.EolStats,
@@ -44,18 +53,32 @@ pub const Loaded = struct {
 
     /// Frees the text.
     pub fn deinit(l: *Loaded, gpa: Allocator) void {
-        gpa.free(l.text);
+        if (l.map) |*m| m.destroy() else gpa.free(l.text);
         l.* = undefined;
     }
 };
 
 /// Reads and decodes `path` (blocking). `hint` is a user or workspace
 /// encoding setting (a BOM still wins); `fallback` is used when detection
-/// is unsure.
+/// is unsure. A UTF-8 file of `map_min` bytes or more is memory-mapped
+/// instead of read (`Loaded.map`).
 pub fn load(gpa: Allocator, io: Io, dir: Dir, path: []const u8, hint: ?Encoding, fallback: Encoding) !Loaded {
+    return loadWith(gpa, io, dir, path, hint, fallback, true);
+}
+
+/// Files from this size open in large-file mode: memory-mapped, line ends
+/// sampled from the first MiB (`EolStats.sampled`), the content hash left
+/// to the caller (`Loaded.hash_pending`). Not on Windows, where replacing a file that has an open
+/// mapping fails, so saving it would.
+pub const map_min: u64 = 64 << 20;
+
+fn loadWith(gpa: Allocator, io: Io, dir: Dir, path: []const u8, hint: ?Encoding, fallback: Encoding, allow_map: bool) !Loaded {
     var f = try dir.openFile(io, path, .{});
     defer f.close(io);
     const st = try f.stat(io);
+    if (allow_map and builtin.os.tag != .windows and st.kind == .file and st.size >= map_min) {
+        if (try loadMapped(gpa, io, f, st, hint, fallback)) |l| return l;
+    }
     const bytes = try readWhole(gpa, io, f, st);
     var bytes_owned = true;
     defer if (bytes_owned) gpa.free(bytes);
@@ -84,6 +107,29 @@ pub fn load(gpa: Allocator, io: Io, dir: Dir, path: []const u8, hint: ?Encoding,
         // after the stat.
         .disk = .{ .size = bytes.len, .mtime = st.mtime, .file_id = save_mod.fileId(st), .content_hash = hash },
     };
+}
+
+/// Maps `f`; null when it cannot be mapped (then it is read). A UTF-8
+/// file keeps the map; other encodings are decoded from it and unmapped.
+fn loadMapped(gpa: Allocator, io: Io, f: File, st: File.Stat, hint: ?Encoding, fallback: Encoding) !?Loaded {
+    const size = std.math.cast(usize, st.size) orelse return error.FileTooBig;
+    // Pages fault in on the threads that summarize the text.
+    var m: buffers.Mapped = .{
+        .mm = f.createMemoryMap(io, .{ .len = size, .protection = .{ .read = true }, .populate = false }) catch return null,
+        .io = io,
+    };
+    var map_owned = true;
+    defer if (map_owned) m.destroy();
+    const bytes = m.mm.memory;
+    const d = enc.detect(bytes[0..@min(bytes.len, 8 << 10)], hint, fallback);
+    var disk: DiskState = .{ .size = bytes.len, .mtime = st.mtime, .file_id = save_mod.fileId(st), .content_hash = 0 };
+    if (d.encoding != .utf8) {
+        disk.content_hash = save_mod.hashBytesParallel(io, bytes);
+        const text = try enc.decodeAll(d.encoding, bytes, gpa);
+        return .{ .text = text, .encoding = d.encoding, .confidence = d.confidence, .eol = eol_mod.detectEolSample(text), .disk = disk };
+    }
+    map_owned = false;
+    return .{ .text = bytes, .map = m, .hash_pending = true, .encoding = d.encoding, .confidence = d.confidence, .eol = eol_mod.detectEolSample(bytes), .disk = disk };
 }
 
 /// Files from this size are read by several tasks at once and hashed on
@@ -204,7 +250,8 @@ pub fn probe(gpa: Allocator, io: Io, file: *const FileState) !Probe {
         if (d.sameMeta(st)) return .unchanged;
         if (try save_mod.hashFile(file.dir, io, file.path) == d.content_hash) return .{ .touched = .fromStat(st, d.content_hash) };
     }
-    return .{ .changed = try load(gpa, io, file.dir, file.path, file.encoding, file.encoding) };
+    // Read, not mapped: a conflict hands the text on as owned bytes.
+    return .{ .changed = try loadWith(gpa, io, file.dir, file.path, file.encoding, file.encoding, false) };
 }
 
 /// A dirty buffer whose file changed on disk.

@@ -27,6 +27,7 @@
 //! thread.
 
 const std = @import("std");
+const zg_core = @import("zg_core");
 const zg_gui = @import("zg_gui");
 const zg_editor = @import("zg_editor");
 
@@ -85,6 +86,10 @@ pub const FileSync = struct {
     undo_store: ?UndoStore = null,
     /// An undo file is being written; `undo_next` waits for it.
     undo_writing: bool = false,
+    /// The content hash of a mapped file is being computed (`hashLater`)
+    /// on `hash_thread`.
+    hashing: bool = false,
+    hash_thread: ?std.Thread = null,
     undo_next: ?[]u8 = null,
     /// Diffs the document against the file's text (not owned).
     diff: ?*DiffModel = null,
@@ -102,6 +107,9 @@ pub const FileSync = struct {
         encoding: zg_editor.model.encoding.Encoding = .utf8,
         eol: zg_editor.model.buffer.eol.Eol = .lf,
         disk: ?save_mod.DiskState = null,
+        /// `disk.content_hash` is still to be computed from the document's
+        /// original (large-file mode, the document owning the map).
+        hash_pending: bool = false,
     }) !*FileSync {
         const fs = try gpa.create(FileSync);
         errdefer gpa.destroy(fs);
@@ -115,12 +123,40 @@ pub const FileSync = struct {
             .path = p,
             .file = .{ .dir = dir, .path = p, .encoding = loaded.encoding, .eol = loaded.eol, .disk = loaded.disk },
         };
+        if (loaded.hash_pending) if (loaded.disk) |d| fs.hashLater(d);
         return fs;
+    }
+
+    /// Computes the content hash of the document's original (the file as
+    /// read) on its own thread (a pool task may run inline on the UI
+    /// thread) and records it in `disk` if that still describes the same
+    /// read. Until then a metadata change compares the text instead of
+    /// telling a touch from an edit by hash.
+    fn hashLater(fs: *FileSync, disk: save_mod.DiskState) void {
+        const store = fs.doc.store;
+        if (fs.app == null) return fs.hashNow();
+        const job = fs.gpa.create(HashJob) catch return fs.hashNow();
+        store.retain();
+        job.* = .{ .fs = fs, .store = store, .disk = disk };
+        fs.hashing = true;
+        fs.hash_thread = std.Thread.spawn(.{}, runHash, .{job}) catch {
+            fs.hashing = false;
+            store.release();
+            fs.gpa.destroy(job);
+            return fs.hashNow();
+        };
+    }
+
+    fn hashNow(fs: *FileSync) void {
+        fs.file.disk.?.content_hash = save_mod.hashBytesParallel(fs.io, fs.doc.store.bt.original);
     }
 
     /// Waits for a running operation, then frees `fs`.
     pub fn destroy(fs: *FileSync) void {
-        if (fs.app) |app| while (fs.busy or fs.undo_writing) {
+        // Its result is posted, then run below.
+        if (fs.hash_thread) |t| t.join();
+        fs.hash_thread = null;
+        if (fs.app) |app| while (fs.busy or fs.undo_writing or fs.hashing) {
             app.joinWork();
             _ = app.drainMessages();
         };
@@ -239,6 +275,39 @@ fn runOp(op: *Op) void {
         free(op);
         op.fs.busy = false;
     };
+}
+
+const HashJob = struct {
+    fs: *FileSync,
+    store: *zg_editor.model.snapshot.Store,
+    /// What `fs.file.disk` was when the job started.
+    disk: save_mod.DiskState,
+};
+
+/// Hash thread: hashes the original, then hands the result to the UI
+/// thread.
+fn runHash(job: *HashJob) void {
+    job.disk.content_hash = save_mod.hashBytes(job.store.bt.original);
+    job.fs.app.?.post(.{ .ctx = job, .f = hashDone }) catch {
+        job.store.release();
+        job.fs.hashing = false;
+        job.fs.gpa.destroy(job);
+    };
+}
+
+/// UI thread: records the hash unless the file state moved on (saved or
+/// reloaded since).
+fn hashDone(ctx: *anyopaque, _: *zg_gui.App) void {
+    const job: *HashJob = @ptrCast(@alignCast(ctx));
+    const fs = job.fs;
+    if (fs.file.disk) |*d| if (d.size == job.disk.size and d.file_id == job.disk.file_id and d.mtime.nanoseconds == job.disk.mtime.nanoseconds and d.content_hash == 0) {
+        d.content_hash = job.disk.content_hash;
+    };
+    job.store.release();
+    fs.hashing = false;
+    if (fs.hash_thread) |t| t.detach();
+    fs.hash_thread = null;
+    fs.gpa.destroy(job);
 }
 
 /// `undo_file.contentHash` of a snapshot's text, chunk by chunk.
@@ -525,4 +594,35 @@ test "file sync: the diff base follows saves and reloads" {
     try testing.expectEqual(Outcome.reloaded, f.settle());
     try m.completeFull();
     try testing.expectEqual(@as(usize, 0), m.hunks().len);
+}
+
+test "file_sync: a mapped file's content hash is computed on a worker" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const n: usize = @intCast(external.map_min + 3);
+    const data = try gpa.alloc(u8, n);
+    defer gpa.free(data);
+    for (data, 0..) |*b, i| b.* = if (i % 40 == 39) '\n' else 'x';
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "big.txt", .data = data });
+    const l = try external.load(gpa, testing.io, tmp.dir, "big.txt", null, .utf8);
+    try testing.expect(l.hash_pending);
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var app = zg_gui.App.init(gpa);
+    defer app.deinit();
+    // Posting from the hash thread needs the runtime's mailbox.
+    app.attachRuntime(&rt);
+    const doc = try Document.initMapped(gpa, @enumFromInt(1), l.map.?);
+    defer doc.deinit();
+    const fs = try FileSync.init(gpa, testing.io, &app, doc, null, tmp.dir, "big.txt", .{ .disk = l.disk, .hash_pending = true });
+    defer fs.destroy();
+    try testing.expect(fs.hashing);
+    fs.hash_thread.?.join();
+    fs.hash_thread = null;
+    _ = app.drainMessages();
+    try testing.expect(!fs.hashing);
+    try testing.expectEqual(try save_mod.hashFile(tmp.dir, testing.io, "big.txt"), fs.file.disk.?.content_hash);
 }

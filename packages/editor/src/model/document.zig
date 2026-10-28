@@ -5,6 +5,7 @@
 const std = @import("std");
 const pt = @import("buffer/piece_tree.zig");
 const snapshot_mod = @import("snapshot.zig");
+const buffers = @import("buffer/buffers.zig");
 const cs_mod = @import("edit/change_set.zig");
 const ChangeLog = @import("change_log.zig").ChangeLog;
 
@@ -76,6 +77,21 @@ pub const Document = struct {
         const store = try Store.create(gpa, bytes);
         errdefer {
             store.bt.owns_original = false;
+            store.release();
+        }
+        const tree = try PieceTree.fromOriginal(&store.pool, store.bt);
+        const d = try gpa.create(Document);
+        d.* = .{ .gpa = gpa, .id = id, .store = store, .tree = tree, .change_log = .init(gpa, 0) };
+        return d;
+    }
+
+    /// A document over the mapped file `m` (large-file mode), which it
+    /// unmaps when the last version is gone. On error `m` is still the
+    /// caller's.
+    pub fn initMapped(gpa: Allocator, id: DocId, m: buffers.Mapped) Allocator.Error!*Document {
+        const store = try Store.createMapped(gpa, m);
+        errdefer {
+            store.bt.mapped = null;
             store.release();
         }
         const tree = try PieceTree.fromOriginal(&store.pool, store.bt);

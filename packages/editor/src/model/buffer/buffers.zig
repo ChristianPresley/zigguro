@@ -1,7 +1,8 @@
 //! The buffer table: the immutable byte buffers that pieces point into.
 //!
-//! - The `original` buffer holds the file as opened (owned, or borrowed
-//!   from a memory map that outlives the table). It is never modified.
+//! - The `original` buffer holds the file as opened: owned, borrowed, or a
+//!   read-only memory map of the file (large-file mode) that the table
+//!   unmaps. It is never modified.
 //! - Add pages hold inserted text. Pages are 1 MiB, allocated once and
 //!   never moved or freed while the table lives, and bytes are only ever
 //!   appended after the current tail, so every slice a snapshot holds stays
@@ -42,6 +43,25 @@ pub const max_pages = dir_fanout * dir_fanout;
 
 const Page = [page_size]u8;
 
+/// A read-only memory map of a file used as an original (large-file
+/// mode). Another program truncating the file while it is mapped makes
+/// reads of the lost bytes fault; replacing it (as editors and `save` do)
+/// is safe, since the map keeps the old file.
+pub const Mapped = struct {
+    mm: std.Io.File.MemoryMap,
+    io: std.Io,
+
+    /// The mapped bytes.
+    pub fn bytes(m: *const Mapped) []const u8 {
+        return m.mm.memory;
+    }
+
+    /// Unmaps.
+    pub fn destroy(m: *Mapped) void {
+        m.mm.destroy(m.io);
+    }
+};
+
 /// Buffers shared by all versions of a document.
 pub const BufferTable = struct {
     rc: std.atomic.Value(u32) = .init(1),
@@ -49,6 +69,8 @@ pub const BufferTable = struct {
     original: []const u8,
     /// Whether `original` is freed with the table.
     owns_original: bool,
+    /// The map `original` lives in, unmapped with the table.
+    mapped: ?Mapped = null,
     dir: [dir_fanout]?*[dir_fanout]?*Page = @splat(null),
     page_count: u32 = 0,
     /// Bytes used in the last page.
@@ -58,6 +80,13 @@ pub const BufferTable = struct {
     pub fn create(gpa: Allocator, original: []const u8, owned: bool) Allocator.Error!*BufferTable {
         const bt = try gpa.create(BufferTable);
         bt.* = .{ .gpa = gpa, .original = original, .owns_original = owned };
+        return bt;
+    }
+
+    /// A table over the mapped `m`, which it unmaps when released.
+    pub fn createMapped(gpa: Allocator, m: Mapped) Allocator.Error!*BufferTable {
+        const bt = try gpa.create(BufferTable);
+        bt.* = .{ .gpa = gpa, .original = m.bytes(), .owns_original = false, .mapped = m };
         return bt;
     }
 
@@ -77,6 +106,7 @@ pub const BufferTable = struct {
             gpa.destroy(level);
         };
         if (bt.owns_original) gpa.free(bt.original);
+        if (bt.mapped) |*m| m.destroy();
         gpa.destroy(bt);
     }
 
