@@ -594,7 +594,7 @@ pub const Debug = struct {
     }
 
     pub fn varHooks(d: *Debug) var_tree.Hooks {
-        return .{ .ctx = d, .changed = varsChanged, .watch_add = watchAdd, .watch_edit = watchEdit, .watch_remove = watchRemove, .value_set = valueSet };
+        return .{ .ctx = d, .changed = varsChanged, .watch_add = watchAdd, .watch_edit = watchEdit, .watch_remove = watchRemove, .watch_move = watchMove, .value_set = valueSet };
     }
 
     /// A value was set: the active session's watches are evaluated again.
@@ -630,6 +630,13 @@ pub const Debug = struct {
         const d: *Debug = @ptrCast(@alignCast(ctx));
         d.no_session.watches.remove(i);
         for (d.entries.items) |e| e.insp.watches.remove(i);
+        d.changed();
+    }
+
+    pub fn watchMove(ctx: *anyopaque, i: u32, to: u32) void {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        d.no_session.watches.move(i, to);
+        for (d.entries.items) |e| e.insp.watches.move(i, to);
         d.changed();
     }
 
