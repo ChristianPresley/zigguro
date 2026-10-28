@@ -85,6 +85,7 @@ const ScmPanel = scm_panel.ScmPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
 const Tasks = @import("tasks.zig").Tasks;
 const debug_service = @import("debug/service.zig");
+const zg_dap = @import("zg_dap");
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
 
@@ -539,6 +540,11 @@ pub const Workbench = struct {
         if (f.completions) |c| c.detach();
         // Before the decoration store goes (diagnostics draw there).
         if (wb.codeintel) |ci| if (f.handle) |h| ci.close(h);
+        if (wb.debug) |d| if (f.path) |p| {
+            const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch null;
+            defer if (abs) |x| wb.gpa.free(x);
+            if (abs) |x| d.docClosed(x);
+        };
         if (f.deco) |d| {
             f.doc.unsubscribe(f.deco_listener);
             f.view.decorations = null;
@@ -584,8 +590,10 @@ pub const Workbench = struct {
         if (wb.win != null) {
             nf.view.on_change = .{ .ctx = wb, .f = onViewChange };
             nf.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+            nf.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
             wb.attachCompletions(nf);
         }
+        if (wb.debug) |d| wb.debugAttach(d, nf);
         return nf;
     }
 
@@ -1121,6 +1129,7 @@ pub const Workbench = struct {
         for (wb.files.items) |f| {
             f.view.on_change = .{ .ctx = wb, .f = onViewChange };
             f.view.on_caret = .{ .ctx = wb, .f = onViewChange };
+            f.view.gutter_hook = .{ .ctx = wb, .f = onGutterClick };
         }
         wb.completions_svc = completions.Service.create(wb.rt, wb.env, win.app) catch |e| blk: {
             log.err("completions: {t}", .{e});
@@ -1163,6 +1172,7 @@ pub const Workbench = struct {
             ci.setTrusted(wb.trust == .trusted);
         } else |e| log.err("language services: {t}", .{e});
         wb.startTasks(win);
+        wb.debugAtStartup(win);
         if (win.app.on_message == null) win.app.on_message = .{ .ctx = wb, .f = onAppMessage };
         win.on_close = .{ .ctx = wb, .f = onMainClose };
         if (wb.layout_dir) |dir| {
@@ -3108,10 +3118,96 @@ pub const Workbench = struct {
             .cursor = debugCursor,
             .reveal = debugReveal,
             .show_panel = debugShowPanel,
-        }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null });
+        }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null, .gutter_styles = .{
+            .enabled = CodeIntel.style.breakpoint,
+            .disabled = CodeIntel.style.breakpoint_disabled,
+            .unverified = CodeIntel.style.breakpoint_unverified,
+            .warning = CodeIntel.style.breakpoint_warning,
+            .anchor = CodeIntel.style.breakpoint,
+            .exec_top = CodeIntel.style.exec_line,
+            .exec_selected = CodeIntel.style.exec_frame_line,
+            .exec_arrow = CodeIntel.style.exec_arrow,
+        } });
         d.win = w;
         wb.debug = d;
+        for (wb.files.items) |*f| wb.debugAttach(d, f);
         return d;
+    }
+
+    /// `f`'s breakpoints follow its edits and show in its gutter (files
+    /// on disk only).
+    fn debugAttach(wb: *Workbench, d: *Debug, f: *OpenFile) void {
+        const p = f.path orelse return;
+        if (f.virtual != null) return;
+        const store = wb.ensureDeco(f) catch return;
+        if (f.view.styles == null) if (wb.codeintel) |ci| {
+            f.view.styles = ci.styleResolver();
+        };
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return;
+        defer wb.gpa.free(abs);
+        d.docOpened(abs, f.doc, store);
+    }
+
+    /// Saved breakpoints show from the start: the service is made once a
+    /// worker finds the workspace's breakpoints file.
+    fn debugAtStartup(wb: *Workbench, win: *Window) void {
+        win.app.spawnLoop(findBreakpointsFile, .{ wb, win.app }) catch findBreakpointsFile(wb, win.app);
+    }
+
+    fn findBreakpointsFile(wb: *Workbench, app: *zg_gui.App) void {
+        const io = wb.io;
+        var dir = std.Io.Dir.cwd().openDir(io, wb.cwd, .{}) catch return;
+        defer dir.close(io);
+        dir.access(io, debug_service.state_dir ++ "/" ++ zg_dap.breakpoints.persist.sub_path, .{}) catch return;
+        app.post(.{ .ctx = wb, .f = breakpointsFound }) catch {};
+    }
+
+    fn breakpointsFound(ctx: *anyopaque, _: *zg_gui.App) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.win == null) return;
+        _ = wb.ensureDebug() catch |e| log.warn("breakpoints: {t}", .{e});
+    }
+
+    /// A click on an editor's gutter: lane 0 toggles a breakpoint on the
+    /// line, the lightbulb in lane 1 opens its code actions.
+    fn onGutterClick(ctx: *anyopaque, v: *EditorView, line: u64, lane: u8) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const f = for (wb.files.items) |*f| {
+            if (f.view == v) break f;
+        } else return false;
+        if (lane == 1) {
+            if (!hasBulb(f, line)) return false;
+            if (v.lineOf(v.primarySel().head) != line) v.setSelection(.caret(v.lineRange(line).start));
+            wb.setCurrent(f.*);
+            wb.quickFix() catch |e| log.warn("quick fix: {t}", .{e});
+            return true;
+        }
+        const p = f.path orelse return false;
+        if (f.virtual != null) return false;
+        const d = wb.ensureDebug() catch return false;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, p }) catch return false;
+        defer wb.gpa.free(abs);
+        // Attached first, so the new breakpoint is anchored at once.
+        wb.debugAttach(d, f);
+        d.toggleBreakpointAt(abs, @intCast(line + 1));
+        if (wb.win) |w| w.markAllDirty();
+        return true;
+    }
+
+    /// Whether `f`'s gutter shows the code action lightbulb on `line`.
+    fn hasBulb(f: *const OpenFile, line: u64) bool {
+        const store = f.deco orelse return false;
+        const r = f.view.lineRange(line);
+        var mask: zg_editor.model.decorations.store.KindMask = .initEmpty();
+        mask.insert(.gutter);
+        var found: std.ArrayList(zg_editor.model.decorations.store.DecoRef) = .empty;
+        defer found.deinit(f.view.gpa);
+        store.query(.{ .start = r.start, .end = r.end }, mask, f.view.gpa, &found) catch return false;
+        for (found.items) |dr| switch (dr.deco.kind) {
+            .gutter => |g| if (g.icon == zg_editor.model.decorations.store.icon_lightbulb) return true,
+            else => {},
+        };
+        return false;
     }
 
     fn ensureDebugPanel(wb: *Workbench) !void {
@@ -4778,6 +4874,8 @@ pub const Workbench = struct {
     }
 
     pub fn build(wb: *Workbench, ui: *Ui) void {
+        // Breakpoint and execution marks, before the editors paint.
+        if (wb.debug) |d| d.onFrame();
         if (wb.inline_edit) |h| if (h.done) {
             h.destroy();
             wb.inline_edit = null;
@@ -6208,7 +6306,6 @@ test "workbench: an agent's commands run in a visible bash terminal" {
 
 test "workbench: Ctrl+Shift+B runs the build task in a terminal; its problems show in the editor and are replaced by the next run" {
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
-    const zg_dap = @import("zg_dap");
     const Store = zg_codeintel.diagnostics.Store;
     const gpa = std.testing.allocator;
     var rt: zg_core.Runtime = undefined;
@@ -6459,8 +6556,81 @@ test "workbench: Run and Debug lists configurations with reasons, F9 sets breakp
     const views = try d.bps.list(arena.allocator());
     try std.testing.expectEqual(@as(usize, 1), views.len);
     try std.testing.expectEqual(@as(u32, 2), views[0].bp.kind.source.line);
+    // Its dot in the gutter, on line 2.
+    _ = t.settle();
+    const f = wb.fileOf(wb.cur_panel.?).?;
+    try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x25CF));
     d.toggleBreakpointCmd();
     try std.testing.expectEqual(@as(usize, 0), (try d.bps.list(arena.allocator())).len);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 0), (try testGutterLines(arena.allocator(), f, 0x25CF)).len);
+
+    // A click in the gutter's breakpoint lane sets one on that line; a
+    // line typed above moves it down with its code.
+    try std.testing.expect(Workbench.onGutterClick(&wb, f.view, 0, 0));
+    _ = t.settle();
+    try std.testing.expectEqualSlices(u64, &.{0}, try testGutterLines(arena.allocator(), f, 0x25CF));
+    f.view.setSelection(.caret(0));
+    try f.view.insertText("// top\n");
+    _ = t.settle();
+    try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x25CF));
+    // No lightbulb: lane 1 leaves the click to the editor.
+    try std.testing.expect(!Workbench.onGutterClick(&wb, f.view, 0, 1));
+}
+
+/// The 0-based lines where `f`'s gutter shows icon `icon`.
+fn testGutterLines(a: std.mem.Allocator, f: *const Workbench.OpenFile, icon: u32) ![]u64 {
+    const store = f.deco orelse return &.{};
+    var mask: zg_editor.model.decorations.store.KindMask = .initEmpty();
+    mask.insert(.gutter);
+    var found: std.ArrayList(zg_editor.model.decorations.store.DecoRef) = .empty;
+    try store.query(.{ .start = 0, .end = f.doc.len() }, mask, a, &found);
+    var lines: std.ArrayList(u64) = .empty;
+    for (found.items) |dr| if (dr.deco.kind.gutter.icon == icon) try lines.append(a, f.view.lineOf(dr.range.start));
+    return lines.items;
+}
+
+test "workbench: saved breakpoints show in the gutter at startup" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\nconst b = 2;\nconst c = 3;\n" });
+    try tmp.dir.createDirPath(io, ".zigguro/debug");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/debug/breakpoints.zon", .data =
+        \\.{ .version = 1, .breakpoints = .{
+        \\    .{ .kind = .source, .path = "a.zig", .line = 3 },
+        \\    .{ .kind = .source, .path = "a.zig", .line = 1, .enabled = false },
+        \\} }
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+    _ = t.settle();
+    // Made for the file, read, and drawn: a dot on line 3, a ring on 1.
+    try std.testing.expect(wb.debug != null);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const f = wb.fileOf(wb.cur_panel.?).?;
+    try std.testing.expectEqualSlices(u64, &.{2}, try testGutterLines(arena.allocator(), f, 0x25CF));
+    try std.testing.expectEqualSlices(u64, &.{0}, try testGutterLines(arena.allocator(), f, 0x25CB));
 }
 
 test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call stack shows it, F10 steps, Shift+F5 ends" {
@@ -6562,6 +6732,12 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     try std.testing.expect(wb.shown(wb.debug_ref));
     _ = t.settle();
     try std.testing.expectEqual(@as(u64, 1), wb.view.lineOf(wb.view.primarySel().head));
+    // The breakpoint's dot and the execution arrow on line 2.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const f = wb.fileOf(wb.cur_panel.?).?;
+    try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x25CF));
+    try std.testing.expectEqualSlices(u64, &.{1}, try testGutterLines(arena.allocator(), f, 0x27A4));
     // The call stack: add, then main.
     try std.testing.expect(t.find(.{ .name = "add, a.c line 2" }) != null);
     try std.testing.expect(t.find(.{ .name = "main, a.c line 6" }) != null);
@@ -6573,17 +6749,21 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     // F10: line 3.
     try (Workbench.dbg(Workbench.stepOver))(&wb);
     const Line3 = struct {
-        fn f(dd: *Debug) bool {
+        fn on(dd: *Debug) bool {
             const ee = dd.active() orelse return false;
             const r = ee.insp.stack.selectedRow() orelse return false;
             return ee.s.state() == .stopped and r.line == 3;
         }
     };
-    try Wait.until(t, d, Line3.f);
+    try Wait.until(t, d, Line3.on);
+    _ = t.settle();
+    try std.testing.expectEqualSlices(u64, &.{2}, try testGutterLines(arena.allocator(), f, 0x27A4));
 
     // Shift+F5: the session ends and leaves the views.
     try std.testing.expectEqualStrings("debug.stop", testCommandFor(&wb, K{ .key = .f5, .mods = .{ .shift = true } }).?);
     try (Workbench.dbg(Debug.stopCmd))(&wb);
     try Wait.until(t, d, Wait.ended);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 0), (try testGutterLines(arena.allocator(), f, 0x27A4)).len);
     try std.testing.expectEqualStrings("debug.start", testCommandFor(&wb, K{ .key = .f5 }).?);
 }
