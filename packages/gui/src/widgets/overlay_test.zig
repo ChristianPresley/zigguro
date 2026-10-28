@@ -122,6 +122,30 @@ test "outside click closes the popover, is consumed, and syncs the flag" {
     try expectEqual(@as(u32, 1), p.clicks);
 }
 
+const Badge = struct {
+    pub fn build(_: *Badge, ui: *Ui) void {
+        ui.open(.{ .test_id = "badge", .style = .{ .w = .{ .px = 50 }, .h = .{ .px = 20 } } });
+        ui.close();
+    }
+};
+
+test "debug overlay: corner placement, no part in light dismiss" {
+    var p: Page = .{};
+    const t = try openPage(&p);
+    defer t.deinit();
+    var badge: Badge = .{};
+    const id = try t.win.openOverlay(.of(&badge), .{ .layer = .debug, .anchor = .{ .corner_at = .{ .corner = .top_right, .margin = 8 } }, .light_dismiss = false, .chrome = false, .restore_focus = false });
+    _ = t.settle();
+    const r = try t.rectOf(.{ .test_id = "badge" });
+    try std.testing.expectApproxEqAbs(@as(f32, 400 - 8 - 50), r.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), r.y, 0.01);
+    // The popover under it still closes on an outside press.
+    try t.click(.{ .name = "Other" });
+    try expect(!p.open);
+    try expect(t.win.isOverlayOpen(id));
+    try expectRect(.{ .x = 8, .y = 222, .w = 50, .h = 70 }, overlay.atCornerOf(.{ .w = 50, .h = 70 }, .{ .w = 400, .h = 300 }, .bottom_left, 8));
+}
+
 test "click inside the popover does not dismiss it" {
     var p: Page = .{};
     const t = try openPage(&p);
