@@ -7,9 +7,7 @@
 //!
 //! Start and the stop request are cheap on the UI thread; the final drain,
 //! export and file write run on a worker, which posts a toast back.
-//! `ZG_TRACE=startup` stops 2 s after the window opens (the first frame
-//! follows within a frame or two) until the present-feedback hook of
-//! E14.F05 lands.
+//! `ZG_TRACE=startup` stops 2 s after the first interactive frame.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -268,12 +266,18 @@ pub const Tracing = struct {
         t.startNamed(req.path, if (req.startup) "startup" else "trace") catch |e| log.err("cannot start the trace: {t}", .{e});
     }
 
-    /// For `ZG_TRACE=startup`: stops the startup trace 2 s from now.
+    /// For `ZG_TRACE=startup`: stops the startup trace 2 s after the first
+    /// interactive frame.
     pub fn armStartupStop(t: *Tracing) void {
         t.group.concurrent(t.io, startupTimer, .{t}) catch {};
     }
 
     fn startupTimer(t: *Tracing) std.Io.Cancelable!void {
+        // 2 s after the first interactive frame (startup marks), or after
+        // 10 s if it never comes.
+        const st = zg_perf.startup.global();
+        var waited: u32 = 0;
+        while (!st.isSet(.interactive) and waited < 200) : (waited += 1) try t.io.sleep(.fromMilliseconds(50), .awake);
         try t.io.sleep(.fromSeconds(2), .awake);
         if (t.takeActive()) |s| finish(t, s);
     }
