@@ -88,6 +88,11 @@ pub const Tracing = struct {
     mem: ?*zg_perf.mem.Sampler = null,
     /// Held while the HUD is visible.
     mem_obs: ?zg_perf.mem.Observation = null,
+    /// Wakeups per second and CPU percent (E14.F05.S02.T01); samples only
+    /// while the HUD is visible.
+    idle: ?*zg_perf.idle.IdleMonitor = null,
+    /// Held while the HUD is visible.
+    idle_obs: ?zg_perf.idle.IdleMonitor.Observation = null,
     /// Runs reclaimers on ceiling breaches and OS memory pressure.
     pressure: ?*zg_perf.mem.PressureMonitor = null,
     /// The `--mem-report` task (cancelled at exit).
@@ -117,12 +122,13 @@ pub const Tracing = struct {
         tl.* = try .init(t.gpa, 1024);
         errdefer tl.deinit();
         t.mem = zg_perf.mem.Sampler.start(t.gpa, t.io, .{}) catch null;
+        t.idle = zg_perf.idle.IdleMonitor.start(t.gpa, t.io, .{}) catch null;
         zg_perf.mem.pressure.loadBudgetCeilings();
         t.pressure = zg_perf.mem.PressureMonitor.start(t.gpa, t.io, .{}) catch null;
         if (t.mem) |s| if (t.pressure) |pm| {
             s.on_sample = pm.samplerHook();
         };
-        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory } });
+        const hud = try zg_perf_ui.Hud.init(t.gpa, tl, .{ .sources = .{ .ctx = t, .memory = hudMemory, .wakeups_per_s = hudWakeups } });
         t.hud = hud;
         t.timeline = tl;
         const dir = t.dir orelse return;
@@ -152,14 +158,28 @@ pub const Tracing = struct {
 
     /// Keeps the sampler sampling exactly while the HUD is visible.
     fn syncMemObservation(t: *Tracing) void {
-        const s = t.mem orelse return;
         const visible = if (t.hud) |h| h.isVisible() else false;
+        if (t.idle) |m| {
+            if (visible and t.idle_obs == null) {
+                t.idle_obs = m.observe();
+            } else if (!visible) if (t.idle_obs) |o| {
+                o.release();
+                t.idle_obs = null;
+            };
+        }
+        const s = t.mem orelse return;
         if (visible and t.mem_obs == null) {
             t.mem_obs = s.observe();
         } else if (!visible) if (t.mem_obs) |o| {
             o.release();
             t.mem_obs = null;
         };
+    }
+
+    fn hudWakeups(ctx: ?*anyopaque) ?f64 {
+        const t: *Tracing = @ptrCast(@alignCast(ctx.?));
+        const w = (t.idle orelse return null).wakeupsPerSecond() orelse return null;
+        return w;
     }
 
     fn hudMemory(ctx: ?*anyopaque) ?zg_perf_ui.hud_model.Memory {
@@ -244,6 +264,8 @@ pub const Tracing = struct {
         if (t.probe) |p| p.destroy();
         t.mem_group.cancel(t.io);
         if (t.mem) |s| s.stop();
+        if (t.idle_obs) |o| o.release();
+        if (t.idle) |m| m.stop();
         if (t.pressure) |pm| pm.stop();
         if (t.recorder) |fr| fr.deinit();
         if (t.timeline) |tl| {
