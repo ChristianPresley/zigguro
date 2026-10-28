@@ -8,6 +8,7 @@ const CodeIntel = @import("CodeIntel.zig");
 const tools = @import("tools.zig");
 const BackgroundDocs = @import("background_docs.zig");
 const Store = @import("../diagnostics/Store.zig");
+const SettleDetector = @import("../diagnostics/settle.zig");
 const Engine = @import("../edits/Engine.zig");
 const plan_mod = @import("../edits/plan.zig");
 const MemFs = @import("../edits/wsedit_test.zig").MemFs;
@@ -149,6 +150,21 @@ test "codeintel: background document, qualified names, queries, review routing, 
         try testing.expectEqual(@as(?u64, 41), out.changeset);
         try testing.expectEqualStrings("Proposed for review as changeset 41: rename to create. Nothing changes until the user accepts it.", out.text.written());
         try testing.expectEqual(Engine.Origin{ .agent = 4 }, f.review.origin.?);
+    }
+    // Waiting on a file no server reports for (no driver here): said at
+    // once, with the state as structured content.
+    {
+        var sd: SettleDetector = .init(gpa, io, &f.st, .{});
+        defer sd.deinit();
+        f.ci.settle = &sd;
+        defer f.ci.settle = null;
+        var out: tools.Output = .init(arena.allocator());
+        const ok = try tools.runAs(&f.ci, 4, io, arena.allocator(), "lsp_wait_for_diagnostics", "{\"paths\": [\"lib.zig\"], \"timeout_ms\": 500}", &out);
+        try testing.expectEqualStrings("No errors or warnings in lib.zig.\nNo language server checks lib.zig, and there is no check task to run.", out.text.written());
+        // (`waited_ms` is the real time it took.)
+        try testing.expect(std.mem.startsWith(u8, out.status.?, "{\"settled\":true,\"heuristic\":false,\"reason\":\"no_server\",\"errors\":0,\"warnings\":0,\"waited_ms\":"));
+        try testing.expect(std.mem.endsWith(u8, out.status.?, ",\"build\":null}"));
+        try testing.expect(ok);
     }
     // Code actions: preferred first, disabled last; commands are refused;
     // an action without an edit is resolved first.
