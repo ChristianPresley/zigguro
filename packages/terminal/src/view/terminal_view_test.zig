@@ -106,7 +106,7 @@ const Fx = struct {
         const r = try f.t.rectOf(.{ .role = .textbox });
         const v = &f.view;
         return .{
-            .x = r.x + v.opts.padding + (@as(f32, @floatFromInt(x)) + 0.5) * v.cell_w,
+            .x = r.x + v.gridLeft() + (@as(f32, @floatFromInt(x)) + 0.5) * v.cell_w,
             .y = r.y + v.opts.padding + (@as(f32, @floatFromInt(y)) + 0.5) * v.cell_h,
         };
     }
@@ -376,4 +376,74 @@ test "terminal: hovering a link underlines it, Ctrl+click opens it" {
     f.t.win.dispatch(.{ .pointer_move = .{ .pos = try f.cellPoint(1, 1) } });
     _ = f.t.settle();
     try testing.expect(f.view.hover_link == null);
+}
+
+test "terminal: command blocks: Ctrl+Up/Down navigation, output selection and copy, rerun" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.view.enableBlocks(.{});
+    f.term.opts.shell_nonce = "n";
+    f.t.win.markAllDirty();
+    _ = f.t.settle();
+    try testing.expectEqual(@as(f32, 10), f.view.gutter);
+
+    const A = "\x1b]133;A\x07$ \x1b]133;B\x07";
+    const C = "\x1b]133;C\x07";
+    var long: [20 * 5]u8 = undefined;
+    for (0..20) |i| _ = std.fmt.bufPrint(long[i * 5 ..][0..5], "L{d:0>2}\r\n", .{i}) catch unreachable;
+    f.feed(A ++ "one\r\n\x1b]633;E;one;n\x07" ++ C ++ "1a\r\n1b\r\n\x1b]133;D;0\x07");
+    f.feed(A ++ "two\r\n\x1b]633;E;two;n\x07" ++ C);
+    f.feed(&long);
+    f.feed("\x1b]133;D;2\x07" ++ A);
+    // Rows: block 1 at 0 (output 1-2), block 2 at 3 (output 4-23), block 3 at 24.
+    const b = f.view.blocks.?;
+    try testing.expectEqual(@as(usize, 3), b.items().len);
+    try testing.expectEqual(@as(u64, 3), b.items()[1].prompt);
+    try testing.expectEqual(@as(?i32, 2), b.items()[1].exit);
+
+    // Ctrl+Up goes to the IDE, not the shell.
+    const seen = f.keys_seen;
+    f.key(.{ .key = .arrow_up, .mods = .{ .ctrl = true } });
+    try f.expectOut("");
+    try testing.expect(f.keys_seen > seen);
+
+    const pl = &f.term.primary.pages;
+    const top = struct {
+        fn of(p: *const zg_terminal.screen.PageList) u64 {
+            return p.evicted + p.rowIndex(p.viewportRow(0));
+        }
+    }.of;
+    try testing.expect(f.view.scrollToCommand(.previous));
+    try testing.expectEqual(@as(u64, 2), top(pl));
+    try testing.expect(f.view.scrollToCommand(.previous));
+    try testing.expectEqual(@as(u64, 0), top(pl));
+    try testing.expect(!f.view.scrollToCommand(.previous));
+    try testing.expect(f.view.scrollToCommand(.next));
+    try testing.expectEqual(@as(u64, 2), top(pl));
+    // Block 3's prompt is on the screen's last rows: following output again.
+    try testing.expect(f.view.scrollToCommand(.next));
+    try testing.expect(f.view.scrollToCommand(.next) or !f.view.scrolledBack());
+    try testing.expect(!f.view.scrolledBack());
+
+    try testing.expect(f.view.selectOutput(.previous));
+    const sel = f.view.selection.?;
+    try testing.expectEqual(@as(u64, 4), sel.lo.row);
+    try testing.expectEqual(@as(u64, 23), sel.hi.row);
+    const out1 = (try f.view.outputText(gpa, b.items()[0].id)).?;
+    defer gpa.free(out1);
+    try testing.expectEqualStrings("1a\n1b", out1);
+
+    // Rerun types the trusted command at the empty prompt.
+    f.view.scrollToBottom();
+    f.out.clearRetainingCapacity();
+    try testing.expectEqual(TerminalView.RerunResult.sent, f.view.rerunLast());
+    try f.expectOut("two\r");
+    // Not while something is typed at the prompt.
+    f.feed("ls");
+    try testing.expectEqual(TerminalView.RerunResult.busy, f.view.rerunLast());
+    // Not a command line the shell did not vouch for.
+    f.feed("\r\n\x1b]633;E;rm -rf x;forged\x07" ++ C ++ "\x1b]133;D;0\x07" ++ A);
+    try testing.expectEqual(TerminalView.RerunResult.untrusted, f.view.rerunLast());
+    try f.expectOut("");
 }
