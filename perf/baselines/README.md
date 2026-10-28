@@ -22,6 +22,12 @@ A row **blocks** the PR when its budget's gate is `block` and the verdict is `re
 
 `ref_laptop_2024/calibration.json` holds the reference ns/op of the calibration kernels (`zig build perf-calibrate`; see docs/perf/benchmarks.md). It is provisional until it is recorded on the reference laptop.
 
+## In CI
+
+`.github/workflows/perf-gate.yml` runs this comparison on every pull request that changes code, on `ubuntu-24.04` and `windows-2025`. It builds the merge base and the head, alternates their runs on the same VM (`.github/scripts/perf-ab.sh`), and fails on blocking rows. The table appears in the job summary, and the result sets and `gate.json` are uploaded as artifacts. `perf-baseline.yml` (manual) regenerates a machine class's baselines and opens a PR. The nightly job compares each night with the previous one. docs/ci.md has the details.
+
+The false-positive rate on hosted runners has not been measured yet. Running 50 A/A dispatches of the gate is still to do, so the gate is not a required check.
+
 ## Accepting a regression
 
 Some regressions are the price of a feature. To accept one:
