@@ -260,6 +260,7 @@ pub fn details(st: *ServerStatus, s: *const Server, w: *Io.Writer) Io.Writer.Err
             try w.print("Dynamic registrations: {d}\n", .{caps.registrations.items.len});
         }
         try w.print("Documents: {d}\n", .{s.docs.items.len});
+        if (s.too_large.items.len > 0) try w.print("Not synced (larger than lsp.maxFileSize): {d}\n", .{s.too_large.items.len});
         var pb: [160]u8 = undefined;
         if (st.progressOf(s.id, &pb)) |p| try w.print("Progress: {s} {s}\n", .{ p.title, p.message });
     };

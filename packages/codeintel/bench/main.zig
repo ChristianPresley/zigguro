@@ -16,6 +16,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 }
 
 fn register(b: *bench.Bench) !void {
+    try b.run("lsp.sync.didchange_latency: one keystroke on a 10k-line file, edit + frame flush to a didChange body (UI)", {}, didChangeLatency);
     try b.run("codeintel.registry.discover: 6 builtin servers, 6-entry PATH, cold cache", {}, discover);
     try b.run("codeintel.semtok.decode_200k: full result, 20k lines x 10 tokens", {}, decode200k);
     // The fixture is built once, outside the measured calls.
@@ -467,5 +468,37 @@ fn wseditPlan10k(f: *WsEditFixture, s: *State) void {
         var p = zg_codeintel.edits.plan.plan(f.gpa, &f.docs, no_fs, &f.edit, .{ .enc = .utf8 }, "rename", null) catch unreachable;
         bench.doNotOptimizeAway(p.steps.len);
         p.deinit();
+    }
+}
+
+fn didChangeLatency(_: void, s: *State) void {
+    const gpa = s.allocator();
+    const api = zg_editor.model.api;
+    var reg: api.registry.DocumentRegistry = .init(gpa, .posix);
+    defer reg.deinit();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (0..10_000) |i| text.print(gpa, "    const value_{d} = compute(arg_{d}, \"\u{e9}t\u{e9}\");\n", .{ i, i }) catch unreachable;
+    const h = reg.openFile("/bench.zig", text.items) catch unreachable;
+    defer reg.release(h);
+    const Noop = struct {
+        fn send(_: *anyopaque, _: []const u8, params: []const u8) anyerror!void {
+            bench.doNotOptimizeAway(params.len);
+        }
+    };
+    var dummy: u8 = 0;
+    var sink: zg_codeintel.sync.Sink = .init(gpa, .{ .ctx = &dummy, .send = Noop.send });
+    defer sink.deinit();
+    var sync: api.lsp_sync.LspSync = .init(gpa, &reg, .utf16, .incremental, sink.lspSink());
+    defer sync.deinit();
+    sync.track(h, "zig") catch unreachable;
+    const doc = reg.get(h).?;
+    const ChangeSet = zg_editor.model.edit.change_set.ChangeSet;
+    for (0..s.iterations()) |i| {
+        const at = 5000 * 40 + (i % 400);
+        var cs = ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at }, .text = "x" }}) catch unreachable;
+        defer cs.deinit();
+        doc.applyChangeSet(&cs, .{ .user = 0 }) catch unreachable;
+        sync.flush();
     }
 }

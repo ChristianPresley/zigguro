@@ -1923,6 +1923,7 @@ pub const Workbench = struct {
             ci.inline_info.configure(mode, st.boolean("editor.codeLens"));
             ci.linked.setEnabled(st.boolean("editor.linkedEditing"));
             applyZigSettings(ci, st);
+            ci.mgr.opts.max_file_bytes = @intCast(@max(0, st.int("lsp.maxFileSize")));
         }
         wb.armAutosave();
         wb.applyExplorerSettings();

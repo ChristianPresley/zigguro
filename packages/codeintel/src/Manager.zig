@@ -80,6 +80,9 @@ pub const Options = struct {
     /// The crash restart policy each server starts with; null: crashed
     /// servers stay down.
     restart: ?RestartPolicy = .{},
+    /// Documents larger than this are not synced (`lsp.maxFileSize`);
+    /// takes effect for documents attached afterwards.
+    max_file_bytes: u64 = 16 << 20,
 };
 
 pub const RestartPolicy = zg_lsp.client.restart.RestartPolicy;
@@ -131,6 +134,8 @@ pub const Server = struct {
     sync: ?LspSync = null,
     /// Documents attached to this server, tracked while it runs.
     docs: std.ArrayList(DocHandle) = .empty,
+    /// Attached documents not synced: larger than `max_file_bytes`.
+    too_large: std.ArrayList(DocHandle) = .empty,
     /// The agent session whose `workspace/executeCommand` is in flight
     /// (UI thread): server edits meanwhile are the agent's.
     agent_command: ?u32 = null,
@@ -239,6 +244,7 @@ pub fn deinit(m: *Manager) void {
     m.taken.deinit(m.gpa);
     for (m.servers.items) |s| {
         s.docs.deinit(m.gpa);
+        s.too_large.deinit(m.gpa);
         s.crash_log.deinit(m.gpa);
         s.arena.deinit();
         m.gpa.free(s.root);
@@ -300,6 +306,7 @@ pub fn closeDoc(m: *Manager, h: DocHandle) void {
     for (m.servers.items) |s| {
         const i = indexOfDoc(s.docs.items, h) orelse continue;
         _ = s.docs.swapRemove(i);
+        if (indexOfDoc(s.too_large.items, h)) |j| _ = s.too_large.swapRemove(j);
         if (s.sync) |*sy| sy.untrack(h);
     }
 }
@@ -410,7 +417,7 @@ fn onAttach(m: *Manager, a: @FieldType(Msg, "attach")) void {
     };
     if (s.status == .missing) return;
     s.docs.append(m.gpa, a.h) catch return;
-    if (s.sync) |*sy| m.track(sy, a.h);
+    if (s.sync != null) m.track(s, a.h);
 }
 
 fn newServer(m: *Manager, a: @FieldType(Msg, "attach")) !*Server {
@@ -465,12 +472,21 @@ fn onReady(m: *Manager, s: *Server) void {
     };
     s.sync = .init(m.gpa, m.docs, enc, kind, s.sink.lspSink());
     s.sync.?.include_text_on_save = caps.save_include_text;
-    for (s.docs.items) |h| m.track(&s.sync.?, h);
+    s.sync.?.max_bytes = m.opts.max_file_bytes;
+    s.too_large.clearRetainingCapacity();
+    for (s.docs.items) |h| m.track(s, h);
 }
 
-fn track(m: *Manager, sy: *LspSync, h: DocHandle) void {
+fn track(m: *Manager, s: *Server, h: DocHandle) void {
+    const sy = if (s.sync) |*x| x else return;
     const od = m.open.get(h) orelse return;
-    sy.track(h, od.lang) catch |err| log.warn("track: {t}", .{err});
+    sy.track(h, od.lang) catch |err| switch (err) {
+        error.TooLarge => {
+            log.info("{s}: {s} is larger than lsp.maxFileSize, not synced", .{ s.def.id, m.docs.name(h) orelse "?" });
+            if (indexOfDoc(s.too_large.items, h) == null) s.too_large.append(m.gpa, h) catch {};
+        },
+        else => log.warn("track: {t}", .{err}),
+    };
 }
 
 fn onFailed(m: *Manager, s: *Server, err: anyerror) void {
