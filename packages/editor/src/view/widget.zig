@@ -281,7 +281,7 @@ pub const Editor = struct {
         for (v.blockList(), 0..) |b, i| {
             const br = v.blockRectAt(i);
             if (br.y + br.h <= 0 or br.y >= r.h) continue;
-            if (v.block_painter) |bp| bp.paint(bp.ctx, pc, br, b) else pc.rect(br, bg, .{});
+            if (v.painterFor(b.owner)) |bp| bp.paint(bp.ctx, pc, br, b) else pc.rect(br, bg, .{});
         }
         pc.popClip();
 
@@ -627,6 +627,18 @@ pub const Editor = struct {
                     return true;
                 }
                 if (p.button != .left) return false;
+                if (p.clicks <= 1) if (v.pointer_hook) |h| {
+                    const lp = ec.local(p.pos);
+                    for (v.blockList(), 0..) |b, i| {
+                        const br = v.blockRectAt(i);
+                        if (lp.y < br.y or lp.y >= br.y + br.h or lp.x < br.x) continue;
+                        if (h.f(h.ctx, v, .{ .kind = .block, .block = b, .block_x = lp.x - br.x, .mods = p.mods, .origin = windowOrigin(ec, v) })) {
+                            ec.focus();
+                            return true;
+                        }
+                        break;
+                    }
+                };
                 if (p.clicks <= 1 and (p.mods.ctrl or p.mods.super) and !p.mods.alt and !p.mods.shift) {
                     if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .click, .offset = textAt(ec, v, p.pos), .origin = windowOrigin(ec, v), .mods = p.mods })) {
                         ec.focus();
