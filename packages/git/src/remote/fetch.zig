@@ -36,6 +36,13 @@ pub const Options = struct {
     tz_offset_min: i32 = 0,
     /// The reflog prefix (default "fetch <remote>").
     reflog_action: ?[]const u8 = null,
+    /// Also ask which branch the remote's HEAD names (`Result.head`).
+    remote_head: bool = false,
+    /// Log `reflog_action` alone, without ": storing head" and the like
+    /// (clone's "clone: from <url>").
+    reflog_verbatim: bool = false,
+    /// Write FETCH_HEAD (clone does not).
+    fetch_head: bool = true,
 };
 
 pub const UpdateKind = enum { new_branch, new_tag, new_ref, fast_forward, forced, up_to_date, rejected, pruned };
@@ -55,6 +62,10 @@ pub const Result = struct {
     updates: []const RefUpdate = &.{},
     /// Objects received (0 when nothing was missing).
     objects: u32 = 0,
+    /// The branch the remote's HEAD names (`Options.remote_head`), and
+    /// whether that branch is unborn.
+    head: ?[]const u8 = null,
+    head_unborn: bool = false,
 
     pub fn deinit(r: *Result) void {
         r.arena.deinit();
@@ -92,7 +103,12 @@ pub fn fetch(repo: *Repository, remote_name: []const u8, opts: Options, connecto
     var prefixes: std.ArrayList([]const u8) = .empty;
     for (specs.items) |s| if (!s.negative) try prefixes.append(a, s.prefix());
     if (tags != .none) try prefixes.append(a, "refs/tags/");
+    if (opts.remote_head) try prefixes.append(a, "HEAD");
     const refs = try protocol.lsRefs(a, conn, &adv, prefixes.items);
+    if (opts.remote_head) for (refs) |r| if (std.mem.eql(u8, r.name, "HEAD")) {
+        res.head = r.symref;
+        res.head_unborn = r.unborn;
+    };
 
     // Which local ref each remote ref goes to.
     var planned: std.ArrayList(Planned) = .empty;
@@ -163,7 +179,7 @@ pub fn fetch(repo: *Repository, remote_name: []const u8, opts: Options, connecto
             else => null,
         };
         if (what) |w| {
-            try tx.update(p.local, .{ .direct = new }, if (old) |o| .{ .oid = o } else .absent, try std.fmt.allocPrint(a, "{s}: {s}", .{ action, w }), who);
+            try tx.update(p.local, .{ .direct = new }, if (old) |o| .{ .oid = o } else .absent, if (opts.reflog_verbatim) action else try std.fmt.allocPrint(a, "{s}: {s}", .{ action, w }), who);
             any = true;
         }
     }
@@ -184,7 +200,7 @@ pub fn fetch(repo: *Repository, remote_name: []const u8, opts: Options, connecto
         }
     }
     if (any) try tx.commit();
-    try writeFetchHead(repo, a, rem.url, planned.items);
+    if (opts.fetch_head) try writeFetchHead(repo, a, rem.url, planned.items);
     res.updates = updates.items;
     return res;
 }
