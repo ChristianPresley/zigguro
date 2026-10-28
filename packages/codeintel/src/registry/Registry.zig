@@ -18,6 +18,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_lsp = @import("zg_lsp");
+const executables = zg_lsp.client.executables;
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -242,56 +243,8 @@ pub fn probeVersion(r: *Registry, io: Io, gpa: Allocator, def: *const ServerDef,
     defer argv.deinit(gpa);
     try argv.append(gpa, exe);
     try argv.appendSlice(gpa, def.version_args);
-    var child = std.process.spawn(io, .{
-        .argv = argv.items,
-        .environ_map = env,
-        .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .ignore,
-        .create_no_window = true,
-    }) catch return null;
-    // The read runs in its own task and the deadline is a plain wait:
-    // blocking pipe reads are not cancelable on Windows, so a timeout kills
-    // the process, which ends the read.
-    var rd: FirstLine = .{};
-    var task = io.concurrent(FirstLine.run, .{ &rd, io, child.stdout.? }) catch {
-        child.kill(io);
-        return null;
-    };
-    const timed_out = if (rd.done.waitTimeout(io, zg_core.runtime.Deadline.after(io, timeout).timeout())) false else |_| true;
-    if (builtin.os.tag == .windows)
-        _ = std.os.windows.ntdll.NtTerminateProcess(child.id.?, @enumFromInt(1))
-    else
-        std.posix.kill(child.id.?, .KILL) catch {};
-    task.await(io);
-    _ = child.wait(io) catch {};
-    if (timed_out) return null;
-    const buf = &rd.buf;
-    const n = rd.n;
-    var lines = std.mem.tokenizeAny(u8, buf[0..n], "\r\n");
-    const line = std.mem.trim(u8, lines.next() orelse return null, " \t");
-    if (line.len == 0) return null;
-    return try gpa.dupe(u8, line);
+    return executables.probeFirstLine(io, gpa, argv.items, env, timeout);
 }
-
-/// The start of a probed process's output.
-const FirstLine = struct {
-    buf: [512]u8 = undefined,
-    n: usize = 0,
-    done: Io.Event = .unset,
-
-    /// Reads until a line ends, end of input, or `buf` is full.
-    fn run(f: *FirstLine, io: Io, file: Io.File) void {
-        defer f.done.set(io);
-        while (f.n < f.buf.len) {
-            const got = file.readStreaming(io, &.{f.buf[f.n..]}) catch break;
-            if (got == 0) break;
-            f.n += got;
-            const text = std.mem.trimStart(u8, f.buf[0..f.n], " \t\r\n");
-            if (std.mem.indexOfScalar(u8, text, '\n') != null) break;
-        }
-    }
-};
 
 /// Forgets the executable cache ("Rescan", or PATH changed).
 pub fn rescan(r: *Registry) void {
@@ -300,48 +253,7 @@ pub fn rescan(r: *Registry) void {
 }
 
 fn search(r: *const Registry, io: Io, a: Allocator, name: []const u8, env: *const std.process.Environ.Map) Allocator.Error!?[]const u8 {
-    const windows = r.os == .windows;
-    // Windows runs an extensionless file only by its spelled-out name.
-    const exts: []const []const u8 = if (windows) try pathExts(a, env.get("PATHEXT"), std.fs.path.extension(name).len > 0) else &.{""};
-    const has_sep = std.mem.indexOfScalar(u8, name, '/') != null or (windows and std.mem.indexOfScalar(u8, name, '\\') != null);
-    if (has_sep) return r.firstExisting(io, a, &.{""}, name, exts);
-    const path_var = env.get("PATH") orelse env.get("Path") orelse return null;
-    var it = std.mem.tokenizeScalar(u8, path_var, if (windows) ';' else ':');
-    while (it.next()) |dir| {
-        if (try r.firstExisting(io, a, &.{dir}, name, exts)) |p| return p;
-    }
-    return null;
-}
-
-fn firstExisting(r: *const Registry, io: Io, a: Allocator, dirs: []const []const u8, name: []const u8, exts: []const []const u8) Allocator.Error!?[]const u8 {
-    const windows = r.os == .windows;
-    for (dirs) |dir| for (exts) |ext| {
-        // A name that already ends in one of the extensions is tried as is.
-        const full = if (dir.len == 0)
-            try std.mem.concat(a, u8, &.{ name, ext })
-        else
-            try std.mem.concat(a, u8, &.{ dir, if (windows) "\\" else "/", name, ext });
-        const ok = if (windows)
-            Io.Dir.cwd().access(io, full, .{}) catch null
-        else
-            Io.Dir.cwd().access(io, full, .{ .execute = true }) catch null;
-        if (ok) |_| {
-            const st = Io.Dir.cwd().statFile(io, full, .{}) catch continue;
-            if (st.kind == .directory) continue;
-            return full;
-        }
-    };
-    return null;
-}
-
-/// `PATHEXT` as lowercase extensions, the bare name first when it already
-/// has an extension.
-fn pathExts(a: Allocator, pathext: ?[]const u8, bare: bool) Allocator.Error![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    if (bare) try out.append(a, "");
-    var it = std.mem.tokenizeScalar(u8, pathext orelse ".COM;.EXE;.BAT;.CMD", ';');
-    while (it.next()) |e| try out.append(a, try std.ascii.allocLowerString(a, e));
-    return out.items;
+    return executables.find(io, a, r.os, name, env);
 }
 
 /// The root folder for `file_path`: the nearest ancestor directory (up to
