@@ -1,0 +1,17 @@
+# Re-sent after a save (lines moved by edits) and, with immediate
+# sending, after edits settle (sourceModified while unsaved).
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< event initialized
+> setBreakpoints {"source": {"path": "/w/a.zig"}, "breakpoints": [{"line": 3}], "sourceModified": false}
+< {"body": {"breakpoints": [{"id": 1, "verified": true}]}}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> setBreakpoints {"source": {"path": "/w/a.zig"}, "breakpoints": [{"line": 5}], "sourceModified": false}
+< {"body": {"breakpoints": [{"id": 1, "verified": true}]}}
+> setBreakpoints {"source": {"path": "/w/a.zig"}, "breakpoints": [{"line": 6}], "sourceModified": true}
+< {"body": {"breakpoints": [{"id": 1, "verified": true}]}}
+> disconnect
+< {}
