@@ -25,7 +25,6 @@
     .{ .key = "terminal.integrated.shell", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Shell", .description = "The terminal's shell program. Empty: $SHELL on Linux and macOS, %COMSPEC% on Windows.", .tags = .{"terminal"}, .order = 1 },
     .{ .key = "terminal.integrated.shellArgs", .type = .array, .items = .string, .default = .{}, .scope = .machine_overridable, .restricted = true, .title = "Shell Arguments", .description = "Arguments passed to the shell.", .tags = .{"terminal"}, .order = 2 },
 
-    .{ .key = "git.path", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Git Path", .description = "The git executable the Source Control tab runs. Empty: git from PATH.", .tags = .{"git"}, .order = 1 },
     .{ .key = "git.autoRefresh", .type = .bool, .default = true, .title = "Auto Refresh", .description = "Refresh Source Control when files change or the window gains focus.", .tags = .{"git"}, .order = 2 },
     .{ .key = "git.confirmSync", .type = .bool, .default = true, .title = "Confirm Sync", .description = "Ask before pull, push or sync with a remote.", .tags = .{"git"}, .order = 3 },
     .{ .key = "git.autofetch", .type = .bool, .default = false, .title = "Auto Fetch", .description = "Fetch from the default remote every few minutes.", .tags = .{"git"}, .order = 4 },

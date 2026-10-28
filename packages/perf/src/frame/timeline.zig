@@ -36,6 +36,9 @@ pub const FrameStatsView = struct {
     /// 0 when the frame was not presented.
     present_id: u64 = 0,
     damage_px: u64 = 0,
+    /// False when no presentation feedback will follow (no source wired
+    /// up): the frame finalizes as estimated at once.
+    expect_feedback: bool = true,
 };
 
 /// Why a frame was slow.
@@ -45,6 +48,13 @@ pub const SlowReason = enum { key_to_photon, frame_cpu, gpu };
 pub const SlowFrameHook = struct {
     ctx: *anyopaque,
     f: *const fn (ctx: *anyopaque, rec: *const FrameRecord, reason: SlowReason) void,
+};
+
+/// Called after each `onFrameStats` (UI thread), e.g. by the HUD to
+/// learn that frames are arriving.
+pub const FrameListener = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, t: *FrameTimeline) void,
 };
 
 const GpuSample = struct { seq: u64, gpu_ns: u32 };
@@ -72,6 +82,9 @@ pub const FrameTimeline = struct {
     key_to_photon: LatencyHistogram = .{},
     /// Same, from estimated presentation times.
     key_to_photon_estimated: LatencyHistogram = .{},
+    /// Key-to-photon over the last 1 000 to 2 000 keys, measured and
+    /// estimated (the HUD's p50/p99).
+    key_to_photon_recent: histogram.RollingHistogram = .{},
     /// UI-thread CPU per frame.
     frame_cpu: LatencyHistogram = .{},
     /// GPU time per frame.
@@ -81,6 +94,7 @@ pub const FrameTimeline = struct {
     /// Slow = above this factor times the budget limit.
     slow_factor: f64 = 2.0,
     hook: ?SlowFrameHook = null,
+    listener: ?FrameListener = null,
     /// Frames finalized, discarded, estimated (diagnostics).
     finalized: u64 = 0,
     discarded: u64 = 0,
@@ -107,6 +121,11 @@ pub const FrameTimeline = struct {
     /// Installs the slow-frame hook.
     pub fn setSlowFrameHook(t: *FrameTimeline, hook: SlowFrameHook) void {
         t.hook = hook;
+    }
+
+    /// Installs (or with null removes) the frame listener.
+    pub fn setListener(t: *FrameTimeline, l: ?FrameListener) void {
+        t.listener = l;
     }
 
     fn slot(t: *FrameTimeline, seq: u64) usize {
@@ -155,6 +174,8 @@ pub const FrameTimeline = struct {
             // Nothing presented: nothing to wait for.
             t.ring[i].discarded = true;
             t.finalize(i);
+        } else if (!s.expect_feedback) {
+            t.finalizeEstimated(i);
         } else {
             if (t.pending_len == max_pending) t.finalizeEstimated(t.pending[0]);
             t.pending[t.pending_len] = @intCast(i);
@@ -166,6 +187,7 @@ pub const FrameTimeline = struct {
             const j = t.pending[k];
             if (t.ring[j].seq + feedback_window <= t.newest) t.finalizeEstimated(j) else k += 1;
         }
+        if (t.listener) |l| l.f(l.ctx, t);
     }
 
     fn unpend(t: *FrameTimeline, i: usize) void {
@@ -226,6 +248,7 @@ pub const FrameTimeline = struct {
         var reason: ?SlowReason = null;
         if (r.isKeyInput()) if (r.keyToPhoton()) |v| {
             if (r.estimated) t.key_to_photon_estimated.record(v) else t.key_to_photon.record(v);
+            t.key_to_photon_recent.record(v);
             zg_core.trace.counter("perf.key_to_photon_ns", @intCast(v));
             if (@as(f64, @floatFromInt(v)) > t.slow_factor * registry.get("input.key_to_photon").limit) reason = .key_to_photon;
         };
@@ -242,9 +265,19 @@ pub const FrameTimeline = struct {
 
     /// Copies the final records, oldest first, into `out`; returns the count.
     pub fn snapshot(t: *const FrameTimeline, out: []FrameRecord) usize {
+        const cap: u64 = t.ring.len;
+        return t.snapshotFrom(if (t.newest + 1 > cap) t.newest + 1 - cap else 0, out);
+    }
+
+    /// Like `snapshot`, but only the newest `out.len` frames (the HUD).
+    pub fn snapshotLatest(t: *const FrameTimeline, out: []FrameRecord) usize {
+        const want: u64 = @min(out.len, t.ring.len);
+        return t.snapshotFrom(if (t.newest + 1 > want) t.newest + 1 - want else 0, out);
+    }
+
+    fn snapshotFrom(t: *const FrameTimeline, first: u64, out: []FrameRecord) usize {
         var n: usize = 0;
         const cap: u64 = t.ring.len;
-        const first: u64 = if (t.newest + 1 > cap) t.newest + 1 - cap else 0;
         var seq = first;
         while (seq <= t.newest and n < out.len) : (seq += 1) {
             const i: usize = @intCast(seq % cap);
@@ -301,6 +334,31 @@ test "timeline: estimated when feedback missing" {
     try std.testing.expectEqual(@as(?u64, 10_000_000 + 1_000_000 + t.refresh_ns), out[0].t_presented_ns);
 }
 
+test "timeline: no feedback expected finalizes at once and notifies" {
+    var t = try FrameTimeline.init(std.testing.allocator, 64);
+    defer t.deinit();
+    const L = struct {
+        var calls: u32 = 0;
+        fn f(_: *anyopaque, tl: *FrameTimeline) void {
+            calls += 1;
+            std.debug.assert(tl.newest > 0);
+        }
+    };
+    var dummy: u8 = 0;
+    t.setListener(.{ .ctx = &dummy, .f = L.f });
+    var s = stats(1, 10_000_000);
+    s.expect_feedback = false;
+    t.onFrameStats(s);
+    try std.testing.expectEqual(@as(u32, 1), L.calls);
+    try std.testing.expectEqual(@as(u64, 1), t.estimated);
+    try std.testing.expectEqual(@as(u64, 1), t.key_to_photon_recent.current.total);
+    var out: [4]FrameRecord = undefined;
+    try std.testing.expectEqual(@as(usize, 1), t.snapshot(&out));
+    t.setListener(null);
+    t.onFrameStats(stats(2, 20_000_000));
+    try std.testing.expectEqual(@as(u32, 1), L.calls);
+}
+
 test "timeline: discarded present handled" {
     var t = try FrameTimeline.init(std.testing.allocator, 64);
     defer t.deinit();
@@ -326,6 +384,22 @@ test "timeline: slow hook fires once per frame" {
     t.onPresented(1001, 10_000_000 + 30_000_000, 0); // 30 ms key to photon
     try std.testing.expectEqual(@as(usize, 1), slow.n);
     try std.testing.expectEqual(@as(?SlowReason, .key_to_photon), slow.last);
+}
+
+test "timeline: snapshotLatest keeps the newest frames" {
+    var t = try FrameTimeline.init(std.testing.allocator, 64);
+    defer t.deinit();
+    for (1..41) |i| {
+        var s = stats(i, i * 10_000_000);
+        s.expect_feedback = false;
+        t.onFrameStats(s);
+    }
+    var out: [10]FrameRecord = undefined;
+    try std.testing.expectEqual(@as(usize, 10), t.snapshotLatest(&out));
+    try std.testing.expectEqual(@as(u64, 31), out[0].seq);
+    try std.testing.expectEqual(@as(u64, 40), out[9].seq);
+    try std.testing.expectEqual(@as(usize, 10), t.snapshot(&out));
+    try std.testing.expectEqual(@as(u64, 1), out[0].seq);
 }
 
 test "timeline: ring wraparound" {

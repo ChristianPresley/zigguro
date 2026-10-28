@@ -68,6 +68,8 @@ const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
 const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
 const WorkspaceTools = @import("agent/workspace_tools.zig").WorkspaceTools;
+const scm_panel = @import("scm/panel.zig");
+const ScmPanel = scm_panel.ScmPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
 
 const Ui = zg_gui.Ui;
@@ -263,6 +265,12 @@ pub const Workbench = struct {
     nav_items: []zg_gui.w.quick_pick.QpItem = &.{},
     nav_pick: zg_gui.w.quick_pick.QuickPickHandle = .{},
     nav_title: []const u8 = "",
+    /// The Git tab (created on first show) and its dock panel.
+    scm: ?*ScmPanel = null,
+    scm_ref: ?PanelRef = null,
+    scm_badge: [12]u8 = undefined,
+    /// When `git.autofetch` last fetched.
+    scm_fetch_ms: u64 = 0,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -328,8 +336,9 @@ pub const Workbench = struct {
     const kind_problems: zg_gui.dock.model.PanelKindId = 8;
     const kind_notes: zg_gui.dock.model.PanelKindId = 9;
     const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
+    const kind_scm: zg_gui.dock.model.PanelKindId = 11;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -804,6 +813,7 @@ pub const Workbench = struct {
                 kind_problems => wb.problems_ref = p,
                 kind_notes => wb.notes_ref = p,
                 kind_notes_search => wb.notes_search_ref = p,
+                kind_scm => wb.scm_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -891,6 +901,9 @@ pub const Workbench = struct {
         wb.autosave_timer = .none;
         if (wb.review_panel) |p| p.destroy();
         wb.review_panel = null;
+        // Waits for running git commands.
+        if (wb.scm) |p| p.destroy();
+        wb.scm = null;
         if (wb.agent_cmds) |c| c.target = null;
         if (wb.agent) |a| a.destroy();
         wb.agent = null;
@@ -1017,6 +1030,7 @@ pub const Workbench = struct {
         if (CodeIntel.create(wb.rt, wb.env, win.app, &wb.docs, wb.cwd)) |ci| {
             ci.win = win;
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
+            ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1143,6 +1157,19 @@ pub const Workbench = struct {
         .{ .id = "notes.saveSearch", .title = "Save Note Search", .category = "Notes", .run = notesSaveSearch },
         .{ .id = "notes.followLink", .title = "Follow Link Under Cursor", .category = "Notes", .run = notesFollowLink },
         .{ .id = "workbench.toggleSidebar", .title = "Toggle Primary Side Bar Visibility", .category = "View", .run = toggleSidebar },
+        .{ .id = "workbench.showScm", .title = "Show Git", .category = "View", .run = showScm },
+        .{ .id = "scm.refresh", .title = "Refresh", .category = "Git", .run = scmRefresh },
+        .{ .id = "scm.commit", .title = "Commit", .category = "Git", .run = scmCommit },
+        .{ .id = "scm.commitStaged", .title = "Commit Staged", .category = "Git", .run = scmCommit },
+        .{ .id = "scm.commitAll", .title = "Commit All", .category = "Git", .run = scmCommitAll },
+        .{ .id = "scm.stage", .title = "Stage Current File", .category = "Git", .run = scmStage },
+        .{ .id = "scm.unstage", .title = "Unstage Current File", .category = "Git", .run = scmUnstage },
+        .{ .id = "scm.checkout", .title = "Checkout to...", .category = "Git", .run = scmCheckout },
+        .{ .id = "scm.openChange", .title = "Open Changes", .category = "Git", .run = showScm },
+        .{ .id = "scm.fetch", .title = "Fetch", .category = "Git", .run = scmFetch },
+        .{ .id = "scm.pull", .title = "Pull", .category = "Git", .run = scmPull },
+        .{ .id = "scm.push", .title = "Push", .category = "Git", .run = scmPush },
+        .{ .id = "scm.sync", .title = "Sync", .category = "Git", .run = scmSync },
         .{ .id = "explorer.open", .title = "Open", .category = "Explorer", .run = explorerOpen },
         .{ .id = "explorer.newFile", .title = "New File...", .category = "Explorer", .run = explorerNewFile },
         .{ .id = "explorer.newFolder", .title = "New Folder...", .category = "Explorer", .run = explorerNewFolder },
@@ -1248,6 +1275,10 @@ pub const Workbench = struct {
     /// diff finished (ignored when its file closed meanwhile).
     fn onAppMessage(ctx: *anyopaque, _: *zg_gui.App, msg: zg_core.runtime.UiMsg) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (msg.kind == scm_panel.msg_kind) {
+            if (wb.scm) |p| _ = p.handleMessage(msg);
+            return;
+        }
         if (msg.kind != diff_model.ui_msg_kind) return;
         for (wb.files.items) |f| if (f.diff) |m| if (@intFromPtr(m) == msg.a) {
             m.completeFull() catch |e| log.warn("diff: {t}", .{e});
@@ -1277,6 +1308,7 @@ pub const Workbench = struct {
                 if (!quiet) wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
                 // A settings or keybindings file applies at once.
                 wb.reloadSettings();
+                wb.scmAutoRefresh();
             },
             .save_failed => if (quiet) for (wb.files.items) |*f| {
                 // An auto save is not retried until the text changes.
@@ -1799,6 +1831,7 @@ pub const Workbench = struct {
         wb.setCompletionsEnabled(st.boolean("editor.inlineCompletions.enabled"));
         wb.armAutosave();
         wb.applyExplorerSettings();
+        wb.applyScmSettings();
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -1819,6 +1852,7 @@ pub const Workbench = struct {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         wb.settings_timer = .none;
         wb.reloadSettings();
+        wb.pollScm(w.app.now_ms);
         wb.armSettingsPoll(w);
     }
 
@@ -1971,6 +2005,15 @@ pub const Workbench = struct {
     /// A navigation request has its answers: none is a notice, one
     /// definition-like target is jumped to, and anything else is offered
     /// in a QuickPick.
+    /// The completion list opened or closed over `view`: the AI ghost
+    /// text there steps aside while it shows.
+    fn onCompletionPopup(ctx: *anyopaque, view: *EditorView, open: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        for (wb.files.items) |*f| if (f.view == view) if (f.completions) |ec| {
+            if (open) ec.popupOpened() else ec.popupClosed();
+        };
+    }
+
     fn onNavDone(ctx: *anyopaque, r: NavService.Results) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (r.targets.len == 0) return wb.notify(.info, "No {s} found", .{navNoun(r.kind)});
@@ -2452,6 +2495,142 @@ pub const Workbench = struct {
 
     fn problemsCopyMessage(wb: *Workbench) !void {
         if (wb.problems) |pp| pp.copyActive(true);
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    // -- the git tab ---------------------------------------------------------
+
+    /// How often the shown Git tab reads the repository again
+    /// (`git.autoRefresh`), and fetches (`git.autofetch`).
+    const scm_poll_ms = 3000;
+    const scm_fetch_every_ms = 3 * 60 * 1000;
+
+    fn ensureScm(wb: *Workbench) !void {
+        if (wb.scm != null) return;
+        const w = wb.win orelse return;
+        const p = try ScmPanel.create(wb.gpa, wb.io, wb.rt, wb.env, wb.cwd, .{ .ctx = wb, .open = onScmOpen, .changed = onScmChanged });
+        p.win = w;
+        wb.scm = p;
+        wb.applyScmSettings();
+        wb.scm_fetch_ms = w.app.now_ms;
+    }
+
+    fn applyScmSettings(wb: *Workbench) void {
+        const p = wb.scm orelse return;
+        const st = wb.settings orelse return;
+        const limit: u32 = @intCast(std.math.clamp(st.int("git.logLimit"), 10, 100_000));
+        if (limit != p.log_limit) {
+            p.log_limit = limit;
+            p.refresh();
+        }
+        p.confirm_sync = st.boolean("git.confirmSync");
+    }
+
+    /// The Git tab, created and shown in the editor area.
+    fn showScmPanel(wb: *Workbench) !*ScmPanel {
+        try wb.ensureScm();
+        if (wb.scm_ref == null) wb.scm_ref = try wb.dock.addPanel(kind_scm, null);
+        try wb.reveal(wb.scm_ref.?, .center);
+        if (wb.win) |w| w.markAllDirty();
+        return wb.scm orelse error.NoWindow;
+    }
+
+    fn showScm(wb: *Workbench) !void {
+        const p = try wb.showScmPanel();
+        p.refresh();
+    }
+
+    /// Reads the repository again when the tab exists (`git.autoRefresh`).
+    fn scmAutoRefresh(wb: *Workbench) void {
+        const p = wb.scm orelse return;
+        if (wb.settings) |st| if (!st.boolean("git.autoRefresh")) return;
+        p.refresh();
+    }
+
+    /// The settings poll's tick: refreshes the shown tab and fetches.
+    fn pollScm(wb: *Workbench, now_ms: u64) void {
+        const p = wb.scm orelse return;
+        const st = wb.settings orelse return;
+        if (wb.shown(wb.scm_ref) and st.boolean("git.autoRefresh")) p.poll(now_ms, scm_poll_ms);
+        if (st.boolean("git.autofetch") and now_ms -| wb.scm_fetch_ms >= scm_fetch_every_ms) {
+            wb.scm_fetch_ms = now_ms;
+            p.fetch();
+        }
+    }
+
+    /// The tab's badge: how many files changed.
+    fn scmBadge(wb: *Workbench) []const u8 {
+        const p = wb.scm orelse return "";
+        const s = p.snap orelse return "";
+        if (s.status.entries.len == 0) return "";
+        return std.fmt.bufPrint(&wb.scm_badge, "{d}", .{s.status.entries.len}) catch "";
+    }
+
+    fn onScmOpen(ctx: *anyopaque, abs: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const copy = wb.gpa.dupe(u8, abs) catch return;
+        if (wb.pending_open) |old| wb.gpa.free(old);
+        wb.pending_open = copy;
+        wb.pending_focus = true;
+        wb.pending_explorer = false;
+        wb.pending_goto = null;
+        wb.pending_range = null;
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// A git command changed the working tree: open editors reload and
+    /// the explorer shows new and deleted files.
+    fn onScmChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.checkFiles();
+        if (wb.explorer) |e| _ = e.refresh();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn scmRefresh(wb: *Workbench) !void {
+        (try wb.showScmPanel()).refresh();
+    }
+    fn scmCommit(wb: *Workbench) !void {
+        (try wb.showScmPanel()).commitNow(false);
+    }
+    fn scmCommitAll(wb: *Workbench) !void {
+        (try wb.showScmPanel()).commitNow(true);
+    }
+    fn scmFetch(wb: *Workbench) !void {
+        (try wb.showScmPanel()).fetch();
+    }
+    fn scmPull(wb: *Workbench) !void {
+        (try wb.showScmPanel()).syncCmd(.pull);
+    }
+    fn scmPush(wb: *Workbench) !void {
+        (try wb.showScmPanel()).syncCmd(.push);
+    }
+    fn scmSync(wb: *Workbench) !void {
+        (try wb.showScmPanel()).syncCmd(.sync);
+    }
+    fn scmCheckout(wb: *Workbench) !void {
+        const p = try wb.showScmPanel();
+        p.tab = .branches;
+    }
+
+    fn scmStage(wb: *Workbench) !void {
+        wb.scmCurrentFile("Stage", &.{ "add", "--" });
+    }
+    fn scmUnstage(wb: *Workbench) !void {
+        wb.scmCurrentFile("Unstage", &.{ "restore", "--staged", "--" });
+    }
+
+    /// Runs `args` and the current editor's file through the Git tab.
+    fn scmCurrentFile(wb: *Workbench, label: []const u8, args: []const []const u8) void {
+        const path = wb.path orelse return wb.notify(.info, "{s}: the editor has no file", .{label});
+        wb.ensureScm() catch return;
+        const p = wb.scm orelse return;
+        const abs = std.fs.path.resolve(wb.gpa, &.{ wb.cwd, path }) catch return;
+        defer wb.gpa.free(abs);
+        var argv: [8][]const u8 = undefined;
+        @memcpy(argv[0..args.len], args);
+        argv[args.len] = abs;
+        p.run(label, &.{argv[0 .. args.len + 1]});
     }
 
     // -- the explorer --------------------------------------------------------
@@ -3171,6 +3350,7 @@ pub const Workbench = struct {
         if (focused and !wb.was_focused) {
             wb.checkFiles();
             wb.reloadSettings();
+            wb.scmAutoRefresh();
         }
         if (!focused and wb.was_focused) wb.autosaveOnBlur();
         wb.was_focused = focused;
@@ -3318,6 +3498,7 @@ pub const Workbench = struct {
             kind_problems => .{ .title = "Problems", .badge = wb.problemsBadge() },
             kind_notes => .{ .title = "Notes" },
             kind_notes_search => .{ .title = "Search Notes" },
+            kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
             else => .{ .title = "?" },
         };
     }
@@ -3361,6 +3542,10 @@ pub const Workbench = struct {
                 }
             },
             kind_notes, kind_notes_search => wb.notesPanel(ui, wb.kindOf(p) == kind_notes_search),
+            kind_scm => {
+                wb.ensureScm() catch |e| log.warn("git tab: {t}", .{e});
+                if (wb.scm) |g| g.build(ui);
+            },
             else => {},
         }
     }
@@ -3387,6 +3572,14 @@ pub const Workbench = struct {
         }
         if (p == wb.settings_ref) {
             wb.settings_ref = null;
+            return true;
+        }
+        if (p == wb.scm_ref) {
+            if (wb.areaOf(p)) |a| if (a != .center) {
+                wb.dock.areaVisible(a, false);
+                return false;
+            };
+            wb.scm_ref = null;
             return true;
         }
         if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
@@ -3417,6 +3610,7 @@ pub const Workbench = struct {
             .{ .id = "review", .label = "Review", .tooltip = "Toggle Review Queue", .action = "review.queue.toggle", .toggled = wb.shown(wb.review_ref), .priority = 15 },
             .{ .id = "theme", .label = "Theme", .tooltip = "Toggle Light/Dark Theme", .action = "workbench.toggleTheme", .priority = 1 },
             .{ .id = "explorer", .label = "Explorer", .tooltip = "Show Explorer (Ctrl+Shift+E)", .action = "workbench.toggleSidebar", .toggled = wb.shown(wb.explorer_ref), .priority = 30 },
+            .{ .id = "git", .label = "Git", .tooltip = "Show Git (Ctrl+Shift+G)", .action = "workbench.showScm", .toggled = wb.scm_ref != null and wb.shown(wb.scm_ref), .priority = 25 },
             .{ .id = "settings", .label = "Settings", .tooltip = "Open Settings (Ctrl+,)", .action = "workbench.openSettings", .priority = 2, .toggled = if (wb.settings_ref) |r| wb.dock.groupOf(r) != null else false },
         };
         zg_gui.w.toolbar(ui, &tools, .{ .label = "Editor actions", .width = avail * 0.4, .test_id = "editor_toolbar" });

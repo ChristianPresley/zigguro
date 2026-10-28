@@ -284,6 +284,19 @@ pub const EditorCompletions = struct {
         ec.changed();
     }
 
+    /// A completion list opened over the editor: the ghost text steps
+    /// aside until `popupClosed`.
+    pub fn popupOpened(ec: *EditorCompletions) void {
+        ec.ctl.dismiss(.popup_opened);
+        ec.changed();
+    }
+
+    /// The completion list closed.
+    pub fn popupClosed(ec: *EditorCompletions) void {
+        ec.ctl.popupClosed() catch |e| log.warn("completions: {t}", .{e});
+        ec.changed();
+    }
+
     /// The status bar's text.
     pub fn statusText(ec: *const EditorCompletions) []const u8 {
         if (!ec.svc.enabled) return "AI: off";
