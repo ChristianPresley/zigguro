@@ -41,6 +41,7 @@ const var_tree = @import("var_tree.zig");
 const bp_view = @import("bp_view.zig");
 const hover_mod = @import("hover.zig");
 const exception_view = @import("exception_view.zig");
+const console_mod = @import("console.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -118,6 +119,8 @@ pub const Entry = struct {
     insp: Inspector,
     /// The user took this session from the agent.
     taken: bool = false,
+    /// Console entries the Debug Console read (dropped ones counted).
+    console_read: u64 = 0,
 };
 
 /// What the open picker is for.
@@ -153,6 +156,9 @@ pub const Debug = struct {
     hover_seen: u64 = 0,
     /// The exception widget.
     exc_view: exception_view.ExceptionView = undefined,
+    /// The Debug Console, and the `generation` it was read at.
+    console: console_mod.ConsoleView = undefined,
+    console_seen: u64 = 0,
     mgr: DebugManager = undefined,
     vars: variables.VarContext = undefined,
     file_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -243,6 +249,7 @@ pub const Debug = struct {
         try d.hover.init(gpa, d.varHooks());
         d.hover.target_of = hoverTargetOf;
         d.exc_view = .init(gpa);
+        try d.console.init(gpa, .{ .ctx = d, .changed = varsChanged, .target = consoleTarget, .inspector = consoleInspector });
         if (root_dir) |rd| d.no_session.watches.persist_to = .{ .dir = rd, .path = state_dir ++ "/" ++ Watches.sub_path };
         d.reg_resolver = .{ .reg = &d.reg, .io = rt.io, .env = env };
         d.vars = .{
@@ -286,6 +293,7 @@ pub const Debug = struct {
         while (d.entries.items.len > 0) d.dropEntry(d.entries.items[d.entries.items.len - 1], false);
         d.hover.deinit();
         d.exc_view.deinit();
+        d.console.deinit();
         d.idle.waitUncancelable(d.io);
         // Freeing sessions waits for their adapters: on a worker.
         var done: Io.Event = .unset;
@@ -389,6 +397,50 @@ pub const Debug = struct {
         defer d.no_session.watches.persist_to = keep;
         d.no_session.watches.load(text) catch |e| return log.warn("{s}: {t}", .{ Watches.sub_path, e });
         for (d.entries.items) |e| for (d.no_session.watches.results()) |w| e.insp.watches.add(w.expr);
+    }
+
+    // ---------------------------------------------------------- console
+
+    /// Reads what `e`'s console got since the last look.
+    fn pullConsole(d: *Debug, e: *Entry) void {
+        const Ctx = struct { d: *Debug, e: *Entry };
+        const f = struct {
+            fn f(c: *const Ctx, con: *const DebugSession.Console) void {
+                c.e.console_read = c.d.console.pull(c.e.id, con, c.e.console_read);
+            }
+        }.f;
+        const c: Ctx = .{ .d = d, .e = e };
+        e.s.withConsole(&c, f);
+    }
+
+    pub fn clearConsoleCmd(d: *Debug) void {
+        d.console.clear();
+    }
+
+    pub fn consoleHistoryPrevCmd(d: *Debug) void {
+        d.console.historyPrev();
+        d.changed();
+    }
+
+    pub fn consoleHistoryNextCmd(d: *Debug) void {
+        d.console.historyNext();
+        d.changed();
+    }
+
+    pub fn consoleCompleteCmd(d: *Debug) void {
+        d.console.complete();
+    }
+
+    fn consoleTarget(ctx: *anyopaque) ?console_mod.Target {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        const e = d.active() orelse return null;
+        return .{ .insp = &e.insp, .id = e.id, .repl_is_command = std.mem.eql(u8, e.s.cfg.type, "gdb") };
+    }
+
+    fn consoleInspector(ctx: *anyopaque, id: u32) ?*Inspector {
+        const d: *Debug = @ptrCast(@alignCast(ctx));
+        const e = d.entryById(id) orelse return null;
+        return &e.insp;
     }
 
     // ------------------------------------------------------------ hover
@@ -625,6 +677,10 @@ pub const Debug = struct {
         if (d.exec_seen != d.generation) {
             d.exec_seen = d.generation;
             d.updateExec();
+        }
+        if (d.console_seen != d.generation) {
+            d.console_seen = d.generation;
+            d.console.update();
         }
         if (d.hover.shown != null and (d.hover_seen != d.generation or d.hover.tree.insp == null)) {
             d.hover_seen = d.generation;
@@ -872,6 +928,8 @@ pub const Debug = struct {
             return;
         };
         e.insp.onChange(s, change);
+        // New output first: a session that ended still shows its last.
+        d.pullConsole(e);
         switch (change) {
             .state => switch (s.state()) {
                 .failed => {
@@ -1544,8 +1602,8 @@ const Inbox = struct {
     fn onSession(ctx: ?*anyopaque, s: *DebugSession, change: DebugSession.Change) void {
         const q: *Inbox = @ptrCast(@alignCast(ctx.?));
         switch (change) {
-            // The console and the other views come later (E07.F07.S01.T03).
-            .output, .progress, .process, .modules, .loaded_sources, .memory, .exited => return,
+            // The other views come later (E07.F07.S01.T03).
+            .progress, .process, .modules, .loaded_sources, .memory, .exited => return,
             else => {},
         }
         q.push(.{ .session = .{ .s = s, .id = s.id, .change = change } });

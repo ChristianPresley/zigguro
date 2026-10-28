@@ -59,6 +59,7 @@ pub const inspect = struct {
     pub const Watches = @import("inspect/Watches.zig");
     pub const ReplHistory = @import("inspect/ReplHistory.zig");
     pub const exception = @import("inspect/exception.zig");
+    pub const sgr = @import("inspect/sgr.zig");
 };
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
@@ -110,4 +111,5 @@ test {
     _ = @import("inspect/evaluator_test.zig");
     _ = @import("inspect/watches_test.zig");
     _ = @import("inspect/exception.zig");
+    _ = @import("inspect/sgr.zig");
 }

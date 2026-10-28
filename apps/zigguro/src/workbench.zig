@@ -323,6 +323,7 @@ pub const Workbench = struct {
     /// The gutter's breakpoint menu.
     gutter_menu: zg_gui.w.menu.MenuHandle = .{},
     debug_ref: ?PanelRef = null,
+    debug_console_ref: ?PanelRef = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -396,8 +397,9 @@ pub const Workbench = struct {
     const kind_scm: zg_gui.dock.model.PanelKindId = 11;
     const kind_hierarchy: zg_gui.dock.model.PanelKindId = 12;
     const kind_debug: zg_gui.dock.model.PanelKindId = 13;
+    const kind_debug_console: zg_gui.dock.model.PanelKindId = 14;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy", "debug" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy", "debug", "debug.console" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -909,6 +911,7 @@ pub const Workbench = struct {
                 kind_scm => wb.scm_ref = p,
                 kind_hierarchy => wb.hierarchy_ref = p,
                 kind_debug => wb.debug_ref = p,
+                kind_debug_console => wb.debug_console_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -1299,6 +1302,11 @@ pub const Workbench = struct {
         .{ .id = "tasks.restart", .title = "Restart Running Task", .category = "Tasks", .run = restartTask },
         .{ .id = "tasks.configure", .title = "Configure Task", .category = "Tasks", .run = configureTask },
         .{ .id = "workbench.showDebug", .title = "Show Run and Debug", .category = "View", .run = showDebug },
+        .{ .id = "workbench.showDebugConsole", .title = "Show Debug Console", .category = "View", .run = showDebugConsole },
+        .{ .id = "debug.clearConsole", .title = "Clear Console", .category = "Debug", .run = dbg(Debug.clearConsoleCmd) },
+        .{ .id = "debug.consoleHistoryPrevious", .title = "Debug Console: Previous Input", .category = "Debug", .run = dbg(Debug.consoleHistoryPrevCmd) },
+        .{ .id = "debug.consoleHistoryNext", .title = "Debug Console: Next Input", .category = "Debug", .run = dbg(Debug.consoleHistoryNextCmd) },
+        .{ .id = "debug.consoleComplete", .title = "Debug Console: Complete", .category = "Debug", .run = dbg(Debug.consoleCompleteCmd) },
         .{ .id = "debug.start", .title = "Start Debugging", .category = "Debug", .run = dbg(startDebugging) },
         .{ .id = "debug.runWithoutDebugging", .title = "Run Without Debugging", .category = "Debug", .run = dbg(runWithoutDebugging) },
         .{ .id = "debug.stop", .title = "Stop", .category = "Debug", .run = dbg(Debug.stopCmd) },
@@ -3397,6 +3405,16 @@ pub const Workbench = struct {
         }
     }
 
+    /// `workbench.showDebugConsole` (Ctrl+Shift+Y): the Debug Console in
+    /// the bottom area, its input focused.
+    fn showDebugConsole(wb: *Workbench) !void {
+        const d = try wb.ensureDebug();
+        if (wb.debug_console_ref == null) wb.debug_console_ref = try wb.dock.addPanel(kind_debug_console, null);
+        try wb.reveal(wb.debug_console_ref.?, .bottom);
+        d.console.focus();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
     fn focusDebug(ctx: *anyopaque, w: *Window) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         if (wb.debug_panel) |dp| dp.focusView(w, wb.debug_focus);
@@ -5261,6 +5279,7 @@ pub const Workbench = struct {
             kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
             kind_hierarchy => .{ .title = "Hierarchy" },
             kind_debug => .{ .title = "Run and Debug" },
+            kind_debug_console => .{ .title = "Debug Console" },
             else => .{ .title = "?" },
         };
     }
@@ -5320,6 +5339,13 @@ pub const Workbench = struct {
                 wb.ensureDebugPanel() catch |e| log.warn("run and debug: {t}", .{e});
                 if (wb.debug_panel) |dp| dp.build(ui);
             },
+            kind_debug_console => {
+                const d = wb.ensureDebug() catch |e| {
+                    log.warn("debug console: {t}", .{e});
+                    return;
+                };
+                d.console.build(ui);
+            },
             else => {},
         }
     }
@@ -5356,7 +5382,7 @@ pub const Workbench = struct {
             wb.scm_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.debug_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.debug_ref or p == wb.debug_console_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -7071,6 +7097,39 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
         t.press(.escape, .{});
         _ = t.settle();
         try std.testing.expect(!d.hover.isOpen());
+    }
+    // The Debug Console: typed `a + b` and Enter evaluates it in the frame.
+    {
+        try wb.showDebugConsole();
+        _ = t.settle();
+        _ = t.settle();
+        try std.testing.expect(wb.shown(wb.debug_console_ref));
+        try std.testing.expect(t.find(.{ .name = "Debug console input" }) != null);
+        t.typeText("a + b");
+        t.press(.enter, .{});
+        var tries: u32 = 0;
+        const cv = &d.console;
+        const found = wait: while (tries < 500) : (tries += 1) {
+            _ = t.settle();
+            var i: usize = 0;
+            while (i < cv.lineCount()) : (i += 1) {
+                if (cv.lineKind(i) == .result and std.mem.eql(u8, cv.lineText(i), "41")) break :wait true;
+            }
+            std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+        } else false;
+        if (!found) {
+            var i: usize = 0;
+            while (i < cv.lineCount()) : (i += 1) std.debug.print("console {d}: {s} \"{s}\"\n", .{ i, @tagName(cv.lineKind(i)), cv.lineText(i) });
+        }
+        try std.testing.expect(found);
+        // The input echoed, then cleared.
+        var echoed = false;
+        var i: usize = 0;
+        while (i < cv.lineCount()) : (i += 1) {
+            if (cv.lineKind(i) == .input and std.mem.eql(u8, cv.lineText(i), "> a + b")) echoed = true;
+        }
+        try std.testing.expect(echoed);
+        try std.testing.expectEqualStrings("", cv.input.slice());
     }
     // The keys follow the stop.
     try std.testing.expectEqualStrings("debug.continue", testCommandFor(&wb, K{ .key = .f5 }).?);
