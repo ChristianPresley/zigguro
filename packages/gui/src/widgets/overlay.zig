@@ -37,8 +37,12 @@ const NodeId = ids.NodeId;
 const AnyView = view_mod.AnyView;
 const Ui = ui_mod.Ui;
 
-/// Overlay layers, bottom to top.
-pub const Layer = enum(u8) { popover = 1, dialog = 2, toast = 3, tooltip = 4, drag = 5 };
+/// Overlay layers, bottom to top. `debug` (the performance HUD) sits
+/// above everything and takes no part in light dismiss.
+pub const Layer = enum(u8) { popover = 1, dialog = 2, toast = 3, tooltip = 4, drag = 5, debug = 6 };
+
+/// A window corner.
+pub const Corner = enum(u8) { top_left, top_right, bottom_left, bottom_right };
 
 /// Which side of the anchor an overlay opens on.
 pub const Side = enum(u8) { below, above, right, left };
@@ -58,6 +62,8 @@ pub const Anchor = union(enum) {
     top: f32,
     /// The bottom-right corner, this many pixels in (toasts).
     corner: f32,
+    /// Any corner, `margin` pixels in (the performance HUD).
+    corner_at: struct { corner: Corner, margin: f32 },
 };
 
 /// Placement next to the anchor.
@@ -173,6 +179,17 @@ pub const Stack = struct {
         return &s.items.items[s.items.items.len - 1];
     }
 
+    /// The topmost overlay outside the debug layer (the one light
+    /// dismiss acts on).
+    pub fn topDismissable(s: *const Stack) ?*Entry {
+        var i = s.items.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (s.items.items[i].opts.layer != .debug) return &s.items.items[i];
+        }
+        return null;
+    }
+
     /// The topmost modal overlay.
     pub fn topModal(s: *const Stack) ?*Entry {
         var i = s.items.items.len;
@@ -263,6 +280,15 @@ pub fn atTop(size: Size, viewport: Rect, frac: f32) Rect {
 pub fn atCorner(size: Size, viewport: Rect, margin: f32) Rect {
     const x = @max(viewport.x, viewport.right() - margin - size.w);
     const y = @max(viewport.y, viewport.bottom() - margin - size.h);
+    return .{ .x = x, .y = y, .w = size.w, .h = size.h };
+}
+
+/// `size` in corner `c` of `viewport`, `margin` in.
+pub fn atCornerOf(size: Size, viewport: Rect, c: Corner, margin: f32) Rect {
+    const left = c == .top_left or c == .bottom_left;
+    const top = c == .top_left or c == .top_right;
+    const x = if (left) viewport.x + margin else @max(viewport.x, viewport.right() - margin - size.w);
+    const y = if (top) viewport.y + margin else @max(viewport.y, viewport.bottom() - margin - size.h);
     return .{ .x = x, .y = y, .w = size.w, .h = size.h };
 }
 
