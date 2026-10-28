@@ -6,6 +6,7 @@ const std = @import("std");
 const zg_core = @import("zg_core");
 const zg_gui = @import("zg_gui");
 const bench = zg_core.bench;
+const jpeg_synth = @import("jpeg_synth.zig");
 
 const Ui = zg_gui.Ui;
 const TestApp = zg_gui.testing.TestApp;
@@ -445,5 +446,20 @@ fn register(b: *bench.Bench) !void {
         defer h.deinit();
         try h.resize(10_000_000, 20);
         try b.run("gui.virtual.height_index_10m", &h, heightIndex);
+    }
+    {
+        const file = try jpeg_synth.make(b.gpa, 4000, 3000);
+        defer b.gpa.free(file);
+        try b.run("gui.jpeg_decode_12mp", file, jpegDecode);
+    }
+}
+
+/// Decodes a generated 12 MP baseline 4:2:0 JPEG (4.6 MB) to RGBA.
+fn jpegDecode(file: []const u8, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        var img = zg_gui.image.decode(s.allocator(), file, .{}) catch return;
+        bench.doNotOptimizeAway(img.rgba[img.rgba.len / 2]);
+        img.deinit(s.allocator());
     }
 }
