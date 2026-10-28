@@ -12,6 +12,8 @@ pub const value = @import("value.zig");
 pub const zon_load = @import("zon_load.zig");
 /// The JSONC reader and comment stripper.
 pub const jsonc = @import("jsonc.zig");
+/// Comment-preserving edits of JSONC settings files.
+pub const json_edit = @import("json_edit.zig");
 
 /// Small regex matcher (stand-in for zg_regex).
 pub const regex_lite = @import("regex_lite.zig");
