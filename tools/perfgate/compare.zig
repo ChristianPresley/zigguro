@@ -67,12 +67,48 @@ fn samplesOf(r: *const baseline.BenchResult) []const f64 {
     return (&r.ns_per_op)[0..1];
 }
 
+/// The bench suite the app's scenario runner writes.
+pub const scenario_suite = "scenarios";
+
 fn budgetFor(budgets: []const Budget, suite: []const u8, name: []const u8) ?*const Budget {
     for (budgets) |*b| switch (b.source) {
         .bench => |s| if (std.mem.eql(u8, s.suite, suite) and std.mem.eql(u8, s.name, name)) return b,
+        .scenario => |s| if (std.mem.eql(u8, suite, scenario_suite) and name.len == s.name.len + 1 + s.metric.len and
+            std.mem.startsWith(u8, name, s.name) and name[s.name.len] == '.' and std.mem.endsWith(u8, name, s.metric)) return b,
         else => {},
     };
     return null;
+}
+
+/// The value a budget checks in `r`. Scenario results pick the field of
+/// the budget's statistic (max from the samples), and rates and
+/// percentages are recorded in thousandths (docs/perf/benchmarks.md).
+fn budgetValue(b: *const Budget, r: *const baseline.BenchResult) ?f64 {
+    switch (b.source) {
+        .bench => |s| return zg_perf.budget.bench_bind.extract(r, s.field),
+        .scenario => {
+            const v: f64 = switch (b.stat) {
+                .p50 => r.p50_ns,
+                .p95 => r.p95_ns orelse r.p99_ns,
+                .p99, .p999 => r.p99_ns,
+                .mean => r.ns_per_op,
+                .max, .total => blk: {
+                    var m: f64 = 0;
+                    var sum: f64 = 0;
+                    for (samplesOf(r)) |x| {
+                        m = @max(m, x);
+                        sum += x;
+                    }
+                    break :blk if (b.stat == .max) m else sum;
+                },
+            };
+            return switch (b.metric) {
+                .per_second, .percent => v / 1000,
+                else => v,
+            };
+        },
+        else => return null,
+    }
 }
 
 fn baselinePath(arena: std.mem.Allocator, machine: schema.MachineClass, suite: []const u8) ![]const u8 {
@@ -154,10 +190,7 @@ fn row(arena: std.mem.Allocator, suite: []const u8, name: []const u8, base_r: ?*
     }
 
     // The budget, on the head value.
-    if (budget) |bb| if (switch (bb.source) {
-        .bench => |s| zg_perf.budget.bench_bind.extract(h, s.field),
-        else => null,
-    }) |v| {
+    if (budget) |bb| if (budgetValue(bb, h)) |v| {
         const own = bb.machine == opts.machine or zg_perf.budget.check.machineIndependent(bb);
         const e = zg_perf.budget.check.evaluateScaled(bb, v, if (own) 1 else opts.scale, 1);
         out.budget_observed = v;
@@ -190,7 +223,31 @@ pub fn blockingCount(rows: []const Row) usize {
 const test_budgets = [_]Budget{
     .{ .id = "t.fast", .owner = "E14", .spec = "E14", .metric = .duration_ns, .stat = .p50, .limit = 1000, .machine = .ci_linux_x64, .source = .{ .bench = .{ .suite = "zg_t", .name = "fast", .field = .p50_ns } } },
     .{ .id = "t.rate", .owner = "E14", .spec = "E14", .metric = .per_second, .stat = .mean, .direction = .higher_is_better, .limit = 1, .machine = .ci_linux_x64, .source = .{ .bench = .{ .suite = "zg_t", .name = "rate", .field = .ns_per_op } } },
+    .{ .id = "t.idle", .owner = "E14", .spec = "E14", .metric = .per_second, .stat = .mean, .limit = 0.5, .machine = .any, .source = .{ .scenario = .{ .name = "idle", .metric = "wakeups_per_s" } } },
+    .{ .id = "t.open", .owner = "E14", .spec = "E14", .metric = .duration_ns, .stat = .max, .limit = 1000, .machine = .ci_linux_x64, .source = .{ .scenario = .{ .name = "open", .metric = "first_screen" } } },
 };
+
+test "compare: scenario budgets bind by name and statistic" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // 0.8 wakeups/s recorded as 800 thousandths: over the 0.5 limit.
+    var idle = try set1(a, "idle.wakeups_per_s", &.{800}, 0);
+    @constCast(&idle.files[0]).package = scenario_suite;
+    const rows = try compare(a, idle, idle, .{ .budgets = &test_budgets });
+    try std.testing.expectEqualStrings("t.idle", rows[0].budget_id.?);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), rows[0].budget_observed.?, 1e-9);
+    try std.testing.expectEqual(Verdict.budget_fail, rows[0].verdict);
+    // max over the samples: one slow open fails the budget.
+    var open = try set1(a, "open.first_screen", &.{ 500, 600, 1200 }, 0);
+    @constCast(&open.files[0]).package = scenario_suite;
+    const orow = try compare(a, open, open, .{ .budgets = &test_budgets });
+    try std.testing.expectEqual(@as(f64, 1200), orow[0].budget_observed.?);
+    try std.testing.expectEqual(Verdict.budget_fail, orow[0].verdict);
+    // Another suite with the same name does not bind.
+    const other = try compare(a, try set1(a, "open.first_screen", &.{500}, 0), try set1(a, "open.first_screen", &.{500}, 0), .{ .budgets = &test_budgets });
+    try std.testing.expect(other[0].budget_id == null);
+}
 
 fn lognormalSamples(r: std.Random, out: []f64, center: f64, sigma: f64) void {
     for (out) |*o| {
