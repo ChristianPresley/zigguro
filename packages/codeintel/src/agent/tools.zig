@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const Store = @import("../diagnostics/Store.zig");
+const SettleDetector = @import("../diagnostics/settle.zig");
 const CodeIntel = @import("CodeIntel.zig");
 const render = @import("render.zig");
 const position = @import("../features/position.zig");
@@ -71,7 +72,7 @@ pub const specs = [_]Spec{
     .{ .name = "lsp_workspace_symbols", .permission = .read, .input_schema_json = schema("lsp_workspace_symbols"), .description = "Symbols in the workspace whose names match query (servers match fuzzily), as file:line: kind name. Needs a running language server (one starts when a file of its language is used)." },
     .{ .name = "lsp_call_hierarchy", .permission = .read, .input_schema_json = schema("lsp_call_hierarchy"), .description = "Who calls a function (incoming) or what it calls (outgoing), as a tree depth levels deep (default 2) with each call site's file and line." ++ symbol_help },
     .{ .name = "lsp_diagnostics", .permission = .read, .input_schema_json = schema("lsp_diagnostics"), .description = "Compiler and linter diagnostics from the language servers, for one file or the whole workspace: file:line:column: severity: message [source code]." },
-    .{ .name = "lsp_wait_for_diagnostics", .permission = .read, .input_schema_json = schema("lsp_wait_for_diagnostics"), .description = "After editing a file: waits (a few seconds at most) until the language servers have checked the new text, then lists its errors and warnings." },
+    .{ .name = "lsp_wait_for_diagnostics", .permission = .read, .input_schema_json = schema("lsp_wait_for_diagnostics"), .description = "After editing files: waits until the language servers have checked the new text (10 s at most), then lists the errors and warnings compiler-style. With no language server for a file it runs the workspace's check task instead. Says when the answer may be out of date (timed out, server busy or crashed)." },
     .{ .name = "lsp_rename_preview", .permission = .read, .input_schema_json = schema("lsp_rename_preview"), .description = "What renaming a symbol to new_name would change, file by file, without changing anything." ++ symbol_help },
     .{ .name = "lsp_rename_apply", .permission = .control, .input_schema_json = schema("lsp_rename_apply"), .description = "Renames a symbol everywhere the language server knows it is used. The edit is proposed to the user for review (an E12 changeset), not applied directly." ++ symbol_help },
     .{ .name = "lsp_code_actions", .permission = .read, .input_schema_json = schema("lsp_code_actions"), .description = "The language server's quick fixes and refactorings for lines start_line..end_line of a file, each with an id for lsp_apply_code_action (ids last 5 minutes)." },
@@ -115,7 +116,7 @@ pub fn ToolExporter(comptime Foreign: type) type {
                     break :blk false;
                 },
             };
-            return .{ .json = try resultJson(arena, out.text.written(), !ok, out.structured), .changeset = if (ok) out.changeset else null };
+            return .{ .json = try resultJson(arena, out.text.written(), !ok, out.structured, out.status), .changeset = if (ok) out.changeset else null };
         }
     };
 }
@@ -125,6 +126,9 @@ pub const Output = struct {
     text: Io.Writer.Allocating,
     /// `render.structuredJson` of the locations shown.
     structured: ?[]const u8 = null,
+    /// A JSON object for results that are not locations (the settle
+    /// state of `lsp_wait_for_diagnostics`).
+    status: ?[]const u8 = null,
     changeset: ?u64 = null,
 
     pub fn init(arena: Allocator) Output {
@@ -149,6 +153,9 @@ const Input = struct {
     start_line: ?u32 = null,
     end_line: ?u32 = null,
     id: ?u32 = null,
+    paths: ?[]const []const u8 = null,
+    timeout_ms: ?u32 = null,
+    build_check: ?SettleDetector.BuildPolicy = null,
 };
 
 /// `runAs` for agent 0, writing only text.
@@ -225,6 +232,9 @@ fn parseInput(arena: Allocator, json: []const u8) !Input {
         start_line: ?u32 = null,
         end_line: ?u32 = null,
         id: ?u32 = null,
+        paths: ?[]const []const u8 = null,
+        timeout_ms: ?u32 = null,
+        build_check: ?[]const u8 = null,
     };
     const r = try std.json.parseFromSliceLeaky(Raw, arena, if (json.len == 0) "{}" else json, .{});
     var in: Input = .{
@@ -242,6 +252,8 @@ fn parseInput(arena: Allocator, json: []const u8) !Input {
         .start_line = r.start_line,
         .end_line = r.end_line,
         .id = r.id,
+        .paths = r.paths,
+        .timeout_ms = r.timeout_ms,
     };
     if (r.min_severity) |s| {
         in.min_severity = for ([_]Store.Severity{ .err, .warning, .information, .hint }) |v| {
@@ -249,6 +261,7 @@ fn parseInput(arena: Allocator, json: []const u8) !Input {
         } else return error.BadSeverity;
     }
     if (r.direction) |d| in.direction = std.meta.stringToEnum(CodeIntel.CallDirection, d) orelse return error.BadDirection;
+    if (r.build_check) |b| in.build_check = std.meta.stringToEnum(SettleDetector.BuildPolicy, b) orelse return error.BadBuildCheck;
     return in;
 }
 
@@ -570,23 +583,40 @@ const Cx = struct {
     }
 
     fn waitForDiagnostics(cx: *Cx, in: Input) !bool {
-        const path = in.path orelse {
-            try cx.w().writeAll("`path` is required.");
+        var paths: std.ArrayList([]const u8) = .empty;
+        if (in.path) |p| try paths.append(cx.arena, p);
+        if (in.paths) |ps| try paths.appendSlice(cx.arena, ps);
+        if (paths.items.len == 0) {
+            try cx.w().writeAll("`path` or `paths` is required.");
             return false;
-        };
-        const abs = try resolve(cx.src, cx.arena, path, cx.w()) orelse return false;
+        }
+        const abs = try cx.arena.alloc([]const u8, paths.items.len);
+        for (paths.items, abs) |p, *a| a.* = try resolve(cx.src, cx.arena, p, cx.w()) orelse return false;
         const sd = cx.src.settle orelse {
             try cx.w().writeAll("Waiting for diagnostics is not available here; use lsp_diagnostics.");
             return true;
         };
-        const summary = sd.afterAgentEdit(cx.io, cx.arena, abs) catch |e| switch (e) {
+        const r = sd.wait(cx.io, cx.arena, .{
+            .paths = abs,
+            .timeout = if (in.timeout_ms) |t| .fromMilliseconds(@min(t, 60_000)) else null,
+            .build_check = in.build_check orelse .if_no_server,
+        }) catch |e| switch (e) {
             error.OutOfMemory => return e,
             error.Canceled => {
                 try cx.w().writeAll("Canceled.");
                 return true;
             },
         };
-        if (summary) |s| try cx.w().writeAll(s) else try cx.w().print("No errors or warnings in {s}.", .{path});
+        try cx.w().writeAll(try sd.renderResult(cx.arena, r, abs, cx.opts.root));
+        cx.out.status = try std.json.Stringify.valueAlloc(cx.arena, .{
+            .settled = r.settled,
+            .heuristic = r.heuristic,
+            .reason = r.reason,
+            .errors = r.errors,
+            .warnings = r.warnings,
+            .waited_ms = r.waited_ns / std.time.ns_per_ms,
+            .build = r.build,
+        }, .{});
         return true;
     }
 
@@ -701,14 +731,18 @@ fn kindLabel(k: anytype) []const u8 {
     };
 }
 
-/// An MCP `CallToolResult` with one text block, and the locations as
-/// `structuredContent` when there are any.
-fn resultJson(arena: Allocator, text: []const u8, is_error: bool, structured: ?[]const u8) Allocator.Error![]const u8 {
+/// An MCP `CallToolResult` with one text block, and the locations (or
+/// the status object) as `structuredContent` when there are any.
+fn resultJson(arena: Allocator, text: []const u8, is_error: bool, structured: ?[]const u8, status: ?[]const u8) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     const Content = struct { content: []const struct { type: []const u8 = "text", text: []const u8 } };
     const head = try std.json.Stringify.valueAlloc(arena, Content{ .content = &.{.{ .text = text }} }, .{});
     try out.appendSlice(arena, head[0 .. head.len - 1]);
-    if (structured) |s| if (!is_error) try out.print(arena, ",\"structuredContent\":{{\"locations\":{s}}}", .{s});
+    if (!is_error) {
+        if (structured) |s| {
+            try out.print(arena, ",\"structuredContent\":{{\"locations\":{s}}}", .{s});
+        } else if (status) |s| try out.print(arena, ",\"structuredContent\":{s}", .{s});
+    }
     try out.print(arena, ",\"isError\":{}}}", .{is_error});
     return out.items;
 }
