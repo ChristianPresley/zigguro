@@ -122,6 +122,12 @@ pub const Pty = struct {
         return self.impl.master;
     }
 
+    /// The child's process id (Linux; null on Windows).
+    pub fn processId(self: *const Pty) ?i64 {
+        if (builtin.os.tag == .windows) return null;
+        return self.impl.child.pid;
+    }
+
     /// Signalled when the child exits: a pidfd (Linux) or the process
     /// handle (Windows).
     pub fn exitHandle(self: *Pty) Handle {

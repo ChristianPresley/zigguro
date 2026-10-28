@@ -89,6 +89,8 @@ const debug_var_tree = @import("debug/var_tree.zig");
 const debug_bp_view = @import("debug/bp_view.zig");
 const debug_hover = @import("debug/hover.zig");
 const zg_dap = @import("zg_dap");
+const RunInTerminalSpec = zg_dap.session.run_in_terminal.RunInTerminalSpec;
+const RunInTerminalResult = zg_dap.session.run_in_terminal.LaunchResult;
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
 
@@ -3160,7 +3162,7 @@ pub const Workbench = struct {
             .cursor = debugCursor,
             .reveal = debugReveal,
             .show_panel = debugShowPanel,
-        }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null, .gutter_styles = .{
+        }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null, .terminal = .{ .ctx = wb, .launch = launchDebuggee }, .gutter_styles = .{
             .enabled = CodeIntel.style.breakpoint,
             .disabled = CodeIntel.style.breakpoint_disabled,
             .unverified = CodeIntel.style.breakpoint_unverified,
@@ -4520,6 +4522,13 @@ pub const Workbench = struct {
     /// task, its process started by the task service.
     fn openTaskTerminal(ctx: *anyopaque, title: []const u8, show: bool, focus: bool) ?*TerminalPanel {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        var name_buf: [96]u8 = undefined;
+        return wb.openNamedTerminal(std.fmt.bufPrint(&name_buf, "Task - {s}", .{title}) catch title, show, focus);
+    }
+
+    /// A terminal tab named `name` whose process the caller starts
+    /// (`show`: the panel comes up; `focus`: and takes focus).
+    fn openNamedTerminal(wb: *Workbench, name: []const u8, show: bool, focus: bool) ?*TerminalPanel {
         const w = wb.win orelse return null;
         // The saved terminals come back first (as `startTerminal` would).
         if (!wb.terminals_loaded) {
@@ -4541,8 +4550,7 @@ pub const Workbench = struct {
             return null;
         };
         wb.next_terminal += 1;
-        var name_buf: [96]u8 = undefined;
-        wb.term_tabs.rename(id, std.fmt.bufPrint(&name_buf, "Task - {s}", .{title}) catch title) catch {};
+        wb.term_tabs.rename(id, name) catch {};
         t.on_output = .{ .ctx = wb, .f = onTerminalOutput };
         t.view.on_open_link = .{ .ctx = wb, .f = onTerminalLink };
         if (wb.settings) |st| {
@@ -4559,6 +4567,56 @@ pub const Workbench = struct {
         }
         w.markAllDirty();
         return t;
+    }
+
+    /// `runInTerminal` (E07.F06.S02.T02): the debuggee in a new terminal
+    /// tab, "Debug - <title>", with the adapter's folder and variables.
+    /// On a session worker: waits for the UI thread to start it.
+    fn launchDebuggee(ctx: ?*anyopaque, spec: *const RunInTerminalSpec) anyerror!RunInTerminalResult {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx.?));
+        const Job = struct {
+            wb: *Workbench,
+            spec: *const RunInTerminalSpec,
+            result: anyerror!RunInTerminalResult = error.NotStarted,
+            fn run(arg: *anyopaque) void {
+                const j: *@This() = @ptrCast(@alignCast(arg));
+                j.result = j.wb.startDebuggee(j.spec);
+            }
+        };
+        var job: Job = .{ .wb = wb, .spec = spec };
+        if (!runOnUi(wb, Job.run, &job)) return error.NoWindow;
+        return job.result;
+    }
+
+    /// UI thread: `launchDebuggee`'s work.
+    fn startDebuggee(wb: *Workbench, spec: *const RunInTerminalSpec) !RunInTerminalResult {
+        if (spec.argv.len == 0 or spec.argv.len > 33) return error.TooManyArguments;
+        var env = try wb.env.clone(wb.gpa);
+        defer env.deinit();
+        try zg_dap.session.run_in_terminal.applyEnv(&env, spec.env);
+        if (spec.env_allow) |allow| {
+            var i: usize = env.count();
+            while (i > 0) {
+                i -= 1;
+                const key = env.keys()[i];
+                const keep = for (allow) |k| {
+                    if (std.mem.eql(u8, k, key)) break true;
+                } else false;
+                if (!keep) _ = env.swapRemove(key);
+            }
+        }
+        const title = spec.title orelse std.fs.path.basename(spec.args[0]);
+        var name_buf: [96]u8 = undefined;
+        const t = wb.openNamedTerminal(std.fmt.bufPrint(&name_buf, "Debug - {s}", .{title}) catch "Debug", true, false) orelse return error.NoTerminal;
+        t.transient = true;
+        t.shell_integration = false;
+        t.env = &env;
+        defer t.env = wb.env;
+        if (spec.cwd.len > 0 and std.fs.path.isAbsolute(spec.cwd)) t.start_cwd = spec.cwd;
+        defer t.start_cwd = null;
+        t.startShell(spec.argv[0], spec.argv[1..]);
+        const pty = &(t.pty orelse return error.SpawnFailed);
+        return .{ .process_id = pty.processId() };
     }
 
     fn closeTaskTerminal(ctx: *anyopaque, panel: *TerminalPanel) void {
@@ -6539,6 +6597,164 @@ test "workbench: an agent's commands run in a visible bash terminal" {
     h.interrupt(io, j5);
     try std.testing.expectEqual(Host.Status.killed, try Done.wait(h, &wb, j5));
     try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+}
+
+test "workbench: a debuggee asked for with runInTerminal runs in a Debug terminal tab with the adapter's folder and variables" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("PATH", "/usr/bin:/bin");
+    try env.put("DBG_DROP", "gone");
+    try env.put("DBG_KEEP", "kept");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    const args = [_][]const u8{ "/bin/sh", "-c", "echo \"in $(pwd) $DBG_SET-$DBG_KEEP-${DBG_DROP:-unset}\"; sleep 1" };
+    const env_entries = [_]zg_dap.session.run_in_terminal.EnvEntry{ .{ .name = "DBG_SET", .value = "set" }, .{ .name = "DBG_DROP", .value = null } };
+    const spec: RunInTerminalSpec = .{ .kind = .integrated, .title = "prog", .cwd = "/usr", .args = &args, .argv = &args, .env = &env_entries };
+    const res = try wb.startDebuggee(&spec);
+    try std.testing.expect(res.process_id.? > 0);
+    // A Debug tab, the terminal panel up.
+    try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+    const id = wb.term_tabs.groups.items[0].terminals.items[0];
+    try std.testing.expectEqualStrings("Debug - prog", wb.term_tabs.nameOf(id).?);
+    try std.testing.expect(wb.shown(wb.terminal_ref));
+    const panel = wb.terminals.get(id).?;
+    try std.testing.expect(panel.transient);
+    // The workbench's variables are back for the next terminal.
+    try std.testing.expect(panel.env == wb.env);
+    // Its output: the adapter's folder and variables.
+    var tries: u32 = 0;
+    const want = "in /usr set-kept-unset";
+    const seen = while (tries < 500) : (tries += 1) {
+        _ = t.settle();
+        const d = try panel.term.dump(gpa);
+        defer gpa.free(d);
+        if (std.mem.indexOf(u8, d, want) != null) break true;
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    } else false;
+    if (!seen) {
+        const d = try panel.term.dump(gpa);
+        defer gpa.free(d);
+        std.debug.print("terminal: \"{s}\" note: {s}\n", .{ d, panel.noteText() });
+    }
+    try std.testing.expect(seen);
+    // Too many arguments are refused before a tab opens.
+    const many = [_][]const u8{"x"} ** 40;
+    const bad: RunInTerminalSpec = .{ .kind = .integrated, .cwd = "", .args = &many, .argv = &many };
+    try std.testing.expectError(error.TooManyArguments, wb.startDebuggee(&bad));
+    try std.testing.expectEqual(@as(usize, 1), wb.terminals.count());
+}
+
+test "workbench: lldb-dap with runInTerminal runs the program in a Debug terminal tab" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.c", .data =
+        \\#include <stdio.h>
+        \\int main(void) {
+        \\    printf("hello-from-debuggee\n");
+        \\    return 0;
+        \\}
+        \\
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    // lldb-dap (any of its versioned names) and a C compiler, or skip.
+    const lldb = for ([_][]const u8{ "/usr/bin/lldb-dap", "/usr/bin/lldb-dap-20", "/usr/bin/lldb-dap-19", "/usr/bin/lldb-dap-18" }) |p| {
+        std.Io.Dir.accessAbsolute(io, p, .{}) catch continue;
+        break p;
+    } else return error.SkipZigTest;
+    const cc = std.process.run(gpa, io, .{ .argv = &.{ "cc", "-g", "-O0", "-o", "a", "a.c" }, .cwd = .{ .path = root } }) catch return error.SkipZigTest;
+    gpa.free(cc.stdout);
+    gpa.free(cc.stderr);
+    if (cc.term != .exited or cc.term.exited != 0) return error.SkipZigTest;
+    try tmp.dir.createDirPath(io, "bin");
+    const link = try std.fs.path.join(gpa, &.{ root, "bin", "lldb-dap" });
+    defer gpa.free(link);
+    std.Io.Dir.symLinkAbsolute(io, lldb, link, .{}) catch return error.SkipZigTest;
+
+    try tmp.dir.createDirPath(io, ".zigguro");
+    const launch = try std.fmt.allocPrint(gpa,
+        \\.{{ .version = 1, .configurations = .{{
+        \\    .{{ .name = "Run a", .type = "lldb-dap", .request = .launch, .args = .{{ .program = "{s}/a", .runInTerminal = true }} }},
+        \\}} }}
+    , .{root});
+    defer gpa.free(launch);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/launch.zon", .data = launch });
+    const path = try std.fmt.allocPrint(gpa, "{s}/bin:/usr/bin:/bin", .{root});
+    defer gpa.free(path);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("HOME", root);
+    try env.put("PATH", path);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, null);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    const d = try wb.ensureDebug();
+    d.selectConfig(.config, "Run a");
+    try (Workbench.dbg(Workbench.startDebugging))(&wb);
+    // The program's output reaches a Debug tab, and the session ends.
+    var tries: u32 = 0;
+    const seen = wait: while (tries < 1500) : (tries += 1) {
+        _ = t.settle();
+        var it = wb.terminals.iterator();
+        while (it.next()) |kv| {
+            const name = wb.term_tabs.nameOf(kv.key_ptr.*) orelse continue;
+            if (!std.mem.startsWith(u8, name, "Debug - ")) continue;
+            const dump = try kv.value_ptr.*.term.dump(gpa);
+            defer gpa.free(dump);
+            if (std.mem.indexOf(u8, dump, "hello-from-debuggee") != null) break :wait true;
+        }
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    } else false;
+    if (!seen) {
+        var it = wb.terminals.iterator();
+        while (it.next()) |kv| {
+            const dump = try kv.value_ptr.*.term.dump(gpa);
+            defer gpa.free(dump);
+            std.debug.print("terminal {s}: \"{s}\" note: {s}\n", .{ wb.term_tabs.nameOf(kv.key_ptr.*) orelse "?", dump, kv.value_ptr.*.noteText() });
+        }
+        var i: usize = 0;
+        while (i < d.console.lineCount()) : (i += 1) std.debug.print("console: {s}\n", .{d.console.lineText(i)});
+    }
+    try std.testing.expect(seen);
+    tries = 0;
+    while (tries < 1000 and !(d.sessionCount() == 0 and d.busy == 0)) : (tries += 1) {
+        _ = t.settle();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(usize, 0), d.sessionCount());
 }
 
 test "workbench: Ctrl+Shift+B runs the build task in a terminal; its problems show in the editor and are replaced by the next run" {
