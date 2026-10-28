@@ -9,6 +9,7 @@
 //! while activity continues, and when a consumer asks (`drainNow`, stop).
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const zg_core = @import("zg_core");
 
 const Event = zg_core.trace.Event;
@@ -154,10 +155,12 @@ pub const Drain = struct {
             if (last != 0 and now -| last < active_interval_ns) {
                 const deadline: std.Io.Clock.Timestamp = .{ .raw = .fromNanoseconds(@intCast(now + active_interval_ns)), .clock = .awake };
                 try io.futexWaitTimeout(u32, &d.kicks.raw, seen, .{ .deadline = deadline });
+                wake_count.noteWake("perf.drain", .timer);
             } else {
                 d.parked.store(true, .release);
                 // A kick between `seen` and here changes the word: no lost wake.
                 try io.futexWait(u32, &d.kicks.raw, seen);
+                wake_count.noteWake("perf.drain", .signal);
                 d.parked.store(false, .release);
             }
             _ = d.wakeups.fetchAdd(1, .monotonic);
