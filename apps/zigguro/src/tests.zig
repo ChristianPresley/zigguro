@@ -36,4 +36,5 @@ test {
     _ = @import("settings/view.zig");
     _ = @import("explorer/fs_tree.zig");
     _ = @import("explorer/panel.zig");
+    _ = @import("problems_panel.zig");
 }
