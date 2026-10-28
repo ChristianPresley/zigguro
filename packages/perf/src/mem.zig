@@ -44,3 +44,15 @@ pub const Observation = Sampler.Observation;
 pub const writeReport = report.writeReport;
 /// See `report.writeReportJson`.
 pub const writeReportJson = report.writeReportJson;
+/// Reclaimers, ceilings and the pressure monitor.
+pub const pressure = @import("mem/pressure.zig");
+/// See `pressure.Pressure`.
+pub const Pressure = pressure.Pressure;
+/// See `pressure.Reclaimer`.
+pub const Reclaimer = pressure.Reclaimer;
+/// See `pressure.registerReclaimer`.
+pub const registerReclaimer = pressure.registerReclaimer;
+/// See `pressure.unregisterReclaimer`.
+pub const unregisterReclaimer = pressure.unregisterReclaimer;
+/// See `pressure.PressureMonitor`.
+pub const PressureMonitor = pressure.PressureMonitor;
