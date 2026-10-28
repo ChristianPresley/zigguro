@@ -1,0 +1,1 @@
+.{ .version = 1, .title = "x", .knowledge = .{.{ .folder = .{ .path = "../outside" } }} }

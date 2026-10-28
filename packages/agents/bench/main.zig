@@ -26,6 +26,7 @@ fn register(b: *bench.Bench) !void {
     try registerLibrary(b);
     try registerWorkflow(b);
     try registerWorkflowView(b);
+    try registerProjects(b);
 }
 
 /// `docs/anchor_resolve_1mb`: re-resolving a sticky anchor in a 1 MB
@@ -995,4 +996,45 @@ fn registerWorkflowView(b: *bench.Bench) !void {
     }.f);
     eng.stop(id);
     _ = try eng.wait(id);
+}
+
+/// `projects/knowledge_index_1000`: the knowledge index of a project whose
+/// folder holds 1,000 Markdown files (walk, stat and title of each, then
+/// the 200-entry cap), as built for every run started in the project
+/// (budget 20 ms).
+fn registerProjects(b: *bench.Bench) !void {
+    const projects = zg_agents.projects;
+    const io = b.io;
+    const cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/bench-projects";
+    cwd.deleteTree(io, root) catch {};
+    try cwd.createDirPath(io, root);
+    defer cwd.deleteTree(io, root) catch {};
+    var dir = try cwd.openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
+    var name: [96]u8 = undefined;
+    var body: [256]u8 = undefined;
+    for (0..1000) |i| {
+        if (i % 50 == 0) {
+            const d = try std.fmt.bufPrint(&name, "docs/part-{d}", .{i / 50});
+            try dir.createDirPath(io, d);
+        }
+        const n = try std.fmt.bufPrint(&name, "docs/part-{d}/chapter-{d}.md", .{ i / 50, i });
+        const data = try std.fmt.bufPrint(&body, "---\ntitle: Chapter {d}\n---\n# Chapter {d}\n\nSome text.\n", .{ i, i });
+        try dir.writeFile(io, .{ .sub_path = n, .data = data });
+    }
+    const p: projects.Project = .{ .slug = "book", .title = "Book", .knowledge = &.{.{ .folder = .{ .path = "docs", .glob = "**/*.md" } }} };
+    const Ctx = struct { dir: std.Io.Dir, io: std.Io, p: *const projects.Project };
+    const ctx: Ctx = .{ .dir = dir, .io = io, .p = &p };
+    try b.run("projects/knowledge_index_1000", &ctx, struct {
+        fn f(c: *const Ctx, s: *bench.State) void {
+            var i: u64 = 0;
+            while (i < s.iterations()) : (i += 1) {
+                var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+                defer arena.deinit();
+                const idx = projects.knowledge.build(c.io, arena.allocator(), c.p, .{ .root = c.dir }, .{}) catch unreachable;
+                bench.doNotOptimizeAway(idx.entries.len);
+            }
+        }
+    }.f);
 }

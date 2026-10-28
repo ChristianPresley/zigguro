@@ -19,6 +19,7 @@ pub const chart = @import("chart/root.zig");
 pub const diagram_render = @import("diagram_render/root.zig");
 pub const library = @import("library/root.zig");
 pub const workflow = @import("workflow/root.zig");
+pub const projects = @import("projects/root.zig");
 
 test {
     _ = runs;
@@ -35,4 +36,5 @@ test {
     _ = artifacts;
     _ = library;
     _ = workflow;
+    _ = projects;
 }
