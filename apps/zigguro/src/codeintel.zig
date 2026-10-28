@@ -81,6 +81,9 @@ const SignatureService = zg_codeintel.features.SignatureService;
 const FormatService = zg_codeintel.features.FormatService;
 pub const SaveActions = zg_codeintel.features.SaveActions;
 pub const FileOpHooks = zg_codeintel.features.FileOpHooks;
+const OutlineProvider = zg_codeintel.features.OutlineProvider;
+const WorkspaceSymbols = zg_codeintel.features.WorkspaceSymbols;
+pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
 const HoverPopup = @import("hover_popup.zig").HoverPopup;
 const CompletionPopup = @import("completion_popup.zig").CompletionPopup;
@@ -111,8 +114,8 @@ pub const CodeIntel = struct {
     lsp_tools: LspTools = undefined,
     files: std.ArrayList(File) = .empty,
     trusted: bool = false,
-    /// A wake call is in the mailbox.
-    wake_posted: std.atomic.Value(bool) = .init(false),
+    /// What wakes post (it outlives `destroy` while a wake is queued).
+    wake_box: *WakeBox = undefined,
     timer: Window.TimerId = .none,
     /// The editor last reported visible.
     shown: ?DocHandle = null,
@@ -166,6 +169,10 @@ pub const CodeIntel = struct {
     save_actions: SaveActions = undefined,
     file_hooks: FileOpHooks = undefined,
     prefs: ?Prefs = null,
+    /// Document outlines and workspace symbols, and their pickers.
+    outline: OutlineProvider = undefined,
+    ws_symbols: WorkspaceSymbols = undefined,
+    pickers: SymbolPickers = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -211,6 +218,9 @@ pub const CodeIntel = struct {
         const gpa = rt.gpa;
         const ci = try gpa.create(CodeIntel);
         errdefer gpa.destroy(ci);
+        const box = try gpa.create(WakeBox);
+        errdefer gpa.destroy(box);
+        box.* = .{ .ci = ci, .gpa = gpa };
         ci.* = .{
             .gpa = gpa,
             .app = app,
@@ -225,6 +235,7 @@ pub const CodeIntel = struct {
             .snippets = .init(gpa),
             .cpopup = .init(gpa),
             .spopup = .init(gpa),
+            .wake_box = box,
         };
         ci.cpopup.on_pick = .{ .ctx = ci, .f = onPick };
         errdefer ci.diags.deinit();
@@ -257,6 +268,11 @@ pub const CodeIntel = struct {
         ci.save_actions = .init(&ci.mgr, &ci.engine, &ci.refactor.commands);
         ci.save_actions.options = ci.format.options;
         ci.file_hooks = .init(&ci.mgr, &ci.engine);
+        ci.outline = .init(&ci.mgr, ci.waker(), .{});
+        ci.outline.structure = .{ .ctx = ci, .f = structureOf };
+        ci.ws_symbols = .init(&ci.mgr, ci.waker(), .{});
+        ci.pickers = .init(gpa, &ci.outline, &ci.ws_symbols);
+        try ci.outline.subscribe(.{ .ctx = ci, .f = onOutline });
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -271,6 +287,7 @@ pub const CodeIntel = struct {
         }
         ci.clearHighlights();
         ci.refactor.close();
+        ci.pickers.deinit();
         ci.popup.deinit();
         ci.cpopup.release();
         ci.spopup.release();
@@ -280,6 +297,8 @@ pub const CodeIntel = struct {
         ci.format.deinit();
         ci.save_actions.deinit();
         ci.file_hooks.deinit();
+        ci.outline.deinit();
+        ci.ws_symbols.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -294,6 +313,12 @@ pub const CodeIntel = struct {
         ci.files.deinit(ci.gpa);
         ci.names.deinit();
         ci.reg.deinit();
+        // No thread wakes any more (the servers are gone): a queued wake
+        // frees the box when it runs.
+        const box = ci.wake_box;
+        box.app = ci.app;
+        box.ci = null;
+        if (!box.posted.load(.acquire)) ci.gpa.destroy(box);
         ci.gpa.destroy(ci);
     }
 
@@ -420,6 +445,7 @@ pub const CodeIntel = struct {
             if (f.deco != null and f.deco == ci.hl_deco) ci.clearHighlights();
             if (f.deco) |d| ci.refactor.forget(d);
             ci.save_actions.forget(h);
+            ci.outline.forget(h);
             if (ci.hover_at) |a| if (a.view == f.view) ci.hideHover();
             if (ci.comp_view == f.view) {
                 ci.closeCompletion();
@@ -684,6 +710,32 @@ pub const CodeIntel = struct {
     fn formatOptions(ctx: *anyopaque, h: DocHandle) zg_codeintel.protocol.FormattingOptions {
         const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
         return if (ci.prefs) |p| p.options(p.ctx, h) else FormatService.default_options;
+    }
+
+    fn structureOf(ctx: *anyopaque, h: DocHandle, gpa: Allocator) ?zg_syntax.Structure {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        const f = ci.fileOf(h) orelse return null;
+        if (f.syntax.version != f.doc.version) return null;
+        return f.syntax.fallbackStructure(gpa, &f.doc.tree) catch null;
+    }
+
+    fn onOutline(ctx: *anyopaque, h: DocHandle) void {
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        ci.pickers.outlineChanged(h);
+    }
+
+    /// `quickOpen.symbolsInFile` over `view` showing `h`.
+    pub fn symbolsInFile(ci: *CodeIntel, view: *EditorView, h: DocHandle) !void {
+        const w = ci.win orelse return;
+        try ci.pickers.openDocument(w, view, h, ci.nowMs());
+        ci.tick();
+    }
+
+    /// `quickOpen.symbols`.
+    pub fn symbolsInWorkspace(ci: *CodeIntel) !void {
+        const w = ci.win orelse return;
+        ci.pickers.now_ms = ci.nowMs();
+        try ci.pickers.openWorkspace(w);
     }
 
     /// `editor.formatDocument`.
@@ -968,6 +1020,10 @@ pub const CodeIntel = struct {
         if (ci.signature.tick() or ci.signature.generation != ci.sig_seen) ci.showSignature();
         ci.refactor.win = ci.win;
         const refactor_due = ci.refactor.tick(now_ms);
+        if (ci.outline.tick(now_ms)) changed = true;
+        _ = ci.ws_symbols.tick(now_ms);
+        ci.pickers.win = ci.win;
+        ci.pickers.tick(now_ms);
         if (ci.format.tick()) {
             if (ci.format.failure.items.len > 0) ci.refactor.say(false, "{s}", .{ci.format.failure.items});
             changed = true;
@@ -989,7 +1045,7 @@ pub const CodeIntel = struct {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
-        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due }) |due| if (due) |d| {
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue() }) |due| if (due) |d| {
             const ms = @max(1, d -| now_ms);
             wait = if (wait) |x| @min(x, ms) else ms;
         };
@@ -1003,25 +1059,38 @@ pub const CodeIntel = struct {
         ci.tick();
     }
 
+    /// The target of posted wakes: `destroy` clears `ci`, and a wake
+    /// still queued then frees the box when it runs.
+    const WakeBox = struct {
+        ci: ?*CodeIntel,
+        gpa: Allocator,
+        app: ?*zg_gui.App = null,
+        /// A wake call is in the mailbox.
+        posted: std.atomic.Value(bool) = .init(false),
+    };
+
     fn waker(ci: *CodeIntel) zg_core.runtime.Waker {
-        return .{ .ctx = ci, .wakeFn = wake };
+        return .{ .ctx = ci.wake_box, .wakeFn = wake };
     }
 
     /// Any thread: a server answered; tick on the UI thread.
     fn wake(ctx: ?*anyopaque) void {
-        const ci: *CodeIntel = @ptrCast(@alignCast(ctx.?));
-        if (ci.wake_posted.swap(true, .acq_rel)) return;
-        ci.app.post(.{ .ctx = ci, .f = onWake }) catch ci.wake_posted.store(false, .release);
+        const box: *WakeBox = @ptrCast(@alignCast(ctx.?));
+        if (box.posted.swap(true, .acq_rel)) return;
+        const app = box.app orelse (box.ci orelse return).app;
+        app.post(.{ .ctx = box, .f = onWake }) catch box.posted.store(false, .release);
     }
 
     fn onWake(ctx: *anyopaque, _: *zg_gui.App) void {
-        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
-        ci.wake_posted.store(false, .release);
+        const box: *WakeBox = @ptrCast(@alignCast(ctx));
+        box.posted.store(false, .release);
+        const ci = box.ci orelse return box.gpa.destroy(box);
         if (ci.trusted) ci.tick();
     }
 
     fn onDocChange(ctx: *anyopaque, _: *const zg_editor.model.document.ChangeEvent) void {
-        wake(ctx);
+        const ci: *CodeIntel = @ptrCast(@alignCast(ctx));
+        wake(ci.wake_box);
     }
 
     fn syntaxOf(ctx: *anyopaque, h: DocHandle) ?*DocumentSyntax {
