@@ -12,6 +12,8 @@ pub const runtime = @import("runtime.zig");
 pub const trace = @import("trace.zig");
 /// Frame records, the frame timeline and latency histograms (E14.F03).
 pub const frame = @import("frame.zig");
+/// Perfetto and Chrome trace export.
+pub const @"export" = @import("export.zig");
 /// The compiled code samples of docs/perf/threading.md.
 pub const docs_examples = @import("docs_examples.zig");
 
@@ -26,4 +28,5 @@ test {
     std.testing.refAllDecls(runtime);
     std.testing.refAllDecls(trace);
     std.testing.refAllDecls(frame);
+    std.testing.refAllDecls(@"export");
 }
