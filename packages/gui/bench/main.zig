@@ -297,6 +297,122 @@ fn quickPick(c: *QpCase, s: *bench.State) void {
 
 const QpCase = struct { t: *TestApp, qp: *QpBench };
 
+/// The same 100k paths split across `workers` chunks scored concurrently
+/// on the `Io` (the query's own worker takes the first chunk). Each chunk
+/// pushes its first 50 matches at once, then batches of 1000.
+const QpParallel = struct {
+    base: *QpBench,
+    io: std.Io,
+    workers: u32 = 4,
+
+    const Chunk = struct {
+        base: *QpBench,
+        q: []const u8,
+        sink: *zg_gui.w.quick_pick_provider.ResultSink,
+        cancel: *const std.atomic.Value(bool),
+        first: usize,
+        last: usize,
+
+        fn run(c: *Chunk) void {
+            const gpa = c.base.gpa;
+            var hl: std.ArrayList([2]u32) = .empty;
+            defer hl.deinit(gpa);
+            var batch: [1000]zg_gui.w.QpItem = undefined;
+            var hls: [1000][4][2]u32 = undefined;
+            var n: usize = 0;
+            var flush_at: usize = 50;
+            for (c.base.labels[c.first..c.last], c.first..) |l, i| {
+                if (c.cancel.load(.acquire)) return;
+                hl.clearRetainingCapacity();
+                const sc = zg_gui.w.quick_pick_matcher.scoreOf(c.q, l, &hl, gpa) orelse continue;
+                const k = @min(hl.items.len, 4);
+                @memcpy(hls[n][0..k], hl.items[0..k]);
+                batch[n] = .{ .id = i, .label = l, .score = sc, .highlights = hls[n][0..k] };
+                n += 1;
+                if (n == flush_at) {
+                    c.sink.push(batch[0..n]);
+                    n = 0;
+                    flush_at = batch.len;
+                }
+            }
+            c.sink.push(batch[0..n]);
+        }
+    };
+
+    fn query(ptr: ?*anyopaque, q: []const u8, sink: *zg_gui.w.quick_pick_provider.ResultSink, cancel: *const std.atomic.Value(bool)) void {
+        const self: *QpParallel = @ptrCast(@alignCast(ptr.?));
+        const labels = self.base.labels;
+        var chunks: [8]Chunk = undefined;
+        const n_chunks = @min(self.workers, chunks.len);
+        const per = labels.len / n_chunks;
+        for (chunks[0..n_chunks], 0..) |*c, k| c.* = .{
+            .base = self.base,
+            .q = q,
+            .sink = sink,
+            .cancel = cancel,
+            .first = k * per,
+            .last = if (k + 1 == n_chunks) labels.len else (k + 1) * per,
+        };
+        var group: std.Io.Group = .init;
+        for (chunks[1..n_chunks]) |*c| {
+            group.concurrent(self.io, Chunk.run, .{c}) catch group.async(self.io, Chunk.run, .{c});
+        }
+        chunks[0].run();
+        group.await(self.io) catch {};
+    }
+
+    const vtable: zg_gui.w.quick_pick_provider.Provider.VTable = .{ .query = query, .accept = QpBench.accept };
+};
+
+const QpParCase = struct { t: *TestApp, qp: *QpParallel };
+
+/// UI thread: paints the first frame (which starts the query), then
+/// handles posted batches until `done(qp)`.
+fn pumpUntil(t: *TestApp, qp: *zg_gui.w.quick_pick.QuickPick, comptime done: fn (*zg_gui.w.quick_pick.QuickPick) bool) void {
+    bench.doNotOptimizeAway(t.frame().nodes_painted);
+    while (!done(qp)) {
+        if (t.app.drainMessages() == 0) {
+            std.atomic.spinLoopHint();
+            continue;
+        }
+        bench.doNotOptimizeAway(t.frame().nodes_painted);
+    }
+}
+
+fn hasFirst50(qp: *zg_gui.w.quick_pick.QuickPick) bool {
+    return qp.results.items.len >= 50 or !qp.streaming;
+}
+
+fn finished(qp: *zg_gui.w.quick_pick.QuickPick) bool {
+    return !qp.streaming;
+}
+
+/// Opens a QuickPick over 100k items scored on 4 workers and waits for the
+/// first 50 results (then closes it, cancelling the rest).
+fn quickPickFirst50(c: *QpParCase, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const h = zg_gui.w.openQuickPick(c.t.win, .{ .providers = &.{.{ .ptr = c.qp, .vtable = &QpParallel.vtable }}, .initial = "f12" }) catch return;
+        pumpUntil(c.t, h.qp.?, hasFirst50);
+        bench.doNotOptimizeAway(c.t.frame().nodes_painted);
+        h.close(c.t.win);
+        c.t.app.joinWork();
+        _ = c.t.app.drainMessages();
+    }
+}
+
+/// Opens a QuickPick over 100k items scored on 4 workers and waits for
+/// every result to be merged.
+fn quickPickComplete(c: *QpParCase, s: *bench.State) void {
+    var i: u64 = 0;
+    while (i < s.iterations()) : (i += 1) {
+        const h = zg_gui.w.openQuickPick(c.t.win, .{ .providers = &.{.{ .ptr = c.qp, .vtable = &QpParallel.vtable }}, .initial = "f12" }) catch return;
+        pumpUntil(c.t, h.qp.?, finished);
+        bench.doNotOptimizeAway(c.t.frame().nodes_painted);
+        h.close(c.t.win);
+    }
+}
+
 /// 200 soft springs on view values (restarted when they settle).
 const AnimCase = struct {
     a: zg_gui.anim.Animator,
@@ -427,6 +543,19 @@ fn register(b: *bench.Bench) !void {
         defer t.deinit();
         var c: QpCase = .{ .t = t, .qp = &qp };
         try b.run("gui.quickpick_100k", &c, quickPick);
+
+        // With a runtime: the query runs on a worker and fans out to 4.
+        var rt: zg_core.Runtime = undefined;
+        try rt.initBorrowed(b.gpa, b.io, 4096);
+        defer _ = rt.deinit();
+        rt.bindUiThread(.noop);
+        const tp = try scene(b.gpa, .of(&page), .{ .w = 1200, .h = 900 });
+        defer tp.deinit();
+        tp.app.attachRuntime(&rt);
+        var par: QpParallel = .{ .base = &qp, .io = b.io };
+        var pc: QpParCase = .{ .t = tp, .qp = &par };
+        try b.run("gui.quickpick_100k_first50_4w", &pc, quickPickFirst50);
+        try b.run("gui.quickpick_100k_complete_4w", &pc, quickPickComplete);
     }
     {
         var c: DockCase = .{ .m = try .init(b.gpa), .groups = undefined, .panels = undefined };

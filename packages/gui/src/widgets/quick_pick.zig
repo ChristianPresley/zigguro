@@ -219,6 +219,8 @@ pub const QuickPick = struct {
     batches: std.ArrayList(*std.heap.ArenaAllocator) = .empty,
     hl_arena: std.heap.ArenaAllocator,
     hl_scratch: std.ArrayList([2]u32) = .empty,
+    /// Sort keys of the batch being merged.
+    merge_keys: std.ArrayList(MergeKey) = .empty,
     /// The results are the previous query's (kept until the first batch).
     stale: bool = false,
     dim: bool = false,
@@ -279,6 +281,7 @@ pub const QuickPick = struct {
         qp.batches.deinit(gpa);
         qp.hl_arena.deinit();
         qp.hl_scratch.deinit(gpa);
+        qp.merge_keys.deinit(gpa);
         qp.picked.deinit(gpa);
         qp.picked_arena.deinit();
         qp.seen.deinit(gpa);
@@ -438,33 +441,21 @@ pub const QuickPick = struct {
     fn onBatch(qp: *QuickPick, j: *Job, b: *provider_mod.Batch) void {
         if (qp.closed or j != qp.job or j.gen != qp.gen) return;
         const active_id: ?u64 = if (qp.user_moved and qp.active < qp.results.items.len) qp.results.items[qp.active].id else null;
-        if (qp.stale and (b.items.items.len > 0 or b.finished)) {
+        const n_new = b.len();
+        if (qp.stale and (n_new > 0 or b.finished)) {
             qp.clearResults();
             qp.stale = false;
             qp.dim = false;
             if (qp.dim_timer != .none) qp.win.cancelTimer(qp.dim_timer);
             qp.dim_timer = .none;
         }
-        if (b.items.items.len > 0) {
+        if (n_new > 0) {
             // The strings now belong to the results.
-            if (b.arena) |a| {
-                qp.batches.append(qp.gpa, a) catch {};
-                b.arena = null;
-            }
-            const items = b.items.items;
-            if (items.len > 1000) {
-                qp.results.appendSlice(qp.gpa, items) catch {};
-                std.sort.block(QpItem, qp.results.items, qp, lessThan);
-            } else for (items) |it| {
-                // After every result that ranks before or equal to it.
-                var lo: usize = 0;
-                var hi: usize = qp.results.items.len;
-                while (lo < hi) {
-                    const mid = lo + (hi - lo) / 2;
-                    if (qp.before(it, qp.results.items[mid])) hi = mid else lo = mid + 1;
-                }
-                qp.results.insert(qp.gpa, lo, it) catch {};
-            }
+            if (qp.batches.ensureUnusedCapacity(qp.gpa, b.parts.items.len)) |_| {
+                for (b.parts.items) |p| qp.batches.appendAssumeCapacity(p.arena);
+                qp.mergeSorted(b.parts.items, n_new);
+                b.parts.clearRetainingCapacity();
+            } else |_| {}
         }
         if (b.finished) {
             qp.streaming = false;
@@ -479,6 +470,61 @@ pub const QuickPick = struct {
             };
         }
         qp.markDirty();
+    }
+
+    /// Sorts `items` and merges them into the results in one backward
+    /// pass, each after every result that ranks before or equal to it.
+    /// Linear in the results: inserting one at a time moved the tail per
+    /// item and stalled the UI thread for ~5 ms per 1000-item batch over
+    /// 8k results.
+    fn mergeSorted(qp: *QuickPick, parts: []const provider_mod.Part, n: usize) void {
+        if (n == 0) return;
+        // Sort small keys, not the items: ties keep push order.
+        qp.merge_keys.resize(qp.gpa, n) catch return;
+        const keys = qp.merge_keys.items;
+        var at: usize = 0;
+        for (parts, 0..) |p, pi| for (p.items, 0..) |it, ii| {
+            keys[at] = .{ .rank = qp.rankKey(it), .part = @intCast(pi), .idx = @intCast(ii) };
+            at += 1;
+        };
+        std.sort.pdq(MergeKey, keys, {}, MergeKey.lessThan);
+        const old_len = qp.results.items.len;
+        qp.results.ensureUnusedCapacity(qp.gpa, n) catch return;
+        qp.results.items.len = old_len + n;
+        const r = qp.results.items;
+        var i = old_len;
+        var j = n;
+        var k = r.len;
+        while (j > 0) {
+            k -= 1;
+            const key = keys[j - 1];
+            const it = parts[key.part].items[key.idx];
+            if (i > 0 and qp.before(it, r[i - 1])) {
+                i -= 1;
+                r[k] = r[i];
+            } else {
+                j -= 1;
+                r[k] = it;
+            }
+        }
+    }
+
+    const MergeKey = struct {
+        rank: u64,
+        part: u32,
+        idx: u32,
+
+        fn lessThan(_: void, a: MergeKey, b: MergeKey) bool {
+            if (a.rank != b.rank) return a.rank < b.rank;
+            if (a.part != b.part) return a.part < b.part;
+            return a.idx < b.idx;
+        }
+    };
+
+    /// Ascending in `before` order: higher score, then more recent.
+    fn rankKey(qp: *const QuickPick, it: QpItem) u64 {
+        const s: u32 = @bitCast(it.score);
+        return @as(u64, ~(s ^ 0x8000_0000)) << 32 | qp.mruRank(it.id);
     }
 
     /// The running job finished: release it.
