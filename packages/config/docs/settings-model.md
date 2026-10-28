@@ -10,16 +10,22 @@ Layers from lowest to highest precedence:
 | # | Layer | File | Notes |
 |---|---|---|---|
 | 0 | default | `settings_schema.zon` of each package, comptime | never written |
-| 1 | user | `<config>/settings.zon` | |
-| 2 | workspace | workspace file `.settings` (multi-root) or `<root>/.zigguro/settings.zon` | |
-| 3 | workspace_local | `<root>/.zigguro/settings.local.zon` | personal; kept out of SCM |
-| 4 | folder | `<folder>/.zigguro/settings.zon` (multi-root) | resource scope only |
+| 1 | user | `<config>/settings.json` | |
+| 2 | workspace | workspace file `.settings` (multi-root) or `<root>/.zigguro/settings.json` | |
+| 3 | workspace_local | `<root>/.zigguro/settings.local.json` | personal; kept out of SCM |
+| 4 | folder | `<folder>/.zigguro/settings.json` (multi-root) | resource scope only |
 | 5 | editorconfig | `.editorconfig` chain | resource scope only |
 | 6 | cli | `zigguro --settings <file or ZON>` | session only |
-| 7 | policy | `<managed>/settings.zon` | locked |
+| 7 | policy | `<managed>/settings.json` | locked |
 
-A file is a ZON struct literal. Keys may be nested or dotted; both forms
-mean the same setting:
+Settings files are JSON with comments (JSONC: `//` and `/* */` comments
+and trailing commas are allowed), the format VS Code uses, so a VS Code
+`settings.json` can be pasted in as is. The loaders also accept a ZON
+struct literal (`zon_load`), which the examples below use. Programmatic
+edits (the settings editor) go through `json_edit`, which keeps comments
+and formatting and writes the file atomically.
+
+Keys may be nested or dotted; both forms mean the same setting:
 
 ```zig
 .{
