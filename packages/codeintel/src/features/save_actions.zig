@@ -164,18 +164,36 @@ fn uriOf(s: *SaveActions, h: DocHandle) ?[]const u8 {
     return s.mgr.docs.uri(h);
 }
 
-fn wantsWillSave(sv: *const Manager.Server) bool {
-    const cl = sv.client orelse return false;
-    const caps = cl.caps() orelse return false;
-    const sync = caps.raw.textDocumentSync orelse return false;
+fn syncOptions(sv: *const Manager.Server) ?protocol.TextDocumentSyncOptions {
+    const cl = sv.client orelse return null;
+    const caps = cl.caps() orelse return null;
+    const sync = caps.raw.textDocumentSync orelse return null;
     return switch (sync) {
-        .text_document_sync_options => |o| o.willSaveWaitUntil orelse false,
-        .text_document_sync_kind => false,
+        .text_document_sync_options => |o| o,
+        .text_document_sync_kind => null,
     };
+}
+
+fn wantsWillSave(sv: *const Manager.Server) bool {
+    const o = syncOptions(sv) orelse return false;
+    return o.willSaveWaitUntil orelse false;
+}
+
+/// The server asked for the `willSave` notification.
+fn wantsWillSaveNote(sv: *const Manager.Server) bool {
+    const o = syncOptions(sv) orelse return false;
+    return o.willSave orelse false;
 }
 
 fn willSave(s: *SaveActions, h: DocHandle, reason: protocol.TextDocumentSaveReason, w: *Waiter, res: *Result) void {
     const uri = s.uriOf(h) orelse return;
+    // The notification first, to every server that wants it, after the
+    // edits it has not seen.
+    s.mgr.flush();
+    for (s.mgr.serverList()) |sv| {
+        if (sv.status != .running or !sv.hasDoc(h) or !wantsWillSaveNote(sv)) continue;
+        sv.client.?.notify(.@"textDocument/willSave", .{ .textDocument = .{ .uri = uri }, .reason = reason }) catch {};
+    }
     for (s.mgr.serverList()) |sv| {
         if (w.expired) return;
         if (sv.status != .running or !sv.hasDoc(h) or !wantsWillSave(sv)) continue;
