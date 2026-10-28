@@ -5,6 +5,10 @@
 //! drain to the UI thread at a time; the UI thread feeds the terminal.
 //! Input goes straight to the PTY from the UI thread. Elsewhere the panel
 //! shows why no shell started (ConPTY arrives with #267).
+//!
+//! Old scrollback is compacted (and deflated) on a worker: the UI thread
+//! only copies the rows out and swaps the result in (`zg_terminal`'s
+//! `Compactor`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -24,6 +28,7 @@ pub const TerminalPanel = struct {
     env: *const std.process.Environ.Map,
     term: zg_terminal.Terminal,
     view: TerminalView,
+    compactor: zg_terminal.term.Compactor = .{},
     pty: ?Pty = null,
     /// Guards `pending`.
     mutex: std.Io.Mutex = .init,
@@ -47,7 +52,7 @@ pub const TerminalPanel = struct {
         const p = try gpa.create(TerminalPanel);
         errdefer gpa.destroy(p);
         p.* = .{ .gpa = gpa, .io = io, .app = app, .env = env, .term = undefined, .view = undefined };
-        p.term = try .init(gpa, .{ .cols = 80, .rows = 24 });
+        p.term = try .init(gpa, .{ .cols = 80, .rows = 24, .deflate_scrollback = true, .background_compaction = true });
         p.view = .init(gpa, &p.term, .{});
         p.view.sink = .{ .ctx = p, .write = write };
         p.view.on_resize = .{ .ctx = p, .f = onResize };
@@ -64,6 +69,7 @@ pub const TerminalPanel = struct {
             _ = pty.tryWait() catch {};
             pty.close();
         }
+        p.compactor.deinit(&p.term);
         p.closed = true;
         p.pending.deinit(p.gpa);
         p.view.deinit();
@@ -140,6 +146,7 @@ pub const TerminalPanel = struct {
             std.mem.swap(std.ArrayList(u8), &bytes, &p.pending);
         }
         if (bytes.items.len > 0) p.view.feed(bytes.items);
+        if (p.compactor.poll(&p.term)) p.app.spawn(compactWork, .{p});
         if (p.ended.load(.acquire) and p.note_len == 0) {
             const status = if (p.pty) |*pty| (pty.tryWait() catch null) else null;
             if (status) |s| switch (s) {
@@ -148,6 +155,12 @@ pub const TerminalPanel = struct {
             } else p.setNote("shell exited", .{});
         }
         if (p.on_output) |h| h.f(h.ctx);
+    }
+
+    /// Worker: encodes the compaction job, then has the UI thread swap it in.
+    fn compactWork(p: *TerminalPanel) void {
+        p.compactor.work();
+        if (!p.posted.swap(true, .acq_rel)) p.app.post(.{ .ctx = p, .f = drain }) catch p.posted.store(false, .release);
     }
 
     fn write(ctx: *anyopaque, bytes: []const u8) void {
