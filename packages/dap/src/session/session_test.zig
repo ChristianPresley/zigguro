@@ -457,3 +457,36 @@ test "session: loaded sources from events and the request" {
     try h.waitFor(s, Harness.ended);
     try h.expectScriptPassed(s);
 }
+
+fn oneModule(h: *Harness, s: *DebugSession) bool {
+    return h.log.count(.modules) >= 3 and s.modulesCount() == 1;
+}
+
+fn twoModules(_: *Harness, s: *DebugSession) bool {
+    return s.modulesCount() == 2;
+}
+
+test "session: modules from events and the request" {
+    var h: Harness = undefined;
+    try h.init(&.{"modules.txt"}, .{});
+    defer h.deinit();
+    const s = try h.start(.launch);
+    try h.waitFor(s, oneModule);
+    try testing.expect(s.refreshModules());
+    try h.waitFor(s, twoModules);
+    const Check = struct {
+        fn all(_: void, list: []const DebugSession.ModuleInfo) void {
+            testing.expectEqualStrings("1", list[0].id) catch unreachable;
+            testing.expectEqualStrings("Symbols loaded", list[0].symbol_status.?) catch unreachable;
+            testing.expectEqualStrings("0x1000-0x2000", list[0].address_range.?) catch unreachable;
+            testing.expectEqual(@as(?bool, true), list[0].is_user_code) catch unreachable;
+            testing.expectEqualStrings("\"libm\"", list[1].id) catch unreachable;
+            testing.expectEqualStrings("2.39", list[1].version.?) catch unreachable;
+            testing.expectEqual(@as(?bool, true), list[1].is_optimized) catch unreachable;
+        }
+    };
+    s.withModules({}, Check.all);
+    s.stop();
+    try h.waitFor(s, Harness.ended);
+    try h.expectScriptPassed(s);
+}

@@ -160,6 +160,12 @@ pub const ModuleInfo = struct {
     id: []const u8,
     name: []const u8,
     path: ?[]const u8,
+    version: ?[]const u8 = null,
+    /// "Symbols loaded", "Symbols not found", … (the adapter's words).
+    symbol_status: ?[]const u8 = null,
+    address_range: ?[]const u8 = null,
+    is_optimized: ?bool = null,
+    is_user_code: ?bool = null,
 };
 
 /// A source the debuggee loaded (`loadedSource` events, the
@@ -574,6 +580,70 @@ fn onLoadedSources(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
     for (b.sources) |src| s.upsertLoaded(src, false) catch break;
     s.mutex.unlock(s.io);
     s.notify(.loaded_sources);
+}
+
+/// Asks the adapter for every module when it takes the `modules`
+/// request; the answer replaces the list and notifies `.modules`.
+pub fn refreshModules(s: *DebugSession) bool {
+    if (!(s.caps().supportsModulesRequest orelse false)) return false;
+    return s.send("modules", "{\"startModule\":0,\"moduleCount\":0}", .{ .ctx = s, .func = onModules });
+}
+
+fn onModules(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
+    const s: *DebugSession = @ptrCast(@alignCast(ctx.?));
+    defer r.deinit();
+    const o = switch (r) {
+        .ok => |o| o,
+        else => return,
+    };
+    const Body = struct { modules: []const ModuleJson = &.{} };
+    var arena: std.heap.ArenaAllocator = .init(s.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const b = parseBody(Body, a, o.response.body) orelse return;
+    s.mutex.lockUncancelable(s.io);
+    s.modules_.clearRetainingCapacity();
+    for (b.modules) |m| s.upsertModule(a, m, false) catch break;
+    s.mutex.unlock(s.io);
+    s.notify(.modules);
+}
+
+const ModuleJson = struct {
+    id: Value = .null,
+    name: []const u8 = "",
+    path: ?[]const u8 = null,
+    version: ?[]const u8 = null,
+    symbolStatus: ?[]const u8 = null,
+    addressRange: ?[]const u8 = null,
+    isOptimized: ?bool = null,
+    isUserCode: ?bool = null,
+};
+
+/// Adds, changes or (`remove`) drops module `m` (`a` for scratch); the
+/// lock held.
+fn upsertModule(s: *DebugSession, a: Allocator, m: ModuleJson, remove: bool) Allocator.Error!void {
+    const id = try jsonText(a, m.id);
+    var idx: ?usize = null;
+    for (s.modules_.items, 0..) |mm, i| if (std.mem.eql(u8, mm.id, id)) {
+        idx = i;
+        break;
+    };
+    if (remove) {
+        if (idx) |i| _ = s.modules_.orderedRemove(i);
+        return;
+    }
+    const sa = s.arena.allocator();
+    const info: ModuleInfo = .{
+        .id = try sa.dupe(u8, id),
+        .name = try sa.dupe(u8, m.name),
+        .path = if (m.path) |p| try sa.dupe(u8, p) else null,
+        .version = if (m.version) |x| try sa.dupe(u8, x) else null,
+        .symbol_status = if (m.symbolStatus) |x| try sa.dupe(u8, x) else null,
+        .address_range = if (m.addressRange) |x| try sa.dupe(u8, x) else null,
+        .is_optimized = m.isOptimized,
+        .is_user_code = m.isUserCode,
+    };
+    if (idx) |i| s.modules_.items[i] = info else try s.modules_.append(s.gpa, info);
 }
 
 const SourceJson = struct { path: ?[]const u8 = null, name: ?[]const u8 = null, sourceReference: ?i64 = null, origin: ?[]const u8 = null };
@@ -1049,7 +1119,7 @@ const ev = struct {
     const ProgressStart = struct { progressId: []const u8 = "", title: []const u8 = "", message: ?[]const u8 = null, percentage: ?f64 = null };
     const ProgressUpdate = struct { progressId: []const u8 = "", message: ?[]const u8 = null, percentage: ?f64 = null };
     const ProgressEnd = struct { progressId: []const u8 = "" };
-    const Module = struct { reason: []const u8 = "new", module: struct { id: Value = .null, name: []const u8 = "", path: ?[]const u8 = null } = .{} };
+    const Module = struct { reason: []const u8 = "new", module: ModuleJson = .{} };
     const LoadedSource = struct { reason: []const u8 = "new", source: SourceJson = .{} };
     const Process = struct { name: []const u8 = "", systemProcessId: ?i64 = null };
 };
@@ -1154,21 +1224,10 @@ fn handleEvent(s: *DebugSession, a: Allocator, event: []const u8, body: ?RawJson
         },
         .module => {
             const b = parseBody(ev.Module, a, body) orelse return;
-            const id = try jsonText(a, b.module.id);
             s.mutex.lockUncancelable(s.io);
-            const sa = s.arena.allocator();
-            var idx: ?usize = null;
-            for (s.modules_.items, 0..) |mm, i| if (std.mem.eql(u8, mm.id, id)) {
-                idx = i;
-                break;
-            };
-            if (std.mem.eql(u8, b.reason, "removed")) {
-                if (idx) |i| _ = s.modules_.orderedRemove(i);
-            } else {
-                const info: ModuleInfo = .{ .id = try sa.dupe(u8, id), .name = try sa.dupe(u8, b.module.name), .path = if (b.module.path) |p| try sa.dupe(u8, p) else null };
-                if (idx) |i| s.modules_.items[i] = info else try s.modules_.append(s.gpa, info);
-            }
+            const r = s.upsertModule(a, b.module, std.mem.eql(u8, b.reason, "removed"));
             s.mutex.unlock(s.io);
+            try r;
             s.notify(.modules);
         },
         .loadedSource => {
