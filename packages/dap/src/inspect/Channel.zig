@@ -92,6 +92,13 @@ pub const Port = struct {
     }
 };
 
+/// Called when an item is queued (any thread, with the mailbox's lock
+/// held: keep it short, e.g. post a coalesced wake to the UI thread).
+pub const Waker = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque) void,
+};
+
 /// Shared with the request callbacks; freed by the last reference.
 const Shared = struct {
     gpa: Allocator,
@@ -103,6 +110,7 @@ const Shared = struct {
     /// Set when an item is queued.
     event: Io.Event = .unset,
     closed: bool = false,
+    waker: ?Waker = null,
 
     fn release(sh: *Shared) void {
         if (sh.refs.fetchSub(1, .acq_rel) != 1) return;
@@ -121,6 +129,8 @@ const Shared = struct {
             sh.mutex.unlock(sh.io);
             return it.deinit(sh.gpa);
         };
+        // Under the lock: after `deinit` no waker runs.
+        if (sh.waker) |w| w.func(w.ctx);
         sh.mutex.unlock(sh.io);
         sh.event.set(sh.io);
     }
@@ -139,6 +149,14 @@ pub fn init(gpa: Allocator, io: Io, port: Port) Allocator.Error!Channel {
     const sh = try gpa.create(Shared);
     sh.* = .{ .gpa = gpa, .io = io };
     return .{ .shared = sh, .port = port };
+}
+
+/// Wakes the UI thread when items arrive (null: nothing to call).
+pub fn setWaker(ch: *Channel, w: ?Waker) void {
+    const sh = ch.shared;
+    sh.mutex.lockUncancelable(sh.io);
+    defer sh.mutex.unlock(sh.io);
+    sh.waker = w;
 }
 
 /// Results still in flight are dropped when they arrive.
@@ -219,4 +237,27 @@ pub fn wait(ch: *Channel, timeout: Io.Duration) void {
 
 pub fn caps(ch: *const Channel) protocol.Capabilities {
     return ch.port.caps(ch.port.ctx);
+}
+
+test "waker runs on every queued item, not after deinit" {
+    const gpa = std.testing.allocator;
+    var ch: Channel = try .init(gpa, std.testing.io, .none);
+    var n: u32 = 0;
+    const W = struct {
+        fn f(ctx: ?*anyopaque) void {
+            const c: *u32 = @ptrCast(@alignCast(ctx.?));
+            c.* += 1;
+        }
+    };
+    ch.setWaker(.{ .ctx = &n, .func = W.f });
+    ch.post(.stack, "");
+    ch.post(.continued, "");
+    try std.testing.expectEqual(@as(u32, 2), n);
+    const items = try ch.take();
+    for (items) |it| it.deinit(gpa);
+    gpa.free(items);
+    ch.setWaker(null);
+    ch.post(.stack, "");
+    try std.testing.expectEqual(@as(u32, 2), n);
+    ch.deinit();
 }
