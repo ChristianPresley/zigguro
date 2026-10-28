@@ -20,6 +20,8 @@ For higher-is-better budgets the test flips. Small samples without ties use the 
 
 A row **blocks** the PR when its budget's gate is `block` and the verdict is `regressed` or `budget_fail`. Warn and track gates only report. `zig build perfgate -- list-gated` lists the bench-bound budgets by gate.
 
+`ref_laptop_2024/calibration.json` holds the reference ns/op of the calibration kernels (`zig build perf-calibrate`; see docs/perf/benchmarks.md). It is provisional until it is recorded on the reference laptop.
+
 ## Accepting a regression
 
 Some regressions are the price of a feature. To accept one:
@@ -45,6 +47,8 @@ zig build perfgate -- compare --base FILE --head FILE [--baseline DIR] [--machin
                               [--json FILE] [--markdown FILE] [--base-ref REF] [--head-ref REF]
 zig build perfgate -- baseline --from FILE --machine CLASS --out DIR
 zig build perfgate -- list-gated
+zig build perfgate -- env
+zig build perf-calibrate
 ```
 
 Exit status: 0 pass, 1 blocking rows, 2 usage or input errors. `--calibration` takes `{"scale": x}`, the machine's speed against the reference laptop. `--changed-baselines` takes the PR's changed paths, one per line.
