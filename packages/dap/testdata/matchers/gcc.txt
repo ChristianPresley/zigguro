@@ -1,0 +1,11 @@
+a.c: In function 'main':
+a.c:2:11: warning: initialization of 'int' from 'char *' makes integer from pointer without a cast [-Wint-conversion]
+    2 |   int x = "a";
+      |           ^~~
+a.c:3:10: error: 'y' undeclared (first use in this function)
+    3 |   return y;
+      |          ^
+a.c:3:10: note: each undeclared identifier is reported only once for each function it appears in
+a.c:2:7: warning: unused variable 'x' [-Wunused-variable]
+    2 |   int x = "a";
+      |       ^

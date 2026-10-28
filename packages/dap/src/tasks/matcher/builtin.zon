@@ -1,0 +1,115 @@
+// The built-in problem matchers (`$name`). Each has fixture tests with
+// output captured from the real tool in testdata/matchers/.
+.{
+    // Zig 0.16 (`zig build`, `zig build-exe`, any --error-style): notes
+    // after an error are its related information; the source excerpt, the
+    // caret line and the `referenced by:` block do not match, nor does the
+    // `error: N compilation errors` summary (no location). Columns are
+    // bytes.
+    .{
+        .name = "zig",
+        .owner = "zig",
+        .source = "zig",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^(.+?):(\\d+):(\\d+): (error|note|warning): (.*)$", .file = 1, .line = 2, .column = 3, .severity = 4, .message = 5, .requires = .{ ": error: ", ": note: ", ": warning: " }, .shape = .{ .words = .{ "error", "note", "warning" } } },
+        },
+        .related_note = .{ .word = "note" },
+    },
+    // `zig build --watch`: active from the start; a rebuild prints no
+    // begin line, so the first line after `Build Summary:` begins a cycle,
+    // or the clear-screen of --error-style minimal_clear/verbose_clear.
+    .{
+        .name = "zig-watch",
+        .owner = "zig",
+        .source = "zig",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^(.+?):(\\d+):(\\d+): (error|note|warning): (.*)$", .file = 1, .line = 2, .column = 3, .severity = 4, .message = 5, .requires = .{ ": error: ", ": note: ", ": warning: " }, .shape = .{ .words = .{ "error", "note", "warning" } } },
+        },
+        .related_note = .{ .word = "note" },
+        .background = .{
+            .active_on_start = true,
+            .begins = ".^",
+            .ends = "^Build Summary: \\d+/\\d+ steps succeeded",
+            .implicit_begin_after_end = true,
+            .begin_on_clear = true,
+        },
+    },
+    // GCC and Clang (`file:line:col: error: msg`); notes are not problems.
+    .{
+        .name = "gcc",
+        .owner = "cpp",
+        .source = "gcc",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$", .file = 1, .line = 2, .column = 3, .severity = 4, .message = 5 },
+        },
+    },
+    // MSVC and MSBuild (`file(line[,col[,endLine,endCol]]): error C1234: msg`,
+    // optionally after a `3>` project prefix; MSBuild's trailing
+    // `[project.vcxproj]` is not part of the message).
+    .{
+        .name = "msCompile",
+        .owner = "msCompile",
+        .source = "cpp",
+        .file_location = .absolute,
+        .patterns = .{
+            .{ .regexp = "^(?:\\s*\\d+>)?(\\S.*?)\\((\\d+|\\d+,\\d+|\\d+,\\d+,\\d+,\\d+)\\)\\s*:\\s+(error|warning|info)\\s+(\\w{1,2}\\d+)\\s*:\\s*(.*?)(?:\\s+\\[[^\\]]+\\.\\w*proj\\])?$", .file = 1, .location = 2, .severity = 3, .code = 4, .message = 5 },
+        },
+    },
+    // rustc and cargo: the message line, then ` --> file:line:col`.
+    .{
+        .name = "rustc",
+        .owner = "rustc",
+        .source = "rustc",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^(warning|error)(?:\\[(E\\d+)\\])?: (.*)$", .severity = 1, .code = 2, .message = 3 },
+            .{ .regexp = "^\\s+--> (.*):(\\d+):(\\d+)$", .file = 1, .line = 2, .column = 3 },
+        },
+    },
+    // go build and go vet.
+    .{
+        .name = "go",
+        .owner = "go",
+        .source = "go",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^([^:\\s][^:]*\\.go):(\\d+):(\\d+): (.*)$", .file = 1, .line = 2, .column = 3, .message = 4 },
+        },
+    },
+    // tsc with --pretty false.
+    .{
+        .name = "tsc",
+        .owner = "typescript",
+        .source = "ts",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^(.+?)\\((\\d+),(\\d+)\\): (error|warning|info) (TS\\d+)\\s*: (.*)$", .file = 1, .line = 2, .column = 3, .severity = 4, .code = 5, .message = 6 },
+        },
+    },
+    // ESLint's stylish formatter: a file line, then one line per problem.
+    .{
+        .name = "eslint-stylish",
+        .owner = "eslint",
+        .source = "eslint",
+        .file_location = .absolute,
+        .patterns = .{
+            .{ .regexp = "^([^\\s].*)$", .file = 1 },
+            .{ .regexp = "^\\s+(\\d+):(\\d+)\\s+(error|warning|info)\\s+(.*?)(?:\\s\\s+(\\S+))?$", .line = 1, .column = 2, .severity = 3, .message = 4, .code = 5, .loop = true },
+        },
+    },
+    // Python tracebacks: the innermost `File "...", line N` frame, with
+    // the exception line that ends the traceback as the message.
+    .{
+        .name = "python",
+        .owner = "python",
+        .source = "python",
+        .file_location = .{ .auto_detect = null },
+        .patterns = .{
+            .{ .regexp = "^\\s*File \"(.+)\", line (\\d+)", .file = 1, .line = 2 },
+        },
+        .trailer = .{ .regexp = "^([A-Za-z_][\\w.]*(?::.*)?)$", .message = 1 },
+    },
+}

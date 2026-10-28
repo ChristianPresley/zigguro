@@ -1,0 +1,30 @@
+.{
+    .{ .problem = .{
+        .file = "C:\\src\\demo\\main.cpp",
+        .line = 12,
+        .column = 5,
+        .severity = .err,
+        .code = "C2065",
+        .message = "'y': undeclared identifier",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "C:\\src\\demo\\main.cpp",
+        .line = 7,
+        .severity = .warning,
+        .code = "C4101",
+        .message = "'x': unreferenced local variable",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "C:\\src\\demo\\util.cpp",
+        .line = 3,
+        .column = 1,
+        .end_line = 3,
+        .end_column = 9,
+        .severity = .info,
+        .code = "C4000",
+        .message = "informational message",
+        .related = .{},
+    } },
+}

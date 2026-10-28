@@ -1,0 +1,10 @@
+
+/home/dev/proj/src/app.js
+   1:10  error    'x' is defined but never used  no-unused-vars
+   2:3   warning  Unexpected console statement    no-console
+
+/home/dev/proj/src/util.js
+  14:1  error  Parsing error: Unexpected token
+
+✖ 3 problems (2 errors, 1 warning)
+

@@ -1,0 +1,22 @@
+.{ .{ .problem = .{
+    .file = "/home/dev/proj/src/main.zig",
+    .line = 11,
+    .column = 9,
+    .severity = .err,
+    .code = "",
+    .message = "unused local variable",
+    .related = .{},
+} }, .{ .problem = .{
+    .file = "/home/dev/proj/src/main.zig",
+    .line = 9,
+    .column = 27,
+    .severity = .err,
+    .code = "",
+    .message = "expected type 'u32', found '[]const u8'",
+    .related = .{.{
+        .file = "/home/dev/proj/src/main.zig",
+        .line = 3,
+        .column = 19,
+        .message = "parameter type declared here",
+    }},
+} } }

@@ -1,0 +1,17 @@
+.{ .{ .problem = .{
+    .file = "/home/dev/proj/main.go",
+    .line = 4,
+    .column = 6,
+    .severity = .err,
+    .code = "",
+    .message = "declared and not used: x",
+    .related = .{},
+} }, .{ .problem = .{
+    .file = "/home/dev/proj/main.go",
+    .line = 4,
+    .column = 14,
+    .severity = .err,
+    .code = "",
+    .message = "cannot use \"a\" (untyped string constant) as int value in variable declaration",
+    .related = .{},
+} } }

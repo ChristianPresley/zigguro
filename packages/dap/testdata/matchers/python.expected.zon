@@ -1,0 +1,8 @@
+.{.{ .problem = .{
+    .file = "/home/dev/proj/a.py",
+    .line = 2,
+    .severity = .err,
+    .code = "",
+    .message = "ZeroDivisionError: division by zero",
+    .related = .{},
+} }}
