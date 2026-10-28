@@ -16,6 +16,9 @@
 //!   There each session's `Inspector` applies them, and `generation`
 //!   bumps for the views.
 //! - An ended session leaves the views at once and is freed on a worker.
+//! - Breakpoints show in the gutter of every open editor and follow its
+//!   edits (zg_codeintel's `BreakpointGutter`, flushed by `onFrame`); the
+//!   saved ones are read on a worker.
 //! - State: `.zigguro/debug/breakpoints.zon`, `watches.zon` and
 //!   `repl_history.zon` under the workspace (written on change).
 //!
@@ -26,6 +29,8 @@ const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const zg_gui = @import("zg_gui");
 const zg_dap = @import("zg_dap");
+const zg_editor = @import("zg_editor");
+const zg_codeintel = @import("zg_codeintel");
 const configs_mod = @import("configs.zig");
 const call_stack = @import("call_stack.zig");
 const toolbar = @import("toolbar.zig");
@@ -47,6 +52,9 @@ const quick_pick = zg_gui.w.quick_pick;
 const Severity = zg_gui.w.notification_center.Severity;
 const ToastAction = zg_gui.w.notification_center.ToastAction;
 const Window = zg_gui.Window;
+const BreakpointGutter = zg_codeintel.debug.BreakpointGutter;
+const Document = zg_editor.model.document.Document;
+const DecorationStore = zg_editor.model.decorations.store.DecorationStore;
 const log = std.log.scoped(.debug_ui);
 
 /// Where the debug state lives, under the workspace.
@@ -78,6 +86,20 @@ pub const Options = struct {
     runner: ?*TaskRunner = null,
     /// Look for the generated configurations now (tests leave it off).
     autos: bool = true,
+    /// The gutter's breakpoint and execution pointer styles (null: the
+    /// editor's defaults).
+    gutter_styles: ?BreakpointGutter.Styles = null,
+};
+
+const no_style: zg_editor.model.decorations.store.StyleRef = @enumFromInt(0);
+const default_gutter_styles: BreakpointGutter.Styles = .{
+    .enabled = no_style,
+    .disabled = no_style,
+    .unverified = no_style,
+    .warning = no_style,
+    .anchor = no_style,
+    .exec_top = no_style,
+    .exec_selected = no_style,
 };
 
 /// One session as the views see it.
@@ -110,6 +132,10 @@ pub const Debug = struct {
     reg: Registry,
     reg_resolver: DebugManager.RegistryResolver = undefined,
     bps: BreakpointManager,
+    /// Breakpoint lines in open editors, and their gutter marks.
+    gutter: BreakpointGutter,
+    /// The `generation` the execution pointer was drawn at.
+    exec_seen: u64 = 0,
     mgr: DebugManager = undefined,
     vars: variables.VarContext = undefined,
     file_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -188,11 +214,14 @@ pub const Debug = struct {
                 .path = state_dir ++ "/" ++ zg_dap.breakpoints.persist.sub_path,
                 .workspace_root = root_copy,
             } else null }),
+            .gutter = .init(gpa, rt.io, opts.gutter_styles orelse default_gutter_styles),
             .configs = .init(gpa, .{ .root = root_copy, .trusted = opts.trusted }, builtin.os.tag),
             .inbox = inbox,
             .pick_arena = .init(gpa),
         };
         inbox.debug_ptr = d;
+        d.bps.opts.host = d.gutter.host();
+        try d.gutter.bind(&d.bps);
         d.reg_resolver = .{ .reg = &d.reg, .io = rt.io, .env = env };
         d.vars = .{
             .workspace_folder = root_copy,
@@ -220,7 +249,7 @@ pub const Debug = struct {
         });
         try d.mgr.subscribe(.{ .ctx = inbox, .func = Inbox.onSession });
         try d.bps.subscribe(.{ .ctx = inbox, .func = Inbox.onBreakpoints });
-        d.loadBreakpoints();
+        d.spawnWork(loadWork, .{});
         if (opts.autos) d.findAutos();
         return d;
     }
@@ -240,6 +269,7 @@ pub const Debug = struct {
         done.waitUncancelable(d.io);
         d.bps.saveNow() catch {};
         d.bps.deinit();
+        d.gutter.deinit();
         d.inbox.release();
         d.entries.deinit(gpa);
         d.dropped.deinit(gpa);
@@ -309,18 +339,77 @@ pub const Debug = struct {
 
     // ------------------------------------------------------------ files
 
-    fn loadBreakpoints(d: *Debug) void {
+    /// Reads the saved breakpoints (a worker; the manager is
+    /// thread-safe). The open editors track them once they are in.
+    fn loadWork(q: *Inbox) void {
+        defer workDone(q);
+        const d = q.debug_ptr;
         const dir = d.root_dir orelse return;
         const path = state_dir ++ "/" ++ zg_dap.breakpoints.persist.sub_path;
         const text = dir.readFileAlloc(d.io, path, d.gpa, .limited(16 << 20)) catch return;
         defer d.gpa.free(text);
-        d.bps.load(text) catch |e| log.warn("{s}: {t}", .{ path, e });
+        d.bps.load(text) catch |e| return log.warn("{s}: {t}", .{ path, e });
+        q.push(.loaded);
+    }
+
+    /// The saved breakpoints are in: the open editors track theirs.
+    fn onLoaded(d: *Debug) void {
+        for (d.gutter.docs.items) |doc| d.bps.docOpened(doc.path);
     }
 
     /// A file was saved or changed (absolute).
     pub fn fileChanged(d: *Debug, path: []const u8) void {
         if (d.configs.fileChanged(path)) d.changed();
-        d.bps.documentSaved(path);
+        d.gutter.saved(path);
+    }
+
+    /// `path` (absolute) is open in an editor showing `store`: its
+    /// breakpoints follow the edits there and draw in its gutter.
+    pub fn docOpened(d: *Debug, path: []const u8, doc: *const Document, store: *DecorationStore) void {
+        if (d.gutter.attached(path)) return;
+        d.gutter.attach(path, doc, store) catch return;
+        d.bps.docOpened(path);
+    }
+
+    /// `path`'s editor closes (before its decoration store goes).
+    pub fn docClosed(d: *Debug, path: []const u8) void {
+        if (!d.gutter.attached(path)) return;
+        d.bps.docClosed(path);
+        d.gutter.detach(path);
+    }
+
+    /// Once per frame, before the editors paint: the gutter marks and the
+    /// execution pointer.
+    pub fn onFrame(d: *Debug) void {
+        if (d.exec_seen != d.generation) {
+            d.exec_seen = d.generation;
+            d.updateExec();
+        }
+        d.gutter.flush();
+    }
+
+    /// The top frame of the active session's stopped thread and, when
+    /// another frame is selected, that one.
+    fn updateExec(d: *Debug) void {
+        var top: ?zg_dap.breakpoints.decorate.FramePos = null;
+        var sel: ?zg_dap.breakpoints.decorate.FramePos = null;
+        if (d.active()) |e| if (e.insp.stopped()) {
+            const thread = if (e.insp.stack.selected()) |x| x.thread else e.s.currentThread();
+            if (thread) |t| {
+                const rows = e.insp.stack.frames(t);
+                if (rows.len > 0) top = framePos(&rows[0]);
+                if (e.insp.stack.selectedRow()) |r| if (rows.len == 0 or r.id != rows[0].id) {
+                    sel = framePos(r);
+                };
+            }
+        };
+        d.gutter.setExec(top, sel) catch {};
+    }
+
+    fn framePos(row: *const Inspector.FrameRow) ?zg_dap.breakpoints.decorate.FramePos {
+        const src = row.source orelse return null;
+        const path = src.path orelse return null;
+        return .{ .path = path, .line = @max(row.line, 1) };
     }
 
     pub fn setTrusted(d: *Debug, trusted: bool) void {
@@ -908,11 +997,17 @@ pub const Debug = struct {
 
     // ----------------------------------------------------- breakpoints
 
+    /// F9: the gutter shows the result.
     pub fn toggleBreakpointCmd(d: *Debug) void {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const c = d.host.cursor(d.host.ctx, &buf) orelse return d.say(.info, "Open a file to set a breakpoint", .{});
-        const added = d.bps.toggleLine(c.path, c.line) catch return;
-        d.say(.info, "{s} breakpoint at {s}:{d}", .{ if (added != null) "Added" else "Removed", std.fs.path.basename(c.path), c.line });
+        d.toggleBreakpointAt(c.path, c.line);
+    }
+
+    /// A breakpoint on 1-based `line` of `path` (absolute), or none where
+    /// there was one (a click in the gutter).
+    pub fn toggleBreakpointAt(d: *Debug, path: []const u8, line: u32) void {
+        _ = d.bps.toggleLine(path, line) catch |e| d.say(.error_, "Cannot set the breakpoint: {t}", .{e});
     }
 
     pub fn removeAllBreakpointsCmd(d: *Debug) void {
@@ -1033,6 +1128,8 @@ const Msg = union(enum) {
     /// Inspection results arrived.
     pump,
     breakpoints,
+    /// The saved breakpoints were read.
+    loaded,
     autos: struct { arena: *std.heap.ArenaAllocator, configs: []const LaunchConfig },
     targets: *TargetsMsg,
     goto_failed: ?[]u8,
@@ -1178,6 +1275,7 @@ const Inbox = struct {
             switch (m) {
                 .session => |x| d.onSessionChange(x.s, x.id, x.change),
                 .pump, .breakpoints => {},
+                .loaded => d.onLoaded(),
                 .autos => |x| d.applyAutos(x.arena, x.configs),
                 .targets => |t| {
                     d.openTargets(t) catch {};
