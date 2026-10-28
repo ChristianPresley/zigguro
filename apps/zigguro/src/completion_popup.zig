@@ -72,6 +72,9 @@ pub const CompletionPopup = struct {
     show_docs: bool = true,
     /// Code fences in the docs are tagged with this language.
     lang: []const u8 = "",
+    /// Highlights code fences (the editor's highlighter, set by the
+    /// workbench).
+    highlighter: @FieldType(markdown.MdViewProps, "highlighter") = null,
     on_pick: ?PickHook = null,
     list: NodeId = .none,
     /// Matched positions of the rows built (index: row - `first`).
@@ -257,7 +260,7 @@ pub const CompletionPopup = struct {
         const w: f32 = if (narrow) p.width() else docs_w;
         ui.open(.{ .style = .{ .dir = .column, .w = .{ .px = w }, .max_h = max_rows * row_h, .scroll_y = true, .padding = .all(6) }, .test_id = "completion-docs" });
         defer ui.close();
-        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = w - 12, .test_id = "completion-docs-text" });
+        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = w - 12, .highlighter = p.highlighter, .test_id = "completion-docs-text" });
     }
 
     fn makeDocs(p: *CompletionPopup, it: *const rank.Item) !void {
@@ -467,9 +470,25 @@ test "completion popup: below the line, aligned with the word; above without roo
     };
     var pick: Pick = .{};
     p.on_pick = .{ .ctx = &pick, .f = Pick.f };
+    // The docs' code goes through the editor's highlighter.
+    const Hl = struct {
+        lang: [8]u8 = undefined,
+        lang_len: usize = 0,
+        n: u32 = 0,
+        fn f(ctx: *anyopaque, _: std.mem.Allocator, lang: []const u8, _: []const u8, _: *std.ArrayList(markdown.code_view.Span)) std.mem.Allocator.Error!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.n += 1;
+            s.lang_len = @min(lang.len, s.lang.len);
+            @memcpy(s.lang[0..s.lang_len], lang[0..s.lang_len]);
+        }
+    };
+    var hl: Hl = .{};
+    p.highlighter = .{ .ptr = &hl, .highlight = Hl.f };
     const model: Model = .{ .items = &items, .ranked = r.ranked.items, .ranker = &r, .selected = 0 };
     try p.show(model, .{ .x = 100, .y = 100, .w = 20, .h = 16 });
-    _ = t.settle();
+    // It paints in the first frame after the results.
+    const fs = t.frame();
+    try testing.expect(fs.presented and fs.nodes_painted > 0);
     try testing.expect(p.isOpen());
     const box = try t.rectOf(.{ .test_id = "completion-list" });
     try testing.expect(box.y >= 116);
@@ -483,6 +502,8 @@ test "completion popup: below the line, aligned with the word; above without roo
     const docs = try t.rectOf(.{ .test_id = "completion-docs" });
     try testing.expect(docs.x >= box.x + box.w - 1);
     try testing.expectEqualStrings("item01, variable, const item01: u32", p.announce.items);
+    try testing.expect(hl.n > 0);
+    try testing.expectEqualStrings("zig", hl.lang[0..hl.lang_len]);
     p.toggleDocs();
     _ = t.settle();
     try testing.expectError(error.NotFound, t.rectOf(.{ .test_id = "completion-docs" }));
