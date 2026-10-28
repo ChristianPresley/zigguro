@@ -120,6 +120,37 @@ pub const KeyHook = struct {
     f: *const fn (ctx: *anyopaque, v: *EditorView, k: zg_gui.input.event.KeyPress) bool,
 };
 
+/// Told where the pointer rests and of Ctrl/Cmd+clicks and key presses,
+/// for hover popups and go to definition (E07). Offsets are null where
+/// no text is (past a line's end, below the last line).
+pub const PointerHook = struct {
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, v: *EditorView, e: PointerEvent) bool,
+};
+
+/// What `PointerHook` hears. `origin` is the text origin in window
+/// coordinates (`posOf` plus `origin` places an offset in the window).
+pub const PointerEvent = struct {
+    kind: Kind,
+    offset: ?u64 = null,
+    origin: Vec2 = .{},
+    mods: @FieldType(zg_gui.input.event.KeyPress, "mods") = .{},
+    /// The key pressed (`kind == .key`).
+    key: ?zg_gui.input.event.KeyPress = null,
+
+    pub const Kind = enum {
+        /// The pointer moved over the text (not while dragging).
+        move,
+        /// The pointer left the editor.
+        leave,
+        /// A left click with Ctrl or Cmd held; returning true consumes it.
+        click,
+        /// A key press, before anything else sees it (returning true
+        /// consumes it; Escape hides a hover this way).
+        key,
+    };
+};
+
 /// Horizontal moves.
 pub const Unit = enum { char, word };
 
@@ -224,6 +255,8 @@ pub const EditorView = struct {
     capture: ?*Capture = null,
     /// Offered every key press before `mode` (release events are not).
     key_hook: ?KeyHook = null,
+    /// Told of pointer moves, Ctrl+clicks and key presses (hover).
+    pointer_hook: ?PointerHook = null,
     /// A modal input handler (Vim) offered every key first. Not owned.
     mode: ?modes.ModeHandler = null,
     /// Where the mode sends `:w`, `:q`, `C-x C-s` and other file and
