@@ -426,10 +426,10 @@ pub const Workbench = struct {
         var bytes: []u8 = &.{};
         // Handed to the document when it opens a loaded file.
         var bytes_owned = true;
-        defer if (bytes_owned) text_gpa.free(bytes);
+        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
+        defer if (bytes_owned) if (loaded) |*l| l.deinit(text_gpa) else text_gpa.free(bytes);
         var f: OpenFile = .{ .path = null, .doc = undefined, .view = undefined, .syntax = null };
         errdefer if (f.path) |p| gpa.free(p);
-        var loaded: ?zg_editor.model.buffer.external.Loaded = null;
         if (path) |p| {
             f.path = try gpa.dupe(u8, p);
             // Decoded (encoding, BOM and line ends detected); a missing
@@ -448,12 +448,19 @@ pub const Workbench = struct {
             // A new document keeps the loaded text instead of a copy (it
             // stays valid below, owned by the document).
             if (loaded != null and try wb.docs.findFile(abs) == null) {
-                const hh = try wb.docs.openFileOwned(abs, bytes);
+                // A mapped file (large-file mode) moves its map instead.
+                const hh = if (loaded.?.map) |m| try wb.docs.openFileMapped(abs, m) else try wb.docs.openFileOwned(abs, bytes);
                 bytes_owned = false;
                 break :blk hh;
             }
             break :blk try wb.docs.openFile(abs, bytes);
         } else try wb.docs.openUntitled(bytes);
+        // A mapped file's hash is computed off the open path from the
+        // document's original; one already open is hashed here.
+        if (loaded) |*l| if (l.hash_pending and bytes_owned) {
+            l.disk.content_hash = zg_editor.model.buffer.save.hashBytesParallel(wb.io, l.text);
+            l.hash_pending = false;
+        };
         f.doc = wb.docs.get(h).?;
         if (f.path != null) f.handle = h;
         f.view = try EditorView.init(mem_tags.of(gpa, .editor), f.doc, wb.editorOptions(null));
@@ -461,7 +468,7 @@ pub const Workbench = struct {
         wb.setMode(&f, wb.key_mode);
         errdefer wb.setMode(&f, .standard);
         if (f.path) |p| {
-            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk } else .{});
+            const sync = try FileSync.init(gpa, wb.io, if (wb.win) |w| w.app else null, f.doc, &f.view.undo, std.Io.Dir.cwd(), p, if (loaded) |l| .{ .encoding = l.encoding, .eol = l.eol.style, .disk = l.disk, .hash_pending = l.hash_pending } else .{});
             sync.on_done = .{ .ctx = wb, .f = onFileSync };
             f.sync = sync;
             if (loaded != null) {
