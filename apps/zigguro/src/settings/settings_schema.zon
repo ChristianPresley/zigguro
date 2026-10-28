@@ -36,6 +36,9 @@
     .{ .key = "terminal.graphics.sixel", .type = .bool, .default = true, .title = "Sixel Images", .description = "Show sixel images in the terminal and tell programs it can (DA1).", .tags = .{"terminal"}, .order = 6 },
     .{ .key = "terminal.agent.visibleTerminals", .type = .bool, .default = true, .title = "Agent Terminals", .description = "Run the agent's commands in terminals you can watch (the Agents section of the terminal panel), with a shell that keeps its folder and variables between commands. Off, or when the shell has no integration, they run as hidden child processes. Applies when the agent starts.", .tags = .{"terminal"}, .order = 7 },
 
+    .{ .key = "zig.path", .type = .path, .default = "", .scope = .machine_overridable, .restricted = true, .title = "Zig Path", .description = "The zig executable ZLS and zigguro use. Empty: zig on PATH.", .tags = .{"zig"}, .order = 1 },
+    .{ .key = "zig.zls", .type = .object, .default = .{}, .restricted = true, .title = "ZLS Options", .description = "ZLS configuration options by their ZLS names, such as \"enable_build_on_save\": true or \"build_on_save_args\": [\"-fincremental\"]. Sent to ZLS as its zls settings section.", .tags = .{"zig"}, .order = 2 },
+
     .{ .key = "git.autoRefresh", .type = .bool, .default = true, .title = "Auto Refresh", .description = "Refresh Source Control when files change or the window gains focus.", .tags = .{"git"}, .order = 2 },
     .{ .key = "git.confirmSync", .type = .bool, .default = true, .title = "Confirm Sync", .description = "Ask before pull, push or sync with a remote.", .tags = .{"git"}, .order = 3 },
     .{ .key = "git.autofetch", .type = .bool, .default = false, .title = "Auto Fetch", .description = "Fetch from the default remote every few minutes.", .tags = .{"git"}, .order = 4 },
