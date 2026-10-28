@@ -2,7 +2,7 @@
 
 # Performance budgets
 
-165 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
+167 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
 
 ## Machines
 
@@ -96,6 +96,8 @@
 | `gui.theme_switch` | duration_ns | max | 16 ms | – | ref_laptop_2024 | runtime `pending` | track | E04.F08 |
 | `gui.node_bytes` | bytes | max | 160 B | – | any | runtime `pending` | track | E04.F01 |
 | `gui.jpeg_decode_12mp` | duration_ns | mean | 80 ms | – | ref_laptop_2024 | bench `zg_gui` / `gui.jpeg_decode_12mp` (ns_per_op) | warn | E04.F09 |
+| `gui.quickpick_100k_first50` | duration_ns | p99 | 5 ms | – | ref_laptop_2024 | bench `zg_gui` / `gui.quickpick_100k_first50_4w` (p99_ns) | warn | E04.F05 |
+| `gui.quickpick_100k_complete` | duration_ns | p99 | 16 ms | – | ref_laptop_2024 | bench `zg_gui` / `gui.quickpick_100k_complete_4w` (p99_ns) | warn | E04.F05 |
 
 ## E05
 
