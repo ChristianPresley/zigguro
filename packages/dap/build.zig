@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const jsonrpc = b.dependency("zg_jsonrpc", f.args()).module("zg_jsonrpc");
     const lsp = b.dependency("zg_lsp", f.args()).module("zg_lsp");
     const regex = b.dependency("zg_regex", f.args()).module("zg_regex");
+    const perf = b.dependency("zg_perf", f.args()).module("zg_perf");
     _ = zg_build.addPackage(b, f, .{
         .name = "zg_dap",
         .imports = &.{
@@ -14,6 +15,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_jsonrpc", .module = jsonrpc },
             .{ .name = "zg_lsp", .module = lsp },
             .{ .name = "zg_regex", .module = regex },
+            .{ .name = "zg_perf", .module = perf },
         },
         .bench = "bench/main.zig",
         .test_exes = &.{

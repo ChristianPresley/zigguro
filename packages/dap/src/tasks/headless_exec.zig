@@ -15,6 +15,7 @@
 //! Every call blocks; none may run on the UI thread.
 
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 
@@ -89,6 +90,7 @@ pub const Proc = struct {
         p.watcher.spawnLoop(watchExit, .{p}) catch |e| {
             p.killTree();
             _ = p.child.wait(io) catch {};
+            zg_perf.idle.noteWake("dap.task.reap", .signal);
             p.closeFiles();
             return e;
         };
@@ -144,6 +146,7 @@ pub const Proc = struct {
         const prev = p.io.swapCancelProtection(.blocked);
         defer _ = p.io.swapCancelProtection(prev);
         p.term = p.child.wait(p.io) catch .{ .unknown = 0 };
+        zg_perf.idle.noteWake("dap.task.exit", .signal);
         p.exit_event.set(p.io);
     }
 

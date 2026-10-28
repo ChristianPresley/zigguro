@@ -21,7 +21,6 @@
 1 packages/ai/src/subagent/runner.zig
 1 packages/ai/src/tools/builtin/fake_host.zig
 4 packages/ai/src/tools/builtin/process_host.zig
-1 packages/codeintel/src/diagnostics/settle.zig
 1 packages/codeintel/src/features/file_ops.zig
 1 packages/codeintel/src/features/save_actions.zig
 1 packages/codeintel/src/registry/Registry.zig

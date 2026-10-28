@@ -23,6 +23,7 @@
 
 const SettleDetector = @This();
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const zg_core = @import("zg_core");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -64,7 +65,8 @@ pub const Clock = struct {
         return Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
     }
     fn realSleep(_: ?*anyopaque, io: Io, d: Io.Duration) Io.Cancelable!void {
-        return io.sleep(d, .awake);
+        try io.sleep(d, .awake);
+        zg_perf.idle.noteWake("codeintel.settle.poll", .timer);
     }
 };
 
@@ -505,7 +507,8 @@ fn plural(n: usize) []const u8 {
 /// none and nothing is in doubt. Any thread but the UI's.
 pub fn afterAgentEdit(sd: *SettleDetector, io: Io, arena: Allocator, abs: []const u8) (Allocator.Error || Io.Cancelable)!?[]const u8 {
     const paths = try arena.dupe([]const u8, &.{abs});
-    const r = try sd.wait(io, arena, .{ .paths = paths });
+    // (A settle wait, not a blocking primitive: it sleeps in `realSleep`.)
+    const r = try SettleDetector.wait(sd, io, arena, .{ .paths = paths });
     const quiet = r.reason == null or (r.reason.? == .no_server and r.build == null);
     if (r.diags.len == 0 and !r.heuristic and quiet) return null;
     return try sd.renderResult(arena, r, paths, std.fs.path.dirname(abs) orelse "");

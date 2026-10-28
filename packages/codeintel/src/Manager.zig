@@ -16,6 +16,7 @@
 
 const Manager = @This();
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const zg_core = @import("zg_core");
@@ -705,7 +706,10 @@ fn resolveTask(job: *ResolveJob) Io.Cancelable!void {
 /// Spawns the server, wires a client and waits for `initialize`.
 fn startTask(s: *Server) Io.Cancelable!void {
     const m = s.mgr;
-    while (s.reaping.load(.acquire) > 0) try m.rt.io.sleep(.fromMilliseconds(5), .awake);
+    while (s.reaping.load(.acquire) > 0) {
+        try m.rt.io.sleep(.fromMilliseconds(5), .awake);
+        zg_perf.idle.noteWake("codeintel.server.reap_wait", .timer);
+    }
     start(s) catch |e| {
         if (s.client) |c| {
             c.shutdown();

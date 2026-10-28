@@ -22,6 +22,7 @@
 
 const CodeIntel = @This();
 const std = @import("std");
+const zg_perf = @import("zg_perf");
 const zg_lsp = @import("zg_lsp");
 const zg_editor = @import("zg_editor");
 const Manager = @import("../Manager.zig");
@@ -975,6 +976,7 @@ fn waitReady(ci: *CodeIntel, call: *Call, h: DocHandle, feature: Feature) Error!
         }
         if (nowNs(call.io) >= call.deadline_ns) return call.fail(error.Timeout, "the language server did not start in time", .{});
         call.io.sleep(.fromMilliseconds(20), .awake) catch return call.fail(error.Timeout, "canceled", .{});
+        zg_perf.idle.noteWake("codeintel.agent.server_start_poll", .timer);
     }
 }
 
