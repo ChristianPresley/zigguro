@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
   issues: write
+  # The trend step downloads the previous nightly's artifact.
+  actions: read
 
 jobs:
   list:
@@ -102,11 +104,76 @@ jobs:
         shell: bash
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - shell: bash
-        run: zig build bench --summary line
+        run: zig build bench -Doptimize=ReleaseFast -Dbench-repeats=7 --summary line
+      - if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ZG_PLATFORM: headless
+          ZG_MACHINE_CLASS: ci_linux_x64
+        run: zig build bench-scenarios -Doptimize=ReleaseFast --summary line
+      # Trend: compare with the previous successful nightly's results
+      # (E14.F06.S02.T02). Informational: nightly never fails on it.
+      - name: Trend against the previous nightly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OS: ${{ matrix.os }}
+          DATE: ${{ steps.date.outputs.date }}
+          MACHINE: ${{ runner.os == 'Linux' && 'ci_linux_x64' || 'ci_windows_x64' }}
+        run: |
+          zig build -Doptimize=ReleaseFast bench-build --summary line
+          shopt -s nullglob
+          files=(zig-out/bench-results/all.json zig-out/bench-results/scenarios.json zig-out/bench-results/startup.json)
+          zig-out/bench-bin/perfgate merge --out zig-out/bench-results/nightly.json "${files[@]}"
+          prev=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main --status success -L 1 --json databaseId -q '.[0].databaseId' || true)
+          mkdir -p "$RUNNER_TEMP/prev"
+          if [ -n "$prev" ] && gh run download "$prev" --repo "$GITHUB_REPOSITORY" --pattern "bench-nightly-$OS-*" --dir "$RUNNER_TEMP/prev"; then
+            old=$(find "$RUNNER_TEMP/prev" -name nightly.json | head -n 1)
+          fi
+          if [ -n "${old:-}" ]; then
+            zig-out/bench-bin/perfgate compare --base "$old" --head zig-out/bench-results/nightly.json \
+              --baseline "perf/baselines/$MACHINE" --machine "$MACHINE" \
+              --json "zig-out/bench-results/trend-$DATE.json" --markdown "$RUNNER_TEMP/trend.md" || true
+            cat "$RUNNER_TEMP/trend.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No previous nightly results to compare with." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: bench-nightly-${{ matrix.os }}-${{ steps.date.outputs.date }}
           path: zig-out/bench-results
+
+  # Absolute budget checks on the reference laptop, when a self-hosted
+  # runner labelled zg-ref-laptop is registered (perf/baselines/README.md).
+  # Off by default: set the repository variable ZG_REF_LAPTOP to 'true'.
+  bench-ref-laptop:
+    if: vars.ZG_REF_LAPTOP == 'true'
+    runs-on: [self-hosted, zg-ref-laptop]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - shell: bash
+        run: |
+          zig build bench -Doptimize=ReleaseFast -Dbench-repeats=7 --summary line
+          zig build bench-scenarios -Doptimize=ReleaseFast --summary line
+          zig build -Doptimize=ReleaseFast bench-build --summary line
+          zig-out/bench-bin/perfgate merge --out "$RUNNER_TEMP/ref.json" zig-out/bench-results/all.json zig-out/bench-results/scenarios.json
+          zig-out/bench-bin/perfgate compare --base "$RUNNER_TEMP/ref.json" --head "$RUNNER_TEMP/ref.json" \
+            --machine ref_laptop_2024 --json "$RUNNER_TEMP/ref-gate.json" --markdown "$RUNNER_TEMP/ref.md" || true
+          cat "$RUNNER_TEMP/ref.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Open an issue per failed budget
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -r '.rows[] | select(.verdict == "budget_fail") | .budget_id' "$RUNNER_TEMP/ref-gate.json" | sort -u | while read -r id; do
+            title="[perf] budget failure $id"
+            if ! gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number -q '.[0].number' | grep -q .; then
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label E14 --body "The nightly reference-laptop run broke budget \`$id\`. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            fi
+          done
 
   toolchain-selftest:
     strategy:
