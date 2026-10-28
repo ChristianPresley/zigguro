@@ -130,6 +130,9 @@ pub const Output = struct {
     /// state of `lsp_wait_for_diagnostics`).
     status: ?[]const u8 = null,
     changeset: ?u64 = null,
+    /// The query failed (no server, no symbol, a timeout): the text says
+    /// why, and agents get it as an answer; `zg lsp` exits with 2.
+    failed: bool = false,
 
     pub fn init(arena: Allocator) Output {
         return .{ .text = .init(arena) };
@@ -410,6 +413,7 @@ const Cx = struct {
 
     /// The failure as the model reads it; false when its input was wrong.
     fn failed(cx: *Cx, e: CodeIntel.Error, at: []const u8) !bool {
+        cx.out.failed = true;
         const call = &cx.call;
         const out = cx.w();
         switch (e) {

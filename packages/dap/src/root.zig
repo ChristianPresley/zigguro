@@ -32,6 +32,13 @@ pub const tasks = struct {
     pub const ansi = @import("tasks/matcher/ansi_strip.zig");
 };
 
+/// The tasks without a GUI (E07.F05.S01.T04): `zg task` and the check
+/// task of `zg lsp diagnostics`.
+pub const headless = struct {
+    pub const HeadlessTasks = @import("headless/HeadlessTasks.zig");
+    pub const cli = @import("headless/cli.zig");
+};
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("config/variables_test.zig");
@@ -42,4 +49,5 @@ test {
     _ = @import("tasks/task_sources_test.zig");
     _ = @import("tasks/shell_quote_test.zig");
     _ = @import("tasks/task_runner_test.zig");
+    _ = @import("headless/headless_test.zig");
 }
