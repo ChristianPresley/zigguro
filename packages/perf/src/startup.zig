@@ -8,6 +8,8 @@ pub const timeline = @import("startup/timeline.zig");
 pub const process_start = @import("startup/process_start.zig");
 /// `writeReport`, `persist` and the startup.json history.
 pub const report = @import("startup/report.zig");
+/// The startup benchmark's per-launch records and percentiles.
+pub const bench = @import("startup/bench.zig");
 
 /// See `timeline.Phase`.
 pub const Phase = timeline.Phase;
