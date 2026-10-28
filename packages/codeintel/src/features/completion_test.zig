@@ -358,3 +358,76 @@ test "fuzz: completion accept never lands at stale offsets" {
         }
     }.f, .{});
 }
+
+const SignatureService = @import("signature.zig");
+
+fn sigSettled(s: *SignatureService) bool {
+    return s.pending == null;
+}
+
+fn waitSig(h: *Harness, s: *SignatureService) !void {
+    for (0..2000) |_| {
+        h.mgr.tick();
+        _ = s.tick();
+        if (sigSettled(s)) return;
+        try h.rt.io.sleep(.fromMilliseconds(5), .awake);
+    }
+    return error.Timeout;
+}
+
+fn typeAt(h: *Harness, d: zg_editor.model.api.registry.DocHandle, at: u64, text: []const u8) !void {
+    const doc = h.docs.get(d).?;
+    var cs = try zg_editor.model.edit.change_set.ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = at, .end = at }, .text = text }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+}
+
+fn paramText(s: *SignatureService) []const u8 {
+    const st = s.current().?;
+    const r = st.param_range orelse return "";
+    return st.signature().label[r[0]..r[1]];
+}
+
+test "signature: trigger, cycle, retrigger with the active help, close on null" {
+    var h: Harness = undefined;
+    try h.init("signature.script", &.{});
+    defer h.deinit();
+    const d = try h.open("main.zig", "f\n");
+    defer {
+        h.mgr.closeDoc(d);
+        h.docs.release(d);
+    }
+    try waitRunning(&h);
+    var s = SignatureService.init(&h.mgr, .noop);
+    defer s.deinit();
+
+    // Not a trigger: nothing asked.
+    try s.onType(d, 'x', 1);
+    try testing.expect(s.pending == null);
+    try typeAt(&h, d, 1, "(");
+    try s.onType(d, '(', 2);
+    try waitSig(&h, &s);
+    try testing.expectEqual(@as(usize, 2), s.current().?.signatures.len);
+    try testing.expectEqualStrings("a: u8", paramText(&s));
+    // Up/Down cycle the signatures.
+    try testing.expect(s.cycle(true));
+    try testing.expectEqualStrings("c: bool", paramText(&s));
+    // The retrigger carries the signature cycled to.
+    try typeAt(&h, d, 2, "1,");
+    try s.onType(d, ',', 4);
+    try waitSig(&h, &s);
+    try testing.expectEqual(@as(u32, 0), s.current().?.active);
+    try testing.expectEqualStrings("b: u16", paramText(&s));
+    // A caret moving within the call keeps it; before the parenthesis
+    // closes it (no request).
+    s.cursorMoved(d, 3);
+    try testing.expect(s.current() != null);
+    // Any edit while it shows asks again; null hides it.
+    try typeAt(&h, d, 4, "x");
+    try s.onType(d, 'x', 5);
+    try waitSig(&h, &s);
+    try testing.expect(s.current() == null);
+    try typeAt(&h, d, 5, ")");
+    s.cursorMoved(d, 1);
+    try testing.expect(s.current() == null);
+}
