@@ -1,6 +1,6 @@
 //! Trace capture in the IDE (E14.F02.S01.T02): `--trace=<path>`,
-//! `--trace-format=perfetto|chrome`, `ZG_TRACE=startup|<path>|startup:<path>`
-//! and the `perf.trace.*` commands, on top of zg_perf's drain and
+//! `--trace-format=perfetto|chrome`, `ZG_TRACE=startup|<path>|startup:<path>`,
+//! `ZG_OS_TRACE=ftrace|etw` and the `perf.trace.*` commands, on top of zg_perf's drain and
 //! `TraceSession`.
 //!
 //! Start and the stop request are cheap on the UI thread; the final drain,
@@ -69,6 +69,8 @@ pub const Tracing = struct {
     /// The last finished trace, for the toast (owned).
     last_path: ?[]u8 = null,
     last_summary: ?session.Summary = null,
+    /// `ZG_OS_TRACE=ftrace|etw`: zones mirrored to the OS tracer.
+    os: zg_perf.os.OsTrace = .{},
 
     /// Starts the drain; `env` gives the trace folder.
     pub fn init(t: *Tracing, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) void {
@@ -78,6 +80,13 @@ pub const Tracing = struct {
             break :blk @constCast(d orelse break :blk null);
         };
         t.drain.start();
+        if (env.get("ZG_OS_TRACE")) |v| {
+            if (zg_perf.os.OsTrace.Kind.parse(v)) |kind| {
+                t.os.init(kind, io);
+                // The UI thread (this one); other threads opt in themselves.
+                if (t.os.kind != .none) zg_perf.os.enableForCurrentThread();
+            } else log.warn("unknown ZG_OS_TRACE {s} (ftrace, etw or off)", .{v});
+        }
     }
 
     /// Finishes a running trace (blocking: at exit), then stops the drain.
@@ -86,6 +95,7 @@ pub const Tracing = struct {
         t.app = null;
         if (t.takeActive()) |s| finish(t, s);
         t.drain.deinit();
+        t.os.deinit();
         if (t.dir) |d| t.gpa.free(d);
         if (t.last_path) |p| t.gpa.free(p);
     }

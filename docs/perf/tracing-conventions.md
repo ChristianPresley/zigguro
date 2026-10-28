@@ -2,6 +2,8 @@
 
 How zigguro code names what it traces, which async spans exist, and what a trace may never contain. Every package that emits zones, counters, async spans or flows follows these rules; E10, E11, E07, E08 and E09 tasks cite this page. E16 owns the final privacy policy; this is the minimum.
 
+How to record and analyse traces (in-app, perf, WPR) is in [profiling.md](profiling.md).
+
 ## Zones and counters
 
 - Zones name synchronous work on one thread: `const z = zg_core.trace.zone(@src(), "editor.view.paint"); defer z.end();`.
