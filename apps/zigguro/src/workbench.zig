@@ -2272,6 +2272,8 @@ pub const Workbench = struct {
     /// open editors of it follow (unsaved ones stay and say so).
     fn onExplorerMoved(ctx: *anyopaque, old: []const u8, new: ?[]const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        // Note links follow (before the editors reopen the files).
+        if (wb.notes) |n| n.moved(old, new);
         var i: usize = 0;
         while (i < wb.files.items.len) {
             const f = &wb.files.items[i];
