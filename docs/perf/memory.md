@@ -126,4 +126,4 @@ E14 provides the mechanism; the caches belong to their epics:
 | E08 | Index pages | Release mapped regions (`madvise(MADV_DONTNEED)` / `DiscardVirtualMemory`; E08 decides) |
 | E10 | Old transcript text | Offload to disk |
 
-The `idle_memory` scenario (open a large workspace, idle 10 s, check `mem.idle_private` < 150 MB) comes with the E14.F06 scenario runner.
+The idle-memory check is the app's `idle` scenario (`zigguro --bench-scenario=idle`, alias `idle_memory`; see [benchmarks.md](benchmarks.md#app-scenarios)). It opens the Linux-sized corpus as a workspace, five of its files and the terminal panel, settles for 5 s, idles for 30 s and then records `idle.private_bytes` (budget `mem.idle_private` < 150 MB) and `idle.rss_bytes`. An agent session loaded from a fixture transcript is not part of it yet: the app has no transcript replay hook.

@@ -593,18 +593,28 @@ pub fn build(b: *std.Build) void {
     b.step("test-build", "Self-test the build graph (spawns zig build)").dependOn(&test_build_run.step);
 
     // Benchmarks: each package's `<name>-bench` writes zig-out/bench-results/<name>.json.
-    const bench_step = b.step("bench", "Run every package benchmark (-Dbench-quick, -Dbench-filter)");
+    // -Dbench-repeats=N runs each binary N times; perfgate (below) merges
+    // every run into zig-out/bench-results/all.json (E14.F06.S01.T02).
+    const bench_step = b.step("bench", "Run every package benchmark (-Dbench-quick, -Dbench-filter, -Dbench-repeats)");
+    const bench_repeats = @max(1, b.option(u32, "bench-repeats", "Runs of each bench binary, merged into bench-results/all.json (default 1)") orelse 1);
+    var bench_outputs: std.ArrayList(std.Build.LazyPath) = .empty;
     inline for (packages.all, 0..) |p, i| {
         if (p.has_bench) {
-            const run = b.addRunArtifact(deps[i].artifact(p.name ++ "-bench"));
-            run.has_side_effects = true;
-            run.addArgs(&.{ "--package", p.name });
-            if (bench_quick) run.addArg("--quick");
-            if (bench_filter) |flt| run.addArgs(&.{ "--filter", flt });
-            run.addArg("--out");
-            const out = run.addOutputFileArg(p.name ++ ".json");
-            const install = b.addInstallFileWithDir(out, .prefix, "bench-results/" ++ p.name ++ ".json");
-            bench_step.dependOn(&install.step);
+            for (0..bench_repeats) |k| {
+                const run = b.addRunArtifact(deps[i].artifact(p.name ++ "-bench"));
+                run.has_side_effects = true;
+                run.addArgs(&.{ "--package", p.name });
+                if (bench_quick) run.addArg("--quick");
+                if (bench_filter) |flt| run.addArgs(&.{ "--filter", flt });
+                run.addArg("--out");
+                // A distinct name per run: identical run steps share an output path.
+                const out = run.addOutputFileArg(b.fmt("{s}-{d}.json", .{ p.name, k }));
+                bench_outputs.append(b.allocator, out) catch @panic("OOM");
+                if (k == 0) {
+                    const install = b.addInstallFileWithDir(out, .prefix, "bench-results/" ++ p.name ++ ".json");
+                    bench_step.dependOn(&install.step);
+                }
+            }
         }
     }
 
@@ -622,6 +632,28 @@ pub fn build(b: *std.Build) void {
         const install = b.addInstallFileWithDir(out, .prefix, "bench-results/latency.json");
         b.step("bench-latency", "Type into a 100k-line file in the app and write zig-out/bench-results/latency.json").dependOn(&install.step);
     }
+
+    // bench-scenarios (E14.F06.S01.T02): every macro scenario in the app,
+    // headless, into zig-out/bench-results/scenarios.json (merged by
+    // perfgate below); build with -Doptimize=ReleaseFast for real numbers.
+    // `test-bench-scenarios` runs them in quick mode (part of zig build test).
+    const scenario_names = [_][]const u8{ "view_switch", "editing_100k", "open_1gb", "fuzzy_find_1m", "idle" };
+    var scenario_outputs: [scenario_names.len]std.Build.LazyPath = undefined;
+    const test_scenarios = b.step("test-bench-scenarios", "Run every app scenario once in quick mode, headless");
+    for (scenario_names, &scenario_outputs) |name, *out| {
+        inline for (.{ false, true }) |quick| {
+            const run = b.addRunArtifact(zigguro_exe);
+            run.has_side_effects = true;
+            run.addArg(b.fmt("--bench-scenario={s}", .{name}));
+            if (quick) run.addArg("--bench-quick") else if (bench_repeats > 1) run.addArg(b.fmt("--bench-repeats={d}", .{bench_repeats}));
+            const o = run.addPrefixedOutputFileArg("--bench-out=", b.fmt("{s}.json", .{name}));
+            if (quick) {
+                run.expectExitCode(0);
+                test_scenarios.dependOn(&run.step);
+            } else out.* = o;
+        }
+    }
+    test_step.dependOn(test_scenarios);
 
     // bench-startup (E14.F05.S01.T03): launches the app repeatedly and
     // writes zig-out/bench-results/startup.json; build with
@@ -718,6 +750,30 @@ pub fn build(b: *std.Build) void {
             if (b.args) |a| run.addArgs(a);
             run.has_side_effects = true;
             b.step("perfgate", "Run perfgate: zig build perfgate -- merge|compare|baseline|list-gated ...").dependOn(&run.step);
+        }
+        {
+            const merge = b.addRunArtifact(perfgate);
+            merge.addArg("merge");
+            merge.addArg("--out");
+            const all = merge.addOutputFileArg("all.json");
+            for (bench_outputs.items) |o| merge.addFileArg(o);
+            bench_step.dependOn(&b.addInstallFileWithDir(all, .prefix, "bench-results/all.json").step);
+            const smerge = b.addRunArtifact(perfgate);
+            smerge.addArgs(&.{ "merge", "--out" });
+            const merged = smerge.addOutputFileArg("scenarios.json");
+            for (scenario_outputs) |o| smerge.addFileArg(o);
+            b.step("bench-scenarios", "Run every app scenario headless into zig-out/bench-results/scenarios.json (-Dbench-repeats)").dependOn(&b.addInstallFileWithDir(merged, .prefix, "bench-results/scenarios.json").step);
+        }
+        {
+            // Calibration needs optimized kernels whatever -Doptimize says.
+            const fast = b.addExecutable(.{ .name = "perfgate", .root_module = toolModule(b, "tools/perfgate/main.zig", .ReleaseFast, &.{.{ .name = "zg_perf", .module = perf_host }}) });
+            const run = b.addRunArtifact(fast);
+            run.setCwd(b.path("."));
+            run.addArgs(&.{ "calibrate", "--reference", "perf/baselines/ref_laptop_2024/calibration.json", "--out" });
+            const out = run.addOutputFileArg("calibration.json");
+            if (b.args) |a| run.addArgs(a);
+            run.has_side_effects = true;
+            b.step("perf-calibrate", "Measure this machine against the reference laptop: zig-out/bench-results/calibration.json").dependOn(&b.addInstallFileWithDir(out, .prefix, "bench-results/calibration.json").step);
         }
         {
             const machine = b.option([]const u8, "machine", "perf-baseline: the machine class (ci_linux_x64, ci_windows_x64, ref_laptop_2024)") orelse "ci_linux_x64";
@@ -857,6 +913,9 @@ fn appModule(
     imports.append(b.allocator, .{ .name = "zg_agents_ui", .module = mods[comptime packages.indexOf("zg_agents")].owner.modules.get("zg_agents_ui").? }) catch @panic("OOM");
     // The IDE connects MCP servers the way `zg agent --mcp-config` does.
     if (std.mem.startsWith(u8, root, "apps/zigguro/")) {
+        // Benchmark corpora for the scenario runner (E14.F06.S01.T02).
+        const corpus = b.createModule(.{ .root_source_file = b.path("tools/corpusgen/lib.zig"), .target = target, .optimize = optimize });
+        imports.append(b.allocator, .{ .name = "zg_corpus", .module = corpus }) catch @panic("OOM");
         const servers = b.createModule(.{ .root_source_file = b.path("apps/zg/src/mcp_servers.zig"), .target = target, .optimize = optimize });
         inline for (.{ "zg_core", "zg_net", "zg_mcp", "zg_ai" }) |n| servers.addImport(n, mods[comptime packages.indexOf(n)]);
         imports.append(b.allocator, .{ .name = "zg_mcp_servers", .module = servers }) catch @panic("OOM");
