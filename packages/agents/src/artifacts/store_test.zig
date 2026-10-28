@@ -259,3 +259,24 @@ test "save_creates_changeset" {
     try testing.expectError(error.UnknownArtifact, f.s.saveToWorkspace(.{ .n = 3 }, null, "x", port, .{}));
     try testing.expectEqualStrings("artifact", try save.slug(a, "!!"));
 }
+
+test "tagging_on_create: artifacts keep their project" {
+    var f: Fx = undefined;
+    try f.init();
+    defer f.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const id = try f.s.create(.{ .kind = .markdown, .title = "Outline", .content = "# Outline", .project = "book" });
+    _ = try f.s.create(.{ .kind = .markdown, .title = "Loose", .content = "x" });
+    _ = try f.s.updateChecked(a, id, "# Outline v2", .{}, undefined);
+    try testing.expectEqualStrings("book", (try f.s.get(id, a)).?.project.?);
+    var list: std.ArrayList(store_mod.Artifact) = .empty;
+    try f.s.list(.{ .project = .{ .slug = "book" } }, &list, a);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("Outline", list.items[0].title);
+    list.clearRetainingCapacity();
+    try f.s.list(.{ .project = .none }, &list, a);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("Loose", list.items[0].title);
+}
