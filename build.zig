@@ -594,6 +594,35 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // The budget registry (E14.F01.S01.T01): `zig build budgets-doc`
+    // regenerates docs/perf/budgets.md; `zig build test` fails when it is
+    // stale. A duplicate budget id must not compile.
+    {
+        const perf_host = b.dependency("zg_perf", host_args).module("zg_perf");
+        const doc_tool = addToolImports(b, "budgets-doc", "packages/perf/tools/budgets_doc.zig", test_filters, f.optimize, tools_test_step, &.{
+            .{ .name = "zg_perf", .module = perf_host },
+        });
+        inline for (.{ false, true }) |check| {
+            const run = b.addRunArtifact(doc_tool);
+            run.setCwd(b.path("."));
+            run.addArg("docs/perf/budgets.md");
+            if (check) run.addArg("--check");
+            run.has_side_effects = true;
+            const step = if (check) b.step("budgets-doc-check", "Fail if docs/perf/budgets.md is stale") else b.step("budgets-doc", "Regenerate docs/perf/budgets.md from packages/perf/budgets.zon");
+            step.dependOn(&run.step);
+            if (check) test_step.dependOn(step);
+        }
+        const dup = b.addTest(.{ .name = "perf-dup-budget", .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/perf/src/budget/testdata/duplicate_id.zig"),
+            .target = b.graph.host,
+            .imports = &.{.{ .name = "zg_perf", .module = perf_host }},
+        }) });
+        dup.expect_errors = .{ .contains = "duplicate budget id: a.b" };
+        const ce = b.step("test-perf-compile-errors", "Check that an invalid budget registry fails to compile");
+        ce.dependOn(&dup.step);
+        test_step.dependOn(ce);
+    }
+
     // Formatting.
     const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "build.zig.zon", "build", "packages", "apps", "tools" }, .check = true });
     b.step("fmt-check", "Fail if any file is not zig fmt clean").dependOn(&fmt.step);

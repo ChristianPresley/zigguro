@@ -33,6 +33,7 @@
         .zg_install = .{ .path = "packages/install" },
         .zg_codeintel = .{ .path = "packages/codeintel" },
         .zg_agents = .{ .path = "packages/agents" },
+        .zg_perf = .{ .path = "packages/perf" },
         // pkgtool:insert
     },
     .paths = .{

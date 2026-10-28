@@ -125,6 +125,9 @@ pub const DecorationStore = struct {
     /// Bumped whenever an inline or block decoration is added, moved or
     /// removed; the display map rebuilds its inlay and block layers.
     inline_generation: u64 = 0,
+    /// Bumped whenever any decoration is added or removed (editors fold
+    /// it into their paint hash).
+    generation: u64 = 0,
     /// Scratch for `onChange`, sized in `add` so edits never allocate.
     touched: std.ArrayList(u32) = .empty,
     scratch_items: std.ArrayList(Tree.Item) = .empty,
@@ -201,6 +204,7 @@ pub const DecorationStore = struct {
         sl.owner_pos = @intCast(owner.nodes.items.len);
         owner.nodes.appendAssumeCapacity(n);
         if (isInline(deco.kind)) s.inline_generation += 1;
+        s.generation += 1;
         return idOf(sl.gen, n);
     }
 
@@ -326,6 +330,7 @@ pub const DecorationStore = struct {
             sl.gen +%= 1;
         }
         const kept = items.items.len;
+        s.generation += 1;
         for (prepared.items) |d| {
             const n = if (reuse > 0) blk: {
                 reuse -= 1;
@@ -430,6 +435,7 @@ pub const DecorationStore = struct {
             s.slots.items[last].owner_pos = sl.owner_pos;
         }
         if (isInline(sl.deco.kind)) s.inline_generation += 1;
+        s.generation += 1;
         freePayload(s.gpa, &sl.deco);
         sl.live = false;
         sl.gen +%= 1;

@@ -26,7 +26,7 @@
         .zg_mcp = 4,
         .zg_review = 4,
         .zg_agents = 4,
-        .zg_perf = 4,
+        .zg_perf = 1, // E14 epic (#15): budgets, tracing and guardrails every package may import (depends only on zg_core)
         .zg_config = 4,
         .zg_security = 4,
         .zg_mcp_servers = 5,

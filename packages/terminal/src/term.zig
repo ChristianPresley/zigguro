@@ -2,6 +2,7 @@
 //! the screen model, the mode table, palette, reports, OSC and DCS handling.
 
 pub const Terminal = @import("term/Terminal.zig");
+pub const Compactor = @import("term/compactor.zig");
 pub const modes = @import("term/modes.zig");
 pub const ModeId = modes.ModeId;
 pub const Modes = modes.Modes;

@@ -160,13 +160,15 @@ pub const Options = struct {
     hot_rows: u32 = 0,
     /// Deflate compacted lines.
     deflate: bool = true,
+    /// Leave compaction to the owner (`PageList.beginCompact`).
+    background_compact: bool = false,
 };
 
 /// Creates a blank `cols` x `rows` screen.
 pub fn init(gpa: Allocator, cols: u16, rows: u16, o: Options) !Screen {
     return .{
         .gpa = gpa,
-        .pages = try .init(gpa, cols, rows, .{ .max_bytes = o.max_bytes, .scrollback = o.scrollback, .hot_rows = o.hot_rows, .deflate = o.deflate }),
+        .pages = try .init(gpa, cols, rows, .{ .max_bytes = o.max_bytes, .scrollback = o.scrollback, .hot_rows = o.hot_rows, .deflate = o.deflate, .background_compact = o.background_compact }),
         .region = .{ .top = 0, .bottom = rows - 1, .left = 0, .right = cols - 1 },
     };
 }
