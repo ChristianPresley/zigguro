@@ -325,6 +325,39 @@ pub const NotesService = struct {
         s.wake();
     }
 
+    /// Follows the link at byte `cursor` of `text`, the note at absolute
+    /// `abs` (#677): opens its target at the heading or block it names,
+    /// creating a missing note first. False when no link is there.
+    pub fn followLink(s: *NotesService, abs: []const u8, text: []const u8, cursor: u32) !bool {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const rel = s.relOf(&buf, abs) orelse return false;
+        if (!s.vault.isNotePath(rel)) return false;
+        var arena: std.heap.ArenaAllocator = .init(s.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const view = try s.ix.reader();
+        defer view.release();
+        const target = (try zg_notes.lang.link_nav.definition(a, view, &s.vault, rel, text, cursor)) orelse return false;
+        switch (target) {
+            .open => |o| {
+                const to = try std.fs.path.join(a, &.{ s.root, o.path });
+                s.hooks.open(s.hooks.ctx, to, o.range, false);
+            },
+            .create => |c| {
+                const to = try std.fs.path.join(a, &.{ s.root, c.path });
+                const cwd = Io.Dir.cwd();
+                if (std.fs.path.dirname(to)) |d| try cwd.createDirPath(s.io, d);
+                if (cwd.createFile(s.io, to, .{ .exclusive = true })) |f| f.close(s.io) else |e| switch (e) {
+                    error.PathAlreadyExists => {},
+                    else => return e,
+                }
+                try s.reindex(c.path);
+                s.hooks.open(s.hooks.ctx, to, null, false);
+            },
+        }
+        return true;
+    }
+
     pub fn stateNow(s: *const NotesService) State {
         return s.state.load(.acquire);
     }
@@ -737,4 +770,33 @@ test "notes service: renaming a note rewrites links to it; deleting forgets it" 
     s.moved(new, null);
     try testing.expect(s.idOf("zeta.md") == null);
     try testing.expectEqual(@as(u32, 1), s.noteCount());
+}
+
+test "notes service: following a link opens its heading or creates the note" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a_text = "# Alpha\n\n[[b#Part]] and [[missing]]\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.md", .data = a_text });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.md", .data = "# Bravo\n\n## Part\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try tmpRoot(&tmp, &buf);
+    const t = try zg_gui.testing.TestApp.init(gpa, .{});
+    defer t.deinit();
+    var rec: Rec = .{};
+    const s = try NotesService.create(gpa, io, &t.app, root, rec.hooks());
+    defer s.destroy();
+    const a = try std.fs.path.join(gpa, &.{ root, "a.md" });
+    defer gpa.free(a);
+
+    try testing.expect(!try s.followLink(a, a_text, 3));
+    try testing.expect(try s.followLink(a, a_text, 11));
+    try testing.expect(std.mem.endsWith(u8, rec.opened[0..rec.opened_len], "b.md"));
+    try testing.expectEqual(@as(u32, 9), rec.range.?[0]);
+    const at = @as(u32, @intCast(std.mem.indexOf(u8, a_text, "missing").?));
+    try testing.expect(try s.followLink(a, a_text, at));
+    try testing.expect(std.mem.endsWith(u8, rec.opened[0..rec.opened_len], "missing.md"));
+    try tmp.dir.access(io, "missing.md", .{});
+    try testing.expect(s.idOf("missing.md") != null);
 }
