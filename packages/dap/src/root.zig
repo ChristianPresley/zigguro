@@ -38,6 +38,14 @@ pub const session = struct {
     pub const child_sessions = @import("session/child_sessions.zig");
     pub const compounds = @import("session/compounds.zig");
 };
+/// Breakpoints (E07.F06.S03): the model, its persistence, the gutter
+/// marks and a line tracker for headless hosts.
+pub const breakpoints = struct {
+    pub const BreakpointManager = @import("breakpoints/BreakpointManager.zig");
+    pub const LineTracker = @import("breakpoints/LineTracker.zig");
+    pub const persist = @import("breakpoints/persist.zig");
+    pub const decorate = @import("breakpoints/decorate.zig");
+};
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
     pub const DapConnection = @import("conn/DapConnection.zig");
@@ -83,4 +91,5 @@ test {
     _ = @import("session/session_test.zig");
     _ = @import("session/reverse_requests_test.zig");
     _ = @import("session/compounds_test.zig");
+    _ = @import("breakpoints/breakpoints_test.zig");
 }

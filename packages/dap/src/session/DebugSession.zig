@@ -515,6 +515,10 @@ fn setState(s: *DebugSession, st: SessionState) void {
     if (changed) s.notify(.state);
 }
 
+fn breakpointsEnded(s: *DebugSession) void {
+    if (s.manager.cfg.breakpoints) |bp| if (bp.onEnd) |f| f(bp.ctx, s);
+}
+
 /// Adds an `important` line to the console (the session's own notices).
 pub fn note(s: *DebugSession, comptime fmt: []const u8, args: anytype) void {
     var buf: [1024]u8 = undefined;
@@ -619,6 +623,13 @@ fn send(s: *DebugSession, command: []const u8, args: ?[]const u8, cb: ?DapConnec
     return true;
 }
 
+/// Sends `command` (`args` is JSON text, or null) without waiting; `cb`
+/// gets the result on the dispatcher. False when the adapter is gone (`cb`
+/// is not called).
+pub fn sendRequest(s: *DebugSession, command: []const u8, args: ?[]const u8, cb: DapConnection.RawRespCb) bool {
+    return s.send(command, args, cb);
+}
+
 fn ignore(_: ?*anyopaque, r: DapConnection.RawResult) void {
     r.deinit();
 }
@@ -666,6 +677,7 @@ pub fn run(s: *DebugSession) Io.Cancelable!void {
     };
     if (s.state() == .failed) {
         s.teardown();
+        s.breakpointsEnded();
         s.ended_event.set(s.io);
         s.notify(.state);
         if (s.opts.parent) |p| {
@@ -1253,6 +1265,7 @@ fn teardown(s: *DebugSession) void {
 
 fn endSession(s: *DebugSession, crashed: bool) void {
     child_sessions.stopChildren(s);
+    s.breakpointsEnded();
     s.mutex.lockUncancelable(s.io);
     s.table.applyContinued(null, true);
     s.step_in_flight = false;

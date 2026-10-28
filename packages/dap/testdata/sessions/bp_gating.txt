@@ -1,0 +1,13 @@
+# An adapter without conditions, hit counts, logpoints or function
+# breakpoints: the logpoint and the function breakpoint are not sent.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< event initialized
+> setBreakpoints {"source": {"path": "/w/a.zig"}, "breakpoints": [{"line": 3}, {"line": 5}]}
+< {"body": {"breakpoints": [{"id": 1, "verified": true}, {"id": 2, "verified": true}]}}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> disconnect
+< {}

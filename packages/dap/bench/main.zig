@@ -22,6 +22,29 @@ fn register(b: *bench.Bench) !void {
     defer afx.deinit();
     try b.run("dap.adapters.discover: resolve every built-in adapter on a typical PATH (warm)", &afx, discoverAdapters);
     try b.run("dap.config.load_200: 100 launch.zon and 100 launch.json configurations", {}, loadConfigs);
+    try b.run("dap.breakpoints.load_10k: breakpoints.zon with 10k breakpoints", {}, loadBreakpoints);
+}
+
+/// 10k saved breakpoints into the model, from text already read. Budget:
+/// < 20 ms.
+fn loadBreakpoints(_: void, s: *State) void {
+    const gpa = s.allocator();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    text.appendSlice(gpa, ".{ .version = 1, .breakpoints = .{\n") catch unreachable;
+    for (0..10_000) |i| {
+        if (i % 4 == 0) {
+            text.print(gpa, "  .{{ .kind = .source, .path = \"src/file{d}.zig\", .line = {d}, .condition = \"i > {d}\" }},\n", .{ i % 300, i % 2000 + 1, i }) catch unreachable;
+        } else text.print(gpa, "  .{{ .kind = .source, .path = \"src/file{d}.zig\", .line = {d} }},\n", .{ i % 300, i % 2000 + 1 }) catch unreachable;
+    }
+    text.appendSlice(gpa, "} }\n") catch unreachable;
+    s.setBytes(text.items.len);
+    for (0..s.iterations()) |_| {
+        var m: zg_dap.breakpoints.BreakpointManager = .init(gpa, s.io, .{});
+        defer m.deinit();
+        m.load(text.items) catch unreachable;
+        bench.doNotOptimizeAway(m.entries.items.len);
+    }
 }
 
 /// The launch configurations from texts already read. Budget: < 5 ms.

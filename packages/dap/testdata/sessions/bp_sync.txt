@@ -1,0 +1,13 @@
+# Breakpoints go out per source after initialized: enabled ones only,
+# answers mapped by index.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsConditionalBreakpoints": true, "supportsLogPoints": true}}
+> launch
+< event initialized
+> setBreakpoints {"source": {"name": "a.zig", "path": "/w/a.zig"}, "breakpoints": [{"line": 3}, {"line": 7, "condition": "i > 1"}, {"line": 11, "logMessage": "x={x}"}], "lines": [3, 7, 11], "sourceModified": false}
+< {"body": {"breakpoints": [{"id": 1, "verified": true, "line": 4}, {"id": 2, "verified": false, "message": "no code"}, {"id": 3, "verified": true, "line": 11}]}}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> disconnect
+< {}

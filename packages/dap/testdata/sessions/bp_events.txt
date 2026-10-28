@@ -1,0 +1,17 @@
+# breakpoint events: changed updates by adapter id, new adopts, removed
+# drops an adopted one.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< event initialized
+> setBreakpoints {"source": {"path": "/w/a.zig"}, "breakpoints": [{"line": 3}]}
+< {"body": {"breakpoints": [{"id": 1, "verified": false}]}}
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event breakpoint {"reason": "changed", "breakpoint": {"id": 1, "verified": true, "line": 5}}
+< event breakpoint {"reason": "new", "breakpoint": {"id": 9, "verified": true, "source": {"path": "/w/b.zig"}, "line": 5}}
+< event breakpoint {"reason": "removed", "breakpoint": {"id": 9, "verified": true}}
+< event breakpoint {"reason": "new", "breakpoint": {"id": 10, "verified": true, "source": {"path": "/w/c.zig"}, "line": 2}}
+> disconnect
+< {}
