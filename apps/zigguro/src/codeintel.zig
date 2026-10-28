@@ -83,6 +83,7 @@ pub const SaveActions = zg_codeintel.features.SaveActions;
 pub const FileOpHooks = zg_codeintel.features.FileOpHooks;
 const OutlineProvider = zg_codeintel.features.OutlineProvider;
 const WorkspaceSymbols = zg_codeintel.features.WorkspaceSymbols;
+const LinkedEditingService = zg_codeintel.features.LinkedEditingService;
 pub const SymbolPickers = @import("symbol_pickers.zig").SymbolPickers;
 pub const InlineInfo = @import("lens_ui.zig").InlineInfo;
 const SnippetStack = zg_codeintel.snippet.Session.Stack;
@@ -178,6 +179,13 @@ pub const CodeIntel = struct {
     pickers: SymbolPickers = undefined,
     /// Inlay hints and code lenses.
     inline_info: InlineInfo = undefined,
+    /// Linked editing (`editor.linkedEditing`): the session's editor and
+    /// decorations.
+    linked: LinkedEditingService = undefined,
+    linked_seen: u64 = 0,
+    linked_view: ?*EditorView = null,
+    linked_deco: ?*DecorationStore = null,
+    linked_owner: zg_editor.model.decorations.store.OwnerId = undefined,
 
     /// Rest time before a hover is asked.
     pub const hover_delay_ms = 500;
@@ -279,6 +287,7 @@ pub const CodeIntel = struct {
         ci.pickers = .init(gpa, &ci.outline, &ci.ws_symbols);
         try ci.outline.subscribe(.{ .ctx = ci, .f = onOutline });
         try ci.inline_info.init(gpa, &ci.mgr, ci.waker(), style.inlay);
+        ci.linked = .init(&ci.mgr, ci.waker(), .{});
         ci.lsp_tools = .{ .src = .{ .mgr = &ci.mgr, .store = &ci.diags, .roots = (&ci.cwd)[0..1], .ui = .{ .ctx = ci, .run = runOnUi } } };
         return ci;
     }
@@ -292,6 +301,7 @@ pub const CodeIntel = struct {
             ci.unhook(f.view);
         }
         ci.clearHighlights();
+        ci.clearLinked();
         ci.refactor.close();
         ci.pickers.deinit();
         ci.inline_info.release();
@@ -307,6 +317,7 @@ pub const CodeIntel = struct {
         ci.outline.deinit();
         ci.ws_symbols.deinit();
         ci.inline_info.deinitServices();
+        ci.linked.deinit();
         ci.engine.deinit();
         ci.gpa.free(ci.fs.trash_root);
         ci.completion.deinit();
@@ -394,6 +405,8 @@ pub const CodeIntel = struct {
         pub const bulb_preferred: StyleRef = @enumFromInt(0x0702_000a);
         /// Inlay hint text.
         pub const inlay: StyleRef = @enumFromInt(0x0702_000b);
+        /// Ranges edited together (linked editing).
+        pub const linked: StyleRef = @enumFromInt(0x0702_000c);
     };
 
     /// `EditorView.styles` for the diagnostic styles, from the app's
@@ -413,6 +426,7 @@ pub const CodeIntel = struct {
             style.bulb => th.color(.fg_muted),
             style.bulb_preferred => th.color(.warning),
             style.inlay => th.color(.fg_muted),
+            style.linked => th.color(.accent).fade(0.18),
             else => null,
         };
     }
@@ -458,6 +472,10 @@ pub const CodeIntel = struct {
             ci.save_actions.forget(h);
             ci.outline.forget(h);
             ci.inline_info.forget(h, f.view);
+            if (ci.linked_view == f.view) {
+                ci.linked.end();
+                ci.clearLinked();
+            }
             if (ci.inlay_hover) |ih| if (ih.view == f.view) {
                 ci.inlay_hover = null;
             };
@@ -506,6 +524,9 @@ pub const CodeIntel = struct {
         if (ci.fileOf(current)) |f| if (f.view == view and f.attached) {
             const r = sel.range();
             ci.refactor.caret(f.h, .{ .start = r.start, .end = r.end }, f.doc.version, ci.nowMs());
+            if (sel.isCaret()) ci.linked.onCursor(f.h, sel.head, ci.nowMs()) else ci.linked.end();
+            // Edits since may have ended the session.
+            _ = ci.linked.active(f.h);
         };
         // A shown hover goes with an edit, and a keyboard hover when the
         // caret leaves its word.
@@ -605,6 +626,11 @@ pub const CodeIntel = struct {
                 ci.inline_info.modifiers(k.mods.ctrl or ctrl_key, k.mods.alt or alt_key);
                 if (ci.inline_info.tick(ci.nowMs())) if (ci.win) |w| w.markAllDirty();
                 if (isModifier(k.key)) return false;
+                if (k.key == .escape and ci.linked_view == v) {
+                    ci.linked.end();
+                    ci.tick();
+                    return true;
+                }
                 ci.comp_origin = e.origin;
                 if (ci.completionKey(f, k)) return true;
                 const showing = ci.popup.isOpen() or ci.hover.pending != null or ci.rest != null;
@@ -1074,6 +1100,45 @@ pub const CodeIntel = struct {
         d.setOwnerDecorations(ci.hl_owner, ci.highlight.marks_version, list.items) catch {};
     }
 
+    /// A linked editing session started or ended: a caret in every range
+    /// (the primary's column), drawn with `style.linked`; ending leaves
+    /// the primary caret.
+    fn applyLinked(ci: *CodeIntel) void {
+        ci.linked_seen = ci.linked.generation;
+        const ses = ci.linked.session orelse {
+            if (ci.linked_view) |v| if (v.sels.items.items.len > 1) v.setSelection(.caret(v.primarySel().head));
+            return ci.clearLinked();
+        };
+        const f = ci.fileOf(ses.h) orelse return ci.clearLinked();
+        const rs = ci.linked.active(ses.h) orelse return ci.clearLinked();
+        const p = ci.linked.primary();
+        const head = f.view.primarySel().head;
+        const col = head -| rs[p].start;
+        var sels: std.ArrayList(zg_editor.model.edit.selection.Selection) = .empty;
+        defer sels.deinit(ci.gpa);
+        for (rs) |r| sels.append(ci.gpa, .caret(@min(r.start + col, r.end))) catch return;
+        f.view.setSelections(sels.items, p) catch return;
+        ci.linked_view = f.view;
+        const d = f.deco orelse return;
+        if (ci.linked_deco != null and ci.linked_deco != d) ci.clearLinked();
+        ci.linked_view = f.view;
+        if (ci.linked_deco == null) {
+            ci.linked_owner = d.ownerByName("lsp.linked") orelse d.registerOwner("lsp.linked", -5) catch return;
+            ci.linked_deco = d;
+        }
+        var list: std.ArrayList(zg_editor.model.decorations.store.Decoration) = .empty;
+        defer list.deinit(ci.gpa);
+        for (rs) |r| list.append(ci.gpa, .{ .range = .{ .start = r.start, .end = r.end }, .owner = ci.linked_owner, .stick = .grow_both, .kind = .{ .highlight = style.linked } }) catch return;
+        d.setOwnerDecorations(ci.linked_owner, f.doc.version, list.items) catch {};
+    }
+
+    fn clearLinked(ci: *CodeIntel) void {
+        ci.linked_view = null;
+        const d = ci.linked_deco orelse return;
+        d.clearOwner(ci.linked_owner);
+        ci.linked_deco = null;
+    }
+
     fn clearHighlights(ci: *CodeIntel) void {
         const d = ci.hl_deco orelse return;
         d.clearOwner(ci.hl_owner);
@@ -1104,6 +1169,10 @@ pub const CodeIntel = struct {
         ci.refactor.win = ci.win;
         const refactor_due = ci.refactor.tick(now_ms);
         if (ci.outline.tick(now_ms)) changed = true;
+        if (ci.linked.tick(now_ms) or ci.linked.generation != ci.linked_seen) {
+            ci.applyLinked();
+            changed = true;
+        }
         if (ci.inline_info.tick(now_ms)) {
             changed = true;
             ci.showInlayTooltip();
@@ -1132,7 +1201,7 @@ pub const CodeIntel = struct {
             const ms: u64 = @intCast(@max(1, @divFloor(d - now, std.time.ns_per_ms) + 1));
             wait = if (wait) |x| @min(x, ms) else ms;
         };
-        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue(), ci.inline_info.nextDue() }) |due| if (due) |d| {
+        for ([_]?u64{ if (ci.rest) |r| r.due_ms else null, ci.hide_due_ms, refactor_due, ci.outline.nextDue(), ci.ws_symbols.nextDue(), ci.inline_info.nextDue(), ci.linked.nextDue() }) |due| if (due) |d| {
             const ms = @max(1, d -| now_ms);
             wait = if (wait) |x| @min(x, ms) else ms;
         };

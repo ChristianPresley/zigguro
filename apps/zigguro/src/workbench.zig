@@ -1854,6 +1854,7 @@ pub const Workbench = struct {
             const m = st.string("editor.inlayHints.enabled");
             const mode: InlineInfo.Mode = if (std.mem.eql(u8, m, "off")) .off else if (std.mem.eql(u8, m, "onUnlessPressed")) .on_unless_pressed else if (std.mem.eql(u8, m, "offUnlessPressed")) .off_unless_pressed else .on;
             ci.inline_info.configure(mode, st.boolean("editor.codeLens"));
+            ci.linked.setEnabled(st.boolean("editor.linkedEditing"));
         }
         wb.armAutosave();
         wb.applyExplorerSettings();
