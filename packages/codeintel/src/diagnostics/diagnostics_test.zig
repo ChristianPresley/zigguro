@@ -427,3 +427,89 @@ test "diag: pull full/unchanged resultId flow; relatedDocuments applied; refresh
     try c.pump(Ctx.r3);
     try testing.expectEqual(@as(usize, 0), c.diags().len);
 }
+
+const Problems = @import("problems.zig");
+
+test "problems: grouping and order; filter text and severity; next/prev wraps across files" {
+    var rt: @import("zg_core").Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var st = try Store.init(testing.allocator, rt.io, .posix);
+    defer st.deinit();
+    const a: Store.Owner = .{ .server = 0 };
+    const b: Store.Owner = .{ .task = 1 };
+    try st.replace("/w/b.zig", a, try setOf(a, &.{ lspDiag(4, 0, 1, .Error, "bad thing"), lspDiag(1, 2, 3, .Warning, "unused x") }));
+    try st.replace("/w/b.zig", b, try setOf(b, &.{lspDiag(2, 0, 1, .Error, "build: expected ';'")}));
+    try st.replace("/w/a.zig", a, try setOf(a, &.{lspDiag(0, 0, 1, .Hint, "consider const")}));
+    st.commit();
+
+    var p = Problems.init(testing.allocator);
+    defer p.deinit();
+    try testing.expect(try p.update(&st, .{}));
+    try testing.expect(!try p.update(&st, .{}));
+    // Files by key, diagnostics merged by position across owners.
+    try testing.expectEqual(@as(usize, 2), p.files.items.len);
+    try testing.expectEqualStrings("/w/a.zig", p.files.items[0].key);
+    const bi = p.fileItems(1);
+    try testing.expectEqual(@as(usize, 3), bi.len);
+    try testing.expectEqualStrings("unused x", bi[0].diag.message);
+    try testing.expectEqualStrings("build: expected ';'", bi[1].diag.message);
+    try testing.expect(bi[1].owner.eql(b));
+    try testing.expectEqual(@as(u32, 2), p.files.items[1].counts[0]);
+    // Ids name their nodes; files have the top bit.
+    try testing.expectEqual(Problems.Node{ .file = 1 }, p.node(p.files.items[1].id).?);
+    try testing.expectEqual(Problems.Node{ .item = .{ .file = 1, .item = 2 } }, p.node(bi[2].id).?);
+    const id_bad = bi[2].id;
+
+    // Next from the top of b.zig, then on, wrapping to a.zig and back.
+    var l = p.step("/w/b.zig", .{ .line = 0, .character = 0 }, .next, false).?;
+    try testing.expectEqualStrings("unused x", p.item(l).diag.message);
+    l = p.step("/w/b.zig", p.item(l).diag.start, .next, false).?;
+    l = p.step("/w/b.zig", p.item(l).diag.start, .next, false).?;
+    try testing.expectEqualStrings("bad thing", p.item(l).diag.message);
+    l = p.step("/w/b.zig", p.item(l).diag.start, .next, false).?;
+    try testing.expectEqualStrings("consider const", p.item(l).diag.message);
+    l = p.step("/w/a.zig", p.item(l).diag.start, .prev, false).?;
+    try testing.expectEqualStrings("bad thing", p.item(l).diag.message);
+    // In-file wraps inside the file; a file without problems goes to the
+    // next one in key order.
+    l = p.step("/w/b.zig", .{ .line = 9, .character = 0 }, .next, true).?;
+    try testing.expectEqualStrings("unused x", p.item(l).diag.message);
+    try testing.expect(p.step("/w/c.zig", .{ .line = 0, .character = 0 }, .next, true) == null);
+    l = p.step("/w/aa.zig", .{ .line = 0, .character = 0 }, .next, false).?;
+    try testing.expectEqual(@as(u32, 1), l.file);
+
+    // Text (case folded, message, source or code) and severity filters.
+    _ = try p.update(&st, .{ .text = "BUILD" });
+    try testing.expectEqual(@as(usize, 1), p.count());
+    _ = try p.update(&st, .{ .min_severity = .warning });
+    try testing.expectEqual(@as(usize, 3), p.count());
+    try testing.expectEqual(@as(usize, 1), p.files.items.len);
+    _ = try p.update(&st, .{ .key = "/w/a.zig" });
+    try testing.expectEqual(@as(usize, 1), p.count());
+
+    // Ids stay across updates: a new diagnostic elsewhere keeps them.
+    try st.replace("/w/c.zig", a, try setOf(a, &.{lspDiag(0, 0, 1, .Error, "c")}));
+    st.commit();
+    _ = try p.update(&st, .{});
+    try testing.expectEqual(@as(usize, 3), p.files.items.len);
+    try testing.expectEqual(Problems.Node{ .item = .{ .file = 1, .item = 2 } }, p.node(id_bad).?);
+    try testing.expectEqual([4]u32{ 3, 1, 0, 1 }, Problems.totals(&st));
+}
+
+test "problems: duplicate diagnostics get distinct ids" {
+    var rt: @import("zg_core").Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var st = try Store.init(testing.allocator, rt.io, .posix);
+    defer st.deinit();
+    const a: Store.Owner = .{ .server = 0 };
+    try st.replace("/w/a.zig", a, try setOf(a, &.{ lspDiag(0, 0, 1, .Error, "same"), lspDiag(0, 0, 1, .Error, "same") }));
+    st.commit();
+    var p = Problems.init(testing.allocator);
+    defer p.deinit();
+    _ = try p.update(&st, .{});
+    const its = p.fileItems(0);
+    try testing.expect(its[0].id != its[1].id);
+    try testing.expectEqual(@as(u32, 3), p.nodes.count());
+}

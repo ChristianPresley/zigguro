@@ -1,5 +1,5 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
-// user's keybindings.json win). VS Code's explorer keys.
+// user's keybindings.json win). VS Code's explorer and problems keys.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
@@ -10,4 +10,10 @@
     .{ .key = "mod+x", .command = "explorer.cut", .when = "explorerTreeFocus" },
     .{ .key = "mod+v", .command = "explorer.paste", .when = "explorerTreeFocus" },
     // workbench.files.action.refreshFilesExplorer has no default key.
+    // workbench.actions.view.problems / editor.action.marker.next / prev
+    // (marker.nextInFiles in VS Code)
+    .{ .key = "mod+shift+m", .command = "workbench.showProblems" },
+    .{ .key = "f8", .command = "editor.nextProblem" },
+    .{ .key = "shift+f8", .command = "editor.previousProblem" },
+    .{ .key = "mod+c", .command = "problems.copy", .when = "problemsFocus" },
 }
