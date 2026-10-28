@@ -24,7 +24,8 @@
 //!
 //! `--trace=<path>` (with `--trace-format=perfetto|chrome`) records a
 //! performance trace until exit; `ZG_TRACE=startup` records startup to the
-//! first frame + 2 s (see `tracing.zig`).
+//! first frame + 2 s (see `tracing.zig`). `--hud` opens the performance
+//! HUD (Ctrl+Alt+Shift+H, `perf.hud.toggle`).
 //!
 //! Text is drawn with system fonts through `zg_gui.FontText` (see
 //! `fonts.zig`), or with placeholder boxes when no font file is found.
@@ -123,6 +124,8 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const want_terminal = hasFlag(min, rt.gpa, "--terminal");
     const want_agent = hasFlag(min, rt.gpa, "--agent");
     const want_review = hasFlag(min, rt.gpa, "--review");
+    // `--hud` opens the performance HUD (perf.hud.toggle) at start.
+    const want_hud = hasFlag(min, rt.gpa, "--hud");
     const frames_arg = framesArg(min, rt.gpa);
     var state_buf: [std.fs.max_path_bytes]u8 = undefined;
     const state_dir = zg_crash.paths.stateDirAt(rt.io, min.environ, &state_buf);
@@ -168,6 +171,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         var host = zg_gui.Host.init(rt.gpa, rt.io, &app, platform, text_sys, .{
             .fonts = font_text,
             .a11y = .{ .session_address = session_bus, .version = zg_release.current.version_string },
+            .timeline = tracing.timeline,
         });
         defer host.deinit();
         // Interactive sessions get the working folder's saved layout back
@@ -181,6 +185,9 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
             }
         }
         const hw = try host.open(.{ .title = "zigguro", .size = size, .root = root });
+        tracing.hud_win = hw.win;
+        defer tracing.detachWindow();
+        if (want_hud) tracing.toggleHud() catch {};
         if (trace_req) |r| if (r.startup) tracing.armStartupStop();
         if (use_wb) try wb.attach(hw.win);
         if (use_wb) wb.enableFloating(host.windowOpener());
@@ -214,9 +221,12 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
     const frames = frames_arg orelse 3;
     const hl = try zg_platform.headless.Headless.init(rt.gpa, rt.io, .{});
     defer hl.deinit();
-    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), text_sys, .{ .fonts = font_text });
+    var host = zg_gui.Host.init(rt.gpa, rt.io, &app, hl.platform(), text_sys, .{ .fonts = font_text, .timeline = tracing.timeline });
     defer host.deinit();
     const hw = try host.open(.{ .title = "zigguro", .size = .{ .w = 960, .h = 600 }, .root = root });
+    tracing.hud_win = hw.win;
+    defer tracing.detachWindow();
+    if (want_hud) tracing.toggleHud() catch {};
     if (use_wb) try wb.attach(hw.win);
     if (want_terminal) try wb.toggleTerminal();
     if (want_agent) try wb.toggleAgent();
