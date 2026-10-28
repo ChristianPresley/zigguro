@@ -1,0 +1,13 @@
+# runInTerminal: the debuggee starts in the launcher's terminal and the
+# response carries its process ids.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< reverse runInTerminal {"kind": "integrated", "title": "app", "cwd": "/w", "args": ["/w/app", "a b"], "env": {"ZG_TEST": "1", "ZG_UNSET": null}}
+> response runInTerminal {"success": true, "body": {"processId": 4242, "shellProcessId": 17}}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< event initialized
+> configurationDone
+< {}
+> disconnect {"terminateDebuggee": true}
+< {}

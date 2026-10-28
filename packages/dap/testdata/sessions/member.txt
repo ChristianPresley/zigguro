@@ -1,0 +1,10 @@
+# A compound member: starts, runs until stopped.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+> disconnect {"terminateDebuggee": true}
+< {}

@@ -34,6 +34,11 @@
 //! stops and starts again with the `terminated` event's `restart` value
 //! as `__restart`. `post_debug_task` runs after the session ends.
 //!
+//! Reverse requests (E07.F06.S02.T02): `runInTerminal`
+//! (run_in_terminal.zig) and `startDebugging` (child_sessions.zig).
+//! Stopping a session stops its children first. A member of a `stopAll`
+//! compound (compounds.zig) stops and restarts with the other members.
+//!
 //! Threading: the accessors take the session lock and may be called from
 //! any thread. Listeners (`DebugManager.subscribe`) are called on the
 //! dispatcher or the session's worker, never with the lock held; the app
@@ -51,6 +56,9 @@ const variables = @import("../config/variables.zig");
 const threads_mod = @import("threads.zig");
 const console_events = @import("console_events.zig");
 const DebugManager = @import("DebugManager.zig");
+const run_in_terminal = @import("run_in_terminal.zig");
+const child_sessions = @import("child_sessions.zig");
+const compounds = @import("compounds.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -88,6 +96,13 @@ pub const StartOptions = struct {
     start_request_override: ?Value = null,
     /// The configuration's inputs, for `${input:id}`.
     inputs: []const variables.InputDef = &.{},
+    /// A child of a TCP adapter: connect to the parent's server instead
+    /// of starting an adapter.
+    connect: ?Connect = null,
+    /// The compound this session was started with.
+    compound: ?*compounds.CompoundRun = null,
+
+    pub const Connect = struct { port: u16, adapter_id: []const u8 };
 };
 
 /// What changed, for listeners.
@@ -224,6 +239,10 @@ stopping: std.atomic.Value(bool) = .init(false),
 /// The connection is closed and the adapter terminated.
 torn_down: std.atomic.Value(bool) = .init(true),
 restarting: bool = false,
+/// How children reach the adapter: its TCP port (0 for stdio) and
+/// `adapterID`. Under `mutex`.
+adapter_port: u16 = 0,
+adapter_id: []const u8 = "",
 work: Subsystem,
 
 const QueuedStep = struct { kind: StepKind, thread: i64, gran: Granularity };
@@ -251,6 +270,7 @@ pub fn create(m: *DebugManager, id: u32, cfg: *const LaunchConfig, opts: StartOp
     errdefer s.freeParts();
     s.cfg = try copyConfig(s.arena.allocator(), cfg);
     if (opts.start_request_override) |v| s.opts.start_request_override = try copyValue(s.arena.allocator(), v);
+    if (opts.connect) |cn| s.opts.connect = .{ .port = cn.port, .adapter_id = try s.arena.allocator().dupe(u8, cn.adapter_id) };
     return s;
 }
 
@@ -384,6 +404,15 @@ pub fn children(s: *const DebugSession) []const *DebugSession {
     return s.children_.items;
 }
 
+/// Child `i`, under the manager's lock (children are added from session
+/// workers).
+pub fn childAt(s: *DebugSession, i: usize) ?*DebugSession {
+    const m = s.manager;
+    m.mutex.lockUncancelable(m.rt.io);
+    defer m.mutex.unlock(m.rt.io);
+    return if (i < s.children_.items.len) s.children_.items[i] else null;
+}
+
 /// Why the session failed, in `a`.
 pub fn failureMessage(s: *DebugSession, a: Allocator) Allocator.Error!?[]u8 {
     s.mutex.lockUncancelable(s.io);
@@ -484,6 +513,23 @@ fn setState(s: *DebugSession, st: SessionState) void {
     s.state_ = st;
     s.mutex.unlock(s.io);
     if (changed) s.notify(.state);
+}
+
+/// Adds an `important` line to the console (the session's own notices).
+pub fn note(s: *DebugSession, comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, fmt ++ "\n", args) catch return;
+    s.mutex.lockUncancelable(s.io);
+    const added = s.console.add(.{ .category = "important", .output = text }) catch null;
+    s.mutex.unlock(s.io);
+    if (added != null) s.notify(.output);
+}
+
+/// How a child session reaches this session's adapter.
+pub fn adapterReach(s: *DebugSession) struct { port: u16, adapter_id: []const u8 } {
+    s.mutex.lockUncancelable(s.io);
+    defer s.mutex.unlock(s.io);
+    return .{ .port = s.adapter_port, .adapter_id = s.adapter_id };
 }
 
 fn fail(s: *DebugSession, comptime fmt: []const u8, args: anytype, url: ?[]const u8) void {
@@ -622,6 +668,13 @@ pub fn run(s: *DebugSession) Io.Cancelable!void {
         s.teardown();
         s.ended_event.set(s.io);
         s.notify(.state);
+        if (s.opts.parent) |p| {
+            var buf: [512]u8 = undefined;
+            s.mutex.lockUncancelable(s.io);
+            const why = std.fmt.bufPrint(&buf, "{s}", .{s.failure orelse "failed"}) catch buf[0..];
+            s.mutex.unlock(s.io);
+            p.note("The child session \"{s}\" failed: {s}", .{ s.cfg.name, why });
+        }
     }
 }
 
@@ -637,13 +690,13 @@ fn runStart(s: *DebugSession) Allocator.Error!void {
     if (s.opts.start_request_override) |o| args = o;
     args = try copyValue(sa, args);
     if (args != .object) return s.fail("the launch arguments of \"{s}\" are not an object", .{s.cfg.name}, null);
-    if (m.cfg.vars) |vars| {
+    if (m.cfg.vars) |vars| if (s.opts.parent == null) {
         variables.substituteValue(sa, &args, vars, s.opts.inputs) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Cancelled => return s.fail("cancelled", .{}, null),
             else => return s.fail("cannot start \"{s}\": {t}", .{ s.cfg.name, e }, null),
         };
-    }
+    };
 
     // 2. Pre-launch task.
     if (s.cfg.pre_launch_task) |label| if (m.cfg.tasks) |th| {
@@ -662,11 +715,14 @@ fn runStart(s: *DebugSession) Allocator.Error!void {
         }
     };
 
-    // 3. The adapter.
-    const spec = m.cfg.resolver.resolve(m.cfg.resolver.ctx, sa, &s.cfg) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return s.fail("no debug adapter for \"{s}\": {t}", .{ s.cfg.type, e }, null),
-    };
+    // 3. The adapter (a child of a TCP adapter connects to its server).
+    const spec: DebugManager.AdapterSpec = if (s.opts.connect) |cn|
+        .{ .transport = .{ .tcp_connect = .{ .port = cn.port } }, .adapter_id = cn.adapter_id }
+    else
+        m.cfg.resolver.resolve(m.cfg.resolver.ctx, sa, &s.cfg) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return s.fail("no debug adapter for \"{s}\": {t}", .{ s.cfg.type, e }, null),
+        };
     if (spec.message) |msg| return s.fail("{s}", .{msg}, null);
     s.proc = ServerProcess.start(s.rt, .{
         .argv = spec.argv,
@@ -675,14 +731,22 @@ fn runStart(s: *DebugSession) Allocator.Error!void {
         .base_env = spec.env,
         .name = "debug adapter",
     }, m.cfg.policy, ServerProcess.default_stderr_cap) catch |e| {
-        return s.fail("cannot start the debug adapter ({s}): {t}", .{ spec.argv[0], e }, null);
+        return s.fail("cannot start the debug adapter ({s}): {t}", .{ if (spec.argv.len > 0) spec.argv[0] else "connect", e }, null);
     };
+    {
+        s.mutex.lockUncancelable(s.io);
+        defer s.mutex.unlock(s.io);
+        s.adapter_port = if (spec.transport == .stdio) 0 else s.proc.?.port;
+        s.adapter_id = try s.arena.allocator().dupe(u8, spec.adapter_id);
+    }
     s.conn = DapConnection.init(s.rt, s.proc.?.transport(), m.cfg.conn) catch |e| {
         return s.fail("cannot connect to the debug adapter: {t}", .{e}, null);
     };
     const c = s.conn.?;
     try c.onEvent(.{ .ctx = s, .func = onEvent });
     c.onClose(.{ .ctx = s, .func = onClose });
+    try c.onReverseRequest("runInTerminal", .{ .ctx = s, .func = run_in_terminal.handle });
+    try c.onReverseRequest("startDebugging", .{ .ctx = s, .func = child_sessions.handle });
     s.initialized_event.reset();
     s.terminated_event.reset();
     s.ended_event.reset();
@@ -731,7 +795,7 @@ fn runStart(s: *DebugSession) Allocator.Error!void {
     // 5. launch/attach, answered later.
     s.setState(.configuring);
     var start_args = args.object;
-    if (spec.normalize) |f| f(sa, s.cfg.request, &start_args) catch |e| switch (e) {
+    if (s.opts.parent == null) if (spec.normalize) |f| f(sa, s.cfg.request, &start_args) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return s.fail("invalid configuration \"{s}\": {t}", .{ s.cfg.name, e }, null),
     };
@@ -1188,6 +1252,7 @@ fn teardown(s: *DebugSession) void {
 }
 
 fn endSession(s: *DebugSession, crashed: bool) void {
+    child_sessions.stopChildren(s);
     s.mutex.lockUncancelable(s.io);
     s.table.applyContinued(null, true);
     s.step_in_flight = false;
@@ -1462,10 +1527,23 @@ fn onGoto(ctx: ?*anyopaque, r: DapConnection.RawResult) void {
 // ---------------------------------------------------------------------
 // Stop, detach, restart.
 
-/// Ends the session (see the file comment for the escalation). Returns at
-/// once; `waitEnded` waits.
+/// Ends the session (see the file comment for the escalation), and the
+/// other members of its `stopAll` compound. Returns at once; `waitEnded`
+/// waits.
 pub fn stop(s: *DebugSession) void {
+    if (s.opts.compound) |r| if (r.stop_all) return compounds.stopMembers(s.manager, r);
+    s.stopOne();
+}
+
+/// `stop` for this session alone.
+pub fn stopOne(s: *DebugSession) void {
     s.work.spawnLoop(stopWorker, .{ s, false }) catch {};
+}
+
+/// Stops this session alone and waits until it has ended. Off the UI
+/// thread.
+pub fn stopAndWait(s: *DebugSession) void {
+    s.stopBlocking(false);
 }
 
 /// Disconnects, leaving the debuggee running (or suspended, when chosen
@@ -1499,6 +1577,7 @@ fn stopBlocking(s: *DebugSession, restart_: bool) void {
     }
     s.prompt_answer = .abort;
     s.prompt_event.set(s.io);
+    child_sessions.stopChildren(s);
     if (s.torn_down.load(.acquire)) {
         s.endSession(false);
         return;
@@ -1526,8 +1605,15 @@ fn stopBlocking(s: *DebugSession, restart_: bool) void {
 }
 
 /// Restarts: the adapter's `restart` when supported, else stop and start
-/// again (passing `__restart`).
+/// again (passing `__restart`). A member of a `stopAll` compound restarts
+/// every member.
 pub fn restart(s: *DebugSession) void {
+    if (s.opts.compound) |r| if (r.stop_all) return compounds.restartMembers(s.manager, r);
+    s.restartOne();
+}
+
+/// `restart` for this session alone.
+pub fn restartOne(s: *DebugSession) void {
     s.work.spawnLoop(restartWorker, .{s}) catch {};
 }
 
