@@ -162,7 +162,7 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
         if (use_wb and frames_arg == null) {
             if (state_dir) |state| {
                 wb.enableUndoFiles(state);
-                if (wb.loadLayout(state)) |s| size = s;
+                if (wb.loadLayout(state)) |s| size = fitOnScreen(s, platform);
             }
         }
         const hw = try host.open(.{ .title = "zigguro", .size = size, .root = root });
@@ -230,6 +230,26 @@ pub fn main(min: std.process.Init.Minimal) !u8 {
 
 /// Runs until the window closes. In a managed install the version counts
 /// as healthy 30 s after the window opened, or at a clean quit.
+/// A saved window size, shrunk to the primary monitor's work area: the
+/// layout may come from a larger screen or a smaller scale, and a window
+/// larger than its output cannot be moved or resized back.
+fn fitOnScreen(s: zg_gui.core.geom.Size, platform: zg_platform.Platform) zg_gui.core.geom.Size {
+    var mons: [8]zg_platform.types.MonitorInfo = undefined;
+    const n = @min(platform.monitors(&mons), mons.len);
+    if (n == 0) return s;
+    var m = &mons[0];
+    for (mons[0..n]) |*x| if (x.primary) {
+        m = x;
+    };
+    const scale = if (m.scale.factor > 0) m.scale.factor else 1;
+    const area = if (m.work_px.w > 0 and m.work_px.h > 0) m.work_px else m.rect_px;
+    if (area.w == 0 or area.h == 0) return s;
+    return .{
+        .w = @min(s.w, @as(f32, @floatFromInt(area.w)) / scale),
+        .h = @min(s.h, @as(f32, @floatFromInt(area.h)) / scale),
+    };
+}
+
 fn runInteractive(rt: *zg_core.Runtime, host: *zg_gui.Host, boot: *early_update.Boot) !void {
     const h = if (boot.health) |*h| h else return host.run();
     h.markFirstFrame(0);

@@ -70,7 +70,7 @@ pub const Adapters = struct {
         for (one) |x| {
             if (!x.on) continue;
             const e = x.e orelse {
-                log.info("no {s} tools: the subsystem is not available", .{x.what});
+                log.debug("no {s} tools: the subsystem is not available", .{x.what});
                 continue;
             };
             try a.add(r, e, cfg);
