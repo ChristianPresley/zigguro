@@ -47,13 +47,17 @@ pub const breakpoints = struct {
     pub const decorate = @import("breakpoints/decorate.zig");
 };
 /// Inspecting a stopped program (E07.F06.S04): call stacks, the
-/// variables tree and sources without a path.
+/// variables tree, sources without a path, evaluation, watches and the
+/// REPL history.
 pub const inspect = struct {
     pub const Inspector = @import("inspect/Inspector.zig");
     pub const StackModel = @import("inspect/StackModel.zig");
     pub const VariablesModel = @import("inspect/VariablesModel.zig");
     pub const Channel = @import("inspect/Channel.zig");
     pub const sources = @import("inspect/sources.zig");
+    pub const Evaluator = @import("inspect/Evaluator.zig");
+    pub const Watches = @import("inspect/Watches.zig");
+    pub const ReplHistory = @import("inspect/ReplHistory.zig");
 };
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
@@ -102,4 +106,6 @@ test {
     _ = @import("session/compounds_test.zig");
     _ = @import("breakpoints/breakpoints_test.zig");
     _ = @import("inspect/inspect_test.zig");
+    _ = @import("inspect/evaluator_test.zig");
+    _ = @import("inspect/watches_test.zig");
 }
