@@ -1,0 +1,11 @@
+{
+  "note": "PROVISIONAL: recorded on a cloud x86_64 VM (Intel Xeon @ 2.10GHz, 4 vCPUs, ReleaseFast) on 2026-10-28, not on the reference laptop. Re-record on ref_laptop_2024 with `zig build perf-calibrate` and copy zig-out/bench-results/calibration.json here.",
+  "machine": "ref_laptop_2024",
+  "provisional": true,
+  "ns_per_op": {
+    "int_alu": 3.2838,
+    "mem_bw": 13854860.2703,
+    "branchy": 83.0503,
+    "alloc": 22.6534
+  }
+}

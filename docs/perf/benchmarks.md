@@ -58,3 +58,88 @@ The values are model parameters, not copied data.
 - Distributions are integer tables only: a size is a uniform pick inside one of 64 equal-probability buckets whose edges are pinned in `profiles.zig`. Every draw is a `u64`, so 32- and 64-bit targets match. No floating point, time or OS entropy is used.
 - The digest is Blake3 over the Blake3 of `paths.txt`, then each file's Blake3 in path order. `paths_only` corpora use the `paths.txt` digest alone. For `--sparse`, a file's digest covers its size.
 - `zig build test-tools` pins the digest of `linux` at 1 % scale. Bump `zg_corpus.version` together with the pinned digest whenever the output changes on purpose. Baselines record the corpus version, so a bump invalidates them.
+
+## Running everything
+
+```
+zig build bench -Doptimize=ReleaseFast                    # every package's bench binary
+zig build bench -Doptimize=ReleaseFast -Dbench-repeats=5  # each binary 5 times, for perfgate
+```
+
+Each package writes `zig-out/bench-results/<package>.json` (the first run), and `perfgate merge` folds every run into `zig-out/bench-results/all.json`: per result, `samples_ns` gathers each run's samples (or its `ns_per_op`) and the other numbers are medians over the runs. `-Dbench-quick` and `-Dbench-filter` still apply. perfgate is described in [perf/baselines/README.md](../../perf/baselines/README.md).
+
+## Scenarios
+
+A scenario drives the composed app through one macro workload (`zg_perf.scenario`, `packages/perf/src/scenario/`):
+
+```zig
+const sc = zg_perf.scenario;
+pub const scenario: sc.Scenario = .{
+    .name = "view_switch",
+    .budgets = &.{"ui.view_switch"},
+    .repeats = 10,
+    .setup = setup,
+    .run = run, // fn (*sc.Context) !void, once per repeat
+    .teardown = teardown,
+};
+
+fn run(c: *sc.Context) !void {
+    var m = c.measurement();
+    m.start();
+    // ... command, then wait for the frame ...
+    m.stop();
+    try c.record("command_to_frame", m.sampleNs()); // result "view_switch.command_to_frame"
+}
+```
+
+`runScenario` calls `setup` once, `run` for the warm-up repeats (samples dropped), then the measured repeats (`quick_repeats` with `Context.quick`), and `teardown` even after a failure. `Context.writeJson` writes E00 bench JSON (package `scenarios`) with every sample, so perfgate can compare them. Every result binds to a budget in `budgets.zon`.
+
+## Environment
+
+`zg_perf.scenario.captureEnv` records the CPU model, logical CPUs, frequency governor, turbo boost, AC or battery power, OS and kernel (Linux: `/proc/cpuinfo`, cpufreq sysfs, `/sys/class/power_supply`; Windows: the registry's `ProcessorNameString`, `GetSystemPowerStatus`, `RtlGetVersion`). The caller adds the git SHA, refresh rate, corpus version and machine class. `warnings` prints what [Google Benchmark's variance guide](https://github.com/google/benchmark/blob/main/docs/reducing_variance.md) warns about: a governor other than `performance`, boost on, battery power. They are reported, never fatal. `zig build perfgate -- env` prints both.
+
+`stabilize` pins the calling thread to one CPU (`sched_setaffinity`, `SetThreadAffinityMask`) and raises its priority where allowed, and reports what it did. Micro benches can be pinned. Scenarios use many threads, so they only get the priority.
+
+## Calibration
+
+```
+zig build perf-calibrate     # zig-out/bench-results/calibration.json
+```
+
+Four fixed kernels run for 0.5 s each (always ReleaseFast):
+
+- an integer hash round;
+- a streaming copy of 64 MiB;
+- a lookup in a 4 095-node array-laid binary search tree with pseudo-random keys;
+- an allocation and free of 16 to 4 096 bytes.
+
+The scale is the geometric mean of ns/op over the reference numbers in `perf/baselines/ref_laptop_2024/calibration.json`, so above 1 means slower than the reference laptop. perfgate takes it with `--calibration` and uses it only for advisory (`budget_warn`) checks of absolute budgets on other machines. Blocking absolute checks run on the reference machine.
+
+The checked-in reference is **provisional**: it was recorded on a cloud VM (Xeon @ 2.1 GHz). Re-record it on the reference laptop by copying the output of `zig build perf-calibrate` there. On that VM two runs differed by about 4 %.
+
+## App scenarios
+
+```
+zig build bench-scenarios -Doptimize=ReleaseFast   # zig-out/bench-results/scenarios.json
+zig build test-bench-scenarios                     # each once in quick mode (part of zig build test)
+zigguro --bench-scenario=view_switch [--bench-quick] [--bench-repeats=N] [--bench-out=FILE] [--bench-corpus-root=DIR]
+```
+
+The runner (`apps/zigguro/src/bench/runner.zig`) runs one scenario per process on the headless platform with the software renderer. Frames are driven on the platform's virtual clock, so a measurement is CPU time from the action to the end of the frame that shows it. Presentation needs a real window: `zig build bench-latency`. Corpora come from `corpusgen`, cached under `ZG_CORPUS_DIR` or `<tmp>/zg-corpus`.
+
+| Scenario | What it does | Results → budget |
+|---|---|---|
+| `view_switch` | Toggles the side bar, terminal, agent pane, review queue and theme on and off, 10 commands per cycle, 10 cycles | `command_to_frame` → `ui.view_switch` |
+| `editing_100k` (alias `typing_100k`) | 500 keys into the middle of `lines_100k`, one frame per key; reads each key frame's UI CPU from the frame timeline | `frame_cpu` → `ui.frame_cpu_keystroke` |
+| `open_1gb` | Opens `bigfile_1g` in a fresh workbench, 5 times | `first_screen` → `file.open_1gb_first_screen` |
+| `fuzzy_find_1m` | Ranks the 1 M `chromium` paths for 20 fixed queries with the quick-pick matcher, keeping the best 50 | `ranked` → `workspace.fuzzy_find_1m` |
+| `idle` (alias `idle_memory`) | Opens the `linux` workspace, 5 files and the terminal, settles 5 s, then idles 30 s on the real clock | `wakeups_per_s` → `idle.wakeups`, `cpu_pct` → `idle.cpu`, `private_bytes` → `mem.idle_private`, `rss_bytes` |
+
+Quick mode uses small corpora (5 % of `lines_100k`, 64 MiB instead of 1 GiB, 10 k paths, a 1 % `linux`) and fewer repeats.
+
+Not yet covered:
+- `agents_10_streaming`: it needs the E10 replay provider wired into the app.
+- `fuzzy_find_1m` excludes painting, because the app has no file quick-open yet.
+- `input.key_to_photon` comes from `bench-latency`.
+
+Samples are integers. Rates and percentages (`per_second` and `percent` budgets) are therefore recorded in thousandths: 250 means 0.25 wakeups/s. perfgate divides them back when it checks the budget. Scenario budgets bind to suite `scenarios`, result `<scenario>.<metric>`, using the field of the budget's statistic (`max` from the samples).

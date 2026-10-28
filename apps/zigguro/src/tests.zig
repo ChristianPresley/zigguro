@@ -59,5 +59,7 @@ test {
     _ = @import("bench/keys.zig");
     _ = @import("bench/latency.zig");
     _ = @import("bench/startup.zig");
+    _ = @import("bench/runner.zig");
+    _ = @import("bench/scenarios/fuzzy_find_1m.zig");
     _ = @import("workspace_fs.zig");
 }
