@@ -50,6 +50,7 @@ test {
     _ = @import("debug/bp_view.zig");
     _ = @import("debug/hover.zig");
     _ = @import("debug/exception_view.zig");
+    _ = @import("debug/console.zig");
     _ = @import("notes/service.zig");
     _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");
