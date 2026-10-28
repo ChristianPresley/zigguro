@@ -2,7 +2,8 @@
 //! `--trace-format=perfetto|chrome`, `ZG_TRACE=startup|<path>|startup:<path>`,
 //! `ZG_OS_TRACE=ftrace|etw` and the `perf.trace.*` commands, on top of zg_perf's drain and
 //! `TraceSession`; the frame timeline the Host feeds and the performance
-//! HUD (`perf.hud.toggle`, E14.F03.S01.T02).
+//! HUD (`perf.hud.toggle`, E14.F03.S01.T02) and the latency probe square
+//! (`perf.latencyProbe.toggle`, E14.F03.S02.T03).
 //!
 //! Start and the stop request are cheap on the UI thread; the final drain,
 //! export and file write run on a worker, which posts a toast back.
@@ -81,6 +82,9 @@ pub const Tracing = struct {
     recorder: ?*zg_perf.trace.FlightRecorder = null,
     /// The window `perf.hud.toggle` shows the HUD in.
     hud_win: ?*zg_gui.Window = null,
+    /// The photodiode square (`perf.latencyProbe.toggle`), created on
+    /// first use.
+    probe: ?*zg_perf_ui.Probe = null,
 
     /// Starts the drain; `env` gives the trace folder.
     pub fn init(t: *Tracing, gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) void {
@@ -121,6 +125,7 @@ pub const Tracing = struct {
     /// Hides the HUD; call before its window closes.
     pub fn detachWindow(t: *Tracing) void {
         if (t.hud) |h| if (t.hud_win) |w| h.setVisible(w, false);
+        if (t.probe) |p| if (t.hud_win) |w| p.setVisible(w, false);
         t.hud_win = null;
     }
 
@@ -130,10 +135,22 @@ pub const Tracing = struct {
         h.toggle(t.hud_win orelse return error.NoWindow);
     }
 
+    /// Shows or hides the latency probe square in the main window.
+    pub fn toggleProbe(t: *Tracing) !void {
+        const w = t.hud_win orelse return error.NoWindow;
+        const p = t.probe orelse blk: {
+            const p = try zg_perf_ui.Probe.init(t.gpa, .{});
+            t.probe = p;
+            break :blk p;
+        };
+        p.toggle(w);
+    }
+
     /// Finishes a running trace (blocking: at exit), then stops the drain.
     pub fn deinit(t: *Tracing) void {
         t.detachWindow();
         if (t.hud) |h| h.destroy();
+        if (t.probe) |p| p.destroy();
         if (t.recorder) |fr| fr.deinit();
         if (t.timeline) |tl| {
             tl.deinit();
@@ -258,6 +275,7 @@ pub const Tracing = struct {
         .{ .id = "perf.trace.toggle", .title = "Toggle Performance Trace", .run = toggle },
         .{ .id = "perf.trace.openFolder", .title = "Show Performance Trace Folder", .run = openFolder },
         .{ .id = zg_perf_ui.commands.commands[0].id, .title = zg_perf_ui.commands.commands[0].title, .run = toggleHud },
+        .{ .id = zg_perf_ui.commands.commands[1].id, .title = zg_perf_ui.commands.commands[1].title, .run = toggleProbe },
     };
 
     fn cmdStart(t: *Tracing) !void {
@@ -268,7 +286,8 @@ pub const Tracing = struct {
         t.stop();
     }
 
-    /// Registers the `perf.trace.*` commands and `perf.hud.toggle`.
+    /// Registers the `perf.trace.*` commands, `perf.hud.toggle` and
+    /// `perf.latencyProbe.toggle`.
     pub fn registerCommands(t: *Tracing, reg: *zg_config.commands.CommandRegistry) !void {
         inline for (commands) |c| {
             _ = try reg.register(.{

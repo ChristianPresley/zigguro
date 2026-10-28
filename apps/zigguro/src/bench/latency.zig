@@ -16,6 +16,10 @@
 //!   no waiting, one frame per key; presentation times are estimated
 //!   (submit + one refresh), and the result is `latency.ring_to_photon`.
 //! - `auto` tries `os` and falls back to `ring`.
+//! - `external` opens a real window with the latency probe square and
+//!   only collects: the photodiode rig is the keyboard (section 3 of
+//!   docs/perf/latency.md). It stops after `--bench-keys` key frames or
+//!   when the window closes.
 //!
 //! The caret starts at line 50 000, column 10. A run fails (exit code 1)
 //! when nothing was measured, the text did not change, or more than 5 % of
@@ -31,13 +35,14 @@ const zg_perf = @import("zg_perf");
 const Workbench = @import("../workbench.zig").Workbench;
 const keys = @import("keys.zig");
 const injector = @import("injector.zig");
+const zg_perf_ui = @import("zg_perf_ui");
 
 const report_mod = zg_perf.frame.latency_report;
 const clock_contract = zg_perf.frame.clock_contract;
 const FrameTimeline = zg_perf.frame.FrameTimeline;
 pub const Report = report_mod.Report;
 
-pub const Injection = enum { auto, os, ring };
+pub const Injection = enum { auto, os, ring, external };
 
 pub const Options = struct {
     keys: u32 = 1000,
@@ -140,7 +145,7 @@ pub fn run(c: Ctx, opts: Options) !Outcome {
     defer c.timeline.sink = null;
     if (opts.injection != .ring and c.backend != .headless) {
         if (runOs(c, opts, &col)) |o| return o else |e| {
-            if (opts.injection == .os) return e;
+            if (opts.injection == .os or opts.injection == .external) return e;
             std.log.warn("bench-latency: OS injection unavailable ({t}); using ring mode", .{e});
             if (e == error.AccessDenied and builtin.os.tag == .linux)
                 std.log.warn("bench-latency: allow /dev/uinput with a udev rule: {s}", .{@import("inject_uinput.zig").udev_rule});
@@ -203,20 +208,30 @@ fn runOs(c: Ctx, opts: Options, col: *report_mod.Collector) !Outcome {
     try c.wb.attach(hw.win);
     defer c.wb.detach();
     c.wb.gotoLine(start_line, start_col);
-    const inj = try injector.osInjector(c.gpa, c.io);
-    defer inj.deinit();
-    // Let the window map, take focus and settle.
-    try pumpFor(&host, platform, c.io, 500 * std.time.ns_per_ms);
     const len0 = c.wb.doc.len();
-    var i: u32 = 0;
-    while (i < opts.keys and host.windows.items.len > 0) : (i += 1) {
-        try inj.keyTap(keys.sequence(i));
-        try pumpFor(&host, platform, c.io, @as(u64, opts.interval_ms) * std.time.ns_per_ms);
+    if (opts.injection == .external) {
+        // The rig types and times the probe square; collect until enough
+        // key frames arrived or the window closes.
+        const probe = try zg_perf_ui.Probe.init(c.gpa, .{});
+        defer probe.destroy();
+        probe.setVisible(hw.win, true);
+        defer probe.setVisible(hw.win, false);
+        while (col.seen < opts.keys and host.windows.items.len > 0) try pumpFor(&host, platform, c.io, 100 * std.time.ns_per_ms);
+    } else {
+        const inj = try injector.osInjector(c.gpa, c.io);
+        defer inj.deinit();
+        // Let the window map, take focus and settle.
+        try pumpFor(&host, platform, c.io, 500 * std.time.ns_per_ms);
+        var i: u32 = 0;
+        while (i < opts.keys and host.windows.items.len > 0) : (i += 1) {
+            try inj.keyTap(keys.sequence(i));
+            try pumpFor(&host, platform, c.io, @as(u64, opts.interval_ms) * std.time.ns_per_ms);
+        }
     }
     // The last frames' presentation feedback.
     try pumpFor(&host, platform, c.io, 300 * std.time.ns_per_ms);
     if (c.wb.doc.len() == len0) return error.KeysNotDelivered;
-    return .{ .report = col.report(.os, c.timeline.refresh_ns, profileOf(c.backend, hw)), .typed = true };
+    return .{ .report = col.report(if (opts.injection == .external) .external else .os, c.timeline.refresh_ns, profileOf(c.backend, hw)), .typed = true };
 }
 
 /// Pumps events and frames for `ns`.
