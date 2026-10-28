@@ -5,8 +5,10 @@
 //! What a session needs from outside comes through `Config`: how to start
 //! an adapter (`AdapterResolver`, normally `RegistryResolver` over the
 //! adapter registry), how to run pre-launch and post-debug tasks
-//! (`TaskHost`, normally `TaskRunnerHost`), and the breakpoint manager
-//! (`BreakpointSink`, E07.F06.S03.T01). Listeners are called on the
+//! (`TaskHost`, normally `TaskRunnerHost`), the breakpoint manager
+//! (`BreakpointSink`, E07.F06.S03.T01) and where `runInTerminal` starts
+//! debuggees (`TerminalLauncher`). Compounds start through
+//! `startCompound`. Listeners are called on the
 //! connection's dispatcher or a session worker; post to the UI from them
 //! and coalesce per frame.
 
@@ -20,6 +22,9 @@ const LaunchConfig = @import("../config/LaunchConfig.zig");
 const variables = @import("../config/variables.zig");
 const Registry = @import("../adapters/Registry.zig");
 const TaskRunner = @import("../tasks/TaskRunner.zig");
+const ConfigSet = @import("../config/ConfigSet.zig");
+const run_in_terminal = @import("run_in_terminal.zig");
+const compounds_mod = @import("compounds.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -27,6 +32,10 @@ const ServerProcess = zg_lsp.client.ServerProcess;
 
 pub const StartOptions = DebugSession.StartOptions;
 pub const Change = DebugSession.Change;
+pub const TerminalLauncher = run_in_terminal.TerminalLauncher;
+pub const RunInTerminalSpec = run_in_terminal.RunInTerminalSpec;
+pub const CompoundRun = compounds_mod.CompoundRun;
+pub const CompoundStart = compounds_mod.StartResult;
 
 /// How to start the adapter for a configuration.
 pub const AdapterSpec = struct {
@@ -89,6 +98,11 @@ pub const Config = struct {
     resolver: AdapterResolver,
     tasks: ?TaskHost = null,
     breakpoints: ?BreakpointSink = null,
+    /// Where `runInTerminal` starts debuggees (refused without one).
+    terminal: ?TerminalLauncher = null,
+    /// The workspace is trusted (E16): `runInTerminal` is refused
+    /// otherwise.
+    trusted: bool = true,
     /// Substitutes `${...}` in configurations when set.
     vars: ?*const variables.VarContext = null,
     policy: ?*const ServerProcess.SpawnPolicy = null,
@@ -110,6 +124,9 @@ list: std.ArrayList(*DebugSession) = .empty,
 listeners: std.ArrayList(Listener) = .empty,
 active_: ?*DebugSession = null,
 next_id: u32 = 1,
+compounds: std.ArrayList(*CompoundRun) = .empty,
+/// The fallback from an external to the integrated terminal was logged.
+external_fallback_logged: std.atomic.Value(bool) = .init(false),
 
 pub fn init(rt: *zg_core.Runtime, cfg: Config) DebugManager {
     return .{ .rt = rt, .gpa = rt.gpa, .cfg = cfg };
@@ -125,6 +142,8 @@ pub fn deinit(m: *DebugManager) void {
         m.list.items[i].deinit();
     }
     m.list.deinit(m.gpa);
+    for (m.compounds.items) |r| r.deinit(m.gpa);
+    m.compounds.deinit(m.gpa);
     m.listeners.deinit(m.gpa);
     m.* = undefined;
 }
@@ -157,7 +176,9 @@ pub fn start(m: *DebugManager, cfg: *const LaunchConfig, opts: StartOptions) !*D
         m.mutex.lockUncancelable(m.rt.io);
         defer m.mutex.unlock(m.rt.io);
         try m.list.ensureUnusedCapacity(m.gpa, 1);
+        if (opts.compound) |r| try r.members.ensureUnusedCapacity(m.gpa, 1);
         if (opts.parent) |p| try p.children_.append(m.gpa, s);
+        if (opts.compound) |r| r.members.appendAssumeCapacity(s);
         m.list.appendAssumeCapacity(s);
         m.active_ = s;
     }
@@ -199,8 +220,18 @@ pub fn remove(m: *DebugManager, s: *DebugSession) void {
             _ = p.children_.orderedRemove(i);
             break;
         };
+        if (s.opts.compound) |r| for (r.members.items, 0..) |x, i| if (x == s) {
+            _ = r.members.orderedRemove(i);
+            break;
+        };
     }
     s.deinit();
+}
+
+/// Starts the configurations of compound `c` (see compounds.zig). Off the
+/// UI thread.
+pub fn startCompound(m: *DebugManager, c: *const ConfigSet.Compound, set: *const ConfigSet, arena: Allocator) Allocator.Error!CompoundStart {
+    return compounds_mod.startCompound(m, c, set, arena);
 }
 
 /// Starts adapters through the adapter registry.
