@@ -1520,6 +1520,14 @@ pub const Workbench = struct {
         }, region);
     }
 
+    /// Writes the review queue's decisions to the workspace's review store.
+    fn flushReview(wb: *Workbench) void {
+        const host = wb.agent orelse return;
+        host.review.mutex.lockUncancelable(wb.io);
+        defer host.review.mutex.unlock(wb.io);
+        host.review.flushLocked();
+    }
+
     /// The inline edit bar handed its selection and instruction over.
     fn inlineToAgent(ctx: *anyopaque, selection: []const u8, instruction: []const u8) void {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
@@ -2387,6 +2395,8 @@ pub const Workbench = struct {
         if (wb.inline_edit) |h| if (h.done) {
             h.destroy();
             wb.inline_edit = null;
+            // An accepted or rejected inline edit goes to the review store.
+            wb.flushReview();
         };
         // Back in the window: files may have changed on disk.
         const focused = ui.win.chrome.focused;
