@@ -375,6 +375,32 @@ test "highlighter: open block comment relexes to end within budget, viewport exa
     try expectMatchesFull(&h, &lines);
 }
 
+test "highlighter: an edit below unlexed lines relexes only its own lines" {
+    var r = try toyRegistry(&toy_resync);
+    defer r.deinit(gpa);
+    var lines: Lines = .{};
+    defer lines.deinit();
+    for (0..30_000) |i| try lines.append(if (i % 10 == 0) "fn a {" else "  1 }");
+    var h: Highlighter = try .init(gpa, &toy_resync, &r);
+    defer h.deinit();
+    try h.reset(try lines.source());
+    // The viewport far down was approximated; the top is still pending.
+    try h.ensure(try lines.source(), 20_005, 20_030);
+    const before = h.stats.lines_lexed;
+    try lines.splice(20_010, 1, &.{"  2 }"});
+    try h.onEdit(.{ .first = 20_010, .removed = 1, .inserted = 1 }, try lines.source(), null);
+    // The edited line only, not the 20,000 pending lines above it.
+    try std.testing.expectEqual(@as(u64, 1), h.stats.lines_lexed - before);
+    try std.testing.expect(!h.isExact(20_010));
+    // An edit in lines never lexed leaves them pending.
+    const b2 = h.stats.lines_lexed;
+    try lines.splice(5_000, 1, &.{"fn b {"});
+    try h.onEdit(.{ .first = 5_000, .removed = 1, .inserted = 1 }, try lines.source(), null);
+    try std.testing.expectEqual(b2, h.stats.lines_lexed);
+    try std.testing.expect(try h.idle(try lines.source(), null));
+    try expectMatchesFull(&h, &lines);
+}
+
 test "highlighter: far viewport resyncs approximately, idle makes it exact" {
     var r = try toyRegistry(&toy_resync);
     defer r.deinit(gpa);
