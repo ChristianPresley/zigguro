@@ -10,6 +10,18 @@ pub const protocol = @import("gen/protocol.zig");
 pub const json = @import("proto/json.zig");
 /// `${...}` variable substitution for launch configurations and tasks.
 pub const variables = @import("config/variables.zig");
+/// Debug adapters (E07.F06.S01.T04): the built-in definitions, the
+/// registry that finds them and argument normalization.
+pub const adapters = struct {
+    pub const Registry = @import("adapters/Registry.zig");
+    pub const builtin_adapters = @import("adapters/builtin_adapters.zig");
+    pub const normalize = @import("adapters/normalize.zig");
+};
+/// Launch configurations (E07.F06.S01.T02).
+pub const config = struct {
+    pub const LaunchConfig = @import("config/LaunchConfig.zig");
+    pub const zig_autoconfig = @import("config/zig_autoconfig.zig");
+};
 /// The DAP wire peer: `DapConnection` and the message envelope.
 pub const conn = struct {
     pub const DapConnection = @import("conn/DapConnection.zig");
@@ -50,4 +62,5 @@ test {
     _ = @import("tasks/shell_quote_test.zig");
     _ = @import("tasks/task_runner_test.zig");
     _ = @import("headless/headless_test.zig");
+    _ = @import("adapters/adapters_test.zig");
 }
