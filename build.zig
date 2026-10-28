@@ -706,6 +706,28 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "zg_perf", .module = perf_host }},
         }) });
         dup.expect_errors = .{ .contains = "duplicate budget id: a.b" };
+        // perfgate (E14.F06.S02.T01): head-vs-base comparison and
+        // baselines. `zig build perf-baseline -Dmachine=<class> -- --from
+        // <merged.json>` rewrites perf/baselines/<class>/.
+        const perfgate = addToolImports(b, "perfgate", "tools/perfgate/main.zig", test_filters, f.optimize, tools_test_step, &.{
+            .{ .name = "zg_perf", .module = perf_host },
+        });
+        {
+            const run = b.addRunArtifact(perfgate);
+            run.setCwd(b.path("."));
+            if (b.args) |a| run.addArgs(a);
+            run.has_side_effects = true;
+            b.step("perfgate", "Run perfgate: zig build perfgate -- merge|compare|baseline|list-gated ...").dependOn(&run.step);
+        }
+        {
+            const machine = b.option([]const u8, "machine", "perf-baseline: the machine class (ci_linux_x64, ci_windows_x64, ref_laptop_2024)") orelse "ci_linux_x64";
+            const run = b.addRunArtifact(perfgate);
+            run.setCwd(b.path("."));
+            run.addArgs(&.{ "baseline", "--machine", machine, "--out", b.fmt("perf/baselines/{s}", .{machine}) });
+            if (b.args) |a| run.addArgs(a);
+            run.has_side_effects = true;
+            b.step("perf-baseline", "Write perf/baselines/<machine>/ from a merged bench set: zig build perf-baseline -Dmachine=M -- --from FILE").dependOn(&run.step);
+        }
         // Every trace_processor recipe is referenced from profiling.md.
         const docs_check = addTool(b, "perf-docs-check", "tools/perf/docs_check.zig", test_filters, f.optimize, tools_test_step);
         const docs_run = b.addRunArtifact(docs_check);
