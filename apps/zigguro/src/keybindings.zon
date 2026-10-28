@@ -1,11 +1,29 @@
 // zigguro's own key bindings (the preset's lowest layer: presets and the
 // user's keybindings.json win). VS Code's explorer, problems and source
-// control keys, note search, multiple terminals and the build task.
+// control keys, note search, multiple terminals, the build task and the
+// debugger.
 .{
     // workbench.view.explorer
     .{ .key = "mod+shift+e", .command = "workbench.showExplorer" },
     // workbench.view.scm
     .{ .key = "mod+shift+g", .command = "workbench.showScm" },
+    // workbench.view.debug
+    .{ .key = "mod+shift+d", .command = "workbench.showDebug" },
+    // The debugger (VS Code's workbench.action.debug.start / continue /
+    // run / stop / restart / pause / stepOver / stepInto / stepOut and
+    // editor.debug.action.toggleBreakpoint). Later entries win.
+    .{ .key = "f5", .command = "debug.start", .when = "!inDebugMode" },
+    .{ .key = "f5", .command = "debug.continue", .when = "inDebugMode && debugState == 'stopped'" },
+    .{ .key = "mod+f5", .command = "debug.runWithoutDebugging", .when = "!inDebugMode" },
+    .{ .key = "shift+f5", .command = "debug.stop", .when = "inDebugMode" },
+    .{ .key = "mod+shift+f5", .command = "debug.restart", .when = "inDebugMode" },
+    .{ .key = "f6", .command = "debug.pause", .when = "inDebugMode && debugState == 'running'" },
+    .{ .key = "f9", .command = "debug.toggleBreakpoint", .when = "editorTextFocus" },
+    .{ .key = "f10", .command = "debug.stepOver", .when = "inDebugMode && debugState == 'stopped'" },
+    .{ .key = "f11", .command = "debug.stepInto", .when = "inDebugMode && debugState != 'inactive'" },
+    .{ .key = "shift+f11", .command = "debug.stepOut", .when = "inDebugMode && debugState == 'stopped'" },
+    .{ .key = "mod+f10", .command = "debug.runToCursor", .when = "inDebugMode && debugState == 'stopped' && editorTextFocus" },
+    .{ .key = "mod+f11", .command = "debug.stepIntoTarget", .when = "inDebugMode && debugState == 'stopped'" },
     // workbench.action.tasks.build
     .{ .key = "mod+shift+b", .command = "tasks.runBuild" },
     // renameFile / deleteFile / filesExplorer.copy / cut / paste

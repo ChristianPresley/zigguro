@@ -43,6 +43,9 @@ test {
     _ = @import("explorer/panel.zig");
     _ = @import("problems_panel.zig");
     _ = @import("hierarchy_panel.zig");
+    _ = @import("debug/toolbar.zig");
+    _ = @import("debug/configs.zig");
+    _ = @import("debug/call_stack.zig");
     _ = @import("notes/service.zig");
     _ = @import("agent/workspace_tools.zig");
     _ = @import("hover_popup.zig");

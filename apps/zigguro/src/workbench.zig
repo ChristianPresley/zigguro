@@ -84,6 +84,9 @@ const scm_panel = @import("scm/panel.zig");
 const ScmPanel = scm_panel.ScmPanel;
 const fs_tree = @import("explorer/fs_tree.zig");
 const Tasks = @import("tasks.zig").Tasks;
+const debug_service = @import("debug/service.zig");
+const Debug = debug_service.Debug;
+const DebugPanel = @import("debug/panel.zig").DebugPanel;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -307,6 +310,11 @@ pub const Workbench = struct {
     scm_fetch_ms: u64 = 0,
     /// The workspace's tasks (from `attach`).
     tasks: ?*Tasks = null,
+    /// Debugging (made on first use), the Run and Debug panel and its
+    /// dock panel.
+    debug: ?*Debug = null,
+    debug_panel: ?*DebugPanel = null,
+    debug_ref: ?PanelRef = null,
 
     const KeysStamp = struct { size: u64, mtime: i96, missing: bool };
 
@@ -379,8 +387,9 @@ pub const Workbench = struct {
     const kind_notes_search: zg_gui.dock.model.PanelKindId = 10;
     const kind_scm: zg_gui.dock.model.PanelKindId = 11;
     const kind_hierarchy: zg_gui.dock.model.PanelKindId = 12;
+    const kind_debug: zg_gui.dock.model.PanelKindId = 13;
     /// The kinds' names in the saved layout (index = kind - 1).
-    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy" };
+    const kind_names = [_][]const u8{ "editor", "terminal", "agent", "review", "review.view", "settings", "explorer", "problems", "notes", "notes.search", "scm", "hierarchy", "debug" };
 
     /// Loads `path` (a missing file opens as a new empty one) and sets up
     /// commands and key bindings. Call `attach` once the window exists.
@@ -881,6 +890,7 @@ pub const Workbench = struct {
                 kind_notes_search => wb.notes_search_ref = p,
                 kind_scm => wb.scm_ref = p,
                 kind_hierarchy => wb.hierarchy_ref = p,
+                kind_debug => wb.debug_ref = p,
                 // Review views are not kept; unknown kinds stay as they are.
                 kind_review_view => try stale.append(wb.gpa, p),
                 else => {},
@@ -997,6 +1007,8 @@ pub const Workbench = struct {
             wb.gpa.destroy(pe);
         }
         wb.pending_edits = null;
+        // Before the tasks (their runner runs pre-launch tasks).
+        wb.stopDebug();
         // After the agent (its task tools), while the task terminals are
         // open.
         wb.stopTasks();
@@ -1264,6 +1276,35 @@ pub const Workbench = struct {
         .{ .id = "tasks.terminate", .title = "Terminate Task", .category = "Tasks", .run = terminateTask },
         .{ .id = "tasks.restart", .title = "Restart Running Task", .category = "Tasks", .run = restartTask },
         .{ .id = "tasks.configure", .title = "Configure Task", .category = "Tasks", .run = configureTask },
+        .{ .id = "workbench.showDebug", .title = "Show Run and Debug", .category = "View", .run = showDebug },
+        .{ .id = "debug.start", .title = "Start Debugging", .category = "Debug", .run = dbg(startDebugging) },
+        .{ .id = "debug.runWithoutDebugging", .title = "Run Without Debugging", .category = "Debug", .run = dbg(runWithoutDebugging) },
+        .{ .id = "debug.stop", .title = "Stop", .category = "Debug", .run = dbg(Debug.stopCmd) },
+        .{ .id = "debug.restart", .title = "Restart", .category = "Debug", .run = dbg(Debug.restartCmd) },
+        .{ .id = "debug.continue", .title = "Continue", .category = "Debug", .run = dbg(Debug.continueCmd) },
+        .{ .id = "debug.pause", .title = "Pause", .category = "Debug", .run = dbg(Debug.pauseCmd) },
+        .{ .id = "debug.stepOver", .title = "Step Over", .category = "Debug", .run = dbg(stepOver) },
+        .{ .id = "debug.stepInto", .title = "Step Into", .category = "Debug", .run = dbg(stepInto) },
+        .{ .id = "debug.stepOut", .title = "Step Out", .category = "Debug", .run = dbg(stepOut) },
+        .{ .id = "debug.stepBack", .title = "Step Back", .category = "Debug", .run = dbg(stepBack) },
+        .{ .id = "debug.reverseContinue", .title = "Reverse Continue", .category = "Debug", .run = dbg(Debug.reverseContinueCmd) },
+        .{ .id = "debug.stepIntoTarget", .title = "Step Into Target...", .category = "Debug", .run = dbg(Debug.stepIntoTargetCmd) },
+        .{ .id = "debug.runToCursor", .title = "Run to Cursor", .category = "Debug", .run = dbg(Debug.runToCursorCmd) },
+        .{ .id = "debug.jumpToCursor", .title = "Jump to Cursor", .category = "Debug", .run = dbg(Debug.jumpToCursorCmd) },
+        .{ .id = "debug.toggleBreakpoint", .title = "Toggle Breakpoint", .category = "Debug", .run = dbg(Debug.toggleBreakpointCmd) },
+        .{ .id = "debug.removeAllBreakpoints", .title = "Remove All Breakpoints", .category = "Debug", .run = dbg(Debug.removeAllBreakpointsCmd) },
+        .{ .id = "debug.enableAllBreakpoints", .title = "Enable All Breakpoints", .category = "Debug", .run = dbg(enableAllBreakpoints) },
+        .{ .id = "debug.disableAllBreakpoints", .title = "Disable All Breakpoints", .category = "Debug", .run = dbg(disableAllBreakpoints) },
+        .{ .id = "debug.selectConfiguration", .title = "Select Debug Configuration", .category = "Debug", .run = dbg(selectDebugConfiguration) },
+        .{ .id = "debug.addConfiguration", .title = "Add Configuration...", .category = "Debug", .run = dbg(Debug.addConfigurationCmd) },
+        .{ .id = "debug.selectSession", .title = "Select Debug Session", .category = "Debug", .run = dbg(selectDebugSession) },
+        .{ .id = "debug.focusCallStack", .title = "Focus on Call Stack View", .category = "Debug", .run = focusCallStack },
+        .{ .id = "debug.copyCallStack", .title = "Copy Call Stack", .category = "Debug", .run = copyCallStack },
+        .{ .id = "debug.restartFrame", .title = "Restart Frame", .category = "Debug", .run = dbg(Debug.restartFrameCmd) },
+        .{ .id = "debug.takeControl", .title = "Take Control from Agent", .category = "Debug", .run = dbg(Debug.takeControlCmd) },
+        .{ .id = "debug.handBackToAgent", .title = "Hand Back to Agent", .category = "Debug", .run = dbg(Debug.handBackCmd) },
+        .{ .id = "debug.debugAnyway", .title = "Debug Anyway (Pre-Launch Task Failed)", .category = "Debug", .run = dbg(debugAnyway) },
+        .{ .id = "debug.abortStart", .title = "Abort Debugging (Pre-Launch Task Failed)", .category = "Debug", .run = dbg(abortStart) },
         .{ .id = "editor.showCallHierarchy", .title = "Show Call Hierarchy", .category = "Go", .run = showCallHierarchy },
         .{ .id = "editor.showOutgoingCalls", .title = "Show Outgoing Calls", .category = "Go", .run = showOutgoingCalls },
         .{ .id = "editor.showTypeHierarchy", .title = "Show Type Hierarchy", .category = "Go", .run = showTypeHierarchy },
@@ -1507,6 +1548,7 @@ pub const Workbench = struct {
             .saved => |s| {
                 if (wb.codeintel) |ci| ci.saved(fs.doc);
                 if (wb.tasks) |t| t.fileChanged(fs.path);
+                if (wb.debug) |d| d.fileChanged(fs.path);
                 if (!quiet) wb.notify(.success, "Saved {s} ({d} bytes)", .{ name, s.bytes });
                 // A settings or keybindings file applies at once.
                 wb.reloadSettings();
@@ -3052,6 +3094,189 @@ pub const Workbench = struct {
         if (wb.problems) |pp| pp.focus(w);
     }
 
+    // -- run and debug -------------------------------------------------------------
+
+    /// The debug service, made on first use.
+    fn ensureDebug(wb: *Workbench) !*Debug {
+        if (wb.debug) |d| return d;
+        const w = wb.win orelse return error.NoWindow;
+        const zig_path: ?[]const u8 = if (wb.settings) |st| (if (st.string("zig.path").len > 0) st.string("zig.path") else null) else null;
+        const d = try Debug.create(wb.rt, w.app, wb.env, wb.cwd, .{
+            .ctx = wb,
+            .notify = debugNotice,
+            .changed = onDebugChanged,
+            .cursor = debugCursor,
+            .reveal = debugReveal,
+            .show_panel = debugShowPanel,
+        }, .{ .trusted = wb.trust == .trusted, .zig_exe = zig_path, .runner = if (wb.tasks) |t| &t.runner else null });
+        d.win = w;
+        wb.debug = d;
+        return d;
+    }
+
+    fn ensureDebugPanel(wb: *Workbench) !void {
+        if (wb.debug_panel != null) return;
+        const d = try wb.ensureDebug();
+        const dp = try wb.gpa.create(DebugPanel);
+        errdefer wb.gpa.destroy(dp);
+        try dp.init(wb.gpa, d);
+        wb.debug_panel = dp;
+    }
+
+    fn stopDebug(wb: *Workbench) void {
+        if (wb.debug_panel) |dp| {
+            dp.deinit();
+            wb.gpa.destroy(dp);
+        }
+        wb.debug_panel = null;
+        const d = wb.debug orelse return;
+        wb.debug = null;
+        d.destroy();
+    }
+
+    /// A command that runs `f` on the debug service.
+    fn dbg(comptime f: fn (*Debug) void) *const fn (*Workbench) anyerror!void {
+        return &struct {
+            fn run(wb: *Workbench) anyerror!void {
+                f(try wb.ensureDebug());
+            }
+        }.run;
+    }
+
+    fn startDebugging(d: *Debug) void {
+        d.startCmd(false);
+    }
+
+    fn runWithoutDebugging(d: *Debug) void {
+        d.startCmd(true);
+    }
+
+    fn stepOver(d: *Debug) void {
+        d.stepCmd(.over);
+    }
+
+    fn stepInto(d: *Debug) void {
+        d.stepCmd(.into);
+    }
+
+    fn stepOut(d: *Debug) void {
+        d.stepCmd(.out);
+    }
+
+    fn stepBack(d: *Debug) void {
+        d.stepCmd(.back);
+    }
+
+    fn enableAllBreakpoints(d: *Debug) void {
+        d.setAllBreakpointsCmd(true);
+    }
+
+    fn disableAllBreakpoints(d: *Debug) void {
+        d.setAllBreakpointsCmd(false);
+    }
+
+    fn selectDebugConfiguration(d: *Debug) void {
+        d.openConfigPicker(false) catch {};
+    }
+
+    fn selectDebugSession(d: *Debug) void {
+        d.openSessionPicker() catch {};
+    }
+
+    fn debugAnyway(d: *Debug) void {
+        d.answerPrompt(.debug_anyway);
+    }
+
+    fn abortStart(d: *Debug) void {
+        d.answerPrompt(.abort);
+    }
+
+    /// `workbench.showDebug` (Ctrl+Shift+D): the Run and Debug panel in
+    /// the side bar, focused.
+    fn showDebug(wb: *Workbench) !void {
+        try wb.showDebugPanel(true);
+    }
+
+    fn showDebugPanel(wb: *Workbench, focus: bool) !void {
+        try wb.ensureDebugPanel();
+        if (wb.debug_ref == null) wb.debug_ref = try wb.dock.addPanel(kind_debug, null);
+        try wb.reveal(wb.debug_ref.?, wb.explorerHome());
+        if (wb.win) |w| {
+            w.markAllDirty();
+            if (focus) w.afterNextFrame(.{ .ctx = wb, .f = focusDebug });
+        }
+    }
+
+    fn focusDebug(ctx: *anyopaque, w: *Window) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        if (wb.debug_panel) |dp| dp.focus(w);
+    }
+
+    fn focusCallStack(wb: *Workbench) !void {
+        try wb.showDebugPanel(true);
+    }
+
+    fn copyCallStack(wb: *Workbench) !void {
+        const dp = wb.debug_panel orelse return;
+        const w = wb.win orelse return;
+        const text = (try dp.copyCallStack(wb.gpa)) orelse return;
+        defer wb.gpa.free(text);
+        w.app.clipboard.set(w.gpa, text);
+    }
+
+    fn debugNotice(ctx: *anyopaque, severity: zg_gui.w.notification_center.Severity, actions: []const zg_gui.w.notification_center.ToastAction, text: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const w = wb.win orelse return;
+        _ = zg_gui.w.toast(w.app, .{ .severity = severity, .title = text, .source = "Debug", .actions = actions, .sticky = actions.len > 0 });
+    }
+
+    /// The debug context keys follow the active session.
+    fn onDebugChanged(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.setDebugKeys();
+        if (wb.win) |w| w.markAllDirty();
+    }
+
+    fn setDebugKeys(wb: *Workbench) void {
+        const d = wb.debug orelse return;
+        const e = d.active();
+        const state: []const u8 = if (e) |x| switch (x.s.state()) {
+            .initializing, .configuring, .launching => "initializing",
+            .running => "running",
+            .stopped => "stopped",
+            .terminating, .terminated, .failed => "inactive",
+        } else "inactive";
+        wb.keys.setByName("inDebugMode", .{ .bool = e != null }) catch {};
+        wb.keys.setByName("debugState", .{ .str = state }) catch {};
+        wb.keys.setByName("debugType", .{ .str = if (e) |x| x.s.cfg.type else "" }) catch {};
+        wb.keys.setByName("debugControllerIsAgent", .{ .bool = if (e) |x| x.s.controller() == .agent else false }) catch {};
+    }
+
+    /// The current file and caret for debugging (1-based line, UTF-16
+    /// column).
+    fn debugCursor(ctx: *anyopaque, buf: []u8) ?debug_service.Cursor {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const path = wb.path orelse return null;
+        var fba = std.heap.FixedBufferAllocator.init(buf);
+        const abs = std.fs.path.resolve(fba.allocator(), &.{ wb.cwd, path }) catch return null;
+        const head = wb.view.primarySel().head;
+        const line = wb.view.lineOf(head);
+        const lr = wb.view.lineRange(line);
+        const col = zg_core.utf8.byteToColumn(wb.view.text(lr), @intCast(head - lr.start), .utf16);
+        return .{ .path = abs, .line = @intCast(line + 1), .column = col + 1 };
+    }
+
+    fn debugReveal(ctx: *anyopaque, path: []const u8, line: u32, column: u32, focus: bool) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.openAt(path, .{ .pos = .{ .line = line -| 1, .character = column -| 1, .enc = .utf16 } });
+        wb.pending_focus = focus;
+    }
+
+    fn debugShowPanel(ctx: *anyopaque) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.showDebugPanel(false) catch {};
+    }
+
     // -- call and type hierarchy ---------------------------------------------------
 
     fn ensureHierarchy(wb: *Workbench) !void {
@@ -4526,6 +4751,7 @@ pub const Workbench = struct {
         if (wb.codeintel) |ci| ci.setTrusted(wb.trust == .trusted);
         // And its tasks run.
         if (wb.tasks) |t| t.setTrusted(wb.trust == .trusted);
+        if (wb.debug) |d| d.setTrusted(wb.trust == .trusted);
         if (wb.win) |w| w.markAllDirty();
     }
 
@@ -4725,6 +4951,7 @@ pub const Workbench = struct {
             kind_notes_search => .{ .title = "Search Notes" },
             kind_scm => .{ .title = "Git", .badge = wb.scmBadge() },
             kind_hierarchy => .{ .title = "Hierarchy" },
+            kind_debug => .{ .title = "Run and Debug" },
             else => .{ .title = "?" },
         };
     }
@@ -4780,6 +5007,10 @@ pub const Workbench = struct {
                     ui.close();
                 }
             },
+            kind_debug => {
+                wb.ensureDebugPanel() catch |e| log.warn("run and debug: {t}", .{e});
+                if (wb.debug_panel) |dp| dp.build(ui);
+            },
             else => {},
         }
     }
@@ -4816,7 +5047,7 @@ pub const Workbench = struct {
             wb.scm_ref = null;
             return true;
         }
-        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
+        if (p == wb.terminal_ref or p == wb.agent_ref or p == wb.review_ref or p == wb.explorer_ref or p == wb.problems_ref or p == wb.hierarchy_ref or p == wb.debug_ref or p == wb.notes_ref or p == wb.notes_search_ref) {
             if (wb.areaOf(p)) |a| if (a != .center) {
                 wb.dock.areaVisible(a, false);
                 return false;
@@ -6144,4 +6375,215 @@ test "workbench: completion, signature and snippet keys resolve through the keym
     try expect(@as(?P, .close_hints), wb.popupCommandFor(.{ .hints = true, .snippet = true }, key(.escape, .{})));
     // Every command is in the palette.
     inline for (comptime std.enums.values(P)) |c| try std.testing.expect(wb.reg.lookup(c.id()) != null);
+}
+
+/// The command `k` runs now, by id (nothing runs).
+fn testCommandFor(wb: *Workbench, k: zg_gui.input.event.KeyPress) ?[]const u8 {
+    const w = wb.win orelse return null;
+    const id = wb.resolver.peek(wb.adapter.contexts(), zg_config.ui.KeymapAdapter.keyInput(k, w.app.now_ms * std.time.ns_per_ms)) orelse return null;
+    return wb.reg.get(id).id;
+}
+
+test "workbench: Run and Debug lists configurations with reasons, F9 sets breakpoints, F5 asks without a selection" {
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\nconst b = 2;\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    const a = try std.fs.path.join(gpa, &.{ root, "a.zig" });
+    defer gpa.free(a);
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, a);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+    // Nothing debug is made until it is used.
+    try std.testing.expect(wb.debug == null);
+
+    const K = zg_gui.input.event.KeyPress;
+    // Not debugging: F5 starts, F10 does nothing, F9 toggles in the editor.
+    try std.testing.expectEqualStrings("debug.start", testCommandFor(&wb, K{ .key = .f5 }).?);
+    try std.testing.expect(testCommandFor(&wb, K{ .key = .f10 }) == null);
+
+    // Ctrl+Shift+D: the panel, in the side bar.
+    try std.testing.expectEqualStrings("workbench.showDebug", testCommandFor(&wb, K{ .key = .key_d, .mods = .{ .ctrl = true, .shift = true } }).?);
+    try Workbench.showDebug(&wb);
+    _ = t.settle();
+    try std.testing.expect(wb.shown(wb.debug_ref));
+    try std.testing.expect(t.find(.{ .name = "Run and Debug" }) != null);
+    const d = wb.debug.?;
+
+    // No launch.zon: Add Configuration writes one and opens it.
+    try (Workbench.dbg(Debug.addConfigurationCmd))(&wb);
+    _ = t.settle();
+    try std.testing.expectEqualStrings("launch.zon", std.fs.path.basename(wb.path.?));
+    // One configuration of a type nothing provides: listed, disabled.
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/launch.zon", .data =
+        \\.{ .version = 1, .configurations = .{
+        \\    .{ .name = "Debug it", .type = "no-such-debugger", .request = .launch, .args = .{ .program = "x" } },
+        \\} }
+    });
+    const launch = try std.fs.path.join(gpa, &.{ root, ".zigguro/launch.zon" });
+    defer gpa.free(launch);
+    d.fileChanged(launch);
+    // F5 without a selection: the picker.
+    d.startCmd(false);
+    _ = t.settle();
+    try std.testing.expectEqual(@as(usize, 2), d.pick_items.len);
+    try std.testing.expectEqualStrings("Debug it", d.pick_items[0].label);
+    try std.testing.expect(std.mem.startsWith(u8, d.pick_items[0].detail, "Cannot start: "));
+    try std.testing.expectEqualStrings("Add Configuration\u{2026}", d.pick_items[1].label);
+    d.pick.close(t.win);
+
+    // F9 on the caret's line, twice.
+    wb.openAt(a, .{ .offset = 14 });
+    _ = t.settle();
+    try std.testing.expectEqualStrings("debug.toggleBreakpoint", testCommandFor(&wb, K{ .key = .f9 }).?);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    d.toggleBreakpointCmd();
+    const views = try d.bps.list(arena.allocator());
+    try std.testing.expectEqual(@as(usize, 1), views.len);
+    try std.testing.expectEqual(@as(u32, 2), views[0].bp.kind.source.line);
+    d.toggleBreakpointCmd();
+    try std.testing.expectEqual(@as(usize, 0), (try d.bps.list(arena.allocator())).len);
+}
+
+test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call stack shows it, F10 steps, Shift+F5 ends" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.c", .data =
+        \\int add(int a, int b) {
+        \\    int s = a + b;
+        \\    return s;
+        \\}
+        \\int main(void) {
+        \\    int x = add(1, 2);
+        \\    return x - 3;
+        \\}
+        \\
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    // GDB 14+ and a C compiler, or skip.
+    const cc = std.process.run(gpa, io, .{ .argv = &.{ "cc", "-g", "-O0", "-o", "a", "a.c" }, .cwd = .{ .path = root } }) catch return error.SkipZigTest;
+    gpa.free(cc.stdout);
+    gpa.free(cc.stderr);
+    if (cc.term != .exited or cc.term.exited != 0) return error.SkipZigTest;
+    const gv = std.process.run(gpa, io, .{ .argv = &.{ "gdb", "--version" } }) catch return error.SkipZigTest;
+    defer gpa.free(gv.stdout);
+    gpa.free(gv.stderr);
+    const ver = @import("zg_lsp").client.executables.parseVersion(gv.stdout) orelse return error.SkipZigTest;
+    if (ver.major < 14) return error.SkipZigTest;
+
+    try tmp.dir.createDirPath(io, ".zigguro");
+    const launch = try std.fmt.allocPrint(gpa,
+        \\.{{ .version = 1, .configurations = .{{
+        \\    .{{ .name = "Debug a", .type = "gdb", .request = .launch, .args = .{{ .program = "{s}/a" }} }},
+        \\}} }}
+    , .{root});
+    defer gpa.free(launch);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/launch.zon", .data = launch });
+    const src = try std.fs.path.join(gpa, &.{ root, "a.c" });
+    defer gpa.free(src);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("HOME", root);
+    try env.put("PATH", "/usr/bin:/bin:/usr/local/bin");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, src);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    // Sessions and their adapters run on workers.
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // A breakpoint on `int s = a + b;` (line 2).
+    wb.openAt(src, .{ .offset = 26 });
+    _ = t.settle();
+    const d = try wb.ensureDebug();
+    d.toggleBreakpointCmd();
+    d.selectConfig(.config, "Debug a");
+
+    const K = zg_gui.input.event.KeyPress;
+    const Wait = struct {
+        fn until(tt: *zg_gui.testing.TestApp, dd: *Debug, comptime f: fn (*Debug) bool) !void {
+            var tries: u32 = 0;
+            while (tries < 2000) : (tries += 1) {
+                _ = tt.settle();
+                if (f(dd)) return;
+                std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+            }
+            return error.Timeout;
+        }
+        fn stoppedWithFrames(dd: *Debug) bool {
+            const e = dd.active() orelse return false;
+            return e.s.state() == .stopped and e.insp.stack.selectedRow() != null;
+        }
+        fn ended(dd: *Debug) bool {
+            return dd.sessionCount() == 0 and dd.busy == 0;
+        }
+    };
+    try (Workbench.dbg(Workbench.startDebugging))(&wb);
+    try Wait.until(t, d, Wait.stoppedWithFrames);
+    const e = d.active().?;
+    // Stopped in `add` at line 2, the editor there, the panel up.
+    const top = e.insp.stack.selectedRow().?;
+    try std.testing.expectEqualStrings("add", top.name);
+    try std.testing.expectEqual(@as(u32, 2), top.line);
+    try std.testing.expect(wb.shown(wb.debug_ref));
+    _ = t.settle();
+    try std.testing.expectEqual(@as(u64, 1), wb.view.lineOf(wb.view.primarySel().head));
+    // The call stack: add, then main.
+    try std.testing.expect(t.find(.{ .name = "add, a.c line 2" }) != null);
+    try std.testing.expect(t.find(.{ .name = "main, a.c line 6" }) != null);
+    // The keys follow the stop.
+    try std.testing.expectEqualStrings("debug.continue", testCommandFor(&wb, K{ .key = .f5 }).?);
+    try std.testing.expectEqualStrings("debug.stepOver", testCommandFor(&wb, K{ .key = .f10 }).?);
+    try std.testing.expect(d.toolbarState().isEnabled(.step_over));
+
+    // F10: line 3.
+    try (Workbench.dbg(Workbench.stepOver))(&wb);
+    const Line3 = struct {
+        fn f(dd: *Debug) bool {
+            const ee = dd.active() orelse return false;
+            const r = ee.insp.stack.selectedRow() orelse return false;
+            return ee.s.state() == .stopped and r.line == 3;
+        }
+    };
+    try Wait.until(t, d, Line3.f);
+
+    // Shift+F5: the session ends and leaves the views.
+    try std.testing.expectEqualStrings("debug.stop", testCommandFor(&wb, K{ .key = .f5, .mods = .{ .shift = true } }).?);
+    try (Workbench.dbg(Debug.stopCmd))(&wb);
+    try Wait.until(t, d, Wait.ended);
+    try std.testing.expectEqualStrings("debug.start", testCommandFor(&wb, K{ .key = .f5 }).?);
 }
