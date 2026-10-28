@@ -1,0 +1,13 @@
+# startDebugging from a TCP adapter: the child connects to the same
+# server (tcp_child.txt); its end does not end the parent.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< event initialized
+> configurationDone
+< {}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": true}
+< reverse startDebugging {"request": "launch", "configuration": {"name": "worker", "__pendingTargetId": "w1"}}
+> response startDebugging {"success": true}
+> disconnect {"terminateDebuggee": true}
+< {}
