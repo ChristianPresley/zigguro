@@ -78,34 +78,58 @@ pub fn detectEolBytes(text: []const u8) EolStats {
 }
 
 /// Streaming terminator counter; a CR at a chunk end waits for the next.
+/// Counts 32 bytes at a time: every LF and CR, and the CRs followed by an
+/// LF (CRLF); LF-only and CR-only counts follow from those.
 const Counter = struct {
     counts: [3]u64 = .{ 0, 0, 0 },
     pending_cr: bool = false,
 
+    const lanes = 32;
+    const V = @Vector(lanes, u8);
+    const Mask = std.meta.Int(.unsigned, lanes);
+
+    fn mask(v: V, b: u8) Mask {
+        return @bitCast(v == @as(V, @splat(b)));
+    }
+
     fn feed(c: *Counter, chunk: []const u8) void {
         var i: usize = 0;
-        if (c.pending_cr and chunk.len > 0) {
+        if (c.pending_cr) {
+            if (chunk.len == 0) return;
             c.pending_cr = false;
             if (chunk[0] == '\n') {
                 c.counts[@intFromEnum(Eol.crlf)] += 1;
                 i = 1;
             } else c.counts[@intFromEnum(Eol.cr)] += 1;
         }
-        while (std.mem.indexOfAnyPos(u8, chunk, i, "\r\n")) |p| {
-            if (chunk[p] == '\n') {
-                c.counts[@intFromEnum(Eol.lf)] += 1;
-                i = p + 1;
-            } else if (p + 1 == chunk.len) {
-                c.pending_cr = true;
-                return;
-            } else if (chunk[p + 1] == '\n') {
-                c.counts[@intFromEnum(Eol.crlf)] += 1;
-                i = p + 2;
-            } else {
-                c.counts[@intFromEnum(Eol.cr)] += 1;
-                i = p + 1;
-            }
+        var lf: u64 = 0;
+        var cr: u64 = 0;
+        var pairs: u64 = 0;
+        // Each block also reads the byte after it, to pair a CR on its
+        // last byte with an LF.
+        while (i + lanes + 1 <= chunk.len) : (i += lanes) {
+            const v: V = chunk[i..][0..lanes].*;
+            const r = mask(v, '\r');
+            lf += @popCount(mask(v, '\n'));
+            if (r == 0) continue;
+            const next: V = chunk[i + 1 ..][0..lanes].*;
+            cr += @popCount(r);
+            pairs += @popCount(r & mask(next, '\n'));
         }
+        while (i < chunk.len) : (i += 1) switch (chunk[i]) {
+            '\n' => lf += 1,
+            '\r' => if (i + 1 == chunk.len) {
+                c.pending_cr = true;
+            } else {
+                cr += 1;
+                if (chunk[i + 1] == '\n') pairs += 1;
+            },
+            else => {},
+        };
+        // A pair's LF was counted as an LF and its CR as a CR.
+        c.counts[@intFromEnum(Eol.crlf)] += pairs;
+        c.counts[@intFromEnum(Eol.lf)] += lf - pairs;
+        c.counts[@intFromEnum(Eol.cr)] += cr - pairs;
     }
 };
 
@@ -121,4 +145,36 @@ test "eol: detect styles" {
     c.feed("\nb\r");
     c.feed("c");
     try std.testing.expectEqual([3]u64{ 0, 1, 1 }, c.counts);
+}
+
+test "eol: block counting matches a byte-by-byte count over random chunks" {
+    var prng: std.Random.DefaultPrng = .init(11);
+    const r = prng.random();
+    var buf: [700]u8 = undefined;
+    for (0..300) |_| {
+        const n = r.uintLessThan(usize, buf.len);
+        for (buf[0..n]) |*b| b.* = "ab\r\n"[r.uintLessThan(usize, 4)];
+        const text = buf[0..n];
+        var want = [3]u64{ 0, 0, 0 };
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (text[i] == '\n') want[@intFromEnum(Eol.lf)] += 1 else if (text[i] == '\r') {
+                if (i + 1 < n and text[i + 1] == '\n') {
+                    want[@intFromEnum(Eol.crlf)] += 1;
+                    i += 1;
+                } else want[@intFromEnum(Eol.cr)] += 1;
+            }
+        }
+        try std.testing.expectEqual(want, detectEolBytes(text).counts);
+        // The same text fed in random pieces.
+        var c: Counter = .{};
+        var at: usize = 0;
+        while (at < n) {
+            const k = @min(n - at, r.uintLessThan(usize, 80));
+            c.feed(text[at..][0..k]);
+            at += k;
+        }
+        if (c.pending_cr) c.counts[@intFromEnum(Eol.cr)] += 1;
+        try std.testing.expectEqual(want, c.counts);
+    }
 }

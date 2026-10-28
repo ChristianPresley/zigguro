@@ -252,3 +252,36 @@ test "fuzz: diff_model incremental" {
         }
     }.one, .{});
 }
+
+test "diff_model: a just-opened large file builds its base on the worker" {
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    while (text.items.len <= dm.sync_base_max) try text.appendSlice(gpa, "2026-10-28 12:00:00 INFO request served\n");
+    const doc = try Document.initBytes(gpa, @enumFromInt(1), text.items);
+    defer doc.deinit();
+    // The base is the document's own version: no hunks, no lines, no job.
+    const m = try dm.DiffModel.init(gpa, &rt, doc.snapshot(), doc, .{});
+    defer m.deinit();
+    try std.testing.expect(!m.base_ready);
+    try std.testing.expect(!m.fullPending());
+    try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+    // The first edit runs a full diff, which builds the base's lines.
+    var cs = try ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = 0, .end = 4 }, .text = "1999" }});
+    defer cs.deinit();
+    try doc.applyChangeSet(&cs, .{ .user = 0 });
+    try std.testing.expect(m.fullPending());
+    try m.completeFull();
+    try std.testing.expect(m.base_ready);
+    try std.testing.expectEqual(@as(usize, 1), m.hunks().len);
+    try std.testing.expectEqual(@as(u64, 0), m.hunks()[0].new.start);
+    try std.testing.expectEqual(@as(u64, 1), m.hunks()[0].new.count);
+    // Later edits rediff locally against the built base.
+    var cs2 = try ChangeSet.fromEdits(gpa, doc.len(), &.{.{ .range = .{ .start = 0, .end = 4 }, .text = "2026" }});
+    defer cs2.deinit();
+    try doc.applyChangeSet(&cs2, .{ .user = 0 });
+    try std.testing.expect(!m.fullPending());
+    try std.testing.expectEqual(@as(usize, 0), m.hunks().len);
+}

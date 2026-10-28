@@ -17,6 +17,11 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
+test {
+    _ = matcher_mod;
+    _ = @import("quick_pick/rank.zig");
+}
+
 const Page = struct {
     pub fn build(_: *Page, ui: *Ui) void {
         ui.open(.{ .style = .{ .padding = .all(10) } });

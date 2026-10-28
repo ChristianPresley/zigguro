@@ -8,6 +8,12 @@
 //! a text ending in a terminator has no empty last line.
 //!
 //! Updates:
+//! - **Base lines**: a base over `sync_base_max` bytes is split into lines
+//!   by the first full diff's worker, not on the UI thread, so opening a
+//!   large file does not copy and scan it before the first frame. Until
+//!   then there are no hunks, and every edit waits for that full diff.
+//! - A model whose base is the document's own current version (a file just
+//!   opened) starts with no hunks and no full diff.
 //! - **Full diff** on `init`, `setBase` and large edits (more than 10,000
 //!   lines, or a rediff window over 2,000 lines): `diffLines` runs on a
 //!   worker over the base and a snapshot. When it finishes it posts
@@ -50,6 +56,9 @@ pub const anchor_lines = 3;
 pub const max_window_lines = 2000;
 /// An edit touching more lines than this goes to a full diff.
 pub const large_edit_lines = 10_000;
+/// Bases up to this many bytes are split into lines on the calling thread;
+/// larger ones on the full diff's worker.
+pub const sync_base_max: u64 = 4 << 20;
 
 /// Hunks `first..first + removed` were replaced by `inserted` new ones.
 pub const HunksChanged = struct { first: u32, removed: u32, inserted: u32, version: u64 };
@@ -76,6 +85,10 @@ const LineEdit = struct { start: u64, old_count: u64, new_count: u64 };
 const FullJob = struct {
     gpa: Allocator,
     base: *const LineSource,
+    /// Set when the base's lines are not built yet: the job builds them
+    /// from this snapshot (owned by the model) into `built`.
+    base_snap: ?*const Snapshot = null,
+    built: ?LineSource = null,
     snap: Snapshot,
     o: diff.DiffOptions,
     rt: ?*zg_core.Runtime,
@@ -91,6 +104,10 @@ const FullJob = struct {
     }
 
     fn compute(job: *FullJob) !void {
+        const base = if (job.base_snap) |bs| blk: {
+            job.built = try LineSource.fromTree(job.gpa, bs.tree);
+            break :blk &job.built.?;
+        } else job.base;
         var cur = try LineSource.fromTree(job.gpa, job.snap.tree);
         defer cur.deinit(job.gpa);
         var o = job.o;
@@ -98,7 +115,7 @@ const FullJob = struct {
         o.intraline = .none;
         o.detect_moves = false;
         o.ignore_ws = .none;
-        var r = try diff.diffLines(job.gpa, job.base, &cur, o);
+        var r = try diff.diffLines(job.gpa, base, &cur, o);
         defer r.deinit(job.gpa);
         job.hunks = r.hunks;
         r.hunks = &.{};
@@ -115,7 +132,10 @@ pub const DiffModel = struct {
     listener_id: document.ListenerId,
     o: diff.DiffOptions,
     base_snap: Snapshot,
+    /// Empty until `base_ready`.
     base: LineSource,
+    /// Whether `base` holds `base_snap`'s lines.
+    base_ready: bool,
     list: std.ArrayList(LineHunk) = .empty,
     /// The document version the hunks describe.
     ver: u64,
@@ -134,10 +154,13 @@ pub const DiffModel = struct {
         errdefer gpa.destroy(m);
         var bsnap = base;
         errdefer bsnap.release();
-        var bsrc = try LineSource.fromTree(gpa, base.tree);
+        const ready = syncBase(rt, base);
+        var bsrc: LineSource = if (ready) try LineSource.fromTree(gpa, base.tree) else empty_source;
         errdefer bsrc.deinit(gpa);
-        m.* = .{ .gpa = gpa, .rt = rt, .doc = current, .listener_id = undefined, .o = o, .base_snap = base, .base = bsrc, .ver = current.version };
+        m.* = .{ .gpa = gpa, .rt = rt, .doc = current, .listener_id = undefined, .o = o, .base_snap = base, .base = bsrc, .base_ready = ready, .ver = current.version };
         m.listener_id = try current.subscribe(.{ .ctx = m, .onChange = onChangeCb });
+        // The base is the current text: nothing differs yet.
+        if (base.doc_id == current.id and base.version == current.version) return m;
         m.scheduleFull();
         return m;
     }
@@ -177,14 +200,29 @@ pub const DiffModel = struct {
     /// Replaces the base (taking over its reference) and recomputes.
     pub fn setBase(m: *DiffModel, base: Snapshot) !void {
         m.dropJob();
-        var bsrc = try LineSource.fromTree(m.gpa, base.tree);
+        const ready = syncBase(m.rt, base);
+        var bsrc: LineSource = if (ready) try LineSource.fromTree(m.gpa, base.tree) else empty_source;
         errdefer bsrc.deinit(m.gpa);
         m.base.deinit(m.gpa);
         m.base_snap.release();
         m.base = bsrc;
         m.base_snap = base;
+        m.base_ready = ready;
+        // The old hunks index the old base.
+        if (!ready and m.list.items.len > 0) {
+            const n = m.list.items.len;
+            m.list.clearRetainingCapacity();
+            m.emit(.{ .first = 0, .removed = @intCast(n), .inserted = 0, .version = m.ver });
+        }
         m.scheduleFull();
     }
+
+    /// Whether `base`'s lines are built on the calling thread.
+    fn syncBase(rt: ?*zg_core.Runtime, base: Snapshot) bool {
+        return rt == null or base.tree.len() <= sync_base_max;
+    }
+
+    const empty_source: LineSource = .{ .text = &.{}, .lines = &.{}, .owned = false };
 
     /// Handles `ui_msg_kind` for this model (UI thread).
     pub fn handleMsg(msg: zg_core.UiMsg) void {
@@ -202,10 +240,17 @@ pub const DiffModel = struct {
         m.job = null;
         defer {
             job.snap.release();
+            if (job.built) |*b| b.deinit(m.gpa);
             m.gpa.free(job.hunks);
             m.gpa.destroy(job);
         }
         if (job.failed) return error.OutOfMemory;
+        if (job.built) |b| {
+            m.base.deinit(m.gpa);
+            m.base = b;
+            m.base_ready = true;
+            job.built = null;
+        }
         // Map the result through the edits made while it ran.
         var result: std.ArrayList(LineHunk) = .fromOwnedSlice(job.hunks);
         job.hunks = &.{};
@@ -304,7 +349,7 @@ pub const DiffModel = struct {
             try m.pending.append(m.gpa, e);
             return;
         }
-        if (old_count > large_edit_lines or new_count > large_edit_lines) {
+        if (!m.base_ready or old_count > large_edit_lines or new_count > large_edit_lines) {
             m.scheduleFull();
             return;
         }
@@ -383,7 +428,7 @@ pub const DiffModel = struct {
             return;
         }
         const job = m.gpa.create(FullJob) catch return;
-        job.* = .{ .gpa = m.gpa, .base = &m.base, .snap = m.doc.snapshot(), .o = m.o, .rt = m.rt, .model_addr = @intFromPtr(m) };
+        job.* = .{ .gpa = m.gpa, .base = &m.base, .base_snap = if (m.base_ready) null else &m.base_snap, .snap = m.doc.snapshot(), .o = m.o, .rt = m.rt, .model_addr = @intFromPtr(m) };
         // Pathological inputs fall back to a coarse diff after the timeout.
         job.o.io = if (m.rt) |rt| rt.io else null;
         m.job = job;
@@ -398,6 +443,7 @@ pub const DiffModel = struct {
         m.future = null;
         m.job = null;
         job.snap.release();
+        if (job.built) |*b| b.deinit(m.gpa);
         m.gpa.free(job.hunks);
         m.gpa.destroy(job);
         m.pending.clearRetainingCapacity();

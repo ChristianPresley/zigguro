@@ -47,6 +47,8 @@ const text_field = @import("text_field/root.zig");
 const provider_mod = @import("quick_pick/provider.zig");
 const matcher_mod = @import("quick_pick/matcher.zig");
 const mru_mod = @import("quick_pick/mru.zig");
+/// Top-k ranking of large candidate lists for async providers.
+pub const rank = @import("quick_pick/rank.zig");
 
 pub const QpItem = provider_mod.QpItem;
 pub const Provider = provider_mod.Provider;

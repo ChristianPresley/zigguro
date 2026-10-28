@@ -104,7 +104,15 @@ pub const PieceTree = struct {
             off += plen;
         }
         const c: Ctx = .{ .pool = pool, .bt = bt };
-        return .{ .root = try buildFromPieces(c, pieces), .buffers = bt };
+        // A large original is summarized (line breaks, UTF-16 units) on
+        // several threads first.
+        var sums: ?[]Summary = null;
+        defer if (sums) |x| pool.gpa.free(x);
+        if (n >= parallel_summary_min) {
+            sums = try pool.gpa.alloc(Summary, count);
+            summarizeParallel(bt, pieces, sums.?);
+        }
+        return .{ .root = try buildFromPiecesWith(c, pieces, sums), .buffers = bt };
     }
 
     /// Another reference to the same version.
@@ -847,6 +855,41 @@ fn split(c: Ctx, n_in: ?*Node, off: u64) EditError!Halves {
 
 /// Builds a balanced tree over `pieces` (new references).
 fn buildFromPieces(c: Ctx, pieces: []const Piece) Allocator.Error!?*Node {
+    return buildFromPiecesWith(c, pieces, null);
+}
+
+/// Originals from this size are summarized on several threads.
+const parallel_summary_min = 32 << 20;
+const max_summary_threads = 8;
+
+/// `sums[i] = Summary.of(pieces[i])`, split over up to
+/// `max_summary_threads` threads (the calling thread when spawning fails).
+fn summarizeParallel(bt: *const BufferTable, pieces: []const Piece, sums: []Summary) void {
+    const Part = struct {
+        fn run(b: *const BufferTable, ps: []const Piece, out: []Summary) void {
+            for (ps, out) |p, *o| o.* = Summary.of(b.bytes(p));
+        }
+    };
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const n = std.math.clamp(@min(cpus, pieces.len), 1, max_summary_threads);
+    const per = std.math.divCeil(usize, pieces.len, n) catch unreachable;
+    var threads: [max_summary_threads]?std.Thread = @splat(null);
+    var k: usize = 1;
+    while (k < n) : (k += 1) {
+        const lo = @min(pieces.len, k * per);
+        const hi = @min(pieces.len, lo + per);
+        threads[k] = std.Thread.spawn(.{}, Part.run, .{ bt, pieces[lo..hi], sums[lo..hi] }) catch blk: {
+            Part.run(bt, pieces[lo..hi], sums[lo..hi]);
+            break :blk null;
+        };
+    }
+    Part.run(bt, pieces[0..@min(per, pieces.len)], sums[0..@min(per, pieces.len)]);
+    for (threads[1..n]) |t| if (t) |th| th.join();
+}
+
+/// `buildFromPieces` with the pieces' summaries already computed, or null
+/// to compute them.
+fn buildFromPiecesWith(c: Ctx, pieces: []const Piece, sums: ?[]const Summary) Allocator.Error!?*Node {
     if (pieces.len == 0) return null;
     const gpa = c.pool.gpa;
     var level: std.ArrayList(*Node) = .empty;
@@ -859,7 +902,7 @@ fn buildFromPieces(c: Ctx, pieces: []const Piece) Allocator.Error!?*Node {
         const l = try c.pool.allocLeaf();
         for (pieces[off..][0..take], 0..) |p, j| {
             l.pieces[j] = p;
-            l.sums[j] = Summary.of(c.bt.bytes(p));
+            l.sums[j] = if (sums) |ss| ss[off + j] else Summary.of(c.bt.bytes(p));
         }
         l.node.count = @intCast(take);
         l.node.recompute();

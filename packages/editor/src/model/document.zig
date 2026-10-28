@@ -64,8 +64,20 @@ pub const Document = struct {
 
     /// A document holding a copy of `bytes`, at version 0.
     pub fn initBytes(gpa: Allocator, id: DocId, bytes: []const u8) Allocator.Error!*Document {
-        const store = try Store.create(gpa, try gpa.dupe(u8, bytes));
-        errdefer store.release();
+        const owned = try gpa.dupe(u8, bytes);
+        errdefer gpa.free(owned);
+        return initOwned(gpa, id, owned);
+    }
+
+    /// `initBytes` taking ownership of `bytes` (allocated with `gpa`)
+    /// instead of copying it: a large file's text is held once. On error
+    /// `bytes` is still the caller's.
+    pub fn initOwned(gpa: Allocator, id: DocId, bytes: []u8) Allocator.Error!*Document {
+        const store = try Store.create(gpa, bytes);
+        errdefer {
+            store.bt.owns_original = false;
+            store.release();
+        }
         const tree = try PieceTree.fromOriginal(&store.pool, store.bt);
         const d = try gpa.create(Document);
         d.* = .{ .gpa = gpa, .id = id, .store = store, .tree = tree, .change_log = .init(gpa, 0) };

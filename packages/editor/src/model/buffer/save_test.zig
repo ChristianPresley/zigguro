@@ -399,3 +399,20 @@ test "merge3: non-overlapping changes merge cleanly; overlapping produce markers
         try std.testing.expectEqualStrings("a\nc\nd\nE\nf\n", m.text);
     }
 }
+
+test "load: a large file read in parallel equals its bytes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const n: usize = @intCast(external.parallel_min + 70_001);
+    const data = try gpa.alloc(u8, n);
+    defer gpa.free(data);
+    var prng: std.Random.DefaultPrng = .init(3);
+    for (data, 0..) |*b, i| b.* = if (i % 61 == 60) '\n' else 'a' + prng.random().uintLessThan(u8, 26);
+    try tmp.dir.writeFile(io, .{ .sub_path = "big.txt", .data = data });
+    var l = try external.load(gpa, io, tmp.dir, "big.txt", null, .utf8);
+    defer l.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, data, l.text);
+    try std.testing.expectEqual(save.hashBytes(data), l.disk.content_hash);
+    try std.testing.expectEqual(@as(u64, n), l.disk.size);
+    try std.testing.expectEqual(@as(u64, n / 61), l.eol.counts[@intFromEnum(eol.Eol.lf)]);
+}
