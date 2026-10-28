@@ -74,10 +74,21 @@ const PlanKey = struct {
     }
 };
 
+/// Hashes the fields (not the bytes: `Feature` has padding) with a
+/// multiply-xorshift per feature, cheap enough for every cached word.
 fn featureHash(features: []const Feature) u64 {
-    var h = std.hash.Wyhash.init(0x5a17);
-    for (features) |f| h.update(std.mem.asBytes(&f));
-    return h.final();
+    var h: u64 = 0x5a17 ^ features.len;
+    for (features) |f| {
+        h = mix(h ^ (@as(u64, f.tag) | @as(u64, f.value) << 32));
+        h = mix(h ^ (@as(u64, f.start) | @as(u64, f.end) << 32));
+    }
+    return h;
+}
+
+fn mix(x: u64) u64 {
+    var z = x *% 0x9E3779B97F4A7C15;
+    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+    return z ^ (z >> 31);
 }
 
 /// One per thread: a reusable buffer and a small plan cache.
@@ -87,6 +98,8 @@ pub const Shaper = struct {
     keys: [plan_cache_size]?PlanKey = @splat(null),
     plans: [plan_cache_size]ShapePlan = undefined,
     next_slot: usize = 0,
+    /// The slot `plan` returned last, checked first.
+    last_slot: usize = 0,
 
     /// An empty shaper.
     pub fn init(gpa: Allocator) Shaper {
@@ -111,8 +124,13 @@ pub const Shaper = struct {
     /// The plan for these settings, built on first use.
     pub fn plan(s: *Shaper, inst: *const FaceInstance, script: Script, lang: Tag, dir: Direction, features: []const Feature) Allocator.Error!*const ShapePlan {
         const key: PlanKey = .{ .inst = inst, .script = script, .lang = lang, .dir = dir, .features = featureHash(features) };
-        for (s.keys, 0..) |k, i| if (k) |v| if (v.eql(key)) return &s.plans[i];
+        if (s.keys[s.last_slot]) |v| if (v.eql(key)) return &s.plans[s.last_slot];
+        for (s.keys, 0..) |k, i| if (k) |v| if (v.eql(key)) {
+            s.last_slot = i;
+            return &s.plans[i];
+        };
         const slot = s.next_slot;
+        s.last_slot = slot;
         s.next_slot = (slot + 1) % plan_cache_size;
         const p = try ShapePlan.build(s.gpa, inst, script, lang, dir, null, features);
         if (s.keys[slot] != null) s.plans[slot].deinit();
