@@ -189,6 +189,22 @@ pub fn nextDue(d: *const Driver) ?i96 {
     return @min(a.?, b.?);
 }
 
+/// A set from outside the language servers (a task's problem matcher, an
+/// agent's check), UI thread. Its positions are zero-based lines and
+/// characters counted in `enc`; when `key`'s document is open the set
+/// gets byte ranges at its current text, so it shows in the editor. Takes
+/// `set` (null clears the owner's set for `key`). Applied by the next
+/// `tick` or `Store.commit`.
+pub fn replaceExternal(d: *Driver, key: []const u8, owner: Store.Owner, set: ?*Store.Set, enc: zg_core.utf8.Encoding) Allocator.Error!void {
+    if (set) |s| if (d.openDocOfKey(key)) |h| if (d.mgr.docs.get(h)) |doc| {
+        convert.mapBytes(d.gpa, s, &doc.tree, enc, doc.version) catch |e| {
+            s.destroy();
+            return e;
+        };
+    };
+    try d.store.replace(key, owner, set);
+}
+
 /// The workspace pulls (tests).
 pub fn workspacePull(d: *Driver) *WorkspacePull {
     return &d.ws;
@@ -397,13 +413,19 @@ fn mapOpened(d: *Driver, h: DocHandle) void {
     var mapped: std.ArrayList(*Store.Set) = .empty;
     defer mapped.deinit(d.gpa);
     for (b.sets) |old| {
-        if (old.version != null or old.owner != .server) continue;
-        const servers = d.mgr.serverList();
-        const id = old.owner.server;
-        if (id >= servers.len) continue;
-        const c = servers[id].client orelse continue;
+        if (old.version != null) continue;
+        // Tasks and agent checks count characters as bytes (compilers do).
+        const enc: zg_core.utf8.Encoding = switch (old.owner) {
+            .server => |id| enc: {
+                const servers = d.mgr.serverList();
+                if (id >= servers.len) continue;
+                const c = servers[id].client orelse continue;
+                break :enc position.encodingOf(c.encoding());
+            },
+            .task, .agent_check => .utf8,
+        };
         const set = convert.copySet(d.gpa, old) catch return;
-        convert.mapBytes(d.gpa, set, &doc.tree, position.encodingOf(c.encoding()), doc.version) catch {
+        convert.mapBytes(d.gpa, set, &doc.tree, enc, doc.version) catch {
             set.destroy();
             continue;
         };
