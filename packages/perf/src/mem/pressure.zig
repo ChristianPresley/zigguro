@@ -11,6 +11,7 @@
 //! each epic is expected to register.
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const tags = @import("tags.zig");
@@ -313,6 +314,7 @@ pub const PressureMonitor = struct {
             const mask = m.pending_tags.swap(0, .acq_rel);
             if (level == .none and mask == 0) {
                 try m.io.futexWait(u32, &m.gen.raw, g);
+                wake_count.noteWake("perf.pressure", .signal);
                 continue;
             }
             if (level != .none) m.finishRun(runReclaim(m.io, level, null, null));

@@ -11,6 +11,7 @@
 //! thread's typical rate of at most 5 000 events per frame.
 
 const std = @import("std");
+const wake_count = @import("../idle/wake_count.zig");
 const builtin = @import("builtin");
 const zg_core = @import("zg_core");
 const Store = @import("store.zig").Store;
@@ -253,6 +254,7 @@ pub const FlightRecorder = struct {
             const seen = fr.signal.load(.acquire);
             if (!fr.hasPending()) {
                 try fr.io.futexWait(u32, &fr.signal.raw, seen);
+                wake_count.noteWake("perf.flight_recorder", .signal);
                 _ = fr.wakeups.fetchAdd(1, .monotonic);
                 continue;
             }
@@ -262,6 +264,7 @@ pub const FlightRecorder = struct {
             if (fr.now() < until) {
                 const deadline: std.Io.Clock.Timestamp = .{ .raw = .fromNanoseconds(@intCast(zg_core.time.nowNs(fr.io) + (until - fr.now()))), .clock = .awake };
                 fr.io.futexWaitTimeout(u32, &fr.signal.raw, seen, .{ .deadline = deadline }) catch |err| return err;
+                wake_count.noteWake("perf.flight_recorder", .timer);
                 if (fr.now() < until) continue;
             }
             fr.drain.drainNow();
