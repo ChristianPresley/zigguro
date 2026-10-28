@@ -57,11 +57,13 @@ const completions = @import("review/completions.zig");
 const inline_edit_bar = @import("review/inline_edit_bar.zig");
 const InlineEditHost = @import("review/inline_edit_host.zig").InlineEditHost;
 const CodeIntel = @import("codeintel.zig").CodeIntel;
+const FileOpHooks = @import("codeintel.zig").FileOpHooks;
 const NavService = @import("codeintel.zig").NavService;
 const settings_mod = @import("settings/service.zig");
 const Settings = settings_mod.Settings;
 const SettingsView = @import("settings/view.zig").SettingsView;
 const ExplorerPanel = @import("explorer/panel.zig").ExplorerPanel;
+const ExplorerFileOp = @import("explorer/panel.zig").FileOp;
 const problems_panel = @import("problems_panel.zig");
 const ProblemsPanel = problems_panel.ProblemsPanel;
 const NotesService = @import("notes/service.zig").NotesService;
@@ -1031,6 +1033,8 @@ pub const Workbench = struct {
             ci.win = win;
             ci.nav_hook = .{ .ctx = wb, .done = onNavDone };
             ci.popup_hook = .{ .ctx = wb, .f = onCompletionPopup };
+            ci.refactor.notice = .{ .ctx = wb, .f = onRefactorNotice };
+            ci.prefs = .{ .ctx = wb, .options = formatOptionsOf, .format_on_type = formatOnTypeOf };
             ci.popup.on_link = .{ .ctx = wb, .f = onHoverLink };
             wb.codeintel = ci;
             for (wb.files.items) |*f| if (f.handle) |h| ci.open(h, f.syntax, f.view, if (f.syntax != null) wb.ensureDeco(f) catch null else null);
@@ -1154,6 +1158,10 @@ pub const Workbench = struct {
         .{ .id = "editor.goToTypeDefinition", .title = "Go to Type Definition", .category = "Go", .run = goToTypeDefinition },
         .{ .id = "editor.goToImplementation", .title = "Go to Implementations", .category = "Go", .run = goToImplementation },
         .{ .id = "editor.findReferences", .title = "Go to References", .category = "Go", .run = findReferences },
+        .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Editor", .run = renameSymbol },
+        .{ .id = "editor.quickFix", .title = "Quick Fix...", .category = "Editor", .run = quickFix },
+        .{ .id = "editor.formatDocument", .title = "Format Document", .category = "Editor", .run = formatDocument },
+        .{ .id = "editor.formatSelection", .title = "Format Selection", .category = "Editor", .run = formatSelection },
         .{ .id = "navigation.back", .title = "Go Back", .category = "Go", .run = navigateBack },
         .{ .id = "navigation.forward", .title = "Go Forward", .category = "Go", .run = navigateForward },
         .{ .id = "problems.copy", .title = "Copy Problem", .category = "Problems", .run = problemsCopy },
@@ -1244,6 +1252,7 @@ pub const Workbench = struct {
 
     fn startSave(wb: *Workbench, o: file_sync.SaveOptions) void {
         const fs = wb.currentSync() orelse return;
+        wb.runSaveActions(fs.doc, .Manual);
         fs.save(o) catch |e| switch (e) {
             error.Busy => wb.notify(.info, "{s} is still being saved", .{std.fs.path.basename(fs.path)}),
             else => wb.notify(.error_, "Save failed: {t}", .{e}),
@@ -1972,6 +1981,96 @@ pub const Workbench = struct {
             wb.notify(.info, "No language server for this file", .{});
     }
 
+    /// `editor.rename`: the symbol at the caret.
+    fn renameSymbol(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can rename here", .{});
+        ci.rename(h, wb.view.primarySel().head);
+    }
+
+    /// `editor.quickFix`: code actions at the caret or selection.
+    fn quickFix(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server offers code actions here", .{});
+        const w = wb.win orelse return;
+        if (wb.editor_node.isNone()) return;
+        const r = w.layoutRect(wb.editor_node);
+        const origin: zg_gui.core.Vec2 = .{ .x = r.x + wb.view.gutter_w - wb.view.scroll.x, .y = r.y - wb.view.scroll.y };
+        const sel = wb.view.primarySel().range();
+        ci.quickFix(wb.view, h, .{ .start = sel.start, .end = sel.end }, origin);
+    }
+
+    /// `editor.formatDocument`.
+    fn formatDocument(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can format this file", .{});
+        ci.formatDocument(h);
+    }
+
+    /// `editor.formatSelection` (the whole file without a selection).
+    fn formatSelection(wb: *Workbench) !void {
+        const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
+        const h = wb.currentHandle() orelse return wb.notify(.info, "No language server can format this file", .{});
+        const sel = wb.view.primarySel().range();
+        ci.formatSelection(h, .{ .start = sel.start, .end = sel.end });
+    }
+
+    fn openFileOfHandle(wb: *Workbench, h: zg_editor.model.api.registry.DocHandle) ?*OpenFile {
+        for (wb.files.items) |*f| if (f.handle) |x| if (std.meta.eql(x, h)) return f;
+        return null;
+    }
+
+    fn langOfHandle(wb: *Workbench, h: zg_editor.model.api.registry.DocHandle) ?[]const u8 {
+        const f = wb.openFileOfHandle(h) orelse return null;
+        return if (f.syntax) |sx| sx.lang.name else null;
+    }
+
+    fn formatOptionsOf(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) zg_codeintel.protocol.FormattingOptions {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const o = wb.editorOptions(wb.langOfHandle(h));
+        return .{ .tabSize = o.tab_size, .insertSpaces = o.insert_spaces };
+    }
+
+    fn formatOnTypeOf(ctx: *anyopaque, h: zg_editor.model.api.registry.DocHandle) bool {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const st = wb.settings orelse return false;
+        const v = st.getFor("editor.formatOnType", wb.langOfHandle(h));
+        return v == .bool and v.bool;
+    }
+
+    /// The save pipeline before `doc` is written: willSaveWaitUntil, the
+    /// code actions on save, then format on save (1 s in all).
+    fn runSaveActions(wb: *Workbench, doc: *Document, reason: zg_codeintel.protocol.TextDocumentSaveReason) void {
+        const ci = wb.codeintel orelse return;
+        const f = for (wb.files.items) |*x| {
+            if (x.doc == doc) break x;
+        } else return;
+        const h = f.handle orelse return;
+        const lang = if (f.syntax) |sx| sx.lang.name else null;
+        var kinds: [8][]const u8 = undefined;
+        var n: usize = 0;
+        var format = false;
+        if (wb.settings) |st| {
+            const fos = st.getFor("editor.formatOnSave", lang);
+            format = fos != .bool or fos.bool;
+            const cas = st.getFor("editor.codeActionsOnSave", lang);
+            if (cas == .object) for (cas.object) |fl| {
+                if (n == kinds.len) break;
+                if (fl.value == .bool and fl.value.bool) {
+                    kinds[n] = fl.key;
+                    n += 1;
+                }
+            };
+        }
+        const r = ci.beforeSave(h, .{ .code_actions = kinds[0..n], .format = format, .reason = reason });
+        if (r.warn) wb.notify(.warning, "{s}: formatting on save took too long and was skipped", .{std.fs.path.basename(f.path orelse "Untitled")});
+    }
+
+    fn onRefactorNotice(ctx: *anyopaque, warning: bool, msg: []const u8) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        wb.notify(if (warning) .warning else .info, "{s}", .{msg});
+    }
+
     fn navGo(wb: *Workbench, kind: NavService.Kind) !void {
         const ci = wb.codeintel orelse return wb.notify(.info, "Language services are not running", .{});
         const h = wb.currentHandle() orelse return wb.notify(.info, "No language server for this file", .{});
@@ -2087,6 +2186,12 @@ pub const Workbench = struct {
         const l = @min(@as(u64, line), v.lineCount() - 1);
         const lr = v.lineRange(l);
         wb.gotoOffset(lr.start + zg_core.utf8.columnToByte(v.text(lr), character, enc));
+    }
+
+    /// Puts the caret at 0-based `line`, byte column `col` of the current
+    /// editor (`bench-latency`).
+    pub fn gotoLine(wb: *Workbench, line: u32, col: u32) void {
+        wb.gotoPos(line, col, .utf8);
     }
 
     fn gotoOffset(wb: *Workbench, off: u64) void {
@@ -2658,7 +2763,7 @@ pub const Workbench = struct {
         if (wb.explorer != null) return;
         const e = try wb.gpa.create(ExplorerPanel);
         errdefer wb.gpa.destroy(e);
-        try e.init(wb.gpa, wb.io, wb.cwd, .{ .ctx = wb, .open = onExplorerOpen, .moved = onExplorerMoved, .open_folder = onOpenFolder });
+        try e.init(wb.gpa, wb.io, wb.cwd, .{ .ctx = wb, .open = onExplorerOpen, .moved = onExplorerMoved, .open_folder = onOpenFolder, .file_op = onExplorerFileOp });
         e.win = wb.win;
         wb.explorer = e;
         wb.applyExplorerSettings();
@@ -2747,6 +2852,39 @@ pub const Workbench = struct {
         wb.pending_focus = focus;
         wb.pending_explorer = true;
         if (wb.win) |w| w.markAllDirty();
+    }
+
+    /// The explorer is about to create, rename or delete files, or has:
+    /// language servers hear of it (LSP `workspace/will*Files` first,
+    /// whose import updates are applied, then `did*Files`).
+    fn onExplorerFileOp(ctx: *anyopaque, phase: ExplorerFileOp.Phase, kind: ExplorerFileOp.Kind, items: []const ExplorerFileOp.Item) void {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        const ci = wb.codeintel orelse return;
+        if (!ci.trusted) return;
+        const hooks = &ci.file_hooks;
+        var arena: std.heap.ArenaAllocator = .init(wb.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        switch (kind) {
+            .rename => {
+                const pairs = a.alloc(FileOpHooks.Pair, items.len) catch return;
+                for (items, pairs) |it, *pr| pr.* = .{ .old = it.path, .new = it.new orelse it.path, .folder = it.folder };
+                switch (phase) {
+                    .will => hooks.willRename(pairs, ci.save_actions.clock()),
+                    .did => hooks.didRename(pairs),
+                }
+            },
+            .create, .delete => {
+                const entries = a.alloc(FileOpHooks.Entry, items.len) catch return;
+                for (items, entries) |it, *e| e.* = .{ .path = it.path, .folder = it.folder };
+                const clk = ci.save_actions.clock();
+                switch (phase) {
+                    .will => if (kind == .create) hooks.willCreate(entries, clk) else hooks.willDelete(entries, clk),
+                    .did => if (kind == .create) hooks.didCreate(entries) else hooks.didDelete(entries),
+                }
+            },
+        }
+        if (phase == .will) if (wb.win) |w| w.markAllDirty();
     }
 
     /// A file or folder was renamed, moved or deleted in the explorer:
@@ -2927,6 +3065,7 @@ pub const Workbench = struct {
     fn quietSave(wb: *Workbench, f: *OpenFile) void {
         const fs = f.sync orelse return;
         if (f.doc.version == f.autosave_failed) return;
+        wb.runSaveActions(f.doc, .AfterDelay);
         fs.save(.{}) catch return;
         wb.quiet_saves.append(wb.gpa, fs) catch {};
     }

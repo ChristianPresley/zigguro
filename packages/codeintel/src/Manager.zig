@@ -108,10 +108,14 @@ pub const Server = struct {
     sync: ?LspSync = null,
     /// Documents attached to this server, tracked while it runs.
     docs: std.ArrayList(DocHandle) = .empty,
+    /// The agent session whose `workspace/executeCommand` is in flight
+    /// (UI thread): server edits meanwhile are the agent's.
+    agent_command: ?u32 = null,
+    agent_commands: u32 = 0,
     /// Start-up strings (argv, URIs, initialization options).
     arena: std.heap.ArenaAllocator,
 
-    fn hasDoc(s: *const Server, h: DocHandle) bool {
+    pub fn hasDoc(s: *const Server, h: DocHandle) bool {
         return indexOfDoc(s.docs.items, h) != null;
     }
 };
@@ -271,6 +275,12 @@ pub fn tick(m: *Manager) void {
         },
     };
     m.freeTaken();
+    m.flush();
+}
+
+/// Sends every server the edits not sent yet (before a request, so it
+/// is about the text the server has).
+pub fn flush(m: *Manager) void {
     for (m.servers.items) |s| if (s.sync) |*sy| sy.flush();
 }
 

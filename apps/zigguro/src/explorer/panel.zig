@@ -17,6 +17,12 @@
 //! made in the terminal or by the agent show up. `files.exclude`,
 //! `explorer.sortOrder` and `explorer.respectGitIgnore` apply through
 //! `setOptions`. UI thread only.
+//!
+//! Each create, rename, move and delete is reported through
+//! `Hooks.file_op` before (`will`) and after (`did`) it happens, so
+//! language servers can update imports and forget files (LSP
+//! `workspace/will*Files` and `did*Files`). A copy is reported as a
+//! create once it is made.
 
 const std = @import("std");
 const zg_gui = @import("zg_gui");
@@ -43,6 +49,18 @@ pub const Hooks = struct {
     moved: ?*const fn (ctx: *anyopaque, old: []const u8, new: ?[]const u8) void = null,
     /// Opens folder `abs` in a new window.
     open_folder: ?*const fn (ctx: *anyopaque, abs: []const u8) void = null,
+    /// A file operation is about to happen or has happened (see the
+    /// module doc).
+    file_op: ?*const fn (ctx: *anyopaque, phase: FileOp.Phase, kind: FileOp.Kind, items: []const FileOp.Item) void = null,
+};
+
+/// A file operation the explorer reports through `Hooks.file_op`.
+pub const FileOp = struct {
+    pub const Phase = enum { will, did };
+    pub const Kind = enum { create, rename, delete };
+    /// `path` (absolute) is the file or folder; a rename's new path is
+    /// `new`.
+    pub const Item = struct { path: []const u8, new: ?[]const u8 = null, folder: bool = false };
 };
 
 /// See the module doc.
@@ -284,11 +302,17 @@ pub const ExplorerPanel = struct {
         switch (pr.kind) {
             .new_file, .new_folder => {
                 if (p.tree.get(pr.target) == null) return true;
+                const folder = pr.kind == .new_folder;
+                if (p.tree.childPath(pr.target, name)) |will| {
+                    defer p.gpa.free(will);
+                    p.fileOp(.will, .create, &.{.{ .path = will, .folder = folder }});
+                } else |_| {}
                 const made = (if (pr.kind == .new_file) p.tree.createFile(pr.target, name) else p.tree.createDir(pr.target, name)) catch |e| {
                     p.say("{s}: {s}", .{ name, opMessage(e) });
                     return false;
                 };
                 defer p.gpa.free(made);
+                p.fileOp(.did, .create, &.{.{ .path = made, .folder = folder }});
                 p.reveal(made);
                 if (pr.kind == .new_file) p.hooks.open(p.hooks.ctx, made, true);
             },
@@ -297,11 +321,19 @@ pub const ExplorerPanel = struct {
                 if (std.mem.eql(u8, p.tree.node(pr.target).name, name)) return true;
                 const old = p.tree.absPath(pr.target) catch return true;
                 defer p.gpa.free(old);
+                const folder = p.tree.node(pr.target).is_dir;
+                if (FsTree.validName(name)) if (std.fs.path.dirname(old)) |dir| {
+                    if (std.fs.path.join(p.gpa, &.{ dir, name })) |will| {
+                        defer p.gpa.free(will);
+                        p.fileOp(.will, .rename, &.{.{ .path = old, .new = will, .folder = folder }});
+                    } else |_| {}
+                };
                 const made = p.tree.rename(pr.target, name) catch |e| {
                     p.say("{s}: {s}", .{ name, opMessage(e) });
                     return false;
                 };
                 defer p.gpa.free(made);
+                p.fileOp(.did, .rename, &.{.{ .path = old, .new = made, .folder = folder }});
                 if (p.hooks.moved) |f| f(p.hooks.ctx, old, made);
                 p.reveal(made);
             },
@@ -386,17 +418,33 @@ pub const ExplorerPanel = struct {
     }
 
     fn deleteDoomed(p: *ExplorerPanel) void {
+        var items: std.ArrayList(FileOp.Item) = .empty;
+        defer items.deinit(p.gpa);
         for (p.doomed.items) |abs| {
             const id = p.tree.find(abs) orelse continue;
+            items.append(p.gpa, .{ .path = abs, .folder = p.tree.node(id).is_dir }) catch {};
+        }
+        p.fileOp(.will, .delete, items.items);
+        var done: usize = 0;
+        for (items.items) |it| {
+            const id = p.tree.find(it.path) orelse continue;
             p.tree.delete(id) catch |e| {
-                p.say("{s}: {s}", .{ std.fs.path.basename(abs), opMessage(e) });
+                p.say("{s}: {s}", .{ std.fs.path.basename(it.path), opMessage(e) });
                 continue;
             };
-            if (p.hooks.moved) |f| f(p.hooks.ctx, abs, null);
+            items.items[done] = it;
+            done += 1;
+            if (p.hooks.moved) |f| f(p.hooks.ctx, it.path, null);
         }
+        p.fileOp(.did, .delete, items.items[0..done]);
         for (p.doomed.items) |d| p.gpa.free(d);
         p.doomed.clearRetainingCapacity();
         p.changed();
+    }
+
+    fn fileOp(p: *ExplorerPanel, phase: FileOp.Phase, kind: FileOp.Kind, items: []const FileOp.Item) void {
+        if (items.len == 0) return;
+        if (p.hooks.file_op) |f| f(p.hooks.ctx, phase, kind, items);
     }
 
     fn clearClip(p: *ExplorerPanel) void {
@@ -430,10 +478,21 @@ pub const ExplorerPanel = struct {
         var last: ?[]u8 = null;
         defer if (last) |l| p.gpa.free(l);
         for (p.clip.items) |src| {
+            const folder = if (std.Io.Dir.cwd().statFile(p.io, src, .{})) |st| st.kind == .directory else |_| false;
+            // A move keeps its name; a copy's name is known once made.
+            if (p.clip_cut) if (p.tree.childPath(dir, std.fs.path.basename(src))) |will| {
+                defer p.gpa.free(will);
+                if (!std.mem.eql(u8, will, src)) p.fileOp(.will, .rename, &.{.{ .path = src, .new = will, .folder = folder }});
+            } else |_| {};
             const made = p.tree.paste(src, dir, p.clip_cut) catch |e| {
                 p.say("{s}: {s}", .{ std.fs.path.basename(src), opMessage(e) });
                 continue;
             };
+            if (!p.clip_cut) {
+                p.fileOp(.did, .create, &.{.{ .path = made, .folder = folder }});
+            } else if (!std.mem.eql(u8, made, src)) {
+                p.fileOp(.did, .rename, &.{.{ .path = src, .new = made, .folder = folder }});
+            }
             if (p.clip_cut) if (p.hooks.moved) |f| f(p.hooks.ctx, src, made);
             if (last) |l| p.gpa.free(l);
             last = made;
@@ -626,6 +685,7 @@ const TestHost = struct {
     opened: std.ArrayList(u8) = .empty,
     focus: bool = false,
     moves: u32 = 0,
+    ops: std.ArrayList(u8) = .empty,
 
     fn open(ctx: *anyopaque, abs: []const u8, focus: bool) void {
         const h: *TestHost = @ptrCast(@alignCast(ctx));
@@ -636,6 +696,15 @@ const TestHost = struct {
     fn moved(ctx: *anyopaque, _: []const u8, _: ?[]const u8) void {
         const h: *TestHost = @ptrCast(@alignCast(ctx));
         h.moves += 1;
+    }
+    /// "phase kind name[>new][/]" lines.
+    fn fileOp(ctx: *anyopaque, phase: FileOp.Phase, kind: FileOp.Kind, items: []const FileOp.Item) void {
+        const h: *TestHost = @ptrCast(@alignCast(ctx));
+        for (items) |it| {
+            h.ops.print(testing.allocator, "{t} {t} {s}", .{ phase, kind, std.fs.path.basename(it.path) }) catch {};
+            if (it.new) |n| h.ops.print(testing.allocator, ">{s}", .{n[std.mem.lastIndexOfScalar(u8, n, std.fs.path.sep).? + 1 ..]}) catch {};
+            h.ops.appendSlice(testing.allocator, if (it.folder) "/\n" else "\n") catch {};
+        }
     }
 };
 
@@ -661,8 +730,9 @@ test "explorer panel: browse, open, create, rename, copy and delete" {
 
     var host: TestHost = .{};
     defer host.opened.deinit(gpa);
+    defer host.ops.deinit(gpa);
     var p: ExplorerPanel = undefined;
-    try p.init(gpa, io, root, .{ .ctx = &host, .open = TestHost.open, .moved = TestHost.moved });
+    try p.init(gpa, io, root, .{ .ctx = &host, .open = TestHost.open, .moved = TestHost.moved, .file_op = TestHost.fileOp });
     defer p.deinit();
     p.confirm_delete = false;
     var page: TestPage = .{ .p = &p };
@@ -740,6 +810,28 @@ test "explorer panel: browse, open, create, rename, copy and delete" {
     _ = t.settle();
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "README copy.md", .{}));
     try testing.expect(t.find(.{ .role = .treeitem, .name = "README copy.md" }) == null);
+
+    // Cut new_util.zig into the root folder.
+    try t.click(.{ .role = .treeitem, .name = "new_util.zig" });
+    p.copySelection(true);
+    try t.click(.{ .role = .treeitem, .name = "README.md" });
+    p.paste();
+    _ = t.settle();
+    _ = try tmp.dir.statFile(io, "new_util.zig", .{});
+
+    // Language servers heard of each operation, before and after.
+    try testing.expectEqualStrings(
+        \\will create util.zig
+        \\did create util.zig
+        \\will rename util.zig>new_util.zig
+        \\did rename util.zig>new_util.zig
+        \\did create README copy.md
+        \\will delete README copy.md
+        \\did delete README copy.md
+        \\will rename new_util.zig>new_util.zig
+        \\did rename new_util.zig>new_util.zig
+        \\
+    , host.ops.items);
 
     // A file made outside shows up after a refresh.
     try tmp.dir.writeFile(io, .{ .sub_path = "outside.txt", .data = "x" });

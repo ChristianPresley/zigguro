@@ -1,10 +1,11 @@
 //! Mission Control's filter grammar (E13.F01.S02.T01). Whitespace-separated
 //! terms: `s:<status|group>`, `k:<kind>`, `n:<text>` (title or first
 //! prompt), `o:<text>` (summary or outputs), `cost>N` / `cost<N` (USD),
-//! `#tag`, `a:<automation or workflow name>`; a bare word is `n:`, and so
+//! `#tag`, `a:<automation or workflow name>`, `p:<project slug>` or
+//! `p:none` (E13.F09); a bare word is `n:`, and so
 //! is a term with an unknown prefix. A value may be double-quoted
-//! (`n:"two words"`). Terms of different kinds are ANDed; several `s:` or
-//! `k:` terms form one set (a run matches any of them). Text matches are
+//! (`n:"two words"`). Terms of different kinds are ANDed; several `s:`,
+//! `k:` or `p:` terms form one set (a run matches any of them). Text matches are
 //! case-insensitive substrings. Pure.
 
 const std = @import("std");
@@ -27,13 +28,18 @@ pub const Filter = struct {
     max_cost_micro: ?u64 = null,
     tags: []const []const u8 = &.{},
     origins: []const []const u8 = &.{},
+    /// Project slugs (matched exactly, ignoring case).
+    projects: []const []const u8 = &.{},
+    /// `p:none`: runs outside any project.
+    no_project: bool = false,
 
     pub const all: Filter = .{};
 
     pub fn isEmpty(f: *const Filter) bool {
         return f.states.count() == 0 and f.groups.count() == 0 and f.kinds.count() == 0 and
             f.names.len == 0 and f.outputs.len == 0 and f.min_cost_micro == null and
-            f.max_cost_micro == null and f.tags.len == 0 and f.origins.len == 0;
+            f.max_cost_micro == null and f.tags.len == 0 and f.origins.len == 0 and
+            f.projects.len == 0 and !f.no_project;
     }
 
     pub fn matches(f: *const Filter, s: Subject) bool {
@@ -51,7 +57,14 @@ pub const Filter = struct {
             } else return false;
         }
         for (f.origins) |o| if (!has(s.origin, o)) return false;
+        if (f.projects.len > 0 or f.no_project) if (!f.projectMatches(s.project)) return false;
         return true;
+    }
+
+    fn projectMatches(f: *const Filter, project: ?[]const u8) bool {
+        const p = project orelse return f.no_project;
+        for (f.projects) |x| if (std.ascii.eqlIgnoreCase(x, p)) return true;
+        return false;
     }
 };
 
@@ -69,6 +82,8 @@ pub const Subject = struct {
     tags: []const []const u8 = &.{},
     /// The automation's name, the workflow step or the workflow's title.
     origin: []const u8 = "",
+    /// The run's project slug.
+    project: ?[]const u8 = null,
 };
 
 fn has(hay: []const u8, needle: []const u8) bool {
@@ -82,6 +97,7 @@ pub fn parseFilter(text: []const u8, arena: Allocator) Allocator.Error!Filter {
     var outputs: std.ArrayList([]const u8) = .empty;
     var tags: std.ArrayList([]const u8) = .empty;
     var origins: std.ArrayList([]const u8) = .empty;
+    var projects: std.ArrayList([]const u8) = .empty;
     var it: Terms = .{ .s = text };
     while (it.next()) |term| {
         if (term.prefix) |p| {
@@ -103,6 +119,9 @@ pub fn parseFilter(text: []const u8, arena: Allocator) Allocator.Error!Filter {
             if (std.mem.eql(u8, p, "n")) try names.append(arena, term.value) //
             else if (std.mem.eql(u8, p, "o")) try outputs.append(arena, term.value) //
             else if (std.mem.eql(u8, p, "a")) try origins.append(arena, term.value) //
+            else if (std.mem.eql(u8, p, "p")) {
+                if (std.ascii.eqlIgnoreCase(term.value, "none")) f.no_project = true else try projects.append(arena, term.value);
+            } //
             else try names.append(arena, term.raw);
             continue;
         }
@@ -124,6 +143,7 @@ pub fn parseFilter(text: []const u8, arena: Allocator) Allocator.Error!Filter {
     f.outputs = try outputs.toOwnedSlice(arena);
     f.tags = try tags.toOwnedSlice(arena);
     f.origins = try origins.toOwnedSlice(arena);
+    f.projects = try projects.toOwnedSlice(arena);
     return f;
 }
 

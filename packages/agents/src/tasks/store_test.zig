@@ -324,3 +324,22 @@ test "queries over the store" {
     // T-0001 (P1) first; T-0012 depends on itself and T-0013 on T-0001.
     try testing.expectEqualSlices(u32, &.{ 1, 6, 15, 0 }, got.items);
 }
+
+test "tagging_on_create: tasks keep their project" {
+    var f: Fx = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    const c = try f.store.create(.{ .title = "Outline", .project = "book" }, .user);
+    const b = try f.read("T-0020-outline.md");
+    defer gpa.free(b);
+    try testing.expect(std.mem.indexOf(u8, b, "\nproject: book\n") != null);
+    {
+        const v = f.store.view();
+        defer f.store.release(v);
+        try testing.expectEqualStrings("book", v.get(c.id).?.project.?);
+    }
+    _ = try f.store.update(c.id, .{ .project = @as(?[]const u8, null) }, .user);
+    const v = f.store.view();
+    defer f.store.release(v);
+    try testing.expect(v.get(c.id).?.project == null);
+}

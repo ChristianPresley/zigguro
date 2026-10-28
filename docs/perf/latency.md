@@ -60,3 +60,105 @@ Today every real backend stamps input events with `nowNs` when it reads them, so
 The backend conformance suite (`packages/platform/src/testing/conformance.zig`) checks the input half on every backend that can synthesise keys: the key's `time_ns` must not be in the future and must be under 50 ms old when `pollEvents` returns it. Harnesses on a virtual clock (headless) declare `virtual_clock` and skip it. Presentation times are checked by the backends that send feedback (the Wayland `wp_presentation` test under Weston, the Win32 CPU present test).
 
 Still to verify on real hardware: Wayland presentation feedback with `hw_clock` on a GPU driver, X11 Present UST on non-Mesa drivers, and `VK_EXT_present_timing` on Windows.
+
+## 2. bench-latency
+
+`zig build bench-latency -Doptimize=ReleaseFast` types into a generated 100 000-line file in the real workbench and writes `zig-out/bench-results/latency.json` (E00 bench JSON, `package` "app"). The scenario runs inside the app (`zigguro --bench-scenario=latency`, `apps/zigguro/src/bench/latency.zig`); the build step passes the options below.
+
+| Build option | App flag | Default |
+|---|---|---|
+| `-Dbench-latency-injection=auto\|os\|ring\|external` | `--bench-injection=` | `auto` |
+| `-Dbench-latency-keys=N` | `--bench-keys=N` | 1000 |
+| `-Dbench-latency-burst=true` | `--burst` (10 ms between keys) | 150 ms |
+| | `--bench-warmup=N` | 50 |
+| | `--bench-lines=N`, `--bench-corpus=PATH` | 100 000, in the temp folder |
+| | `--bench-out=PATH` | |
+
+The caret starts at line 50 000, column 10. The keys are a to z with a space every 8th key and 8 Backspaces after every 64, so the line stays short.
+
+### Injection
+
+- **os** opens a real window and types at the OS level, waiting the interval after each key so each key gets its own frame:
+  - Linux: a uinput virtual keyboard. The compositor reads it like real hardware, under Wayland and X11. It needs write access to `/dev/uinput`; on `EACCES` the app logs the udev rule to add (`KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"`).
+  - Windows: `SendInput` with scancodes. The window must be in the foreground.
+- **ring** runs on the headless platform and queues key events there, one frame per key, with no waiting. Presentation times are estimated (submit + one refresh), so the key result is named `latency.ring_to_photon`. It runs in CI on any machine.
+- **auto** tries `os` and falls back to `ring`.
+- **external** opens a real window with the latency probe square and only collects frames, because the photodiode rig is the keyboard (section 3). It stops after `--bench-keys` key frames or when the window closes.
+
+### Results
+
+| Result | Measures |
+|---|---|
+| `latency.key_to_photon` (or `latency.ring_to_photon`) | Input time to presentation |
+| `latency.input_to_dispatch` | Input time to frame start |
+| `latency.dispatch_to_submit` | Frame start to submit |
+| `latency.submit_to_present` | Submit to presentation |
+| `latency.frame_cpu` | UI-thread CPU of the frame |
+
+Each result has `p50_ns`, `p95_ns`, `p99_ns`, `p999_ns` and `max_ns`. The file also carries the backend's `profile` from section 1, the injection mode, the refresh period, and the counts of estimated frames and clock violations. The budget `input.key_to_photon` (8 ms p99) applies to `latency.key_to_photon` from an `os` run.
+
+A run fails (exit code 1) when nothing was measured, when the keys did not change the text, or when more than 5 % of the frames were estimated on a backend whose profile claims presentation feedback.
+
+## 3. Hardware method
+
+Software timestamps stop at "presented". Neither USB polling before the OS sees a key nor scanout and panel response after presentation shows up in them. A photodiode rig measures the whole path from key press to light, and is used to check the software numbers.
+
+### Probe mode
+
+**Toggle Latency Probe** (`perf.latencyProbe.toggle`, no default key) shows a 64 × 64 physical-pixel square in the bottom-left corner of the window. It flips between black and white in the frame that applies each key press, repeat or committed text. The flip goes through the normal render path: the window calls the probe before it dispatches the key (`Window.key_tap`), so the square is rebuilt, damaged, submitted and presented together with the key's effect. The square is a debug-layer overlay with its own damage rect. When the probe is off there is no overlay and no tap, so it costs nothing.
+
+### The rig
+
+You need:
+
+- A microcontroller board with native USB HID that can act as a USB keyboard (a Teensy, an Arduino Leonardo or Micro, an RP2040 or an STM32 with USB). Set the HID polling interval to 1 ms (full-speed `bInterval` = 1) and write the value down.
+- A fast photodiode (for example a BPW34) with a transimpedance amplifier, or a phototransistor with a comparator (for example an LM393). Its output edge goes to an interrupt-capable pin. Aim for a rise time well under 100 µs. Adjust the comparator threshold so the black→white and white→black transitions both cross it.
+- A light shield (black foam or tape) that holds the sensor against the probe square and blocks room light.
+- The board's USB serial port (CDC) for reporting. It can be the same USB connection as the keyboard (a composite device) or a second board.
+
+Wiring: the sensor output (through the comparator) goes to the interrupt pin, with sensor and board sharing ground. Mount the sensor centred on the probe square at the bottom-left of the zigguro window.
+
+The firmware is not part of this repository. It must behave as follows:
+
+1. Wait a random 100–200 ms, so presses do not lock to the display refresh.
+2. Send a key press for a printable key (for example `a`) and record `t0 = micros()` right after the HID report is queued. Send the release about 20 ms later.
+3. Wait for the next edge on the sensor pin, in either direction, and record `t1` in the interrupt. Give up after 500 ms and report nothing.
+4. Print one ASCII line over serial: `S <seq> <t0> <t1>\n`, where `seq` counts from 1 and the times are the board's microsecond counter. The counter may wrap at 2^32; the tool handles that.
+5. Optionally, at start, print `R <description>\n` (board, sensor, polling interval, display). The tool copies it into the JSON.
+6. Repeat.
+
+### Reading the rig
+
+```sh
+zig build                     # installs zig-out/bin/latency-probe
+latency-probe --port /dev/ttyACM0 --samples 500 --out probe.json   # Linux
+latency-probe --port COM5 --samples 500 --out probe.json           # Windows
+latency-probe --input session.txt --out probe.json                 # a recorded session
+```
+
+The tool puts the port in raw 8N1 mode (`--baud`, default 115200; USB CDC ignores the rate). It writes E00 bench JSON with the result `probe.key_to_photon` (p50, p95, p99, p99.9, min and max) and the rig line.
+
+### Cross-check procedure
+
+1. Start the app in collect-only mode with the probe square showing: `zigguro --bench-scenario=latency --bench-injection=external --bench-keys=550 --bench-out=sw.json`. The rig is the keyboard here; the app collects the frames until 550 key frames arrive (50 are warm-up) or until you close the window.
+2. Put the sensor on the square and start `latency-probe --port ... --samples 500 --out probe.json`.
+3. Compare the medians of `probe.key_to_photon` and `latency.key_to_photon`. The hardware number should be higher by USB polling (up to the polling interval), plus scanout time to the square's position (the square sits at the bottom of the screen, so close to a full frame on a top-to-bottom panel), plus the panel's response time. If the gap is much larger than that sum, the software presentation times are wrong for that backend (see the error budget below).
+
+Cross-check results (date, hardware, backend, the two medians, the gap) go in the table below.
+
+| Date | Hardware and display | Backend | Software p50 | Probe p50 | Gap |
+|---|---|---|---|---|---|
+| | Not measured yet | | | | |
+
+### Error budget per platform
+
+The segments a software measurement sees depend on the backend profile from section 1. Hardware sees everything.
+
+| Segment | Wayland | X11 | Win32 | Headless (ring) | Hardware rig |
+|---|---|---|---|---|---|
+| USB polling and the OS input stack | No | No | No | No | Yes |
+| Input event to dispatch | Yes (from the dequeue time; ms protocol times are not used) | Yes (from the dequeue time) | Yes (from the dequeue time) | Yes | Yes |
+| Dispatch to submit (zigguro) | Yes | Yes | Yes | Yes | Yes |
+| Submit to presentation | Yes with `wp_presentation` feedback; `hardware` with `hw_clock` | Yes with Present `CompleteNotify` | Upper bound with `vkWaitForPresentKHR`; real with `VK_EXT_present_timing`; GDI: none | Estimated (one refresh) | Yes |
+| Scanout to the square's position | No | No | No | No | Yes |
+| Panel response | No | No | No | No | Yes |

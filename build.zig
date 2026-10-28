@@ -256,6 +256,11 @@ pub fn build(b: *std.Build) void {
     check_fp_run.addArtifactArg(zigguro_exe);
     check_fp_run.expectExitCode(0);
     b.step("check-frame-pointers", "Check that the zigguro executable keeps frame pointers").dependOn(&check_fp_run.step);
+    // `latency-probe` reads the photodiode rig (E14.F03.S02.T03).
+    const latency_probe = addToolImports(b, "latency-probe", "tools/latency-probe/main.zig", test_filters, f.optimize, tools_test_step, &.{
+        .{ .name = "latency_histogram", .module = b.createModule(.{ .root_source_file = b.path("packages/perf/src/frame/histogram.zig") }) },
+    });
+    b.installArtifact(latency_probe);
     _ = addTool(b, "wayland-scanner", "packages/build/wayland_scanner/main.zig", test_filters, f.optimize, tools_test_step);
     const keysym_gen = addTool(b, "keysym-gen", "tools/keysym_gen/main.zig", test_filters, f.optimize, tools_test_step);
     const tzdata_gen = addTool(b, "tzdata-gen", "tools/tzdata_gen/main.zig", test_filters, f.optimize, tools_test_step);
@@ -568,6 +573,21 @@ pub fn build(b: *std.Build) void {
             const install = b.addInstallFileWithDir(out, .prefix, "bench-results/" ++ p.name ++ ".json");
             bench_step.dependOn(&install.step);
         }
+    }
+
+    // bench-latency (E14.F03.S02.T02): the typing-latency scenario in the
+    // app; build with -Doptimize=ReleaseFast for real numbers.
+    {
+        const run = b.addRunArtifact(zigguro_exe);
+        run.has_side_effects = true;
+        run.addArg("--bench-scenario=latency");
+        const injection = b.option([]const u8, "bench-latency-injection", "bench-latency: auto, os or ring (headless)") orelse "auto";
+        run.addArg(b.fmt("--bench-injection={s}", .{injection}));
+        if (b.option(u32, "bench-latency-keys", "bench-latency: keys to type (default 1000)")) |n| run.addArg(b.fmt("--bench-keys={d}", .{n}));
+        if (b.option(bool, "bench-latency-burst", "bench-latency: 10 ms between keys") orelse false) run.addArg("--burst");
+        const out = run.addPrefixedOutputFileArg("--bench-out=", "latency.json");
+        const install = b.addInstallFileWithDir(out, .prefix, "bench-results/latency.json");
+        b.step("bench-latency", "Type into a 100k-line file in the app and write zig-out/bench-results/latency.json").dependOn(&install.step);
     }
 
     // Agent evaluations (packages/ai/eval): scenarios against fixture

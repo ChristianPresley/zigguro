@@ -142,7 +142,7 @@ pub fn buildClientCapabilities(arena: Allocator, enabled: EnabledFeatures, opts:
 
     const tags = try arena.dupe(protocol.DiagnosticTag, &.{ .Unnecessary, .Deprecated });
     const text_document: protocol.TextDocumentClientCapabilities = .{
-        .synchronization = .{ .dynamicRegistration = dyn, .willSave = false, .willSaveWaitUntil = false, .didSave = true },
+        .synchronization = .{ .dynamicRegistration = dyn, .willSave = false, .willSaveWaitUntil = true, .didSave = true },
         .filters = if (v318) .{ .relativePatternSupport = true } else null,
         .completion = if (on.contains(.completion)) .{
             .dynamicRegistration = dyn,
