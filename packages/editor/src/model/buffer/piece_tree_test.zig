@@ -379,3 +379,26 @@ test "fuzz: piece_tree vs naive" {
         }
     }.one, .{});
 }
+
+test "piece_tree: a large original summarized on threads matches its text" {
+    // Over the parallel threshold, with multi-byte text and CRLFs.
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    var i: usize = 0;
+    while (text.items.len < (32 << 20) + 12345) : (i += 1) {
+        try text.appendSlice(gpa, if (i % 3 == 0) "héllo wörld\r\n" else "line €\n");
+    }
+    var env = try Env.init(text.items);
+    defer env.deinit();
+    var t = try PieceTree.fromOriginal(&env.pool, env.bt);
+    defer t.deinit(&env.pool);
+    var li = try zg_core.LineIndex.build(gpa, text.items);
+    defer li.deinit(gpa);
+    try std.testing.expectEqual(@as(u64, text.items.len), t.len());
+    try std.testing.expectEqual(@as(u64, li.lineCount()), t.lineCount());
+    var line: u32 = 0;
+    while (line < li.lineCount()) : (line += 99_991) try std.testing.expectEqual(li.lineStart(line), t.lineStart(line));
+    const last = text.items.len - 1;
+    const want = zg_core.utf8.byteToColumn(text.items[@intCast(li.lineStart(li.lineOf(last)))..], last - @as(usize, @intCast(li.lineStart(li.lineOf(last)))), .utf16);
+    try std.testing.expectEqual(want, t.offsetToUtf16(last).col);
+}
