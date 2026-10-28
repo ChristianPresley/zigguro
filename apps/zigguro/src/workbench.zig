@@ -66,6 +66,7 @@ const ProblemsPanel = problems_panel.ProblemsPanel;
 const NotesService = @import("notes/service.zig").NotesService;
 const zg_notes_ui = @import("zg_notes_ui");
 const ReviewGlue = @import("agent/review_glue.zig").ReviewGlue;
+const WorkspaceTools = @import("agent/workspace_tools.zig").WorkspaceTools;
 const fs_tree = @import("explorer/fs_tree.zig");
 
 const Ui = zg_gui.Ui;
@@ -245,6 +246,8 @@ pub const Workbench = struct {
     notes_search_ref: ?PanelRef = null,
     /// The bytes `pending_open` selects (a note link or search hit).
     pending_range: ?[2]u32 = null,
+    /// The agent's workspace tools (made with the agent; outlive it).
+    ws_tools: ?*WorkspaceTools = null,
     /// Back and forward through the places navigation jumped between.
     nav_history: ?NavService.History = null,
     /// The targets the last navigation offered, and their QuickPick rows.
@@ -925,6 +928,8 @@ pub const Workbench = struct {
         wb.problem_note.deinit(wb.gpa);
         if (wb.notes) |n| n.destroy();
         wb.notes = null;
+        if (wb.ws_tools) |x| x.destroy();
+        wb.ws_tools = null;
         if (wb.win) |w| wb.nav_pick.close(w);
         if (wb.nav_history) |*h| h.deinit();
         if (wb.nav_arena) |*a| a.deinit();
@@ -2794,6 +2799,12 @@ pub const Workbench = struct {
             host.file_tools.diagnostics = ci.agentDiagnostics();
             host.addLanguageTools(ci.agentTools()) catch |e| log.warn("language tools: {t}", .{e});
         }
+        // list_dir, glob, find_files and grep over the folder.
+        if (wb.ws_tools == null) wb.ws_tools = WorkspaceTools.create(wb.gpa, wb.io, wb.cwd) catch |e| blk: {
+            log.warn("workspace tools: {t}", .{e});
+            break :blk null;
+        };
+        if (wb.ws_tools) |x| host.addWorkspaceTools(x.exporter()) catch |e| log.warn("workspace tools: {t}", .{e});
         // The notes tools (the folder's notes are scanned from now on).
         if (wb.ensureNotes()) {
             host.addNotesTools(wb.notes.?.agentTools()) catch |e| log.warn("notes tools: {t}", .{e});
