@@ -378,7 +378,8 @@ test "async provider on worker threads" {
     _ = f.t.settle();
     const items = f.qp().results.items;
     try expectEqual(@as(usize, 200), items.len);
-    for (items[1..], items[0 .. items.len - 1]) |b, a| try expect(a.score >= b.score);
+    // Best score first; ties in push order.
+    for (items[1..], items[0 .. items.len - 1]) |b, a| try expect(a.score > b.score or (a.score == b.score and a.id < b.id));
     try expect(!f.qp().streaming);
     // Typing again while the window closes cancels cleanly.
     f.t.typeText("x");
