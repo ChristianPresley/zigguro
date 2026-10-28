@@ -1,0 +1,35 @@
+# The agent tools against a stopped program: the stop, the stack, two
+# levels of variables (children capped, a long string cut), an
+# evaluation, then a refused continue (the user took control) and one
+# that runs to the end.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event output {"category": "stdout", "output": "hello\nworld\n"}
+< event stopped {"reason": "breakpoint", "threadId": 1}
+> threads
+< {"body": {"threads": [{"id": 1, "name": "main"}]}}
+> stackTrace {"threadId": 1, "startFrame": 0}
+< {"body": {"stackFrames": [{"id": 1000, "name": "main", "line": 3, "column": 1, "source": {"path": "/w/src/main.zig"}}, {"id": 1001, "name": "start", "line": 9, "source": {"path": "/w/src/start.zig"}}], "totalFrames": 2}}
+> scopes {"frameId": 1000}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 7}]}}
+> stackTrace {"threadId": 1, "startFrame": 0, "levels": 20}
+< {"body": {"stackFrames": [{"id": 1000, "name": "main", "line": 3, "column": 1, "source": {"path": "/w/src/main.zig"}}, {"id": 1001, "name": "start", "line": 9, "source": {"path": "/w/src/start.zig"}}], "totalFrames": 5}}
+> scopes {"frameId": 1000}
+< {"body": {"scopes": [{"name": "Locals", "variablesReference": 7}, {"name": "Registers", "variablesReference": 9, "expensive": true}]}}
+> variables {"variablesReference": 7}
+< {"body": {"variables": [{"name": "p", "type": "Point", "value": "{...}", "variablesReference": 8}, {"name": "s", "type": "[]const u8", "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "variablesReference": 0}, {"name": "a", "type": "i32", "value": "1", "variablesReference": 0}]}}
+> variables {"variablesReference": 8}
+< {"body": {"variables": [{"name": "x", "type": "i32", "value": "1", "variablesReference": 0}, {"name": "y", "type": "i32", "value": "2", "variablesReference": 0}, {"name": "z", "type": "i32", "value": "3", "variablesReference": 0}]}}
+> evaluate {"expression": "a + 1", "context": "watch", "frameId": 1000}
+< {"body": {"result": "2", "type": "i32", "variablesReference": 0}}
+> continue {"threadId": 1}
+< {"body": {"allThreadsContinued": true}}
+< event exited {"exitCode": 0}
+< event terminated
+> disconnect
+< {}
