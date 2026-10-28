@@ -2,7 +2,7 @@
 
 # Performance budgets
 
-164 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
+165 budgets. Limits are hard; targets are goals. `machine = any` rows are machine-independent. CI hosted runners gate only relative regressions (see `docs/perf/benchmarks.md`). How the UI thread stays within these: [threading.md](threading.md).
 
 ## Machines
 
@@ -69,6 +69,7 @@
 | `text.layout_200col` | duration_ns | p99 | 20 µs | 3 µs | ref_laptop_2024 | bench `zg_text` / `text.layout_200col` (p99_ns) | warn | E03.F06 |
 | `text.shape_latin_1k` | duration_ns | p99 | 60 µs | – | ref_laptop_2024 | bench `zg_text` / `text.shape_latin_1k` (p99_ns) | warn | E03.F04 |
 | `text.shape_arabic_1k` | duration_ns | p99 | 250 µs | – | ref_laptop_2024 | bench `zg_text` / `text.shape_arabic_1k` (p99_ns) | warn | E03.F04 |
+| `text.shape_word_cache_hit` | duration_ns | mean | 80 ns | – | ref_laptop_2024 | bench `zg_text` / `text.shape_word_cache_hit` (ns_per_op) | warn | E03.F06.S01.T04 |
 | `text.face_open` | duration_ns | p99 | 100 µs | – | ref_laptop_2024 | bench `zg_text` / `text.face_open` (p99_ns) | warn | E03.F01 |
 | `text.cmap_lookup` | duration_ns | p99 | 30 ns | 5 ns | ref_laptop_2024 | bench `zg_text` / `text.cmap_lookup` (p99_ns) | warn | E03.F01 |
 | `text.raster_14px` | duration_ns | mean | 4 µs | – | ref_laptop_2024 | bench `zg_text` / `text.raster_14px` (ns_per_op) | warn | E03.F02 |
