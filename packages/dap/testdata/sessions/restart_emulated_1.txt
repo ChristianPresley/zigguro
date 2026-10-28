@@ -1,0 +1,11 @@
+# First run: the debuggee ends and the adapter offers restart data.
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true}}
+> launch {"program": "/w/app"}
+< {}
+< event initialized
+> configurationDone
+< {}
+< event terminated {"restart": {"token": 42}}
+> disconnect {"restart": false}
+< {}
