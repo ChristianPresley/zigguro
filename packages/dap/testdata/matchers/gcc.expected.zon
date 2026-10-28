@@ -1,0 +1,29 @@
+.{
+    .{ .problem = .{
+        .file = "/home/dev/proj/a.c",
+        .line = 2,
+        .column = 11,
+        .severity = .warning,
+        .code = "",
+        .message = "initialization of 'int' from 'char *' makes integer from pointer without a cast [-Wint-conversion]",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "/home/dev/proj/a.c",
+        .line = 3,
+        .column = 10,
+        .severity = .err,
+        .code = "",
+        .message = "'y' undeclared (first use in this function)",
+        .related = .{},
+    } },
+    .{ .problem = .{
+        .file = "/home/dev/proj/a.c",
+        .line = 2,
+        .column = 7,
+        .severity = .warning,
+        .code = "",
+        .message = "unused variable 'x' [-Wunused-variable]",
+        .related = .{},
+    } },
+}
