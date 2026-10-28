@@ -115,7 +115,7 @@ pub const Server = struct {
     /// Start-up strings (argv, URIs, initialization options).
     arena: std.heap.ArenaAllocator,
 
-    fn hasDoc(s: *const Server, h: DocHandle) bool {
+    pub fn hasDoc(s: *const Server, h: DocHandle) bool {
         return indexOfDoc(s.docs.items, h) != null;
     }
 };
