@@ -1,0 +1,2 @@
+// expect: step "a": duplicate step id
+.{ .version = 1, .name = "x", .steps = .{ .{ .id = "a", .agent = .{ .prompt = "A" } }, .{ .id = "a", .agent = .{ .prompt = "B" } } } }

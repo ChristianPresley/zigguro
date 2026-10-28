@@ -1,0 +1,10 @@
+.{
+    .version = 1,
+    .name = "map-files",
+    .args = .{ .{ .name = "glob" }, .{ .name = "check" } },
+    .steps = .{
+        .{ .id = "files", .builtin = .{ .name = "files.glob", .input = "$args.glob" } },
+        .{ .id = "audit", .map = .{ .over = "$.files", .as = "file", .max_parallel = 8, .agent = .{ .prompt = "Check {{$file}} for {{$args.check}}.", .tools = .{ "read_file", "grep" } } } },
+        .{ .id = "report", .reduce = .{ .prompt = "Rank these findings: {{$.audit[*].findings[*]}}" } },
+    },
+}

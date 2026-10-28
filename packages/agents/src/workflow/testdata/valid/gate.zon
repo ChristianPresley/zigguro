@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "gate",
+    .steps = .{
+        .{ .id = "plan", .agent = .{ .prompt = "Plan the migration." } },
+        .{ .id = "approve", .gate = .{ .title = "Approve the plan", .show = "$.plan" } },
+        .{ .id = "do", .agent = .{ .prompt = "Do {{$.plan}}." } },
+    },
+}

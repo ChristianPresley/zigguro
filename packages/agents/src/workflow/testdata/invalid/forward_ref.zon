@@ -1,0 +1,2 @@
+// expect: step "a": prompt: $.b reads step "b", which has not run yet
+.{ .version = 1, .name = "x", .steps = .{ .{ .id = "a", .agent = .{ .prompt = "Use {{$.b}}" } }, .{ .id = "b", .agent = .{ .prompt = "B" } } } }

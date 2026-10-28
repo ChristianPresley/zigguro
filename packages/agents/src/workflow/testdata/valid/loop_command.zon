@@ -1,0 +1,9 @@
+.{
+    .version = 1,
+    .name = "loop-command",
+    .profile = "unattended-lane-write",
+    .args = .{.{ .name = "cmd", .default = "zig build test", .required = false }},
+    .steps = .{
+        .{ .id = "fix", .loop_until = .{ .agent = .{ .prompt = "Fix the failures of {{$args.cmd}}: {{$.fix}}" }, .check = .{ .command = .{ "zig", "build", "test" } }, .max_rounds = 8 } },
+    },
+}

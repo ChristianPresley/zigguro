@@ -1,0 +1,2 @@
+// expect: step "a": prompt: $.nope.x reads unknown step "nope"
+.{ .version = 1, .name = "x", .steps = .{.{ .id = "a", .agent = .{ .prompt = "Use {{$.nope.x}}" } }} }
