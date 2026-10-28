@@ -1,0 +1,9 @@
+# runInTerminal in an untrusted workspace is refused; the adapter then
+# fails the launch.
+> initialize
+< {"body": {}}
+> launch
+< reverse runInTerminal {"kind": "integrated", "cwd": "/w", "args": ["/w/app"]}
+> response runInTerminal {"success": false, "message": "runInTerminal needs a trusted workspace"}
+< {"type": "response", "request_seq": 2, "command": "launch", "success": false, "message": "runInTerminal refused"}
+< event initialized
