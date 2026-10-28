@@ -30,6 +30,9 @@ pub const SignaturePopup = struct {
     gpa: Allocator,
     win: ?*Window = null,
     overlay: OverlayId = .none,
+    /// Highlights code fences (the editor's highlighter, set by the
+    /// workbench).
+    highlighter: @FieldType(markdown.MdViewProps, "highlighter") = null,
     label: []const u8 = "",
     param: ?[2]usize = null,
     counter: [16]u8 = undefined,
@@ -140,7 +143,7 @@ pub const SignaturePopup = struct {
         const m = p.md orelse return;
         ui.open(.{ .style = .{ .dir = .column, .max_h = 200, .scroll_y = true }, .test_id = "signature-docs" });
         defer ui.close();
-        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = max_width, .test_id = "signature-docs-text" });
+        markdown.view(ui, &m.view, .{ .compact = true, .virtualize = false, .max_width = max_width, .highlighter = p.highlighter, .test_id = "signature-docs-text" });
     }
 };
 
