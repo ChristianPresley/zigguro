@@ -1,0 +1,17 @@
+# Loaded sources: events add, change and remove; the `loadedSources`
+# request replaces the list (references kept apart from paths).
+> initialize
+< {"body": {"supportsConfigurationDoneRequest": true, "supportsLoadedSourcesRequest": true}}
+> launch
+< {}
+< event initialized
+> configurationDone
+< {}
+< event loadedSource {"reason": "new", "source": {"path": "/w/src/main.zig"}}
+< event loadedSource {"reason": "new", "source": {"path": "/w/src/old.zig"}}
+< event loadedSource {"reason": "changed", "source": {"path": "/w/src/main.zig", "origin": "rebuilt"}}
+< event loadedSource {"reason": "removed", "source": {"path": "/w/src/old.zig"}}
+> loadedSources
+< {"body": {"sources": [{"path": "/w/src/main.zig", "name": "main.zig"}, {"name": "<eval>", "sourceReference": 7, "origin": "eval"}, {"name": "<eval>", "sourceReference": 8}]}}
+> disconnect
+< {}
