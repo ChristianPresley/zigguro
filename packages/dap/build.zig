@@ -16,10 +16,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zg_regex", .module = regex },
         },
         .bench = "bench/main.zig",
-        .test_exes = &.{.{
-            .name = "fake_dap_adapter",
-            .root = "testdata/fake_adapter.zig",
-            .imports = &.{.{ .name = "zg_lsp", .module = lsp }},
-        }},
+        .test_exes = &.{
+            .{
+                .name = "fake_dap_adapter",
+                .root = "testdata/fake_adapter.zig",
+                .imports = &.{.{ .name = "zg_lsp", .module = lsp }},
+            },
+            .{ .name = "fake_task", .root = "testdata/fake_task.zig" },
+        },
     });
 }

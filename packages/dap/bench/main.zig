@@ -16,6 +16,39 @@ fn register(b: *bench.Bench) !void {
     try b.run("dap.events_10k: decode 10k event envelopes", {}, decodeEvents);
     try b.run("tasks.matcher.200mb: $zig over build output (MB/s)", {}, matchOutput);
     try b.run("tasks.load: 50 zig build steps, 20 tasks.zon and 20 tasks.json tasks", {}, loadTasks);
+    try b.run("tasks.run.start: run() and wait of a 5-task graph without processes", {}, startRun);
+}
+
+/// An upper bound of the UI-thread cost of starting a task: `run` (graph
+/// check, copies, worker start) plus the worker's handoff, with tasks
+/// that start no process.
+fn startRun(_: void, s: *State) void {
+    const gpa = s.allocator();
+    var rt: zg_core.Runtime = undefined;
+    rt.initBorrowed(gpa, s.ioHandle(), 64) catch unreachable;
+    defer _ = rt.deinit();
+    var list = zg_dap.tasks.TaskList.fromSources(gpa, .{
+        .tasks_zon =
+        \\.{ .tasks = .{
+        \\    .{ .label = "a", .command = "" }, .{ .label = "b", .command = "" }, .{ .label = "c", .command = "", .depends_on = .{ "a", "b" } },
+        \\    .{ .label = "d", .command = "", .depends_on = .{"c"}, .depends_order = .sequence },
+        \\    .{ .label = "all", .command = "", .depends_on = .{ "d", "a" }, .problem_matcher = "$zig" },
+        \\} }
+        ,
+        .os = .linux,
+        .trusted = true,
+    }) catch unreachable;
+    defer list.deinit();
+    var r: zg_dap.tasks.TaskRunner = .init(&rt, &list, .{ .root = "/" });
+    defer r.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    for (0..s.iterations()) |_| {
+        const run = r.run("all", .{ .headless = true }) catch unreachable;
+        const sum = r.wait(run, arena.allocator()) catch unreachable;
+        std.debug.assert(sum.state == .succeeded);
+        _ = arena.reset(.retain_capacity);
+    }
 }
 
 /// The task list from texts already read (the `zig build -l` process is
