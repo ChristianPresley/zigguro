@@ -106,6 +106,12 @@ pub fn build(b: *std.Build) void {
         b.step("test-apps", "Run the tests of apps/zigguro").dependOn(&run.step);
         test_step.dependOn(&run.step);
     }
+    // The critical-path allowlist check alone (E14.F05.S01.T02; it also
+    // runs in test-apps).
+    {
+        const t = b.addTest(.{ .name = "zigguro-startup-allowlist", .root_module = appModule(b, "apps/zigguro/src/startup/services.zig", f.target, f.optimize, &mods, options), .filters = &.{"startup allowlist"} });
+        b.step("test-startup-allowlist", "Check the app's critical startup services against packages/perf/startup_allowlist.zon").dependOn(&b.addRunArtifact(t).step);
+    }
     const fuzz_step = b.step("fuzz", "Run every test (use with --fuzz to fuzz `fuzz:` tests)");
     inline for (packages.all, 0..) |p, i| {
         const tm = zg_build.testModule(b, f, mods[i]);
