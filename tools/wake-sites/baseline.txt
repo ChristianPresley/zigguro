@@ -23,12 +23,12 @@
 4 packages/ai/src/tools/builtin/process_host.zig
 1 packages/codeintel/src/features/file_ops.zig
 1 packages/codeintel/src/features/save_actions.zig
-1 packages/codeintel/src/registry/Registry.zig
 1 packages/core/src/runtime/deadline.zig
 1 packages/git/src/refs/lock.zig
 1 packages/gui/src/a11y/atspi/bridge.zig
 1 packages/gui/src/dock/persist.zig
 2 packages/lsp/src/client/ServerProcess.zig
+1 packages/lsp/src/client/executables.zig
 1 packages/lsp/src/transport/tcp.zig
 1 packages/mcp/src/client/catalog.zig
 1 packages/mcp/src/client/mrtr.zig
