@@ -706,6 +706,14 @@ pub const Editor = struct {
             },
             .text => |t| {
                 if (v.opts.read_only) return false;
+                if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .text, .text = t })) {
+                    ec.respond(.{ .changed = true });
+                    ec.repaint();
+                    return true;
+                };
+                defer if (v.pointer_hook) |h| {
+                    _ = h.f(h.ctx, v, .{ .kind = .typed, .text = t, .offset = v.primarySel().head, .origin = windowOrigin(ec, v) });
+                };
                 if (v.mode != null) {
                     // Each character goes to the mode (Vim commands and
                     // insert-mode typing).
@@ -734,7 +742,7 @@ pub const Editor = struct {
             },
             .key => |k| {
                 if (k.action == .release) return false;
-                if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .key, .key = k, .mods = k.mods })) return true;
+                if (v.pointer_hook) |h| if (h.f(h.ctx, v, .{ .kind = .key, .key = k, .mods = k.mods, .offset = v.primarySel().head, .origin = windowOrigin(ec, v) })) return true;
                 if (v.key_hook) |h| if (h.f(h.ctx, v, k)) {
                     ec.respond(.{ .changed = true });
                     ec.repaint();
