@@ -367,6 +367,26 @@ fn compatibleModes(self: *Swapchain, mode: vk.PresentModeKHR, out: []vk.PresentM
     return compat.present_mode_count;
 }
 
+/// The swapchain's create flags. Never DEFERRED_MEMORY_ALLOCATION: the
+/// image views are created before any image is acquired, and an image
+/// without memory loses the device on its first frame (NVIDIA, #284).
+fn createFlags(present_id2: bool, present_wait2: bool) vk.SwapchainCreateFlagsKHR {
+    var flags: vk.SwapchainCreateFlagsKHR = .{};
+    if (present_id2 and present_wait2) {
+        flags.present_id_2 = true;
+        flags.present_wait_2 = true;
+    }
+    return flags;
+}
+
+test "swapchain: images get memory at creation" {
+    for ([_]bool{ false, true }) |id2| for ([_]bool{ false, true }) |wait2| {
+        const f = createFlags(id2, wait2);
+        try std.testing.expect(!f.deferred_memory_allocation);
+        try std.testing.expectEqual(id2 and wait2, f.present_id_2 and f.present_wait_2);
+    };
+}
+
 fn recreate(self: *Swapchain) AcquireError!void {
     const gpu = self.gpu;
     const d = &gpu.ddisp;
@@ -395,13 +415,9 @@ fn recreate(self: *Swapchain) AcquireError!void {
         .clipped = .true,
         .old_swapchain = self.handle,
     };
-    if (gpu.info.caps.present_id2 and gpu.info.caps.present_wait2) {
-        ci.flags.present_id_2 = true;
-        ci.flags.present_wait_2 = true;
-    }
+    ci.flags = createFlags(gpu.info.caps.present_id2, gpu.info.caps.present_wait2);
     var modes_ci: vk.SwapchainPresentModesCreateInfoKHR = .{ .present_mode_count = self.n_modes, .p_present_modes = &self.modes };
     if (gpu.info.caps.swapchain_maint1) {
-        ci.flags.deferred_memory_allocation = true;
         vk.chain(&ci, &modes_ci);
     }
     var handle: vk.SwapchainKHR = .null_handle;
