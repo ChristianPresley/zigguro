@@ -201,6 +201,9 @@ pub const Debug = struct {
     /// generated configurations); `destroy` waits for `idle`.
     busy_mutex: Io.Mutex = .init,
     busy: u32 = 0,
+    /// Sessions the agent tools hold (any thread): a session is freed only
+    /// once none is held.
+    agent_holds: std.atomic.Value(u32) = .init(0),
     idle: Io.Event = .is_set,
     compound_busy: bool = false,
 
@@ -422,7 +425,10 @@ pub const Debug = struct {
             }
         }.f;
         const c: Ctx = .{ .d = d, .e = e };
+        const before = e.console_read;
         e.s.withConsole(&c, f);
+        // Outside the session's lock: the change hooks read its state.
+        if (e.console_read > before) d.changed();
     }
 
     pub fn clearConsoleCmd(d: *Debug) void {
@@ -936,7 +942,62 @@ pub const Debug = struct {
 
     fn removeWork(q: *Inbox, s: *DebugSession) void {
         defer workDone(q);
-        q.debug_ptr.mgr.remove(s);
+        const d = q.debug_ptr;
+        // An agent tool still reads it (its calls end within seconds).
+        while (d.agent_holds.load(.acquire) > 0) d.io.sleep(.fromMilliseconds(10), .awake) catch break;
+        d.mgr.remove(s);
+    }
+
+    // ------------------------------------------------------ agent tools
+
+    /// The configurations for `debug_list_configs` (in `a`). UI thread.
+    pub fn agentConfigs(d: *Debug, a: Allocator) Allocator.Error![]const zg_dap.agent.debug_tools.ConfigInfo {
+        var out: std.ArrayList(zg_dap.agent.debug_tools.ConfigInfo) = .empty;
+        if (d.configSet()) |set| for (set.configs) |*c| try out.append(a, try agentConfig(a, c));
+        for (d.autos) |*c| try out.append(a, try agentConfig(a, c));
+        return out.items;
+    }
+
+    fn agentConfig(a: Allocator, c: *const LaunchConfig) Allocator.Error!zg_dap.agent.debug_tools.ConfigInfo {
+        return .{
+            .name = try a.dupe(u8, c.name),
+            .type = try a.dupe(u8, c.type),
+            .request = @tagName(c.request),
+            .disabled = if (c.enabled) null else try a.dupe(u8, c.disabled_reason orelse "disabled"),
+        };
+    }
+
+    /// Starts configuration `name` with the agent in control; the session
+    /// is held (`agentRelease`). UI thread.
+    pub fn agentStart(d: *Debug, name: []const u8) !*DebugSession {
+        if (!d.trusted) return error.WorkspaceNotTrusted;
+        const c: *const LaunchConfig = blk: {
+            if (d.configSet()) |set| if (set.find(name)) |c| break :blk c;
+            for (d.autos) |*c| if (std.mem.eql(u8, c.name, name)) break :blk c;
+            return error.NoSuchConfiguration;
+        };
+        if (!c.enabled) return error.ConfigurationDisabled;
+        if (!d.anyStarting()) d.setFileVars();
+        const s = try d.mgr.start(c, .{ .controller = .agent });
+        d.active_id = s.id;
+        _ = d.addEntry(s) catch {};
+        d.host.show_panel(d.host.ctx);
+        d.changed();
+        _ = d.agent_holds.fetchAdd(1, .acq_rel);
+        return s;
+    }
+
+    /// The active session, held (`agentRelease`); null without one. UI
+    /// thread.
+    pub fn agentAcquire(d: *Debug) ?*DebugSession {
+        const e = d.active() orelse return null;
+        _ = d.agent_holds.fetchAdd(1, .acq_rel);
+        return e.s;
+    }
+
+    /// Any thread.
+    pub fn agentRelease(d: *Debug) void {
+        _ = d.agent_holds.fetchSub(1, .acq_rel);
     }
 
     /// A change of `s` (UI thread, from the inbox).
