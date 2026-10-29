@@ -69,7 +69,11 @@ pub const Host = struct {
     /// `release`; null without one.
     acquire: *const fn (ctx: *anyopaque) ?*DebugSession,
     release: *const fn (ctx: *anyopaque, s: *DebugSession) void,
-    breakpoints: *BreakpointManager,
+    /// The breakpoints (null: the debugger is not available).
+    breakpoints: *const fn (ctx: *anyopaque) ?*BreakpointManager,
+    /// False: every tool is refused (an untrusted workspace). Null:
+    /// always trusted.
+    trusted: ?*const fn (ctx: *anyopaque) bool = null,
     /// The workspace folder: paths are shown and taken relative to it.
     root: []const u8,
     io: Io,
@@ -219,6 +223,11 @@ pub fn ToolExporter(comptime Foreign: type) type {
                 .input_schema_json = s.input_schema_json,
                 .read_only = s.permission == .read,
                 .annotations = .{ .destructive_hint = s.permission != .read },
+                .permission = switch (s.permission) {
+                    .read => .read,
+                    .control => .control,
+                    .execute => .execute,
+                },
             };
             return out;
         }
@@ -276,6 +285,10 @@ pub fn runTool(h: Host, arena: Allocator, tool: []const u8, input_json: []const 
     const in = std.json.parseFromSliceLeaky(Input, arena, if (input_json.len == 0) "{}" else input_json, .{ .ignore_unknown_fields = true }) catch {
         try w.writeAll("The arguments are not valid for this tool (check names and types against its schema).");
         return .{ .ok = false, .code = "bad_arguments" };
+    };
+    if (h.trusted) |f| if (!f(h.ctx)) {
+        try w.writeAll("The workspace is not trusted: the debugger tools are off until the user trusts it.");
+        return .{ .ok = false, .code = "untrusted" };
     };
     // Tools without a session.
     if (std.mem.eql(u8, tool, "debug_list_configs")) return listConfigs(h, arena, w);
@@ -415,7 +428,7 @@ fn setBreakpoints(h: Host, arena: Allocator, in: Input, w: *Io.Writer) !Outcome 
         return .{ .ok = false, .code = "bad_arguments" };
     };
     const path = try absPath(h, arena, rel);
-    const m = h.breakpoints;
+    const m = h.breakpoints(h.ctx) orelse return noDebugger(w);
     for (try m.inSource(arena, path)) |v| m.remove(v.bp.id);
     const ids = try arena.alloc(BreakpointManager.BpId, lines.len);
     for (lines, ids) |l, *id| id.* = try m.add(.{ .kind = .{ .source = .{
@@ -467,8 +480,13 @@ fn pending(views: []const ?BreakpointManager.View) bool {
     return false;
 }
 
+fn noDebugger(w: *Io.Writer) !Outcome {
+    try w.writeAll("The debugger is not available here.");
+    return .{ .ok = false, .code = "unavailable" };
+}
+
 fn clearBreakpoints(h: Host, arena: Allocator, in: Input, w: *Io.Writer) !Outcome {
-    const m = h.breakpoints;
+    const m = h.breakpoints(h.ctx) orelse return noDebugger(w);
     var n: usize = 0;
     if (in.path) |rel| {
         for (try m.inSource(arena, try absPath(h, arena, rel))) |v| {
@@ -620,7 +638,7 @@ const VarRender = struct {
     /// Writes the children of `ref`, `depth` levels down; false when the
     /// first request failed (the reason is written).
     fn children(r: *VarRender, ref: i64, depth: u8, indent: u8) !bool {
-        const args = try std.fmt.allocPrint(r.arena, "{{\"variablesReference\":{d},\"start\":0,\"count\":{d}}}", .{ ref, r.max_children + 1 });
+        const args = try std.fmt.allocPrint(r.arena, "{{\"variablesReference\":{d}}}", .{ref});
         const body = try requestOk(r.s, r.arena, "variables", args, r.w) orelse return false;
         const B = struct { variables: []const VarJson = &.{} };
         const b = parse(B, r.arena, body) orelse return error.BadResponse;
