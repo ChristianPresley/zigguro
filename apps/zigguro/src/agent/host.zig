@@ -108,6 +108,12 @@ pub const AgentHost = struct {
         try h.adapters.registerAll(&h.tools, &.{ .tasks = e }, .{ .lsp = false, .debug = false, .tasks = true, .workspace = false, .notes = false, .scm = false, .mcp = false }, .{});
     }
 
+    /// Adds the debugger tools (E07.F05.S02.T01); `e` must outlive the
+    /// host.
+    pub fn addDebugTools(h: *AgentHost, e: zg_ai.tools.adapters.foreign.Exporter) !void {
+        try h.adapters.registerAll(&h.tools, &.{ .debug = e }, .{ .lsp = false, .debug = true, .tasks = false, .workspace = false, .notes = false, .scm = false, .mcp = false }, .{});
+    }
+
     /// Adds the workspace tools (E08.F08); `e` must outlive the host.
     pub fn addWorkspaceTools(h: *AgentHost, e: zg_ai.tools.adapters.foreign.Exporter) !void {
         try h.adapters.registerAll(&h.tools, &.{ .workspace = e }, .{ .lsp = false, .debug = false, .tasks = false, .workspace = true, .notes = false, .scm = false, .mcp = false }, .{});

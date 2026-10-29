@@ -1,7 +1,7 @@
 find_references origin=lsp read_only=true writes=false open_world=false idempotent=true permission=read
 hover origin=lsp read_only=true writes=false open_world=false idempotent=true permission=read
 rename_symbol origin=lsp read_only=false writes=true open_world=false idempotent=false permission=control
-debug_start origin=debug read_only=false writes=true open_world=false idempotent=false permission=control
+debug_start origin=debug read_only=false writes=false open_world=false idempotent=false permission=execute
 debug_stack origin=debug read_only=true writes=false open_world=false idempotent=true permission=read
 task_run origin=tasks read_only=false writes=false open_world=false idempotent=false permission=execute
 find_files origin=workspace read_only=true writes=false open_world=false idempotent=true permission=read

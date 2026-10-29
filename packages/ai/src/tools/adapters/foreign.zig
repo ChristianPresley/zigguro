@@ -66,6 +66,9 @@ pub const ForeignTool = struct {
     read_only: bool = false,
     /// Changes workspace content; must answer with a changeset (E12).
     mutates: bool = false,
+    /// Package exporters: the gate's class when it is not the default
+    /// (`read` for read-only tools, else `control`; `execute` for tasks).
+    permission: ?proto.tool.PermissionClass = null,
     /// MCP annotations.
     annotations: Annotations = .{},
 };
@@ -156,11 +159,17 @@ pub const Adapter = struct {
                 .input_schema_json = t.input_schema_json,
                 .read_only = effects.read_only,
                 .effects = effects,
-                .permission = if (effects.read_only) .read else if (a.exporter.kind == .mcp or a.exporter.kind == .tasks) .execute else .control,
+                .permission = a.permissionOf(t, effects),
                 .handler = .{ .ctx = entry, .call = callTool },
                 .origin = if (a.exporter.kind == .mcp) .{ .mcp = a.exporter.name } else .{ .extension = @tagName(a.exporter.kind) },
             });
         }
+    }
+
+    fn permissionOf(a: *const Adapter, t: ForeignTool, effects: proto.tool.Effects) proto.tool.PermissionClass {
+        if (a.exporter.kind != .mcp) if (t.permission) |p| return if (effects.read_only) .read else p;
+        if (effects.read_only) return .read;
+        return if (a.exporter.kind == .mcp or a.exporter.kind == .tasks) .execute else .control;
     }
 
     /// Package tools declare their effects. MCP annotations count only for

@@ -18,6 +18,7 @@ const Fixture = struct {
     bps: BreakpointManager,
     started: ?[]const u8 = null,
     h: ?*Harness = null,
+    trust: bool = true,
 
     fn configs(_: *anyopaque, arena: std.mem.Allocator) anyerror![]const debug_tools.ConfigInfo {
         return arena.dupe(debug_tools.ConfigInfo, &.{
@@ -38,9 +39,17 @@ const Fixture = struct {
         return f.session;
     }
     fn release(_: *anyopaque, _: *DebugSession) void {}
+    fn breakpoints(ctx: *anyopaque) ?*BreakpointManager {
+        const f: *Fixture = @ptrCast(@alignCast(ctx));
+        return &f.bps;
+    }
+    fn trusted(ctx: *anyopaque) bool {
+        const f: *Fixture = @ptrCast(@alignCast(ctx));
+        return f.trust;
+    }
 
     fn host(f: *Fixture) debug_tools.Host {
-        return .{ .ctx = f, .configs = configs, .start = start, .acquire = acquire, .release = release, .breakpoints = &f.bps, .root = "/w", .io = testing.io };
+        return .{ .ctx = f, .configs = configs, .start = start, .acquire = acquire, .release = release, .breakpoints = breakpoints, .trusted = trusted, .root = "/w", .io = testing.io };
     }
 };
 
@@ -100,6 +109,10 @@ test "debug_tools: configs, no session, breakpoints without sessions" {
     r = try run(a, h, "debug_set_breakpoints", "{\"path\":3}");
     try testing.expectEqualStrings("bad_arguments", r.out.code.?);
     try testing.expectError(error.UnknownTool, run(a, h, "debug_frobnicate", "{}"));
+    // An untrusted workspace: everything is refused.
+    f.trust = false;
+    r = try run(a, h, "debug_list_configs", "{}");
+    try testing.expectEqualStrings("untrusted", r.out.code.?);
 }
 
 test "debug_tools: stop, stack, variables, evaluate, output, takeover, end" {

@@ -93,6 +93,7 @@ const RunInTerminalSpec = zg_dap.session.run_in_terminal.RunInTerminalSpec;
 const RunInTerminalResult = zg_dap.session.run_in_terminal.LaunchResult;
 const Debug = debug_service.Debug;
 const DebugPanel = @import("debug/panel.zig").DebugPanel;
+const DebugAgentTools = @import("debug/agent_tools.zig").DebugAgentTools;
 
 const Ui = zg_gui.Ui;
 const Window = zg_gui.Window;
@@ -300,6 +301,8 @@ pub const Workbench = struct {
     pending_range: ?[2]u32 = null,
     /// The agent's workspace tools (made with the agent; outlive it).
     ws_tools: ?*WorkspaceTools = null,
+    /// The debugger tools of the agents (made with the agent).
+    debug_tools: ?*DebugAgentTools = null,
     /// Back and forward through the places navigation jumped between.
     nav_history: ?NavService.History = null,
     /// The targets the last navigation offered, and their QuickPick rows.
@@ -1030,6 +1033,9 @@ pub const Workbench = struct {
             wb.gpa.destroy(pe);
         }
         wb.pending_edits = null;
+        // After the agent (its debugger tools), before the service.
+        if (wb.debug_tools) |x| wb.gpa.destroy(x);
+        wb.debug_tools = null;
         // Before the tasks (their runner runs pre-launch tasks).
         wb.stopDebug();
         // After the agent (its task tools), while the task terminals are
@@ -4700,6 +4706,21 @@ pub const Workbench = struct {
     }
 
     /// Agent thread: runs `f(arg)` on the UI thread and waits for it.
+    /// The agents' debugger tools, hopping to the UI thread with `run`.
+    fn makeDebugTools(wb: *Workbench, run: *const fn (ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool) !*DebugAgentTools {
+        const t = try wb.gpa.create(DebugAgentTools);
+        t.init(wb.io, wb.cwd, .{ .ctx = wb, .run = run }, .{ .ctx = wb, .get = debugForAgent });
+        return t;
+    }
+
+    fn debugForAgent(ctx: *anyopaque) ?*Debug {
+        const wb: *Workbench = @ptrCast(@alignCast(ctx));
+        return wb.ensureDebug() catch |e| {
+            log.warn("debug tools: {t}", .{e});
+            return null;
+        };
+    }
+
     fn runOnUi(ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool {
         const wb: *Workbench = @ptrCast(@alignCast(ctx));
         const w = wb.win orelse return false;
@@ -4963,6 +4984,12 @@ pub const Workbench = struct {
         }
         // task_run and task_list.
         if (wb.tasks) |t| host.addTaskTools(t.exporter()) catch |e| log.warn("task tools: {t}", .{e});
+        // The debugger (the service is made on the first call).
+        if (wb.debug_tools == null) wb.debug_tools = wb.makeDebugTools(runOnUi) catch |e| blk: {
+            log.warn("debug tools: {t}", .{e});
+            break :blk null;
+        };
+        if (wb.debug_tools) |x| host.addDebugTools(x.exporter()) catch |e| log.warn("debug tools: {t}", .{e});
         // list_dir, glob, find_files and grep over the folder.
         if (wb.ws_tools == null) wb.ws_tools = WorkspaceTools.create(mem_tags.of(wb.gpa, .workspace), wb.io, wb.cwd) catch |e| blk: {
             log.warn("workspace tools: {t}", .{e});
@@ -7519,6 +7546,123 @@ test "workbench: F5 debugs a C program with GDB: the breakpoint stops, the call 
     _ = t.settle();
     try std.testing.expectEqual(@as(usize, 0), (try testGutterLines(arena.allocator(), f, 0x27A4)).len);
     try std.testing.expectEqualStrings("debug.start", testCommandFor(&wb, K{ .key = .f5 }).?);
+}
+
+test "workbench: an agent debugs a C program with GDB through the debugger tools" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var rt: zg_core.Runtime = undefined;
+    rt.initTesting();
+    defer _ = rt.deinit();
+    const io = rt.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.c", .data =
+        \\#include <stdio.h>
+        \\int add(int a, int b) {
+        \\    int s = a + b;
+        \\    return s;
+        \\}
+        \\int main(void) {
+        \\    printf("sum %d\\n", add(1, 2));
+        \\    return 0;
+        \\}
+        \\
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    // GDB 14+ and a C compiler, or skip.
+    const cc = std.process.run(gpa, io, .{ .argv = &.{ "cc", "-g", "-O0", "-o", "a", "a.c" }, .cwd = .{ .path = root } }) catch return error.SkipZigTest;
+    gpa.free(cc.stdout);
+    gpa.free(cc.stderr);
+    if (cc.term != .exited or cc.term.exited != 0) return error.SkipZigTest;
+    const gv = std.process.run(gpa, io, .{ .argv = &.{ "gdb", "--version" } }) catch return error.SkipZigTest;
+    defer gpa.free(gv.stdout);
+    gpa.free(gv.stderr);
+    const ver = @import("zg_lsp").client.executables.parseVersion(gv.stdout) orelse return error.SkipZigTest;
+    if (ver.major < 14) return error.SkipZigTest;
+
+    try tmp.dir.createDirPath(io, ".zigguro");
+    const launch = try std.fmt.allocPrint(gpa,
+        \\.{{ .version = 1, .configurations = .{{
+        \\    .{{ .name = "Debug a", .type = "gdb", .request = .launch, .args = .{{ .program = "{s}/a" }} }},
+        \\}} }}
+    , .{root});
+    defer gpa.free(launch);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zigguro/launch.zon", .data = launch });
+    const src = try std.fs.path.join(gpa, &.{ root, "a.c" });
+    defer gpa.free(src);
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    try env.put("HOME", root);
+    try env.put("PATH", "/usr/bin:/bin:/usr/local/bin");
+
+    var wb: Workbench = undefined;
+    try wb.init(&rt, &env, src);
+    defer wb.deinit();
+    gpa.free(wb.cwd);
+    wb.cwd = try gpa.dupeZ(u8, root);
+    wb.trust = .trusted;
+    const t = try zg_gui.testing.TestApp.init(gpa, .{ .size = .{ .w = 1000, .h = 700 }, .root = .of(&wb) });
+    defer t.deinit();
+    rt.bindUiThread(.noop);
+    t.app.attachRuntime(&rt);
+    try wb.attach(t.win);
+    defer wb.detach();
+    _ = t.settle();
+
+    // The test thread is the UI thread: the tools' hops run inline.
+    const TestUi = struct {
+        fn run(ctx: *anyopaque, f: *const fn (arg: *anyopaque) void, arg: *anyopaque) bool {
+            const w: *Workbench = @ptrCast(@alignCast(ctx));
+            if (!w.rt.isUiThread()) return Workbench.runOnUi(ctx, f, arg);
+            f(arg);
+            return true;
+        }
+    };
+    const tools = try wb.makeDebugTools(TestUi.run);
+    defer gpa.destroy(tools);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const Run = struct {
+        fn tool(a: std.mem.Allocator, x: *DebugAgentTools, name: []const u8, input: []const u8) ![]const u8 {
+            var w: std.Io.Writer.Allocating = .init(a);
+            _ = try zg_dap.agent.debug_tools.runTool(x.x.host, a, name, input, &w.writer);
+            return w.written();
+        }
+    };
+    const a = arena.allocator();
+    try std.testing.expect(std.mem.startsWith(u8, try Run.tool(a, tools, "debug_list_configs", "{}"), "Debug a [gdb, launch]\n"));
+    try std.testing.expectEqualStrings("a.c:3: set (verified when a session starts)\n", try Run.tool(a, tools, "debug_set_breakpoints", "{\"path\":\"a.c\",\"lines\":[{\"line\":3}]}"));
+    try std.testing.expect(std.mem.startsWith(u8, try Run.tool(a, tools, "debug_start", "{\"name\":\"Debug a\"}"), "Started 'Debug a'."));
+    const d = wb.debug.?;
+    try std.testing.expectEqual(zg_dap.session.DebugSession.Controller.agent, d.active().?.s.controller());
+    // The breakpoint in `add`, with the lines around it.
+    const stop = try Run.tool(a, tools, "debug_wait_for_stop", "{\"timeout_ms\":20000}");
+    try std.testing.expect(std.mem.startsWith(u8, stop, "Stopped: breakpoint"));
+    try std.testing.expect(std.mem.indexOf(u8, stop, "#0 add at a.c:3 frame=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stop, ">    3 |     int s = a + b;\n") != null);
+    const vars = try Run.tool(a, tools, "debug_variables", "{}");
+    try std.testing.expect(std.mem.indexOf(u8, vars, "a: int = 1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vars, "b: int = 2\n") != null);
+    try std.testing.expectEqualStrings("a + b: int = 3\n", try Run.tool(a, tools, "debug_evaluate", "{\"expression\":\"a + b\"}"));
+    const st = try Run.tool(a, tools, "debug_stack", "{}");
+    try std.testing.expect(std.mem.startsWith(u8, st, "#0 add (a.c:3) frame="));
+    try std.testing.expect(std.mem.indexOf(u8, st, "#1 main (a.c:7) frame=") != null);
+    // The user takes control: the agent may only read.
+    d.takeControlCmd();
+    try std.testing.expect(std.mem.startsWith(u8, try Run.tool(a, tools, "debug_continue", "{}"), "The user controls this debug session"));
+    d.handBackCmd();
+    try std.testing.expectEqualStrings("Continued. Call debug_wait_for_stop.", try Run.tool(a, tools, "debug_continue", "{}"));
+    const end = try Run.tool(a, tools, "debug_wait_for_stop", "{\"timeout_ms\":20000}");
+    try std.testing.expect(std.mem.startsWith(u8, end, "The program exited with code 0.\n"));
+    // The session goes once the UI has seen it end.
+    var tries: u32 = 0;
+    while (tries < 2000 and (d.sessionCount() > 0 or d.busy > 0)) : (tries += 1) {
+        _ = t.settle();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(usize, 0), d.sessionCount());
 }
 
 test "workbench: a C program crashing under GDB shows the signal under its line; Close hides it" {

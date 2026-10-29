@@ -287,12 +287,13 @@ pub const ConsoleView = struct {
     }
 
     /// Reads the entries of `c` (session `session`'s console) from its
-    /// `read`-th on (counting dropped ones); returns the count seen.
+    /// `read`-th on (counting dropped ones); returns the count seen. It
+    /// runs under the session's lock, so it does not call `hooks.changed`:
+    /// the caller does once the lock is released.
     pub fn pull(cv: *ConsoleView, session: u32, c: *const ConsoleEntry, read: u64) u64 {
         const total = c.dropped + c.entries.items.len;
         var i = @max(read, c.dropped);
         while (i < total) : (i += 1) cv.addEntry(session, c.entries.items[@intCast(i - c.dropped)]) catch break;
-        if (total > read) cv.hooks.changed(cv.hooks.ctx);
         return total;
     }
 
