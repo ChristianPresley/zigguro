@@ -57,7 +57,8 @@ fn mut(name: []const u8) foreign.ForeignTool {
 
 const World = struct {
     lsp: Fake = .{ .tools = &.{ ro("find_references"), ro("hover"), mut("rename_symbol") } },
-    debug: Fake = .{ .tools = &.{ mut("debug_start"), ro("debug_stack") } },
+    // An exporter's own class wins over the default (control).
+    debug: Fake = .{ .tools = &.{ .{ .name = "debug_start", .description = "debug_start", .input_schema_json = schema, .permission = .execute }, ro("debug_stack") } },
     tasks: Fake = .{ .tools = &.{.{ .name = "task_run", .description = "task_run", .input_schema_json = schema }} },
     workspace: Fake = .{ .tools = &.{ ro("find_files"), ro("glob"), ro("grep"), ro("find_symbol"), ro("list_dir") } },
     notes: Fake = .{ .tools = &.{ ro("search_notes"), ro("read_note"), ro("note_links"), mut("create_note"), mut("update_note"), mut("daily_note") } },
